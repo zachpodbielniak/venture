@@ -1231,6 +1231,11 @@ test_auth_pages_refuse_anonymous_requests(
 		"/organizations/1/settings/stripe"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/organizations/1/settings/stripe", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/support"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/support", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* Invitation ceremony is public only in explicitly hosted mode. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/invitation"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/invitation", NULL, "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/oidc"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/oidc", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/oidc/link", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);

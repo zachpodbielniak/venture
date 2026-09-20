@@ -1118,7 +1118,7 @@ venture_backup_schedule_actions_register(VentureDatabase *database)
 		g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
 		g_autoptr(VentureAction) action = NULL;
 		g_ptr_array_add(parameters, venture_field_spec_new("as_of", "As of", VENTURE_FIELD_KIND_DATETIME));
-		action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "backup_schedule", "name", "run",
+		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_PLATFORM, "type-name", "backup_schedule", "name", "run",
 			"label", "Run backup now", "description", "Write this schedule's backup, verify it if the schedule says so, and apply retention",
 			"parameters", parameters, "stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_ADMIN, NULL);
 		if (!venture_action_registry_register(registry, action, action_allowed, run_invoke, self, NULL, &error))
@@ -1127,7 +1127,7 @@ venture_backup_schedule_actions_register(VentureDatabase *database)
 	{
 		g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
 		g_autoptr(VentureAction) action = NULL;
-		action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "backup_run", "name", "verify",
+		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_PLATFORM, "type-name", "backup_run", "name", "verify",
 			"label", "Verify", "description", "Restore this backup into a temporary empty database and tie it to the live books",
 			"parameters", parameters, "stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_ADMIN, NULL);
 		if (!venture_action_registry_register(registry, action, action_allowed, verify_invoke, self, NULL, &error))
@@ -1139,7 +1139,7 @@ venture_backup_schedule_actions_register(VentureDatabase *database)
 		g_ptr_array_add(parameters, venture_field_spec_new("run_id", "Backup run", VENTURE_FIELD_KIND_INTEGER));
 		g_ptr_array_add(parameters, venture_field_spec_new("organization_id", "Organization", VENTURE_FIELD_KIND_INTEGER));
 		g_ptr_array_add(parameters, venture_field_spec_new("name", "Drill name", VENTURE_FIELD_KIND_STRING));
-		action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "backup_run", "name", "restore_drill",
+		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_PLATFORM, "type-name", "backup_run", "name", "restore_drill",
 			"label", "Restore drill", "description", "Restore a backup (the latest by default) into an empty database, tie it out, and keep the report as a named drill",
 			"parameters", parameters, "stageable", FALSE, "type-level", TRUE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_ADMIN, NULL);
 		if (!venture_action_registry_register(registry, action, action_allowed, drill_invoke, self, NULL, &error))

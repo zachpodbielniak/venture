@@ -727,7 +727,7 @@ sales_tax_return(VentureContext *context, VentureDateRange *period, JsonObject *
 void
 venture_sales_tax_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"sales_tax_return", "Sales tax return by jurisdiction",
 		"Gross, exempt and taxable sales, tax collected and credited, and net due per jurisdiction from frozen invoice lines.",
 		sales_tax_return)));

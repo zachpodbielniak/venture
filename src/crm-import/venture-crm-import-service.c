@@ -1558,7 +1558,7 @@ venture_crm_import_actions_register(VentureDatabase *database)
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
-		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "crm_import",
+		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "crm_import",
 			"name", names[i], "label", names[i], "description", "CRM import batch action",
 			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		g_autoptr(GError) error = NULL;

@@ -838,7 +838,7 @@ void venture_ai_provider_actions_register(VentureDatabase *database)
 				g_ptr_array_add(parameters, field);
 			}
 		}
-		action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "ai_platform_offer", "name", names[i], "label", labels[i],
+		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_PLATFORM, "type-name", "ai_platform_offer", "name", names[i], "label", labels[i],
 			"description", "Platform operator only; a recipient must select its grant explicitly", "parameters", parameters,
 			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_ADMIN, NULL);
 		if (!venture_action_registry_register(venture_database_get_action_registry(database), action, ai_platform_action_allowed,

@@ -3013,7 +3013,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	for (i = 0; i < G_N_ELEMENTS(builtins); i++)
 	{
 		venture_report_registry_add(self,
-			VENTURE_REPORT(venture_func_report_new(builtins[i].name,
+			VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, builtins[i].name,
 			                                       builtins[i].title,
 			                                       builtins[i].description,
 			                                       builtins[i].func)));

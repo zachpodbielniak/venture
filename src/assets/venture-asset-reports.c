@@ -195,8 +195,8 @@ deferrals_report(VentureContext *context, VentureDateRange *period, JsonObject *
 void
 venture_assets_register_reports(VentureReportRegistry *registry)
 {
-	VentureReport *assets = VENTURE_REPORT(venture_func_report_new("fixed_assets", "Fixed assets", "Historical asset and category carrying values.", assets_report));
-	VentureReport *deferrals = VENTURE_REPORT(venture_func_report_new("deferrals", "Deferrals", "Historical remaining deferral balances.", deferrals_report));
+	VentureReport *assets = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "fixed_assets", "Fixed assets", "Historical asset and category carrying values.", assets_report));
+	VentureReport *deferrals = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "deferrals", "Deferrals", "Historical remaining deferral balances.", deferrals_report));
 	g_object_set(assets, "financial", TRUE, NULL);
 	g_object_set(deferrals, "financial", TRUE, NULL);
 	venture_report_registry_add(registry, assets);

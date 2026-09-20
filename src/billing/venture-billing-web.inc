@@ -25,7 +25,7 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 		if (gate != NULL)
 			return gate;
 	}
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	gate = venture_web_require_module_api(self, "billing");
 	if (gate != NULL)

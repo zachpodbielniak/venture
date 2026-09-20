@@ -921,6 +921,10 @@ venture_automation_new(
 
 	self = g_object_new(VENTURE_TYPE_AUTOMATION, NULL);
 	self->context = g_object_ref(context);
+	venture_data_class_declare_resource(G_OBJECT(self), VENTURE_DATA_CLASS_PLATFORM);
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(self), TRUE, error)) return NULL;
+
 
 	if (!venture_automation_build_engine(self, error))
 		return NULL;

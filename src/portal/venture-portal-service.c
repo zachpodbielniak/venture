@@ -351,7 +351,7 @@ portal_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 void
 venture_portal_actions_register(VentureDatabase *database)
 {
-	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "customer_portal_access",
+	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "customer_portal_access",
 		"name", "revoke", "label", "Revoke", "description", "Revoke portal access without deleting history",
 		"stageable", FALSE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_autoptr(GError) error = NULL;

@@ -1043,7 +1043,7 @@ venture_setup_actions_register(VentureDatabase *database)
 		return;
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
-		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "accounting_setup",
+		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "accounting_setup",
 			"name", names[i], "label", names[i], "description", "Accounting setup action",
 			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		g_autoptr(GError) error = NULL;

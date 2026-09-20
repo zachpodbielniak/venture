@@ -336,7 +336,7 @@ venture_projects_save_hook(VentureDatabase *database, VentureEntity *record, con
 void
 venture_projects_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"project_margin", "Project margin", "Budget, billed revenue, approved unbilled work, frozen actual cost and management profit.", project_margin_report)));
 }
 

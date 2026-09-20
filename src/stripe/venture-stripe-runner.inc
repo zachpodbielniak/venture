@@ -81,6 +81,7 @@ venture_stripe_service_collect_due(VentureStripeService *self, GDateTime *now,
 	guint i;
 	gint processed = 0;
 	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), -1);
+	if (!venture_tenant_service_check_operation(venture_tenant_service_get(self->database), TRUE, error)) return -1;
 	if (!stripe_finance(self, error) || !stripe_automatic_ready(self, error)) return -1;
 	if (!now || limit < 1 || limit > 100 || venture_database_has_transaction(self->database))
 	{

@@ -1966,7 +1966,7 @@ register_action(VentureActionRegistry *registry, const gchar *type_name, const g
 {
 	g_autoptr(VentureAction) action = NULL;
 	g_autoptr(GError) error = NULL;
-	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", type_name, "name", name,
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", type_name, "name", name,
 		"label", label, "description", description, "parameters", parameters, "stageable", stageable,
 		"type-level", type_level, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, action, allowed, invoke, self, NULL, &error))
@@ -2575,10 +2575,10 @@ worklist(VentureContext *context, VentureDateRange *period, JsonObject *options,
 void
 venture_dunning_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("collections", "Collections",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "collections", "Collections",
 		"Per reminder step: reminders sent, queued, failed, invoices paid within 7 days of it, and average days-to-pay before and after policy adoption",
 		collections)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("dunning_worklist", "Dunning worklist",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "dunning_worklist", "Dunning worklist",
 		"One row per open overdue invoice: aging, balance, the last reminder step and what happens next, and who owns it",
 		worklist)));
 }

@@ -142,6 +142,36 @@ typedef struct
 const VentureWebNavSection *
 venture_web_navigation_sections(void);
 
+/**
+ * VentureHostedRouteFlags:
+ * @VENTURE_HOSTED_ROUTE_NONE: ordinary lifecycle enforcement
+ * @VENTURE_HOSTED_ROUTE_CONTROL: identity or workspace-administration route
+ * @VENTURE_HOSTED_ROUTE_SUPPORT: audited generic repository route safe for scoped support
+ */
+typedef enum {
+	VENTURE_HOSTED_ROUTE_NONE = 0,
+	VENTURE_HOSTED_ROUTE_CONTROL = 1 << 0,
+	VENTURE_HOSTED_ROUTE_SUPPORT = 1 << 1
+} VentureHostedRouteFlags;
+
+/**
+ * venture_web_server_add_classified_route:
+ * @self: server
+ * @method: HTTP method
+ * @pattern: existing router pattern syntax
+ * @classification: explicit authority class
+ * @flags: explicit lifecycle-control or scoped-support declaration
+ * @callback: (scope forever) (closure user_data): guarded handler
+ * @user_data: (nullable): handler data
+ *
+ * Registers execution and classification together. Hosted mode refuses direct
+ * unclassified router additions. Control bypasses lifecycle blocking, never
+ * host verification or the handler's authentication and permission checks.
+ */
+void venture_web_server_add_classified_route(VentureWebServer *self, HtmxMethod method,
+	const gchar *pattern, VentureDataClass classification, VentureHostedRouteFlags flags,
+	HtmxRouteCallback callback, gpointer user_data);
+
 G_END_DECLS
 
 #endif /* VENTURE_WEB_SERVER_H */

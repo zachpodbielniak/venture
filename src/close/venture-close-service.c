@@ -1143,7 +1143,7 @@ close_report(VentureContext *context, VentureDateRange *period, JsonObject *opti
 void
 venture_close_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"close_workspace", "Close workspace",
 		"Accountant close status, signoffs and subledger tie-outs", close_report)));
 }

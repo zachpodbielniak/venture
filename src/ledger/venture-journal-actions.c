@@ -91,19 +91,19 @@ venture_journal_actions_register(VentureDatabase *database)
 	g_autoptr(VentureAction) create = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureFieldSpec *journal_spec;
-	post = g_object_new(VENTURE_TYPE_ACTION, "type-name", "journal", "name", "post",
+	post = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "journal", "name", "post",
 		"label", "Post", "description", "Post this live draft journal", "stageable", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_ptr_array_add(parameters, venture_field_spec_new("occurred_at", "Reversal date", VENTURE_FIELD_KIND_DATETIME));
 	g_ptr_array_add(parameters, venture_field_spec_new("memo", "Reason", VENTURE_FIELD_KIND_TEXT));
-	reverse = g_object_new(VENTURE_TYPE_ACTION, "type-name", "journal", "name", "reverse",
+	reverse = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "journal", "name", "reverse",
 		"label", "Reverse", "description", "Reverse this posted journal once", "parameters", parameters,
 		"stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_ptr_array_set_size(parameters, 0);
 	journal_spec = venture_field_spec_new("journal", "Journal header and lines", VENTURE_FIELD_KIND_JSON);
 	journal_spec->required = TRUE;
 	g_ptr_array_add(parameters, journal_spec);
-	create = g_object_new(VENTURE_TYPE_ACTION, "type-name", "journal", "name", "create_and_post",
+	create = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "journal", "name", "create_and_post",
 		"label", "Create and post", "description", "Create and post a journal header and lines atomically",
 		"parameters", parameters, "stageable", TRUE, "type-level", TRUE, "subject-parameter", "journal", "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, post, journal_allowed, journal_post, g_object_ref(service), g_object_unref, &error) ||

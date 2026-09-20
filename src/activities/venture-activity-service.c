@@ -236,7 +236,7 @@ call_prepare(VentureEntity *row, VentureEntity *subject, JsonObject *details,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) fields = venture_activity_call_parameters();
-	g_autoptr(VentureAction) schema = g_object_new(VENTURE_TYPE_ACTION, "parameters", fields, NULL);
+	g_autoptr(VentureAction) schema = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "parameters", fields, NULL);
 	g_autoptr(JsonNode) input = json_node_new(JSON_NODE_OBJECT);
 	g_autoptr(GHashTable) params = NULL;
 	g_autoptr(JsonNode) normalized = NULL;

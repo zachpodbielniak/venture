@@ -512,3 +512,34 @@ gboolean venture_oidc_service_unlink(VentureOidcService *self, gint64 id, gint64
 	if (ok) ok = venture_database_commit(self->database, error); else venture_database_rollback(self->database);
 	return ok;
 }
+
+gboolean
+venture_oidc_service_quarantine(VentureOidcService *self, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_OIDC_IDENTITY);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) columns = NULL;
+	guint i;
+	if (!self->database || !venture_tenant_service_is_maintenance(venture_tenant_service_get(self->database)))
+		return fail(error, VENTURE_ERROR_PERMISSION_DENIED, "OIDC quarantine requires explicit hosted operator maintenance");
+	/* Default installs never created this optional table. A disabled module
+	 * can still retain identities, so inspect schema rather than enablement. */
+	columns = venture_schema_get_existing_columns(venture_database_get_connection(self->database), "oidc_identities", error);
+	if (!columns) return FALSE;
+	if (g_hash_table_size(columns) == 0) {
+		g_hash_table_remove_all(self->attempts);
+		g_hash_table_remove_all(self->validators);
+		return TRUE;
+	}
+	venture_query_set_include_deleted(query, TRUE);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) return FALSE;
+	for (i = 0; i < rows->len; i++) {
+		VentureEntity *identity = g_ptr_array_index(rows, i);
+		g_object_set(identity, "active", FALSE, NULL);
+		if (!save(self, identity, NULL, error)) return FALSE;
+	}
+	g_hash_table_remove_all(self->attempts);
+	g_hash_table_remove_all(self->validators);
+	return TRUE;
+}

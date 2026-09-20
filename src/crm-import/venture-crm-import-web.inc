@@ -61,6 +61,7 @@ venture_crm_import_web_action(HtmxRequest *request, GHashTable *params, gpointer
 static void
 venture_crm_import_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_post(router, "/api/v1/crm_imports/preview", venture_crm_import_web_preview, self);
-	htmx_router_post(router, "/api/v1/crm_imports/:id/:action", venture_crm_import_web_action, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/crm_imports/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_crm_import_web_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/crm_imports/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_crm_import_web_action, self);
 }

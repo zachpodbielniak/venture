@@ -102,6 +102,10 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("database-busy-timeout", "database", "busy_timeout", 5,
 	        "Seconds to wait for a lock"),
 
+	VC_BOOL("hosted-enabled", "hosted", "enabled", FALSE, "Pin this database to one hosted workspace"),
+	VC_STR("hosted-workspace-id", "hosted", "workspace_id", "", "Immutable hosted workspace UUID"),
+	VC_STR("hosted-origin", "hosted", "origin", "", "Immutable public HTTPS tenant origin"),
+
 	VC_BOOL("security-require-auth", "security", "require_auth", TRUE,
 	        "Require authentication for every request"),
 	VC_STR ("security-session-secret-env", "security", "session_secret_env",

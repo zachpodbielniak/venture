@@ -573,10 +573,10 @@ tax_liability(VentureContext *context, VentureDateRange *period, JsonObject *opt
 void
 venture_receivables_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"receivables", "Receivables aging", "Outstanding issued amounts less dated allocations, as of the period end.", receivables_aging)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"customer_statement", "Customer statement", "Dated customer movements and balance in one organization and currency; requires customer_id.", customer_statement)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"tax_liability", "Tax liability by code", "Frozen invoice and bill tax grouped by tax code and jurisdiction.", tax_liability)));
 }

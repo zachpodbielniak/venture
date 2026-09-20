@@ -1111,7 +1111,7 @@ static const VentureFieldDecl venture_knowledge_base_fields[] = {
 	 */
 	VENTURE_FIELD("source-path", "Source directory",
 	              "Synced from this directory on the server, when set",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_HOST_RESOURCE),
 	VENTURE_FIELD("synced-at", "Last synced", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	/* Whether the assistant may reach for this base without being asked
@@ -1163,7 +1163,7 @@ static const VentureFieldDecl venture_kb_article_fields[] = {
 	                   "Shown in search results ahead of the passage"),
 	VENTURE_FIELD("source-path", "Source file",
 	              "Where it came from, for sync", VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_INDEXED),
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_HOST_RESOURCE),
 	VENTURE_FIELD("source-hash", "Checksum",
 	              "SHA-256 of the file's bytes, for change detection",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),

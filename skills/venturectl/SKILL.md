@@ -24,6 +24,40 @@ venturectl health
 Mint a token from the UI (Settings → API tokens) or
 `POST /api/v1/tokens` as an admin. It is shown once.
 
+For an operation requiring an interactive session (including hosted workspace
+administration), `--session-file /private/session.json` accepts an owner-only,
+single-link regular JSON file, at most 8 KiB, containing:
+
+```json
+{"origin":"https://workspace.example.test","cookie":"venture_session=SIGNED_SESSION_VALUE"}
+```
+
+Obtain the session through the normal sign-in and MFA ceremony; this option
+neither logs in nor elevates a token. Keep the file private (`chmod 600`), do not
+put its contents in argv or logs, and unset `VENTURE_TOKEN`. The origin must
+exactly match `--server`/`VENTURE_SERVER` (HTTPS, or numeric loopback HTTP for a
+local fixture). Symlinks, hard links, FIFOs, non-private files, origin mismatch,
+token combinations and MCP use are refused. Session-authenticated requests never
+follow redirects, including redirects to another path on the same origin.
+The ordinary generic `act`, `list` and `get` commands keep their existing forms.
+
+Hosted administration uses declared actions: `tenant_workspace.set_state`,
+`tenant_membership.set_membership`, `tenant_invitation.invite`,
+`tenant_membership.invite_recovery` and `tenant_support_grant.revoke`. Inspect
+parameters with `describe`; do not create or update these control rows directly.
+`invite_recovery` is a privately delivered one-time recovery for an explicitly
+reviewed, quarantined ordinary member. It preserves the user ID and member role;
+it does not activate a suspended workspace or grant platform authority.
+
+Operator maintenance is the local server binary's interface, not a `venturectl`
+subcommand: `venture --tenant-admin USER --tenant-password-file FILE|-` requires
+`--tenant-reason`, and existing identities additionally require `--tenant-recover`.
+Use stopped-workspace `--tenant-revoke-credentials --tenant-reason REASON` before
+restored authority is activated; it suspends and quarantines all restored login
+capabilities. `--tenant-status` and explicit `--tenant-state` expose the operator
+lifecycle contract. See `docs/hosted-workspaces.org` for the pinned configuration,
+recovery, scoped support and audit requirements. Never pass passwords in argv.
+
 If `health` fails, stop and fix that. Every other command will fail the same
 way and less clearly.
 
@@ -125,7 +159,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
-Flags: `--server/-s`, `--token/-t`, `--format/-f table|json|yaml|csv`,
+Flags: `--server/-s`, `--token/-t`, `--session-file FILE`, `--format/-f table|json|yaml|csv`,
 `--quiet/-q`.
 
 `mcp` is the one command that refuses `--token`: it is spawned from an agent's

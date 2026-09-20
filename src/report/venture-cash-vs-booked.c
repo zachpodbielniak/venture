@@ -788,7 +788,7 @@ venture_cash_vs_booked_register_report(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
 
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"cash_vs_booked", "Cash vs booked",
 		"Revenue booked (issued invoices less voids and credits) beside cash "
 		"received (receipts less refunds) per month or week and per currency, "

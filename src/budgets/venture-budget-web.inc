@@ -49,6 +49,7 @@ budgets_report(HtmxRequest *request, GHashTable *params, gpointer data)
 static void
 venture_budget_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/budgets", budgets_report, self);
-	htmx_router_get(router, "/api/v1/budget_reports", budgets_report, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/budgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, budgets_report, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/budget_reports", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, budgets_report, self);
 }

@@ -22,7 +22,7 @@ venture_custom_fields_web(HtmxRequest *request, GHashTable *params, gpointer use
 	if (gate != NULL)
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	venture_auth_to_actor(principal, &actor);
 	org = venture_web_active_organization(self, request);
@@ -122,6 +122,7 @@ venture_custom_fields_web(HtmxRequest *request, GHashTable *params, gpointer use
 static void
 venture_custom_fields_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/settings/fields", venture_custom_fields_web, self);
-	htmx_router_post(router, "/settings/fields", venture_custom_fields_web, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/settings/fields", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_custom_fields_web, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/settings/fields", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_custom_fields_web, self);
 }

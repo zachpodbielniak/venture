@@ -337,6 +337,7 @@ money_calendar_feed(HtmxRequest *request, GHashTable *params, gpointer data)
 static void
 venture_money_calendar_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/money/calendar", money_calendar_page, self);
-	htmx_router_get(router, "/money/calendar.ics", money_calendar_feed, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/money/calendar", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, money_calendar_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/money/calendar.ics", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, money_calendar_feed, self);
 }

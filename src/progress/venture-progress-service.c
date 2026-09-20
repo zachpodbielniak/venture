@@ -485,7 +485,7 @@ venture_progress_actions_register(VentureDatabase *database)
 	g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
 	g_autoptr(GError) error = NULL;
 	g_ptr_array_add(parameters, venture_field_spec_new("percent", "Percent of original", VENTURE_FIELD_KIND_INTEGER));
-	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "quote", "name", "progress_invoice",
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "quote", "name", "progress_invoice",
 		"label", "Progress invoice", "description", "Invoice a slice of remaining contract value",
 		"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	venture_action_registry_register(venture_database_get_action_registry(database), action,

@@ -1,0 +1,78 @@
+#+title: Hosted workspace application demonstration
+
+* Built artifact and scope
+
+This is a synthetic application demonstration, separate from the operator's
+container isolation, encrypted restore and neighbor-availability drill. It used
+the DEBUG =venture= binary, a fresh private SQLite database, numeric loopback
+origin, Chromium and no external provider. Passwords and capabilities were
+submitted privately and are absent from this transcript. The recording shows
+before/after administrator pages: global EDITOR, visible control rows and the
+retained colleague as tenant member. Acceptance forms run in a separate browser
+context and are established by the verbatim scripted transcript, not the clip.
+
+Run =python docs/evidence/hosted-workspaces-demonstration.py= from an environment
+with Playwright and Chromium installed, after =make DEBUG=1=. The script derives
+the repository path, creates its own private database/state, starts and stops the
+built server, and retains the private evidence directory for inspection.
+It never connects to the ambient database.
+
+* Verbatim demonstration transcript
+
+#+begin_example
+Artifact SHA256: 8ffacdbfeff1b941552198162f3bbd191ccf39b9e62edcc319edab60c385e16e
+PASS immutable hosted workspace migrated and explicit local tenant administrator bootstrapped
+Workspace response shape: total,count,records
+PASS interactive tenant administrator reaches workspace records; host settings and global user CRUD return 403
+PASS generic audited action suspends business access while health and membership review remain available
+PASS explicit tenant reactivation restores business access
+PASS explicit one-time invitation creates an ordinary member with a retained local identity
+PASS stopped restore quarantine and named administrator recovery preserve suspension; targeted member recovery preserves user ID and member role
+Recording: /tmp/venture-125-tenant-app-demo-xra31g74/video/page@f986643e43d02828e4220ffb5b7ff43f.webm
+Evidence directory: /tmp/venture-125-tenant-app-demo-xra31g74
+#+end_example
+
+The assertions behind these lines execute the built artifact: immutable
+workspace migration and explicit bootstrap; authenticated generic API actions;
+403 responses for platform settings/global identity CRUD; suspension blocking
+business access while health/admin review remain reachable; explicit activation;
+one-time invitation acceptance; stopped restore quarantine; administrator
+recovery; and targeted ordinary-member recovery retaining the same user ID and
+member role while business access remains suspended.
+
+The browser run caught two defects before review: selected-organization filtering
+hid workspace control rows, and a =no-referrer= form policy made Chromium send
+=Origin: null=. The final run keeps strict origin checks, uses =same-origin= on
+capability exchange pages, and renders workspace controls across legal entities.
+
+* Automated boundaries
+
+=test-tenant= covers immutable identity, explicit classification, safe invitations,
+last-admin protection, scoped support and revocation, nested maintenance isolation,
+lifecycle actions, HTTP authority/completion checks, restored mandatory MFA
+reenrollment, transactional credential quarantine, retained ordinary-member
+recovery, and an absent optional OIDC table. The same eleven cases pass on SQLite
+and a disposable PostgreSQL schema. Retained OIDC identities are revoked even
+when the module is disabled; schema absence is checked separately.
+
+The related auth, organization access, MFA, OIDC, actions, modules, migrations,
+private connectors and CLI transport suites passed. GIR generation passed without
+warnings. This evidence does not replace an independent security review, deployment
+egress isolation or full integrated-head qualification.
+
+The OIDC suite's two live-Keycloak opt-in cases were not run for this lane;
+its twenty hermetic cases passed. PostgreSQL migration coverage ran separately
+with the dedicated disposable fixture. No external identity/provider request was
+made by hosted quarantine or the application demonstration.
+
+The final review added and proved failing-before/fixed-after regressions for an
+unknown access verb and for Secure cookies behind an HTTPS public origin with
+HTTP backend transport. The eleven-case SQLite gate and fresh built-artifact
+demonstration passed again after those repairs. The docs checker rendered all
+92 pages after completing the index links.
+
+Migration evidence applies to this isolated feature history. Unreleased lane
+snapshots are not supported upgrade sources for an epic whose earlier migration
+numbers are still being integrated; final upgrade qualification starts from the
+released master history. The operator's separate label-only image upgrade drill
+does not claim a cross-schema upgrade.

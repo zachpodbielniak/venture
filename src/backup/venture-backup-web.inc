@@ -98,7 +98,7 @@ venture_backup_web_settings(HtmxRequest *request, GHashTable *params, gpointer u
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
-	may_trigger = venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN, NULL);
+	may_trigger = venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN, NULL);
 	org = venture_web_active_organization(self, request);
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
 	{
@@ -107,7 +107,7 @@ venture_backup_web_settings(HtmxRequest *request, GHashTable *params, gpointer u
 		const gchar *run_id = htmx_request_get_form_value(request, "run_id");
 		g_autoptr(VentureEntity) subject = NULL;
 		g_autoptr(VentureEntity) produced = NULL;
-		if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN, &error))
+		if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN, &error))
 			return venture_web_error_response(error);
 		if (g_strcmp0(action, "run") == 0)
 		{
@@ -249,8 +249,9 @@ venture_backup_web_settings(HtmxRequest *request, GHashTable *params, gpointer u
 static void
 venture_backup_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_post(router, "/backup/export", venture_backup_web_export, self);
-	htmx_router_post(router, "/api/v1/accounting_backups/export", venture_backup_web_export, self);
-	htmx_router_get(router, "/settings/backups", venture_backup_web_settings, self);
-	htmx_router_post(router, "/settings/backups", venture_backup_web_settings, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/backup/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_backup_web_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/accounting_backups/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_backup_web_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/settings/backups", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_backup_web_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/settings/backups", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_backup_web_settings, self);
 }

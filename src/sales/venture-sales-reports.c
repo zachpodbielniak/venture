@@ -226,6 +226,6 @@ static VentureReportResult *attainment(VentureContext *context, VentureDateRange
 void venture_sales_reports_register(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("sales_attainment", "Sales quota attainment",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "sales_attainment", "Sales quota attainment",
 		"Immutable booked sales by representative/team and currency, independent period targets and current forecast", attainment)));
 }

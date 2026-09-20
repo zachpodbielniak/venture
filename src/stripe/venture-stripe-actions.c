@@ -180,7 +180,7 @@ venture_stripe_actions_register(VentureDatabase *database)
 		}
 		if (i == 8 || i == 10) g_ptr_array_add(parameters, venture_field_spec_new("now", "Scheduling clock (default now)", VENTURE_FIELD_KIND_DATETIME));
 		if (i == 10) g_ptr_array_add(parameters, venture_field_spec_new("limit", "Maximum permissions (default 10)", VENTURE_FIELD_KIND_INTEGER));
-		action = g_object_new(VENTURE_TYPE_ACTION, "type-name", types[i], "name", names[i],
+		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", types[i], "name", names[i],
 			"label", labels[i], "description", descriptions[i], "parameters", parameters,
 			"stageable", FALSE, "service-transaction", TRUE, "type-level", i == 10, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		if (!venture_action_registry_register(venture_database_get_action_registry(database), action,

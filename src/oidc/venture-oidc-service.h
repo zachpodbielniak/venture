@@ -118,5 +118,16 @@ gchar *venture_oidc_service_callback_uri(VentureOidcService *self, GError **erro
  * Returns: whether the lifecycle write is service-authorized
  */
 gboolean venture_oidc_check_write(VentureDatabase *database, VentureEntity *entity, gboolean removal, GError **error);
+/**
+ * venture_oidc_service_quarantine:
+ * @self: service
+ * @error: (out) (optional): refusal
+ *
+ * Disables retained identity links and clears pending in-memory sign-in state.
+ * Requires explicit hosted operator maintenance and participates in the caller's
+ * restore-quarantine transaction. Never removes provider credential bindings.
+ * Returns: whether all links were disabled
+ */
+gboolean venture_oidc_service_quarantine(VentureOidcService *self, GError **error);
 G_END_DECLS
 #endif

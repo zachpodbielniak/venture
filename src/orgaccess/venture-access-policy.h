@@ -284,5 +284,20 @@ gboolean venture_access_policy_record_is_personal(VentureAccessPolicy *self, Ven
  * all record types, including types registered by plugins later.
  */
 void venture_access_policy_install_privacy(VentureDatabase *database);
+
+/**
+ * venture_access_policy_check_action:
+ * @self: policy
+ * @entity: declared action subject
+ * @action: classified service operation
+ * @error: (out) (optional): authorization refusal
+ *
+ * Preserves subject, organization and extension-policy checks while permitting
+ * dedicated administrative services to operate on protected control records.
+ * Actual repository mutations still require check_write().
+ * Returns: whether the declared operation is authorized
+ */
+gboolean venture_access_policy_check_action(VentureAccessPolicy *self, VentureEntity *entity,
+	VentureAction *action, GError **error);
 G_END_DECLS
 #endif

@@ -1537,7 +1537,7 @@ worklist_report(VentureContext *context, VentureDateRange *period, JsonObject *o
 void
 venture_recurring_register_reports(VentureReportRegistry *registry)
 {
-	VentureReport *worklist = VENTURE_REPORT(venture_func_report_new("collections_worklist", "Collections worklist",
+	VentureReport *worklist = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "collections_worklist", "Collections worklist",
 		"Overdue invoices with owner, promised payment and dispute notes.", worklist_report));
 	venture_report_registry_add(registry, worklist);
 }
@@ -1702,7 +1702,7 @@ register_one(VentureActionRegistry *registry, const gchar *type_name, const gcha
 	gboolean type_level, GPtrArray *parameters, VentureActionAllowed allowed, VentureActionInvoke invoke,
 	gpointer data)
 {
-	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", type_name, "name", name,
+	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", type_name, "name", name,
 		"label", label, "description", label, "parameters", parameters, "stageable", TRUE,
 		"type-level", type_level, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_autoptr(GError) error = NULL;

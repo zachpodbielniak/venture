@@ -2630,6 +2630,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 	if (NULL == self->actions)
 	{
 		self->actions = g_object_new(VENTURE_TYPE_ACTION_REGISTRY, "database", self, NULL);
+		venture_tenant_actions_register(self);
 		venture_journal_actions_register(self);
 		venture_cutover_actions_register(self);
 		venture_setup_actions_register(self);

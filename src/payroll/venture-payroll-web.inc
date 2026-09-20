@@ -21,7 +21,7 @@ venture_web_payroll_action(HtmxRequest *request, GHashTable *params, gpointer us
 			return gate;
 	}
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	gate = api ? venture_web_require_module_api(self, "payroll")
 		: venture_web_require_module_ui(self, request, "payroll");

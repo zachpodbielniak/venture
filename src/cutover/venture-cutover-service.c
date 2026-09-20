@@ -701,7 +701,7 @@ venture_cutover_actions_register(VentureDatabase *database)
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
-		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "accounting_cutover",
+		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "accounting_cutover",
 			"name", names[i], "label", names[i], "description", "Cutover batch action",
 			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		g_autoptr(GError) error = NULL;

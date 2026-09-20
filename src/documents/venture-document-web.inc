@@ -184,10 +184,11 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 static void
 venture_document_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/invoices/compose", venture_document_web_compose, self);
-	htmx_router_post(router, "/invoices/compose", venture_document_web_compose, self);
-	htmx_router_post(router, "/api/v1/invoices/compose", venture_document_web_compose, self);
-	htmx_router_get(router, "/quotes/compose", venture_document_web_compose, self);
-	htmx_router_post(router, "/quotes/compose", venture_document_web_compose, self);
-	htmx_router_post(router, "/api/v1/quotes/compose", venture_document_web_compose, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_document_web_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_document_web_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_document_web_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/quotes/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_document_web_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/quotes/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_document_web_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/quotes/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_document_web_compose, self);
 }

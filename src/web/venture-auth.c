@@ -83,12 +83,33 @@ venture_auth_new(VentureContext *context)
 		self->secret = g_strdup(secret);
 	}
 
+	{
+		gboolean hosted = FALSE;
+		g_autofree gchar *workspace = NULL;
+		g_object_get(config, "hosted-enabled", &hosted, "hosted-workspace-id", &workspace, NULL);
+		if (hosted) {
+			gchar *bound = g_compute_hmac_for_string(G_CHECKSUM_SHA256,
+				(const guchar *)self->secret, strlen(self->secret), workspace, -1);
+			g_free(self->secret);
+			self->secret = bound;
+		}
+	}
+
 	g_object_get(config,
 	             "security-require-auth", &self->required,
 	             "security-session-lifetime", &self->lifetime,
 	             "security-cookie-secure", &self->cookie_secure,
 	             "security-password-iterations", &iterations,
 	             NULL);
+
+	/* TLS may terminate before this process. The immutable hosted public
+	 * origin, not the backend transport, determines browser cookie security. */
+	{
+		gboolean hosted = FALSE;
+		g_autofree gchar *origin = NULL;
+		g_object_get(config, "hosted-enabled", &hosted, "hosted-origin", &origin, NULL);
+		if (hosted && g_str_has_prefix(origin, "https://")) self->cookie_secure = TRUE;
+	}
 
 	self->password_iterations = (guint)iterations;
 
@@ -1224,6 +1245,7 @@ venture_auth_ensure_owner(
 	g_return_val_if_fail(VENTURE_IS_AUTH(self), NULL);
 
 	database = venture_context_get_database(self->context);
+	if (venture_tenant_service_is_enabled(venture_tenant_service_get(database))) return NULL;
 	query = venture_query_new(VENTURE_TYPE_USER);
 	existing = venture_database_count(database, query, error);
 

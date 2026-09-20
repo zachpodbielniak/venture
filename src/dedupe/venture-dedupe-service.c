@@ -1012,20 +1012,20 @@ venture_dedupe_actions_register(VentureDatabase *database)
 	registry = venture_database_get_action_registry(database);
 	g_ptr_array_add(scan_parameters, venture_field_spec_new("kind", "Kind (company or contact)", VENTURE_FIELD_KIND_STRING));
 	g_ptr_array_add(scan_parameters, venture_field_spec_new("organization_id", "Organization", VENTURE_FIELD_KIND_INTEGER));
-	scan = g_object_new(VENTURE_TYPE_ACTION, "type-name", "duplicate_candidate", "name", "scan",
+	scan = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "duplicate_candidate", "name", "scan",
 		"label", "Scan for duplicates", "description", "Propose pairs of companies or contacts that look like one; merges nothing",
 		"parameters", scan_parameters, "stageable", FALSE, "type-level", TRUE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, scan, scan_allowed, scan_invoke, self, NULL, &error))
 		g_error("Dedupe scan action registration: %s", error->message);
 	g_ptr_array_add(merge_parameters, venture_field_spec_new("survivor", "Record to keep", VENTURE_FIELD_KIND_INTEGER));
-	merge = g_object_new(VENTURE_TYPE_ACTION, "type-name", "duplicate_candidate", "name", "merge",
+	merge = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "duplicate_candidate", "name", "merge",
 		"label", "Merge", "description", "Fold the other record into the survivor: references, fields, timeline note, audit",
 		"parameters", merge_parameters, "stageable", TRUE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, merge, open_allowed, merge_invoke, self, NULL, &error))
 		g_error("Dedupe merge action registration: %s", error->message);
-	dismiss = g_object_new(VENTURE_TYPE_ACTION, "type-name", "duplicate_candidate", "name", "dismiss",
+	dismiss = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "duplicate_candidate", "name", "dismiss",
 		"label", "Not a duplicate", "description", "Close the proposal; later scans leave the pair alone",
 		"parameters", no_parameters, "stageable", FALSE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);

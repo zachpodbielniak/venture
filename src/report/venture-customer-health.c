@@ -1379,7 +1379,7 @@ venture_customer_health_register_reports(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
 
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"customer_health", "Customer health",
 		"Every customer's last touch, open deals, overdue invoices, tickets, "
 		"reminder step and trailing revenue, banded green, amber or red",

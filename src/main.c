@@ -25,6 +25,45 @@
 #include <unistd.h>
 #include <errno.h>
 #include <openssl/crypto.h>
+#include <sys/stat.h>
+
+/* Credentials never enter argv or process listings. Descriptor validation also
+ * prevents a symlink swap between checking permissions and reading the file. */
+static gchar *
+venture_read_tenant_password(const gchar *path, GError **error)
+{
+	g_autoptr(GString) input = g_string_new(NULL);
+	struct stat status;
+	gint fd;
+	gchar buffer[512];
+	ssize_t count;
+	gboolean standard_input = g_strcmp0(path, "-") == 0;
+	fd = standard_input ? STDIN_FILENO : open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0 || (!standard_input && (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) || status.st_nlink != 1 ||
+	    status.st_uid != geteuid() || (status.st_mode & 0077) != 0))) {
+		if (fd >= 0 && !standard_input) close(fd);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Tenant password must come from stdin or an owner-only regular file");
+		return NULL;
+	}
+	while ((count = read(fd, buffer, sizeof(buffer))) != 0) {
+		if (count < 0) {
+			if (errno == EINTR) continue;
+			break;
+		}
+		if (input->len + (gsize)count > 4097) break;
+		g_string_append_len(input, buffer, count);
+	}
+	if (!standard_input) close(fd);
+	if (count != 0 || memchr(input->str, '\0', input->len)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Cannot read bounded tenant password input");
+		return NULL;
+	}
+	/* A terminal or secret-file writer commonly adds one final line ending. */
+	if (input->len && input->str[input->len - 1] == '\n') g_string_truncate(input, input->len - 1);
+	if (input->len && input->str[input->len - 1] == '\r') g_string_truncate(input, input->len - 1);
+	return g_string_free(g_steal_pointer(&input), FALSE);
+}
 
 typedef struct
 {
@@ -171,6 +210,7 @@ main(
 	g_autoptr(VentureConfig) config = NULL;
 	g_autoptr(VentureDatabase) database = NULL;
 	g_autoptr(VentureProcessLease) process_lease = NULL;
+	g_autoptr(VentureTenantMaintenance) tenant_migration = NULL;
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(VentureAiService) ai = NULL;
@@ -184,6 +224,12 @@ main(
 	g_autofree gchar *owner_password = NULL;
 	g_autofree gchar *rotation_key_file = NULL;
 	g_autoptr(GBytes) rotation_key = NULL;
+	g_autofree gchar *tenant_admin = NULL, *tenant_password_file = NULL, *tenant_reason = NULL;
+	gboolean tenant_recover = FALSE, tenant_status = FALSE, tenant_revoke_credentials = FALSE;
+	g_autofree gchar *tenant_state = NULL, *tenant_operator = NULL, *tenant_support = NULL;
+	gint64 tenant_support_organization = 0;
+	gint tenant_support_seconds = 900;
+	gboolean tenant_support_write = FALSE, tenant_support_private = FALSE, tenant_support_emergency = FALSE;
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean generate_config = FALSE;
@@ -212,6 +258,34 @@ main(
 		  "Offline only: re-encrypt retained integration credentials with private FILE", "FILE" },
 		{ "check-integration-key", 0, 0, G_OPTION_ARG_NONE, &check_integration_key,
 		  "Offline only: authenticate retained credentials without changing them", NULL },
+		{ "tenant-revoke-credentials", 0, 0, G_OPTION_ARG_NONE, &tenant_revoke_credentials,
+		  "Quarantine restored workspace: suspend and revoke every restored login/capability", NULL },
+		{ "tenant-state", 0, 0, G_OPTION_ARG_STRING, &tenant_state,
+		  "Set hosted lifecycle offline and exit; requires --tenant-reason", "STATE" },
+		{ "tenant-status", 0, 0, G_OPTION_ARG_NONE, &tenant_status,
+		  "Print verified hosted workspace identity and lifecycle JSON, then exit", NULL },
+		{ "tenant-operator", 0, 0, G_OPTION_ARG_STRING, &tenant_operator,
+		  "Provision a named support identity without tenant membership", "USERNAME" },
+		{ "tenant-support", 0, 0, G_OPTION_ARG_STRING, &tenant_support,
+		  "Issue an audited support capability for an existing named operator", "USERNAME" },
+		{ "tenant-support-organization", 0, 0, G_OPTION_ARG_INT64, &tenant_support_organization,
+		  "Restrict support to this legal organization", "ID" },
+		{ "tenant-support-seconds", 0, 0, G_OPTION_ARG_INT, &tenant_support_seconds,
+		  "Support lifetime (60-3600 seconds; emergency at most 900)", "SECONDS" },
+		{ "tenant-support-write", 0, 0, G_OPTION_ARG_NONE, &tenant_support_write,
+		  "Explicitly permit scoped support record repairs", NULL },
+		{ "tenant-support-private", 0, 0, G_OPTION_ARG_NONE, &tenant_support_private,
+		  "Explicitly include private records in the support organization", NULL },
+		{ "tenant-support-emergency", 0, 0, G_OPTION_ARG_NONE, &tenant_support_emergency,
+		  "Permit bounded emergency support during suspension", NULL },
+		{ "tenant-admin", 0, 0, G_OPTION_ARG_STRING, &tenant_admin,
+		  "Bootstrap an explicitly named hosted administrator and exit", "USERNAME" },
+		{ "tenant-password-file", 0, 0, G_OPTION_ARG_FILENAME, &tenant_password_file,
+		  "Read the hosted administrator password privately; '-' reads stdin", "FILE" },
+		{ "tenant-reason", 0, 0, G_OPTION_ARG_STRING, &tenant_reason,
+		  "Required reason for a hosted operator change", "REASON" },
+		{ "tenant-recover", 0, 0, G_OPTION_ARG_NONE, &tenant_recover,
+		  "Explicitly reset an existing hosted identity and revoke credentials", NULL },
 		{ "migrate", 0, 0, G_OPTION_ARG_NONE, &migrate_only,
 		  "Apply schema migrations and exit", NULL },
 		{ "no-ai", 0, 0, G_OPTION_ARG_NONE, &no_ai,
@@ -296,6 +370,10 @@ main(
 	if (rotation_key_file != NULL || check_integration_key)
 	{
 		if (migrate_only || owner_password != NULL || list_modules ||
+			tenant_admin || tenant_operator || tenant_support || tenant_password_file ||
+			tenant_recover || tenant_state || tenant_status || tenant_revoke_credentials ||
+			tenant_support_organization || tenant_support_seconds != 900 ||
+			tenant_support_write || tenant_support_private || tenant_support_emergency ||
 			(rotation_key_file != NULL && check_integration_key))
 		{
 			g_printerr("Key rotation is a separate offline maintenance command\n");
@@ -416,6 +494,132 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFLICT);
 	}
 
+	if (!venture_tenant_service_configure(venture_tenant_service_get(database), config, &error) ||
+	    !venture_tenant_service_verify_existing(venture_tenant_service_get(database), &error)) {
+		g_printerr("Hosted identity: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_PERMISSION_DENIED);
+	}
+	if (owner_password && venture_tenant_service_is_enabled(venture_tenant_service_get(database))) {
+		g_printerr("Hosted bootstrap requires --tenant-admin with private password input.\n"); return 2;
+	}
+
+	if (!tenant_support && (tenant_support_organization || tenant_support_seconds != 900 ||
+	    tenant_support_write || tenant_support_private || tenant_support_emergency)) {
+		g_printerr("Support options require an explicit --tenant-support identity.\n"); return 2;
+	}
+	if (rotation_key != NULL || check_integration_key)
+	{
+		g_autoptr(VentureTenantMaintenance) maintenance = NULL;
+		VentureActor actor;
+		if (venture_tenant_service_is_enabled(venture_tenant_service_get(database)))
+		{
+			maintenance = venture_tenant_service_enter_maintenance(venture_tenant_service_get(database), tenant_reason, &error);
+			if (!maintenance)
+			{
+				g_printerr("Key maintenance: %s\n", error->message);
+				return venture_error_to_exit_code(VENTURE_ERROR_PERMISSION_DENIED);
+			}
+		}
+		venture_auth_to_actor(NULL, &actor);
+		actor.name = g_get_user_name();
+		if (!(check_integration_key
+			? venture_integration_service_verify_key(venture_integration_service_get(database), &error)
+			: venture_integration_service_rekey(venture_integration_service_get(database),
+				rotation_key, &actor, &error)))
+		{
+			g_printerr("Key rotation: %s\n", error->message);
+			return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+		}
+		if (maintenance && !venture_tenant_maintenance_finish(maintenance, &error))
+		{
+			g_printerr("Key maintenance audit: %s\n", error->message);
+			return venture_error_to_exit_code(VENTURE_ERROR_FAILED);
+		}
+		if (check_integration_key)
+			g_print("All retained integration credentials authenticated; no envelopes changed. An empty repository cannot identify a previous key.\n");
+		else g_print("Integration credentials re-encrypted. Set VENTURE_INTEGRATION_KEY from the new file before restarting. Retain the old key for older backups.\n");
+		return 0;
+	}
+
+	if (tenant_revoke_credentials) {
+		if (!tenant_reason || tenant_state || tenant_status || tenant_admin || tenant_operator || tenant_support || tenant_password_file || tenant_recover) {
+			g_printerr("Restore quarantine requires only --tenant-revoke-credentials and --tenant-reason.\n"); return 2;
+		}
+		if (!venture_tenant_service_revoke_credentials(venture_tenant_service_get(database), tenant_reason, &error)) {
+			g_printerr("Restore quarantine: %s\n", error->message); return 1;
+		}
+		g_print("Workspace quarantined: suspended; restored login authority revoked. Explicit credential recovery and activation required.\n");
+		return 0;
+	}
+
+	if (tenant_state || tenant_status)
+	{
+		g_autoptr(JsonNode) status = NULL;
+		g_autofree gchar *encoded = NULL;
+		if (tenant_admin || tenant_operator || tenant_support || tenant_password_file || tenant_recover || (tenant_state && !tenant_reason)) {
+			g_printerr("Hosted lifecycle commands are separate from identity bootstrap and require a reason for changes.\n");
+			return 2;
+		}
+		if (tenant_state && !venture_tenant_service_set_state_operator(venture_tenant_service_get(database),
+		        tenant_state, tenant_reason, &error)) {
+			g_printerr("Hosted lifecycle: %s\n", error->message); return 1;
+		}
+		status = venture_tenant_service_status(venture_tenant_service_get(database), &error);
+		if (!status) { g_printerr("Hosted status: %s\n", error->message); return 1; }
+		encoded = venture_json_to_string(status, FALSE);
+		g_print("%s\n", encoded);
+		return 0;
+	}
+
+	if (tenant_support) {
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+		g_autoptr(GPtrArray) users = NULL;
+		g_autoptr(VentureTenantSupportGrant) grant = NULL;
+		g_autofree gchar *capability = NULL;
+		if (tenant_admin || tenant_operator || tenant_password_file || tenant_recover || !tenant_reason || tenant_support_seconds < 60) {
+			g_printerr("Support issuance requires an existing operator, organization, bounded lifetime and reason.\n"); return 2;
+		}
+		venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, tenant_support, NULL);
+		users = venture_database_find(database, query, &error);
+		if (!users || users->len != 1) { g_printerr("Named support identity is unavailable.\n"); return 1; }
+		grant = venture_tenant_service_create_support_grant(venture_tenant_service_get(database),
+			venture_entity_get_id(g_ptr_array_index(users, 0)), tenant_support_organization,
+			tenant_support_write, tenant_support_private, tenant_support_emergency,
+			(guint)tenant_support_seconds, tenant_reason, &error);
+		if (!grant) { g_printerr("Support issuance: %s\n", error->message); return 1; }
+		g_object_get(grant, "capability", &capability, NULL);
+		/* Explicit one-time operator output. Redirect into a private file; no
+		 * credential is accepted in argv or persisted in plaintext. */
+		g_print("%s\n", capability);
+		return 0;
+	}
+
+	if (tenant_admin || tenant_operator || tenant_password_file || tenant_reason || tenant_recover)
+	{
+		g_autofree gchar *credential = NULL;
+		if ((!!tenant_admin == !!tenant_operator) || !tenant_password_file || !tenant_reason) {
+			g_printerr("Hosted administration requires --tenant-admin, --tenant-password-file and --tenant-reason.\n");
+			return 2;
+		}
+		credential = venture_read_tenant_password(tenant_password_file, &error);
+		if (!credential || !(tenant_admin ? venture_tenant_service_bootstrap_admin : venture_tenant_service_bootstrap_operator)(venture_tenant_service_get(database),
+		        config, tenant_admin ? tenant_admin : tenant_operator, credential, tenant_recover, tenant_reason, &error)) {
+			g_printerr("Hosted administration: %s\n", error->message);
+			return venture_error_to_exit_code(VENTURE_ERROR_PERMISSION_DENIED);
+		}
+		g_print("Hosted identity configured; no platform role was granted.\n");
+		return 0;
+	}
+
+	{
+		gboolean auto_migrate = FALSE;
+		g_object_get(config, "database-auto-migrate", &auto_migrate, NULL);
+		if (auto_migrate || migrate_only) {
+			tenant_migration = venture_tenant_service_enter_migration(venture_tenant_service_get(database), &error);
+			if (!tenant_migration) { g_printerr("Hosted migration: %s\n", error->message); return 1; }
+		}
+	}
+
 	context = venture_context_new(config, database);
 
 	/*
@@ -514,23 +718,19 @@ main(
 		}
 	}
 
-	if (rotation_key != NULL || check_integration_key)
+
+	if (!venture_tenant_service_configure(venture_tenant_service_get(database), config, &error) ||
+	    !venture_tenant_service_initialize(venture_tenant_service_get(database), &error))
 	{
-		VentureActor actor;
-		venture_auth_to_actor(NULL, &actor);
-		actor.name = g_get_user_name();
-		if (!(check_integration_key
-			? venture_integration_service_verify_key(venture_integration_service_get(database), &error)
-			: venture_integration_service_rekey(venture_integration_service_get(database),
-				rotation_key, &actor, &error)))
-		{
-			g_printerr("Key rotation: %s\n", error->message);
-			return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+		g_printerr("Hosted workspace: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_PERMISSION_DENIED);
+	}
+
+	if (tenant_migration) {
+		if (!venture_tenant_maintenance_finish(tenant_migration, &error)) {
+			g_printerr("Hosted migration audit: %s\n", error->message); return 1;
 		}
-		if (check_integration_key)
-			g_print("All retained integration credentials authenticated; no envelopes changed. An empty repository cannot identify a previous key.\n");
-		else g_print("Integration credentials re-encrypted. Set VENTURE_INTEGRATION_KEY from the new file before restarting. Retain the old key for older backups.\n");
-		return 0;
+		g_clear_object(&tenant_migration);
 	}
 
 	if (migrate_only)

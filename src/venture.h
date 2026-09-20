@@ -45,6 +45,7 @@
 #include "venture-types.h"
 #include "venture-enums.h"
 #include "venture-error.h"
+#include "model/venture-data-class.h"
 
 /* --- Boxed value types --------------------------------------------------- */
 
@@ -97,6 +98,7 @@
 #include "oidc/venture-oidc-records.h"
 #include "ai/venture-ai-organization-records.h"
 #include "sales/venture-sales-records.h"
+#include "tenant/venture-tenant-records.h"
 #include "model/venture-module.h"
 #include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
@@ -258,6 +260,7 @@
 #include "ai/venture-ai-service.h"
 #include "ai/venture-ai-provider-service.h"
 #include "sales/venture-sales-service.h"
+#include "tenant/venture-tenant-service.h"
 #include "ai/venture-ai-assist.h"
 #include "ai/venture-ai-factory.h"
 #include "ai/venture-ai-skills.h"

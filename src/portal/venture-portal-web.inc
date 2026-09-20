@@ -124,7 +124,8 @@ venture_customer_portal_invite_api(HtmxRequest *request, GHashTable *params, gpo
 static void
 venture_portal_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/portal/:token", venture_portal_web, self);
-	htmx_router_post(router, "/portal/:token", venture_portal_web, self);
-	htmx_router_post(router, "/api/v1/customer_portal/invite", venture_customer_portal_invite_api, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/portal/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_portal_web, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/portal/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_portal_web, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/customer_portal/invite", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_customer_portal_invite_api, self);
 }

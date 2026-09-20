@@ -766,28 +766,28 @@ venture_tax_filing_actions_register(VentureDatabase *database)
 	g_autoptr(VentureAction) export_action = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureFieldSpec *ack_spec;
-	review = g_object_new(VENTURE_TYPE_ACTION, "type-name", "tax_filing", "name", "review",
+	review = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "tax_filing", "name", "review",
 		"label", "Review", "description", "Mark this filing pack reviewed",
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
-	submit = g_object_new(VENTURE_TYPE_ACTION, "type-name", "tax_filing", "name", "submit",
+	submit = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "tax_filing", "name", "submit",
 		"label", "Submit", "description", "Preserve JSON and CSV bytes and mark submitted",
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	ack_spec = venture_field_spec_new("acknowledgment_id", "Acknowledgment id", VENTURE_FIELD_KIND_STRING);
 	ack_spec->required = TRUE;
 	g_ptr_array_add(parameters, ack_spec);
-	ack = g_object_new(VENTURE_TYPE_ACTION, "type-name", "tax_filing", "name", "acknowledge",
+	ack = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "tax_filing", "name", "acknowledge",
 		"label", "Acknowledge", "description", "Store the filing acknowledgment id",
 		"parameters", parameters, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
-	amend = g_object_new(VENTURE_TYPE_ACTION, "type-name", "tax_filing", "name", "amend",
+	amend = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "tax_filing", "name", "amend",
 		"label", "Amend", "description", "Prepare a new draft and keep the prior pack",
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
-	preview = g_object_new(VENTURE_TYPE_ACTION, "type-name", "contractor_tax_pack", "name", "review",
+	preview = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "contractor_tax_pack", "name", "review",
 		"label", "Review", "description", "Mark this 1099-NEC pack reviewed",
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
-	approve = g_object_new(VENTURE_TYPE_ACTION, "type-name", "contractor_tax_pack", "name", "approve",
+	approve = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "contractor_tax_pack", "name", "approve",
 		"label", "Approve", "description", "Approve and freeze the 1099-NEC CSV",
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
-	export_action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "contractor_tax_pack", "name", "export",
+	export_action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "contractor_tax_pack", "name", "export",
 		"label", "Export", "description", "Export the approved 1099-NEC CSV",
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, review, filing_allowed, filing_review,

@@ -106,6 +106,7 @@ struct _VentureWebServer
 	VentureContext	*context;
 	VentureAuth	*auth;
 	HtmxServer	*server;
+	HtmxRouter *classified_routes;
 	gchar		*base_url;
 	guint16		 port;
 
@@ -155,6 +156,8 @@ static void venture_web_connector_append_actions(VentureWebServer *self, GString
  * htmx-glib passes along, so no global is needed.
  */
 
+#include "venture-web-hosted-private.h"
+
 static void
 venture_web_server_finalize(GObject *object)
 {
@@ -166,6 +169,7 @@ venture_web_server_finalize(GObject *object)
 	g_clear_object(&self->auth);
 	g_clear_object(&self->quote_limiter);
 	g_clear_object(&self->server);
+	g_clear_object(&self->classified_routes);
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
@@ -290,7 +294,7 @@ venture_web_api_require(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (venture_auth_require(self->auth, principal, role, &error))
+	if (venture_web_hosted_auth_require(self, request, principal, role, &error))
 		return NULL;
 
 	return venture_web_error_response(g_steal_pointer(&error));
@@ -626,6 +630,20 @@ venture_web_require_for_type(
 ){
 	VentureUserRole needed;
 
+	if (venture_tenant_service_is_enabled(venture_tenant_service_get(venture_context_get_database(self->context)))) {
+		VentureDataClass classification = venture_data_class_for_type(entity_type);
+		if (classification == VENTURE_DATA_CLASS_UNKNOWN || classification == VENTURE_DATA_CLASS_PLATFORM) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Record type has no tenant authority");
+			return FALSE;
+		}
+	}
+
+	if (venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(self->context))) > 0) {
+		if (!venture_tenant_service_check_support_request(venture_tenant_service_get(venture_context_get_database(self->context)),
+		        principal, ordinary != VENTURE_USER_ROLE_VIEWER, error)) return FALSE;
+		return venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER, error);
+	}
+
 	needed = ordinary;
 
 	if ((VENTURE_TYPE_FEDERATION_PEER == entity_type) ||
@@ -708,6 +726,12 @@ venture_web_type_accepts_writes(
 	GType	  entity_type,
 	GError	**error
 ){
+	if (venture_data_class_for_type(entity_type) == VENTURE_DATA_CLASS_TENANT_ADMIN) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Use the declared workspace administration actions");
+		return FALSE;
+	}
+
 	if (VENTURE_TYPE_FEDERATION_REPLICA == entity_type)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
@@ -2138,7 +2162,7 @@ venture_web_api_list(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -2221,7 +2245,7 @@ venture_web_api_get(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -2418,7 +2442,7 @@ venture_web_api_write(
 	{
 		const gchar *password;
 
-		if (!venture_auth_require(self->auth, principal,
+		if (!venture_web_hosted_auth_require(self, request, principal,
 		                          VENTURE_USER_ROLE_OWNER, &error))
 			return venture_web_error_response(error);
 
@@ -2477,7 +2501,7 @@ venture_web_api_create(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -2518,7 +2542,7 @@ venture_web_api_update(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -2586,7 +2610,7 @@ venture_web_api_delete(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -2759,7 +2783,7 @@ venture_web_api_report(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -3294,13 +3318,18 @@ venture_web_not_found_middleware(
 	gpointer		 next_data,
 	gpointer		 user_data
 ){
+	g_autoptr(VentureAccessScope) boundary = NULL;
+	g_autoptr(VentureTenantSupportScope) support_scope = NULL;
 	VentureWebServer *self;
 	HtmxRequest *request;
 	const gchar *path;
 
 	self = user_data;
 
+	boundary = venture_access_policy_enter(venture_database_get_access_policy(venture_context_get_database(self->context)), NULL);
+	if (!venture_web_hosted_preflight(self, context, &support_scope)) return;
 	venture_orgaccess_web_dispatch(self->auth, self->context, context, next, next_data);
+	if (!venture_web_hosted_finish(self, context)) return;
 
 	if (NULL != htmx_context_get_response(context))
 		return;
@@ -3419,7 +3448,7 @@ venture_web_ui_automations(
 
 	/* Rules run code -- inline crispy and bash included -- so even
 	 * reading them is administration, not data entry. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -3617,7 +3646,7 @@ venture_web_ui_automations_validate(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -3683,7 +3712,7 @@ venture_web_ui_automations_save(
 	principal = venture_auth_authenticate(self->auth, request);
 
 	/* Rules execute code on the server; writing them is the owner's. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -3765,7 +3794,7 @@ venture_web_ui_automations_reload(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -3819,7 +3848,7 @@ venture_web_stripe_checkout(HtmxRequest *request, GHashTable *params, gpointer u
 	gate = api ? venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR) : venture_web_ui_require_session(self, request);
 	if (gate) return gate;
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error)) return venture_web_error_response(error);
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error)) return venture_web_error_response(error);
 	gate = venture_web_require_module_api(self, "stripe");
 	if (gate) return gate;
 	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
@@ -3927,7 +3956,7 @@ venture_web_ui_invoice_status(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -4023,7 +4052,7 @@ venture_web_ui_invoice_print(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -4250,7 +4279,7 @@ venture_web_ui_plugins(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -4393,7 +4422,7 @@ venture_web_ui_plugins_config(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -4777,7 +4806,7 @@ venture_web_ui_export(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -5161,7 +5190,7 @@ venture_web_ui_import_template(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -5608,6 +5637,7 @@ venture_web_ui_list(
 			"<a class=\"btn\" href=\"/e/%s/export%s\" "
 			"title=\"Download this view as CSV\">Export</a>",
 			type_name, suffix);
+		if (venture_web_type_accepts_writes(entity_type, NULL))
 		g_string_append_printf(content,
 			"<a class=\"btn\" href=\"/e/%s/import\" "
 			"title=\"Create records from a CSV\">Import</a>",
@@ -5616,8 +5646,9 @@ venture_web_ui_list(
 
 	venture_web_append_save_view_form(content, request, type_name, FALSE);
 
-	g_string_append_printf(content,
-		"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
+	if (venture_web_type_accepts_writes(entity_type, NULL))
+		g_string_append_printf(content,
+			"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
 	g_string_append(content, "</div></div>");
 
 	venture_entity_set_organization_id(prototype, venture_web_active_organization(self, request));
@@ -7293,7 +7324,8 @@ venture_web_scope_to_active_organization(
 	 * carry a matching identifier -- including, on a fresh install, all
 	 * of them.
 	 */
-	if (VENTURE_TYPE_ORGANIZATION == venture_query_get_entity_type(query))
+	if (VENTURE_TYPE_ORGANIZATION == venture_query_get_entity_type(query) ||
+	    venture_data_class_for_type(venture_query_get_entity_type(query)) == VENTURE_DATA_CLASS_TENANT_ADMIN)
 		return;
 
 	active = venture_web_active_organization(self, request);
@@ -8441,7 +8473,7 @@ venture_web_ui_link_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -8503,7 +8535,7 @@ venture_web_ui_link_delete(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -8547,7 +8579,7 @@ venture_web_api_links(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -8593,7 +8625,7 @@ venture_web_api_link_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -9287,15 +9319,16 @@ venture_web_ui_detail(
 	g_string_append(content, "</span></div><div class=\"page-actions\">");
 	/* Watching comes first so it sits beside the title on every page;
 	 * the audit log and a notification are not things to follow. */
-	if ((VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
+	if (venture_data_class_for_type(entity_type) != VENTURE_DATA_CLASS_TENANT_ADMIN &&
+	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
 	    (VENTURE_TYPE_NOTIFICATION != entity_type) &&
 	    (VENTURE_TYPE_WATCH != entity_type))
 		venture_web_append_watch_button(self, content, principal, record);
 
-	g_string_append_printf(content,
-		"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT
-		"/edit\">Edit</a> <a class=\"btn\" href=\"/e/%s\">All %s</a>",
-		type_name, id, type_name, type_name);
+	if (venture_web_type_accepts_writes(entity_type, NULL))
+		g_string_append_printf(content,
+			"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT "/edit\">Edit</a> ", type_name, id);
+	g_string_append_printf(content, "<a class=\"btn\" href=\"/e/%s\">All %s</a>", type_name, type_name);
 	g_string_append(content, "</div></div>");
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
@@ -9323,7 +9356,7 @@ venture_web_ui_detail(
 
 	if (venture_web_module_enabled(self, "federation") &&
 		venture_entity_type_get_federation_access(entity_type) &&
-		venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER, NULL))
+		venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL))
 	{
 		g_string_append(content, "<section class=\"card\"><h2>Federation sharing</h2><p>This record stays private unless explicitly granted. Use its UUID to select exact fields and peers.</p><code>");
 		venture_html_escape_append(content, venture_entity_get_uuid(record));
@@ -9518,7 +9551,7 @@ venture_web_ui_ticket_comment(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -9882,7 +9915,7 @@ venture_web_ui_tickets(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -10188,7 +10221,7 @@ venture_web_ui_ticket_move(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -10445,7 +10478,7 @@ venture_web_ui_entities(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -10715,7 +10748,7 @@ venture_web_ui_entities_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -10778,7 +10811,7 @@ venture_web_ui_entities_default(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -10848,7 +10881,7 @@ venture_web_ui_entities_delete(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -11164,7 +11197,7 @@ venture_web_ui_account(
 		 * their own credentials. The page itself is admin-gated, so the
 		 * link is shown only to somebody it will let in.
 		 */
-		if (venture_auth_require(self->auth, principal,
+		if (venture_web_hosted_auth_require(self, request, principal,
 		                         VENTURE_USER_ROLE_ADMIN, NULL))
 			g_string_append(content,
 				"<h2>API tokens</h2>"
@@ -11280,7 +11313,7 @@ venture_web_ui_tokens(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -11500,7 +11533,7 @@ venture_web_ui_tokens_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -11594,7 +11627,7 @@ venture_web_ui_tokens_revoke(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -12040,7 +12073,7 @@ venture_web_ui_users(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -12299,7 +12332,7 @@ venture_web_ui_users_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -12377,7 +12410,7 @@ venture_web_ui_users_update(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -12444,7 +12477,7 @@ venture_web_ui_users_password(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -13714,7 +13747,7 @@ venture_web_ui_chat_threads(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -13758,7 +13791,7 @@ venture_web_ui_chat_thread(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -13840,7 +13873,7 @@ venture_web_ui_chat_thread_delete(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -14130,7 +14163,7 @@ venture_web_ui_records_search(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -14446,7 +14479,7 @@ venture_web_ui_models(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -15163,7 +15196,7 @@ venture_web_ui_chat_complete(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -15275,7 +15308,7 @@ venture_web_ui_chat_thread_rename(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -15355,7 +15388,7 @@ venture_web_ui_chat_thread_export(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -15543,7 +15576,7 @@ venture_web_ui_chat_upload(
 	principal = venture_auth_authenticate(self->auth, request);
 
 	/* An upload creates a document record, which is a write. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -16022,7 +16055,7 @@ venture_web_ui_chat_decide(
 	principal = venture_auth_authenticate(self->auth, request);
 
 	/* Applying a staged write is a write; deciding is the editor's. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -16447,7 +16480,7 @@ venture_web_ui_chat_stream(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -16570,7 +16603,7 @@ venture_web_ui_chat(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -16980,7 +17013,7 @@ venture_web_api_mint_token(
 	principal = venture_auth_authenticate(self->auth, request);
 
 	/* Minting a credential is an administrative act, not an editing one. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -17899,7 +17932,7 @@ venture_web_ui_modules(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18131,7 +18164,7 @@ venture_web_api_confirmations(
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18185,7 +18218,7 @@ venture_web_api_decide(
 
 	/* Approving a staged write is exactly the authority an editor has, and
 	 * exactly what a viewer must not have. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18356,7 +18389,7 @@ venture_web_ui_forge_token(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18433,7 +18466,7 @@ venture_web_ui_forge_secret(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18508,7 +18541,7 @@ venture_web_ui_forge_verify(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18618,7 +18651,7 @@ venture_web_ui_ticket_relate(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18684,7 +18717,7 @@ venture_web_ui_relation_delete(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18763,7 +18796,7 @@ venture_web_ui_ticket_link(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -18910,7 +18943,7 @@ venture_web_ui_ticket_branch(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -19148,7 +19181,7 @@ venture_web_ui_ticket_work(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -19210,7 +19243,7 @@ venture_web_ui_run_cancel(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -19753,7 +19786,7 @@ venture_web_api_restore(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -20813,7 +20846,7 @@ venture_web_ui_factory_load(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -21967,7 +22000,7 @@ venture_web_ui_release_changelog(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -22044,7 +22077,7 @@ venture_web_ui_release_publish(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -22817,7 +22850,7 @@ venture_web_ui_factory(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -22965,7 +22998,7 @@ venture_web_dashboard_load(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, role, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, role, &error))
 		return venture_web_error_response(error);
 
 	slug = g_hash_table_lookup(params, "slug");
@@ -23408,7 +23441,7 @@ venture_web_ui_dashboards(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -23480,7 +23513,7 @@ venture_web_ui_dashboards(
 
 	/* Making one: from a template, or blank. Editors only, so the forms
 	 * are not offered to a viewer who could not submit them. */
-	if (venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL))
+	if (venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, NULL))
 	{
 		templates = venture_dashboard_get_templates(&n_templates);
 
@@ -23591,7 +23624,7 @@ venture_web_ui_dashboard_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -23664,7 +23697,7 @@ venture_web_ui_dashboard_import(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -23740,7 +23773,7 @@ venture_web_ui_dashboard_view(
 	                         "<a class=\"btn\" href=\"/dashboards\">All "
 	                         "dashboards</a> ");
 
-	if (venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL))
+	if (venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, NULL))
 	{
 		g_string_append_printf(content,
 			"<a class=\"btn\" href=\"/dashboards/%s/export\">Export</a> "
@@ -25536,7 +25569,7 @@ venture_web_ui_view_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -25661,7 +25694,7 @@ venture_web_ui_view_delete(
 
 	if (owner != principal->user_id)
 	{
-		if (!venture_auth_require(self->auth, principal,
+		if (!venture_web_hosted_auth_require(self, request, principal,
 		                          personal ? VENTURE_USER_ROLE_ADMIN
 		                                   : VENTURE_USER_ROLE_EDITOR,
 		                          &error))
@@ -26838,7 +26871,7 @@ venture_web_ui_ticket_macro(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -26903,7 +26936,7 @@ venture_web_ui_ticket_worklog(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -26956,7 +26989,7 @@ venture_web_ui_ticket_assign_me(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -27345,7 +27378,7 @@ venture_web_ui_sprints(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -27574,7 +27607,7 @@ venture_web_ui_incident_ticket(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -27911,7 +27944,7 @@ venture_web_ui_runs(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -28643,7 +28676,7 @@ venture_web_ui_webhooks(
 	/* A webhook names the host this install's business data is posted
 	 * to, and holds the secret that signs it. Same reasoning as a
 	 * forge: that is access management, not data entry. */
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_OWNER,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -28844,7 +28877,7 @@ venture_web_webhook_load(
 
 	*out_principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, *out_principal,
+	if (!venture_web_hosted_auth_require(self, request, *out_principal,
 	                          VENTURE_USER_ROLE_OWNER, &error))
 		return venture_web_error_response(error);
 
@@ -29278,7 +29311,7 @@ venture_web_ui_ticket_triage(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -29384,7 +29417,7 @@ venture_web_ui_ticket_satisfaction(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR,
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -29622,6 +29655,7 @@ venture_web_api_ticket_draft(
 #include "report/venture-report-pack-web.inc"
 #include "orgaccess/venture-mfa-web.inc"
 #include "oidc/venture-oidc-web.inc"
+#include "tenant/venture-tenant-web.inc"
 
 VentureWebServer *
 venture_web_server_new(
@@ -29635,6 +29669,11 @@ venture_web_server_new(
 	gint64 port;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	if (!venture_tenant_service_configure(venture_tenant_service_get(venture_context_get_database(context)),
+	        venture_context_get_config(context), error) ||
+	    !venture_tenant_service_initialize(venture_tenant_service_get(venture_context_get_database(context)), error))
+		return NULL;
 
 	self = g_object_new(VENTURE_TYPE_WEB_SERVER, NULL);
 	self->context = g_object_ref(context);
@@ -29654,6 +29693,7 @@ venture_web_server_new(
 	htmx_config_set_port(config, (guint16)port);
 
 	self->server = htmx_server_new_with_config(config);
+	self->classified_routes = htmx_router_new();
 	router = htmx_server_get_router(self->server);
 
 	/* The catch-all 404, wrapped around every route below. */
@@ -29661,433 +29701,310 @@ venture_web_server_new(
 	                NULL);
 
 	/* UI */
-	htmx_router_get(router, "/", venture_web_ui_dashboard, self);
-	htmx_router_get(router, "/overview", venture_web_ui_overview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/overview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_overview, self);
 
 	/* Dashboards. The literal paths go before the :slug ones, because the
 	 * router takes the first match. */
-	htmx_router_get(router, "/dashboards", venture_web_ui_dashboards, self);
-	htmx_router_post(router, "/dashboards", venture_web_ui_dashboard_create,
-	                 self);
-	htmx_router_post(router, "/dashboards/import",
-	                 venture_web_ui_dashboard_import, self);
-	htmx_router_get(router, "/dashboards/:slug", venture_web_ui_dashboard_view,
-	                self);
-	htmx_router_post(router, "/dashboards/:slug",
-	                 venture_web_ui_dashboard_update, self);
-	htmx_router_get(router, "/dashboards/:slug/edit",
-	                venture_web_ui_dashboard_edit, self);
-	htmx_router_get(router, "/dashboards/:slug/export",
-	                venture_web_ui_dashboard_export, self);
-	htmx_router_post(router, "/dashboards/:slug/delete",
-	                 venture_web_ui_dashboard_delete, self);
-	htmx_router_get(router, "/dashboards/:slug/widgets/new",
-	                venture_web_ui_dashboard_widget_form, self);
-	htmx_router_post(router, "/dashboards/:slug/widgets",
-	                 venture_web_ui_dashboard_widget_save, self);
-	htmx_router_get(router, "/dashboards/:slug/widgets/:id",
-	                venture_web_ui_dashboard_widget, self);
-	htmx_router_get(router, "/dashboards/:slug/widgets/:id/edit",
-	                venture_web_ui_dashboard_widget_form, self);
-	htmx_router_post(router, "/dashboards/:slug/widgets/:id",
-	                 venture_web_ui_dashboard_widget_save, self);
-	htmx_router_post(router, "/dashboards/:slug/widgets/:id/delete",
-	                 venture_web_ui_dashboard_widget_delete, self);
-	htmx_router_post(router, "/dashboards/:slug/widgets/:id/move",
-	                 venture_web_ui_dashboard_widget_move, self);
-	htmx_router_post(router, "/dashboards/:slug/widgets/:id/swap",
-	                 venture_web_ui_dashboard_widget_swap, self);
-	htmx_router_post(router, "/dashboards/:slug/widgets/:id/place",
-	                 venture_web_ui_dashboard_widget_place, self);
-	htmx_router_post(router, "/dashboards/:slug/arrange",
-	                 venture_web_ui_dashboard_arrange, self);
-	htmx_router_get(router, "/search", venture_web_ui_search, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboards, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_import, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_view, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_update, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_edit, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_save, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/:id/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_save, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_move, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id/swap", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_swap, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id/place", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_place, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/arrange", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_arrange, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/search", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_search, self);
 
 	/* The workdesk. */
-	htmx_router_get(router, "/inbox", venture_web_ui_inbox, self);
-	htmx_router_post(router, "/inbox/read", venture_web_ui_inbox_read, self);
-	htmx_router_get(router, "/inbox/count", venture_web_ui_inbox_count, self);
-	htmx_router_post(router, "/watch", venture_web_ui_watch, self);
-	htmx_router_get(router, "/views", venture_web_ui_views, self);
-	htmx_router_post(router, "/views", venture_web_ui_view_create, self);
-	htmx_router_get(router, "/views/:id", venture_web_ui_view_open, self);
-	htmx_router_post(router, "/views/:id/delete", venture_web_ui_view_delete,
-	                 self);
-	htmx_router_post(router, "/tickets/:id/macro", venture_web_ui_ticket_macro,
-	                 self);
-	htmx_router_post(router, "/tickets/:id/worklog",
-	                 venture_web_ui_ticket_worklog, self);
-	htmx_router_post(router, "/tickets/:id/assign-me",
-	                 venture_web_ui_ticket_assign_me, self);
-	htmx_router_get(router, "/sprints", venture_web_ui_sprints, self);
-	htmx_router_get(router, "/runs", venture_web_ui_runs, self);
-	htmx_router_get(router, "/runs/table", venture_web_ui_runs_table, self);
-	htmx_router_post(router, "/incidents/:id/ticket",
-	                 venture_web_ui_incident_ticket, self);
-	htmx_router_post(router, "/e/:type/bulk", venture_web_ui_bulk, self);
-	htmx_router_get(router, "/webhooks", venture_web_ui_webhooks, self);
-	htmx_router_post(router, "/webhooks/:id/test", venture_web_ui_webhook_test,
-	                 self);
-	htmx_router_post(router, "/webhooks/:id/secret",
-	                 venture_web_ui_webhook_secret, self);
-	htmx_router_get(router, "/tickets/:id/assist", venture_web_ui_ticket_assist,
-	                self);
-	htmx_router_post(router, "/tickets/:id/triage",
-	                 venture_web_ui_ticket_triage, self);
-	htmx_router_post(router, "/tickets/:id/satisfaction",
-	                 venture_web_ui_ticket_satisfaction, self);
-	htmx_router_get(router, "/automations", venture_web_ui_automations, self);
-	htmx_router_post(router, "/automations/validate",
-	                 venture_web_ui_automations_validate, self);
-	htmx_router_post(router, "/automations/save",
-	                 venture_web_ui_automations_save, self);
-	htmx_router_post(router, "/automations/reload",
-	                 venture_web_ui_automations_reload, self);
-	htmx_router_get(router, "/plugins", venture_web_ui_plugins, self);
-	htmx_router_get(router, "/modules", venture_web_ui_modules, self);
-	htmx_router_post(router, "/plugins/config",
-	                 venture_web_ui_plugins_config, self);
-	htmx_router_post(router, "/invoices/:id/checkout", venture_web_stripe_checkout, self);
-	htmx_router_post(router, "/api/v1/invoices/:id/checkout", venture_web_stripe_checkout, self);
-	htmx_router_get(router, "/pay/:token", venture_web_stripe_payment_link, self);
-	htmx_router_post(router, "/pay/:token", venture_web_stripe_payment_link, self);
-	htmx_router_post(router, "/webhooks/stripe", venture_web_stripe_webhook, self);
-	htmx_router_post(router, "/webhooks/stripe/:connection_id", venture_web_stripe_webhook, self);
-	htmx_router_get(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);
-	htmx_router_post(router, "/organizations/:id/settings/stripe", venture_web_stripe_settings, self);
-	htmx_router_get(router, "/organizations/:id/settings/mail", venture_web_mail_settings, self);
-	htmx_router_post(router, "/organizations/:id/settings/mail", venture_web_mail_settings, self);
-	htmx_router_post(router, "/invoices/:id/status",
-	                 venture_web_ui_invoice_status, self);
-	htmx_router_post(router, "/api/v1/vendor_bill/:id/:action", venture_web_payables_action, self);
-	htmx_router_post(router, "/bills/:id/:action", venture_web_payables_action, self);
-	htmx_router_get(router, "/payables", venture_web_payables_workbench, self);
-	htmx_router_post(router, "/payables/pay", venture_web_payables_workbench_pay, self);
-	htmx_router_post(router, "/api/v1/payables/pay", venture_web_payables_workbench, self);
-	htmx_router_get(router, "/claims", venture_web_claims_workbench, self);
-	htmx_router_post(router, "/claims/:id/:action", venture_web_claims_action, self);
-	htmx_router_post(router, "/api/v1/expense_claim/:id/:action", venture_web_claims_action, self);
-	htmx_router_get(router, "/payroll", venture_web_payroll_workbench, self);
-	htmx_router_post(router, "/api/v1/payroll/import", venture_web_payroll_action, self);
-	htmx_router_post(router, "/api/v1/payroll_run/:id/:action", venture_web_payroll_action, self);
-	htmx_router_post(router, "/payroll/:id/:action", venture_web_payroll_action, self);
-	htmx_router_get(router, "/purchasing", venture_web_purchasing_workbench, self);
-	htmx_router_get(router, "/sales-orders", venture_web_sales_workbench, self);
-	htmx_router_post(router, "/purchase_order/:id/:action", venture_web_goods_action, self);
-	htmx_router_post(router, "/api/v1/purchase_order/:id/:action", venture_web_goods_action, self);
-	htmx_router_post(router, "/sales_order/:id/:action", venture_web_goods_action, self);
-	htmx_router_post(router, "/api/v1/sales_order/:id/:action", venture_web_goods_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/inbox", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_inbox, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_inbox_read, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/inbox/count", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_inbox_count, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_watch, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/views", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_views, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/views", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_view_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/views/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_view_open, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/views/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_view_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/macro", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_macro, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_worklog, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/assign-me", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_assign_me, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/sprints", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_sprints, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/runs", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_runs, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/runs/table", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_runs_table, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/incidents/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_incident_ticket, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/bulk", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_bulk, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/webhooks", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhooks, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/test", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_test, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tickets/:id/assist", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_assist, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_triage, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/satisfaction", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_satisfaction, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/automations", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_automations, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/automations/validate", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_automations_validate, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/automations/save", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_automations_save, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/automations/reload", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_automations_reload, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/plugins", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_plugins, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/modules", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_modules, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plugins/config", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_plugins_config, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_webhook, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe/:connection_id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_webhook, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/mail", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/mail", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/status", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_status, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/vendor_bill/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bills/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payables", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/payables/pay", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench_pay, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/payables/pay", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/claims", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_claims_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/claims/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_claims_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/expense_claim/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_claims_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payroll", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payroll_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/payroll/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payroll_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/payroll_run/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payroll_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/payroll/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payroll_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/purchasing", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_purchasing_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/sales-orders", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sales_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/purchase_order/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_goods_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/purchase_order/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_goods_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/sales_order/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_goods_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sales_order/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_goods_action, self);
 	venture_supplier_portal_web_register(router, self);
-	htmx_router_get(router, "/close", close_ui, self);
-	htmx_router_post(router, "/api/v1/close/open", close_api, self);
-	htmx_router_post(router, "/api/v1/close/:id/:action", close_api, self);
-	htmx_router_get(router, "/api/v1/close/:id/pack", close_api, self);
-	htmx_router_get(router, "/tax-filings", tax_filings_ui, self);
-	htmx_router_post(router, "/api/v1/tax-filings/prepare", tax_filing_api, self);
-	htmx_router_post(router, "/api/v1/tax-filings/:id/:action", tax_filing_api, self);
-	htmx_router_post(router, "/api/v1/contractor-tax/prepare", contractor_tax_api, self);
-	htmx_router_post(router, "/api/v1/contractor-tax/:id/:action", contractor_tax_api, self);
-	htmx_router_get(router, "/api/v1/contractor-tax/:id/export", contractor_tax_api, self);
-	htmx_router_get(router, "/api/v1/sales-tax/export", sales_tax_export_api, self);
-	htmx_router_get(router, "/capture", capture_ui, self);
-	htmx_router_post(router, "/api/v1/commerce/import", commerce_import, self);
-	htmx_router_post(router, "/api/v1/capture", capture_api, self);
-	htmx_router_post(router, "/api/v1/capture/:id/:action", capture_api, self);
-	htmx_router_get(router, "/accounting", accounting_ui_home, self);
-	htmx_router_get(router, "/api/v1/accounting/home", accounting_api_home, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/close", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/close/open", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/close/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/close/:id/pack", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-filings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filings_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/contractor-tax/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, contractor_tax_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/contractor-tax/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, contractor_tax_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/contractor-tax/:id/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, contractor_tax_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sales-tax/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, sales_tax_export_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/capture", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/commerce/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_import, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/capture", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/capture/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/accounting", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, accounting_ui_home, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/accounting/home", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, accounting_api_home, self);
 	venture_budget_web_register(router, self);
 	venture_equity_web_register(router, self);
 	venture_group_web_register(router, self);
-	htmx_router_get(router, "/invoices/:id/print",
-	                 venture_web_ui_invoice_print, self);
-	htmx_router_get(router, "/quotes/:id/print", quote_route, self);
-	htmx_router_post(router, "/quotes/:id/:action", quote_route, self);
-	htmx_router_post(router, "/api/v1/quotes/:id/:action", quote_route, self);
-	htmx_router_get(router, "/q/:token", quote_public, self);
-	htmx_router_post(router, "/q/:token", quote_public, self);
-	htmx_router_post(router, "/q/:token/accept", quote_public, self);
-	htmx_router_get(router, "/reports", venture_web_ui_reports, self);
-	htmx_router_get(router, "/settings", venture_web_ui_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_print, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/quotes/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/quotes/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/quotes/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/q/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/q/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/q/:token/accept", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/reports", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_reports, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/settings", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_settings, self);
 	venture_custom_fields_web_register(router, self);
-	htmx_router_get(router, "/entity/:id", venture_web_ui_switch_entity, self);
-	htmx_router_get(router, "/tickets", venture_web_ui_tickets, self);
-	htmx_router_post(router, "/tickets/:id/move", venture_web_ui_ticket_move,
-	                 self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/entity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_switch_entity, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tickets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_tickets, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_move, self);
 	/* Forge actions on a ticket, with the other ticket actions so they
 	 * precede /e/:type/:id. */
-	htmx_router_post(router, "/tickets/:id/relate",
-	                 venture_web_ui_ticket_relate, self);
-	htmx_router_post(router, "/relations/:id/delete",
-	                 venture_web_ui_relation_delete, self);
-	htmx_router_post(router, "/links", venture_web_ui_link_create, self);
-	htmx_router_get(router, "/factory", venture_web_ui_factory, self);
-	htmx_router_get(router, "/factory/assist/:type/:id",
-	                venture_web_ui_factory_assist, self);
-	htmx_router_post(router, "/factory/draft/:type/:id",
-	                 venture_web_ui_factory_draft_save, self);
-	htmx_router_post(router, "/releases/:id/deploy",
-	                 venture_web_ui_release_deploy, self);
-	htmx_router_post(router, "/environments/:id/rollback",
-	                 venture_web_ui_environment_rollback, self);
-	htmx_router_post(router, "/builds/:id/ticket", venture_web_ui_build_ticket,
-	                 self);
-	htmx_router_post(router, "/releases/:id/changelog",
-	                 venture_web_ui_release_changelog, self);
-	htmx_router_post(router, "/releases/:id/publish",
-	                 venture_web_ui_release_publish, self);
-	htmx_router_post(router, "/links/:id/delete", venture_web_ui_link_delete,
-	                 self);
-	htmx_router_post(router, "/tickets/:id/link", venture_web_ui_ticket_link,
-	                 self);
-	htmx_router_post(router, "/tickets/:id/branch",
-	                 venture_web_ui_ticket_branch, self);
-	htmx_router_post(router, "/tickets/:id/work", venture_web_ui_ticket_work,
-	                 self);
-	htmx_router_get(router, "/tickets/:id/runs", venture_web_ui_ticket_runs,
-	                self);
-	htmx_router_post(router, "/runs/:id/cancel", venture_web_ui_run_cancel,
-	                 self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/relate", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_relate, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/relations/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_relation_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/links", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_link_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/factory", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_factory, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/factory/assist/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_factory_assist, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/factory/draft/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_factory_draft_save, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/releases/:id/deploy", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_release_deploy, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/environments/:id/rollback", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_environment_rollback, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/builds/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_build_ticket, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/releases/:id/changelog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_release_changelog, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/releases/:id/publish", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_release_publish, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/links/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_link_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/link", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_link, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/branch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_branch, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/work", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_work, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tickets/:id/runs", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_runs, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/runs/:id/cancel", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_run_cancel, self);
 
 	/* Credentials, the same shape as /users/:id/password. */
-	htmx_router_post(router, "/forges/:id/token", venture_web_ui_forge_token,
-	                 self);
-	htmx_router_post(router, "/forges/:id/secret", venture_web_ui_forge_secret,
-	                 self);
-	htmx_router_post(router, "/forges/:id/verify", venture_web_ui_forge_verify,
-	                 self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_forge_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_forge_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forges/:id/verify", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_forge_verify, self);
 
 	/*
 	 * Inbound from a forge. The only route here that does not require a
 	 * session -- see the handler for what stands in for one, and why it
 	 * is not under /api.
 	 */
-	htmx_router_post(router, "/hooks/forge/:id", venture_web_forge_webhook,
-	                 self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/forge/:id", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_forge_webhook, self);
 
-	htmx_router_post(router, "/tickets/:id/comment",
-	                 venture_web_ui_ticket_comment, self);
-	htmx_router_get(router, "/entities", venture_web_ui_entities, self);
-	htmx_router_post(router, "/entities", venture_web_ui_entities_create, self);
-	htmx_router_post(router, "/entities/:id/default",
-	                 venture_web_ui_entities_default, self);
-	htmx_router_post(router, "/entities/:id/delete",
-	                 venture_web_ui_entities_delete, self);
-	htmx_router_get(router, "/account", venture_web_ui_account, self);
-	htmx_router_post(router, "/account/password",
-	                 venture_web_ui_account_password, self);
-	htmx_router_get(router, "/kb", venture_web_ui_kb, self);
-	htmx_router_get(router, "/account/tokens", venture_web_ui_tokens, self);
-	htmx_router_post(router, "/account/tokens", venture_web_ui_tokens_create,
-	                 self);
-	htmx_router_post(router, "/account/tokens/:id/revoke",
-	                 venture_web_ui_tokens_revoke, self);
-	htmx_router_get(router, "/users", venture_web_ui_users, self);
-	htmx_router_post(router, "/users", venture_web_ui_users_create, self);
-	htmx_router_post(router, "/users/:id/update",
-	                 venture_web_ui_users_update, self);
-	htmx_router_post(router, "/users/:id/password",
-	                 venture_web_ui_users_password, self);
-	htmx_router_get(router, "/reports/:name", venture_web_ui_report, self);
-	htmx_router_get(router, "/e/:type", venture_web_ui_list, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/comment", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_comment, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/entities", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_entities, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/entities", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_entities_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/entities/:id/default", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_entities_default, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/entities/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_entities_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_account, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/password", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_account_password, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/kb", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_kb, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/tokens", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_tokens, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/tokens", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_tokens_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/tokens/:id/revoke", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_tokens_revoke, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/users", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_users, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/users", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_users_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/users/:id/update", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_users_update, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/users/:id/password", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_users_password, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/reports/:name", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_report, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_list, self);
 	/* Before /e/:type/:id, or "export" would be parsed as a record id. */
-	htmx_router_get(router, "/e/:type/export", venture_web_ui_export, self);
-	htmx_router_get(router, "/e/:type/import", venture_web_ui_import_form,
-	                self);
-	htmx_router_get(router, "/e/:type/import/template",
-	                venture_web_ui_import_template, self);
-	htmx_router_post(router, "/e/:type/import", venture_web_ui_import, self);
-	htmx_router_get(router, "/e/:type/new", venture_web_ui_form, self);
-	htmx_router_post(router, "/e/:type", venture_web_ui_save, self);
-	htmx_router_get(router, "/e/:type/:id", venture_web_ui_detail, self);
-	htmx_router_get(router, "/e/:type/:id/edit", venture_web_ui_form, self);
-	htmx_router_post(router, "/e/:type/:id", venture_web_ui_save, self);
-	htmx_router_post(router, "/e/:type/:id/delete", venture_web_ui_delete,
-	                 self);
-	htmx_router_get(router, "/login", venture_web_ui_login_form, self);
-	htmx_router_post(router, "/login", venture_web_ui_login_submit, self);
-	htmx_router_get(router, "/logout", venture_web_ui_logout, self);
-	htmx_router_post(router, "/look", venture_web_ui_look, self);
-	htmx_router_post(router, "/ui/chat", venture_web_ui_chat, self);
-	htmx_router_get(router, "/ui/chat/threads", venture_web_ui_chat_threads,
-	                self);
-	htmx_router_get(router, "/ui/chat/thread/:id", venture_web_ui_chat_thread,
-	                self);
-	htmx_router_get(router, "/assistant", venture_web_ui_assistant, self);
-	htmx_router_get(router, "/ui/models", venture_web_ui_models, self);
-	htmx_router_get(router, "/harness", venture_web_ui_harness, self);
-	htmx_router_post(router, "/harness", venture_web_ui_harness_open, self);
-	htmx_router_get(router, "/harness/:id", venture_web_ui_harness_session,
-	                self);
-	htmx_router_post(router, "/harness/:id/send", venture_web_ui_harness_send,
-	                 self);
-	htmx_router_post(router, "/harness/:id/close", venture_web_ui_harness_close,
-	                 self);
-	htmx_router_get(router, "/harness/:id/stream",
-	                venture_web_ui_harness_stream, self);
-	htmx_router_get(router, "/ui/records/search",
-	                venture_web_ui_records_search, self);
-	htmx_router_get(router, "/ui/chat/complete", venture_web_ui_chat_complete,
-	                self);
-	htmx_router_get(router, "/ui/chat/stream/:token",
-	                venture_web_ui_chat_stream, self);
-	htmx_router_post(router, "/ui/chat/thread/:id/rename",
-	                 venture_web_ui_chat_thread_rename, self);
-	htmx_router_get(router, "/ui/chat/thread/:id/export",
-	                venture_web_ui_chat_thread_export, self);
-	htmx_router_post(router, "/ui/chat/thread/:id/delete",
-	                 venture_web_ui_chat_thread_delete, self);
-	htmx_router_get(router, "/organizations/:id/settings/ai", venture_web_ai_settings, self);
-	htmx_router_post(router, "/organizations/:id/settings/ai", venture_web_ai_settings, self);
-	htmx_router_get(router, "/settings/ai/platform", venture_web_ai_platform_settings, self);
-	htmx_router_post(router, "/settings/ai/platform", venture_web_ai_platform_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_import_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/import/template", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_import_template, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_import, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_save, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_detail, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/:id/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_save, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/invitation", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_invitation, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/invitation", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_invitation, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/support", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_support, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/support", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_support, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/login", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_login_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/login", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_login_submit, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/logout", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_logout, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/look", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_look, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/chat/threads", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_threads, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/chat/thread/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_thread, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/assistant", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_assistant, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/models", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_models, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/harness", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_harness, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/harness", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_harness_open, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/harness/:id", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_harness_session, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/harness/:id/send", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_harness_send, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/harness/:id/close", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_harness_close, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/harness/:id/stream", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_harness_stream, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/records/search", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_records_search, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/chat/complete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_complete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/chat/stream/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_stream, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat/thread/:id/rename", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_thread_rename, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/ui/chat/thread/:id/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_thread_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat/thread/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_thread_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/ai", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ai_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/ai", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ai_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/settings/ai/platform", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ai_platform_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/settings/ai/platform", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ai_platform_settings, self);
 
-	htmx_router_post(router, "/ui/chat/upload", venture_web_ui_chat_upload,
-	                 self);
-	htmx_router_post(router, "/ui/chat/confirm/:id/approve",
-	                 venture_web_ui_chat_approve, self);
-	htmx_router_post(router, "/ui/chat/confirm/:id/reject",
-	                 venture_web_ui_chat_reject, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat/upload", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_upload, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat/confirm/:id/approve", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_approve, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat/confirm/:id/reject", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_reject, self);
 
 	/* API */
-	htmx_router_get(router, "/api/v1/health", venture_web_api_health, self);
-	htmx_router_post(router, "/f/:token", venture_web_lead_capture, self);
-	htmx_router_post(router, "/api/v1/leads/:id/:action", venture_web_lead_action, self);
-	htmx_router_post(router, "/leads/:id/:action", venture_web_lead_action, self);
-	htmx_router_get(router, "/customers/duplicates", venture_web_ui_duplicates, self);
-	htmx_router_post(router, "/customers/duplicates/scan", venture_web_ui_duplicates_action, self);
-	htmx_router_post(router, "/customers/duplicates/:id/:action", venture_web_ui_duplicates_action, self);
-	htmx_router_get(router, "/api/v1/factory", venture_web_api_factory, self);
-	htmx_router_get(router, "/api/v1/factory/actions",
-	                venture_web_api_factory_actions, self);
-	htmx_router_get(router, "/api/v1/factory/briefing",
-	                venture_web_api_factory_briefing, self);
-	htmx_router_get(router, "/api/v1/releases/:id/readiness",
-	                venture_web_api_release_readiness, self);
-	htmx_router_post(router, "/api/v1/releases/:id/deploy",
-	                 venture_web_api_release_deploy, self);
-	htmx_router_post(router, "/api/v1/releases/:id/notes",
-	                 venture_web_api_release_notes, self);
-	htmx_router_post(router, "/api/v1/environments/:id/rollback",
-	                 venture_web_api_environment_rollback, self);
-	htmx_router_get(router, "/api/v1/milestones/:id/forecast",
-	                venture_web_api_milestone_forecast, self);
-	htmx_router_post(router, "/api/v1/incidents/:id/postmortem",
-	                 venture_web_api_incident_postmortem, self);
-	htmx_router_post(router, "/api/v1/builds/:id/triage",
-	                 venture_web_api_build_triage, self);
-	htmx_router_post(router, "/api/v1/builds/:id/ticket",
-	                 venture_web_api_build_ticket, self);
-	htmx_router_post(router, "/api/v1/post/backfill", venture_web_autojournal_backfill, self);
-	htmx_router_get(router, "/api/v1/inbox", venture_web_api_inbox, self);
-	htmx_router_post(router, "/api/v1/inbox/read", venture_web_api_inbox_read,
-	                 self);
-	htmx_router_post(router, "/api/v1/watch", venture_web_api_watch, self);
-	htmx_router_get(router, "/api/v1/watching/:type/:id",
-	                venture_web_api_watching, self);
-	htmx_router_get(router, "/api/v1/activity/:type/:id",
-	                venture_web_api_activity, self);
-	htmx_router_get(router, "/api/v1/tickets/:id/sla",
-	                venture_web_api_ticket_sla, self);
-	htmx_router_post(router, "/api/v1/tickets/:id/macro",
-	                 venture_web_api_ticket_macro, self);
-	htmx_router_post(router, "/api/v1/tickets/:id/worklog",
-	                 venture_web_api_ticket_worklog, self);
-	htmx_router_post(router, "/api/v1/sla/sweep", venture_web_api_sla_sweep,
-	                 self);
-	htmx_router_get(router, "/api/v1/sprints", venture_web_api_sprints, self);
-	htmx_router_get(router, "/api/v1/sprints/:id", venture_web_api_sprint, self);
-	htmx_router_post(router, "/api/v1/incidents/:id/ticket",
-	                 venture_web_api_incident_ticket, self);
-	htmx_router_get(router, "/api/v1/runs", venture_web_api_runs, self);
-	htmx_router_get(router, "/api/v1/budgets", venture_web_api_budgets, self);
-	htmx_router_get(router, "/api/v1/palette", venture_web_api_palette, self);
-	htmx_router_get(router, "/api/v1/webhooks", venture_web_api_webhooks, self);
-	htmx_router_post(router, "/api/v1/webhooks/:id/test",
-	                 venture_web_api_webhook_test, self);
-	htmx_router_post(router, "/api/v1/webhooks/:id/secret",
-	                 venture_web_api_webhook_secret, self);
-	htmx_router_post(router, "/api/v1/tickets/:id/triage",
-	                 venture_web_api_ticket_triage, self);
-	htmx_router_get(router, "/api/v1/tickets/:id/summary",
-	                venture_web_api_ticket_summary, self);
-	htmx_router_post(router, "/api/v1/tickets/:id/draft",
-	                 venture_web_api_ticket_draft, self);
-	htmx_router_post(router, "/api/v1/releases/:id/changelog",
-	                 venture_web_api_release_changelog, self);
-	htmx_router_get(router, "/worklist", activity_ui_worklist, self);
-	htmx_router_post(router, "/activities/:id/complete", activity_ui_done, self);
-	htmx_router_get(router, "/api/v1/activities.ics", activity_api_calendar, self);
-	htmx_router_get(router, "/api/v1/activities", activity_api_list, self);
-	htmx_router_post(router, "/api/v1/activities/sweep", activity_api_sweep, self);
-	htmx_router_post(router, "/api/v1/activities/:id/:action", activity_api_action, self);
-	htmx_router_post(router, "/api/v1/releases/:id/publish",
-	                 venture_web_api_release_publish, self);
-	htmx_router_post(router, "/api/v1/fixed_assets/:id/:operation", venture_web_asset_action, self);
-	htmx_router_post(router, "/assets/:id/:operation", venture_web_asset_action, self);
-	htmx_router_post(router, "/api/v1/assets/run-period", venture_web_assets_run, self);
-	htmx_router_post(router, "/api/v1/assets/run-tax-period", venture_web_assets_run_tax, self);
-	htmx_router_post(router, "/api/v1/customer_subscriptions/:id/:action", venture_billing_web_action, self);
-	htmx_router_post(router, "/api/v1/billing/start", venture_billing_web_action, self);
-	htmx_router_post(router, "/api/v1/billing/:action", venture_billing_web_action, self);
-	htmx_router_post(router, "/billing/subscriptions/:id/action", venture_billing_web_action, self);
-	htmx_router_get(router, "/api/v1/widget-kinds",
-	                venture_web_api_widget_kinds, self);
-	htmx_router_get(router, "/api/v1/dashboard-templates",
-	                venture_web_api_dashboard_templates, self);
-	htmx_router_get(router, "/api/v1/dashboards", venture_web_api_dashboards,
-	                self);
-	htmx_router_post(router, "/api/v1/dashboards/:action",
-	                 venture_web_api_dashboard_import, self);
-	htmx_router_get(router, "/api/v1/dashboards/:slug",
-	                venture_web_api_dashboard, self);
-	htmx_router_get(router, "/api/v1/dashboards/:slug/export",
-	                venture_web_api_dashboard_export, self);
-	htmx_router_get(router, "/api/v1/schema", venture_web_api_describe, self);
-	htmx_router_get(router, "/api/v1/schema/:type", venture_web_api_describe,
-	                self);
-	htmx_router_post(router, "/api/v1/journals/:id/post", venture_web_orgaccess_post, self);
-	htmx_router_get(router, "/api/v1/reports", venture_web_api_reports, self);
-	htmx_router_get(router, "/api/v1/reports/:name", venture_web_api_report,
-	                self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/customers/duplicates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_duplicates, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/customers/duplicates/scan", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_duplicates_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/customers/duplicates/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_duplicates_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/factory", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_factory, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/factory/actions", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_factory_actions, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/factory/briefing", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_factory_briefing, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/releases/:id/readiness", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_release_readiness, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/releases/:id/deploy", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_release_deploy, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/releases/:id/notes", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_release_notes, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/environments/:id/rollback", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_environment_rollback, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/milestones/:id/forecast", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_milestone_forecast, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/incidents/:id/postmortem", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_incident_postmortem, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/builds/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_build_triage, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/builds/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_build_ticket, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/post/backfill", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_autojournal_backfill, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/inbox", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox_read, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watch, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/watching/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watching, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/activity/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_activity, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/sla", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_sla, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/macro", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_macro, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_worklog, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sla/sweep", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sla_sweep, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprints, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprint, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/incidents/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_incident_ticket, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/runs", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_runs, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/budgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_budgets, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/palette", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_palette, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/webhooks", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhooks, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/test", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_test, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_triage, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/summary", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_summary, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/draft", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_draft, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/releases/:id/changelog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_release_changelog, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/worklist", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, activity_ui_worklist, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/activities/:id/complete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, activity_ui_done, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/activities.ics", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, activity_api_calendar, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/activities", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, activity_api_list, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/activities/sweep", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, activity_api_sweep, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/activities/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, activity_api_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/releases/:id/publish", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_release_publish, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/fixed_assets/:id/:operation", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_asset_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/assets/:id/:operation", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_asset_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/assets/run-period", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_assets_run, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/assets/run-tax-period", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_assets_run_tax, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/customer_subscriptions/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/widget-kinds", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_widget_kinds, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboard-templates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_templates, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboards, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/dashboards/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_import, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards/:slug/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_describe, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/schema/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_describe, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/journals/:id/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_orgaccess_post, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/reports", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_reports, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/reports/:name", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_report, self);
 
 	/* Minting a token and deciding an AI change are registered before the
 	 * generic record routes, so their paths are not swallowed by
 	 * /api/v1/:type. */
-	htmx_router_post(router, "/api/v1/tokens", venture_web_api_mint_token, self);
-	htmx_router_get(router, "/api/v1/confirmations",
-	                venture_web_api_confirmations, self);
-	htmx_router_post(router, "/api/v1/confirmations/:id/approve",
-	                 venture_web_api_approve, self);
-	htmx_router_post(router, "/api/v1/confirmations/:id/reject",
-	                 venture_web_api_reject, self);
-	htmx_router_get(router, "/api/v1/settings", venture_web_api_settings, self);
-	htmx_router_get(router, "/api/v1/kb/search", venture_web_api_kb_search,
-	                self);
-	htmx_router_post(router, "/api/v1/kb/:id/sync", venture_web_api_kb_sync,
-	                 self);
-	htmx_router_post(router, "/api/v1/kb/:id/reindex",
-	                 venture_web_api_kb_reindex, self);
-	htmx_router_get(router, "/api/v1/kb/:id/export",
-	                venture_web_api_kb_export, self);
-	htmx_router_post(router, "/api/v1/kb/:id/import",
-	                 venture_web_api_kb_import, self);
-	htmx_router_post(router, "/api/v1/kb/crossref/:type/:id",
-	                 venture_web_api_kb_crossref, self);
-	htmx_router_post(router, "/api/v1/kb/from/:type/:id",
-	                 venture_web_api_kb_from_record, self);
-	htmx_router_get(router, "/api/v1/plugins", venture_web_api_plugins, self);
-	htmx_router_get(router, "/api/v1/modules", venture_web_api_modules, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tokens", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_mint_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/confirmations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_confirmations, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/confirmations/:id/approve", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_approve, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/confirmations/:id/reject", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_reject, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/settings", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/kb/search", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_search, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/kb/:id/sync", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/kb/:id/reindex", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_reindex, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/kb/:id/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_export, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/kb/:id/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_import, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/kb/crossref/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_crossref, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/kb/from/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_kb_from_record, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/plugins", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_plugins, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/modules", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_modules, self);
 	/* Before /api/v1/:type/:id, or "links" would be read as a type. */
-	htmx_router_get(router, "/api/v1/links/:type/:id", venture_web_api_links,
-	                self);
-	htmx_router_post(router, "/api/v1/links", venture_web_api_link_create,
-	                 self);
-	htmx_router_get(router, "/api/v1/venture-types",
-	                venture_web_api_venture_types, self);
-	htmx_router_get(router, "/api/v1/venture-types/:name",
-	                venture_web_api_venture_types, self);
-	htmx_router_get(router, "/api/v1/automations", venture_web_api_automations,
-	                self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/links/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_links, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/links", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_link_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/venture-types", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_venture_types, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/venture-types/:name", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_venture_types, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/automations", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_automations, self);
 
 	/*
 	 * One set of handlers serves every record type. A plugin registering
@@ -30100,65 +30017,60 @@ venture_web_server_new(
 	 * write a raw password hash, which is precisely what hashing exists
 	 * to prevent.
 	 */
-	htmx_router_post(router, "/api/v1/forge/:id/token",
-	                 venture_web_api_forge_token, self);
-	htmx_router_post(router, "/api/v1/forge/:id/webhook-secret",
-	                 venture_web_api_forge_secret, self);
-	htmx_router_post(router, "/api/v1/forge/:id/verify",
-	                 venture_web_api_forge_verify, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/webhook-secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/forge/:id/verify", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_verify, self);
 
 	/* Before the generic record routes, so "restore" is not read as an
 	 * id. */
-	htmx_router_post(router, "/api/v1/:type/bulk", venture_web_api_bulk, self);
-	htmx_router_post(router, "/api/v1/:type/:id/restore",
-	                 venture_web_api_restore, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type/bulk", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_bulk, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type/:id/restore", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_restore, self);
 
-	htmx_router_get(router, "/federation/v1/identity", venture_web_federation_identity, self);
-	htmx_router_post(router, "/federation/v1/request", venture_web_federation_receive, self);
-	htmx_router_post(router, "/api/v1/federation", venture_web_api_federation, self);
-	htmx_router_get(router, "/federation", venture_web_ui_federation, self);
-	htmx_router_get(router, "/federation/replicas/:id", venture_web_ui_federation_replica, self);
-	htmx_router_post(router, "/federation/pull", venture_web_ui_federation_write, self);
-	htmx_router_post(router, "/federation/replicas/:id/:action", venture_web_ui_federation_write, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/federation/v1/identity", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_federation_identity, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/federation/v1/request", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_federation_receive, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/federation", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_federation, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/federation", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_federation, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/federation/replicas/:id", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_federation_replica, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/federation/pull", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_federation_write, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/federation/replicas/:id/:action", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_federation_write, self);
 
-	htmx_router_post(router, "/api/v1/reconciliation/suggest", venture_web_api_reconciliation_suggest, self);
-	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
-	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
-	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
-	htmx_router_post(router, "/api/v1/mail/sync", venture_web_mail_sync, self);
-	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact, self);
-	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss, self);
-	htmx_router_post(router, "/api/v1/mail_accounts/:id/sync", venture_web_mail_account_sync, self);
-	htmx_router_post(router, "/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact_ui, self);
-	htmx_router_post(router, "/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss_ui, self);
-	htmx_router_post(router, "/mail_accounts/:id/sync", venture_web_mail_account_sync_ui, self);
-	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
-	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
-	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
-	htmx_router_get(router, "/deals", venture_web_deals_board, self);
-	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
-	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
-	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
-	htmx_router_post(router, "/api/v1/sequences/run", venture_web_sequence_run, self);
-	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
-	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
-	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
-	htmx_router_get(router, "/connectors/:type/:id/settings", venture_web_connector_settings, self);
-	htmx_router_post(router, "/connectors/:type/:id/settings", venture_web_connector_settings, self);
-	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
-	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
-	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);
-	htmx_router_post(router, "/deals/:id/quote", venture_web_deal_quote, self);
-	htmx_router_get(router, "/t/o/:token", venture_web_sequence_open, self);
-	htmx_router_get(router, "/t/c/:token/:n", venture_web_sequence_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/reconciliation/suggest", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_reconciliation_suggest, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/send", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_invoice_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_messages/:id/retry", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_unmatched_senders/:id/create_contact", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_contact, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/create_contact", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_contact_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/send", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_invoice, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence/:id/enroll", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_enroll, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequences/run", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_run, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/headline", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_headline, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/customers/health/sweep", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_customer_health_sweep, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/calendar/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_calendar_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/connectors/:type/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_connector_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/connectors/:type/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_connector_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/book/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/book/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_open, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_click, self);
 
-	htmx_router_get(router, "/api/v1/:type", venture_web_api_list, self);
-	htmx_router_post(router, "/api/v1/:type", venture_web_api_create, self);
-	htmx_router_get(router, "/api/v1/:type/:id", venture_web_api_get, self);
-	htmx_router_put(router, "/api/v1/:type/:id", venture_web_api_update, self);
-	htmx_router_patch(router, "/api/v1/:type/:id", venture_web_api_update, self);
-	htmx_router_delete(router, "/api/v1/:type/:id", venture_web_api_delete,
-	                   self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_PUT, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_update, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_PATCH, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_update, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_DELETE, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_delete, self);
 
 	venture_bank_web_register(router, self);
 	venture_bankfeed_web_register(router, self);
@@ -30170,18 +30082,18 @@ venture_document_web_register(router, self);
 	venture_accountant_web_register(router, self);
 	venture_crm_import_web_register(router, self);
 	venture_mfa_web_register(router, self);
-	htmx_router_get(router, "/auth/oidc/start", venture_oidc_web_start, self);
-	htmx_router_get(router, "/auth/oidc/callback", venture_oidc_web_callback, self);
-	htmx_router_get(router, "/account/oidc", venture_oidc_web_account, self);
-	htmx_router_post(router, "/account/oidc", venture_oidc_web_account, self);
-	htmx_router_post(router, "/account/oidc/link", venture_oidc_web_start, self);
-	htmx_router_get(router, "/organizations/:id/settings/oidc", venture_oidc_web_settings, self);
-	htmx_router_post(router, "/organizations/:id/settings/oidc", venture_oidc_web_settings, self);
-	htmx_router_post(router, "/api/v1/:type/:id/actions/:action", venture_web_api_action, self);
-	htmx_router_post(router, "/api/v1/journals/post", venture_web_api_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/oidc/start", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/oidc/callback", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_callback, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/oidc", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_account, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/oidc", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_account, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/oidc/link", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/oidc", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_oidc_web_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/oidc", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_oidc_web_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type/:id/actions/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/journals/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_action, self);
 	venture_money_calendar_web_register(router, self);
 	venture_docs_web_register(router, self);
-	htmx_router_post(router, "/api/v1/report_pack/:id/deliver", venture_web_report_pack_deliver, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/report_pack/:id/deliver", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_report_pack_deliver, self);
 
 	return g_steal_pointer(&self);
 }

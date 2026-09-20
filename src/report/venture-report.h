@@ -539,6 +539,18 @@ venture_report_registry_register_builtins(VentureReportRegistry *self);
 JsonNode *
 venture_report_registry_describe(VentureReportRegistry *self);
 
+/**
+ * venture_func_report_new_classified:
+ * @classification: explicit hosted authority declaration
+ * @name: machine name
+ * @title: display title
+ * @description: report description
+ * @func: (scope forever): report implementation
+ * Returns: (transfer full): explicitly classified report
+ */
+VentureFuncReport *venture_func_report_new_classified(VentureDataClass classification,
+	const gchar *name, const gchar *title, const gchar *description, VentureReportFunc func);
+
 G_END_DECLS
 
 #endif /* VENTURE_REPORT_H */

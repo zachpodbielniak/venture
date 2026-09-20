@@ -21,6 +21,8 @@ stripe_collection_tick(gpointer data)
 	if (!venture_context_module_enabled(context, "stripe") || !venture_context_module_enabled(context, "billing") ||
 		venture_database_has_transaction(database) || venture_access_policy_get_actor(venture_database_get_access_policy(database)))
 		return G_SOURCE_CONTINUE;
+	if (!venture_tenant_service_check_operation(venture_tenant_service_get(database), TRUE, &error))
+		return G_SOURCE_CONTINUE;
 	venture_query_set_limit(query, 1);
 	venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, NULL);
 	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", NULL);

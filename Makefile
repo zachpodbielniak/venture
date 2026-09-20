@@ -70,6 +70,7 @@ CORE_SRCS += src/orgaccess/venture-access-records.c
 CORE_SRCS += src/billing/venture-billing-records.c
 CORE_SRCS += src/projects/venture-project-records.c
 CORE_SRCS += src/leads/venture-lead-records.c
+CORE_SRCS += src/tenant/venture-tenant-records.c
 CORE_SRCS += src/sales/venture-sales-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
@@ -129,6 +130,7 @@ SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard s
 CORE_SRCS += src/goods/venture-goods-records.c
 SERVER_ONLY_SRCS += $(filter-out src/goods/venture-goods-records.c,$(wildcard src/goods/*.c))
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
+SERVER_ONLY_SRCS += $(filter-out src/tenant/venture-tenant-records.c,$(wildcard src/tenant/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/sales/venture-sales-records.c,$(wildcard src/sales/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
@@ -225,6 +227,7 @@ PUBLIC_HDRS := \
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
 PUBLIC_HDRS += $(wildcard src/assets/*.h)
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/tenant/*.h))
 PUBLIC_HDRS += $(wildcard src/billing/*.h)
 PUBLIC_HDRS += $(wildcard src/projects/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
@@ -657,3 +660,6 @@ install: install-docs-site
 test-mail-relay: $(OUTDIR)/tests/test-mail-routing
 	@test "$(BUILD_TYPE)" = debug || { echo 'Use make DEBUG=1 test-mail-relay' >&2; exit 1; }
 	@tools/venture-test-smtp-relay.sh "$(OUTDIR)/tests/test-mail-routing"
+
+# Session transport tests execute the independently linked generic CLI.
+$(OUTDIR)/tests/test-cli-session: $(OUTDIR)/venturectl

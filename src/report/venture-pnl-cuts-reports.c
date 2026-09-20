@@ -1907,25 +1907,25 @@ venture_pnl_cuts_register_reports(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
 
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"revenue_by_customer", "Revenue by customer",
 		"Paid revenue (receipts less refunds) and issued revenue (invoices "
 		"less credit notes) per customer for the period, largest first, "
 		"with the lead source each came from; by=source groups by source",
 		venture_report_revenue_by_customer)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"spend_by_vendor", "Spend by vendor",
 		"Approved bills and expenses per vendor for the period, largest "
 		"first, with the acquisition-flagged share beside the rest; "
 		"by=category groups by expense category",
 		venture_report_spend_by_vendor)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"recurring_costs", "Recurring costs",
 		"Every running recurring bill and expense schedule priced from its "
 		"template and rolled up to a monthly run-rate, with the next due "
 		"date; cancelled, paused and ended schedules excluded",
 		venture_report_recurring_costs)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"cash_outlook", "Cash outlook",
 		"The next N weeks (weeks, default 8) of cash out from approved "
 		"unpaid bills and cash in from issued unpaid invoices by due date, "

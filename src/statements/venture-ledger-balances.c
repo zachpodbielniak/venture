@@ -1576,6 +1576,7 @@ venture_statements_register_reports(VentureReportRegistry *registry)
 		VentureReport *report = g_object_new(VENTURE_TYPE_STATEMENT_REPORT,
 			"name", reports[i].name, "title", reports[i].title,
 			"description", "Posted ledger evidence, per legal entity and currency, with date cutoffs and prior-period comparatives", NULL);
+		venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
 		g_object_set(report, "financial", TRUE, NULL);
 		venture_report_registry_add(registry, report);
 	}

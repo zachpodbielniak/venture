@@ -114,7 +114,7 @@ venture_activity_actions_register(VentureDatabase *database)
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(types); i++)
 	{
-		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION,
+		g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
 			"type-name", types[i], "name", "log_call", "label", "Log a call",
 			"description", "Record one call and optional followup atomically; exact retries reuse history",
 			"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);

@@ -430,7 +430,7 @@ venture_backup_actions_register(VentureDatabase *database)
 	g_autoptr(VentureAction) action = NULL;
 	g_autoptr(GError) error = NULL;
 	g_ptr_array_add(parameters, venture_field_spec_new("payload", "Pack JSON", VENTURE_FIELD_KIND_TEXT));
-	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "accounting_backup", "name", "restore",
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "accounting_backup", "name", "restore",
 		"label", "Restore", "description", "Restore this pack into an empty organization",
 		"parameters", parameters, "stageable", FALSE, "roles", VENTURE_USER_ROLE_ADMIN, NULL);
 	venture_action_registry_register(venture_database_get_action_registry(database), action,

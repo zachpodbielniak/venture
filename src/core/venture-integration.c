@@ -345,6 +345,7 @@ resolve_snapshot(VentureIntegrationService *self, gint64 organization_id,
 {
 	g_autoptr(VentureEntity) entity = NULL;
 	gboolean enabled = FALSE;
+	g_autofree gchar *provider = NULL;
 	g_return_val_if_fail(VENTURE_IS_INTEGRATION_SERVICE(self), NULL);
 	if (!self->database) { refuse(error, VENTURE_ERROR_FAILED, "Integration repository is no longer available"); return NULL; }
 	if (organization_id <= 0 || connection_id <= 0)
@@ -360,6 +361,8 @@ resolve_snapshot(VentureIntegrationService *self, gint64 organization_id,
 	g_object_get(entity, "enabled", &enabled, NULL);
 	if (!enabled && !allow_disabled)
 	{ refuse(error, VENTURE_ERROR_CONFIG, "Organization integration is disabled"); return NULL; }
+	g_object_get(entity, "provider", &provider, NULL);
+	if (!venture_tenant_service_check_provider(venture_tenant_service_get(self->database), provider, error)) return NULL;
 	return unseal(self, entity, error);
 }
 

@@ -161,8 +161,8 @@ calls(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 void
 venture_activity_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("worklist", "Worklist",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "worklist", "Worklist",
 		"Current UTC week, per owner: overdue, today, due this week and completed this week", worklist)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("calls", "Calls",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "calls", "Calls",
 		"One completed call per actual occurrence, grouped by owner; duration in seconds", calls)));
 }

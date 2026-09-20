@@ -251,6 +251,6 @@ venture_period_reports_register(VentureReportRegistry *registry)
 		if (NULL != report)
 			g_object_set(report, "financial", TRUE, NULL);
 	}
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("snapshot_vs_live",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "snapshot_vs_live",
 		"Snapshot vs live", "Compare the totals preserved at period close with current reports", snapshot_vs_live)));
 }

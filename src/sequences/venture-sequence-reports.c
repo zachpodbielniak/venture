@@ -262,10 +262,10 @@ engagement(VentureContext *context, VentureDateRange *period, JsonObject *option
 void
 venture_sequences_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("sequence_performance",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "sequence_performance",
 		"Sequence performance", "Current outcomes of enrollments started during the selected period", performance)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("sequence_failures",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "sequence_failures",
 		"Sequence failures", "Failed deliveries scheduled during the selected period", failures)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("sequence_engagement",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "sequence_engagement",
 		"Sequence engagement", "Sent, opened, clicked and replied counts and rates per step for deliveries scheduled in the period", engagement)));
 }

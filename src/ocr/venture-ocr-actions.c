@@ -58,7 +58,7 @@ static VentureEntity *invoke(VentureAction *action, VentureEntity *entity, GHash
 static void register_action(VentureDatabase *database, const gchar *type, const gchar *name, const gchar *label,
 	gboolean type_level, GPtrArray *parameters)
 {
-	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", type, "name", name,
+	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", type, "name", name,
 		"label", label, "description", label, "parameters", parameters, "stageable", TRUE,
 		"type-level", type_level, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_autoptr(GError) error = NULL;

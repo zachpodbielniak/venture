@@ -224,7 +224,8 @@ venture_accountant_web_pack_retained(HtmxRequest *request, GHashTable *params, g
 static void
 venture_accountant_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/books", venture_accountant_web_books, self);
-	htmx_router_get(router, "/books/year-end-pack.zip", venture_accountant_web_pack_live, self);
-	htmx_router_get(router, "/books/packs/:id/year-end-pack.zip", venture_accountant_web_pack_retained, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/books", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_accountant_web_books, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/books/year-end-pack.zip", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_accountant_web_pack_live, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/books/packs/:id/year-end-pack.zip", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_accountant_web_pack_retained, self);
 }

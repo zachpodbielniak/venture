@@ -96,7 +96,7 @@ venture_web_sequence_action(HtmxRequest *request, GHashTable *params, gpointer d
 	if (!venture_web_sequence_direct(request, &error))
 		return venture_web_error_response(error);
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	enrollment = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_SEQUENCE_ENROLLMENT, id, &error);
 	if (enrollment == NULL)

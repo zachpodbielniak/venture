@@ -24,12 +24,16 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 typedef struct
 {
 	SoupSession		*session;
 	gchar			*base_url;
 	gchar			*token;
+	const gchar		*session_cookie;
 	VentureOutputFormat	 format;
 	gboolean		 quiet;
 
@@ -47,6 +51,64 @@ typedef struct
 	 * act honour it, and passing it to anything else is refused. */
 	gboolean		 stage;
 } VentureCli;
+
+/* A session is interactive authority. Its private descriptor carries an exact
+ * origin binding so selecting another server cannot silently disclose it. */
+static gchar *
+venture_cli_read_session(const gchar *path, const gchar *server, GError **error)
+{
+	g_autoptr(GUri) origin = NULL;
+	g_autoptr(GInetAddress) address = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autofree gchar *contents = NULL;
+	JsonNode *root, *origin_node, *cookie_node;
+	JsonObject *object;
+	const gchar *bound, *cookie, *host, *cursor;
+	struct stat info;
+	gsize used = 0;
+	gint descriptor;
+	gboolean valid = FALSE;
+	descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (descriptor < 0) goto refused;
+	if (fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != geteuid() ||
+	    (info.st_mode & 0077) != 0 || info.st_nlink != 1 || info.st_size < 1 || info.st_size > 8192) goto close_file;
+	contents = g_malloc0(8193);
+	while (used < 8193) {
+		ssize_t count = read(descriptor, contents + used, 8193 - used);
+		if (count < 0 && errno == EINTR) continue;
+		if (count < 0) goto close_file;
+		if (count == 0) break;
+		used += (gsize)count;
+	}
+	valid = used <= 8192 && !memchr(contents, '\0', used);
+close_file:
+	close(descriptor);
+	if (!valid || !json_parser_load_from_data(parser, contents, used, NULL)) goto refused;
+	root = json_parser_get_root(parser);
+	if (!root || !JSON_NODE_HOLDS_OBJECT(root)) goto refused;
+	object = json_node_get_object(root);
+	origin_node = json_object_get_member(object, "origin");
+	cookie_node = json_object_get_member(object, "cookie");
+	if (!origin_node || !cookie_node || !JSON_NODE_HOLDS_VALUE(origin_node) || !JSON_NODE_HOLDS_VALUE(cookie_node) ||
+	    json_node_get_value_type(origin_node) != G_TYPE_STRING || json_node_get_value_type(cookie_node) != G_TYPE_STRING) goto refused;
+	bound = json_node_get_string(origin_node); cookie = json_node_get_string(cookie_node);
+	if (g_strcmp0(bound, server) != 0) goto refused;
+	origin = g_uri_parse(bound, G_URI_FLAGS_NONE, NULL);
+	if (!origin || !g_uri_get_scheme(origin) || !g_uri_get_host(origin) || g_uri_get_userinfo(origin) ||
+	    g_uri_get_query(origin) || g_uri_get_fragment(origin) || !venture_string_is_empty(g_uri_get_path(origin))) goto refused;
+	host = g_uri_get_host(origin);
+	address = g_inet_address_new_from_string(host);
+	if (!g_str_equal(g_uri_get_scheme(origin), "https") &&
+	    !(g_str_equal(g_uri_get_scheme(origin), "http") && address && g_inet_address_get_is_loopback(address))) goto refused;
+	if (!g_str_has_prefix(cookie, "venture_session=") || !cookie[strlen("venture_session=")]) goto refused;
+	for (cursor = cookie + strlen("venture_session="); *cursor; cursor++)
+		if (!g_ascii_isalnum(*cursor) && !strchr(":%._~-", *cursor)) goto refused;
+	return g_strdup(cookie);
+refused:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"Session file must be a bounded private single-link regular JSON file with the exact HTTPS (or numeric loopback) server origin and one venture_session cookie");
+	return NULL;
+}
 
 /* --- Output -------------------------------------------------------------- */
 
@@ -410,6 +472,11 @@ venture_cli_send(
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "\"%s\" is not a usable URL", url);
 		return NULL;
+	}
+
+	if (cli->session_cookie) {
+		soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+		soup_message_headers_append(soup_message_get_request_headers(message), "Cookie", cli->session_cookie);
 	}
 
 	if (NULL != cli->token)
@@ -3571,10 +3638,11 @@ main(
 	g_autoptr(GOptionContext) options = NULL;
 	g_autoptr(GError) error = NULL;
 	g_auto(GStrv) args = NULL;
-	VentureCli cli = { NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE,
+	VentureCli cli = { NULL, NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE,
 	                   FALSE, FALSE, FALSE, FALSE };
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
+	g_autofree gchar *session_file = NULL, *session_cookie = NULL;
 	g_autofree gchar *format = NULL;
 	g_autofree gchar *mail_html = NULL;
 	g_autofree gchar *mail_limit = NULL;
@@ -3598,6 +3666,8 @@ main(
 	const GOptionEntry entries[] = {
 		{ "server", 's', 0, G_OPTION_ARG_STRING, &server,
 		  "Server base URL (default http://127.0.0.1:8747)", "URL" },
+		{ "session-file", 0, 0, G_OPTION_ARG_STRING, &session_file,
+		  "Private origin-bound interactive session JSON file (not for mcp)", "FILE" },
 		{ "token", 't', 0, G_OPTION_ARG_STRING, &token,
 		  "API token; also read from VENTURE_TOKEN", "TOKEN" },
 		{ "format", 'f', 0, G_OPTION_ARG_STRING, &format,
@@ -3875,6 +3945,20 @@ main(
 	                            : g_strdup(g_getenv("VENTURE_TOKEN"));
 	cli.server_from_argv = (NULL != server);
 	cli.token_from_argv = (NULL != token);
+	if (session_file) {
+		if (cli.token || g_strcmp0(args[0], "mcp") == 0) {
+			g_printerr("venturectl: --session-file cannot be combined with a token or mcp\n");
+			g_free(cli.base_url); g_free(cli.token);
+			return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+		}
+		session_cookie = venture_cli_read_session(session_file, cli.base_url, &error);
+		if (!session_cookie) {
+			g_printerr("venturectl: %s\n", error->message);
+			g_free(cli.base_url);
+			return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+		}
+		cli.session_cookie = session_cookie;
+	}
 	cli.apply_writes = apply_writes;
 	cli.stage = stage;
 

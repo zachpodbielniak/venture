@@ -439,6 +439,9 @@ venture_webhook_send(
 	g_autoptr(GBytes) bytes = NULL;
 	SoupMessageHeaders *headers;
 
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, NULL)) return;
+
 	g_object_get(webhook, "url", &url, "secret", &secret, NULL);
 
 	if (venture_string_is_empty(url))
@@ -692,6 +695,9 @@ venture_webhook_test(
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(VENTURE_IS_WEBHOOK(webhook), NULL);
+
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, error)) return NULL;
 
 	g_object_get(webhook, "url", &url, "secret", &secret, NULL);
 

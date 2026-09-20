@@ -241,9 +241,10 @@ bankfeed_settings(HtmxRequest *request, GHashTable *params, gpointer data)
 static void
 venture_bankfeed_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/bankfeed", bankfeed_ui, self);
-	htmx_router_get(router, "/bankfeed/:id/settings", bankfeed_settings, self);
-	htmx_router_post(router, "/bankfeed/:id/settings", bankfeed_settings, self);
-	htmx_router_post(router, "/bankfeed/:id/sync", bankfeed_sync, self);
-	htmx_router_post(router, "/api/v1/bankfeed/:id/sync", bankfeed_sync, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/bankfeed", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, bankfeed_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/bankfeed/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, bankfeed_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bankfeed/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, bankfeed_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bankfeed/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, bankfeed_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/bankfeed/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, bankfeed_sync, self);
 }
