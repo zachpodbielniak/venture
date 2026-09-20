@@ -36,8 +36,8 @@ before any destination write. Restored rows are compared before startup can
 legitimately update operational state. The restored application then starts,
 accepts local login and reads its retained company/provider settings.
 
-The operator explicitly inspected this successful transcript. No credential,
-key file, archive plaintext or private business data is published. This is a
+The driver checked the restored rows and the transcript records its result.
+No credential, key file, archive plaintext or private business data is published. This is a
 small synthetic recovery proof, not a scale test, cross-host off-site proof,
 provider-authentication proof or the final hosted-boundary security review.
 
