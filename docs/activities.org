@@ -293,3 +293,13 @@ DEBUG server and CLI, because the suite executes the real CLI:
 make DEBUG=1
 make DEBUG=1 test-one T=test-activities
 #+end_src
+
+For an explicitly disposable PostgreSQL server, set
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= before running =test-activities=.
+Each service fixture creates and drops its own unique schema; public and
+other fixtures' schemas are never reset. The suite's independent file-based
+upgrade/restart regression remains SQLite; its record-only test uses no
+database.
+Set =VENTURE_TEST_MIGRATION_POSTGRES_URI= for =test-migrations= to exercise
+all shipped migrations, including =000490=, in a separate temporary
+PostgreSQL schema. Ordinary runs require neither variable nor a server.

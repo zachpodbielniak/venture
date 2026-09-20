@@ -3,6 +3,7 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -35,7 +36,7 @@ fixture_set_up(Fixture *fixture, gconstpointer data)
 	g_object_set(fixture->config, "state-dir", fixture->state_dir,
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)port,
 		"security-require-auth", data != NULL, NULL);
-	fixture->database = venture_database_new("sqlite://:memory:", &error);
+	fixture->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	fixture->context = venture_context_new(fixture->config, fixture->database);
 	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
@@ -55,6 +56,7 @@ fixture_tear_down(Fixture *fixture, gconstpointer data)
 	g_clear_object(&fixture->session);
 	g_clear_object(&fixture->server);
 	g_clear_object(&fixture->context);
+	venture_test_accounting_database_cleanup(fixture->database);
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
 	venture_test_remove_tree(fixture->state_dir);
@@ -437,6 +439,8 @@ static void
 test_migration(Fixture *f, gconstpointer data)
 {
 	g_autoptr(OrmResult) result = venture_database_query_raw(f->database,
+		g_getenv("VENTURE_TEST_ACCOUNTING_POSTGRES_URI") != NULL ?
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM pg_indexes WHERE schemaname=current_schema() AND indexname='activities_notification_target'" :
 		"SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type='index' AND name='activities_notification_target'", NULL, NULL);
 	g_assert_nonnull(result);
 	g_assert_true(orm_result_next(result));
