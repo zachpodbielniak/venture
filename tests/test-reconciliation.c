@@ -190,6 +190,9 @@ test_ai_answer(gconstpointer data)
 	g_autoptr(GPtrArray) result = NULL;
 	g_autoptr(GError) error = NULL;
 	guint i;
+	/* Even an injected model must resolve the transaction's real organization. */
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
 	provider->answer = g_strdup(data);
 	ai = venture_ai_service_new_with_provider(context, AI_PROVIDER(provider), &error);
 	g_assert_no_error(error);
@@ -598,6 +601,9 @@ test_registry_merges_matchers(void)
 	g_autoptr(GPtrArray) result = NULL;
 	g_autoptr(GError) error = NULL;
 	gint confidence;
+	/* The organization binding is shared with production AI completion. */
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
 	provider->answer = g_strdup("[{\"id\":3,\"confidence\":95,\"why\":\"reference agrees\"}]");
 	ai = venture_ai_service_new_with_provider(context, AI_PROVIDER(provider), &error);
 	g_assert_no_error(error);
