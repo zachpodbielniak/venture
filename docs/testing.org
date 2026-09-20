@@ -734,3 +734,12 @@ revocation, quota accounting, concurrency, configuration revisions and redaction
 Its PostgreSQL fixtures use =VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. Provider tests
 use local controlled HTTP peers; they do not spend against a live model account.
 See [[file:ai-organizations.org][the contract and built-artifact demonstration]].
+
+* Recurring invoice automatic collection
+
+=test-stripe= includes controlled-provider authorization, recurring collection,
+persisted idempotency and retries, signed settlement and restart scenarios.
+Application HTTP responses never constitute payment evidence. See
+[[file:stripe-automatic-demonstration.org][the built-artifact collection transcript]] and
+[[file:stripe.org][the provider/account contract]]. PostgreSQL fixture runs use
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=.

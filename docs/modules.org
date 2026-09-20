@@ -268,3 +268,11 @@ AI provider selection is explicit per organization and purpose; disabling AI
 prevents runtime use without deleting historical grants or usage. Platform offers
 are platform administration, not tenant-owned credentials. See
 [[file:ai-organizations.org][provider settings, grants and limits]].
+
+* Automatic subscription collection
+
+The existing =stripe= module owns customer payment authorizations and collection
+attempts. Billing still owns subscription invoice generation; signed provider
+settlement alone posts payment. Disabling collection does not remove retained
+account identities or authorize another provider account. Lightsite provisioning
+is excluded. See [[file:stripe.org][the recurring collection contract]].

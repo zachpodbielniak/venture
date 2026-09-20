@@ -149,3 +149,5 @@ screen's ordinary sync-and-import test.
 - [[file:oidc.org][Organization OpenID Connect sign-in]] — explicit local identity linking, verified provider sign-in, revocation and local recovery.
 
 - [[file:ai-organizations.org][Organization AI providers]] — explicit private/platform sources, grants, quotas and usage attribution.
+
+- [[file:stripe-automatic-demonstration.org][Automatic collection demonstration]] — explicit customer authorization, recurring invoice attempts, settlement and recovery.
