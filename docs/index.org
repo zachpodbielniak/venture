@@ -31,6 +31,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:federation.org][Federation and offline sync]] — opt-in sharing, pinned hosts, separate federation URLs, local working copies and conflict-aware reconnects
 - [[file:configuration.org][Configuration]] — every setting, the layering order, and the compiled C configuration
 - [[file:migrations.org][Database migrations]] — backend SQL, startup upgrades, history validation and authoring requirements
+- [[file:evidence/postgres-upgrade-demonstration.org][PostgreSQL released-history upgrade demonstration]] — exact populated artifact preservation checkpoint
 - [[file:data-model.org][Data model]] — the record types and how to add one
 - [[file:api.org][REST API]] — the generated API, filtering, staged writes, and error handling
 - [[file:cli.org][venturectl]] — the command line client
