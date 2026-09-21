@@ -318,15 +318,17 @@ Most CLI mistakes are a field name guessed rather than read.
 
 ## Dependencies
 
-Seven git submodules under `deps/`, all linked statically, all treated as the
+Nine git submodules under `deps/`, all linked statically, all treated as the
 canonical copies: `yaml-glib`, `htmx-glib`, `ai-glib`, `orm-glib`,
-`podomation`, `crispy`, `mail-glib`. Fixing a bug in one and pushing it upstream is
-expected and has happened several times.
+`podomation`, `crispy`, `mail-glib`, `stripe-glib`, `oidc-glib`. Fixing a bug in
+one and pushing it upstream is expected and has happened several times.
 
-Fedora build packages are printed by `make list-deps`, plus `libetpan-devel`
+Fedora build packages are printed by `make list-deps` (one per line, under a
+heading — skip that first line if you pipe it into `dnf`), plus `libetpan-devel`
 and `libgudev-devel` for podomation. That pair matters more than it looks:
 podomation resolves its whole dependency set in one `pkg-config` call, so one
 missing package empties the flags and the build fails on a missing `glib.h`.
+`oidc-glib` fails the same way without `libjose-devel` and `jansson-devel`.
 
 ## Tests
 

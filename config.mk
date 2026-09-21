@@ -538,17 +538,18 @@ FEDORA_DEPS := gcc make nodejs pkgconf-pkg-config \
                glib2-devel libyaml-devel json-glib-devel libsoup3-devel \
                libxml2-devel sqlite-devel libpq-devel readline-devel openssl-devel \
                gobject-introspection-devel poppler-glib-devel \
+               gdk-pixbuf2-devel \
                libarchive-devel
 
 DEBIAN_DEPS := gcc make nodejs pkg-config \
                libglib2.0-dev libyaml-dev libjson-glib-dev libsoup-3.0-dev \
                libxml2-dev libsqlite3-dev libpq-dev libreadline-dev \
                gobject-introspection libgirepository1.0-dev \
-               libpoppler-glib-dev libarchive-dev
+               libpoppler-glib-dev libgdk-pixbuf-2.0-dev libarchive-dev
 
 ARCH_DEPS := gcc make nodejs pkgconf \
              glib2 libyaml json-glib libsoup3 libxml2 sqlite postgresql-libs \
-             readline gobject-introspection poppler-glib libarchive
+             readline gobject-introspection poppler-glib gdk-pixbuf2 libarchive
 
 .PHONY: install-deps
 install-deps:

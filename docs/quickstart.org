@@ -17,7 +17,7 @@ SQLite, with its result asserted (=tests/docs-quickstart.sh=, driven by
 =test-docs=). If a command is on this page, it works; if it stops
 working, the suite goes red before you find out.
 
-The build is the slow part: a fresh tree compiles seven vendored
+The build is the slow part: a fresh tree compiles nine vendored
 libraries as well as VENTURE, which takes several minutes on four cores.
 Everything after it takes under a minute.
 
@@ -27,7 +27,7 @@ On Fedora, =make list-deps= prints the packages the build needs; two more
 are podomation's and easy to miss:
 
 #+begin_src sh
-sudo dnf install -y git gcc make $(make list-deps) libetpan-devel libgudev-devel
+sudo dnf install -y git gcc make $(make list-deps | tail -n +2) libetpan-devel libgudev-devel
 #+end_src
 
 You also need =curl= and =python3=, which the demo seeding uses to talk
@@ -148,11 +148,18 @@ demo for 250 USD, dated today:
 
 #+name: qs-invoice
 #+begin_src sh
+# Every date below is a calendar date in the *business* timezone
+# (=locale.timezone=), which the server reports. Do not substitute the UTC
+# date: west of UTC it is already tomorrow's business date for part of
+# every evening, and a financial event may not be dated ahead of today.
+ZONE="$(curl -sf -H "Authorization: Bearer $VENTURE_TOKEN" \
+  "$VENTURE_SERVER/api/v1/settings" \
+  | python3 -c 'import json, sys; print(next(s["value"] for s in json.load(sys.stdin) if s["name"] == "locale-timezone"))')"
 CUSTOMER="$(venturectl -f json list company limit=1 \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["records"][0]["id"])')"
 INVOICE="$(venturectl -f json create invoice number=QS-1 status=draft \
-  company_id="$CUSTOMER" issued_at="$(date -u +%F)" \
-  due_at="$(date -u -d '+30 days' +%F)" terms='30 days' \
+  company_id="$CUSTOMER" issued_at="$(TZ="$ZONE" date +%F)" \
+  due_at="$(TZ="$ZONE" date -d '+30 days' +%F)" terms='30 days' \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
 venturectl create invoice_line invoice_id="$INVOICE" \
   description='Onboarding workshop' quantity=1 unit_price=250.00 position=1
@@ -177,7 +184,7 @@ and allocated to the invoice, which settles it.
 #+begin_src sh
 BANK="$(venturectl -f json list bank_account limit=1 \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["records"][0]["id"])')"
-TODAY="$(date -u +%F)"
+TODAY="$(TZ="$ZONE" date +%F)"
 python3 - "$TODAY" > "$VENTURE_DEMO_STATE/statement.json" <<'EOF'
 import json, sys
 today = sys.argv[1]

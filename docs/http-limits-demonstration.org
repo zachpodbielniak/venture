@@ -44,13 +44,27 @@ The driver deletes its disposable workspaces on success and retains failure
 logs if any assertion fails. The fixture certificate contains only localhost
 identities and no production credential.
 
-The final DEBUG transport suite passed all 19 cases, including ordinary chunk
+The final DEBUG transport suite passed all 20 cases, including ordinary chunk
 ordering, declared/chunked overflow, TLS rejection, stalled headers/body/handshake,
 idle cleanup, connection saturation with an independent neighbor, generic record
-mutation refusal, aggregate credit release on abort/timeout/dispatch, nested main
-loops, active server destruction, malformed length, invalid/overflowing startup
-limits before workspace binding, and a private GLib main context. A complete
-rerun under a private TMPDIR passed the litter check and removed its directory.
+mutation refusal, aggregate credit release on abort/timeout/dispatch, a route
+that attempts an in-process request while it blocks, active server destruction,
+malformed length, invalid/overflowing startup limits before workspace binding,
+and a private GLib main context.
+
+That in-process case pins a constraint rather than a capability. libsoup 3 runs
+a route synchronously on the server's main context, so a route that blocks
+waiting on this same server gets no answer while it blocks -- iterating the
+context from inside the handler does not get the nested connection served.
+Nothing in VENTURE issues an in-process request from a handler; the case exists
+to prove the attempt costs the limits nothing. Whether the abandoned connection
+is dispatched once the handler returns or dropped when its client gives up is a
+socket race, so the check bounds it instead of pinning it: either way the
+receive budget is released, the connection slot is reclaimed, and the next
+full-size request is served exactly once.
+
+A complete rerun under a private TMPDIR passed the litter check and removed its
+directory.
 
 Related checks passed: configuration 32, hosted tenant 11, federation 34 and
 authentication 96. The hosted HTTP and verified federation HTTPS cases were also
@@ -76,7 +90,7 @@ remain separate responsibilities.
 
 * Combined startup validation
 
-The combined dispatch/transport artifact above passes 19 HTTP-limit cases,
+The combined dispatch/transport artifact above passes 20 HTTP-limit cases,
 15 hosted-tenant cases and both actual-executable maintenance/startup cases.
 The new regression first failed because invalid hosted dispatch settings
 created the database before the listener refused them. Validation now runs

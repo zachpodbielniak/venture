@@ -57,6 +57,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         jansson-devel \
         gobject-introspection-devel \
         poppler-glib-devel \
+        gdk-pixbuf2-devel \
         libetpan-devel \
         libgudev-devel \
         libarchive-devel \
@@ -200,6 +201,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         sqlite-libs \
         libpq \
         poppler-glib \
+        gdk-pixbuf2 \
         readline \
         libetpan \
         libgudev \

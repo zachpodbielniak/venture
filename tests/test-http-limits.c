@@ -6,9 +6,10 @@
 
 /* A real socket must be rejected before either a future plugin route or generic
  * record writer can see its body. Handler-side Content-Length checks miss this. */
-typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; gboolean tls; GMainContext *owner; const gchar *nested_request; } Fixture;
-typedef struct { guint port; gchar *request; gchar *response; gint done; GError *error; guint delay; gboolean tls; } Exchange;
+typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; } Fixture;
+typedef struct { guint port; gchar *request; gchar *response; gint done; GError *error; guint delay; guint timeout; gboolean tls; } Exchange;
 static gchar *exchange(Fixture *f, const gchar *request);
+static gchar *probe(Fixture *f, const gchar *request, guint seconds);
 static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpointer data)
 {
 	Fixture *f = data;
@@ -18,10 +19,10 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	if (f->nested_request)
 	{
 		const gchar *request_text = f->nested_request;
-		g_autofree gchar *response = NULL;
 		f->nested_request = NULL;
-		response = exchange(f, request_text);
-		g_assert_nonnull(strstr(response, " 200 "));
+		/* Recorded, never asserted: see test_nested_dispatch for why a route
+		 * that talks to its own server gets no answer while it blocks here. */
+		f->nested_response = probe(f, request_text, 1);
 	}
 	return htmx_response_new_with_content(body && g_bytes_get_size(body) == 3 && !memcmp(g_bytes_get_data(body, NULL), "abc", 3) ? "yes" : "bad");
 }
@@ -46,7 +47,7 @@ static gpointer exchange_thread(gpointer data)
 	g_autoptr(GTlsDatabase) trust = NULL;
 	gchar buffer[1024];
 	gssize count;
-	g_socket_client_set_timeout(client, 5);
+	g_socket_client_set_timeout(client, x->timeout);
 	if (x->tls)
 	{
 		g_autofree gchar *path = g_canonicalize_filename("tests/fixtures/federation/tls-cert.pem", NULL);
@@ -68,19 +69,34 @@ static gpointer exchange_thread(gpointer data)
 	g_atomic_int_set(&x->done, 1);
 	return NULL;
 }
-static gchar *exchange(Fixture *f, const gchar *request)
+static gchar *run_exchange(Fixture *f, const gchar *request, guint seconds, GError **error)
 {
 	Exchange x;
 	GThread *thread;
-	gint64 deadline = g_get_monotonic_time() + 8 * G_USEC_PER_SEC;
-	x.port = f->port; x.request = (gchar *)request; x.response = NULL; x.done = 0; x.error = NULL; x.delay = 0; x.tls = f->tls;
+	gint64 deadline = g_get_monotonic_time() + (seconds + 3) * G_USEC_PER_SEC;
+	x.port = f->port; x.request = (gchar *)request; x.response = NULL; x.done = 0; x.error = NULL;
+	x.delay = 0; x.timeout = seconds; x.tls = f->tls;
 	thread = g_thread_new("http-limit-client", exchange_thread, &x);
 	while (!g_atomic_int_get(&x.done) && g_get_monotonic_time() < deadline)
 	{ g_main_context_iteration(f->owner, FALSE); g_usleep(1000); }
 	g_assert_true(g_atomic_int_get(&x.done)); g_thread_join(thread);
 	if (g_error_matches(x.error, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED)) g_clear_error(&x.error);
-	g_assert_no_error(x.error);
+	if (x.error) g_propagate_error(error, x.error);
 	return x.response;
+}
+static gchar *exchange(Fixture *f, const gchar *request)
+{
+	g_autoptr(GError) error = NULL;
+	gchar *response = run_exchange(f, request, 5, &error);
+	g_assert_no_error(error);
+	return response;
+}
+/* A bounded attempt that is allowed to go unanswered: the caller decides what
+ * an empty response means. Its own errors are discarded, not asserted. */
+static gchar *probe(Fixture *f, const gchar *request, guint seconds)
+{
+	g_autoptr(GError) error = NULL;
+	return run_exchange(f, request, seconds, &error);
 }
 static void setup(Fixture *f, gconstpointer data)
 {
@@ -119,7 +135,7 @@ static void teardown(Fixture *f, gconstpointer data)
 {
 	(void)data;
 	if (f->server) { venture_web_server_stop(f->server); g_object_unref(f->server); } g_object_unref(f->context);
-	g_object_unref(f->database); g_object_unref(f->config);
+	g_object_unref(f->database); g_object_unref(f->config); g_clear_pointer(&f->nested_response, g_free);
 	venture_test_remove_tree(f->state); g_free(f->state); g_main_context_unref(f->owner);
 }
 static void test_declared(Fixture *f, gconstpointer data)
@@ -278,13 +294,39 @@ static void test_timeout_budget(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	response = exchange(f, request); g_assert_nonnull(strstr(response, " 200 ")); g_assert_cmpuint(f->writes, ==, 1);
 }
+/* libsoup 3 runs a route synchronously on the server's main context, so a route
+ * that blocks waiting on this same server gets no answer while it blocks:
+ * iterating the context from inside the handler does not get the nested
+ * connection served. Nothing in VENTURE issues an in-process request from a
+ * handler for exactly that reason. What the limits must guarantee is that the
+ * attempt costs them nothing -- whether the abandoned connection is dispatched
+ * once the handler returns or dropped when its client gives up, the receive
+ * budget is released and the connection slot is reclaimed, so ordinary traffic
+ * of the same full size is served immediately afterwards. Which of those two
+ * the socket wins is a race, so it is bounded rather than pinned. */
 static void test_nested_dispatch(Fixture *f, gconstpointer data)
 {
 	g_autofree gchar *body = g_strnfill(600000, 'x'), *request = NULL, *response = NULL;
+	guint settled;
 	(void)data;
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	f->nested_request = request;
-	response = exchange(f, request); g_assert_nonnull(strstr(response, " 200 ")); g_assert_cmpuint(f->writes, ==, 2);
+	response = exchange(f, request);
+	/* The outer request is unharmed by what its route attempted, and the
+	 * blocked route got nothing back inside its own bounded second. */
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_nonnull(f->nested_response);
+	g_assert_cmpstr(f->nested_response, ==, "");
+	pump();
+	settled = f->writes;
+	g_assert_cmpuint(settled, >=, 1);
+	g_assert_cmpuint(settled, <=, 2);
+	/* The receive budget and the connection slots survived the abandoned
+	 * attempt: a further full-size request is served, and exactly once. */
+	g_clear_pointer(&response, g_free);
+	response = exchange(f, request);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(f->writes, ==, settled + 1);
 }
 static void test_active_teardown(Fixture *f, gconstpointer data)
 {

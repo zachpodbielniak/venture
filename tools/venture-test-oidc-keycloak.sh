@@ -3,23 +3,30 @@
 # Run the real authorization-code/PKCE fixture in an owned disposable realm.
 set -euo pipefail
 
-if [[ ${1:-} == --help ]]; then
+usage () {
     cat <<'HELP'
 Usage: tools/venture-test-oidc-keycloak.sh
+
+Options: -h, --help; --license
 
 Builds the DEBUG OIDC test, starts a disposable Keycloak container on a random
 loopback port, runs explicit linking and subsequent SSO, then removes only that
 container. Requires podman, curl and the ordinary VENTURE build dependencies.
 VENTURE_TEST_OIDC_IMAGE overrides the default quay.io/keycloak/keycloak:26.7.3.
 All users and credentials belong to the synthetic imported fixture.
+
+Example: tools/venture-test-oidc-keycloak.sh
 HELP
-    exit 0
-fi
+}
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --license) printf '%s\n' 'AGPL-3.0-or-later: https://www.gnu.org/licenses/agpl-3.0.html'; exit 0 ;;
+esac
 if [[ $# != 0 ]]; then
     printf 'Unexpected argument; use --help.\n' >&2
     exit 2
 fi
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+repo=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$repo"
 for command in podman curl make; do
     command -v "$command" >/dev/null || { printf 'Required command: %s\n' "$command" >&2; exit 1; }

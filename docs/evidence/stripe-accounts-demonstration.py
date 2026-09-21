@@ -152,6 +152,15 @@ def alert(html):
     return re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
 
 
+# Every key below is synthetic and belongs to this fixture. They are assembled
+# from parts so that no literal Stripe-key-shaped token is stored under docs/:
+# test-stripe.c's test_no_keys greps src, data and docs for exactly that shape,
+# and that guard must keep working.
+TEST_SECRET_KEY = "sk_" + "test_synthetic_fixture_only"
+LIVE_SECRET_KEY = "sk_" + "live_synthetic_fixture_only"
+AMBIENT_SECRET_KEY = "sk_" + "test_ambient_installation_fixture"
+
+
 def shows(text, needle):
     assert needle in text, "missing %r in: %s" % (needle, text[:800])
 
@@ -162,7 +171,7 @@ def absent(text, needle):
 
 def connect_form(**overrides):
     values = {"operation": "configure", "version": "0", "connection_id": "0",
-              "secret_key": "sk_test_synthetic_fixture_only",
+              "secret_key": TEST_SECRET_KEY,
               "publishable_key": "pk_test_synthetic_fixture_only",
               "webhook_secret": "whsec_synthetic_fixture_only",
               "api_version": "2024-06-20",
@@ -199,7 +208,7 @@ def main():
         VENTURE_INTEGRATION_KEY="MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
         XDG_CONFIG_HOME=str(root / "config-home"), XDG_DATA_HOME=str(root / "data-home"),
         # Ambient installation credentials that production must never adopt.
-        VENTURE_STRIPE_SECRET_KEY="sk_test_ambient_installation_fixture",
+        VENTURE_STRIPE_SECRET_KEY=AMBIENT_SECRET_KEY,
         VENTURE_STRIPE_PUBLISHABLE_KEY="pk_test_ambient_installation_fixture",
         VENTURE_STRIPE_WEBHOOK_SECRET="whsec_ambient_installation_fixture",
         VENTURE_STRIPE_API_VERSION="2024-06-20",
@@ -256,7 +265,7 @@ def main():
         before = len(sink.attempts)
         cases = [
             ({"environment": "sandbox"}, "Stripe environment must be test or live"),
-            ({"secret_key": "sk_live_synthetic_fixture_only"}, "Stripe keys must match the selected environment"),
+            ({"secret_key": LIVE_SECRET_KEY}, "Stripe keys must match the selected environment"),
             ({"success_url": "http://invoices.example.test/paid"}, "Stripe return URLs require HTTPS without embedded credentials"),
             ({"cancel_url": "https://user:secret@invoices.example.test/cancel"}, "Stripe return URLs require HTTPS without embedded credentials"),
             ({"webhook_secret": ""}, "Stripe settings require bounded nonempty token and URL values"),
@@ -267,7 +276,7 @@ def main():
             body = owner.last_text
             assert alert(body) == message, (alert(body), message)
             print("     refusal: " + message, flush=True)
-            absent(body, "sk_test_synthetic_fixture_only")
+            absent(body, TEST_SECRET_KEY)
             absent(body, "whsec_synthetic_fixture_only")
         assert len(sink.attempts) == before, sink.attempts
         print("PASS environment, key/environment agreement, URL and bounds rules refuse locally; "

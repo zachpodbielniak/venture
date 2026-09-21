@@ -168,10 +168,18 @@ screen's ordinary sync-and-import test.
 - [[file:hosted-controls.org][Hosted control inventory and evidence matrix]] — implemented boundaries, evidence limits and launch gates.
 - [[file:hosted-workspaces.org][Hosted workspace authority]] — immutable identity, scoped administration/support and restored-credential quarantine.
 
-
-
 - [[file:sales-performance.org][Sales territories and quotas]] — assignment, scoped owner authority, targets and actual performance.
 
 - [[file:forge-vault-demonstration.org][Forge credential demonstration]] — real server/CLI settings, callback revocation and worker cancellation.
 
 - [[file:evidence/125-attribution-server.org][Authenticated attribution server walkthrough]] — ordinary invoice dates, partial cash, independent withdrawal and exact signed restart replay
+
+- [[file:evidence/125-hosted-isolation-review.org][Hosted isolation component review]] — scope, method and the boundaries each check actually proves
+- [[file:evidence/hosted-workspaces-demonstration.org][Hosted workspace application demonstration]] — built-artifact transcript of workspace authority and scoped support
+- [[file:evidence/125-bankfeed-demo.org][Bank-feed settings demonstration]] — encrypted per-account setup, sandbox configuration and the sync-and-import test
+- [[file:evidence/125-connectors-demo.org][Private connector demonstration]] — explicit IMAP/CalDAV settings, delegation and import privacy
+- [[file:evidence/commerce-accounts-demonstration.org][Commerce account demonstration]] — account boundary, connection-scoped webhooks and reproduction steps
+- [[file:evidence/stripe-accounts-demonstration.org][Stripe account boundary demonstration]] — hosted links, disclosure and ACH-return guards, zero provider contact
+- [[file:evidence/calls-demonstration.org][Call logging and follow-up demonstration]] — logging, replay, lead-only history, report counts and recording-URL redaction
+- [[file:evidence/ocr-demonstration.org][Local OCR and capture review demonstration]] — bounds, provenance, batch isolation and retry/cancel/resume
+- [[file:evidence/backup-retention-demonstration.org][Local backup retention demonstration]] — archive catalog, explicit expiry plans, holds and crash reconciliation
