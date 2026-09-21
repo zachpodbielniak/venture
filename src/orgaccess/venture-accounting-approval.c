@@ -203,49 +203,6 @@ operation_identity(VentureDatabase *database, const VentureActor *actor)
 	return actor != NULL && actor->name != NULL ? g_strdup(actor->name) : NULL;
 }
 
-/* Hash canonical JSON, including nested maps supplied through generic actions.
- * Object member insertion order cannot distinguish two identical commands. */
-static void
-append_canonical(GString *output, JsonNode *node)
-{
-	if (JSON_NODE_HOLDS_OBJECT(node))
-	{
-		JsonObject *object = json_node_get_object(node);
-		g_autoptr(GList) members = json_object_get_members(object);
-		GList *item;
-		members = g_list_sort(members, (GCompareFunc)g_strcmp0);
-		g_string_append_c(output, '{');
-		for (item = members; item != NULL; item = item->next)
-		{
-			g_autoptr(JsonNode) key = json_node_new(JSON_NODE_VALUE);
-			g_autofree gchar *quoted = NULL;
-			json_node_set_string(key, item->data);
-			quoted = venture_json_to_string(key, FALSE);
-			g_string_append(output, quoted);
-			g_string_append_c(output, ':');
-			append_canonical(output, json_object_get_member(object, item->data));
-			g_string_append_c(output, ',');
-		}
-		g_string_append_c(output, '}');
-	}
-	else if (JSON_NODE_HOLDS_ARRAY(node))
-	{
-		JsonArray *array = json_node_get_array(node);
-		guint i;
-		g_string_append_c(output, '[');
-		for (i = 0; i < json_array_get_length(array); i++)
-		{
-			append_canonical(output, json_array_get_element(array, i));
-			g_string_append_c(output, ',');
-		}
-		g_string_append_c(output, ']');
-	}
-	else
-	{
-		g_autofree gchar *text = venture_json_to_string(node, FALSE);
-		g_string_append(output, text);
-	}
-}
 
 static void
 append_operation_record(GString *material, VentureEntity *record)
@@ -259,7 +216,7 @@ append_operation_record(GString *material, VentureEntity *record)
 		json_object_remove_member(object, "updated_at");
 	}
 	g_string_append_printf(material, ":%s:", venture_entity_get_entity_name(record));
-	append_canonical(material, node);
+	venture_json_append_canonical(material, node);
 }
 
 static gboolean

@@ -242,6 +242,12 @@ YAML, web list view, AI tools, audit diffs and CLI subcommands all follow.
 | =SENSITIVE=    | never serialised to an API response, log, export or AI |
 | =SEARCHABLE=   | included in free-text search                           |
 | =TRANSIENT=    | computed; never persisted                              |
+| =RETAIN_REFERENCE= | CRM merge keeps the original subject for this reference |
+
+=RETAIN_REFERENCE= is also =retain_reference: true= in declarative field
+metadata. It survives into =VentureFieldSpec.flags= and is consumed by the
+generic dedupe reference walk. It does not replace save validators for
+immutable evidence. Ordinary references continue to follow the survivor.
 
 * Schema evolution
 

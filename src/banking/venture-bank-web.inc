@@ -97,9 +97,10 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 static void
 venture_bank_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_post(router, "/api/v1/bank_transactions/:id/:action", venture_bank_web_action, self);
-	htmx_router_post(router, "/api/v1/bank_statements/:id/:action", venture_bank_web_action, self);
-	htmx_router_post(router, "/api/v1/bank_accounts/:id/:action", venture_bank_web_action, self);
-	htmx_router_post(router, "/api/v1/bank_rules/:id/:action", venture_bank_web_action, self);
-	htmx_router_post(router, "/banking/:id/action", venture_bank_web_action, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/bank_transactions/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bank_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/bank_statements/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bank_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/bank_accounts/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bank_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/bank_rules/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bank_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/banking/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bank_web_action, self);
 }

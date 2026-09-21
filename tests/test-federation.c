@@ -464,6 +464,61 @@ assert_home(Fixture *fixture, const gchar *expected, gint64 version)
 	g_assert_cmpint(venture_entity_get_version(home), ==, version);
 }
 
+/* Retained platform peers must not turn a hosted timer into operator work.
+ * Real signed HTTPS proves both the refusal and explicit maintenance path. */
+static void
+test_hosted_outbound(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(VentureEntity) replica = pull(fixture);
+	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Operator reviewed edit\"}");
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) op = operation(fixture, "get"), answer = NULL;
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/server-1/records.db", fixture->directory);
+	VentureTenantService *tenant;
+	(void)data;
+	venture_web_server_stop(fixture->server[1]);
+	g_clear_object(&fixture->server[1]);
+	g_clear_object(&fixture->context[1]);
+	g_clear_object(&fixture->database[1]);
+	g_object_set(fixture->config[1], "hosted-enabled", TRUE,
+		"hosted-workspace-id", "c82ee8ea-1842-44bf-91f4-8231be82d5d1",
+		"hosted-origin", "https://hosted.example.test", NULL);
+	fixture->database[1] = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	fixture->context[1] = venture_context_new(fixture->config[1], fixture->database[1]);
+	fixture->server[1] = venture_web_server_new(fixture->context[1], &error);
+	g_assert_no_error(error);
+	tenant = venture_tenant_service_get(fixture->database[1]);
+	answer = call(fixture, op, &error);
+	g_assert_null(answer);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_true(venture_tenant_service_set_state_operator(tenant, "suspended", "Review retained federation", &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureTenantMaintenance) maintenance = venture_tenant_service_enter_maintenance(tenant, "Explicit federation review", &error);
+		gint64 deadline = g_get_monotonic_time() + 7 * G_TIME_SPAN_SECOND;
+		g_assert_no_error(error);
+		/* An unrelated timer dispatched by an operator's nested main loop
+		 * must not inherit that operator's privileged maintenance scope. */
+		g_object_set(fixture->config[1], "federation-sync-interval", (gint64)5, NULL);
+		venture_federation_sync_start(fixture->context[1]);
+		while (g_get_monotonic_time() < deadline) {
+			while (g_main_context_iteration(NULL, FALSE)) {}
+			g_usleep(10000);
+		}
+		venture_federation_sync_stop(fixture->context[1]);
+		assert_home(fixture, "Shared business", venture_entity_get_version(fixture->record));
+		result = venture_federation_replica_sync(fixture->context[1], venture_entity_get_id(edited), NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(result);
+		assert_home(fixture, "Operator reviewed edit", venture_entity_get_version(fixture->record) + 1);
+		g_assert_true(venture_tenant_maintenance_finish(maintenance, &error));
+		g_assert_no_error(error);
+	}
+}
+
 static void
 restart_home(Fixture *fixture)
 {
@@ -1039,6 +1094,7 @@ main(int argc, char **argv)
 	g_test_add("/federation/grant-validation", Fixture, NULL, setup, test_grant_validation, teardown);
 	g_test_add("/federation/updates", Fixture, NULL, setup, test_updates, teardown);
 	g_test_add("/federation/offline-merge", Fixture, NULL, setup, test_offline_merge, teardown);
+	g_test_add("/federation/hosted-outbound", Fixture, NULL, setup, test_hosted_outbound, teardown);
 	g_test_add("/federation/scheduler", Fixture, NULL, setup, test_scheduler, teardown);
 	g_test_add("/federation/conflict", Fixture, NULL, setup, test_conflict, teardown);
 	g_test_add("/federation/response-proof", Fixture, NULL, setup, test_response_proof, teardown);

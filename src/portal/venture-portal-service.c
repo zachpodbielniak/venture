@@ -310,14 +310,17 @@ venture_portal_service_checkout(VenturePortalService *self, VentureStripeService
 	const gchar *token, gint64 invoice_id, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) access = NULL;
+	g_autoptr(VentureStripeService) configured = NULL;
 
 	access = venture_portal_service_lookup(self, token, error);
 	if (access == NULL || !portal_invoice_allowed(self, VENTURE_CUSTOMER_PORTAL_ACCESS(access), invoice_id, error))
 		return NULL;
 	if (stripe == NULL)
 	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Checkout is not configured");
-		return NULL;
+		configured = venture_stripe_service_for_organization(self->database,
+			venture_entity_get_organization_id(access), NULL, error);
+		if (!configured) return NULL;
+		stripe = configured;
 	}
 	return venture_stripe_service_checkout(stripe, invoice_id, actor, error);
 }
@@ -348,7 +351,7 @@ portal_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 void
 venture_portal_actions_register(VentureDatabase *database)
 {
-	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "customer_portal_access",
+	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "customer_portal_access",
 		"name", "revoke", "label", "Revoke", "description", "Revoke portal access without deleting history",
 		"stageable", FALSE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_autoptr(GError) error = NULL;

@@ -1,0 +1,323 @@
+#+title: Hosted workspace authority
+
+* Identity and operator bootstrap
+
+Hosted mode is opt-in. =hosted.enabled: true= requires authenticated access,
+an immutable =hosted.workspace_id= UUID and a canonical =hosted.origin=.
+The public origin is the gateway address, not an internal backend port. HTTPS
+is required except for an explicit numeric loopback development origin.
+
+A database contains exactly one workspace identity and may contain several
+legal organizations. Startup refuses a different UUID or public origin, and
+refuses reopening a bound hosted database with hosted mode disabled. A restore
+retains this identity; moving the backend behind the same gateway is not a
+workspace switch. Session signing derives a workspace-specific key even when
+operators use the same configured signing secret for separate workspaces. HTTPS
+public origins always issue Secure cookies, including with HTTP transport behind
+the TLS gateway.
+
+=venture --migrate= creates and verifies the workspace binding before any
+administrator is required. Bootstrap is an explicit local operator command:
+
+#+begin_src sh
+venture --config /private/venture.yaml --tenant-admin administrator \
+  --tenant-password-file - --tenant-reason 'Initial workspace bootstrap'
+#+end_src
+
+Supply the password on stdin. A named file must be a regular file owned by
+the invoking account with no group or other permission bits (mode 600 or
+400) and exactly one hard link; symlinks, FIFOs and devices are refused, and
+the checks run on the opened descriptor so a swap after the check cannot
+substitute another file. The password is bounded and never accepted in a
+tenant-admin argv argument. Existing usernames fail
+unless =--tenant-recover= is also supplied. Recovery explicitly resets that
+identity and revokes its previous sessions and API tokens. Explicit recovery also
+resets its old MFA enrollment and spends retained recovery codes with audit. A
+mandatory MFA policy requires fresh enrollment before membership review, including
+while the workspace remains suspended. Ordinary provisioning
+retries cannot reset a working administrator. Hosted startup does not create
+the self-hosted global =owner= account.
+
+* Tenant and platform authority
+
+A tenant administrator is an ordinary global EDITOR with a separate active
+tenant ADMIN membership. Its authority does not mint a global OWNER or ADMIN.
+The tenant role governs workspace administration; organization roles continue
+to govern ordinary members' legal-entity access. Personal connector/document
+ownership remains an additional restriction, including for tenant admins.
+
+The last active tenant administrator cannot be deactivated or demoted. An
+operator can recover a named identity locally with a required reason. Membership
+changes revoke browser sessions and API tokens in the same transaction.
+Reactivating membership does not reactivate an old API token.
+
+Interactive tenant administration does not inherit from a scoped API token.
+Service operations re-read durable membership; a cached principal alone is not
+authority. Cross-row administration serializes through the workspace row's
+optimistic version before changing identities, invitations or memberships.
+
+* Invitations
+
+An administrator chooses a tenant role, initial legal organization and
+organization role, and an expiry between one minute and seven days. The
+returned capability is transient: only its SHA-256 hash is persisted. Deliver
+it privately. It is not an email-address identity match.
+
+A recipient either explicitly creates an unused local username and password or
+accepts as its already authenticated interactive identity. Existing usernames
+are refused by new-account acceptance, including soft-deleted usernames.
+Acceptance, membership and single-use consumption commit together. Expired,
+consumed or revoked capabilities fail; changes to the issuing administrator's
+membership or credential generation invalidate pending invitations. Accepting
+as an existing identity requires a fresh login afterward.
+
+* Lifecycle
+
+=active= permits ordinary operations. =read_only= permits reads but refuses
+writes and new external effects. =suspended= refuses ordinary business reads,
+writes and provider starts. Explicit identity and workspace administration
+remain reachable so an authorized administrator can reactivate the workspace.
+Unknown persisted lifecycle values fail closed.
+
+Checks apply below HTTP: repository writers and generic actions honor the
+lifecycle, reports check their declared authority, and integration credential
+resolution refuses new provider work. A NULL request actor is not maintenance
+authority. An operator maintenance scope requires a bounded reason and records
+begin, completion or abandonment. It is synchronous and must not span a main
+loop dispatch or external asynchronous call.
+
+* Classification extension contract
+
+Every concrete record declares a =VentureDataClass=. Built-in registrations
+pair their type constructor with that declaration. Plugins must explicitly
+call =venture_data_class_declare_type()= for each concrete type; a classified
+parent does not lend authority to an undeclared subclass.
+
+- =UNKNOWN=: undeclared; hosted access is refused.
+- =TENANT=: ordinary workspace business data, still organization-scoped.
+- =PERSONAL=: personal data with additional identity ownership checks.
+- =REFERENCE=: non-sensitive reference or build information.
+- =PLATFORM=: operator machinery, not tenant authority.
+- =TENANT_ADMIN=: service-managed workspace administration.
+
+Actions declare the =data-class= GEnum property. Reports use
+=venture_func_report_new_classified()= or explicitly declare their instance
+with =venture_data_class_declare_resource()=. Unclassified resources fail
+closed in hosted mode. Host filesystem fields additionally declare
+=VENTURE_COLUMN_FLAG_HOST_RESOURCE=; hosted writers cannot assign or change
+such a field outside explicit operator maintenance.
+
+Routes register execution and classification together through
+=venture_web_server_add_classified_route()=. A second metadata-only
+=HtmxRouter= uses the same pattern matching and ordering before dispatch. It
+never invokes business handlers. Direct, undeclared plugin router additions
+are refused in hosted mode. Verified Host and Origin checks use the configured
+public authority, never a caller-selected organization or a forwarded header.
+The build-only health route remains available to an internal container probe.
+
+These application checks are separate from platform process exclusivity,
+container operation, encrypted backups and restore drills. Those controls and
+an independent security review remain separate deployment requirements.
+
+* Administration through shared actions
+
+The ordinary record pages expose the same declared actions as the API:
+
+| Record | Action | Required parameters |
+|--------+--------+---------------------|
+| =tenant_workspace= | =set_state= | =state=, =reason= |
+| =tenant_membership= | =set_membership= | =role=, =active=, =reason= |
+| =tenant_membership= | =invite_recovery= | =lifetime_seconds=, =reason= |
+| =tenant_invitation= (ID zero) | =invite= | =organization_id=, =organization_role=, =role=, =lifetime_seconds=, =reason= |
+| =tenant_support_grant= | =revoke= | =reason= |
+
+Use =venturectl describe TYPE= and =venturectl act= to inspect the generated
+schema. These administrative actions require an interactive session; ordinary
+API tokens deliberately do not inherit tenant administration. The CLI's generic
+action transport uses =--session-file= with a private JSON file containing the
+exact server =origin= and one =venture_session= =cookie=. No tenant-admin token
+or global role is minted as a shortcut. The file is descriptor-validated,
+bounded to 8 KiB, owner-only and single-link; symlinks/FIFOs, origin mismatch,
+redirects, token combinations and MCP use are refused. Generic create/update/delete of control records is refused.
+
+The invitation action returns its capability once. The recipient opens
+=/account/invitation= and enters the capability privately, never in a URL.
+Authenticated acceptance uses the current identity; anonymous acceptance
+requires a new username and password. A refused invitation does not identify
+which part of an account or capability lookup failed.
+
+Offline lifecycle commands exit before loading plugins or starting providers:
+
+#+begin_src sh
+venture --config /private/venture.yaml --tenant-status
+venture --config /private/venture.yaml --tenant-state suspended \
+  --tenant-reason 'Operator incident containment'
+venture --config /private/venture.yaml --tenant-state active \
+  --tenant-reason 'Verified incident recovery'
+#+end_src
+
+Status prints one JSON object with =workspace_id=, =origin= and =state=.
+It neither migrates nor initializes a missing workspace. Run =--migrate= first.
+The operator's process lease and stopped-container workflow remain required for
+these offline operations when integrated with the deployment tools.
+
+* Scoped support
+
+Provision a named support identity locally using =--tenant-operator USERNAME=
+in place of =--tenant-admin=, with the same private password input and explicit
+recovery rules. It receives global VIEWER and no tenant membership. An ordinary
+tenant member cannot be converted into a support identity. Authentication by
+itself grants no business access.
+
+Issue a separate bounded grant while the application is stopped:
+
+#+begin_src sh
+umask 077
+venture --config /private/venture.yaml --tenant-support named-operator \
+  --tenant-support-organization 1 --tenant-support-seconds 900 \
+  --tenant-reason 'Requested invoice investigation' > /private/support-capability
+#+end_src
+
+The command prints only the one-time capability. Protect and privately deliver
+that output; do not collect it in operator command logs. Only its hash is stored.
+Normal grants expire within one hour. =--tenant-support-write= explicitly adds
+record repairs; =--tenant-support-private= explicitly includes private records
+whose ownership can be resolved inside the granted organization. Neither grants
+platform records, configuration, arbitrary file paths or code execution.
+
+The named operator signs in and submits the capability at =/account/support=.
+The browser receives an HttpOnly, SameSite=Strict cookie, Secure for HTTPS
+origins. An authenticated HTTP client may instead supply =X-Venture-Support=.
+The capability alone is insufficient: the request must independently authenticate
+its named operator's interactive session. Every admitted request creates a
+=tenant_event= before business access, rechecks expiry/revocation and restricts
+repository access to one legal organization. Nested dispatch starts without
+inherited support authority. Reports, service actions and provider work are not
+support operations. Private-target audit entries retain their target's access
+restriction. An administrator may revoke a grant immediately, even while the
+workspace is suspended.
+
+Suspension also blocks ordinary support. Explicit =--tenant-support-emergency=
+permits scoped direct-record diagnosis/repair during suspension, at most fifteen
+minutes, with a separate durable emergency event and required reason. It does
+not reactivate the workspace, start providers or authorize platform resources.
+Leave the support form empty to remove the browser capability. A cookie never
+extends the durable grant's expiry.
+
+* Hosted restrictions and deployment qualification
+
+Host-execution facilities remain platform-only in hosted mode: plugins and
+module/configuration editing, YAML automation engines, coding/harness runs,
+forge repository paths and credentials, filesystem knowledge-base sync,
+federation and full-installation backup schedules. An organization accounting
+pack remains tenant business data: export/restore does not grant a host path.
+Ordinary uploaded documents and knowledge-base content retain their scoped
+attachment rules.
+
+The existing generic outbound webhook connector permits arbitrary network
+destinations and redirects. It is therefore platform-only in hosted mode;
+provider-specific inbound protocols such as Stripe retain their own signature
+checks and the workspace lifecycle gate. A future hosted outbound connector
+must declare its egress policy rather than inheriting the self-hosted connector.
+Provider credentials and deployment networks still require independent isolation
+and egress controls. Application classification is not a process/network sandbox.
+
+Suspension refuses new work and repository writes. Provider calls already sent
+cannot be recalled or rolled back; callers recheck durable authority before
+releasing a prepared business response. Identity ceremonies remain available for
+sign-in, MFA/recovery and explicit invitation/support exchange. Invitation
+acceptance itself still requires an active writable workspace.
+
+Existing databases receive control-table schema without fabricated memberships.
+Adopting hosted mode requires explicit immutable identity configuration and local
+bootstrap/recovery. Existing self-hosted users are not implicitly linked by email
+or promoted into hosted administration. Hosted OIDC still requires an explicitly
+accepted local identity and explicit linking; a provider claim is not a tenant
+membership grant.
+
+* Restored authority quarantine
+
+An old database snapshot can contain passwords, memberships, tokens or OIDC
+links revoked after its capture. Rotating only the session signing secret is
+insufficient: an old password could otherwise create a new session.
+
+Before activating a restored workspace, the stopped-workspace operator runs:
+
+#+begin_src sh
+venture --config /private/venture.yaml --tenant-revoke-credentials \
+  --tenant-reason 'Restored snapshot requires identity and membership review'
+#+end_src
+
+This single transaction suspends the workspace, disables restored user logins
+and tenant memberships, removes local password verifiers, invalidates sessions,
+expires invitation capabilities, revokes API tokens and support grants, and
+disables retained OIDC identity links. It retains business data, membership
+roles, integration credentials and the immutable workspace identity. It never
+contacts an identity provider. A later membership toggle cannot revive the old
+password hash. The operator also rotates the deployment's session secret as an
+independent defense.
+
+Use explicit named =--tenant-admin= plus =--tenant-recover= and private fresh
+password input to recover the reviewing administrator. This does not activate
+the workspace. Review restored membership and legal-organization roles before
+separately changing lifecycle to =active=. For each reviewed ordinary member, use
+the generic =tenant_membership.invite_recovery= action. It issues a privately
+delivered capability pinned to that retained user ID and membership version.
+The recipient enters that exact username and a fresh password at
+=/account/invitation=. No email lookup, new identity or temporary administrator
+role is involved: references and reviewed roles stay attached to the same user.
+
+Targeted recovery works while suspended and does not activate business access.
+It requires an inactive ordinary member with no retained password verifier,
+resets old MFA enrollment/recovery codes, revokes old credentials, and consumes
+the capability atomically. A role/version change, issuing-admin revocation,
+expiry, wrong username or replay refuses it. Administrators require explicit
+operator recovery instead. Existing
+OIDC links require explicit linking again. The command requires local operator
+maintenance and is unavailable as an HTTP action or tenant-admin privilege.
+
+* Validation evidence
+
+See [[file:evidence/hosted-workspaces-demonstration.org][the built-artifact demonstration]] for the exact binary hash,
+verbatim transcript, reproducible browser driver and tested boundaries. The
+recording shows administrator pages before and after the scripted operations;
+the transcript establishes the separately exercised invitation/recovery forms.
+
+* HTTP admission and backpressure
+
+Hosted dynamic routes share one request budget per application process/workspace;
+request parameters, IP addresses and organization IDs cannot select another
+bucket. The default is 600 admitted requests per minute, a burst of 120, and at
+most eight active nested handlers. Set =hosted.http_requests_per_minute= and
+=hosted.http_burst= to integers from 1 through 1,000,000, and
+=hosted.http_concurrency= from 1 through 256. Invalid values refuse server
+construction. Values are read at startup; changing them requires a restart.
+Self-hosted mode retains its existing per-feature limits.
+
+Admission happens after the hosted authority/lifecycle checks and before the
+route callback. Exhaustion returns HTTP 429, =Cache-Control: no-store= and a
+conservative whole-second =Retry-After=. A client waits and retries using its
+existing idempotency identity; rejection did not invoke the callback. A full
+concurrency budget does not consume an additional rate token. Classified static
+reference routes, including public build health, bypass the budget so a busy
+workspace does not falsely fail health checks. Dynamic control/login requests
+share the budget; offline audited maintenance remains available during overload.
+
+The concurrency bound matters when a synchronous provider drives a nested main
+loop: another request can enter before the first handler returns. Slots release
+on every normal dispatch return, including an error response. It does not add
+worker threads or make blocking operations asynchronous. A restarted process has
+a fresh burst; this is admission control, not a durable billing/job quota. Public
+connection/body limits still require the platform gateway. Storage and queued-job
+budgets, fair heavy-neighbor benchmarks and operational alerting remain separate
+qualification requirements; these HTTP controls do not establish them.
+
+=tests/test-tenant.c= exercises exhausted bursts, refused-host non-consumption,
+health availability, nested-handler rejection and slot release, and invalid
+configuration against a real loopback server. Invalid admission settings are
+refused before a fresh database acquires its durable workspace binding.
+
+The [[file:evidence/http-admission.txt][built-artifact transcript]] and
+[[file:evidence/http-admission-demonstration.py][reusable two-process driver]] demonstrate
+429/backoff, independent neighbor admission and continued health availability.
+They are deliberately narrower than a heavy-neighbor capacity qualification.

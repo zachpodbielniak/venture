@@ -5,6 +5,7 @@
 #include <libsoup/soup.h>
 #include <gio/gio.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -117,8 +118,9 @@ static void
 save(Fixture *f, VentureEntity *record)
 {
 	g_autoptr(GError) error = NULL;
-	g_assert_true(venture_database_save(f->db, record, NULL, &error));
+	gboolean saved = venture_database_save(f->db, record, NULL, &error);
 	g_assert_no_error(error);
+	g_assert_true(saved);
 }
 
 static void
@@ -129,10 +131,9 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(GPtrArray) accounts = NULL;
 	g_autoptr(VentureBankAccount) bank = NULL;
 	(void)data;
-	g_setenv("VENTURE_BANKFEED_TELLER_KEY", "test-token", TRUE);
 	f->config = venture_config_new();
 	g_object_set(f->config, "bankfeed-enabled", TRUE, NULL);
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -160,6 +161,7 @@ teardown(Fixture *f, gconstpointer data)
 {
 	(void)data;
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db);
 	g_clear_object(&f->config);
 }
@@ -190,14 +192,12 @@ test_missing_key(void)
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureBankFeedService) service = NULL;
 
-	g_unsetenv("VENTURE_BANKFEED_TELLER_KEY");
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	service = venture_bankfeed_service_new(db, 1, NULL, &error);
 	g_assert_nonnull(service);
 	g_assert_no_error(error);
-	g_assert_null(venture_bank_feed_registry_lookup(venture_bankfeed_service_get_registry(service), "teller"));
-	g_setenv("VENTURE_BANKFEED_TELLER_KEY", "test-token", TRUE);
+	g_assert_nonnull(venture_bank_feed_registry_lookup(venture_bankfeed_service_get_registry(service), "teller"));
 }
 
 static void
@@ -205,11 +205,9 @@ test_start_without_key(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	(void)data;
-	g_unsetenv("VENTURE_BANKFEED_TELLER_KEY");
 	g_assert_true(venture_context_start_bankfeed(f->context, &error));
 	g_assert_no_error(error);
 	g_assert_nonnull(venture_context_get_bankfeed_service(f->context));
-	g_setenv("VENTURE_BANKFEED_TELLER_KEY", "test-token", TRUE);
 }
 
 static VentureBankConnection *
@@ -221,6 +219,21 @@ link_account(Fixture *f, const gchar *provider, const gchar *provider_account)
 	venture_entity_set_organization_id(VENTURE_ENTITY(connection), f->org);
 	save(f, VENTURE_ENTITY(connection));
 	return g_steal_pointer(&connection);
+}
+
+static void
+configure_teller(Fixture *f, VentureBankFeedService *service, VentureBankConnection *connection)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	json_object_set_string_member(values, "access_token", "test-token");
+	json_object_set_string_member(values, "environment", "sandbox");
+	binding = venture_bankfeed_service_configure(service, venture_entity_get_id(VENTURE_ENTITY(connection)), values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
 }
 
 static void
@@ -294,6 +307,7 @@ test_teller_uses_transport(Fixture *f, gconstpointer data)
 	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
 	g_assert_no_error(error);
 	connection = link_account(f, "teller", "acc_teller");
+	configure_teller(f, service, connection);
 	imported = venture_bankfeed_service_sync(service, venture_entity_get_id(VENTURE_ENTITY(connection)),
 		from, to, NULL, &error);
 	g_assert_no_error(error);
@@ -440,6 +454,7 @@ test_async_health_stays_responsive(Fixture *f, gconstpointer data)
 	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
 	g_assert_no_error(error);
 	connection = link_account(f, "teller", "acc_slow");
+	configure_teller(f, service, connection);
 	started = g_get_monotonic_time();
 	health.started = started;
 	venture_bankfeed_service_sync_async(service, venture_entity_get_id(VENTURE_ENTITY(connection)),
@@ -477,6 +492,7 @@ test_async_cancel(Fixture *f, gconstpointer data)
 	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
 	g_assert_no_error(error);
 	connection = link_account(f, "teller", "acc_cancel");
+	configure_teller(f, service, connection);
 	venture_bankfeed_service_sync_async(service, venture_entity_get_id(VENTURE_ENTITY(connection)),
 		from, to, NULL, cancel, sync_finished, &sync);
 	g_cancellable_cancel(cancel);
@@ -504,6 +520,7 @@ test_actor_lifetime(Fixture *f, gconstpointer data)
 	(void)data;
 	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
 	connection = link_account(f, "teller", "async-lifetime");
+	configure_teller(f, service, connection);
 	actor.kind = VENTURE_ACTOR_KIND_USER;
 	actor.name = "lifetime";
 	actor.prompt = prompt;
@@ -527,6 +544,224 @@ test_actor_lifetime(Fixture *f, gconstpointer data)
 			found = TRUE;
 	}
 	g_assert_true(found);
+}
+
+/* An old installation token must not authorize any organization's feed.
+ * A configured account is selected anew on each run so rotation and
+ * disconnect cannot leave a service holding stale credentials. */
+static void
+test_organization_credentials(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureBankConnection) connection = link_account(f, "teller", "acc_scoped");
+	g_autoptr(VentureIntegrationConnection) binding = NULL, rotated = NULL;
+	g_autoptr(JsonObject) values = json_object_new();
+	FakeTransport *transport = g_object_new(fake_transport_get_type(), NULL);
+	gint64 id = venture_entity_get_id(VENTURE_ENTITY(connection));
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_cmpint(venture_bankfeed_service_sync(service, id, NULL, NULL, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_cmpuint(transport->calls, ==, 0);
+	g_clear_error(&error);
+	json_object_set_string_member(values, "access_token", "organization-token");
+	json_object_set_string_member(values, "environment", "sandbox");
+	binding = venture_bankfeed_service_configure(service, id, values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+	g_assert_cmpint(venture_bankfeed_service_sync(service, id, NULL, NULL, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpstr(transport->authorization, ==, "Basic b3JnYW5pemF0aW9uLXRva2VuOg==");
+	json_object_set_string_member(values, "access_token", "rotated-token");
+	rotated = venture_bankfeed_service_configure(service, id, values,
+		venture_entity_get_id(VENTURE_ENTITY(binding)), venture_entity_get_version(VENTURE_ENTITY(binding)), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(rotated);
+	g_assert_cmpint(venture_bankfeed_service_sync(service, id, NULL, NULL, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpstr(transport->authorization, ==, "Basic cm90YXRlZC10b2tlbjo=");
+	g_assert_true(venture_integration_service_disable(venture_integration_service_get(f->db), f->org,
+		venture_entity_get_id(VENTURE_ENTITY(rotated)), venture_entity_get_version(VENTURE_ENTITY(rotated)), NULL, &error));
+	g_assert_cmpint(venture_bankfeed_service_sync(service, id, NULL, NULL, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_cmpuint(transport->calls, ==, 2);
+	g_object_unref(transport);
+}
+
+/* A historical connection may remain editable after its bank is deleted,
+ * but syncing it must refuse before contacting the provider. */
+static void test_deleted_bank(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureBankConnection) connection = link_account(f, "teller", "acc_deleted");
+	FakeTransport *transport = g_object_new(fake_transport_get_type(), NULL);
+	(void)data;
+	g_assert_no_error(error);
+	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	configure_teller(f, service, connection);
+	/* Simulate a historical row: current removal guards refuse an active bank. */
+	g_assert_true(venture_database_execute(f->db, "UPDATE bank_accounts SET deleted_at = '2026-01-01T00:00:00Z'", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_bankfeed_service_sync(service, venture_entity_get_id(VENTURE_ENTITY(connection)), NULL, NULL, NULL, &error), ==, -1);
+	g_assert_nonnull(error);
+	g_assert_cmpuint(transport->calls, ==, 0);
+	g_object_unref(transport);
+}
+
+/* Equal provider identities in independent businesses are independent rows,
+ * and an existing row cannot be reassigned to rewrite its import history. */
+static void test_account_isolation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankConnection) a = link_account(f, "teller", "acc_collision"), b = NULL;
+	g_autoptr(VentureBankConnection) forged = venture_bank_connection_new();
+	g_autoptr(VentureOrganization) organization = venture_organization_new();
+	g_autoptr(VentureBankAccount) bank = venture_bank_account_new();
+	g_autoptr(VentureAccount) ledger = venture_account_new();
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonObject) values = json_object_new();
+	FakeTransport *transport = g_object_new(fake_transport_get_type(), NULL);
+	gint64 first_org = f->org, first_bank = f->bank_id;
+	gint64 a_id = venture_entity_get_id(VENTURE_ENTITY(a));
+	g_object_set(organization, "name", "Independent feed owner", NULL);
+	save(f, VENTURE_ENTITY(organization));
+	f->org = venture_entity_get_id(VENTURE_ENTITY(organization));
+	g_object_set(ledger, "organization-id", f->org, "code", "B-CASH", "name", "Independent cash",
+		"kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(ledger));
+	g_object_set(bank, "organization-id", f->org, "name", "Independent checking", "currency", "USD",
+		"account-id", venture_entity_get_id(VENTURE_ENTITY(ledger)), NULL);
+	save(f, VENTURE_ENTITY(bank));
+	f->bank_id = venture_entity_get_id(VENTURE_ENTITY(bank));
+	b = link_account(f, "teller", "acc_collision");
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(a)), !=, venture_entity_get_id(VENTURE_ENTITY(b)));
+	g_object_set(forged, "organization-id", f->org, "name", "Forged", "provider", "teller",
+		"provider-account-id", "acc_forged", "bank-account-id", first_bank, NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(forged), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	service = venture_bankfeed_service_new(f->db, first_org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	json_object_set_string_member(values, "environment", "sandbox");
+	json_object_set_string_member(values, "access_token", "organization-A");
+	binding = venture_bankfeed_service_configure(service, venture_entity_get_id(VENTURE_ENTITY(a)), values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+	g_clear_object(&binding);
+	json_object_set_string_member(values, "access_token", "organization-B");
+	binding = venture_bankfeed_service_configure(service, venture_entity_get_id(VENTURE_ENTITY(b)), values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+	g_assert_cmpint(venture_bankfeed_service_sync(service, venture_entity_get_id(VENTURE_ENTITY(a)), NULL, NULL, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpstr(transport->authorization, ==, "Basic b3JnYW5pemF0aW9uLUE6");
+	g_assert_cmpint(venture_bankfeed_service_sync(service, venture_entity_get_id(VENTURE_ENTITY(b)), NULL, NULL, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpstr(transport->authorization, ==, "Basic b3JnYW5pemF0aW9uLUI6");
+	g_clear_object(&a);
+	a = VENTURE_BANK_CONNECTION(venture_database_get(f->db, VENTURE_TYPE_BANK_CONNECTION, a_id, &error));
+	g_assert_no_error(error);
+	g_object_set(a, "provider-account-id", "acc_reassigned", NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(a), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_object_unref(transport);
+	f->org = first_org;
+	f->bank_id = first_bank;
+}
+
+/* Access revoked while HTTP is in flight cannot authorize a later import. */
+static void test_inflight_revocation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankFeedService) service = NULL;
+	g_autoptr(VentureBankConnection) connection = link_account(f, "teller", "acc_revoked");
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autofree gchar *provider = g_strconcat("bankfeed-", venture_entity_get_uuid(VENTURE_ENTITY(connection)), NULL);
+	SlowTransport *transport = g_object_new(slow_transport_get_type(), NULL);
+	SyncDone done = { FALSE, -1, NULL };
+	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	configure_teller(f, service, connection);
+	binding = venture_integration_service_find(venture_integration_service_get(f->db), f->org, provider, &error);
+	g_assert_no_error(error);
+	venture_bankfeed_service_sync_async(service, venture_entity_get_id(VENTURE_ENTITY(connection)), NULL, NULL, NULL, NULL, sync_finished, &done);
+	g_assert_true(venture_integration_service_disable(venture_integration_service_get(f->db), f->org,
+		venture_entity_get_id(VENTURE_ENTITY(binding)), venture_entity_get_version(VENTURE_ENTITY(binding)), NULL, &error));
+	g_assert_no_error(error);
+	while (!done.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_cmpint(done.imported, ==, -1);
+	g_assert_nonnull(done.error);
+	g_clear_error(&done.error);
+	g_assert_cmpuint(count_txns(f), ==, 0);
+	g_object_unref(transport);
+}
+
+/* Upgrades preserve IDs and scope legacy keys without activating an optional
+ * module whose table was absent in a deliberately minimal installation. */
+static void test_identity_upgrade(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankConnection) connection = link_account(f, "teller", "acc_upgrade");
+	g_autoptr(VentureEntity) restored = NULL;
+	g_autofree gchar *key = NULL, *expected = g_strdup_printf("%" G_GINT64_FORMAT ":teller:acc_upgrade", f->org);
+	gint64 id = venture_entity_get_id(VENTURE_ENTITY(connection));
+	g_assert_true(venture_database_execute(f->db, "UPDATE bank_connections SET connection_key = 'teller:acc_upgrade'", NULL, &error));
+	g_assert_true(venture_database_execute(f->db, "DELETE FROM schema_migrations WHERE version >= 550", NULL, &error));
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	restored = venture_database_get(f->db, VENTURE_TYPE_BANK_CONNECTION, id, &error);
+	g_assert_no_error(error);
+	g_object_get(restored, "connection-key", &key, NULL);
+	g_assert_cmpstr(key, ==, expected);
+	g_assert_cmpstr(venture_entity_get_uuid(restored), ==, venture_entity_get_uuid(VENTURE_ENTITY(connection)));
+	g_object_set(f->config, "bankfeed-enabled", FALSE, NULL);
+	g_assert_true(venture_database_execute(f->db, "DROP TABLE bank_connections", NULL, &error));
+	g_assert_true(venture_database_execute(f->db, "DELETE FROM schema_migrations WHERE version >= 550", NULL, &error));
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(OrmResult) result = venture_database_query_raw(f->db, "SELECT COUNT(*) FROM bank_connections", NULL, &error);
+		g_assert_null(result);
+		g_assert_nonnull(error);
+	}
+	g_object_set(f->config, "bankfeed-enabled", TRUE, NULL);
+}
+
+/* Credential parsing refuses ambient file capabilities and never sends a
+ * production token without a client certificate. Errors contain no secrets. */
+static void test_provider_settings_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureBankFeedService) service = venture_bankfeed_service_new(f->db, f->org, NULL, &error);
+	g_autoptr(VentureBankConnection) connection = link_account(f, "teller", "acc_validation");
+	g_autoptr(JsonObject) values = json_object_new();
+	gint64 id = venture_entity_get_id(VENTURE_ENTITY(connection));
+	json_object_set_string_member(values, "access_token", "never-echo-this-secret");
+	g_assert_null(venture_bankfeed_service_configure(service, id, values, 0, 0, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_null(strstr(error->message, "never-echo-this-secret"));
+	g_clear_error(&error);
+	json_object_set_string_member(values, "environment", "sandbox");
+	json_object_set_string_member(values, "certificate_file", "/etc/never-read-this-file");
+	g_assert_null(venture_bankfeed_service_configure(service, id, values, 0, 0, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_null(strstr(error->message, "never-read-this-file"));
+	g_clear_error(&error);
+	json_object_remove_member(values, "certificate_file");
+	json_object_set_int_member(values, "access_token", 42);
+	g_assert_null(venture_bankfeed_service_configure(service, id, values, 0, 0, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+	json_object_set_string_member(values, "access_token", "never-echo-this-secret");
+	json_object_set_string_member(values, "certificate", "not-a-certificate");
+	json_object_set_string_member(values, "private_key", "not-a-private-key");
+	g_assert_null(venture_bankfeed_service_configure(service, id, values, 0, 0, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_null(strstr(error->message, "not-a-private-key"));
 }
 
 typedef struct { gchar *redirect; guint leaked; } RedirectFixture;
@@ -587,5 +822,11 @@ main(int argc, char **argv)
 	g_test_add("/bankfeed/async-cancel", Fixture, NULL, setup, test_async_cancel, teardown);
 	g_test_add("/bankfeed/actor-lifetime", Fixture, NULL, setup, test_actor_lifetime, teardown);
 	g_test_add_func("/bankfeed/redirect", test_transport_redirect);
+	g_test_add("/bankfeed/organization-credentials", Fixture, NULL, setup, test_organization_credentials, teardown);
+	g_test_add("/bankfeed/account-isolation", Fixture, NULL, setup, test_account_isolation, teardown);
+	g_test_add("/bankfeed/inflight-revocation", Fixture, NULL, setup, test_inflight_revocation, teardown);
+	g_test_add("/bankfeed/identity-upgrade", Fixture, NULL, setup, test_identity_upgrade, teardown);
+	g_test_add("/bankfeed/provider-settings-validation", Fixture, NULL, setup, test_provider_settings_validation, teardown);
+	g_test_add("/bankfeed/deleted-bank", Fixture, NULL, setup, test_deleted_bank, teardown);
 	return g_test_run();
 }

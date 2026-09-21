@@ -921,6 +921,10 @@ venture_automation_new(
 
 	self = g_object_new(VENTURE_TYPE_AUTOMATION, NULL);
 	self->context = g_object_ref(context);
+	venture_data_class_declare_resource(G_OBJECT(self), VENTURE_DATA_CLASS_PLATFORM);
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(self), TRUE, error)) return NULL;
+
 
 	if (!venture_automation_build_engine(self, error))
 		return NULL;
@@ -1177,6 +1181,9 @@ venture_automation_emit_entity_event(
 	 * would make every automation that writes trigger itself. */
 	if (VENTURE_IS_AUDIT_ENTRY(entity))
 		return;
+	if (venture_access_policy_record_is_personal(venture_database_get_access_policy(
+		venture_context_get_database(self->context)), entity)) return;
+
 
 	/*
 	 * An automation's own writes do not trigger automations. Without

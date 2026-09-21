@@ -292,3 +292,19 @@ additive metadata reconciliation.
 Conversion refuses recursive conversion calls from its callbacks, and archived leads cannot be converted. Interaction history may reference a deal alone, including activity completion history.
 
 A reply linked to both a lead and an enrolled contact updates lead activity history and exits matching sequences atomically. Neither service repeats the other service's already-authorized write.
+
+* Conversion ownership
+
+A new deal created by conversion inherits the reloaded lead's assigned owner
+alongside source and campaign. The original lead and its activity/history
+remain linked, and a repeated stale conversion cannot create another customer
+or deal. Ownership is a responsibility label, not an access grant. Existing
+company/contact links retain their existing values. The executable
+[[file:crm-acceptance.org][capture-to-collection walkthrough]] checks these handoffs.
+
+* Territory ownership
+
+The optional [[file:sales-performance.org][sales performance module]] attaches a territory and
+team to existing routing rules and retains assignment history. It reuses the
+same ordering and persisted round-robin cursor. Qualified lead conversion
+carries the resolved representative, team and territory into the deal.

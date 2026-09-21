@@ -29,7 +29,7 @@ Both backends must have exactly the same filenames and versions, even when the S
 
 The scripts are embedded in the server archive and executable by =tools/venture-migrations.sh=. The installed server and container need no writable migration directory, working-directory convention or extra SQL installation step. Adding, editing or removing a script regenerates the embedded catalog and relinks the server; the standalone CLI does not acquire server dependencies. All files remain in the catalog permanently so history can be validated on every startup.
 
-The migration runs after additive schema reconciliation and before seeds. A backfill can therefore refer to a new field added in the same release. Do not depend on seeded account IDs or call application save validators from SQL. Modules may be disabled and their tables absent: write and test an explicit compatible schema path for that case; do not silently skip a version and mark it applied. SQL renames or type changes which conflict with current metadata require staged releases (add the new representation, migrate data, then retire the old representation); dropping a column still declared in the field table causes it to be recreated on the next reconciliation. Existing C schema repairs remain in place for older installations.
+The migration runs after additive schema reconciliation and before seeds. A backfill can therefore refer to a new field added in the same release. Do not depend on seeded account IDs or call application save validators from SQL. Modules may be disabled and their tables absent: write and test an explicit compatible schema path for that case. An optional data-only patch may begin with exactly =-- requires-table: table_name= followed by a newline. The identifier must be unquoted lowercase ASCII (letters, digits and underscores, at most 63 bytes, not starting with a digit). The runner checks the current schema through backend introspection: absent means the explicitly declared empty-data case succeeds and records the checksummed version; present executes the entire SQL batch transactionally. Malformed directives and SQL failures remain errors. Use this only when enabling the module later creates an empty table with correct metadata defaults and needs no historical transformation. Do not hide a required schema or financial migration behind this guard. SQL renames or type changes which conflict with current metadata require staged releases (add the new representation, migrate data, then retire the old representation); dropping a column still declared in the field table causes it to be recreated on the next reconciliation. Existing C schema repairs remain in place for older installations.
 
 For an additive feature with no data transformation, its SQL should express the intended database invariant or verify the required schema on the supported installation states, rather than inventing historical values. Do not fabricate financial events from a present-day invoice status. The initial =000001_legacy_baseline.sql= adopts existing installations and creates the legacy version marker for new ones; it preserves the marker and existing data and does not reconstruct past invoice/payment history. =schema_migrations= is the authoritative applied-script history; =venture_schema_version= remains the legacy compatibility marker.
 
@@ -52,3 +52,76 @@ The PostgreSQL case is opt-in and uses its own uniquely named schema, removing i
 #+begin_src sh
 VENTURE_TEST_MIGRATION_POSTGRES_URI=postgres://user@127.0.0.1:5432/test_db make DEBUG=1 test-one T=test-migrations
 #+end_src
+
+The optional-module regressions cover absent/present/malformed guards on SQLite
+and PostgreSQL, preserve errors from present-table SQL, and enable Stripe after
+its absent-table migration on SQLite without rewriting recorded history.
+
+* Released-to-candidate artifact drill
+
+=tools/venture-upgrade-drill.py --baseline-binary /path/to/released/venture
+--candidate-binary /path/to/candidate/venture= starts isolated loopback-only
+servers and uses their real API to seed a customer, ledger accounts, a balanced
+posted journal, an issued invoice with tax and a partial receipt, and a
+forge/repository link. It stops the released binary, copies
+its complete private fixture, starts the candidate and compares every original
+column of retained business rows plus the exact migration-history prefix.
+Provider environment overrides are excluded. Successful and failed fixtures and
+server logs are retained under a fresh private temporary directory for inspection.
+The output records both binary digests. SQLite remains the default. This is
+an isolated migration check with authentication disabled, not a hosted
+capacity test, authenticated-workflow proof or complete replacement qualification.
+All 12 selected tables retain every original column exactly. The full income,
+balance-sheet and account-balance report maps must agree before and after;
+independent USD-cent controls require cash 4000, AR 6500, tax liability 500,
+revenue 10000 and a separate balanced 12345 opening journal. These assertions
+run against the actual released and candidate servers, not hand-written SQL
+substitutes for their business workflows.
+
+Build both artifacts at recorded revisions using their pinned dependencies. The
+baseline must be a released migration history (for this epic, =848a93d=), not an
+unreleased lane missing earlier-numbered child migrations. Run the final combined
+artifact again even if a preceding integration revision passed.
+
+The collection integration's [[file:evidence/125-upgrade.txt][recorded upgrade checkpoint]]
+retains exact binary hashes and comparison counts. It is not final-head evidence.
+
+
+** Disposable PostgreSQL mode
+
+Select an environment variable explicitly; the driver never implicitly uses
+an ambient production/test URI:
+
+#+begin_src sh
+python3 tools/venture-upgrade-drill.py --baseline-binary /path/to/released/venture \
+  --candidate-binary /path/to/candidate/venture \
+  --postgres-uri-env VENTURE_TEST_UPGRADE_URI
+#+end_src
+
+Set that named variable privately to a URI for a disposable PostgreSQL service
+whose role has CREATEDB. The URI must explicitly name host, user and control
+database, without query options. =psql= must be installed. Credentials go via
+the process environment and private application config, never PostgreSQL
+command arguments or demonstration output. Personal PG service/password-file
+settings, provider variables, proxies and redirects are not used.
+
+Each invocation creates a fresh =venture_upgrade_UUID= database from
+=template0=. After stopping the released server, it clones only that owned
+database into a second fresh database using PostgreSQL's TEMPLATE operation.
+It never clears a schema, migrates the supplied control database or connects
+the application to another database. Historical-column and migration-history
+queries run only in its owned fixtures. SQL/connection waits are bounded.
+
+Both owned databases are dropped after successful comparison. On failure,
+private fixture files and the owned database names are retained for diagnosis;
+remove only those exact recorded databases after inspecting them. Never reset
+=public= or drop a shared database to rerun the check. Local SQLite fixture
+files remain private evidence on both success and failure.
+
+Run =make DEBUG=1 test-one T=test-upgrade-drill= for five isolated
+ownership/credential regressions without a database connection. Its GTest
+wrapper runs the Python checks in the ordinary =make DEBUG=1 test= suite;
+=python3 tests/test-upgrade-drill.py= remains a direct diagnostic entry point. The
+[[file:evidence/postgres-upgrade-demonstration.org][PostgreSQL artifact transcript]] records the actual populated 46→62 migration
+checkpoint. It does not qualify a later combined head or unreleased lane
+histories that are not a prefix of that head.

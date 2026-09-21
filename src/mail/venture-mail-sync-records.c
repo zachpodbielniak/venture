@@ -3,11 +3,10 @@
 #define STR(n, l, h) VENTURE_FIELD(n, l, h, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 #define INT(n, l, h) VENTURE_FIELD(n, l, h, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 #define DATE(n, l) VENTURE_FIELD(n, l, NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
-/* An account row never holds a password: secret-env names the variable
- * whose value is read at sync time, the same shape as the Stripe module.
- * The health fields come first because the generated list shows the first
- * seven columns, and a failing mailbox is what the list is looked at for. */
+/* Account identity is public metadata; an explicit encrypted binding supplies
+ * the credential. Historical environment labels are never resolved. */
 static const VentureFieldDecl account_fields[] = {
+	VENTURE_FIELD_REF("private-owner-id", "Private owner", "User whose private connector this is; zero explicitly shares business data with the organization", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_NAME("address", "Address", "The mailbox this account receives as"),
 	VENTURE_FIELD_NAME("imap-host", "IMAP host", NULL),
 	VENTURE_FIELD("active", "Active", "Included in the sweep; switched off after repeated refused logins", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
@@ -18,7 +17,7 @@ static const VentureFieldDecl account_fields[] = {
 	INT("imap-port", "IMAP port", "993 for TLS, 143 otherwise"),
 	STR("imap-tls", "Security", "tls or starttls"),
 	STR("username", "Username", NULL),
-	STR("secret-env", "Secret variable", "NAME of a VENTURE_IMAP_* environment variable holding the password or app token; never the value"),
+	STR("secret-env", "Legacy secret variable", "Unused historical metadata; configure an explicit encrypted connector binding"),
 	STR("folders", "Folders", "Comma-separated folders to watch; INBOX when empty. The capture folder is always included"),
 	STR("capture-address", "Capture address", "Mail to exactly this address, or to it with a +tag, becomes a capture inbox item; must differ from the account address"),
 	STR("capture-folder", "Capture folder", "Every message in this folder becomes a capture inbox item"),
@@ -32,7 +31,7 @@ VENTURE_DEFINE_ENTITY(VentureMailAccount, venture_mail_account, account_fields)
 /* One row per fetched message. The UID key is what makes a rerun a no-op
  * even when the cursor write was lost. */
 static const VentureFieldDecl inbound_fields[] = {
-	VENTURE_FIELD_REF("account-id", "Account", NULL, "mail_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("account-id", "Account", NULL, "mail_account", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	STR("folder", "Folder", NULL),
 	INT("uid", "UID", NULL),
 	INT("uid-validity", "UIDVALIDITY", "The folder's UIDVALIDITY when the UID was read; UIDs from another value are different messages"),

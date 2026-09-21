@@ -202,7 +202,7 @@ void
 venture_year_end_pack_register_reports(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		VENTURE_YEAR_END_PACK_REPORT, "Year-end pack",
 		"Trial balance, P&L, balance sheet, cash flow, AR and AP aging, general "
 		"ledger, sales-tax and 1099 summaries and the fixed-asset register for a "

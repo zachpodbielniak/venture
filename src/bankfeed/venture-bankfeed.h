@@ -68,6 +68,8 @@ G_DECLARE_INTERFACE(VentureBankFeed, venture_bank_feed, VENTURE, BANK_FEED, GObj
  * @get_name: registry key
  * @fetch: provider transactions as JSON objects with id, date, amount, description
  * @fetch_async: nonblocking fetch, returning a GTask with owned JSON objects
+ * @prepare: optional factory resolving write-only settings into an immutable client
+ * @dup_schema: optional write-only JSON settings schema, owned by the caller
  */
 struct _VentureBankFeedInterface
 {
@@ -78,7 +80,31 @@ struct _VentureBankFeedInterface
 	void (*fetch_async)(VentureBankFeed *self, const gchar *account_id, GDateTime *from,
 		GDateTime *to, const gchar *currency, GCancellable *cancellable,
 		GAsyncReadyCallback callback, gpointer user_data);
+	VentureBankFeed *(*prepare)(VentureBankFeed *self, JsonObject *settings, GError **error);
+	JsonNode *(*dup_schema)(VentureBankFeed *self);
+	gpointer padding[8];
 };
+/**
+ * venture_bank_feed_prepare:
+ * @self: provider factory or explicitly injected concrete feed
+ * @settings: write-only settings owned by the caller
+ * @error: (out) (optional): redacted configuration refusal
+ *
+ * Creates a client from one configuration snapshot without network I/O.
+ * Factories must copy retained settings. A feed without a prepare hook is
+ * an explicitly injected trusted client and is returned with a new reference.
+ *
+ * Returns: (transfer full) (nullable): immutable client, or NULL on refusal
+ */
+VentureBankFeed *venture_bank_feed_prepare(VentureBankFeed *self, JsonObject *settings, GError **error);
+/**
+ * venture_bank_feed_dup_schema:
+ * @self: provider factory
+ *
+ * Returns: (transfer full) (nullable): write-only settings schema; NULL for a feed without a settings factory
+ */
+JsonNode *venture_bank_feed_dup_schema(VentureBankFeed *self);
+
 /**
  * venture_bank_feed_get_name:
  * @self: the service or registry instance
@@ -170,7 +196,7 @@ GPtrArray *venture_bank_feed_registry_list(VentureBankFeedRegistry *self);
 G_DECLARE_FINAL_TYPE(VentureTellerFeed, venture_teller_feed, VENTURE, TELLER_FEED, GObject)
 /**
  * venture_teller_feed_new:
- * @access_token: provider credential, copied by the constructor
+ * @access_token: (nullable): provider credential, copied by the constructor
  * @transport: (nullable): injected transport; NULL selects HTTP
  *
  * Returns: (transfer full): owned result
@@ -190,6 +216,46 @@ G_DECLARE_FINAL_TYPE(VentureBankFeedService, venture_bankfeed_service, VENTURE, 
  */
 VentureBankFeedService *venture_bankfeed_service_new(VentureDatabase *database, gint64 organization_id,
 	VentureBankFeedTransport *transport, GError **error);
+/**
+ * venture_bankfeed_install_validators:
+ * @database: repository receiving the built-in bank-connection invariants
+ *
+ * Installed once by database construction. Account identity and organization
+ * remain immutable after creation, and the destination bank belongs to that
+ * same organization. Every writer uses these checks.
+ */
+void venture_bankfeed_install_validators(VentureDatabase *database);
+
+/**
+ * venture_bankfeed_service_configure:
+ * @self: provider service
+ * @connection_id: saved bank connection selecting organization and remote account
+ * @settings: write-only provider settings, copied into encrypted storage
+ * @expected_binding: zero for first configuration, otherwise displayed binding ID
+ * @expected_version: zero for first configuration, otherwise displayed version
+ * @actor: (nullable): audit actor; authority comes from the repository scope
+ * @error: (out) (optional): redacted refusal
+ *
+ * Validates settings through the registered provider and binds them to this
+ * connection's organization and immutable account identity. No fetch occurs.
+ * Rotation takes effect at the next sync; no installation fallback exists.
+ *
+ * Returns: (transfer full) (nullable): safe integration metadata
+ */
+VentureIntegrationConnection *venture_bankfeed_service_configure(VentureBankFeedService *self,
+	gint64 connection_id, JsonObject *settings, gint64 expected_binding,
+	gint64 expected_version, const VentureActor *actor, GError **error);
+/**
+ * venture_bankfeed_service_settings_schema:
+ * @self: provider service
+ * @provider: registered provider name
+ * @error: (out) (optional): unsupported provider
+ *
+ * Returns: (transfer full) (nullable): write-only provider schema with no saved secrets
+ */
+JsonNode *venture_bankfeed_service_settings_schema(VentureBankFeedService *self,
+	const gchar *provider, GError **error);
+
 /**
  * venture_bankfeed_service_get_registry:
  * @self: the service or registry instance

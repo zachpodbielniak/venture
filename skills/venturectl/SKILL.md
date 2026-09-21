@@ -24,6 +24,40 @@ venturectl health
 Mint a token from the UI (Settings → API tokens) or
 `POST /api/v1/tokens` as an admin. It is shown once.
 
+For an operation requiring an interactive session (including hosted workspace
+administration), `--session-file /private/session.json` accepts an owner-only,
+single-link regular JSON file, at most 8 KiB, containing:
+
+```json
+{"origin":"https://workspace.example.test","cookie":"venture_session=SIGNED_SESSION_VALUE"}
+```
+
+Obtain the session through the normal sign-in and MFA ceremony; this option
+neither logs in nor elevates a token. Keep the file private (`chmod 600`), do not
+put its contents in argv or logs, and unset `VENTURE_TOKEN`. The origin must
+exactly match `--server`/`VENTURE_SERVER` (HTTPS, or numeric loopback HTTP for a
+local fixture). Symlinks, hard links, FIFOs, non-private files, origin mismatch,
+token combinations and MCP use are refused. Session-authenticated requests never
+follow redirects, including redirects to another path on the same origin.
+The ordinary generic `act`, `list` and `get` commands keep their existing forms.
+
+Hosted administration uses declared actions: `tenant_workspace.set_state`,
+`tenant_membership.set_membership`, `tenant_invitation.invite`,
+`tenant_membership.invite_recovery` and `tenant_support_grant.revoke`. Inspect
+parameters with `describe`; do not create or update these control rows directly.
+`invite_recovery` is a privately delivered one-time recovery for an explicitly
+reviewed, quarantined ordinary member. It preserves the user ID and member role;
+it does not activate a suspended workspace or grant platform authority.
+
+Operator maintenance is the local server binary's interface, not a `venturectl`
+subcommand: `venture --tenant-admin USER --tenant-password-file FILE|-` requires
+`--tenant-reason`, and existing identities additionally require `--tenant-recover`.
+Use stopped-workspace `--tenant-revoke-credentials --tenant-reason REASON` before
+restored authority is activated; it suspends and quarantines all restored login
+capabilities. `--tenant-status` and explicit `--tenant-state` expose the operator
+lifecycle contract. See `docs/hosted-workspaces.org` for the pinned configuration,
+recovery, scoped support and audit requirements. Never pass passwords in argv.
+
 If `health` fails, stop and fix that. Every other command will fail the same
 way and less clearly.
 
@@ -63,8 +97,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `update TYPE ID field=value ...` | change a record |
 | `delete TYPE ID` | soft delete — the row stays, stamped |
 | `restore TYPE ID` | clear that stamp |
-| `forge set-token ID` | set a forge's access token, read from stdin |
-| `forge set-secret ID` | set or generate its webhook secret |
+| `forge settings ID` | encrypted configure/test/disconnect/import operation, JSON from stdin |
+| `forge set-token ID` / `forge set-secret ID` | retired; refuse with encrypted-settings guidance |
 | `forge verify ID` | record which account the token belongs to |
 | `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width |
 | `links TYPE ID` | every link touching a record, read from it |
@@ -125,7 +159,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `health` | is the server up |
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
-Flags: `--server/-s`, `--token/-t`, `--format/-f table|json|yaml|csv`,
+Flags: `--server/-s`, `--token/-t`, `--session-file FILE`, `--format/-f table|json|yaml|csv`,
 `--quiet/-q`.
 
 `mcp` is the one command that refuses `--token`: it is spawned from an agent's
@@ -243,29 +277,26 @@ is no generic "write this sensitive field" command: a password must be
 hashed, a forge token must not be, and one command for both would be a way
 to get one of them wrong.
 
-For a forge, use the `forge` subcommand — the one part of `venturectl` that
-is not generic over types, and the exception earns itself:
+For a forge, use the encrypted settings adapter. The request is JSON on stdin,
+never secrets in argv:
 
 ```bash
-printf '%s' "$FORGE_TOKEN" | venturectl forge set-token 1
-venturectl forge set-token 1 < token.txt
-
-printf '' | venturectl forge set-secret 1    # generates one, returns it once
-printf '%s' "$SECRET" | venturectl forge set-secret 1
-
-venturectl forge verify 1                    # records the bot account
+venturectl forge settings 1 < protected-settings.json
 ```
 
-**The value comes from standard input, and there is no flag to put it in
-argv.** A command line is visible to every process on the host through
-`/proc` and lands in shell history; a secret that has been in either has to
-be rotated. An empty token is refused rather than treated as "leave it
-alone" — a script that sent an empty string meant to send something and its
-variable was unset.
+Create input: `{"operation":"configure","connection_id":0,"version":0,"settings":{"token":"SUPPLY_PRIVATELY","webhook_secret":"SUPPLY_32_OR_MORE_RANDOM_BYTES_PRIVATELY"}}`.
+The response contains only connection metadata. Rotation repeats `configure` with
+both credentials and the exact current `connection_id` and `version`. Operations
+`test` and `disconnect` take that same identity without settings. `import` with
+both identity numbers zero explicitly verifies, encrypts and transactionally clears
+legacy plaintext; old backups may still contain it. Failed import changes nothing.
 
-`forge verify` is not optional if you want webhooks: it records which
-account the token belongs to, and that is the loop guard. Without it VENTURE
-cannot tell an issue it filed itself from one somebody else opened.
+The forge must name an explicit organization. Account/origin changes require
+disconnect first. Settings remain platform-owner/admin capability; organization
+membership does not authorize arbitrary forge origins or host execution.
+`forge set-token` and `forge set-secret` are retired and refuse. `forge verify`
+uses the encrypted binding; configure already verifies its account. See
+[forge documentation](../../docs/forge.org) for worker revocation and clone limits.
 
 A user's password still has no CLI path and is set on the account page.
 Setting a hash directly is what hashing exists to prevent.
@@ -339,20 +370,15 @@ are owner-only. A 403 here means the token's role, not a bug.
 
 ```bash
 # 1. The server, and where git lives — often a different host
-venturectl create forge name="Home" kind=forgejo \
+venturectl create forge name="Home" kind=forgejo organization_id=1 \
     base_url=https://git.example.com \
     clone_base_url=git@git-ssh.example.com \
     active=true
 
-# 2. The credentials, from a script
+# 2. Both credentials in an encrypted organization binding (JSON stdin)
 FORGE=$(venturectl -f json list forge name__eq=Home | jq -r '.records[0].id')
-printf '%s' "$FORGE_TOKEN" | venturectl forge set-token "$FORGE"
-venturectl forge verify "$FORGE"
-
-# Generate a webhook secret and keep it — it is shown once, and you paste
-# it into the forge's webhook settings.
-SECRET=$(printf '' | venturectl -f json forge set-secret "$FORGE" \
-         | jq -r '.secret')
+venturectl forge settings "$FORGE" < protected-forge-settings.json
+# Keep the separately generated webhook secret privately and install it on the forge.
 
 # 3. A repository
 venturectl create forge_repo name=owner/project forge_id="$FORGE" \
@@ -439,6 +465,10 @@ venturectl federation '{"action":"sync","id":1}'
 venturectl federation '{"action":"resolve","id":1,"version":5,"field":"description","keep_local":false}'
 ```
 
+Federation is platform-only in hosted mode: tenant CLI/API calls are refused,
+and retained replicas never reconnect automatically. Explicit local operator
+maintenance may invoke the service; it does not lend authority to timers.
+
 Collection pulls return at most ten results, `next_offset` and `more`; continue pages while `more` is true and inspect per-record errors. Pull imports/merges without pushing; sync pushes conflict-free changes with an expected remote version. Edits require the local replica version. A conflict blocks that record until resolved; choosing remote can accept a removed/revoked field. Never update `federation_replica` through generic CRUD: its merge state belongs to the service. Copies remain usable during outages but are not authoritative local accounting rows. New source objects and binary attachments are not created/copied offline. See `docs/federation.org` for key exchange, grants, scheduling and revocation.
 
 ## Fixed assets and recurring journals
@@ -501,7 +531,11 @@ module's ledger-driven forecast, a different report. The P&L card's
 `links` open the four with the card's period and scope.
 Read their notes: MRR is contracted revenue, not cash or recognized income;
 churn rates are in basis points. Proration adjustments are settled on the
-next renewal. Billing sends no mail and integrates no card provider.
+next renewal. The optional Stripe adapter collects billing invoices only after
+verified hosted reusable customer authorization; provider-confirmed cash and
+failures use the existing billing recovery lifecycle. A manual payment-method
+record does not authorize a Stripe charge. Billing notices remain delivery
+intents for the mail adapter.
 ## Transactional mail
 
 `mail send to=... subject=... body=...` queues mail; `--html FILE` supplies
@@ -512,14 +546,15 @@ submits due rows. `mail list state=uncertain` lists uncertain acceptance;
 active `mail_account` in the organization that is not backing off; the
 report's `skipped` counts accounts in backoff or mid-sync elsewhere and
 `deferred: true` means a message or time budget ran out, so run it again to
-continue. `mail sync account_id=N` syncs one account now, ignoring its backoff
-(owner only). Pass `organization_id=N` to scope another organization. Never
+continue. `mail sync account_id=N` syncs one readable account now, ignoring its backoff. Pass `organization_id=N` to scope another organization. Never
 automatically retry uncertain rows. Actions reject `--stage`; propose an
 enqueue with the generic `--stage create mail_message` command when approval
 is required.
 
-`mail_account` is owner-only: it names the IMAP host and a `VENTURE_IMAP_*`
-environment variable holding the password, never the password itself. Its
+`mail_account` is assigned by organization administrators and uses an explicit
+encrypted binding in connector settings; `secret_env` is unused historical
+metadata. A positive `private_owner_id` imports private messages and attachments
+without CRM capture. Zero is explicitly shared business mail. Its
 `consecutive_failures`, `next_attempt_at`, `last_error`, `cursors` and
 `sync_lease_until` are maintained by the sync; do not write them. Five failed
 syncs ending in a refused login set `active=false`: fix the credentials, then
@@ -539,8 +574,10 @@ sweep over every active `calendar_account`: dated calls and meetings go up as
 VEVENTs, events made on the calendar come back as planned meetings, removals
 cancel rather than delete, and a change on both sides is settled by
 last-modified with the loser noted on the activity timeline. It refuses
-`--stage`. `calendar_account` is owner-only and names a `VENTURE_CALDAV_*`
-variable, never a password; generic writes to `calendar_event` are refused.
+`--stage`. `calendar_account` uses an explicit encrypted connector binding;
+`secret_env` is unused. A positive `private_owner_id` selects private, read-only
+imports without shared activity mirroring or export. Ownership is immutable.
+Generic writes to `calendar_event` are refused.
 `booking_page` (slug, owner, duration, buffer, IANA timezone, availability
 JSON of weekday to `HH:MM-HH:MM` windows) is ordinary editor data and serves
 the public `/book/<slug>` page, which books a contact and a meeting.
@@ -560,6 +597,8 @@ Use `describe lead` before capture or qualification. `lead convert ID
 [deal=yes|no] [company_id=ID] [contact_id=ID]` requires a qualified lead and
 creates or links CRM records atomically. `--stage` proposes conversion for
 approval. Never set `status=converted` or conversion ids with generic updates.
+A new deal retains the lead's assigned owner, source and campaign. Existing
+linked company/contact records retain their values; ownership grants no role.
 `lead reassign ID [owner=NAME]` assigns explicitly or reruns the matching
 rules; staged reassignment is refused. Recycle with `update lead ID
 status=recycled unqualified_reason=... recycle_until=YYYY-MM-DD`.
@@ -799,3 +838,330 @@ answers 301 to the survivor. Refused across organizations, onto itself, or
 when the loser has issued invoices/bills in a currency the survivor's issued
 documents do not use. `dedupe dismiss ID` closes a proposal. Arguments are
 `key=value`; `--stage dedupe merge` proposes the merge for approval.
+
+## Project approval and profitability
+
+Read `describe project_time` and `describe client_project` before entering work.
+Use `act project_time ID approve` to freeze the billable amount and actual
+labour cost from that project's rate, then `act client_project ID bill
+date=YYYY-MM-DD` to invoice approved unbilled time and billable costs. These
+are generic actions, available for staging under the ordinary policy. Finance
+or organization administration is required. Generic edits cannot approve
+time, rewrite frozen evidence or remove billing allocations.
+
+`report project_margin --from YYYY-MM-DD --to YYYY-MM-DD` distinguishes
+budget, billed allocations, approved unbilled work and recorded actual cost;
+unknown historical cost suppresses total cost/profit rather than assuming zero.
+This is management profitability, not cash received or net statutory revenue
+after credits/refunds. Check the report's source IDs and period basis.
+
+## Structured calls
+
+Use the generated `log_call` action on `company`, `contact`, `lead`, or a
+planned call `activity`; inspect `describe TYPE` for the typed parameters.
+Actual occurrence, direction, duration and structured outcome belong to the
+historical call. Free-text outcome remains narrative. An optional followup
+is created in the same transaction. A verified CRM relation is required.
+External source/ID pairs provide replay identity for adapters; changed
+payloads conflict rather than adding duplicate history. `report calls` counts
+historical calls once; `activity_churn` remains the existing financial metric.
+Sales handoff uses `act quote ID handoff` or `act deal ID handoff` with name,
+owner and scope. `client_project` actions `plan_work`, `change_scope` and
+`manage` retain agreement and delivery decisions. `project_deliverable`
+actions `accept` and `bill` require finished work and retained acceptance.
+Inspect the generated schemas first. Request keys deduplicate planned work;
+replaying accepted billing returns its invoice. Fixed-price projects invoice
+accepted slices through progress billing; their approved labour is cost
+evidence, not a second time-and-materials charge. Full-billed quotes already
+have an invoice. Generic writes cannot replace or remove delivery evidence.
+
+## Attachments and local OCR
+
+Document file paths are service-owned. Generic create/import/update cannot
+assign or replace `document.path` or move a filed attachment to another
+organization. Use the existing upload or mail-filing workflow; valid legacy
+originals remain readable, but conflicting ownership and symlinks are refused.
+
+With OCR explicitly enabled, `act document ID ocr_extract language=eng`
+queues bounded work. `act ocr_job ID step` processes one page; `retry` and
+`cancel` retain provenance. `act capture_item 0 ocr_extract_all
+organization_id=N limit=25 after_id=N` freezes a bounded batch, advanced by
+`act ocr_batch ID step`. Review with `act document ID ocr_review job_id=N
+text=...`; `--stage` keeps the document version so newer corrections conflict.
+Extraction is not accounting approval. See `docs/ocr.org` for dependencies,
+limits and failure diagnostics.
+### Share a Stripe invoice link and reconcile a payment
+
+With the organization's Stripe connection configured and `server.base_url` set
+to the trusted HTTPS origin, `act invoice ID payment_link` returns a one-time
+`url`. Copy it from that result: ordinary `get stripe_payment_link ID` omits the
+bearer URL. The default expiry is seven days; `expires_at=...` accepts a datetime
+from one hour through thirty days ahead. The capability binds that invoice
+revision, organization, account and expiry.
+
+`act stripe_payment_link ID revoke` disables the resolver and expires an open
+provider session. Processing ACH remains pending; revoking a link cannot cancel
+an already initiated bank debit. An uncertain provider response keeps the
+attempt blocked until reconciled, so do not create another payment by guessing.
+
+`act stripe_event ID retry` replays only retained verified evidence after a local
+posting failure. For a manual/partial payment received while ACH was pending,
+`act stripe_event ID retry accept_balance_change=true` explicitly permits the
+original provider amount to allocate with excess as customer credit. Organization
+finance authorization, period guards and second-actor accounting approval apply.
+The action cannot alter the event's amount, currency, account or effective date.
+### Organization SMTP accounts
+
+Outbound `mail test`, `mail send` and `mail deliver` use the explicit business
+organization's SMTP binding. Missing configuration never falls back to
+installation credentials. An organization owner/admin configures it at
+`/organizations/ID/settings/mail`; the operator must first permit the relay
+in `mail.allowed_endpoints`. Password inputs are write-only.
+
+A delivery retains `connection_id` and `connection_version` before SMTP.
+Retry can use rotated credentials for the same connection, but replacing an
+account does not move old attempts to it. Inspect `last_error` on a `dead`
+row and make a deliberate retry/new-message decision. Uncertain acceptance
+still must never be retried automatically. The settings page's test sends
+only its selected test message and shows retained delivery evidence.
+
+### Organization bank feeds
+
+Bank-feed credentials belong to the selected `bank_connection` organization.
+Open its Settings link on `/bankfeed` to configure or rotate the write-only
+provider settings, then use **Sync and test** to import the last 30 days of
+statement evidence. This is a real sync, not a dry run. The existing
+`bankfeed sync ID` command uses the same current binding and import service.
+`VENTURE_BANKFEED_TELLER_KEY` is ignored; an administrator must configure an
+explicit connection. A saved connection's provider, account and organization
+cannot be reassigned. Create a new connection for a different identity.
+
+## Organization sign-in
+
+OIDC configuration and explicit identity linking use the web settings described
+in `docs/oidc.org`; existing local passwords, roles and MFA remain authoritative.
+Do not create identity/provider records through generic CRUD or infer a local
+user from the provider's email. Credential inputs are write-only, and a rotated
+or disabled provider invalidates its old sessions. API tokens keep their existing
+local authorization behavior; provider sign-in does not mint global authority.
+
+## Organization AI provider settings
+
+Use the organization AI settings page to choose disabled, organization-owned or
+explicitly granted platform service separately for chat, coding and embeddings.
+No missing or failing private connection falls back to platform AI. Read
+`docs/ai-organizations.org` before configuring provider actions; generic record
+writes cannot manufacture grants or overwrite service-owned usage evidence.
+Platform credentials remain operator-only even in their billing organization.
+
+### Authorize and operate recurring Stripe collection
+
+Use `describe stripe_authorization` and the subscription's actions to inspect the
+current contract. `act customer_subscription ID authorize_payment limit='100 USD'`
+returns a copy-once hosted Setup URL. The connection and webhook must explicitly
+use Stripe API `2024-06-20`. Customer completion plus verified Setup/mandate evidence
+activates permission; `act stripe_authorization ID verify` recovers a missed
+callback. `act stripe_authorization ID revoke_authorization` stops future charges
+without discarding settlement evidence. Changing terms requires fresh permission.
+
+The running server advances bounded due renewals/collections only for enabled,
+verified permissions. `act stripe_authorization 0 collect_due organization_id=N
+limit=10` is the explicit bounded sweep; optional `now=...` controls scheduling,
+never settlement dates. `act invoice ID collect` runs the same collection service.
+A pending attempt blocks hosted and automatic alternatives across all accounts.
+
+`act stripe_checkout ID retry_collection` waits the recorded day and stops after
+three attempts. Each retry confirms the old provider invoice is cancelled before
+creating a new identity. `act stripe_checkout ID cancel_collection` requires
+zero-receipt void/delete proof; processing payments cannot be cancelled by guess.
+Manual cancellation stops collection until the customer gives fresh permission.
+For a lost create response, `act stripe_checkout ID reconcile_collection
+provider_invoice_id=in_...` validates original account and opaque correlation,
+then permits explicit cancellation or signed-event recovery. Never manufacture
+payment evidence with CRUD or treat a successful pay request as settled cash.
+## Offline integration master-key maintenance
+
+These are server-binary operator commands, not venturectl actions. Stop the workspace,
+then run `venture --config FILE --check-integration-key` with its current private
+environment key. Rotate with `venture --config FILE --rotate-integration-key PRIVATE_FILE`;
+the new file must be owned, mode 600/400, single-link canonical base64 for 32 bytes.
+Update the environment secret, check again, then restart. Retain old keys for old
+backups. A lost commit response requires checking both candidates separately while
+stopped; never blindly retry rotation. See `docs/integration-key-maintenance.org`.
+## Platform workspace lifecycle
+
+`tools/venture-tenantctl` is a local trusted-operator tool, not a venturectl or AI
+action. It provisions isolated stopped workspaces and supports status, stop/start,
+offline state changes, encrypted export/restore, bounded maintenance upgrades and
+retained offboarding. It never provisions Lightsite. Read `docs/tenant-operations.org`
+for private password/key files, immutable workspace identity, maintenance locks,
+restore quarantine, explicit administrator recovery and the distinction between
+offboarding and erasure. Success exits 0; refusals and failures exit 2. Status
+and provisioning return JSON; empty restore targets have no persisted-state result.
+
+For hosted offline integration-key checks or rotation, supply `--tenant-reason`
+to the server command. The workspace must be stopped; maintenance acquires its
+process lease before any hosted operation, does not migrate or start providers,
+and cannot be combined with other tenant operation flags.
+
+Sales territories and quotas use the generic record commands. Read
+`describe sales_territory`, `describe sales_quota` and `describe lead_routing_rule`
+before configuring their organization/team references. `report sales_attainment`
+shows captured booked sales, targets and current pipeline by recipient, currency
+and quota period. It is not posted accounting revenue. Assignment/credit rows are
+service evidence; correct the source deal instead of editing that history.
+## Marketing sends
+
+Use `describe marketing_list`, `describe marketing_member`, `describe
+marketing_send` and `describe marketing_recipient`. These are ordinary record
+commands; consent and delivery evidence are service-owned. An organization
+editor records explicit permission with `act contact ID consent_marketing
+source="Signed preference form" evidence="Requested marketing email"
+evidence_key=FORM_ID occurred_at=2026-09-20T10:00:00Z` (company and lead have
+the same action). Use the real evidence timestamp, never a fabricated one.
+
+Create a static list and member rows with exactly one `contact_id`,
+`company_id` or `lead_id`; a company means its own primary mailbox. Segments
+use `mode=segment target=contact filters='name=Alice'`, with ordinary typed
+filters and no organization/history/pagination override. Create a
+`marketing_send` referencing that list, then `act marketing_send ID preview`.
+Review `list marketing_recipient send_id=ID` and the frozen counts/content
+before `act marketing_send ID approve`. Preview is immutable; new copy,
+filters or recipients require a new draft. Existing CRM records never imply
+permission. Configure HTTPS `server.base_url` before preview.
+
+`act marketing_send ID run limit=100` examines a bounded audience, queues at
+most one due recipient and attempts that exact organization-bound outbox
+message. Repeat for progress; it does not start an unbounded job. The default
+interval is 60 seconds. `pause`, `resume` and `cancel` preserve identities;
+uncertain SMTP acceptance blocks progress until deliberately resolved through
+the existing outbox retry workflow. Retry may duplicate a delivery and is
+never automatic for uncertainty. `report marketing_performance` uses approval
+cohorts and current retained outcomes; acceptance is not inbox delivery, and
+observed opens/clicks are not proof of reading.
+
+`act marketing_consent ID withdraw` suppresses the address and stops applicable
+queued campaigns and sequences. Transactional messages remain independent.
+Recipient unsubscribe links are private capabilities sent only in mail; GET
+shows confirmation, POST performs an idempotent organization-scoped withdrawal.
+Do not request or expose private body/token fields. Record reviewed relay
+feedback with `act marketing_recipient ID feedback kind=hard_bounce
+source="Reviewed DSN 5.1.1" event_key=DSN_ID occurred_at=TIMESTAMP`;
+`temporary_bounce` does not suppress, `complaint` does. A new consent row cannot
+clear retained suppression. Tracking requires both organization
+`marketing_tracking=true` and send `tracking=true` before preview.
+
+## First-party source attribution
+
+`describe attribution_site` exposes the organization-owned site configuration;
+only organization owners/admins may change it.
+Set its exact HTTPS `origin`, verified `external_tenant_id`/`external_site_id`,
+`lead_form_id`, `consent_policy`, and `active=true`; `campaign_map` maps bounded
+UTM labels to same-organization campaign IDs. Lookback/retention default to
+30 days. A changed site configuration requires fresh analytics permission.
+Use the organization Lightsite form settings page to pair/rotate/disconnect
+write-only signing credentials, then name that `connection_id` on the site.
+Do not put secrets in generic records or CLI arguments. Site identities cannot
+be deleted: deactivate them so existing withdrawal capabilities remain usable.
+
+`report attribution 2026-09 organization_id=1 model=first` groups source
+records by source/campaign, measure and currency. `model=last` selects last-touch;
+`details=true` lists exact contributing record identities. Read `period_basis`
+and `evidence`: new leads, conversions, first applied-cash customers, won deal
+value, issued net and applied cash have different dates/denominators. Imported
+`cac_*` and `campaigns_*` metrics are the existing reports under the same scope,
+not extra attributed revenue. Currency buckets are never added together.
+Legacy/current CRM source is explicitly labelled; no touch or consent is inferred.
+`venture_id` and `as_of` are refused because partial reconstruction would mislead.
+
+Owners/admins run `act attribution_visitor 0 retention_sweep organization_id=1
+limit=100` to redact expired private observations and forget expired capability
+hashes. Analytics withdrawal is independent of marketing permission: it stops
+tracking and removes visitor linkage, while coarse business acquisition and
+separate email-choice evidence remain. Generic CRUD cannot manufacture or remove
+that evidence. See `docs/attribution.org` for the versioned signed Lightsite
+contract and browser consent methods. No Lightsite provisioning is performed.
+### Commerce account ownership
+
+`commerce import '{"organization_id":1,"connector":"shopify"}'` uses that
+organization's explicitly configured account. Without `organization_id`, the
+API uses the browser organization cookie or the installation default.
+An organization owner/admin connects, tests, rotates or disconnects Shopify at
+`/organizations/ID/settings/commerce`. Credentials are write-only vault values;
+`VENTURE_COMMERCE_SHOPIFY_TOKEN` and `VENTURE_COMMERCE_SHOPIFY_SHOP` are ignored.
+The shop must be a canonical `your-shop.myshopify.com` hostname. Configuration
+is local; Test connection is the explicit provider request. Disconnect keeps
+historical imports but blocks further use. Rotation during a fetch refuses
+that response before import.
+
+`commerce_import_link` is immutable identity evidence. Its account namespace
+prevents equal provider order/customer IDs from colliding across shops or
+organizations; reconnecting the same account recognizes previous imports.
+A legacy invoice needs explicit account adoption, never automatic ownership:
+
+```sh
+venturectl describe integration_connection
+venturectl act integration_connection 7 adopt_commerce_invoice invoice_id=42 'reason=Reviewed original shop order evidence'
+venturectl list commerce_import_link
+```
+
+The action requires organization integration administration, pins the selected
+active binding and leaves historical invoice/settlement amounts unchanged.
+Use the account record linked from settings. Generic edits cannot rewrite or
+delete import identities. Do not use credentials in CLI arguments.
+
+
+### Operator backup retention
+
+`tools/venture-tenantctl` (not `venturectl` or an HTTP action) provides
+`backup-list`, explicit authenticated `backup-enroll --archive FILE --key-file FILE`,
+`retention-plan --days 30`, `retention-execute --plan UUID`,
+`retention-recover`, and `backup-retire --copy COPY-UUID`. Each takes the tenant
+slug; writes require `--reason`.
+Use `--root` before the command. Review the plan's exact registered copy IDs
+before execution. Holds block expiry; offboarding starts an additional retention
+period. A pending journal requires recovery, which records missing files and
+preserves survivors without another unlink. A retained file that has left its
+registered path (moved offsite) makes plan and execute refuse with exit 2 naming
+its copy id and path; `backup-retire` tombstones that entry as `retired` and
+refuses while the file is still present, so nothing live is retired by mistake. Never remove the catalog to bypass
+a refusal. Read `docs/backup-retention.org`, including the original-ledger
+transfer gap for restoration to a new host. No offsite or erasure claim follows
+from local archive deletion.
+
+### Close checklist actions
+
+`act fiscal_period ID open_close [currency=USD]` opens the checked workspace.
+Use `list close_task workspace_id=ID`, then `act close_task ID complete
+'notes=Finding'` or `waive 'notes=Reason'` for each task. Explain retained
+differences with `act close_discrepancy ID explain 'explanation=Evidence'`.
+`act close_workspace ID run_checks|sign|complete|reopen` calls the same
+service as the close convenience commands; `sign` requires
+`role=preparer|reviewer`. Review must come from a different authenticated
+account. These transactional actions cannot be staged. Organization finance,
+owner or administrator membership is required; signed/closed task evidence
+must be reopened before completion or waiver can change it.
+
+### Customer retainer actions
+
+`act company ID collect_retainer 'amount=250 USD' liability_account_id=N`
+records already-received cash against an active same-organization liability
+account. `act customer_retainer ID release 'amount=100 USD'` recognizes earned
+income and reduces the remaining liability. These finance-authorized actions
+cannot be staged. They do not charge a provider or settle an invoice. Never
+record the same cash again as an invoice receipt; a linked retainer remains
+separate from invoice-billed project margin.
+
+
+### HTTP transport refusal
+
+Every server route, including generic record writes, receives the same early body
+and connection limits. HTTP 413 means the body exceeded `server.max_request_size_mb`;
+503 may mean the aggregate receive budget is full. A parsed incomplete request
+can receive 408; an incomplete TLS/header or saturated connection can close
+without an HTTP response. Rejected partial bodies never enter record handlers.
+Do not blindly retry a write whose response was lost after dispatch: read its
+retained identity first. Configure `server.max_buffered_request_mb`,
+`server.max_connections` and `server.request_timeout` with the platform budget,
+then restart. The timeout bounds reception/idle connections, not synchronous
+business execution. See `docs/configuration.org` for gateway responsibilities.

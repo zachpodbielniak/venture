@@ -1,4 +1,4 @@
-#+title: Planned activities
+#+title: Planned activities and call history
 #+description: The next action as a record, and a daily worklist
 
 * Planned work and history
@@ -26,8 +26,8 @@ belong to the activity's organization.
 * Completing and moving the next action
 
 =VentureActivityService= owns completion. It saves =done= and =completed_at=,
-records the outcome in an interaction when a contact, company or deal is
-related, and creates the next occurrence when recurrence is enabled. All
+records the outcome in an interaction when a contact, company, deal or lead
+is related, and creates the next occurrence when recurrence is enabled. All
 records and audit entries share one transaction. A refused interaction or
 next occurrence leaves the original planned and writes no partial history.
 =VentureActivityService::completing= is a =G_SIGNAL_RUN_LAST= veto signal,
@@ -35,8 +35,8 @@ emitted inside the transaction after version/status validation and before
 writing. Its detached snapshot cannot change the action; the first returned
 =GError= aborts it. Reentrant actions are refused.
 
-Company-only and deal-only interactions are permitted without inventing a
-contact. The service preserves its caller's object and checks its version.
+Company-only, deal-only and lead-only interactions are permitted without
+inventing a contact. The service preserves its caller's object and checks its version.
 
 Generic writes setting =status=done= are refused, naming the service.
 Completed activities cannot be edited to rewrite their completion. Deletion
@@ -146,3 +146,160 @@ Email is recorded as history here as well: the =mail_sync= module writes an
 the outbox writes one with =outbound= set when a message is sent, so a
 contact's timeline shows both directions. See [[file:mail.org][mail]],
 section Inbound.
+
+* Logging calls
+
+*Log a call* appears among the generated actions on company, contact and
+lead pages and on an activity of kind =call=. The same =log_call= action
+is available through the ordinary REST action route, =venturectl act= and
+the assistant's generic action tool. There is no telephony connection,
+recording download, transcription request or provisioning side effect.
+
+A planned call must name a verified lead, company, contact or deal before
+=log_call= can record its CRM history. Legacy completion without a CRM
+relation retains its previous behavior and creates no interaction.
+
+The service creates a completed call activity for a CRM subject, or
+completes the selected planned call. It writes exactly one linked
+=interaction= of kind =call= and an optional planned followup in the same
+transaction. The ordinary =completing= veto signal and recurrence machinery
+are reused. A history, followup, validation or veto failure rolls back all
+business rows and audit entries. The caller's input record stays unchanged.
+
+#+begin_src sh
+venturectl act company 1 log_call subject='Discovery call' owner=alice \
+  call_direction=inbound call_duration=120 \
+  call_occurred_at=2026-09-01T10:00:00Z call_outcome=callback \
+  outcome='Send the estimate' call_followup_due_at=2026-09-02T10:00:00Z
+#+end_src
+
+=POST /api/v1/company/1/actions/log_call= accepts the same names in a JSON
+object, with =call_duration= a JSON integer. Append =?stage=1= to use the
+existing confirmation queue. Staging writes no history or followup;
+approval rechecks the target version, current access and service rules.
+A changed activity or CRM target makes the approval stale. Read-only roles
+cannot log calls, and disabling activities removes the action's availability.
+There is no public unauthenticated logging endpoint.
+
+| Input | Meaning and defaults |
+|-------+----------------------|
+| =subject= | Required call title |
+| =owner= | Username credited for this event; defaults to the existing activity owner, then the actor, then Unassigned |
+| =call_direction= | Required =inbound= or =outbound= |
+| =call_duration= | Required actual duration in seconds, from 0 through 86400 |
+| =call_occurred_at= | Required actual timestamp, not in the future; independent of planned dates and the completion stamp |
+| =call_outcome= | Required =reached=, =voicemail=, =no_answer= or =callback= |
+| =outcome= | Optional narrative notes, distinct from the structured result, at most 4096 characters |
+| =call_recording_url= | Optional stable HTTPS URL; no credentials, query string or fragment |
+| =call_transcript= | Optional supplied transcript, at most 65536 characters |
+| =call_followup_due_at= | Optional; creates one followup due no earlier than the call |
+| =call_followup_owner= | Defaults to the call owner |
+| =call_followup_subject= | Defaults to Follow up plus the call title |
+| =call_followup_remind_at= | Defaults to due; must be between occurrence and due |
+| =call_external_source= and =call_external_id= | Optional pair: authenticated adapter namespace/version and stable provider call identity |
+
+Call inputs and generated forms share the record field metadata. Other
+string inputs are bounded to 1024 characters. Recording addresses are
+validated before entering a staged confirmation, with errors that disclose
+no submitted credentials. A signed download URL with credential-bearing
+query parameters is deliberately unsupported; store a stable authenticated
+recording page instead. The server never fetches this address.
+
+If a planned call recurs, its ordinary next occurrence is created too.
+That recurrence and an explicitly requested followup are separate planned
+items. Neither inherits the completed call's transcript, recording, replay
+identity or linked historical evidence. Followups use the existing reminder
+sweep and username ownership convention, including unknown usernames with
+no inbox delivery.
+
+** Replay, ownership and history
+
+External identities are scoped by the activity's verified organization and
+source namespace. The identity is an idempotency key, not authorization.
+Future voice adapters must authenticate using an ordinary authorized
+organization credential and keep the source/version and provider call ID
+stable. No provider-specific webhook or telephony client is implemented.
+
+An exact replay returns the original completed activity and creates no
+second interaction, followup or recurrence. Reusing an identity with a
+different normalized call payload returns a conflict. Without the external
+pair, the service derives a =manual-v1= identity from the subject and
+normalized call details, including the actual occurrence time. Submitting
+those same details again therefore reuses history; two otherwise identical
+calls need distinct actual timestamps or explicit external identities.
+Deleted call identities remain reserved and cannot resurrect history.
+A database uniqueness constraint enforces the organization-scoped identity;
+the same external ID in another organization is independent.
+
+Call evidence is service-owned. Generic CRUD cannot manufacture it or
+rewrite a completed call, so owner attribution, duration and outcome remain
+historical facts. Planned activity status and dates remain separate. Old
+completed calls retain their original completion time and an =unknown=
+structured outcome; the migration does not infer old durations or fabricate
+interactions. Ordinary completion of a call records occurrence at completion
+and preserves the historical outbound default; use *Log a call* to supply
+actual occurrence, direction and result.
+
+** Timelines, reporting and retention
+
+Company, contact, lead and deal timelines include one summary for each
+linked completed call. A lead-only call needs no invented contact. Timeline
+summaries contain the title and narrative outcome, not recording addresses
+or transcripts. Call content remains on its activity page under normal
+organization and record access. Text is escaped when rendered. A related
+record ID or caller-supplied organization cannot grant access to another
+organization's content.
+
+The =calls= report groups completed call activities by the owner frozen at
+logging. It counts activity rows once, not both the activity and its linked
+interaction or followup. It uses actual occurrence in the requested period,
+with an inclusive start and exclusive end; historical calls without the new
+occurrence field fall back to their completion stamp. It reports call count,
+inbound/outbound counts, duration seconds and counts for each structured
+outcome. Raw imported interactions without completed activities are not
+silently treated as structured call logs. Organizations are never combined.
+
+The existing =activity_churn= headline is a customer/cash-receipt churn
+metric, not an interaction counter. Logging a phone call does not create a
+cash receipt or alter that accounting definition. The =calls= report is the
+call-activity evidence; this distinction prevents communication events from
+changing financial churn arithmetic.
+
+Recording links and transcripts are optional, retained CRM history with the
+same access, audit and backup lifecycle as the completed activity. The
+supported default is no automatic expiry. Soft deletion hides the active
+record but retains evidence; it is not erasure of the database, audit or
+backups. There is no claim of consent capture, automatic content retention
+purging or provider-side recording deletion. Operators should store only
+content their agreed retention policy permits and account for retained
+audit/backup copies in that policy.
+
+** Migration and verification
+
+Paired migration =000490_call_history= checks the additive metadata-owned
+fields when activities exists and tolerates a disabled module. The scoped
+replay index comes from =VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION= on the
+service's identity digest. Migration preserves existing activities and
+interactions, and backfills no invented call history.
+
+The call tests in =test-activities= cover lead-only history and exact replay,
+changed-payload conflict, bounded inputs and credential-address refusal,
+transaction rollback after a failed followup, staged completion and stale
+approval, occurrence-based counts, exactly one timeline event per call,
+escaped transcript rendering and module switching. Run after building the
+DEBUG server and CLI, because the suite executes the real CLI:
+
+#+begin_src sh
+make DEBUG=1
+make DEBUG=1 test-one T=test-activities
+#+end_src
+
+For an explicitly disposable PostgreSQL server, set
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= before running =test-activities=.
+Each service fixture creates and drops its own unique schema; public and
+other fixtures' schemas are never reset. The suite's independent file-based
+upgrade/restart regression remains SQLite; its record-only test uses no
+database.
+Set =VENTURE_TEST_MIGRATION_POSTGRES_URI= for =test-migrations= to exercise
+all shipped migrations, including =000490=, in a separate temporary
+PostgreSQL schema. Ordinary runs require neither variable nor a server.

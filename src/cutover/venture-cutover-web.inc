@@ -246,12 +246,13 @@ venture_cutover_web_csv(HtmxRequest *request, GHashTable *params, gpointer user_
 static void
 venture_cutover_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/api/v1/accounting_cutovers/template/:section", venture_cutover_web_template, self);
-	htmx_router_get(router, "/cutover/template/:section", venture_cutover_web_template, self);
-	htmx_router_post(router, "/api/v1/accounting_cutovers/csv", venture_cutover_web_csv, self);
-	htmx_router_post(router, "/cutover/csv", venture_cutover_web_csv, self);
-	htmx_router_post(router, "/api/v1/accounting_cutovers/preview", venture_cutover_web_preview, self);
-	htmx_router_post(router, "/cutover/preview", venture_cutover_web_preview, self);
-	htmx_router_post(router, "/api/v1/accounting_cutovers/:id/:action", venture_cutover_web_action, self);
-	htmx_router_post(router, "/cutover/:id/action", venture_cutover_web_action, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/accounting_cutovers/template/:section", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_template, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/cutover/template/:section", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_template, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/accounting_cutovers/csv", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_csv, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/cutover/csv", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_csv, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/accounting_cutovers/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/cutover/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/accounting_cutovers/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/cutover/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_cutover_web_action, self);
 }

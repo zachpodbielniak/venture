@@ -56,6 +56,8 @@ struct _VentureAiService
 	 */
 	gboolean		 streaming;
 	GPtrArray *action_tools;
+	gint64 organization_id;
+	gboolean injected_provider;
 };
 
 G_DEFINE_FINAL_TYPE(VentureAiService, venture_ai_service, G_TYPE_OBJECT)
@@ -98,6 +100,28 @@ venture_ai_service_get_policy(VentureAiService *self)
 	                     VENTURE_AI_POLICY_READ_ONLY);
 
 	return self->policy;
+}
+
+static gint64
+venture_ai_service_organization(VentureAiService *self)
+{
+	return self->organization_id > 0 ? self->organization_id :
+		venture_context_get_default_organization_id(self->context);
+}
+
+static VentureAccessScope *
+venture_ai_service_enter_scope(VentureAiService *self)
+{
+	VentureAccessPolicy *policy = venture_database_get_access_policy(venture_context_get_database(self->context));
+	VentureAuthPrincipal anonymous;
+	const VentureAuthPrincipal *principal = self->current_principal;
+	if (self->organization_id <= 0) return venture_orgaccess_enter_ai(self->context, principal);
+	/* An invalidated provider yields anonymous authority, so every generic
+	 * read, proposal and action fails closed even after a tool-loop pause. */
+	if (!venture_ai_provider_service_check_provider(self->provider, NULL)) principal = NULL;
+	anonymous.user_id = 0; anonymous.token_id = 0; anonymous.role = VENTURE_USER_ROLE_VIEWER;
+	anonymous.name = NULL; anonymous.authenticated = FALSE;
+	return venture_access_policy_enter_organization(policy, principal ? principal : &anonymous, self->organization_id);
 }
 
 /* --- Tool helpers -------------------------------------------------------- */
@@ -239,7 +263,7 @@ venture_ai_tool_list_types(
 	gsize i;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	registry = venture_context_get_entity_registry(self->context);
 	names = venture_entity_registry_list_names(registry);
 
@@ -289,7 +313,7 @@ venture_ai_tool_query(
 	guint i;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -315,7 +339,7 @@ venture_ai_tool_query(
 		return venture_ai_tool_error("%s", local_error->message);
 
 	venture_query_set_organization(query,
-		venture_context_get_default_organization_id(self->context));
+		venture_ai_service_organization(self));
 
 	/* A hard ceiling regardless of what was asked for: a model that
 	 * requests every row would blow its own context and learn nothing. */
@@ -372,7 +396,7 @@ venture_ai_tool_report(
 	const gchar *name;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -536,7 +560,7 @@ venture_ai_tool_create(
 	const gchar *type_name;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -566,7 +590,7 @@ venture_ai_tool_create(
 	}
 
 	venture_entity_set_organization_id(record,
-		venture_context_get_default_organization_id(self->context));
+		venture_ai_service_organization(self));
 
 	if (VENTURE_AI_POLICY_AUTONOMOUS == self->policy && !venture_access_policy_requires_approval(venture_database_get_access_policy(venture_context_get_database(self->context)), self->current_principal, "write", record, NULL))
 	{
@@ -606,7 +630,7 @@ venture_ai_tool_update(
 	gint64 id;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -684,7 +708,7 @@ venture_ai_tool_delete(
 	gint64 id;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -755,7 +779,7 @@ venture_ai_tool_get(
 	gint64 id;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -811,7 +835,7 @@ venture_ai_tool_links(
 	gint64 id;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -869,7 +893,7 @@ venture_ai_tool_link(
 	gint64 target_id;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -963,7 +987,7 @@ venture_ai_tool_count(
 	gint64 total;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -989,7 +1013,7 @@ venture_ai_tool_count(
 		return venture_ai_tool_error("%s", local_error->message);
 
 	venture_query_set_organization(query,
-		venture_context_get_default_organization_id(self->context));
+		venture_ai_service_organization(self));
 
 	total = venture_database_count(venture_context_get_database(self->context),
 	                               query, &local_error);
@@ -1030,7 +1054,7 @@ venture_ai_tool_search(
 	gsize i;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -1065,7 +1089,7 @@ venture_ai_tool_search(
 		query = venture_query_new(entity_type);
 		venture_query_set_search(query, text);
 		venture_query_set_organization(query,
-			venture_context_get_default_organization_id(self->context));
+			venture_ai_service_organization(self));
 		venture_query_set_limit(query, 5);
 
 		records = venture_database_find(
@@ -1484,7 +1508,7 @@ venture_ai_tool_kb_search(
 	gsize n_ids = 0;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -1549,7 +1573,7 @@ venture_ai_tool_kb_list(
 	guint i;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 
 	query = venture_query_new(VENTURE_TYPE_KNOWLEDGE_BASE);
 	venture_query_set_limit(query, 0);
@@ -1609,7 +1633,7 @@ venture_ai_tool_dashboard(
 	const gchar *slug;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 
 	if (!venture_context_module_enabled(self->context, "dashboards"))
 		return venture_ai_tool_error("The dashboards module is off");
@@ -1702,7 +1726,7 @@ venture_ai_tool_factory(
 	gint64 id;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 	action = (NULL != input)
 		? venture_json_object_get_string(input, "action", "status") : "status";
@@ -2027,7 +2051,7 @@ venture_ai_tool_dashboard_build(
 	VentureActor actor;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 
 	if (!venture_context_module_enabled(self->context, "dashboards"))
 		return venture_ai_tool_error("The dashboards module is off");
@@ -2121,7 +2145,7 @@ venture_ai_tool_inbox(
 	(void)error;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 	action = (NULL != input)
 		? venture_json_object_get_string(input, "action", "list") : "list";
@@ -2205,7 +2229,7 @@ venture_ai_tool_runs(
 	(void)error;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 	what = (NULL != input)
 		? venture_json_object_get_string(input, "what", "runs") : "runs";
@@ -2256,7 +2280,7 @@ venture_ai_tool_desk(
 	(void)error;
 
 	self = user_data;
-	access_scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	access_scope = venture_ai_service_enter_scope(self);
 	input = venture_ai_tool_input(tool_use);
 
 	if (NULL == input)
@@ -2610,7 +2634,7 @@ static gchar *
 venture_ai_tool_journal_post(AiToolUse *tool_use, GCancellable *cancellable, GError **tool_error, gpointer user_data)
 {
 	VentureAiService *self = user_data;
-	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	g_autoptr(VentureAccessScope) scope = venture_ai_service_enter_scope(self);
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
 	JsonObject *input = venture_ai_tool_input(tool_use);
@@ -2711,6 +2735,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);
+	ai_tool_add_parameter(report, "model", "string", "Attribution model: first or last", FALSE);
+	ai_tool_add_parameter(report, "details", "boolean", "List attribution source records instead of grouped rows", FALSE);
 	ai_tool_add_parameter(report, "as_of", "string",
 		"Historical cutoff as an ISO date or timestamp; include rows deleted after it", FALSE);
 	ai_tool_add_parameter(report, "organization_id", "integer",
@@ -3158,50 +3184,6 @@ venture_ai_service_build_prompt(VentureAiService *self)
  * provider is unknown or has no credentials, which is a normal state rather
  * than a failure.
  */
-static AiProvider *
-venture_ai_service_create_provider(
-	VentureAiService	 *self,
-	GError			**error
-){
-	VentureConfig *config;
-	g_autofree gchar *provider_name = NULL;
-	g_autofree gchar *model = NULL;
-	AiProvider *provider = NULL;
-
-	config = venture_context_get_config(self->context);
-	g_object_get(config, "ai-provider", &provider_name, "ai-model", &model,
-	             NULL);
-
-	if (0 == g_strcmp0(provider_name, "claude"))
-		provider = AI_PROVIDER(ai_claude_client_new());
-	else if (0 == g_strcmp0(provider_name, "openai"))
-		provider = AI_PROVIDER(ai_openai_client_new());
-	else if (0 == g_strcmp0(provider_name, "gemini"))
-		provider = AI_PROVIDER(ai_gemini_client_new());
-	else if (0 == g_strcmp0(provider_name, "grok"))
-		provider = AI_PROVIDER(ai_grok_client_new());
-	else if (0 == g_strcmp0(provider_name, "ollama"))
-		provider = AI_PROVIDER(ai_ollama_client_new());
-	else if (0 == g_strcmp0(provider_name, "claude-code"))
-		provider = AI_PROVIDER(ai_claude_code_client_new());
-	else if (0 == g_strcmp0(provider_name, "opencode"))
-		provider = AI_PROVIDER(ai_opencode_client_new());
-
-	if (NULL == provider)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		            "\"%s\" is not a provider I know. Use claude, openai, "
-		            "gemini, grok, ollama, claude-code or opencode.",
-		            provider_name);
-		return NULL;
-	}
-
-	if (!venture_string_is_empty(model))
-		ai_client_set_model(AI_CLIENT(provider), model);
-
-	return provider;
-}
-
 VentureAiService *
 venture_ai_service_new_with_provider(
 	VentureContext	 *context,
@@ -3234,10 +3216,8 @@ venture_ai_service_new_with_provider(
 	g_object_get(config, "ai-max-tokens", &max_tokens, NULL);
 	self->max_tokens = (gint)max_tokens;
 
-	self->provider = provider != NULL ? g_object_ref(provider) : venture_ai_service_create_provider(self, error);
-
-	if (NULL == self->provider)
-		return NULL;
+	self->provider = provider != NULL ? g_object_ref(provider) : NULL;
+	self->injected_provider = provider != NULL;
 
 	/*
 	 * Empty, deliberately: ai_tool_executor_new() would pre-register
@@ -3269,6 +3249,64 @@ venture_ai_service_new_with_provider(
 	return g_steal_pointer(&self);
 }
 
+VentureAiService *
+venture_ai_service_for_organization(VentureAiService *self, gint64 org, GError **error)
+{
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(VentureAiService) bound = NULL;
+	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
+	organization = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_ORGANIZATION, org, error);
+	if (!organization || venture_entity_is_deleted(organization)) return NULL;
+	bound = venture_ai_service_new_with_provider(self->context, self->injected_provider ? self->provider : NULL, error);
+	if (!bound) return NULL;
+	bound->organization_id = org;
+	return g_steal_pointer(&bound);
+}
+
+static gboolean
+venture_ai_service_prepare_provider(VentureAiService *self, const VentureAuthPrincipal *principal, GError **error)
+{
+	if (self->injected_provider) return TRUE;
+	g_clear_object(&self->provider);
+	self->provider = venture_ai_provider_service_create_provider(venture_ai_provider_service_get(
+		venture_context_get_database(self->context)), self->organization_id, "chat", principal, error);
+	return self->provider != NULL;
+}
+
+static gboolean
+venture_ai_service_check_history(VentureAiService *self, GPtrArray *history,
+	const VentureAuthPrincipal *principal, GError **error)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
+	guint i;
+	if (self->injected_provider && self->organization_id <= 0) return TRUE;
+	for (i = 0; history && i < history->len; i++) {
+		VentureEntity *message = g_ptr_array_index(history, i);
+		g_autoptr(VentureEntity) current = NULL, thread = NULL;
+		g_autofree gchar *body = NULL, *current_body = NULL;
+		gint64 thread_id = 0, owner = 0;
+		if (VENTURE_IS_CHAT_MESSAGE(message) && venture_entity_is_persisted(message))
+			current = venture_database_get(database, VENTURE_TYPE_CHAT_MESSAGE, venture_entity_get_id(message), NULL);
+		if (current) {
+			g_object_get(current, "thread-id", &thread_id, "body", &current_body, NULL);
+			g_object_get(message, "body", &body, NULL);
+			thread = venture_database_get(database, VENTURE_TYPE_CHAT_THREAD, thread_id, NULL);
+			if (thread) g_object_get(thread, "user-id", &owner, NULL);
+		}
+		if (!current || !thread || !principal || owner != principal->user_id ||
+			venture_entity_get_organization_id(thread) != self->organization_id ||
+			venture_entity_get_version(current) != venture_entity_get_version(message) || g_strcmp0(body, current_body)) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "The conversation changed or is no longer available"); return FALSE;
+		}
+		if (!VENTURE_IS_CHAT_MESSAGE(message) || venture_entity_get_organization_id(message) != self->organization_id ||
+			!principal || !venture_access_policy_can(policy, principal, "read", message, NULL)) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "This conversation is not available in the selected organization"); return FALSE;
+		}
+	}
+	return TRUE;
+}
+
 gchar *
 venture_ai_service_complete(
 	VentureAiService	 *self,
@@ -3282,14 +3320,21 @@ venture_ai_service_complete(
 
 	g_return_val_if_fail(VENTURE_IS_AI_SERVICE(self), NULL);
 	g_return_val_if_fail(NULL != user_text, NULL);
+	if (self->streaming) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "This assistant instance is already answering"); return NULL;
+	}
+	if (!venture_ai_service_prepare_provider(self, venture_access_policy_get_actor(venture_database_get_access_policy(
+		venture_context_get_database(self->context))), error)) return NULL;
 
 	messages = g_list_append(NULL, ai_message_new_user(user_text));
 
+	self->streaming = TRUE;
 	reply = ai_tool_executor_run(self->plain, self->provider, messages,
 	                             system_prompt, self->max_tokens, NULL,
 	                             &local_error);
 
 	g_list_free_full(messages, g_object_unref);
+	self->streaming = FALSE;
 
 	if (NULL == reply)
 	{
@@ -3300,6 +3345,14 @@ venture_ai_service_complete(
 	}
 
 	return g_steal_pointer(&reply);
+}
+
+gchar *
+venture_ai_service_complete_for_organization(VentureAiService *self, gint64 org,
+	const gchar *system_prompt, const gchar *user_text, GError **error)
+{
+	g_autoptr(VentureAiService) bound = venture_ai_service_for_organization(self, org, error);
+	return bound ? venture_ai_service_complete(bound, system_prompt, user_text, error) : NULL;
 }
 
 /* --- Answering ----------------------------------------------------------- */
@@ -3337,6 +3390,7 @@ venture_ai_service_retrieve(
 	g_autoptr(GPtrArray) hits = NULL;
 	g_autofree gint64 *ids = NULL;
 	VentureKbService *kb;
+	g_autoptr(VentureAccessScope) scope = venture_ai_service_enter_scope(self);
 	const gchar *p;
 	gsize n_ids = 0;
 	guint i;
@@ -3656,11 +3710,14 @@ venture_ai_service_answer_with_images(
 		return NULL;
 	}
 
+	if (!venture_ai_service_check_history(self, history, principal, error) ||
+		!venture_ai_service_prepare_provider(self, principal, error)) return NULL;
 	venture_ai_register_actions(self);
 	/* Held for the duration so a tool call can record what prompted it. */
 	g_free(self->current_prompt);
 	self->current_prompt = g_strdup(message);
 	self->current_principal = principal;
+	self->streaming = TRUE;
 
 	messages = venture_ai_service_build_turn(self, history, message, images,
 	                                         mime_types);
@@ -3672,6 +3729,7 @@ venture_ai_service_answer_with_images(
 
 	g_list_free_full(messages, g_object_unref);
 	self->current_principal = NULL;
+	self->streaming = FALSE;
 
 	if (NULL == reply)
 	{
@@ -3800,6 +3858,7 @@ venture_ai_service_answer_stream_async(
 	gpointer		  user_data
 ){
 	g_autoptr(GTask) task = NULL;
+	g_autoptr(GError) local_error = NULL;
 	VentureAiStreamCall *call;
 
 	g_return_if_fail(VENTURE_IS_AI_SERVICE(self));
@@ -3829,6 +3888,10 @@ venture_ai_service_answer_stream_async(
 		return;
 	}
 
+	if (!venture_ai_service_check_history(self, history, principal, &local_error) ||
+		!venture_ai_service_prepare_provider(self, principal, &local_error)) {
+		g_task_return_error(task, g_steal_pointer(&local_error)); return;
+	}
 	venture_ai_register_actions(self);
 	/* Held for the duration so a tool call can record what prompted it. */
 	g_free(self->current_prompt);

@@ -242,8 +242,9 @@ venture_forgejo_set_status_error(
 	status = soup_message_get_status(message);
 
 	/* The forge's own explanation, when it sent one. Far more useful for
-	 * a 422 than anything this side could invent. */
-	if (NULL != body)
+	 * a 422 than anything this side could invent. Credential-bearing clients
+	 * suppress provider text, which may echo credentials back. */
+	if (NULL != body && venture_string_is_empty(self->token))
 	{
 		gsize length = 0;
 		const gchar *data = g_bytes_get_data(body, &length);
@@ -353,8 +354,13 @@ venture_forgejo_send(
 		                                         payload);
 	}
 
-	response = soup_session_send_and_read(self->session, message, NULL,
+	if (!venture_forge_client_check_credentials(VENTURE_FORGE_CLIENT(self), error)) return NULL;
+	response = soup_session_send_and_read(self->session, message,
+		venture_forge_client_get_credentials(VENTURE_FORGE_CLIENT(self)) ?
+		venture_forge_credentials_get_cancellable(venture_forge_client_get_credentials(VENTURE_FORGE_CLIENT(self))) : NULL,
 	                                      &local_error);
+
+	if (!venture_forge_client_check_credentials(VENTURE_FORGE_CLIENT(self), error)) return NULL;
 
 	if (NULL == response)
 	{
@@ -420,6 +426,7 @@ venture_forgejo_send(
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
 		            "%s sent a reply that is not JSON: %s", self->host,
+		            !venture_string_is_empty(self->token) ? "invalid provider response" :
 		            (NULL != local_error) ? local_error->message : "unknown");
 		return NULL;
 	}
@@ -490,8 +497,12 @@ venture_forgejo_whoami(
 		return NULL;
 	}
 
-	return g_strdup(venture_json_object_get_string(json_node_get_object(node),
-	                                               "login", NULL));
+	{
+		const gchar *login = venture_json_object_get_string(json_node_get_object(node), "login", NULL);
+		if (venture_string_is_empty(login))
+		{ g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION, "Forge account response lacks a login"); return NULL; }
+		return g_strdup(login);
+	}
 }
 
 static gboolean

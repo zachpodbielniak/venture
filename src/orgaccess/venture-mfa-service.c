@@ -911,9 +911,11 @@ venture_mfa_service_requires_enrolment(VentureMfaService *self, const VentureAut
 	rows = venture_database_find(self->database, policies, NULL);
 	if (NULL == rows || 0 == rows->len)
 		return FALSE;
-	/* A global owner or admin administers every organization, so any
-	 * organization's requirement reaches them. */
-	if (VENTURE_USER_ROLE_OWNER == principal->role || VENTURE_USER_ROLE_ADMIN == principal->role)
+	/* Global and hosted workspace administrators reach every legal organization,
+	 * including organizations created after their original memberships. */
+	if (VENTURE_USER_ROLE_OWNER == principal->role || VENTURE_USER_ROLE_ADMIN == principal->role ||
+	    (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)) &&
+	     venture_tenant_service_is_member(venture_tenant_service_get(self->database), principal->user_id, TRUE)))
 		return TRUE;
 	memberships = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
 	venture_query_add_filter_int(memberships, "user-id", VENTURE_FILTER_OP_EQ, principal->user_id, NULL);
@@ -1013,7 +1015,7 @@ venture_mfa_actions_register(VentureDatabase *database)
 	if (self->actions)
 		return;
 	self->actions = TRUE;
-	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "user", "name", "mfa_reset",
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "user", "name", "mfa_reset",
 		"label", "Reset second factor", "description", "Break glass: turn off this account's second factor and spend its recovery codes",
 		"parameters", parameters, "stageable", FALSE, "type-level", FALSE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_OWNER, NULL);

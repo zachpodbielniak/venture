@@ -1,0 +1,14 @@
+-- Metadata adds optional privacy fields before this checkpoint. Historical
+-- rows remain explicitly shared; never infer ownership or import ENV secrets.
+CREATE TEMP TABLE venture_connector_upgrade_guard (valid INTEGER NOT NULL CHECK (valid = 1));
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mail_accounts') OR EXISTS (SELECT 1 FROM pragma_table_info('mail_accounts') WHERE name = 'private_owner_id') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_accounts') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_accounts') WHERE name = 'private_owner_id') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents') OR EXISTS (SELECT 1 FROM pragma_table_info('documents') WHERE name = 'private_owner_id') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'integration_connections') OR EXISTS (SELECT 1 FROM pragma_table_info('integration_connections') WHERE name = 'private_owner_id') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_events') WHERE name = 'subject') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_events') WHERE name = 'body') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_events') WHERE name = 'starts_at') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_events') WHERE name = 'ends_at') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_events') WHERE name = 'due_at') THEN 1 ELSE 0 END;
+INSERT INTO venture_connector_upgrade_guard SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_events') OR EXISTS (SELECT 1 FROM pragma_table_info('calendar_events') WHERE name = 'status') THEN 1 ELSE 0 END;
+DROP TABLE venture_connector_upgrade_guard;

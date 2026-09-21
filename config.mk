@@ -195,7 +195,7 @@ DEPS_CLI := $(DEPS_CORE) libsoup-3.0
 
 # Needed by the server on top of the CLI set. libxml-2.0 comes in via
 # ai-glib, which parses XML responses from some providers.
-DEPS_SERVER := $(DEPS_CLI) libxml-2.0 openssl
+DEPS_SERVER := $(DEPS_CLI) libxml-2.0 openssl jose jansson
 
 ifeq ($(SQLITE),1)
     DEPS_SERVER += sqlite3
@@ -220,6 +220,13 @@ POPPLER_AVAILABLE := $(shell $(PKG_CONFIG) --exists poppler-glib 2>/dev/null && 
 ifeq ($(POPPLER_AVAILABLE),1)
     DEPS_SERVER += poppler-glib
     CFLAGS_BASE += -DVENTURE_HAVE_POPPLER=1
+endif
+
+# Optional bounded image decoding for local OCR. Ordinary capture needs neither.
+OCR_RASTER_AVAILABLE := $(shell $(PKG_CONFIG) --exists gdk-pixbuf-2.0 2>/dev/null && echo 1 || echo 0)
+ifeq ($(OCR_RASTER_AVAILABLE),1)
+    DEPS_SERVER += gdk-pixbuf-2.0
+    CFLAGS_BASE += -DVENTURE_HAVE_OCR_RASTER=1
 endif
 
 # Archive reading and writing, for knowledge-base import and export.
@@ -527,19 +534,19 @@ endif
 # Fedora / RHEL / CentOS (dnf). These are the package names to layer into
 # an immutable image (Immutablue / Hyacinth Macaw) rather than dnf-install
 # on the host.
-FEDORA_DEPS := gcc make pkgconf-pkg-config \
+FEDORA_DEPS := gcc make nodejs pkgconf-pkg-config \
                glib2-devel libyaml-devel json-glib-devel libsoup3-devel \
                libxml2-devel sqlite-devel libpq-devel readline-devel openssl-devel \
                gobject-introspection-devel poppler-glib-devel \
                libarchive-devel
 
-DEBIAN_DEPS := gcc make pkg-config \
+DEBIAN_DEPS := gcc make nodejs pkg-config \
                libglib2.0-dev libyaml-dev libjson-glib-dev libsoup-3.0-dev \
                libxml2-dev libsqlite3-dev libpq-dev libreadline-dev \
                gobject-introspection libgirepository1.0-dev \
                libpoppler-glib-dev libarchive-dev
 
-ARCH_DEPS := gcc make pkgconf \
+ARCH_DEPS := gcc make nodejs pkgconf \
              glib2 libyaml json-glib libsoup3 libxml2 sqlite postgresql-libs \
              readline gobject-introspection poppler-glib libarchive
 
@@ -587,6 +594,19 @@ CFLAGS += $(CFLAGS_MAIL)
 LDFLAGS += $(shell $(PKG_CONFIG) --libs gmime-3.0 gnutls)
 # Keep telemetry after both consumers for ordinary static archive extraction.
 VENDOR_LIBS_SERVER += $(MAIL_GLIB_LIB) $(OTEL_GLIB_LIB)
+OIDC_GLIB_DIR := $(DEPS_DIR)/oidc-glib
+OIDC_GLIB_LIB := $(OIDC_GLIB_DIR)/build/$(BUILD_TYPE)/liboidc-glib-1.0.a
+CFLAGS += -I$(OIDC_GLIB_DIR)/src
+TEST_CFLAGS += -I$(OIDC_GLIB_DIR)/src
+VENDOR_LIBS_SERVER := $(OIDC_GLIB_LIB) $(VENDOR_LIBS_SERVER)
 FEDORA_DEPS += gmime30-devel gnutls-devel
+FEDORA_DEPS += libjose-devel jansson-devel
 DEBIAN_DEPS += libgmime-3.0-dev libgnutls28-dev
+DEBIAN_DEPS += libjose-dev libjansson-dev
 ARCH_DEPS += gmime3 gnutls
+ARCH_DEPS += jose jansson
+
+# The recovery GTest uses real authenticated archives, not a fake encryptor.
+FEDORA_DEPS += jq gnupg2
+DEBIAN_DEPS += jq gnupg
+ARCH_DEPS += jq gnupg

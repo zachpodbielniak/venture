@@ -1,0 +1,110 @@
+#+title: Integration master-key maintenance
+
+* Offline operation
+
+=VENTURE_INTEGRATION_KEY= supplies the canonical base64 encoding of 32 random
+bytes. It protects retained organization and personal integration credentials;
+changing the environment variable alone does not rotate their ciphertext.
+Keep the old and new keys in the operator's secret store, separate from database
+backups. Older backups continue to require their original key.
+
+Stop the workspace before maintenance. With its current key in the environment,
+run the same application version and configuration used by that workspace:
+
+#+begin_src sh
+venture --config workspace.yaml --check-integration-key
+venture --config workspace.yaml --rotate-integration-key /private/new-key
+#+end_src
+
+The new-key file must belong to the invoking user, have mode 600 or 400, and
+contain exactly one canonical base64 key, optionally followed by one newline.
+Symlinks and hardlinked files are refused. The command does not print key
+material, contact providers, load plugins, run automation or migrate the schema.
+Never place the key itself on a command line.
+
+Rotation authenticates and re-encrypts every retained binding, including disabled
+accounts and private accounts whose membership has since been revoked. Processing
+is paged, but all changes commit in one serializable transaction. Corrupt history
+aborts the whole rotation. Credential and record versions advance, invalidating
+stale queued snapshots; explicitly revalidate and retry affected work. Remote
+account identities and authenticated ownership do not change.
+
+After a successful rotation, replace the workspace's environment secret with the
+new key, run =--check-integration-key= again, and restart. Retain the old key for
+backups until their retention period has ended. The command never edits external
+secret storage: that handoff remains the operator's responsibility.
+
+* Interrupted maintenance
+
+A failure before commit rolls back all envelopes. A lost database connection at
+commit can leave the outcome unknown. Keep both keys and the application stopped.
+Run =--check-integration-key= in separate invocations, supplying each candidate
+through the private environment. The command authenticates all retained envelopes
+without rewriting them or advancing versions. Use the candidate that succeeds;
+if neither succeeds, preserve evidence and investigate or restore a verified
+backup. An empty credential repository cannot identify an old key and is reported
+as such. There is no automatic fallback to another key.
+
+* One application process per workspace
+
+The application acquires =VentureProcessLease= before migrations, context startup
+or maintenance. An owned, mode-600 state lock coordinates the same state path.
+SQLite also locks the actual database inode, and PostgreSQL takes a session
+advisory lock scoped to that database. Thus a second state directory does not
+allow another application to operate on the same database. Process termination,
+including a crash, releases the operating-system/database leases. If PostgreSQL
+cannot confirm an unlock (for example, a caller left an aborted transaction),
+that repository connection cannot acquire another lease; close it before retrying.
+
+This coordinates cooperating Venture versions, not arbitrary SQL clients or old
+binaries that do not implement the lease. Stop those writers explicitly. Operator
+backup and lifecycle commands must also honor their platform maintenance lock;
+the application lease does not replace platform orchestration.
+
+* Extension and verification
+
+=venture_integration_service_rekey()= and
+=venture_integration_service_verify_key()= are offline service APIs, never tenant
+HTTP actions. Both refuse authenticated request scopes and enclosing transactions.
+A caller must hold the workspace process lease and retain external keys until the
+configuration handoff is confirmed. No provider-specific credential serializer is
+needed: the existing authenticated envelope preserves provider and owner binding.
+
+=tests/test-integrations.c= covers retained history, wrong keys, rollback after a
+later corrupt envelope, scope refusal and paging beyond 128 private accounts.
+=tests/test-process-lease.c= uses separate executable processes to exercise same
+DB/different-state exclusion, release, duplicate acquisition and crash recovery on
+SQLite and opt-in PostgreSQL. These tests do not establish key-store durability or
+backup retention; operators must verify those independently.
+
+* Built-artifact demonstration
+
+A synthetic SQLite workspace was started with the DEBUG server, signed in through
+HTTP, and configured with a sandbox bank-feed binding. No provider was contacted.
+The stopped database was inspected before and after maintenance to compare the
+retained envelope and revision. Separate maintenance processes exercised the key
+handoff; the server then restarted and its bank settings remained readable without
+revealing the credential. Verbatim nonsecret transcript:
+
+#+begin_example
+PASS: live server refuses competing key maintenance
+PASS: stopped maintenance re-encrypts and audits retained credentials
+PASS: old-key retry fails with the new ciphertext unchanged
+PASS: read-only checking distinguishes old and new keys without rewriting data
+PASS: new key authenticates retained data in a fresh maintenance process
+PASS: server restarts with retained business settings and no credential echo
+PASS: permissive key file refused before database maintenance
+PASS: FIFO key path refuses promptly without waiting for a writer
+#+end_example
+
+* Hosted workspaces
+
+The same process lease excludes all hosted offline operations, including
+bootstrap, lifecycle changes and restored-credential quarantine. Key verification
+and rotation run before context/provider construction and never apply migrations.
+Hosted key maintenance additionally requires =--tenant-reason= and records a
+durable maintenance begin/completion (or abandonment on failure). It remains
+available while suspended. Other tenant operation flags cannot be combined with
+either key command. Keep the old and new external keys until verification and
+restart succeed; a completion-audit failure after re-encryption does not undo the
+committed envelopes.

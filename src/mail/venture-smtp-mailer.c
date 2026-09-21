@@ -7,6 +7,9 @@
 struct _VentureSmtpMailer {
 	GObject parent_instance;
 	VentureConfig *config;
+	MailConfig *resolved;
+	gint64 connection_id;
+	gint64 connection_version;
 	gchar *profile, *from, *from_name, *reply_to;
 };
 static void smtp_iface(VentureMailerInterface *iface);
@@ -19,6 +22,11 @@ static void configured(GObject *object)
 	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *host = NULL, *security = NULL, *username = NULL, *env = NULL, *password = NULL;
 	gint64 port;
+	if (self->config == NULL)
+	{
+		G_OBJECT_CLASS(venture_smtp_mailer_parent_class)->constructed(object);
+		return;
+	}
 	g_object_get(self->config, "mail-host", &host, "mail-port", &port, "mail-security", &security,
 		"mail-username", &username, "mail-password-env", &env, "mail-from-address", &self->from,
 		"mail-from-name", &self->from_name, "mail-reply-to", &self->reply_to, NULL);
@@ -79,6 +87,7 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 	g_autoptr(GBytes) rendered = NULL, wire = NULL;
 	g_autofree gchar *path = NULL, *to = NULL, *cc = NULL, *bcc = NULL, *reply = NULL;
 	g_autofree gchar *subject = NULL, *text = NULL, *html = NULL, *id = NULL, *private_text = NULL, *private_html = NULL;
+	g_autofree gchar *unsubscribe = NULL;
 	MailReceipt *receipt = NULL;
 	GMimeStream *input = NULL, *output = NULL;
 	GMimeParser *parser = NULL;
@@ -89,18 +98,24 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 	gint fd;
 	VentureError code;
 	gboolean ok = FALSE;
-	fd = g_file_open_tmp("venture-mail-config-XXXXXX", &path, &local);
-	if (fd < 0) goto out;
-	close(fd);
-	/* Only the environment variable NAME is written, never its value. */
-	if (g_file_set_contents(path, self->profile, -1, &local)) config = mail_config_load(path, cancellable, &local);
-	g_unlink(path);
+	if (self->resolved != NULL) config = g_object_ref(self->resolved);
+	else if (self->profile != NULL)
+	{
+		fd = g_file_open_tmp("venture-mail-config-XXXXXX", &path, &local);
+		if (fd < 0) goto out;
+		close(fd);
+		/* The legacy operator-configured adapter writes only an environment
+		 * variable name. Organization credentials use resolved config above. */
+		if (g_file_set_contents(path, self->profile, -1, &local)) config = mail_config_load(path, cancellable, &local);
+		g_unlink(path);
+	}
 	if (!config) goto out;
 	transport = mail_transport_new(config, &local);
 	if (!transport) goto out;
 	g_object_get(message, "to", &to, "cc", &cc, "bcc", &bcc, "reply-to", &reply,
 		"subject", &subject, "text-body", &text, "html-body", &html, "message-id", &id,
-		"private-text-body", &private_text, "private-html-body", &private_html, NULL);
+		"private-text-body", &private_text, "private-html-body", &private_html,
+		"private-unsubscribe-url", &unsubscribe, NULL);
 	/* Do not let a public HTML alternative hide the invitation link: a
 	 * private text body drops the public HTML, and a private HTML body, when
 	 * the sender rendered one, replaces it so an HTML-only link survives. */
@@ -158,6 +173,20 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 		}
 		g_mime_message_set_message_id(mime, id);
 	}
+	if (unsubscribe && *unsubscribe) {
+		g_autoptr(GUri) uri = g_uri_parse(unsubscribe, G_URI_FLAGS_NONE, NULL);
+		if (!uri || !g_uri_get_host(uri) || g_uri_get_userinfo(uri) || g_uri_get_fragment(uri) ||
+			strpbrk(unsubscribe, "\r\n\t <>\"")) {
+			g_set_error_literal(&local, MAIL_ERROR, MAIL_ERROR_MESSAGE, "Invalid unsubscribe endpoint"); goto out;
+		}
+		/* Local development can use the body link. RFC 8058 signaling needs
+		 * HTTPS and the operator's relay must DKIM-sign both headers. */
+		if (!g_strcmp0(g_uri_get_scheme(uri), "https")) {
+			g_autofree gchar *header = g_strdup_printf("<%s>", unsubscribe);
+			g_mime_object_set_header(GMIME_OBJECT(mime), "List-Unsubscribe", header, NULL);
+			g_mime_object_set_header(GMIME_OBJECT(mime), "List-Unsubscribe-Post", "List-Unsubscribe=One-Click", NULL);
+		}
+	}
 	output = g_mime_stream_mem_new();
 	options = g_mime_format_options_new();
 	g_mime_format_options_set_newline_format(options, GMIME_NEWLINE_FORMAT_DOS);
@@ -186,11 +215,22 @@ out:
 		code == VENTURE_ERROR_MAIL_TRANSIENT ? "SMTP connection or transient transport failure" : "SMTP configuration, message or permanent transport failure");
 	return FALSE;
 }
-static void smtp_iface(VentureMailerInterface *iface) { iface->send = smtp_send; }
+static void smtp_binding(VentureMailer *mailer, gint64 *connection_id, gint64 *version)
+{
+	VentureSmtpMailer *self = VENTURE_SMTP_MAILER(mailer);
+	*connection_id = self->connection_id;
+	*version = self->connection_version;
+}
+static void smtp_iface(VentureMailerInterface *iface)
+{
+	iface->send = smtp_send;
+	iface->get_binding = smtp_binding;
+}
 static void smtp_finalize(GObject *object)
 {
 	VentureSmtpMailer *self = VENTURE_SMTP_MAILER(object);
 	g_clear_object(&self->config);
+	g_clear_object(&self->resolved);
 	g_free(self->profile); g_free(self->from); g_free(self->from_name); g_free(self->reply_to);
 	G_OBJECT_CLASS(venture_smtp_mailer_parent_class)->finalize(object);
 }
@@ -213,3 +253,52 @@ static void venture_smtp_mailer_class_init(VentureSmtpMailerClass *klass)
 }
 static void venture_smtp_mailer_init(VentureSmtpMailer *self) { }
 VentureSmtpMailer *venture_smtp_mailer_new(VentureConfig *config) { return g_object_new(VENTURE_TYPE_SMTP_MAILER, "config", config, NULL); }
+
+VentureSmtpMailer *
+venture_smtp_mailer_new_from_values(JsonObject *values, GError **error)
+{
+	g_autoptr(MailConfig) resolved = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_autoptr(MailMessage) sender = mail_message_new();
+	VentureSmtpMailer *self;
+	const gchar *from;
+	g_return_val_if_fail(values != NULL, NULL);
+	resolved = mail_config_new_from_values(values, &local_error);
+	from = resolved != NULL ? mail_config_get(resolved, "from") : NULL;
+	if (resolved == NULL || from == NULL || *from == '\0' ||
+		g_strcmp0(mail_config_get(resolved, "transport"), "smtp") != 0 ||
+		g_strcmp0(mail_config_get(resolved, "tls"), "none") == 0 ||
+		mail_config_get_uint(resolved, "retries") != 0 ||
+		mail_config_get_uint(resolved, "timeout") > 30)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "SMTP settings require TLS, a sender, bounded timeout and outbox-owned retries");
+		return NULL;
+	}
+	if (!mail_message_add_address(sender, GMIME_ADDRESS_TYPE_FROM,
+		mail_config_get(resolved, "from-name"), from, &local_error) ||
+		!addresses(sender, GMIME_ADDRESS_TYPE_REPLY_TO, mail_config_get(resolved, "reply-to"), &local_error))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "SMTP sender or reply address is invalid");
+		return NULL;
+	}
+	self = g_object_new(VENTURE_TYPE_SMTP_MAILER, NULL);
+	self->from = g_strdup(from);
+	self->from_name = g_strdup(mail_config_get(resolved, "from-name"));
+	self->reply_to = g_strdup(mail_config_get(resolved, "reply-to"));
+	self->resolved = g_steal_pointer(&resolved);
+	return self;
+}
+
+VentureSmtpMailer *venture_smtp_mailer_new_for_connection(JsonObject *values,
+	gint64 connection_id, gint64 version, GError **error)
+{
+	VentureSmtpMailer *self;
+	g_return_val_if_fail(connection_id > 0 && version > 0, NULL);
+	self = venture_smtp_mailer_new_from_values(values, error);
+	if (self != NULL)
+	{
+		self->connection_id = connection_id;
+		self->connection_version = version;
+	}
+	return self;
+}

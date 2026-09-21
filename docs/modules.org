@@ -23,7 +23,7 @@ Written bottom-up, because a module may only require what precedes it:
 
 | Module       | Requires        | Owns                                                              | Also switched by      |
 |--------------+-----------------+-------------------------------------------------------------------+-----------------------|
-| =core=       | —               | organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification | always on |
+| =core=       | —               | tenant_workspace, tenant_membership, tenant_invitation, tenant_support_grant, tenant_event, organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification | always on |
 | =custom_fields= | core          | accounting_custom_field, accounting_layout, custom_field_value; =/settings/fields= | |
 | =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
 | =finance=    | sales           | expense, account, ledger_entry, tax_category, tax_code; =pnl=, =ventures=, =monthly=, =tax=, =tax_liability= |     |
@@ -31,26 +31,28 @@ Written bottom-up, because a module may only require what precedes it:
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
-| =stripe= | receivables | stripe_price_link, stripe_customer_link, stripe_checkout, stripe_event, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
+| =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
+| =integrations= | orgaccess | integration_connection; encrypted organization provider bindings, rotation and revocation; =/organizations/:id/settings/*= | |
+| =stripe= | receivables, integrations | stripe_price_link, stripe_customer_link, stripe_payment_link, stripe_checkout, stripe_event, stripe_authorization, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
 | =tickets=    | core            | ticket, ticket_comment, ticket_relation, sla_policy, macro, worklog, sprint, routing_rule; =support= | |
 | =webhooks=   | core            | webhook, webhook_delivery; the =/webhooks= page and its API        |                       |
+| =federation= | core            | federation_replica, federation_peer, federation_grant; explicit object sharing between authenticated servers | =federation.enabled= (opt-in) |
 | =ai=         | core            | the assistant and its tools                                       | =ai.enabled=          |
 | =chat=       | ai              | chat_thread, chat_message, ai_skill                               |                       |
 | =automation= | core            | the podomation engine                                             | =automation.enabled=  |
 | =plugins=    | core            | plugins and declarative venture types                             | =plugins.enabled=     |
-| =forge=      | tickets         | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_budget | =forge.enabled=     |
+| =forge=      | tickets, integrations | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_session, agent_turn, agent_budget | =forge.enabled=     |
 | =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
 | =bankfeed= | banking | bank_connection | =bankfeed.enabled= (opt-in) |
-| =commerce= | invoicing, receivables | order import through invoice compose | =commerce.enabled= (opt-in) |
-| =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
+| =commerce= | invoicing, receivables, integrations | commerce_import_link; organization-owned provider accounts and order import through invoice compose | =commerce.enabled= (opt-in) |
 | =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
-| =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing; =project_margin= | |
+| =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing, project_scope, project_deliverable; =project_margin= | |
 | =mail= | core | mail_message, mail_template; durable outbox and SMTP actions | |
 | =mail_sync= | mail, crm, leads (suggests capture) | mail_account, mail_inbound, mail_unmatched_sender; IMAP sync onto contact timelines and the capture inbox | |
 
@@ -76,6 +78,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =recurring= | invoicing, payables, ledger, periods, receivables, mail | recurring_schedule, recurring_occurrence, collection_policy, collection_step, collection_case, collection_notice, financial_batch; =collections_worklist= | |
 | =close= | periods, ledger, statements | close_workspace, close_task, close_workpaper, close_discrepancy, close_signoff; =close_workspace= | banking, receivables, payables, assets |
 | =capture= | finance | capture_item | payables |
+| =ocr= | capture | ocr_job, ocr_batch; bounded local extraction and durable review jobs | =ocr.enabled= (opt-in) |
 | =claims= | finance, ledger | expense_claim, expense_claim_line; /claims | capture, payables |
 | =payroll= | finance, ledger | payroll_run, payroll_line; =payroll_reconciliation=; default off | |
 | =accounting= | finance | the =/accounting= home | banking, receivables, payables, periods, close, capture |
@@ -93,6 +96,11 @@ Written bottom-up, because a module may only require what precedes it:
 | =money_calendar= | receivables, payables | no records; =money_calendar=; =/money/calendar=, =/money/calendar.ics=, =money calendar= | recurring, dunning, payroll, tax_filing |
 | =dedupe= | crm | duplicate_candidate; =duplicate_candidate= scan, merge and dismiss actions; =/customers/duplicates= | leads, invoicing, payables |
 | =docs= | core | the rendered documentation site at =/docs= (read-only, no session); =venturectl docs build= | |
+| =oidc= | orgaccess, mfa, integrations | oidc_identity; explicit provider linking at =/account/oidc=, =/auth/oidc/callback=, =/organizations/:id/settings/oidc= | =oidc.enabled= (opt-in) |
+| =ai_providers= | orgaccess, integrations | ai_configuration, ai_platform_offer, ai_grant, ai_usage_period, ai_usage; =/organizations/:id/settings/ai=, =/settings/ai/platform= | |
+| =marketing= | mail, sequences, leads | marketing_list, marketing_member, marketing_consent, marketing_send, marketing_recipient, marketing_event; =marketing_performance=; =/marketing/*= | |
+| =attribution= | leads, integrations | attribution_site, attribution_visitor, attribution_touch, attribution_submission, attribution_binding; =attribution=; =/attribution.js=, =/attribution/:site/:operation=, =/hooks/lightsite/:site/:connection=, =/organizations/:id/settings/attribution= | |
+| =sales_performance= | orgaccess, leads, pipelines | sales_territory, sales_quota, sales_credit, sales_assignment; =sales_attainment= | |
 
 Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
 
@@ -208,7 +216,10 @@ The description must outlive the registry. A static does.
 
 All five are checked at registration, and a built-in that breaks one aborts startup, because a registry missing a core module would fail in a hundred quieter ways later.
 
-Stripe is opt-in because startup requires deployment credentials. See [[file:stripe.org][Stripe payments]].
+Stripe is opt-in. Each organization connects its own verified account through
+settings; enabling the module supplies no credentials or ambient fallback.
+The =integrations= module owns =integration_connection= and requires
+=orgaccess=. See [[file:stripe.org][Stripe payments]] and [[file:integrations.org][protected integration settings]].
 
 Disable =leads= too when disabling =crm=. Campaign attribution is optional
 and uses outreach when available. See [[file:leads.org][leads]].
@@ -228,3 +239,48 @@ source-save transaction boundary.
 
 See [[file:security.org][Security: the second factor]]. Switching it off returns
 sign-in to password only.
+
+* Organization integrations
+
+The =integrations= module depends on =orgaccess= and owns
+=integration_connection=. It supplies the shared credential boundary described
+in [[file:integrations.org][organization integration credentials]]; enabling
+it does not implicitly connect a provider or borrow installation credentials.
+
+* Local OCR
+
+=ocr= depends on =capture= and owns =ocr_job= and =ocr_batch=. It is off by
+default through =ocr.enabled=false=. Enabling it requires the local engine
+and build dependencies documented in [[file:ocr.org][OCR]]. Its shared actions
+appear on document/capture pages and the capture list; it never posts books.
+
+* Mailbox and calendar credentials
+
+=mail_sync= and =calendar= retain their existing record ownership and history.
+Connecting or syncing an account additionally needs =integrations= enabled;
+turning the credential module off does not hide imported history or remove
+booking records. The settings routes check both modules. Generic record
+metadata supplies optional private ownership; it is not a separate module or
+a second visibility registry. See [[file:connectors.org][mailbox and calendar connectors]].
+
+* Organization OIDC sign-in
+
+The =oidc= module requires =orgaccess=, =mfa= and =integrations=. Provider
+sign-in also requires the independent =oidc.enabled= switch and an explicit
+issuer allowlist; both default to refusing provider sign-in. Local users,
+permissions, MFA and recovery remain authoritative. See [[file:oidc.org][the sign-in guide]].
+
+* Organization AI providers
+
+AI provider selection is explicit per organization and purpose; disabling AI
+prevents runtime use without deleting historical grants or usage. Platform offers
+are platform administration, not tenant-owned credentials. See
+[[file:ai-organizations.org][provider settings, grants and limits]].
+
+* Automatic subscription collection
+
+The existing =stripe= module owns customer payment authorizations and collection
+attempts. Billing still owns subscription invoice generation; signed provider
+settlement alone posts payment. Disabling collection does not remove retained
+account identities or authorize another provider account. Lightsite provisioning
+is excluded. See [[file:stripe.org][the recurring collection contract]].

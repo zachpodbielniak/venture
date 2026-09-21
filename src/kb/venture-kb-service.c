@@ -93,10 +93,7 @@ venture_kb_service_new(
 
 	self = g_object_new(VENTURE_TYPE_KB_SERVICE, NULL);
 	self->context = g_object_ref(context);
-	self->embedder = venture_embedder_new(config, error);
-
-	if (NULL == self->embedder)
-		return NULL;
+	/* Credentials are resolved only after a verified corpus names its owner. */
 
 	self->chunk_chars = (chunk_chars > 0) ? (gsize)chunk_chars : 1200;
 	self->chunk_overlap = (chunk_overlap >= 0) ? (gsize)chunk_overlap : 200;
@@ -119,6 +116,14 @@ venture_kb_service_get_embedder(VentureKbService *self)
 	g_return_val_if_fail(VENTURE_IS_KB_SERVICE(self), NULL);
 
 	return self->embedder;
+}
+
+static gboolean venture_kb_service_select_organization(VentureKbService *self, gint64 org, GError **error)
+{
+	g_autoptr(VentureEmbedder) embedder = venture_embedder_new_for_organization(self->context, org, error);
+	if (!embedder) return FALSE;
+	g_set_object(&self->embedder, embedder);
+	return TRUE;
 }
 
 /*
@@ -276,6 +281,14 @@ venture_kb_service_index_article(
 		return -1;
 	}
 
+	{
+		g_autoptr(VentureEntity) base = venture_database_get(database, VENTURE_TYPE_KNOWLEDGE_BASE, kb_id, error);
+		if (!base) return -1;
+		if (venture_entity_get_organization_id(base) != venture_entity_get_organization_id(article)) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Article and knowledge base must have the same organization"); return -1;
+		}
+	}
+	if (!venture_kb_service_select_organization(self, venture_entity_get_organization_id(article), error)) return -1;
 	if (!venture_kb_service_claim_model(self, kb_id, actor, error))
 		return -1;
 
@@ -407,7 +420,6 @@ venture_kb_service_reindex(
 
 	g_return_val_if_fail(VENTURE_IS_KB_SERVICE(self), -1);
 
-	model = venture_embedder_get_model(self->embedder);
 	query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
 	venture_query_set_limit(query, 0);
 
@@ -431,6 +443,24 @@ venture_kb_service_reindex(
 		g_autoptr(GDateTime) embedded_at = NULL;
 		g_autofree gchar *article_model = NULL;
 
+		if (!venture_kb_service_select_organization(self, venture_entity_get_organization_id(article), error)) return -1;
+		model = venture_embedder_get_model(self->embedder);
+		if (force) {
+			gint64 article_base = 0;
+			g_autoptr(VentureEntity) base = NULL;
+			VentureDatabase *database = venture_context_get_database(self->context);
+			g_object_get(article, "kb-id", &article_base, NULL);
+			base = venture_database_get(database, VENTURE_TYPE_KNOWLEDGE_BASE, article_base, error);
+			if (!base) return -1;
+			if (venture_entity_get_organization_id(base) != venture_entity_get_organization_id(article)) {
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Article and knowledge base must have the same organization"); return -1;
+			}
+			/* Explicit forced migration changes the corpus contract before
+			 * indexing. Old article/chunk provenance keeps unfinished work
+			 * unsearchable and a later forced retry can resume safely. */
+			g_object_set(base, "embedding-model", model, "embedding-dims", (gint64)venture_embedder_get_dimensions(self->embedder), NULL);
+			if (!venture_database_save(database, base, actor, error)) return -1;
+		}
 		g_object_get(article, "embedded-at", &embedded_at,
 		             "embedding-model", &article_model, NULL);
 
@@ -624,6 +654,7 @@ venture_kb_service_search(
 	VentureDatabase *database;
 	const gchar *model;
 	gsize query_dims = 0;
+	gint64 organization_id = 0;
 	gsize count;
 	gsize i;
 
@@ -638,7 +669,6 @@ venture_kb_service_search(
 	}
 
 	database = venture_context_get_database(self->context);
-	model = venture_embedder_get_model(self->embedder);
 
 	if (0 == limit)
 		limit = self->search_limit;
@@ -664,6 +694,21 @@ venture_kb_service_search(
 		return g_ptr_array_new_with_free_func(
 			(GDestroyNotify)venture_kb_hit_free);
 
+	{
+		gint64 organization = 0;
+		for (i = 0; i < count; i++) {
+			g_autoptr(VentureEntity) base = venture_database_get(database, VENTURE_TYPE_KNOWLEDGE_BASE, kb_ids[i], error);
+			if (!base) return NULL;
+			if (organization && organization != venture_entity_get_organization_id(base)) {
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Search one organization's knowledge bases at a time"); return NULL;
+			}
+			organization = venture_entity_get_organization_id(base);
+		}
+		organization_id = organization;
+		if (!venture_kb_service_select_organization(self, organization, error)) return NULL;
+	}
+	model = venture_embedder_get_model(self->embedder);
+
 	/* The base slugs, so a result can say where it came from. */
 	slugs = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
 	                              g_free);
@@ -671,7 +716,7 @@ venture_kb_service_search(
 	for (i = 0; i < count; i++)
 	{
 		g_autoptr(VentureEntity) base = NULL;
-		g_autofree gchar *slug = NULL;
+		g_autofree gchar *slug = NULL, *base_model = NULL;
 		gint64 *key;
 
 		base = venture_database_get(database, VENTURE_TYPE_KNOWLEDGE_BASE,
@@ -680,7 +725,8 @@ venture_kb_service_search(
 		if (NULL == base)
 			continue;
 
-		g_object_get(base, "slug", &slug, NULL);
+		g_object_get(base, "slug", &slug, "embedding-model", &base_model, NULL);
+		if (g_strcmp0(base_model, model)) continue;
 		key = g_new0(gint64, 1);
 		*key = kb_ids[i];
 		g_hash_table_insert(slugs, key, g_steal_pointer(&slug));
@@ -701,7 +747,9 @@ venture_kb_service_search(
 		g_autoptr(GPtrArray) found = NULL;
 		guint j;
 
+		if (!g_hash_table_contains(slugs, &kb_ids[i])) continue;
 		query = venture_query_new(VENTURE_TYPE_KB_ARTICLE);
+		venture_query_set_organization(query, organization_id);
 		venture_query_set_limit(query, 0);
 
 		if (!venture_query_add_filter_int(query, "kb-id",
@@ -717,13 +765,14 @@ venture_kb_service_search(
 		for (j = 0; j < found->len; j++)
 		{
 			VentureEntity *article = g_ptr_array_index(found, j);
+			g_autofree gchar *article_model = NULL;
 			VentureKbArticleInfo *info;
 			VentureKbArticleStatus status;
 			gint64 *key;
 
-			g_object_get(article, "status", &status, NULL);
+			g_object_get(article, "status", &status, "embedding-model", &article_model, NULL);
 
-			if (VENTURE_KB_ARTICLE_STATUS_PUBLISHED != status)
+			if (VENTURE_KB_ARTICLE_STATUS_PUBLISHED != status || g_strcmp0(article_model, model))
 				continue;
 
 			info = g_new0(VentureKbArticleInfo, 1);
@@ -757,6 +806,7 @@ venture_kb_service_search(
 		guint j;
 
 		query = venture_query_new(VENTURE_TYPE_KB_CHUNK);
+		venture_query_set_organization(query, organization_id);
 		venture_query_set_limit(query, 0);
 
 		if (!venture_query_add_filter_int(query, "kb-id",

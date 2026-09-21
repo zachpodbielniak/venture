@@ -1,0 +1,122 @@
+#+title: Authenticated accounting server demonstration
+#+description: Exact synthetic opening, trading, close and independent restore evidence
+
+* Artifact and scope
+
+Executed 20 September 2026 against the DEBUG artifact containing the typed
+close actions (feature commit =f0bf0ab=). The SHA-256 below identifies the
+actual executable; this is component evidence, not qualification of a later
+combined PR head. Parent acceptance must rerun the same driver against that
+head. All records are synthetic USD books, all network traffic is loopback,
+and authentication remains enabled throughout. No provider is contacted.
+
+Command from the driver checkout:
+
+#+begin_src sh
+python3 tools/venture-accounting-server-drill.py --binary /home/fai/venture-wt/125-admission/build/debug/venture
+#+end_src
+
+* Verbatim stdout
+
+Exit status: 0. This stdout contains no credentials. Private server logs are
+not attached because they contain generated bootstrap passwords.
+
+#+begin_example
+Artifact SHA256: b1243b3c809ff77470285970d9644a06f81947f55d4ca440ac88e73d9e8e1233
+Evidence directory: /tmp/venture-accounting-server-drill-j1fgu4xf
+PASS opening import reconciles/replays once; settled cash55500 AR0 AP0 January profit0 and tax0 cents
+PASS source restart preserves all statement/account totals
+PASS all historical fields and 173 remapped references match independently
+PASS independent server restored 142 unique record identities; every statement/account total agrees in cents
+PASS restored server restart preserves all historical fields/references and statement/account totals
+PASS trading invoice10500 receipt4000 bill5000 payment5000; cash-1000 AR6500 tax500 profit5000 cents; explicit bank matching reconciles zero
+PASS distinct authenticated preparer/reviewer; self-review refused; closed-date receipt refused; balanced correction and fresh signatures preserve profit5000 cents
+PASS source restart preserves all statement/account totals
+PASS all historical fields and 227 remapped references match independently
+PASS independent server restored 197 unique record identities; every statement/account total agrees in cents
+PASS restored server restart preserves all historical fields/references and statement/account totals
+#+end_example
+
+* Interpretation
+
+The source arithmetic and exact workflow are specified independently in
+[[file:../accounting-acceptance.org][Accounting acceptance]]. There is no compensating balance adjustment: the
+five-dollar correction only reclassifies expenses. Restore compares every
+archived field after explicit identity/reference/key remapping, including
+historical timestamps, versions, bank matches and close evidence. Restart
+checks include the restored record set, not only its row count.
+
+The reviewer and preparer are different synthetic authenticated OWNER
+accounts in ordinary standalone mode. This demonstrates separation at the
+close-signature boundary, not hosted role administration or independent
+accountant authorization. The run uses SQLite; service-level PostgreSQL
+checks are separate evidence. It does not establish M2 deployment readiness,
+customer migration acceptance, production operations, or full-tenant recovery.
+
+* Regression discrimination and runner checks
+
+The same final driver against the earlier DEBUG artifact
+=01358a56143b25136b51482eee1fdb9511ac7107945bcc9cc0f2aa84772b711c=
+passed trading setup, then exited 1 at the missing typed close action:
+
+#+begin_example
+AssertionError: /api/v1/fiscal_period/1/actions/open_close: HTTP 404: {
+  "error" : "not_found",
+  "message" : "Unknown record action",
+  "code" : 2
+}
+#+end_example
+
+The completed artifact passes that same path. Running with Python =-O=
+exits 1 before provisioning, with =Run without Python -O: acceptance
+assertions are mandatory=. The actual documentation renderer/checker built
+97 pages successfully. Review checked process cleanup, bounded waits,
+credential handling, source arithmetic, action failure assertions, identity
+bijection, historical reference/key remapping and restart comparisons.
+
+* Re-recorded against PR head
+
+Head commit at recording: =7b2160b= (later commits on the branch are tests,
+comments and evidence documents only; the server source is the same).
+
+The section above is component evidence recorded on the =f0bf0ab= lane
+artifact, which is not an ancestor of this branch head. Parent acceptance
+therefore reran the same driver, unmodified, against the head artifact.
+
+- Head commit: =7b2160b= (=/home/fai/venture-wt/epic-post-parity-5=)
+- Binary SHA-256: =13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d=
+- Exit status: 0
+
+Command, run from this driver checkout with a private =TMPDIR= under =/tmp=
+(removed afterwards) and =nice -n 19= because a full suite was running in the
+build worktree:
+
+#+begin_src sh
+python3 tools/venture-accounting-server-drill.py --binary /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+#+end_src
+
+Verbatim stdout:
+
+#+begin_example
+Artifact SHA256: 13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d
+Evidence directory: /tmp/demo-acct-gtsy/venture-accounting-server-drill-j07q4sl2
+PASS opening import reconciles/replays once; settled cash55500 AR0 AP0 January profit0 and tax0 cents
+PASS source restart preserves all statement/account totals
+PASS all historical fields and 173 remapped references match independently
+PASS independent server restored 142 unique record identities; every statement/account total agrees in cents
+PASS restored server restart preserves all historical fields/references and statement/account totals
+PASS trading invoice10500 receipt4000 bill5000 payment5000; cash-1000 AR6500 tax500 profit5000 cents; explicit bank matching reconciles zero
+PASS distinct authenticated preparer/reviewer; self-review refused; closed-date receipt refused; balanced correction and fresh signatures preserve profit5000 cents
+PASS source restart preserves all statement/account totals
+PASS all historical fields and 227 remapped references match independently
+PASS independent server restored 197 unique record identities; every statement/account total agrees in cents
+PASS restored server restart preserves all historical fields/references and statement/account totals
+#+end_example
+
+Every PASS line is identical to the component run, so the typed close actions
+and the restore/restart comparisons are present and behave the same on the
+head artifact. The driver was not edited for this rerun. The evidence
+directory named above was removed after the run under the shared run rules,
+so only this transcript remains. The limits of the original section still
+apply unchanged: SQLite, synthetic USD books, loopback only, no provider, and
+no claim about M2 deployment, migration or full-tenant recovery.

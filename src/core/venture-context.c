@@ -171,9 +171,18 @@ venture_context_new(
 		G_BINDING_SYNC_CREATE);
 	/* Scheduled backups read their destination and retention defaults here. */
 	venture_backup_schedule_service_set_config(venture_backup_schedule_service_get(self->database), config);
+	venture_oidc_service_set_config(venture_oidc_service_get(self->database), config);
+	venture_ai_provider_service_set_config(venture_ai_provider_service_get(self->database), config);
 	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
+	/* Generated invoice dates and same-day receipts follow the business
+	 * calendar, not the zone the process runs in. */
+	g_object_bind_property(config, "locale-timezone", venture_settlement_service_get(self->database), "timezone",
+		G_BINDING_SYNC_CREATE);
 	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);
+	venture_ocr_service_configure(venture_ocr_service_get(self->database), config);
+	venture_stripe_actions_set_context(self->database, self);
+	venture_marketing_service_configure(venture_marketing_service_get(self->database), self);
 
 	/*
 	 * Modules, resolved against this configuration and applied to the
@@ -565,12 +574,9 @@ venture_context_set_stripe_service(VentureContext *self, VentureStripeService *s
 gboolean
 venture_context_start_stripe(VentureContext *self, GError **error)
 {
-	g_autoptr(VentureStripeService) provider = NULL;
-	if (!venture_context_module_enabled(self, "stripe")) return TRUE;
-	provider = venture_stripe_service_new(self->database,
-		venture_context_get_default_organization_id(self), NULL, error);
-	if (!provider) return FALSE;
-	venture_context_set_stripe_service(self, provider);
+	/* Each verified invoice selects its own organization binding at use time. */
+	(void)self;
+	(void)error;
 	return TRUE;
 }
 
@@ -620,7 +626,7 @@ VentureMailer *venture_context_get_mailer(VentureContext *self)
 {
 	if (!venture_context_module_enabled(self, "mail")) return NULL;
 	if (!venture_mailer_registry_lookup(self->mailers, "smtp")) {
-		g_autoptr(VentureSmtpMailer) smtp = venture_smtp_mailer_new(self->config);
+		g_autoptr(VentureOrganizationMailer) smtp = venture_organization_mailer_new(self->database, self->config);
 		venture_mailer_registry_add(self->mailers, "smtp", VENTURE_MAILER(smtp));
 	}
 	return venture_mailer_registry_lookup(self->mailers, "smtp");

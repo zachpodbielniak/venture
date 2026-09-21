@@ -40,6 +40,7 @@ FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION} AS builder
 # though nothing ever uses it again.
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc \
+        nodejs \
         make \
         git \
         pkgconf-pkg-config \
@@ -52,11 +53,17 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libpq-devel \
         readline-devel \
         openssl-devel \
+        libjose-devel \
+        jansson-devel \
         gobject-introspection-devel \
         poppler-glib-devel \
         libetpan-devel \
         libgudev-devel \
         libarchive-devel \
+        gmime30-devel \
+        gnutls-devel \
+        jq \
+        gnupg2 \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
@@ -98,7 +105,7 @@ ENV DEBUG=0
 #
 ENV PREFIX=/usr
 
-RUN if [ ! -f deps/yaml-glib/Makefile ]; then \
+RUN if [ ! -f deps/yaml-glib/Makefile ] || [ ! -f deps/oidc-glib/Makefile ]; then \
         echo "deps/ is empty -- run: git submodule update --init --recursive" >&2; \
         exit 1; \
     fi
@@ -113,6 +120,7 @@ COPY modules/ modules/
 COPY tests/ tests/
 COPY venture.pc.in ./
 COPY docs/ docs/
+COPY migrations/ migrations/
 COPY README.org ./
 
 RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
@@ -196,6 +204,10 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libetpan \
         libgudev \
         libarchive \
+        libjose \
+        jansson \
+        gmime30 \
+        gnutls \
         ca-certificates \
         tzdata \
         git \

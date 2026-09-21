@@ -49,34 +49,30 @@ model and we do not have it. They are targets rather than limits.
 
 * The embedding model is not the chat model
 
-=kb.embedding_provider= and =kb.embedding_model= are configured separately
-from =ai.provider= and =ai.model=, and that separation is deliberate.
+The organization's =embedding= binding is configured separately from its
+=chat= binding in [[file:ai-organizations.org][AI settings]]. The assistant is whichever model writes well;
+the embedder is whichever model the corpus was indexed with. Switching chat
+models never changes the embedding model or its credentials.
 
-The assistant is whichever model writes well. The embedder is whichever model
-the corpus was indexed with --- and only one of those can be changed freely.
-Every stored vector was made by a particular model, so switching embedders
-invalidates the index; switching chat models must not.
-
-It also allows the arrangement most installs want: a hosted model for the
-conversation, a local one for the documents, so the corpus never leaves the
-machine.
+Enable =kb.enabled= and retain the ordinary chunk/search settings:
 
 #+begin_src yaml
 kb:
   enabled: true
-  embedding_provider: ollama          # or openai, for anything compatible
-  embedding_url: http://127.0.0.1:11434
-  embedding_model: nomic-embed-text:v1.5
-  embedding_key_env: ""               # names the variable, never the key
   chunk_chars: 1200
   chunk_overlap: 200
   search_limit: 8
 #+end_src
 
-Embedding goes through ai-glib's =AiEmbedder=, implemented there by the
-Ollama and OpenAI clients. The OpenAI shape is spoken by every compatible
-server --- vLLM, LM Studio, llama.cpp, Together --- so pointing
-=embedding_url= at one and naming its model needs no new code here.
+Configure an OpenAI-compatible embedding provider and an explicit model in the
+organization's embedding binding. Alternative API origins require the exact
+administrator allowlist; explicit loopback opt-in supports a local compatible
+server. There is no ambient key or global model fallback. Legacy
+=kb.embedding_*= configuration remains readable for migration only.
+
+Embedding uses ai-glib's =AiEmbedder= interface. The scoped adapter currently
+supports its OpenAI-compatible implementation and preserves the model on the
+base, article and every chunk. Searches refuse mixed-organization bases.
 
 ** Vectors from two models cannot be compared
 
@@ -93,7 +89,7 @@ So the model is recorded in three places, and checked:
 - on the *chunk*, so a search skips any passage the configured model did not
   write rather than scoring it.
 
-Changing =kb.embedding_model= therefore requires a forced reindex. That is
+Changing the organization's embedding model therefore requires a forced reindex. That is
 not a limitation to work around; it is the only correct response.
 
 * Storage

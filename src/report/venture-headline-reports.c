@@ -4416,14 +4416,14 @@ venture_headline_register_reports(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
 
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"cac", "Customer acquisition cost",
 		"Acquisition spend -- acquisition-flagged expense and bill lines, and "
 		"campaign spend pro-rated over the campaign -- over companies whose "
 		"first cash receipt fell in the period, broken down by the converted "
 		"lead's campaign and source",
 		venture_report_cac)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"customer_churn", "Customer churn (activity and recurring schedules)",
 		"Recurring churn: customers whose invoice schedules and subscriptions "
 		"all stopped in the period, over those with one running at its start. "
@@ -4431,18 +4431,18 @@ venture_headline_register_reports(VentureReportRegistry *registry)
 		"months over customer-months at risk (days, default 90). Both list "
 		"the customers behind the number",
 		venture_report_churn)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"ltv", "Customer lifetime value",
 		"Realised: cash per customer net of refunds, with mean, median and "
 		"the top ten. Projected: revenue per customer-month x gross margin / "
 		"monthly activity churn, withheld below a minimum of customer-months",
 		venture_report_ltv)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"customer_cohorts", "Customer cohorts",
 		"Companies grouped by the month of their first cash receipt, and the "
 		"share of each still paying in each of the twelve months after",
 		venture_report_cohorts)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"ltv_cac", "LTV to CAC",
 		"Projected LTV over CAC for the same period, with ARPA and CAC "
 		"payback; n/a when either side is",

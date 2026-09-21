@@ -513,9 +513,9 @@ report_forecast(VentureContext *context, VentureDateRange *period, JsonObject *o
 void
 venture_budgets_register_reports(VentureReportRegistry *registry)
 {
-	VentureReport *vs = VENTURE_REPORT(venture_func_report_new("budget_vs_actual", "Budget vs actual",
+	VentureReport *vs = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "budget_vs_actual", "Budget vs actual",
 		"Planned amounts against posted account movement.", report_vs));
-	VentureReport *forecast = VENTURE_REPORT(venture_func_report_new("cash_forecast", "Cash forecast",
+	VentureReport *forecast = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "cash_forecast", "Cash forecast",
 		"Unpaid AR and AP plus remaining budget cash movements.", report_forecast));
 	g_object_set(vs, "financial", TRUE, NULL);
 	g_object_set(forecast, "financial", TRUE, NULL);

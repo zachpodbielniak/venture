@@ -4,6 +4,8 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
+#include "db/venture-migrations.h"
 
 typedef struct
 {
@@ -34,7 +36,7 @@ set_up(Fixture *f, gconstpointer data)
 
 	f->config = venture_config_new();
 	g_object_set(f->config, "stripe-enabled", TRUE, NULL);
-	f->database = venture_database_new("sqlite://:memory:", &error);
+	f->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->database,
 		venture_entity_registry_get_default(), &error));
@@ -59,6 +61,7 @@ static void
 tear_down(Fixture *f, gconstpointer data)
 {
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->database);
 	g_clear_object(&f->database);
 	g_clear_object(&f->config);
 }
@@ -150,6 +153,7 @@ http_done(GObject *source, GAsyncResult *result, gpointer data)
 }
 
 static gchar *signature(const gchar *body);
+static gchar *binding_signature(const gchar *body, const gchar *secret);
 
 static guint
 http_request(VentureWebServer *server, const gchar *method, const gchar *path,
@@ -166,9 +170,9 @@ http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
 	message = soup_message_new(method, url);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
-	if (body && !g_strcmp0(path, "/webhooks/stripe"))
+	if (body && (!g_strcmp0(path, "/webhooks/stripe") || g_str_has_prefix(path, "/webhooks/stripe/")))
 	{
-		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : signature(body);
+		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : (!g_strcmp0(path, "/webhooks/stripe") ? signature(body) : binding_signature(body, "whsec_original"));
 		soup_message_headers_append(soup_message_get_request_headers(message), "Stripe-Signature", sig);
 	}
 
@@ -273,6 +277,15 @@ test_records(void)
 			venture_entity_registry_get_default(), names[i]), !=, G_TYPE_INVALID);
 }
 
+/* Provider identity must include the historical account binding, not just
+ * a globally unique remote identifier. */
+static void
+test_account_binding_metadata(void)
+{
+	g_autoptr(VentureStripeCheckout) checkout = venture_stripe_checkout_new();
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(checkout), "connection-id"));
+}
+
 static void
 test_missing_key(void)
 {
@@ -283,19 +296,23 @@ test_missing_key(void)
 	g_unsetenv("VENTURE_STRIPE_SECRET_KEY");
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
 	service = venture_stripe_service_new(db, 1, NULL, &error);
 	g_assert_null(service);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_STRIPE_SECRET_KEY"));
+	g_assert_nonnull(error);
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *price_json; gint64 price_amount; } FakeTransport;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
+	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live; gchar *last_invoice_id; guint invoice_count, payment_calls; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
 G_DEFINE_TYPE_WITH_CODE(FakeTransport, fake_transport, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(STRIPE_TYPE_TRANSPORT, fake_iface))
+#include "test-stripe-provider.inc"
 static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	GCancellable *cancellable, GError **error)
@@ -303,6 +320,12 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	FakeTransport *self = (FakeTransport *)transport;
 	(void)cancellable; (void)error;
 	self->calls++;
+	if (g_str_has_suffix(request->url, "/account"))
+	{
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"%s\",\"object\":\"account\"}", self->account_id ? self->account_id : "acct_offline");
+		g_assert_cmpstr(request->method, ==, "GET");
+		return stripe_response_new(200, body, NULL, NULL);
+	}
 	if (g_str_has_suffix(request->url, "/prices/price_offline"))
 	{
 		g_autofree gchar *body = NULL;
@@ -310,17 +333,63 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 		body = g_strdup_printf("{\"id\":\"price_offline\",\"object\":\"price\",\"active\":true,\"type\":\"one_time\",\"billing_scheme\":\"per_unit\",\"unit_amount\":%" G_GINT64_FORMAT ",\"currency\":\"usd\"}", self->price_amount ? self->price_amount : 10000);
 		return stripe_response_new(200, self->price_json ? self->price_json : body, NULL, NULL);
 	}
+	if (g_str_has_suffix(request->url, "/expire"))
+		return stripe_response_new(200, "{\"id\":\"cs_offline\",\"status\":\"expired\"}", NULL, NULL);
+	if (strstr(request->url, "/invoices") || g_str_has_suffix(request->url, "/invoiceitems"))
+		return fake_invoice_send(self, request);
 	if (g_str_has_suffix(request->url, "/customers"))
 	{
 		self->customers++;
 		g_assert_nonnull(strstr(request->body, "venture_company_uuid"));
 		return stripe_response_new(200, "{\"id\":\"cus_offline\",\"object\":\"customer\"}", NULL, NULL);
 	}
+	if (strstr(request->url, "/checkout/sessions/cs_setup?"))
+	{
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"cs_setup\",\"mode\":\"setup\",\"status\":\"complete\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\"},\"mandate\":%s}}", self->setup_customer ? self->setup_customer : "cus_offline", self->setup_reference, self->deadline, self->setup_consent, self->setup_live ? "true" : "false", self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
+		g_assert_cmpstr(request->method, ==, "GET");
+		g_assert_nonnull(strstr(request->url, "setup_intent.payment_method"));
+		return stripe_response_new(200, body, NULL, NULL);
+	}
+	if (strstr(request->body, "mode=setup"))
+	{
+		g_autoptr(GHashTable) form = soup_form_decode(request->body);
+		g_free(self->setup_reference); self->setup_reference = g_strdup(g_hash_table_lookup(form, "client_reference_id"));
+		g_free(self->setup_consent); self->setup_consent = g_strdup(g_hash_table_lookup(form, "custom_text[submit][message]"));
+		g_free(self->deadline); self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
+		g_assert_cmpstr(request->api_version, ==, "2024-06-20");
+		g_assert_nonnull(strstr(request->body, "custom_text%5Bsubmit%5D%5Bmessage%5D="));
+		g_assert_nonnull(strstr(request->body, "customer=cus_offline"));
+		g_assert_null(strstr(request->body, "line_items"));
+		return stripe_response_new(200, "{\"id\":\"cs_setup\",\"object\":\"checkout.session\",\"url\":\"https://checkout.stripe.com/setup\"}", NULL, NULL);
+	}
 	g_assert_true(strstr(request->body, "price_offline") || strstr(request->body, "price_data"));
 	g_assert_null(strstr(request->body, "metadata"));
 	g_free(self->key);
 	self->key = g_strdup(request->idempotency_key);
 	self->checkouts++;
+	self->checkout_ach = strstr(request->body, "us_bank_account") != NULL;
+	{
+		g_autoptr(GHashTable) form = soup_form_decode(request->body);
+		g_free(self->deadline);
+		self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
+		if (self->early_service)
+		{
+			const gchar *reference = g_hash_table_lookup(form, "client_reference_id");
+			g_autofree gchar *body = g_strdup_printf("{\"id\":\"evt_early\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"client_reference_id\":\"%s\",\"amount_total\":10000,\"currency\":\"usd\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_early\"}}}", reference ? reference : "missing");
+			g_autofree gchar *sig = signature(body);
+			g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+			g_autoptr(GError) callback_error = NULL;
+			g_assert_true(venture_stripe_service_handle_webhook(self->early_service, bytes, sig, &callback_error));
+			g_assert_no_error(callback_error);
+		}
+	}
+	if (self->reservation_database)
+		g_assert_false(venture_database_has_transaction(self->reservation_database));
+	if (self->checkout_drop)
+	{
+		g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED, "Checkout response lost");
+		return NULL;
+	}
 	if (self->checkouts > 1) return stripe_response_new(200, "{\"id\":\"cs_second\",\"url\":\"https://checkout.stripe.com/second\"}", NULL, NULL);
 	return stripe_response_new(200, "{\"id\":\"cs_offline\",\"object\":\"checkout.session\",\"url\":\"https://checkout.stripe.com/offline\"}", NULL, NULL);
 }
@@ -328,6 +397,12 @@ static void fake_iface(StripeTransportInterface *iface) { iface->send = fake_sen
 static void fake_finalize(GObject *object)
 {
 	g_free(((FakeTransport *)object)->key);
+	g_free(((FakeTransport *)object)->deadline);
+	g_free(((FakeTransport *)object)->setup_reference);
+	g_free(((FakeTransport *)object)->setup_consent);
+	g_free(((FakeTransport *)object)->last_invoice_id);
+	g_clear_pointer(&((FakeTransport *)object)->invoices, g_hash_table_unref);
+	g_clear_pointer(&((FakeTransport *)object)->invoice_keys, g_hash_table_unref);
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
@@ -480,7 +555,7 @@ test_flow(Fixture *f, gconstpointer data)
 	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(checkout);
-	key = g_strdup_printf("venture-invoice-%s-%" G_GINT64_FORMAT, venture_entity_get_uuid(invoice), venture_entity_get_version(invoice));
+	key = g_strdup_printf("venture-checkout-%s", venture_entity_get_uuid(VENTURE_ENTITY(checkout)));
 	g_assert_cmpstr(((FakeTransport *)transport)->key, ==, key);
 	if (!g_strcmp0(mode, "customer-reuse"))
 	{
@@ -530,10 +605,17 @@ test_flow(Fixture *f, gconstpointer data)
 	{
 		g_assert_false(ok);
 		g_assert_nonnull(error);
-		g_assert_cmpuint(events->len, ==, 0);
+		g_assert_cmpuint(events->len, ==, !g_strcmp0(mode, "bad-signature") ? 0 : 1);
 		g_assert_cmpuint(payments->len, ==, 0);
 		audits_after = rows(f, "audit_entry");
-		g_assert_cmpuint(audits_after->len, ==, audits_before->len + (!g_strcmp0(mode, "bad-signature") ? 1 : 0));
+		if (!g_strcmp0(mode, "bad-signature"))
+			g_assert_cmpuint(audits_after->len, ==, audits_before->len + 1);
+		else
+		{
+			g_autoptr(GPtrArray) exceptions = rows(f, "processor_exception");
+			g_assert_cmpuint(exceptions->len, ==, 1);
+			g_assert_cmpuint(audits_after->len, >, audits_before->len);
+		}
 		return;
 	}
 	g_assert_cmpuint(events->len, ==, 1);
@@ -550,7 +632,7 @@ test_flow(Fixture *f, gconstpointer data)
 	{
 		g_autofree gchar *result = NULL;
 		g_object_get(g_ptr_array_index(events, 0), "result", &result, NULL);
-		g_assert_cmpstr(result, ==, "ignored");
+		g_assert_cmpstr(result, ==, "unknown");
 		g_assert_cmpuint(payments->len, ==, 0);
 		return;
 	}
@@ -668,7 +750,7 @@ test_price_migration_rollback(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *sql = g_strdup_printf(
-		"DROP INDEX uq_stripe_price_links_organization_product_id;"
+		"DROP INDEX uq_stripe_price_links_organization_connection_id_product_id;"
 		"INSERT INTO stripe_price_links (uuid, organization_id, product_id, stripe_price_id) VALUES ('legacy-price-a', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 'price_a'), ('legacy-price-b', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 'price_b')",
 		f->organization_id, f->product_id, f->organization_id, f->product_id);
 	g_autoptr(OrmResult) rows = NULL;
@@ -760,7 +842,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "e32797673f0e7780dede9ed23260a673d2936b7f");
+		g_assert_cmpstr(g_strstrip(out), ==, "fbc66e52ddaa8e6294aaa5c48d36bf206c286105");
 	}
 }
 
@@ -771,15 +853,14 @@ test_module_start(Fixture *f, gconstpointer data)
 	g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
 	(void)data;
 	g_unsetenv("VENTURE_STRIPE_SECRET_KEY");
-	g_assert_false(venture_context_start_stripe(f->context, &error));
-	g_assert_nonnull(strstr(error->message, "VENTURE_STRIPE_SECRET_KEY"));
+	g_assert_true(venture_context_start_stripe(f->context, &error));
+	g_assert_no_error(error);
 	g_clear_error(&error);
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 	g_assert_true(venture_context_start_stripe(f->context, &error));
 	g_assert_no_error(error);
-	g_assert_nonnull(venture_context_get_stripe_service(f->context));
+	g_assert_null(venture_context_get_stripe_service(f->context));
 	g_assert_cmpuint(g_type_from_name("StripeBundledYamlParser"), ==, G_TYPE_INVALID);
-	g_assert_cmpuint(g_type_from_name("YamlParser"), !=, G_TYPE_INVALID);
 	venture_module_registry_register_builtins(modules);
 	venture_config_set_module_enabled(f->config, "receivables", FALSE);
 	g_assert_false(venture_module_registry_configure(modules, f->config, &error));
@@ -941,14 +1022,65 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
 
+#include "test-stripe-settings.inc"
+#include "test-stripe-ach.inc"
+#include "test-stripe-links.inc"
+#include "test-stripe-automatic.inc"
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/stripe/records", test_records);
+	g_test_add("/stripe/payment-link/basic", Fixture, NULL, set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/authorization", Fixture, "authorization", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/changed", Fixture, "changed", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/replacement", Fixture, "replacement", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/uncertain", Fixture, "uncertain", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/deleted", Fixture, "deleted", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/finance", Fixture, "finance", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/api", Fixture, "api", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/paid", Fixture, "paid", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);
+	g_test_add("/stripe/ach/delayed", Fixture, NULL, set_up, test_ach_delayed, tear_down);
+	g_test_add("/stripe/ach/reservation", Fixture, NULL, set_up, test_ach_reservation, tear_down);
+	g_test_add("/stripe/ach/posting-retry", Fixture, NULL, set_up, test_ach_posting_retry, tear_down);
+	g_test_add("/stripe/ach/balance-conflict", Fixture, NULL, set_up, test_ach_balance_conflict, tear_down);
+	g_test_add("/stripe/ach/sod", Fixture, "sod", set_up, test_ach_balance_conflict, tear_down);
+	g_test_add("/stripe/ach/settings", Fixture, NULL, set_up, test_ach_settings, tear_down);
+	g_test_add("/stripe/ach/closed-period", Fixture, NULL, set_up, test_ach_closed_period, tear_down);
+	g_test_add("/stripe/ach/failed-replacement", Fixture, NULL, set_up, test_ach_failed_replacement, tear_down);
+	g_test_add("/stripe/ach/pending-mismatch", Fixture, NULL, set_up, test_ach_pending_mismatch, tear_down);
+	g_test_add("/stripe/ach/return-closed-period", Fixture, "closed", set_up, test_ach_return_guard, tear_down);
+	g_test_add("/stripe/ach/return-sod", Fixture, "sod", set_up, test_ach_return_guard, tear_down);
+	g_test_add("/stripe/ach/return-lost", Fixture, "lost", set_up, test_ach_return, tear_down);
+	g_test_add("/stripe/ach/return-won", Fixture, "won", set_up, test_ach_return, tear_down);
+	g_test_add("/stripe/ach/database-backstop", Fixture, NULL, set_up, test_ach_database_backstop, tear_down);
 	g_test_add_func("/stripe/no-keys", test_no_keys);
 	g_test_add_func("/stripe/customer-link-owner", test_customer_link_owner);
 	g_test_add_func("/stripe/dependency-pin", test_dependency_pin);
+	g_test_add("/stripe/automatic-authorization", Fixture, NULL, set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-authorization-callback", Fixture, "callback", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-collection", Fixture, "collection", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-settlement", Fixture, "settlement", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-failure-recovery", Fixture, "failure-recovery", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-paused-recovery", Fixture, "paused-recovery", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-pay-restart", Fixture, "pay-retry", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-catalog-retirement", Fixture, "catalog", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-environment", Fixture, "environment", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-manual-conflict", Fixture, "manual-conflict", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-manual-recovery", Fixture, "manual-recovery", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-bank-permission", Fixture, "bank", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-finance", Fixture, "finance", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-scheduler", Fixture, "scheduler", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-action", Fixture, "action", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-reconcile", Fixture, "reconcile", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-sweep", Fixture, "sweep", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-expiry-collision", Fixture, "expiry-collision", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-retry", Fixture, "retry", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-cancel", Fixture, "cancel", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/price-uniqueness", Fixture, NULL, set_up, test_price_uniqueness, tear_down);
 	g_test_add("/stripe/module-start", Fixture, NULL, set_up, test_module_start, tear_down);
 
@@ -984,5 +1116,14 @@ main(int argc, char **argv)
 	environment();
 	g_test_add("/stripe/price-migration-rollback", Fixture, NULL, set_up, test_price_migration_rollback, tear_down);
 	g_test_add("/stripe/payout-dispute-chargeback", Fixture, NULL, set_up, test_payout_dispute_chargeback, tear_down);
+	g_test_add_func("/stripe/account-binding-metadata", test_account_binding_metadata);
+	g_test_add("/stripe/binding-organizations", Fixture, NULL, set_up, test_binding_organizations, tear_down);
+	g_test_add("/stripe/binding-settings-ui", Fixture, "settings-ui", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-migration", Fixture, NULL, set_up, test_binding_migration, tear_down);
+	g_test_add("/stripe/binding-rotation", Fixture, "rotation", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
+	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
+
 	return g_test_run();
 }

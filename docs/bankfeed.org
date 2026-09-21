@@ -4,22 +4,74 @@
 * Bank feeds
 
 The =bankfeed= module is opt-in and requires =banking=. Set
-=bankfeed.enabled: true=. A Teller key is optional: without
-=VENTURE_BANKFEED_TELLER_KEY= the registry is empty so a plugin can
-register another feed. Production HTTP uses
+=bankfeed.enabled: true=. The Teller factory is registered without credentials;
+plugins can register other providers. =VENTURE_BANKFEED_TELLER_KEY= is no
+longer read. An unconfigured connection fails closed even if that old
+installation variable is present. Production HTTP uses
 =venture_bank_feed_transport_get_async= with a =GCancellable=; database
-writes stay on the completion context. Credentials are never stored in YAML.
+writes stay on the completion context.
 
-A =bank_connection= row is one linked account: provider, provider account
-id, and the =bank_account= that receives statement evidence. Hosted
-metering can count these rows later. Generic writes may link an account;
-sync is a service action.
+A =bank_connection= row links one provider account to its =bank_account=
+for statement evidence. Its organization, provider, remote account and local
+bank identity are fixed after creation. Create a different connection when
+the account changes; never rewrite the identity of retained imports.
+The destination bank must belong to the connection's organization. Derived
+connection keys include organization, so independent businesses may use the
+same remote account identifier without a collision. Migration 550 backfills
+these keys atomically; an inconsistent historical identity refuses migration
+rather than discarding an account.
+
+* Organization settings
+
+Open =/bankfeed=, link the bank account, then choose =Settings= on that row.
+Organization owners and administrators can configure, rotate, test or
+disconnect this connection at =/bankfeed/:id/settings=. The form is generated
+from the provider's write-only schema. Supply the complete settings on every
+rotation; credential fields are never populated with saved values. Stale
+binding IDs or versions refuse the save. Ordinary editors cannot manage
+provider credentials.
+
+For Teller, supply =access_token= and =environment= (=sandbox=,
+=development= or =production=). Development and production also require the
+application's =certificate= and =private_key= as PEM text. These values are
+encrypted together through [[file:integrations.org][organization integration storage]];
+there are no credential files, environment lookups or caller-selected API
+hosts. The TLS client identity is built in memory. The sandbox permits no
+certificate because it contains synthetic data; Teller requires mTLS for
+end-user data, as described in its
+[[https://teller.io/docs/api/authentication][authentication contract]].
+
+=Sync and test= uses the ordinary sync operation for the previous 30 days:
+it verifies provider access and imports new statement rows, reporting their
+count. It is not a dry run and does not post a journal. Repeated imports use
+the existing statement deduplication. A saved configuration is not a claim
+of successful provider access. TLS/authentication refusals are errors, never
+reasons to borrow an installation token or another organization's account.
+
+Each bank connection has its own encrypted binding, keyed by its stable UUID
+within its organization; multiple enrollments do not share credentials.
+A sync resolves the binding and exact version before network I/O, then checks
+that version again before importing the response. Rotation, disconnect or
+revocation during a request prevents the stale result from being written;
+retry deliberately using the current settings. Disconnect retains previously
+imported statement evidence. A replacement receives a new integration ID.
+
+For migration from installation settings, an administrator must explicitly
+select each bank connection and enter its authorized credentials. Venture
+never guesses which organization owned the old token. Keep the integration
+master key separately backed up as described in the integration guide.
 
 * Providers
 
 =VentureBankFeed= is a GInterface with a registry, the same shape as
-posting rules. The built-in Teller implementation talks only to an
-injected transport. Tests register a fake feed and never open a socket.
+posting rules. A provider's optional =prepare= hook builds an immutable
+client from one resolved credential snapshot; =dup_schema= supplies its
+write-only settings schema. The service performs authorization, encryption
+and version checks for every factory. A plugin adds these hooks to join the
+same settings/sync workflow. Fully configured feeds injected without a
+factory remain a trusted in-process extension/test facility; tenants may
+not load arbitrary plugins. The built-in Teller implementation talks through
+an injectable transport, and fixture tests use synthetic responses.
 
 Fetch results are imported through =VentureBankMatchService= action
 =feed=. That writes =bank_transaction= with the existing external-key

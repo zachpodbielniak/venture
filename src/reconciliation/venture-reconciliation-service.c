@@ -111,7 +111,7 @@ match_action(VentureDatabase *db, GError **error)
 	parts = venture_field_spec_new("parts", "Matching documents", VENTURE_FIELD_KIND_JSON);
 	parts->required = TRUE;
 	g_ptr_array_add(parameters, parts);
-	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "bank_transaction", "name", "match",
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "bank_transaction", "name", "match",
 		"label", "Match", "description", "Match cash documents through the banking service",
 		"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, action, match_allowed, match_invoke,

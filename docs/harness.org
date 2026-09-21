@@ -16,23 +16,19 @@ It is not the assistant panel. That answers questions about your records and sta
 
 The same machinery a run uses. [[file:factory.org][The software factory]] already runs a coding agent against a ticket: a ticket goes in, a branch comes out, nobody watches. A session is the other half — the same providers, on the same background thread, under the same rules — with a person in the loop.
 
-*** Provider, model and effort
+*** Organization and provider
 
-The three are chosen from dropdowns, and they are not independent: a model belongs to a provider, and an effort level only exists for the CLI providers that take a flag for it. Choosing a provider fills the other two in; a provider with no effort flag has no effort field at all, because a control that cannot do anything is worse than none.
+Choose the organization when opening a session. Its explicit =coding= binding
+in [[file:ai-organizations.org][AI settings]] supplies the HTTP provider, model and encrypted credential.
+Each turn rechecks that binding and the caller's current access. A missing,
+disabled or revoked binding fails before provider I/O; neither global AI
+configuration nor an installed CLI supplies a fallback.
 
-None of those lists is written by hand. ai-glib declares every model it knows as a constant in its provider headers, and =tools/venture-models.sh= turns those into a C table at build time; the provider list is walked out of =AiProviderType=. Both therefore move when the submodule does. A model outside the list can still be typed — the field falls back to a text box for a provider whose models nobody can enumerate, which is what an OpenAI-compatible endpoint is.
-
-Effort is a property of the provider rather than of the model, because that is how ai-glib passes it: a flag on the command line, spelled differently per CLI. =low=, =medium=, =high= and =max= are offered; each provider folds what it cannot express, so =grok-build= turns =max= into =xhigh= and =antigravity= folds both onto =high=. Two kinds take none: an HTTP API has no such flag, and =cursor= bakes the level into the model id, so choosing =claude-opus-5-high= over =claude-opus-5-low= /is/ choosing the effort.
-
-Providers come from ai-glib's factory, so anything it knows is available:
-
-| =claude-code= | the =claude= CLI, in the workspace, with its own tools |
-| =codex=       | the =codex= CLI                                       |
-| =cursor=      | =cursor-agent=                                        |
-| =opencode=    | the =opencode= CLI                                    |
-| =claude=, =openai=, … | an API provider, given VENTURE's own confined file tools |
-
-A CLI provider is a subprocess started in the workspace and brings its own tools; an API provider gets the read/write/edit/glob/grep tools rooted at the workspace and nothing else. Neither gets ai-glib's built-ins, whose file tools take absolute paths and whose bash tool would be a shell inside the server.
+The provider receives VENTURE's confined workspace tools, with paths checked
+against the selected checkout. ai-glib's built-in file and shell tools are
+never registered. Historical provider, model and effort fields remain readable;
+the actual provider and model are recorded when a new turn starts. Historical
+CLI provider names do not authorize executing those programs.
 
 ** Where a session works
 

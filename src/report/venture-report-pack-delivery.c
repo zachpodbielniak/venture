@@ -253,7 +253,7 @@ enqueue_output(VentureContext *context, VentureReportPack *pack, GDateTime *cloc
 		g_object_get(mailer, "config", &config, NULL);
 		if (config != NULL)
 			g_object_get(config, "mail-host", &host, NULL);
-		if (host == NULL || host[0] == '\0')
+		if (config != NULL && (host == NULL || host[0] == '\0'))
 		{
 			refuse(error, "mail", "No mail transport is configured (mail.host is empty), so the pack's output cannot be mailed");
 			return NULL;
@@ -344,6 +344,23 @@ enqueue_output(VentureContext *context, VentureReportPack *pack, GDateTime *cloc
 	key = g_strdup_printf("report_pack:%s:%s", venture_entity_get_uuid(VENTURE_ENTITY(pack)), stamp);
 	g_object_set(message, "to", recipients, "attachments", attachment_json, "idempotency-key", key,
 		"related-type", "report_pack", "related-id", venture_entity_get_id(VENTURE_ENTITY(pack)), NULL);
+	{
+		g_autoptr(GError) unavailable = NULL;
+		g_autoptr(VentureMailer) prepared = NULL;
+		g_autofree gchar *reason = NULL;
+		/* A selector existing is not evidence that this organization has
+		 * transport. Preflight the retained report's actual message without
+		 * submitting it; the outbox selects again at the first attempt. */
+		venture_entity_set_organization_id(VENTURE_ENTITY(message), organization_id);
+		prepared = venture_mailer_prepare(mailer, message, &unavailable);
+		if (prepared == NULL)
+		{
+			reason = g_strdup_printf("No mail transport is available: %s",
+				unavailable != NULL ? unavailable->message : "configuration is unavailable");
+			refuse(error, "mail", reason);
+			return NULL;
+		}
+	}
 	return venture_mail_outbox_enqueue(outbox, message, actor, error);
 }
 

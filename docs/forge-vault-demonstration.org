@@ -1,0 +1,466 @@
+#+title: Forge vault — built-artifact demonstration
+
+The actual DEBUG =venture= server and =venturectl= below use a disposable
+SQLite workspace and a synthetic loopback Forgejo account endpoint. No live forge,
+user credential, repository or hosted workspace is contacted. Authentication is
+disabled only on this loopback transport fixture; =test-auth= separately checks
+authentication/role refusal. Secrets are supplied on stdin and omitted from this
+transcript. Configure/test/account refusal, independent organizations, rotation,
+webhook revocation and explicit legacy import are exercised through real routes.
+See [[file:forge.org][Git forges]] for the credential and host-capability contract.
+
+* Encrypted settings and callback journey
+
+#+begin_example
+Disposable loopback Venture server; synthetic provider; authentication disabled only in this isolated transport demonstration.
+$ venturectl create forge name=Demo-A organization_id=1 kind=forgejo base_url=http://127.0.0.1:34793 active=true
+{
+  "type" : "forge",
+  "id" : 1,
+  "uuid" : "08421235-714d-4e96-b1d4-9f0e38bc5340",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:49.594895Z",
+  "updated_at" : "2026-09-20T10:17:49.596086Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "name" : "Demo-A",
+  "kind" : "forgejo",
+  "base_url" : "http://127.0.0.1:34793",
+  "clone_base_url" : null,
+  "token_set_at" : null,
+  "webhook_secret_set_at" : null,
+  "bot_username" : null,
+  "verified_at" : null,
+  "active" : true,
+  "notes" : null,
+  "display_name" : "Demo-A"
+}
+# operation=configure connection_id=0 version=0; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : true,
+  "connection_id" : 1,
+  "version" : 1
+}
+$ venturectl create organization name=Demo-B active=true
+{
+  "type" : "organization",
+  "id" : 2,
+  "uuid" : "f64d6aef-61f1-429b-898a-7f3ed2840ab5",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:49.698972Z",
+  "updated_at" : "2026-09-20T10:17:49.700471Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "name" : "Demo-B",
+  "parent_id" : 0,
+  "slug" : null,
+  "kind" : "personal",
+  "legal_name" : null,
+  "default_currency" : null,
+  "fiscal_year_start_month" : 0,
+  "email" : null,
+  "phone" : null,
+  "website" : null,
+  "address" : null,
+  "notes" : null,
+  "is_default" : false,
+  "active" : true,
+  "quote_valid_days" : 0,
+  "sequence_tracking" : false,
+  "display_name" : "Demo-B"
+}
+$ venturectl create forge name=Demo-B organization_id=2 kind=forgejo base_url=http://127.0.0.1:34793 active=true
+{
+  "type" : "forge",
+  "id" : 2,
+  "uuid" : "559bda7a-d779-4b1c-bb9a-a1d40ec32e95",
+  "organization_id" : 2,
+  "created_at" : "2026-09-20T10:17:49.738200Z",
+  "updated_at" : "2026-09-20T10:17:49.739585Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "name" : "Demo-B",
+  "kind" : "forgejo",
+  "base_url" : "http://127.0.0.1:34793",
+  "clone_base_url" : null,
+  "token_set_at" : null,
+  "webhook_secret_set_at" : null,
+  "bot_username" : null,
+  "verified_at" : null,
+  "active" : true,
+  "notes" : null,
+  "display_name" : "Demo-B"
+}
+# operation=configure connection_id=0 version=0; credential fields omitted
+$ venturectl forge settings 2 < private-settings.json
+{
+  "forge_id" : 2,
+  "connected" : true,
+  "connection_id" : 2,
+  "version" : 1
+}
+# operation=test connection_id=1 version=1; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : true,
+  "connection_id" : 1,
+  "version" : 1
+}
+# operation=test connection_id=2 version=1; credential fields omitted
+$ venturectl forge settings 2 < private-settings.json
+{
+  "forge_id" : 2,
+  "connected" : true,
+  "connection_id" : 2,
+  "version" : 1
+}
+$ venturectl get forge 1
+{
+  "type" : "forge",
+  "id" : 1,
+  "uuid" : "08421235-714d-4e96-b1d4-9f0e38bc5340",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:49.594895Z",
+  "updated_at" : "2026-09-20T10:17:49.596086Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "name" : "Demo-A",
+  "kind" : "forgejo",
+  "base_url" : "http://127.0.0.1:34793",
+  "clone_base_url" : null,
+  "token_set_at" : null,
+  "webhook_secret_set_at" : null,
+  "bot_username" : null,
+  "verified_at" : null,
+  "active" : true,
+  "notes" : null,
+  "display_name" : "Demo-A"
+}
+GET /forges/1/settings => 200; schema credential fields are blank password inputs; connect/rotate/test/disconnect/import controls rendered.
+POST /hooks/forge/1 with retained fixture signature => 204
+POST /hooks/forge/2 with retained fixture signature => 204
+# operation=configure connection_id=1 version=1; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+venturectl: Disconnect the existing account before replacing its identity or environment
+# operation=configure connection_id=1 version=1; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : true,
+  "connection_id" : 1,
+  "version" : 2
+}
+POST /hooks/forge/1 with retained fixture signature => 401
+POST /hooks/forge/1 with retained fixture signature => 204
+POST /hooks/forge/2 with retained fixture signature => 204
+# operation=configure connection_id=1 version=1; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+venturectl: Binding changed; reload settings
+# operation=disconnect connection_id=1 version=2; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : false,
+  "connection_id" : 0,
+  "version" : 0
+}
+POST /hooks/forge/1 with retained fixture signature => 401
+POST /hooks/forge/2 with retained fixture signature => 204
+Stopped the disposable server and restored synthetic legacy plaintext to simulate an old installation; restarted with the same external encryption key.
+$ venturectl forge verify 1
+venturectl: Organization integration is unconfigured or ambiguous
+# operation=import connection_id=0 version=0; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : true,
+  "connection_id" : 3,
+  "version" : 1
+}
+# operation=test connection_id=3 version=1; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : true,
+  "connection_id" : 3,
+  "version" : 1
+}
+Read-only database verification: imported token and webhook_secret are cleared.
+POST /hooks/forge/1 with retained fixture signature => 204
+$ venturectl create forge_repo name=demo/project organization_id=1 forge_id=1 clone_url=git@fixture.invalid:demo/project.git default_branch=main active=true
+{
+  "type" : "forge_repo",
+  "id" : 1,
+  "uuid" : "f6bd43fe-2146-40e2-8201-e9ad92472cc7",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:50.729840Z",
+  "updated_at" : "2026-09-20T10:17:50.731388Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "name" : "demo/project",
+  "forge_id" : 1,
+  "default_branch" : "main",
+  "branch_prefix" : null,
+  "clone_url" : "git@fixture.invalid:demo/project.git",
+  "venture_id" : 0,
+  "product_id" : 0,
+  "workspace_path" : null,
+  "push_issues" : false,
+  "accept_issues" : false,
+  "active" : true,
+  "notes" : null,
+  "display_name" : "demo/project"
+}
+$ venturectl create release name=Vault demonstration organization_id=1 repo_id=1 number=1.0.0
+{
+  "type" : "release",
+  "id" : 1,
+  "uuid" : "7853a762-8bc1-4e6d-90ad-f269413271dc",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:50.770439Z",
+  "updated_at" : "2026-09-20T10:17:50.771962Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "number" : "1.0.0",
+  "name" : "Vault demonstration",
+  "product_id" : 0,
+  "repo_id" : 1,
+  "milestone_id" : 0,
+  "status" : "planned",
+  "tag" : null,
+  "released_at" : null,
+  "url" : null,
+  "changelog" : null,
+  "notes" : null,
+  "external_id" : 0,
+  "display_name" : "Vault demonstration"
+}
+$ venturectl release publish 1
+{
+  "type" : "release",
+  "id" : 1,
+  "uuid" : "7853a762-8bc1-4e6d-90ad-f269413271dc",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:50.770439Z",
+  "updated_at" : "2026-09-20T10:17:50.818820Z",
+  "deleted_at" : null,
+  "version" : 2,
+  "number" : "1.0.0",
+  "name" : "Vault demonstration",
+  "product_id" : 0,
+  "repo_id" : 1,
+  "milestone_id" : 0,
+  "status" : "released",
+  "tag" : "v1.0.0",
+  "released_at" : "2026-09-20T10:17:50.816355Z",
+  "url" : "http://127.0.0.1:34793/demo/project/releases/tag/v1.0.0",
+  "changelog" : null,
+  "notes" : null,
+  "external_id" : 501,
+  "display_name" : "Vault demonstration"
+}
+Actual release publishing used the imported organization binding and retained the verified synthetic provider release identity.
+$ venturectl create forge_rule name=Demo-rule organization_id=1 repo_id=1 issue_type=bug enabled=true runner=agent
+{
+  "type" : "forge_rule",
+  "id" : 1,
+  "uuid" : "f06b07ad-3c80-4317-bcb1-377546efda88",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:50.857321Z",
+  "updated_at" : "2026-09-20T10:17:50.859050Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "name" : "Demo-rule",
+  "repo_id" : 1,
+  "forge_id" : 0,
+  "issue_type" : "bug",
+  "all_issue_types" : false,
+  "enabled" : true,
+  "runner" : "agent",
+  "runner_command" : null,
+  "provider" : null,
+  "model" : null,
+  "prompt" : null,
+  "outcome" : "draft_pr",
+  "trigger" : "manual",
+  "branch_template" : null,
+  "base_branch" : null,
+  "labels" : null,
+  "max_turns" : 0,
+  "timeout_seconds" : 0,
+  "max_runs_per_day" : 0,
+  "require_approval" : false,
+  "notes" : null,
+  "display_name" : "Demo-rule"
+}
+$ venturectl create ticket organization_id=1 title=Credential revocation demonstration repo_id=1 issue_type=bug
+{
+  "type" : "ticket",
+  "id" : 1,
+  "uuid" : "596a2fc8-a970-4afe-ba9e-dbf7d9447e49",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:50.899426Z",
+  "updated_at" : "2026-09-20T10:17:50.901404Z",
+  "deleted_at" : null,
+  "version" : 1,
+  "title" : "Credential revocation demonstration",
+  "kind" : "internal",
+  "status" : "triage",
+  "priority" : "low",
+  "description" : null,
+  "assignee" : null,
+  "contact_id" : 0,
+  "company_id" : 0,
+  "venture_id" : 0,
+  "idea_id" : 0,
+  "parent_id" : 0,
+  "due_at" : null,
+  "resolved_at" : null,
+  "estimate_hours" : 0.0,
+  "tags" : null,
+  "board_order" : 0.0,
+  "resolution" : null,
+  "issue_type" : "bug",
+  "repo_id" : 1,
+  "milestone_id" : 0,
+  "release_id" : 0,
+  "sprint_id" : 0,
+  "story_points" : 0,
+  "first_response_due_at" : null,
+  "resolution_due_at" : null,
+  "first_responded_at" : null,
+  "sla_breached" : false,
+  "logged_hours" : 0.0,
+  "satisfaction" : "unrated",
+  "satisfaction_comment" : null,
+  "owner_user_id" : 0,
+  "team_id" : 0,
+  "display_name" : "Credential revocation demonstration"
+}
+POST /tickets/1/work => 302; real Venture worker starts the fixture git process using SSH mode, with no forge token in its environment.
+$ venturectl list forge_run ticket_id__eq=1
+{
+  "total" : 1,
+  "count" : 1,
+  "records" : [
+    {
+      "type" : "forge_run",
+      "id" : 1,
+      "uuid" : "91282d20-8002-48aa-808f-ccb525d080df",
+      "organization_id" : 1,
+      "created_at" : "2026-09-20T10:17:50.913126Z",
+      "updated_at" : "2026-09-20T10:17:50.924789Z",
+      "deleted_at" : null,
+      "version" : 2,
+      "connection_id" : 3,
+      "credential_version" : 1,
+      "ticket_id" : 1,
+      "link_id" : 0,
+      "rule_id" : 1,
+      "state" : "running",
+      "runner" : "agent",
+      "outcome" : "draft_pr",
+      "branch" : null,
+      "pull_request_number" : 0,
+      "started_at" : "2026-09-20T10:17:50.913124Z",
+      "finished_at" : null,
+      "provider" : null,
+      "model" : null,
+      "input_tokens" : 0,
+      "output_tokens" : 0,
+      "turns" : 0,
+      "cost" : null,
+      "prompt" : null,
+      "summary" : null,
+      "log" : null,
+      "failure_reason" : null,
+      "display_name" : "forge_run #1"
+    }
+  ]
+}
+# operation=disconnect connection_id=3 version=1; credential fields omitted
+$ venturectl forge settings 1 < private-settings.json
+{
+  "forge_id" : 1,
+  "connected" : false,
+  "connection_id" : 0,
+  "version" : 0
+}
+$ venturectl get forge_run 1
+{
+  "type" : "forge_run",
+  "id" : 1,
+  "uuid" : "91282d20-8002-48aa-808f-ccb525d080df",
+  "organization_id" : 1,
+  "created_at" : "2026-09-20T10:17:50.913126Z",
+  "updated_at" : "2026-09-20T10:17:51.049234Z",
+  "deleted_at" : null,
+  "version" : 3,
+  "connection_id" : 3,
+  "credential_version" : 1,
+  "ticket_id" : 1,
+  "link_id" : 0,
+  "rule_id" : 1,
+  "state" : "cancelled",
+  "runner" : "agent",
+  "outcome" : "draft_pr",
+  "branch" : null,
+  "pull_request_number" : 0,
+  "started_at" : "2026-09-20T10:17:50.913124Z",
+  "finished_at" : "2026-09-20T10:17:51.046666Z",
+  "provider" : null,
+  "model" : null,
+  "input_tokens" : 0,
+  "output_tokens" : 0,
+  "turns" : 0,
+  "cost" : null,
+  "prompt" : null,
+  "summary" : null,
+  "log" : null,
+  "failure_reason" : "Forge credentials changed or were revoked; external outcome may be uncertain",
+  "display_name" : "forge_run #1"
+}
+Worker cancellation completed without waiting for the fixture child sleep; retained run names its original encrypted binding and version.
+#+end_example
+
+* Verification and review
+
+All commands use the DEBUG build. The local fixture provider is synthetic; this
+is not a live Forgejo deployment or a claim about physical disk recovery.
+
+| Check | Result |
+| Forge subsystem, SQLite | 40 passed |
+| Forge subsystem, isolated PostgreSQL schemas | 40 passed, including populated origin-constraint upgrade |
+| Coding workers | 9 passed, including disconnect/module revocation and retained binding evidence |
+| Factory and factory operations | 16 + 16 passed |
+| Authentication | 95 passed; added settings editor-denial case also passed separately |
+| Module lifecycle | 19 passed |
+| GObject introspection | GIR and typelib generated with no warnings; credential snapshot and settings APIs discovered |
+| Documentation | 90 pages rendered by Emacs |
+| Fixture cleanup | Worker/module/authorization run passed litter comparison; private temporary directory removed |
+
+PostgreSQL ran in schema-isolated disposable databases with fsync enabled on a
+tmpfs-backed fixture. These tests establish PostgreSQL behavior and transactional
+rollback, not persistent-media durability. One authentication attempt could not
+bind its fixture listener; the complete subsequent run passed.
+
+The regression against the record-only credential factory failed before its
+fail-closed implementation. New vault tests also caught a shallow JSON copy that
+modified caller-owned settings; credentials now copy only declared input fields.
+A worker regression reproduced service finalization joining its own thread;
+completion now releases the service on the main context after worker cleanup.
+The clone regression refused a nonempty destination while the old helper lived
+inside it, then passed with the helper beside the checkout. The owned child
+process test checks exact askpass authority, neighboring-host refusal, immediate
+revocation, immutable retained connection/version and completion before teardown.
+The worker HTTP test holds the database transaction lock while an independent
+credential-bound request completes, proving that request does not read the DB.
+
+The local skill-review pass opened this demonstration before reviewing the diff,
+repaired those defects and missing settings role checks, then reviewed the final
+repairs and their tests. No remaining defect was identified in this bounded lane.
+The combined epic's hosted classification and full-suite gate remain the parent
+PR's responsibility; all forge settings routes must retain PLATFORM authority.

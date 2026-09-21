@@ -1095,6 +1095,16 @@ venture_notify_on_audit(
 
 	if (venture_notify_type_is_quiet(target_type) || (0 == target_id))
 		return;
+	{
+		g_autoptr(VentureEntity) target = NULL;
+		GType type = venture_entity_registry_lookup_any(venture_context_get_entity_registry(context), target_type);
+		if (type == G_TYPE_INVALID) return;
+		target = venture_database_get(database, type, target_id, NULL);
+		/* Private data is never published through organization-wide
+		 * notification excerpts or outbound integration events. */
+		if (!target || venture_access_policy_record_is_personal(venture_database_get_access_policy(database), target)) return;
+	}
+
 
 	if ((VENTURE_AUDIT_ACTION_CREATE != action) &&
 	    (VENTURE_AUDIT_ACTION_UPDATE != action) &&

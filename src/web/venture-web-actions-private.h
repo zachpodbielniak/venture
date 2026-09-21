@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Included by the route owner so generic actions use its authentication and
  * error policy, while keeping generated action rendering in one place. */
+static gboolean venture_web_url_is_web(const gchar *url);
+
 static void
 venture_web_append_record_actions(VentureWebServer *self, GString *html,
 	VentureEntity *entity, VentureAuthPrincipal *principal)
@@ -19,7 +21,7 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		VentureUserRole role;
 		gboolean type_level;
 		g_object_get(action, "type-level", &type_level, NULL);
-		if (type_level) continue;
+		if (type_level != (venture_entity_get_id(entity) == 0)) continue;
 		g_object_get(action, "name", &name, "label", &label, "parameters", &parameters, "roles", &role, NULL);
 		if (!venture_web_require_for_type(self, principal, G_OBJECT_TYPE(entity), role, NULL) ||
 			!venture_action_registry_allowed(registry, action, entity, &actor, principal->role, NULL)) continue;
@@ -28,23 +30,79 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		for (j = 0; j < parameters->len; j++)
 		{
 			VentureFieldSpec *spec = g_ptr_array_index(parameters, j);
-			const gchar *kind = "text";
-			if (VENTURE_FIELD_KIND_DATE == spec->kind) kind = "date";
-			if (VENTURE_FIELD_KIND_INTEGER == spec->kind || VENTURE_FIELD_KIND_REFERENCE == spec->kind) kind = "number";
-			g_string_append(html, "<label class=\"field\"><span class=\"field-label\">");
-			venture_html_escape_append(html, venture_field_spec_get_label(spec));
-			g_string_append(html, "</span>");
-			if (VENTURE_FIELD_KIND_BOOLEAN == spec->kind)
+			g_autoptr(VentureFieldSpec) field = venture_field_spec_copy(spec);
+			if (VENTURE_FIELD_KIND_BOOLEAN == field->kind)
 			{
-				g_string_append_printf(html, "<select name=\"%s\"><option value=\"false\">No</option><option value=\"true\">Yes</option></select>", spec->name);
+				/* A select has one submitted value; duplicate hidden/checkbox
+				 * names are collapsed by the generic form parser. */
+				g_string_append(html, "<label class=\"field\"><span class=\"field-label\">");
+				venture_html_escape_append(html, field->label);
+				g_string_append_printf(html, "</span><select name=\"%s\"><option value=\"false\">No</option><option value=\"true\">Yes</option></select></label>", field->name);
 			}
 			else
-				g_string_append_printf(html, "<input name=\"%s\" type=\"%s\"%s>", spec->name, kind, spec->required ? " required" : "");
-			g_string_append(html, "</label>");
+			{
+				if (type_level && g_str_equal(field->name, "organization_id") && venture_entity_get_organization_id(entity) > 0)
+				{
+					g_free(field->default_text);
+					field->default_text = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_organization_id(entity));
+				}
+				/* Action timestamps retain their explicit ISO time and zone. */
+				if (field->kind == VENTURE_FIELD_KIND_DATETIME) field->kind = VENTURE_FIELD_KIND_STRING;
+				venture_web_append_form_field_scoped(self, html, field, NULL, venture_entity_get_organization_id(entity));
+			}
 		}
 		g_string_append(html, "<button class=\"btn\" type=\"submit\">");
 		venture_html_escape_append(html, label);
 		g_string_append(html, "</button></form>");
+	}
+}
+
+/* Transient action outputs are intentionally absent from ordinary record
+ * serialization. Return them once using their declared metadata and secrecy. */
+static void
+venture_web_action_transient_result(VentureEntity *result, JsonObject *json, GString *html)
+{
+	g_autofree GParamSpec **properties = NULL;
+	guint count, i;
+	properties = g_object_class_list_properties(G_OBJECT_GET_CLASS(result), &count);
+	for (i = 0; i < count; i++)
+	{
+		GParamSpec *property = properties[i];
+		VentureColumnFlags flags = venture_entity_class_get_column_flags(VENTURE_ENTITY_GET_CLASS(result), property->name);
+		g_auto(GValue) value = G_VALUE_INIT;
+		g_autoptr(JsonNode) node = NULL;
+		g_autofree gchar *text = NULL, *member = NULL;
+		if (!(flags & VENTURE_COLUMN_FLAG_TRANSIENT) || (flags & VENTURE_COLUMN_FLAG_SENSITIVE) ||
+			!(property->flags & G_PARAM_READABLE)) continue;
+		g_value_init(&value, property->value_type);
+		g_object_get_property(G_OBJECT(result), property->name, &value);
+		node = venture_json_node_from_value(&value);
+		if (!node || JSON_NODE_HOLDS_NULL(node)) continue;
+		if (G_VALUE_HOLDS_STRING(&value))
+		{
+			/* Transient plugin results follow the same URI credential rule as
+			 * stored fields, on both the wire and the rendered page. */
+			text = venture_string_redact_uri(g_value_get_string(&value));
+			json_node_set_string(node, text);
+		}
+		else text = venture_json_to_string(node, FALSE);
+		if (!text || !*text) continue;
+		member = venture_entity_property_to_column(property->name);
+		json_object_set_member(json, member, json_node_copy(node));
+		if (!html) continue;
+		g_string_append(html, "<p><strong>");
+		venture_html_escape_append(html, g_param_spec_get_nick(property));
+		g_string_append(html, "</strong></p><p>");
+		if (G_VALUE_HOLDS_STRING(&value) && venture_web_url_is_web(text))
+		{
+			g_string_append(html, "<a rel=\"noreferrer\" href=\"");
+			venture_html_escape_append(html, text);
+			g_string_append(html, "\">");
+			venture_html_escape_append(html, text);
+			g_string_append(html, "</a>");
+		}
+		else venture_html_escape_append(html, text);
+		g_string_append(html, "</p>");
 	}
 }
 
@@ -178,15 +236,32 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 	}
 	result = venture_action_registry_perform(registry, type_name, id, name, params, &actor, principal->role, &error);
 	if (!result) return venture_web_error_response(error);
+	response = venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE);
 	if (form)
 	{
 		g_autofree gchar *location = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT,
 			venture_entity_get_entity_name(result), venture_entity_get_id(result));
-		HtmxResponse *redirect = htmx_response_new();
+		g_autoptr(GString) transient = g_string_new("");
+		HtmxResponse *redirect;
+		venture_web_action_transient_result(result, json_node_get_object(response), transient);
+		if (transient->len)
+		{
+			HtmxResponse *shown;
+			g_string_append_printf(transient, "<p><a href=\"%s\">View record</a></p>", location);
+			shown = venture_web_html_response(venture_web_page(self, request, NULL, "Action result", transient->str), 200);
+			htmx_response_add_header(shown, "Cache-Control", "no-store");
+			htmx_response_add_header(shown, "Referrer-Policy", "no-referrer");
+			return shown;
+		}
+		redirect = htmx_response_new();
 		htmx_response_set_status(redirect, 303);
 		htmx_response_add_header(redirect, "Location", location);
 		return redirect;
 	}
-	response = venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE);
-	return venture_web_json_response(response, journal_alias ? 201 : 200);
+	venture_web_action_transient_result(result, json_node_get_object(response), NULL);
+	{
+		HtmxResponse *reply = venture_web_json_response(response, journal_alias ? 201 : 200);
+		htmx_response_add_header(reply, "Cache-Control", "no-store");
+		return reply;
+	}
 }

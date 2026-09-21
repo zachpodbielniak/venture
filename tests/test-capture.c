@@ -2,6 +2,7 @@
 #include <venture.h>
 #include <string.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -26,7 +27,7 @@ setup(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) vendor = NULL;
 	f->config = venture_config_new();
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -42,7 +43,7 @@ static void
 teardown(Fixture *f, gconstpointer unused)
 {
 	g_clear_object(&f->context);
-	g_clear_object(&f->db);
+	venture_test_accounting_database_cleanup(f->db); g_clear_object(&f->db);
 	g_clear_object(&f->config);
 }
 

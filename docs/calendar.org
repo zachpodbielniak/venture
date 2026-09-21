@@ -15,37 +15,38 @@ nurture touch that lands on the timeline like any other activity.
 
 * Accounts and secrets
 
-=calendar_account= is owner-only, for the same reason a =mail_account= is:
-the row names the CalDAV host and which environment variable holds the app
-password, and an editor who could change either could point the next sweep
-at a host they control or read another secret out of the process
-environment.
+Organization administrators assign an account's CalDAV HTTPS URL, login,
+collection path and owner username. The operator must allow the exact HTTPS
+origin in =calendar.allowed_origins=. An explicit encrypted account binding
+supplies its password or app token through [[file:connectors.org][connector settings]].
+=secret_env= is retained as unused historical metadata; the process environment
+is never a password fallback. =sync_token=, =last_synced_at= and =last_error=
+record the synchronization state.
 
-An account names the CalDAV base URL, the owner (a username, whose
-activities are mirrored), the login username, the collection's
-=calendar_path= (for example =/calendars/ben/default/=) and =secret_env=:
-the NAME of a =VENTURE_CALDAV_*= environment variable holding the password
-or app token. The row never holds the secret. A name that is not
-=VENTURE_CALDAV_= followed by letters, digits or underscores is refused
-before any connection, so a row cannot name =VENTURE_SMTP_PASSWORD= or the
-session secret. A sync whose variable is unset fails with a
-=VENTURE_ERROR_CONFIG= error naming that variable and never opens a
-connection. =sync_token= holds the collection's ctag after the last sweep;
-=last_synced_at= and =last_error= record the outcome either way so the list
-at =/e/calendar_account= shows a failing calendar.
+=private_owner_id= is chosen at creation. Zero explicitly shares business
+calendar events and enables the two-way activity workflow below. A positive
+active member ID selects a private, read-only CalDAV import: snapshots remain
+on that account's =calendar_event= records, no CRM activity is created, and
+shared activities are never exported into the private calendar. A removed
+private event is soft-deleted; its retained snapshot stays private. Private
+appointments are not yet a source for public booking availability.
 
-Authentication is HTTP basic with an app password, which is what Fastmail,
-Nextcloud, Radicale, iCloud and Google's CalDAV endpoint all accept. OAuth
-would attach in =VentureSoupCalDavClient= as a bearer token selected by a
-=secret_kind= on the account, with the refresh living in a separate service
-that writes the access token to the same secret source; nothing in the sync
-service would change. Google's and Microsoft's proprietary calendar APIs are
-not implemented; both speak CalDAV.
+Saved ownership cannot change. After an account has ever been configured,
+its remote identity and organization cannot change either: create a new
+account for another source so old event links are never reused. Rotation,
+disconnection, selection changes and membership revocation invalidate an
+in-flight import before its downloaded results are saved.
+
+The current transport uses HTTP Basic authentication over HTTPS. Redirects are
+refused, including same-origin redirects; configure the final calendar origin
+and collection path. A server response cannot select another destination or
+forward the saved credential. Provider OAuth and proprietary calendar APIs are not implemented. Provider support
+must be verified against the selected service's actual authentication policy.
 
 * The sync
 
 =VentureCalendarSyncService= is the one service behind REST, the CLI and the
-sweep. One pass over an account:
+sweep. One pass over a shared business account:
 
 1. Reads the collection's ctag and lists its members with their etags.
 2. *Pull.* Every member whose etag differs from the one recorded on its
@@ -186,7 +187,7 @@ slug)= key on =booking_page= exist, since a rerun being a no-op and
 guard against a half-present schema and migrates with the module disabled.
 
 =test-calendar= covers the field tables and module, the missing-secret
-refusal naming the variable, the =VENTURE_CALDAV_*= prefix, push with stable
+refusal without environment fallback, private import isolation, push with stable
 UIDs and an idempotent rerun, pull into meetings by UID and update in place
 (following an event the server moved, leaving a done activity alone),
 cancellation on both sides rather than deletion, last-modified conflict

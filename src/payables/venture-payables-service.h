@@ -100,51 +100,13 @@ VentureMoney *venture_payables_service_vendor_balance(VenturePayablesService *se
 gboolean venture_payables_service_refresh_credit(VenturePayablesService *self,
 	gint64 credit_id, const VentureActor *actor, GError **error);
 
-/**
- * venture_payables_service_approve_opening:
- * @self: the service
- * @bill: an unsaved draft carrying its source number, vendor, bill and due dates
- * @lines: (element-type VentureVendorBillLine): unsaved lines with frozen tax
- * @opening_at: the cutover instant; the bill date must precede it
- * @clearing_account_id: the opening balance clearing account
- * @actor: (nullable): the audit actor
- * @error: (out) (optional): the error
- *
- * Approves a migrated bill whose journal posts at @opening_at against the
- * clearing account instead of expense.
- * Returns: TRUE on success
- */
 gboolean venture_payables_service_approve_opening(VenturePayablesService *self, VentureVendorBill *bill,
 	GPtrArray *lines, GDateTime *opening_at, gint64 clearing_account_id,
 	const VentureActor *actor, GError **error);
 
-/**
- * venture_payables_service_void_opening:
- * @self: the service
- * @bill: a migrated bill
- * @date: the void date
- * @number_suffix: (nullable): appended to the number to free it for a re-import
- * @actor: (nullable): the audit actor
- * @error: (out) (optional): the error
- *
- * Voids a migrated bill during a cutover rollback.
- * Returns: TRUE on success
- */
 gboolean venture_payables_service_void_opening(VenturePayablesService *self, VentureVendorBill *bill,
 	GDateTime *date, const gchar *number_suffix, const VentureActor *actor, GError **error);
 
-/**
- * venture_payables_service_credit_opening:
- * @self: the service
- * @credit: an unsaved vendor credit note dated in the source system
- * @opening_at: the cutover instant
- * @clearing_account_id: the opening balance clearing account
- * @actor: (nullable): the audit actor
- * @error: (out) (optional): the error
- *
- * Records a migrated unapplied vendor credit against the clearing account.
- * Returns: TRUE on success
- */
 gboolean venture_payables_service_credit_opening(VenturePayablesService *self, VentureVendorCredit *credit,
 	GDateTime *opening_at, gint64 clearing_account_id, const VentureActor *actor, GError **error);
 

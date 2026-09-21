@@ -1,0 +1,233 @@
+#+TITLE: Organization AI ownership and platform grants
+
+* Contract and defaults
+
+AI has no executable or ambient credential fallback. Each organization selects
+=disabled=, =organization= or =platform= independently for =chat=, =embedding=
+and =coding=. No selection means disabled. An unusable selected connection is
+an error, even when another connection or grant is available. A platform grant
+alone never enables service for its recipient.
+
+The =ai_providers= module owns =ai_configuration=, =ai_platform_offer=,
+=ai_grant=, =ai_usage_period= and =ai_usage=. It depends on organization access
+and encrypted integrations. Chat/coding also require =ai.enabled=; embeddings
+require =kb.enabled=. Disabling chat therefore need not disable corpus indexing.
+All records, actions, audit entries and generic JSON/CLI descriptions use the
+ordinary metadata registries. These lifecycle records refuse generic writes,
+deletes and restores; the configuration service owns their invariants.
+
+* Configure an organization's provider
+
+Open Organizations, then the organization's *AI settings* link:
+=/organizations/ID/settings/ai=. A global platform administrator or that
+organization's owner/admin may configure, rotate, disconnect and test service.
+Ordinary members cannot administer credentials. An administrator must provision
+=VENTURE_INTEGRATION_KEY= using the encrypted integration workflow first; see
+[[file:integrations.org][integration credentials]].
+
+Each purpose has its own form, model and request allowance. Supply all four
+write-only settings when connecting or rotating:
+
+| Setting  | Meaning |
+|----------+---------|
+| provider | A supported HTTP API implementation: openai, claude, gemini or grok |
+| model    | Exact model identifier for this purpose |
+| api_key  | Nonempty credential; never echoed, audited or exported in plaintext |
+| base_url | Exact provider base, without an extra API-version suffix |
+
+Built-in bases are =https://api.openai.com=, =https://api.anthropic.com=,
+=https://generativelanguage.googleapis.com= and =https://api.x.ai=. Approved
+OpenAI-compatible services use the openai implementation. The platform may add
+exact HTTPS bases to =ai.allowed_base_urls=. URI credentials, query strings and
+fragments are refused. =ai.allow_loopback= defaults false; isolated fixtures may
+enable literal HTTP =127.0.0.1= or =::1= bases that are also explicitly listed.
+Redirect handling remains the provider library's origin-pinned HTTP behavior.
+
+Changing provider/account identity requires disabling the existing selection
+first. Rotation requires the current configuration version and changes the
+credential version. Previously constructed clients and pending results then
+fail closed. Disable disconnects own credentials and removes the effective
+grant selection. Historic grant and usage evidence remain.
+
+*Test selected provider* sends a short synthetic request with no business
+records, tools or history. It consumes ordinary request quota. The page shows
+configured/unavailable state and the last request's state; configured does not
+mean that an untested endpoint has answered. Provider failures are redacted.
+A test reports actual response success without presenting provider content.
+
+* Explicit platform offers
+
+Global platform administrators use =/settings/ai/platform= to create or rotate
+an offer. They choose its purpose and an explicit billing organization. The
+payer is an attribution target: its ordinary organization owners do not gain
+access to the platform credential. Reserved =platform-ai-*= connections are
+hidden from non-platform principals, including direct integration resolution,
+and service guards refuse their generic rotation/disconnection.
+
+An offer's ordinary record page exposes the metadata action *Grant or revoke
+organization eligibility*. Choose the recipient, enabled state, monthly
+request limit, concurrency limit and current grant version (zero for a new
+grant). The recipient then chooses that grant in its own purpose's settings.
+A grant for another purpose or organization is refused. The platform can
+revoke a grant or disable its offer. Every provider round and completion
+rechecks configuration, offer, grant and credential versions. Revocation
+therefore refuses an already pending answer before tools or callers receive it.
+
+The configuration chooses one source. Failure of an own provider never spends
+a platform grant, and platform failure never tries an organization's own key.
+No model policy shares business records, chat histories or embeddings across
+organizations. There is no implicit all-tenant eligibility policy.
+
+* Data scope and callers
+
+A new conversation names its organization before context, record mentions,
+attachments or history are read. With exactly one accessible active
+organization the server can resolve that sole choice; with several it requires
+an explicit selection. A resumed conversation retains its stored owner
+organization. Streaming tokens carry that organization and local user and are
+revalidated against the stored thread. Uploads inherit the verified thread or
+new conversation selection. Cross-organization attachments fail before a
+provider request.
+
+The assistant executor gets an explicit organization access scope even for a
+global administrator. Queries, records, actions, reports and nested user scopes
+retain it. Independent trusted internal operations start their own scope, and
+an explicitly bounded internal scope is still filtered. Callback work restores
+its captured caller/scope instead of inheriting another active web request.
+Conversation histories must still refer to the stored user's thread and
+unchanged persisted messages. The provider checks active users, API tokens,
+expiry and current organization authority on each round and completion.
+
+Application callers use =venture_ai_service_for_organization()= or
+=venture_ai_service_complete_for_organization()=. A factory briefing requires
+exactly one organization; account-wide arithmetic reports remain available
+without sending multiple organizations' records to one provider. Existing
+injected =AiProvider= instances remain an explicitly trusted test/embedding
+seam, not an automatically selected production fallback.
+
+Coding sessions select their organization before workspace/repository access.
+Each turn constructs its coding provider on the database-owning thread. Worker
+jobs receive that immutable adapter and plain input; provider requests cross
+back to the captured main context for reservation, validation and completion.
+No Venture database operation runs on the coding worker. Coding uses the
+organization's configured API model and Venture's confined work tools. Historic
+provider/model/effort session fields are display hints until a turn records its
+actual provider/model; they never cause execution of an ambient CLI provider.
+Explicit non-AI forge command runners retain their existing behavior.
+
+* Embedding model provenance
+
+Embedding configuration is independent of chat. Legacy =kb.embedding_*= values
+are migration input, never a reason to copy the chat model or host credentials.
+The configuration-only =venture_embedder_new()= refuses with an explicit
+migration error; use =venture_embedder_new_for_organization()=.
+
+Indexing resolves the article's verified corpus organization before obtaining
+credentials. Search refuses a collection spanning organizations and checks the
+model recorded on each base, article and chunk before comparing vectors.
+Changing an embedding model requires explicit forced reindexing. Force changes
+the corpus model contract and replaces indexed vectors; interrupted work keeps
+its old article/chunk provenance and is excluded from comparisons until a
+forced retry completes it. Chat rotation does not change this contract.
+The current provider library implements embeddings on its OpenAI-compatible
+client; choosing a client without that interface fails before indexing.
+
+* Durable quotas, attribution and bounds
+
+Quotas count provider requests, not tokens or currency. Every tool continuation
+is another request. Limits are 1–10,000,000 requests per UTC calendar month and
+1–32 concurrent requests for each organization/purpose. Configuration or
+credential rotation does not reset its counter. Switching source also retains
+usage for that organization/purpose/month.
+
+Before network I/O a transaction increments the unique monthly counter and
+creates a usage reservation. Optimistic row versions serialize competing
+reservations; a conflicting transaction refuses before spending credentials.
+A failed, cancelled, revoked or interrupted request remains charged. This
+avoids reusing quota when the provider may already have billed the request.
+A completed request releases concurrency. A process interrupted while a request
+is reserved releases its concurrency slot after the 90-second lease, without
+resetting the monthly count. =reserved= evidence may therefore remain after a
+crash; its lease distinguishes an active reservation from an expired one.
+
+=ai.provider_deadline_seconds= defaults to 60 and accepts 1–60 seconds, always
+below the reservation lease. Cancellation propagates to provider I/O. Chat
+requests accept at most 128 messages, 1 MiB combined text/system input and
+32,768 output tokens. Embedding batches accept at most 128 passages, 32 KiB per
+passage and 512 KiB total. Existing upload, transcript, executor-turn and tool
+bounds also apply.
+
+Usage stores organization, purpose, caller, payer, source, exact connection
+identity/version, grant, state and provider-reported input/output token counts.
+It stores no prompts, transcripts, vectors, response text or secrets. The
+embedding result interface exposes no token usage, so its counts are zero
+(unknown), not a claim that embedding was free. Money/cost estimation is not
+invented from token counts: payer attribution and provider-request quota are
+separate from the provider's own invoice. No paid production provider has been
+validated by the synthetic fixtures.
+
+* Upgrade and recovery
+
+Migration =000560= verifies compatible metadata and assigns no credentials or
+grants. Before using AI after upgrade, explicitly choose each organization and
+purpose, copy the intended old provider/model into its settings, supply its
+credential, set limits, and run the synthetic test. Preserve an existing
+embedding model to reuse its index; use forced reindex only when deliberately
+changing it. Remove obsolete ambient key references after migration.
+
+Credential encryption requires the same integration master key after restart
+or restore. Losing it leaves the selected binding unavailable; configure a new
+explicit credential through the normal rotation/disconnect workflow. Usage and
+selection versions are durable database state. Full database backups must
+retain these rows and their encrypted integration records; a books-only export
+is not an AI credential backup. An unavailable key or endpoint never causes
+fallback or reassignment to another organization.
+
+* Extending and validating
+
+The provider table owns accepted names, default origins, client kinds and
+constructors; the settings page obtains its choices from that same table.
+OpenAI-compatible services need only an explicitly approved base and model.
+Other implementations add a reviewed constructor to the table. The scoped
+adapter implements =AiProvider= and =AiEmbedder=, so UI, synchronous callers and
+workers share quota/revocation behavior. Streaming currently buffers one
+provider response; it does not expose unvalidated partial text.
+
+=tests/test-ai-organizations.c= uses real loopback HTTP implementations and
+private databases. It covers independent keys/purposes, exact token
+attribution, durable quota, concurrency, rotation, local and platform
+revocation, missing credentials, failure without fallback, a bounded deadline,
+worker/main-thread ownership, metadata registration, nested organization scopes,
+platform credential ownership and actual corpus index/search/reindex.
+=tests/test-auth.c= pins route authentication, administrative permissions and
+write-only settings. Existing organization access, coding, factory and KB tests
+cover the affected callers. PostgreSQL runs opt in through the schema-isolated
+accounting fixture helper; never point those tests at an existing business DB.
+
+
+* Demonstration and review evidence
+
+=tools/venture-test-ai-settings.py --evidence DIRECTORY= drives the built DEBUG
+server in Chromium with a private database and a loopback OpenAI-compatible
+fixture. It creates two independent organization bindings, verifies blank
+secret fields after reload, refuses foreign context/attachments, and exercises
+platform offer creation, explicit grant/selection, synthetic testing and
+revocation. [[file:evidence/125-ai-organizations-demo.txt][The sanitized verbatim transcript]] is retained with this change.
+The fixture never contacts a paid provider or an existing installation.
+
+The DEBUG AI suite contains 18 behavioral tests. A database-reopen test retains
+a simulated interrupted reservation: its lease blocks concurrency until expiry,
+its monthly charge survives expiry, and exhaustion prevents another HTTP call.
+SQLite and the isolated PostgreSQL fixture both exercise that behavior.
+Regression evidence also includes a deadline-removal mutation that leaves the
+callback unfinished, and the pre-fix service-scope test that incorrectly obtains
+another organization's provider. The repaired versions pass.
+
+Validation includes DEBUG build and introspection with zero warnings, 94
+authentication tests, 34 organization-access tests, seven coding-service tests,
+16 factory-operation tests, 32 configuration tests, 19 module tests and nine
+migration tests (also PostgreSQL). The existing 39-case KB suite passes with
+its credential-dependent live tests skipped; the new hermetic corpus test
+actually sends embedding HTTP requests and verifies index/search/forced reindex
+and all three levels of model provenance. These are synthetic acceptance
+results, not a paid-provider or deployment-readiness certification.

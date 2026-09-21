@@ -1,0 +1,164 @@
+#+title: Local encrypted backup catalog and retention
+
+* Operator boundary
+
+The catalog is private metadata for encrypted recovery archives. It lives at
+=control/backup-catalog.json=, outside application database/state snapshots.
+It contains paths, workspace/archive/copy UUIDs, encrypted-byte SHA-256 digests,
+file and parent-directory identities, timestamps, provenance and permanent
+retirement tombstones. It contains no decrypted archive payload or key.
+Once initialized, registration records that the catalog is required: a missing
+catalog then blocks archive use instead of silently creating an empty ledger. It is
+mode 600, atomically replaced and fsynced under the same tenant maintenance
+flock used by export, upgrade, restore, holds and offboarding.
+
+Only the local platform operator runs these commands. No tenant request, AI
+tool, provider callback or subscription event can invoke expiry. The catalog
+is not an offsite inventory, personal-data deletion ledger or proof of media
+erasure. Its current 16 MiB bound refuses further publication rather than
+silently dropping old tombstones. Preserve and separately back up the control
+catalog and operator audit log; deleting them loses the retirement authority.
+
+* Registration and explicit replicas
+
+New =venture-tenant-backup create= exports and =venture-tenantctl upgrade=
+backups include an authenticated =archive_id= UUID inside the encrypted
+manifest. Successful publication registers the encrypted file before the
+command reports success. The archive parent must be a current-operator-owned
+mode-700 directory outside the platform registration/data root. The archive
+must be a mode-600/400 regular file with exactly one hard link; every parent
+is opened without following symlinks. Existing destinations are never replaced.
+
+If encryption or publication fails, no successful backup is reported. If
+catalog registration fails after publication, the complete encrypted file is
+retained but the command fails. Inspect that archive and explicitly enroll it
+after resolving the catalog/journal problem; do not overwrite or delete it.
+
+An additional local copy participates only after explicit authentication:
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture backup-enroll studio \
+  --archive /backups/studio-copy.gpg --key-file /private/backup-key \
+  --reason 'Enroll verified local recovery replica'
+tools/venture-tenantctl --root /srv/venture backup-list studio
+#+end_src
+
+Enrollment uses real archive authentication, manifest/workspace checks and
+payload hashes. Verification binds the exact encrypted-byte digest to the
+subsequent catalog write, refusing a changed verification snapshot. Each local file gets a distinct =copy_id= while retaining the
+same authenticated =archive_id= and encrypted-byte digest. A reused archive
+UUID with different encrypted bytes, a reused registered path, changed inode,
+symlink, hard link, wrong workspace or retired archive is refused. Older
+archives without an authenticated UUID remain explicitly restorable but
+cannot enter automatic expiry; make a new export to adopt this contract.
+Copying, moving, re-encrypting or renaming registered files outside the tool
+invalidates their recorded file identity and requires operator investigation.
+No command discovers or modifies unregistered/offsite copies.
+
+* Retiring an entry whose file has left
+
+Retention fails closed on a missing file. When a retained entry's file is no
+longer at its registered path — typically because the operator moved the
+month's archive to offsite media and removed the local copy —
+=retention-plan= and =retention-execute= refuse (exit 2) with a message naming
+the =copy_id= and the path, and publish nothing: one departed archive halts
+every local expiry for that workspace until an operator records the fact. A
+missing file is never treated as an empty plan and never tombstoned by
+inference. The operator either puts the file back or retires the entry:
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture backup-retire studio \
+  --copy COPY-UUID-FROM-THE-REFUSAL --reason 'Copied to offsite media 2026-09; local file removed'
+#+end_src
+
+=backup-retire= takes the catalog =copy_id= (=--copy=), requires =--reason=,
+and moves the entry from =retained= to =retired= with =retired_at= and
+=retire_reason=. It never unlinks: it refuses while the file is still present
+at the registered path (a live archive leaves only through a reviewed plan),
+refuses an unknown or already retired/deleted copy, refuses while a journal
+is pending, refuses when the registered parent directory is missing or has
+been replaced (an unmounted or swapped archive directory is not a departed
+file: the parent is identified by device and inode, so remount the original
+directory and rerun; a recreated directory reads as replaced and is refused),
+and publishes under the same catalog revision guard and tenant
+lock as every other write, with a =backup-retire= entry in the operator audit
+stream. A retired entry is skipped by later plans. Unlike an expiry tombstone
+it does not retire the archive UUID or digest from restore: the offsite copy
+remains restorable and may be re-enrolled with =backup-enroll= — at the same
+path or another — where it receives a fresh =copy_id=.
+
+* Plan and execute
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture retention-plan studio \
+  --reason 'Review the 30-day operational backup expiry'
+tools/venture-tenantctl --root /srv/venture retention-execute studio \
+  --plan PLAN-UUID-FROM-REVIEWED-OUTPUT --reason 'Approve the reviewed local expiry'
+#+end_src
+
+=retention-plan= defaults to 30 days; =--days= accepts 1–36500. It validates
+all retained file identities and publishes an exact list of registered copy
+IDs. It does not unlink anything. Expiry starts at the authenticated archive
+creation timestamp. For an offboarded workspace it starts no earlier than
+=offboarded_at=, so offboarding cannot immediately expire older archives.
+A hold produces no candidates and blocks execution, regardless of age.
+Releasing a hold by itself deletes nothing.
+
+Execution requires the exact current catalog revision and plan UUID, rejects
+a backwards clock or a plan older than 24 hours, and rechecks the current
+workspace identity, hold, offboarding clock, digest, file inode and parent
+inode. Registration, retirement or another plan invalidates the old plan. A
+changed, missing, replaced or linked candidate causes refusal before the
+initial batch begins; a missing candidate's refusal names its =copy_id= and
+path so it can be retired (see above). Subsequent I/O failure leaves an explicit partial outcome and durable
+journal; the command never claims all-or-nothing filesystem deletion.
+
+Each deletion is preceded by durable intent, performed relative to the verified
+parent descriptor, followed by a directory fsync and catalog tombstone. Archive
+bytes, parent paths and operator reasons are never inferred from a directory
+scan. The operator must honor the maintenance lock for other filesystem
+writers; an administrator who can arbitrarily rewrite both archives and the
+catalog is outside this local trust boundary. The local hash-linked audit
+stream does not replace separately controlled tamper-resistant evidence.
+
+* Interrupted execution and restoration
+
+#+begin_src sh
+tools/venture-tenantctl --root /srv/venture retention-recover studio \
+  --reason 'Reconcile the interrupted local expiry after inspection'
+#+end_src
+
+A pending journal blocks new plans, execution, enrollment and archive use.
+Recovery does not unlink any additional file. An unchanged survivor remains
+retained; an absent name with the original parent inode becomes a permanent
+=missing-after-durable-intent= tombstone. This records the observed outcome,
+not proof of who removed it. A replaced parent or file leaves the journal
+pending and fails closed. Recovery may reconcile under a newly applied hold
+because it only records facts and preserves every surviving file. A new plan
+is required after recovery.
+
+Verification and restore consult the current workspace control catalog and
+refuse retired archive UUIDs or encrypted digests, including an unregistered
+copy of retired bytes. A new recovery target without the original catalog
+cannot know the original target's tombstones. Transfer and verify that ledger
+through the separately controlled recovery process before claiming retirement
+survives cross-host restore; this implementation does not automate that transfer.
+The catalog must not be rolled back with an old application snapshot.
+
+* Qualification and limits
+
+The lifecycle fixtures exercise real locks/private files, stale plans,
+replacement directories/inodes, symlinks/hard links, UUID/digest/workspace
+mismatch, holds/offboarding, crash-after-unlink reconciliation, refusal of
+uncertain recovery, a departed retained file blocking plan and execute by
+name until =backup-retire= records it, and =backup-retire= refusing a present
+file, an unknown copy and a stale catalog revision. The recovery fixture uses actual GnuPG authentication and
+archives, enrolls two explicit local copies, expires only those copies and
+refuses the remaining unregistered copy through the retirement check. Container
+responses in this bounded fixture are synthetic; the earlier physical database
+recovery drill is separate evidence.
+
+There is no automatic scheduler, remote replica enrollment, offsite hold
+propagation, PITR/WAL retention, personal-data erasure or key/media destruction
+claim. These remain deployment/governance work. See the
+[[file:evidence/backup-retention-demonstration.org][verbatim executable demonstration]].

@@ -1206,6 +1206,8 @@ venture_report_generate(
 	g_return_val_if_fail(VENTURE_IS_REPORT(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(venture_context_get_database(context)),
+	        G_OBJECT(self), FALSE, error)) return NULL;
 	klass = VENTURE_REPORT_GET_CLASS(self);
 
 	if (NULL == klass->generate)
@@ -1307,6 +1309,15 @@ venture_func_report_new(
 	                    NULL);
 	self->func = func;
 
+	return self;
+}
+
+VentureFuncReport *
+venture_func_report_new_classified(VentureDataClass classification, const gchar *name,
+	const gchar *title, const gchar *description, VentureReportFunc func)
+{
+	VentureFuncReport *self = venture_func_report_new(name, title, description, func);
+	if (self) venture_data_class_declare_resource(G_OBJECT(self), classification);
 	return self;
 }
 

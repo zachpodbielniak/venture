@@ -290,14 +290,14 @@ scoring_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 void
 venture_leads_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("lead_sources", "Lead sources",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "lead_sources", "Lead sources",
 		"Conversion by source and campaign for leads created in the period", source_report)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("lead_response_time", "Lead response time",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "lead_response_time", "Lead response time",
 		"Creation to the first outbound interaction; unanswered leads are counted separately", response_report)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("leads_recycled_due", "Recycled leads due",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "leads_recycled_due", "Recycled leads due",
 		"Recycled leads whose return date has arrived", recycled_report)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("lead_routing", "Lead routing",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "lead_routing", "Lead routing",
 		"Leads created in the period by routing rule and owner, with the unrouted count", routing_report)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("lead_scoring", "Lead scoring",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "lead_scoring", "Lead scoring",
 		"Score distribution by band and conversion rate per band for leads created in the period", scoring_report)));
 }

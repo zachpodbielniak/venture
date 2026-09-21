@@ -1218,6 +1218,19 @@ venture_desk_activity(
 	}
 
 	venture_dunning_append_timeline(context, target_type, target_id, limit, venture_desk_add_event, events);
+	{
+		g_autoptr(JsonNode) calls = venture_activity_call_timeline(context, target_type, target_id, limit, error);
+		JsonArray *rows;
+		if (calls == NULL) return NULL;
+		rows = json_node_get_array(calls);
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonNode *event = json_array_get_element(rows, i);
+			const gchar *iso = venture_json_object_get_string(json_node_get_object(event), "when", NULL);
+			g_autoptr(GDateTime) when = iso != NULL ? venture_time_from_string(iso, NULL) : NULL;
+			venture_desk_add_event(events, when, json_node_copy(event));
+		}
+	}
 	g_ptr_array_sort(events, venture_desk_compare_events);
 
 	out = json_builder_new();

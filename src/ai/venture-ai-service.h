@@ -48,18 +48,39 @@ G_BEGIN_DECLS
 
 G_DECLARE_FINAL_TYPE(VentureAiService, venture_ai_service,
                      VENTURE, AI_SERVICE, GObject)
+/**
+ * venture_ai_service_for_organization:
+ * @self: service prototype or trusted injected service
+ * @organization_id: explicitly selected organization visible to the caller
+ * @error: (out) (optional): unavailable organization
+ *
+ * Creates independent executors for this organization's turn. Credentials are
+ * resolved when the operation starts, under its captured caller authority.
+ * Returns: (transfer full) (nullable): organization-bound service
+ */
+VentureAiService *venture_ai_service_for_organization(VentureAiService *self,
+	gint64 organization_id, GError **error);
+/**
+ * venture_ai_service_complete_for_organization:
+ * @self: prototype or trusted injected service
+ * @organization_id: organization of the verified source records
+ * @system_prompt: trusted task instructions
+ * @user_text: bounded source data
+ * @error: (out) (optional): redacted refusal
+ * Returns: (transfer full) (nullable): toolless reply using only the selected organization provider
+ */
+gchar *venture_ai_service_complete_for_organization(VentureAiService *self, gint64 organization_id,
+	const gchar *system_prompt, const gchar *user_text, GError **error);
 
 /**
  * venture_ai_service_new:
  * @context: the wiring
  * @error: (out) (optional): return location for a #GError
  *
- * Creates the AI service, resolving the provider and credentials from
- * configuration.
- *
- * Returns %NULL with %VENTURE_ERROR_CONFIG when AI is disabled or has no
- * credentials. That is not a fatal condition: the server runs without it and
- * the chat dock says so.
+ * Creates an unbound service when AI is enabled. Select an organization with
+ * venture_ai_service_for_organization() before requesting a model turn; its
+ * explicit encrypted binding is resolved at the turn, never from ambient
+ * configuration. Disabled AI returns %NULL with %VENTURE_ERROR_CONFIG.
  *
  * Returns: (transfer full) (nullable): the service, or %NULL
  */
@@ -307,7 +328,7 @@ venture_ai_service_complete(
 /**
  * venture_ai_service_new_with_provider:
  * @context: application context
- * @provider: (nullable): injected provider; NULL uses configuration
+ * @provider: (nullable): trusted injected provider; NULL creates an unbound service
  * @error: (out) (optional): error location
  * Returns: (transfer full) (nullable): service using the supplied transport
  */

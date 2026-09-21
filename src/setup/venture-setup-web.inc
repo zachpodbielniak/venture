@@ -117,9 +117,10 @@ venture_setup_web_action(HtmxRequest *request, GHashTable *params, gpointer user
 static void
 venture_setup_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/setup", venture_setup_web_page, self);
-	htmx_router_post(router, "/api/v1/accounting_setups/preview", venture_setup_web_preview, self);
-	htmx_router_post(router, "/setup/preview", venture_setup_web_preview, self);
-	htmx_router_post(router, "/api/v1/accounting_setups/:id/:action", venture_setup_web_action, self);
-	htmx_router_post(router, "/setup/:id/action", venture_setup_web_action, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/setup", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_setup_web_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/accounting_setups/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_setup_web_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/setup/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_setup_web_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/accounting_setups/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_setup_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/setup/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_setup_web_action, self);
 }

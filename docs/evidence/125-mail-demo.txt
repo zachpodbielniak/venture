@@ -1,0 +1,54 @@
+Organization SMTP isolation demonstration
+
+Built source: 4dd239d (same tested source immediately before commit).
+Command: make DEBUG=1 test-mail-relay
+Dependencies: mail-glib 54fc361; isolated Mailpit v1.29.2 with required
+STARTTLS, authenticated synthetic accounts and a temporary trusted CA.
+Only loopback traffic and synthetic recipients are used.
+
+The executable configures A and B through VentureIntegrationService,
+sends once from each through VentureMailOutbox, rotates only A to an
+invalid password, and sends once more from each. Expected visible states:
+A sent, B sent, A dead (authentication refused), B sent. The same executable
+asserts the relay retained exactly three messages, one from A and two from
+B, and that connection status excludes all credential values. "Sent" means
+relay acceptance; this does not demonstrate delivery to an external inbox.
+
+The following is the verbatim executable output, from TAP start through
+completion; preceding dependency make output is omitted.
+
+TAP version 14
+# random seed: R02Se463c966cdaf1e2300c02b75520816df
+# Start of mail-routing tests
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation dconf (DConfSettingsBackend) for ‘gsettings-backend’
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gvfs (GDaemonVfs) for ‘gio-vfs’
+# pxbackend-DEBUG: px_config_sysconfig_set_config_file: Could not read file /etc/sysconfig/proxy
+# pxbackend-DEBUG: Active config plugins:
+# pxbackend-DEBUG:  - config-env
+# pxbackend-DEBUG:  - config-xdp
+# pxbackend-DEBUG:  - config-kde
+# pxbackend-DEBUG:  - config-gnome
+# pxbackend-DEBUG:  - config-sysconfig
+# GLib-GIO-DEBUG: Failed to initialize portal (GNetworkMonitorPortal) for gio-network-monitor: Not using portals
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation networkmanager (GNetworkMonitorNM) for ‘gio-network-monitor’
+# pxbackend-DEBUG: px_manager_constructed: Up and running
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation libproxy (GLibproxyResolver) for ‘gio-proxy-resolver’
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=none://127.0.0.1:43523 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# GLib-GIO-DEBUG: _g_io_module_get_default: Found default implementation gnutls (GTlsBackendGnutls) for ‘gio-tls-backend’
+# organization A delivery 0: sent
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=none://127.0.0.1:43523 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# organization B delivery 1: sent
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=none://127.0.0.1:43523 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# organization A delivery 2: dead
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=none://127.0.0.1:43523 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+# organization B delivery 3: sent
+# pxbackend-DEBUG: px_manager_get_proxies_sync: url=http://127.0.0.1:40247 online=1
+# pxbackend-DEBUG: px_manager_get_proxies_sync: Proxy[0] = direct://
+ok 1 /mail-routing/real-tls-isolation
+# slow test /mail-routing/real-tls-isolation executed in 1.20 secs
+# End of mail-routing tests
+1..1

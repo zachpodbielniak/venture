@@ -388,13 +388,15 @@ test_generator_real_docs(void)
 	g_autoptr(GDir) dir = NULL;
 	const gchar *name;
 	guint org_files = 0;
+	gboolean built;
 
 	g_assert_nonnull(out);
 
 	site = venture_docs_site_new(root, out);
 	g_object_set(site, "renderer", VENTURE_DOCS_RENDERER_BUILTIN, NULL);
-	g_assert_true(venture_docs_site_build(site, NULL, &error));
+	built = venture_docs_site_build(site, NULL, &error);
 	g_assert_no_error(error);
+	g_assert_true(built);
 
 	dir = g_dir_open("docs", 0, &error);
 	g_assert_no_error(error);

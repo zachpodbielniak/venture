@@ -323,7 +323,7 @@ The pack records the hand-over. =last_delivered_at=, =last_delivery_message_id=
 =venturectl mail retry=) are set when the message was queued;
 =last_delivery_error= holds the reason when it was not, and the other three
 are cleared. The run is never marked failed by its delivery: a refused send
---- the mail module off, no transport configured (=mail.host= empty), a
+--- the mail module off, no organization SMTP binding configured, a
 policy plugin refusing the enqueue, no output retained yet --- leaves
 =last_run_at= and =last_output= as the run wrote them, so the report is not
 run again for it, and the sweep goes on to the next pack. The hand-over and
@@ -951,3 +951,15 @@ a note saying how to add it.
 report. The reads are gated as every report is: the viewer role over the
 API and the report page, and with the =tickets= module off the report is
 not registered, so asking for it is a 404 rather than an empty table.
+
+** Organization mail readiness
+
+A report pack's email delivery prepares its actual organization transport
+before enqueueing retained output. An unconfigured or revoked binding records
+a delivery error while keeping the completed report run. A prepared SMTP
+client is also supported; having no legacy installation configuration does
+not make that client unconfigured. No SMTP submission occurs during this
+preflight. The outbox resolves and durably binds the current account at the
+first real delivery attempt, so queued reports still honor later rotation
+or disconnect. The pack's delivery stamp records acceptance into the outbox,
+not relay acceptance or arrival in a recipient's inbox.

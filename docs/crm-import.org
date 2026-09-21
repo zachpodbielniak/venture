@@ -56,7 +56,10 @@ result and closes the door on rollback.
   maps to a lost stage, because the deal service requires one.
 - =currency= supplies deals whose export has no currency column.
 - =owner_map= turns source owner names or ids into VENTURE usernames for
-  deal and activity owners. Unmapped owners are kept as typed.
+  deal and activity owners. Unmapped owners are kept as typed. A source
+  owner label that happens to equal a VENTURE username whose account is not
+  an active member of the importing organization fails that row rather than
+  assigning it; map such labels through =owner_map= to the intended member.
 - =columns= overrides the built-in column map per object; =notes= applies
   to =emails=, =calls= and =meetings= unless they carry their own entry.
 
@@ -192,3 +195,14 @@ unmapped-stage and other manifest refusals, history and tasks, exact
 rollback on a database with pre-existing records, the three vendor maps
 with an override, the generic-write refusal, transactional atomicity,
 and the REST and CLI surfaces.
+
+* Rollback and credited wins
+
+Before removing an imported won deal, rollback moves it through the existing
+pipeline transition service to an open stage in the same organization and
+pipeline. This retains an immutable reversal of its sales booking; quota
+reports therefore do not keep credit for a removed import. The transition,
+reversal and removals share the rollback transaction. If that pipeline has
+no available open stage, rollback refuses without partially removing rows;
+restore an open stage and retry. Existing matched customer/deal rows are
+still preserved, and activated batches still cannot be rolled back.

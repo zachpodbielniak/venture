@@ -19,6 +19,20 @@ G_DECLARE_FINAL_TYPE(VentureSettlementService, venture_settlement_service,
 VentureSettlementService *venture_settlement_service_get(VentureDatabase *database);
 
 /**
+ * venture_settlement_service_today:
+ * @self: the service
+ *
+ * Today's calendar date in the configured business zone (the service's
+ * =timezone= property, bound from =locale.timezone=), encoded as midnight
+ * UTC like a date-picker receipt. Every generated invoice date and the
+ * same-day receipt allowance read it here, so they agree with each other
+ * and with the operator's calendar rather than the process zone.
+ *
+ * Returns: (transfer full): midnight UTC on the business date
+ */
+GDateTime *venture_settlement_service_today(VentureSettlementService *self);
+
+/**
  * venture_settlement_service_get_state_machine:
  * @self: the service
  * Returns: (transfer none): its extensible, vetoable invoice lifecycle
@@ -107,51 +121,13 @@ VentureMoney *venture_settlement_service_customer_balance(VentureSettlementServi
 gboolean venture_settlement_service_refresh_credit(VentureSettlementService *self,
 	gint64 credit_id, const VentureActor *actor, GError **error);
 
-/**
- * venture_settlement_service_issue_opening:
- * @self: the service
- * @invoice: an unsaved draft carrying its source number, customer, issue and due dates
- * @lines: (element-type VentureInvoiceLine): unsaved lines with frozen income and tax
- * @opening_at: the cutover instant; the issue date must precede it
- * @clearing_account_id: the opening balance clearing account
- * @actor: (nullable): the audit actor
- * @error: (out) (optional): the error
- *
- * Issues a migrated invoice whose journal posts at @opening_at against the
- * clearing account instead of income and tax.
- * Returns: TRUE on success
- */
 gboolean venture_settlement_service_issue_opening(VentureSettlementService *self, VentureInvoice *invoice,
 	GPtrArray *lines, GDateTime *opening_at, gint64 clearing_account_id,
 	const VentureActor *actor, GError **error);
 
-/**
- * venture_settlement_service_void_opening:
- * @self: the service
- * @invoice: a migrated invoice
- * @date: the void date
- * @number_suffix: (nullable): appended to the number to free it for a re-import
- * @actor: (nullable): the audit actor
- * @error: (out) (optional): the error
- *
- * Voids a migrated invoice during a cutover rollback.
- * Returns: TRUE on success
- */
 gboolean venture_settlement_service_void_opening(VentureSettlementService *self, VentureInvoice *invoice,
 	GDateTime *date, const gchar *number_suffix, const VentureActor *actor, GError **error);
 
-/**
- * venture_settlement_service_credit_opening:
- * @self: the service
- * @credit: an unsaved customer credit note dated in the source system
- * @opening_at: the cutover instant
- * @clearing_account_id: the opening balance clearing account
- * @actor: (nullable): the audit actor
- * @error: (out) (optional): the error
- *
- * Records a migrated unapplied credit note against the clearing account.
- * Returns: TRUE on success
- */
 gboolean venture_settlement_service_credit_opening(VentureSettlementService *self, VentureCustomerCredit *credit,
 	GDateTime *opening_at, gint64 clearing_account_id, const VentureActor *actor, GError **error);
 
@@ -240,5 +216,19 @@ gboolean venture_settlement_service_correct_tax_allocation(VentureSettlementServ
  */
 gboolean venture_settlement_service_write_off(VentureSettlementService *self,
 	gint64 invoice_id, GDateTime *date, const VentureActor *actor, GError **error);
+/**
+ * venture_settlement_service_refresh_invoice:
+ * @self: canonical settlement service
+ * @invoice_id: issued invoice whose financial status must be derived again
+ * @actor: (nullable): audit and accounting approval identity
+ * @error: (out) (optional): authorization or evidence refusal
+ *
+ * Restores status after a nonfinancial workflow such as a won dispute. The
+ * paid date comes from immutable allocations (or the issue of a zero invoice),
+ * never a caller-supplied clock. Writes no receipt, allocation or journal.
+ * Returns: TRUE when financial status matches retained accounting evidence
+ */
+gboolean venture_settlement_service_refresh_invoice(VentureSettlementService *self,
+	gint64 invoice_id, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

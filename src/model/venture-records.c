@@ -62,7 +62,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("sequence-tracking", "Sequence mail tracking", "Allow open and click tracking on sequence mail; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("sequence-tracking", "Sequence mail tracking", "Allow open and click tracking on sequence mail; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("marketing-tracking", "Marketing mail tracking", "Allow marketing open and click observations; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -784,6 +785,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("source", "Source", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("territory-id", "Territory", "Current ownership; changes never recast past booked credit", "sales_territory", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
@@ -1110,7 +1112,7 @@ static const VentureFieldDecl venture_knowledge_base_fields[] = {
 	 */
 	VENTURE_FIELD("source-path", "Source directory",
 	              "Synced from this directory on the server, when set",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_HOST_RESOURCE),
 	VENTURE_FIELD("synced-at", "Last synced", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	/* Whether the assistant may reach for this base without being asked
@@ -1162,7 +1164,7 @@ static const VentureFieldDecl venture_kb_article_fields[] = {
 	                   "Shown in search results ahead of the passage"),
 	VENTURE_FIELD("source-path", "Source file",
 	              "Where it came from, for sync", VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_INDEXED),
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_HOST_RESOURCE),
 	VENTURE_FIELD("source-hash", "Checksum",
 	              "SHA-256 of the file's bytes, for change detection",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
@@ -2365,7 +2367,7 @@ static const VentureFieldDecl venture_forge_fields[] = {
 	 * appends that. */
 	VENTURE_FIELD("base-url", "Base URL", "https://git.example.com",
 	              VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION |
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	/*
 	 * Where git clones from, when that is not where the API lives.
@@ -2400,14 +2402,13 @@ static const VentureFieldDecl venture_forge_fields[] = {
 	VENTURE_FIELD("webhook-secret-set-at", "Secret set", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	/*
-	 * The login the access token belongs to, fetched from the forge
-	 * rather than typed. This is the webhook loop guard: an event whose
-	 * sender is this account was caused by VENTURE itself. Until it is
-	 * set, VENTURE cannot tell its own writes from anybody else's, which
-	 * is why the detail page warns while it is empty.
+	 * The login the last verification saw, fetched from the forge rather
+	 * than typed. A display stamp: the webhook loop guard reads the
+	 * account the binding verified at configure time, and a save that
+	 * changes only this and verified-at does not revoke credential leases.
 	 */
 	VENTURE_FIELD("bot-username", "Bot account",
-	              "The account the token belongs to; its own events are ignored",
+	              "The account the last verification saw; the webhook loop guard uses the binding's verified account",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("verified-at", "Last verified",
 	              "When the token last authenticated",
@@ -2633,6 +2634,8 @@ VENTURE_DEFINE_ENTITY(VentureTicketLink, venture_ticket_link,
  * rewrite after the fact.
  */
 static const VentureFieldDecl venture_forge_run_fields[] = {
+	VENTURE_FIELD_REF("connection-id", "Credential binding", "Exact account selected at start; zero on legacy runs", "integration_connection", VENTURE_COLUMN_FLAG_IMMUTABLE),
+	VENTURE_FIELD("credential-version", "Credential version", "Exact configuration selected at start; zero means unknown legacy evidence", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_IMMUTABLE),
 	VENTURE_FIELD_REF("ticket-id", "Ticket", NULL, "ticket",
 	                  VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("link-id", "Link", NULL, "ticket_link",
@@ -2726,6 +2729,7 @@ VENTURE_DEFINE_ENTITY(VentureAgentBudget, venture_agent_budget,
                       venture_agent_budget_fields)
 
 static const VentureFieldDecl venture_document_fields[] = {
+	VENTURE_FIELD_REF("private-owner-id", "Private owner", "Private attachment owner; zero is a shared business document", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_NAME("title", "Title", NULL),
 	VENTURE_FIELD("kind", "Kind",
 	              "Receipt, contract, licence, artwork, manuscript",

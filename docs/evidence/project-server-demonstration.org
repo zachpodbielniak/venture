@@ -1,0 +1,151 @@
+#+title: Authenticated CRM and project server demonstration
+#+description: Synthetic billing modes, ordinary receipt dates and retained financial evidence
+
+* Artifact and limits
+
+Executed 20 September 2026 on the DEBUG artifact containing typed retainer
+collect/release actions and the repaired generated-invoice business dates.
+Its exact SHA-256 is below. The executable was copied to a stable local path
+before execution. This transcript demonstrates authenticated HTTP workflows
+with synthetic local data only; it is not a browser recording, final
+integrated PR-head qualification, hosted isolation, production authorization
+or M2 acceptance.
+
+The independently specified source amounts and report contract are in
+[[file:../project-delivery.org][Project delivery]]. All four scenarios use separate private SQLite servers,
+ordinary first-run owner sessions, no external providers and no direct SQL.
+The lead is qualified, converted and moved to won through its transition
+route. A repeated conversion is refused; handoff, ticket acceptance,
+progress billing and scope changes use registered application actions.
+
+* Verbatim ordinary-date stdout
+
+Command (exit 0):
+
+#+begin_src sh
+python3 tools/venture-project-server-drill.py --binary build/debug/venture-project-date-qualified
+#+end_src
+
+No =--precise-receipts= workaround was used. No private server logs or
+bootstrap passwords are attached.
+
+#+begin_example
+Artifact SHA256: 823a528362bd22c5434cee133ff8c3596139580a98112fae53ddb6b19e9a6ee2
+Evidence directory: /tmp/venture-project-server-drill-kn_k8zf1
+Receipt mode: ordinary date-only
+PASS CRM conversion/won deal -> owned scope/ticket/acceptance -> two T&M invoices; billed40000 cost23500 profit16500 cents; frozen cost, duplicate refusal and source links
+PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
+PASS project profitability, account balances and retained source records survive authenticated server restart
+PASS fixed400/600 progress + changed scope200; invoice replay/linking and cap refusal; budget120000 billed120000 cost10500 profit109500 cents
+PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
+PASS project profitability, account balances and retained source records survive authenticated server restart
+PASS full fixed quote invoice retained at handoff; no duplicate labor billing; billed100000 cost10500 profit89500 cents
+PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
+PASS project profitability, account balances and retained source records survive authenticated server restart
+PASS existing authenticated link form/picker; retainer cash25000 -> liability25000 -> releases10000+15000 revenue25000 cents; over-release refused; no invoice/receipt or project billed allocation invented
+PASS project profitability, account balances and retained source records survive authenticated server restart
+#+end_example
+
+* Same-day receipt regression: refused before, accepted after
+
+On the preceding artifact
+=b61773271731ccabfc9c43dc74a25087d1fa47fa6336aea9d7d326ec892ff4b3=,
+the same default driver failed in fixed progress (exit 1). A generated invoice
+stored an issue instant later than midnight; its ordinary same-calendar-day
+receipt was refused:
+
+#+begin_example
+AssertionError: /api/v1/payment: HTTP 422: {
+  "error" : "validation",
+  "message" : "VentureSettlementService: The date must not precede the source event",
+  "code" : 5
+}
+#+end_example
+
+The demonstrated artifact repairs generated invoice business dates. All four
+modes now pass with ordinary date-only inputs. Every receipt additionally
+verifies that an earlier-calendar-day payment is refused and leaves no
+payment record. Precise timestamps were used only to diagnose the original
+defect; they are not needed by the successful transcript above.
+
+* Retainer surface and review evidence
+
+The pre-action artifact
+=01358a56143b25136b51482eee1fdb9511ac7107945bcc9cc0f2aa84772b711c=
+fails the retainer scenario at its real authenticated collect operation:
+
+#+begin_example
+AssertionError: /api/v1/company/1/actions/collect_retainer: HTTP 404: {
+  "error" : "not_found",
+  "message" : "Unknown record action",
+  "code" : 2
+}
+#+end_example
+
+The demonstrated artifact fixes that missing surface. Retainer earning is
+not an invoice credit or a project billed allocation; its zero management
+margin and 25000-cent earned ledger income are deliberately checked
+separately. Invoice-mode labour costs are management evidence, not invented
+statutory expense entries. Review checked these distinctions, exact source
+identities, partial payments, duplicate/cap/over-release refusals, private
+process lifetime and complete retained-record restart comparisons. The shared
+accounting driver also passed all opening/trading/close/restore scenarios on
+the preceding retainer artifact after its helper was extended to accept a
+=name= action parameter and detect replacement of the binary during a run.
+
+The retainer association uses the existing authenticated project page's
+Links panel, not generic record-link CRUD. The driver fetches the real page,
+checks the target-type/search-picker wiring, queries that picker's endpoint,
+submits the actual =POST /links= form and verifies the rendered link and
+retained relationship. This exercises the form and its search data endpoint;
+it is not a claim of automated browser JavaScript interaction.
+
+* Re-recorded against PR head
+
+Head commit at recording: =7b2160b= (later commits on the branch are tests,
+comments and evidence documents only; the server source is the same).
+
+The transcript above was recorded on a retainer-lane artifact whose feature
+commit is not an ancestor of this branch head, and it says so. Parent
+acceptance reran the same driver, unmodified and with the same ordinary
+date-only default, against the head artifact.
+
+- Head commit: =7b2160b= (=/home/fai/venture-wt/epic-post-parity-5=)
+- Binary SHA-256: =13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d=
+- Exit status: 0
+
+Command, run from this driver checkout with a private =TMPDIR= under =/tmp=
+(removed afterwards) and =nice -n 19= because a full suite was running in the
+build worktree. No =--precise-receipts= workaround was used:
+
+#+begin_src sh
+python3 tools/venture-project-server-drill.py --binary /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+#+end_src
+
+Verbatim stdout:
+
+#+begin_example
+Artifact SHA256: 13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d
+Evidence directory: /tmp/demo-proj-WCzt/venture-project-server-drill-xv8cjsng
+Receipt mode: ordinary date-only
+PASS CRM conversion/won deal -> owned scope/ticket/acceptance -> two T&M invoices; billed40000 cost23500 profit16500 cents; frozen cost, duplicate refusal and source links
+PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
+PASS project profitability, account balances and retained source records survive authenticated server restart
+PASS fixed400/600 progress + changed scope200; invoice replay/linking and cap refusal; budget120000 billed120000 cost10500 profit109500 cents
+PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
+PASS project profitability, account balances and retained source records survive authenticated server restart
+PASS full fixed quote invoice retained at handoff; no duplicate labor billing; billed100000 cost10500 profit89500 cents
+PASS collected cash equals invoices and project billed allocations; AR zero and balance sheet ties
+PASS project profitability, account balances and retained source records survive authenticated server restart
+PASS existing authenticated link form/picker; retainer cash25000 -> liability25000 -> releases10000+15000 revenue25000 cents; over-release refused; no invoice/receipt or project billed allocation invented
+PASS project profitability, account balances and retained source records survive authenticated server restart
+#+end_example
+
+Every PASS line is identical to the lane run. The typed retainer
+collect/release actions, the repaired generated-invoice business dates that
+let an ordinary same-calendar-day receipt be accepted, and the Links-panel
+form and picker are all present on the head artifact. The driver was not
+edited for this rerun. The evidence directory named above was removed after
+the run under the shared run rules. The limits of the sections above still
+apply unchanged: synthetic local SQLite data, no browser recording, no hosted
+isolation, no production authorization and no M2 acceptance.

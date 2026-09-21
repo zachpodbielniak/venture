@@ -36,6 +36,26 @@ gboolean venture_lead_service_save_hook(VentureLeadService *self, VentureEntity 
  */
 gboolean venture_lead_service_capture(VentureLeadService *self, const gchar *token, JsonObject *fields, gchar **redirect_url, GError **error);
 /**
+ * venture_lead_service_capture_result:
+ * @self: canonical capture service
+ * @token: configured form capability; determines the organization
+ * @fields: untrusted mapped form strings
+ * @source: (nullable): verified adapter source overriding submitted source
+ * @campaign_id: verified campaign in the form organization, or zero
+ * @captured: (out) (optional) (nullable) (transfer full): created or matched subject
+ * @redirect_url: (out) (optional) (nullable) (transfer full): configured redirect
+ * @error: (out) (optional): capture or tenant-binding refusal
+ *
+ * Shares validation, duplicate matching, routing and transaction handling with
+ * ordinary capture. Trusted adapters may attach verified attribution. A bot
+ * honeypot succeeds with no subject; it never creates a second capture path.
+ *
+ * Returns: whether capture committed, including a discarded honeypot
+ */
+gboolean venture_lead_service_capture_result(VentureLeadService *self, const gchar *token,
+	JsonObject *fields, const gchar *source, gint64 campaign_id, VentureEntity **captured,
+	gchar **redirect_url, GError **error);
+/**
  * venture_lead_service_convert:
  * @self: the canonical service
  * @lead: saved lead, carrying the expected version
@@ -46,6 +66,18 @@ gboolean venture_lead_service_capture(VentureLeadService *self, const gchar *tok
  */
 VentureEntity *venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 	JsonObject *options, const VentureActor *actor, GError **error);
+/**
+ * venture_lead_service_converting_source:
+ * @self: the canonical service
+ *
+ * The deal a conversion creates copies the lead's owner, team and territory.
+ * A save hook validating that deal needs to know those fields were inherited
+ * rather than chosen, because an inherited assignment may name a
+ * representative or territory deactivated since routing.
+ *
+ * Returns: (transfer none) (nullable): the lead being converted right now
+ */
+VentureEntity *venture_lead_service_converting_source(VentureLeadService *self);
 /**
  * venture_lead_service_reassign:
  * @self: the canonical service

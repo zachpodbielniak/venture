@@ -1,0 +1,254 @@
+#+title: Stripe account boundary, hosted links and ACH return guards — built-artifact demonstration
+#+description: Verbatim operator transcript for issue #125 (PR #130), Stripe items
+
+This transcript runs the already-built DEBUG =venture= artifact as an operator
+would: a real loopback HTTP server with a private config and state directory,
+the first-run owner, two organizations, three authenticated accounts, and the
+ordinary =/api/v1= and web routes. No Stripe account, bank account or live key
+is involved. Every outbound destination the server could reach is pinned to a
+local sink, which recorded the single attempt the server made and refused it;
+the transcript shows that attempt and its refusal (a proxy-environment sink
+cannot rule out a route that ignores the proxy, so this is evidence of the
+server's behaviour, not a network-level guarantee).
+
+* What is demonstrated
+
+Issue #125, "Stripe account boundary — required for #124":
+
+- "One configured Stripe account per organization. Settings show the connected
+  account's safe identity, test/live environment and verification status."
+  — Section A and B: each organization has its own settings page and its own
+  binding; the environment/key/URL rules are enforced on the connect form.
+  *Partially shown*: a connected account's displayed identity needs a verified
+  account, which an offline running server cannot obtain (see LIMITATIONS).
+- "Derive the Stripe account from the business record's verified organization,
+  not a caller-supplied provider account or ambient default." — Sections C, E
+  and F: an unverifiable account stores no binding at all; a forged
+  =integration_connection= and forged =stripe_checkout= / =stripe_event= /
+  =stripe_payment_link= rows are refused to generic writers; ambient
+  installation =VENTURE_STRIPE_*= credentials are present in the server
+  environment throughout and grant no authority anywhere.
+- "Resolve webhook routing to a configured account... Shared webhook
+  infrastructure must preserve this boundary." — Section F: the
+  =/webhooks/stripe/:connection_id= route resolves only a configured
+  connection; unknown, non-numeric and the unbound =/webhooks/stripe= endpoints
+  all refuse with 503 and settle nothing. *Partially shown*: an event signed
+  for organization A's connection delivered to organization B's endpoint needs
+  two verified connections (see LIMITATIONS).
+- "Define credential rotation, disconnect/reconnect and account replacement
+  with pending payments." — *Not shown here*; see LIMITATIONS.
+- "Cover two organizations with different Stripe accounts... No implicit shared
+  Stripe account is supported." — Section A and D: two organizations, separate
+  settings, and an administrator of the second business is refused both read
+  and rotation of the first business's Stripe settings. The identical-invoice
+  -number and colliding-provider-ID half needs verified connections.
+
+Issue #125, #124 item 4 — "Specify later ACH returns/reversals and
+mandate/payment-method failures, using existing refund/dispute/accounting
+guards. Test closed-period and separation-of-duties behavior.":
+
+- Section I: a settled receipt is applied, the month is closed, and a return
+  dated inside the closed month is refused (the driver asserts the closed-period
+  message; the transcript records the status and the zero refund rows). With a =pay= approval rule
+  in force, the proposer's own return is refused and a pending approval is
+  recorded; a distinct authenticated account repeating the exact command
+  applies exactly one 30.00 USD refund and the invoice reopens as
+  =partially_paid=. These are the same refund, period and whole-operation
+  approval guards the Stripe return path enters; the signed
+  =charge.dispute.*= entry into them is covered by the C tests named below.
+
+Issue #125, #124 item 5 — "Define whether a hosted invoice link is a
+Venture-owned resolver or a provider URL. Handle expiry/replacement, revoked
+links, already-paid/deleted invoices and pending payments. Expose no arbitrary
+invoice selector or sensitive data through the public link.":
+
+- Section G: the hosted link is a Venture-owned action that refuses without
+  this organization's verified account, and writes no link record.
+- Section H: the public resolver =/pay/<capability>= answers a well-formed but
+  unknown 101-character capability with one generic unavailable page (message
+  asserted by the driver),
+  =Cache-Control: no-store=, =Referrer-Policy: no-referrer=, and no invoice
+  number or customer name; a POST carrying =invoice_id= cannot select an
+  invoice, and the invoice's state is unchanged afterwards.
+  *Not shown here*: creating a link and resolving it, expiry, replacement,
+  revocation, already-paid/deleted invoices and a pending bank payment, all of
+  which need a verified connection (see LIMITATIONS).
+
+* Observation, not a refusal of anything the documentation promises
+
+The two refusals in section G return HTTP 500 rather than a 4xx:
+=venture_web_error_response()= maps =VENTURE_ERROR_CONFIG= to 500, which the
+source already remarks on at =src/web/venture-web-server.c:17072=. The refusal
+itself and its message ("Organization integration is unconfigured or
+ambiguous") are correct; only the status class is coarse.
+
+* The exact command
+
+#+begin_example
+$ ROOT=$(mktemp -d /tmp/demo-stripe-accounts-XXXX)
+$ nice -n 19 python3 docs/evidence/stripe-accounts-demonstration.py \
+      /path/to/build/debug/venture "$ROOT"
+$ rm -rf "$ROOT"
+#+end_example
+
+The run below used =/home/fai/venture-wt/epic-post-parity-5/build/debug/venture=
+(the already-built DEBUG artifact) and exited 0. The private root was removed
+afterwards. The driver builds nothing.
+
+* Transcript
+
+#+begin_example
+Artifact: /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+Artifact SHA256: 13815d4d925e8df1c5d7cf751fd659e154223ca2e3d500591780c62c5be63f8d
+[01] POST /login  (owner) -> HTTP 302
+
+== A. One Stripe account per organization: the unconnected binding ==
+[02] GET /api/v1/health  (owner) -> HTTP 200
+[03] GET /organizations/1/settings/stripe  (owner) -> HTTP 200
+     page: no connected account; no webhook endpoint is published yet
+[04] POST /api/v1/organization  (owner) -> HTTP 201
+[05] GET /organizations/2/settings/stripe  (owner) -> HTTP 200
+     organization 2 has its own independent settings page
+PASS each organization carries its own Stripe binding; none is shared or inherited
+
+== B. Connect refusals decided before any provider request ==
+[06] POST /organizations/1/settings/stripe  (owner) -> HTTP 400
+     refusal: Stripe environment must be test or live
+[07] POST /organizations/1/settings/stripe  (owner) -> HTTP 400
+     refusal: Stripe keys must match the selected environment
+[08] POST /organizations/1/settings/stripe  (owner) -> HTTP 400
+     refusal: Stripe return URLs require HTTPS without embedded credentials
+[09] POST /organizations/1/settings/stripe  (owner) -> HTTP 400
+     refusal: Stripe return URLs require HTTPS without embedded credentials
+[10] POST /organizations/1/settings/stripe  (owner) -> HTTP 400
+     refusal: Stripe settings require bounded nonempty token and URL values
+PASS environment, key/environment agreement, URL and bounds rules refuse locally; outbound provider attempts still 0; no credential is echoed
+
+== C. The account is verified with the supplied key before anything is stored ==
+[11] POST /organizations/1/settings/stripe  (owner) -> HTTP 400
+     outbound attempts captured by the local sink: ['CONNECT api.stripe.com:443 HTTP/1.1']
+[12] GET /api/v1/integration_connection?organization_id=1&limit=1000  (owner) -> HTTP 200
+PASS a well-formed but unverifiable account stores no binding: integration_connection rows for stripe = 0
+
+== D. Organization A's binding is invisible to organization B ==
+[13] POST /users  (owner) -> HTTP 302
+[14] GET /api/v1/user?organization_id=1&limit=1000  (owner) -> HTTP 200
+[15] POST /api/v1/organization_membership  (owner) -> HTTP 201
+[16] POST /login  (second-business-admin) -> HTTP 302
+[17] GET /organizations/2/settings/stripe  (second-business-admin) -> HTTP 200
+[18] GET /organizations/1/settings/stripe  (second-business-admin) -> HTTP 403
+[19] POST /organizations/1/settings/stripe  (second-business-admin) -> HTTP 403
+PASS an administrator of the second business can neither read nor rotate the first business's Stripe settings
+
+== E. Provider identity alone grants no authority ==
+[20] POST /api/v1/integration_connection  (owner) -> HTTP 403
+[21] POST /api/v1/stripe_checkout  (owner) -> HTTP 422
+     stripe_checkout: refused to a generic writer
+[22] POST /api/v1/stripe_event  (owner) -> HTTP 422
+     stripe_event: refused to a generic writer
+[23] POST /api/v1/stripe_payment_link  (owner) -> HTTP 422
+     stripe_payment_link: refused to a generic writer
+PASS neither a Stripe binding nor Stripe evidence can be forged through the generic API
+
+== F. Webhook routing is per connection, with no ambient fallback ==
+[24] POST /webhooks/stripe/1  (anonymous) -> HTTP 503
+     event routed to a connection that does not exist
+[25] POST /webhooks/stripe/999999  (anonymous) -> HTTP 503
+[26] POST /webhooks/stripe  (anonymous) -> HTTP 503
+     the unbound fixture route refuses in production configuration
+[27] POST /webhooks/stripe/not-a-connection  (anonymous) -> HTTP 503
+     a non-numeric binding resolves no connection either
+     ambient VENTURE_STRIPE_* credentials are set in the server environment and settle nothing
+PASS /webhooks/stripe/:connection_id only resolves a configured connection; an unbound or unknown endpoint cannot post a receipt
+
+== G. Hosted payment actions refuse without that organization's account ==
+[28] POST /api/v1/company  (owner) -> HTTP 201
+[29] POST /api/v1/invoice  (owner) -> HTTP 201
+[30] POST /api/v1/invoice_line  (owner) -> HTTP 201
+[31] PATCH /api/v1/invoice/1  (owner) -> HTTP 200
+[32] POST /api/v1/invoices/1/checkout  (owner) -> HTTP 500
+     VENTURE_ERROR_CONFIG is mapped to 500 by venture_web_error_response()
+[33] POST /api/v1/invoice/1/actions/payment_link  (owner) -> HTTP 500
+[34] GET /api/v1/stripe_payment_link?organization_id=1&limit=1000  (owner) -> HTTP 200
+PASS ACH Checkout and the hosted invoice link both require this organization's verified account; no link record exists
+
+== H. The public /pay resolver exposes nothing it was not given ==
+[35] GET /pay/79b737b9-a89d-4402-a978-588ffc845bb1.24d53b519c65d92774ab494347edbf8d6a6e9b9db41dbd7f72064896c73f2cf4  (anonymous) -> HTTP 404
+     unavailable page: no invoice number, no customer, Cache-Control=no-store, Referrer-Policy=no-referrer
+[36] POST /pay/79b737b9-a89d-4402-a978-588ffc845bb1.24d53b519c65d92774ab494347edbf8d6a6e9b9db41dbd7f72064896c73f2cf4  (anonymous) -> HTTP 404
+     a submitted invoice selector cannot choose an invoice
+[37] GET /pay/invalid  (anonymous) -> HTTP 404
+[38] GET /api/v1/invoice/1  (owner) -> HTTP 200
+     invoice workflow_state remains sent
+PASS a missing or tampered capability returns one unavailable page, discloses no invoice identity and honours no invoice selector
+
+== I. A return after settlement meets the existing refund guards ==
+[39] POST /api/v1/payment  (owner) -> HTTP 201
+[40] GET /api/v1/invoice/1  (owner) -> HTTP 200
+[41] GET /api/v1/payment_allocation?organization_id=1&limit=1000  (owner) -> HTTP 200
+     receipt applied: invoice workflow_state=paid, allocation id=1
+[42] POST /api/v1/fiscal_year  (owner) -> HTTP 201
+[43] GET /api/v1/fiscal_period?organization_id=1&limit=1000  (owner) -> HTTP 200
+[44] PATCH /api/v1/fiscal_period/1  (owner) -> HTTP 200
+     fiscal period FY2026 P01 closed
+[45] POST /api/v1/refund  (owner) -> HTTP 409
+     a return dated inside the closed month
+[46] GET /api/v1/refund?organization_id=1&limit=1000  (owner) -> HTTP 200
+PASS a return cannot post into the closed month; refund rows = 0
+[47] POST /api/v1/accounting_approval_rule  (owner) -> HTTP 201
+[48] POST /users  (owner) -> HTTP 302
+[49] POST /login  (synthetic-reviewer) -> HTTP 302
+[50] POST /api/v1/refund  (owner) -> HTTP 403
+     the proposer applying their own return
+[51] GET /api/v1/refund?organization_id=1&limit=1000  (owner) -> HTTP 200
+[52] GET /api/v1/accounting_approval?organization_id=1&limit=1000  (owner) -> HTTP 200
+     pending approval: action=pay record_type=refund proposer=user:1
+[53] POST /api/v1/refund  (synthetic-reviewer) -> HTTP 201
+     the second actor applying the identical proposal
+[54] GET /api/v1/refund?organization_id=1&limit=1000  (owner) -> HTTP 200
+[55] GET /api/v1/accounting_approval?organization_id=1&limit=1000  (owner) -> HTTP 200
+[56] GET /api/v1/invoice/1  (owner) -> HTTP 200
+     refund {'amount': 3000, 'currency': 'USD', 'exponent': 2, 'formatted': '30.00 USD'} applied by user:3; invoice workflow_state=partially_paid
+PASS separation of duties is enforced on the return: the proposer is refused, a distinct authenticated actor applies the identical proposal once
+
+All assertions passed.
+
+LIMITATIONS: what this transcript does NOT prove.
+- No Stripe was contacted. The only outbound attempt the server made was
+  captured by the local sink shown above, so no live account, bank account,
+  mandate or settlement timing is exercised here.
+- Venture's synthetic Stripe provider is a C StripeTransport passed to
+  venture_stripe_service_new()/venture_stripe_settings_configure(); there is no
+  configuration key or environment variable that injects it into a running
+  server, and Venture does not expose stripe-glib's test_base_url. A running
+  artifact therefore cannot hold a verified Stripe connection offline, so
+  everything that needs one is shown only by the DEBUG test artifact:
+  * an event signed for organization A's connection delivered to another
+    endpoint, a wrong signing secret, wrong livemode, wrong account, colliding
+    provider IDs across two organizations and identical local invoice numbers:
+    build/debug/tests/test-stripe -p /stripe/binding-rotation,
+    -p /stripe/binding-organizations, -p /stripe/binding-settings-ui,
+    -p /stripe/binding-replacement, -p /stripe/binding-authorization,
+    -p /stripe/binding-migration, -p /stripe/account-binding-metadata.
+  * disconnect retaining historical credentials so an old connection's callbacks
+    still verify while its replacement cannot borrow them:
+    -p /stripe/binding-replacement.
+  * rotation accepting the new signing secret and refusing the old one:
+    -p /stripe/binding-rotation.
+  * the hosted link lifecycle with a live capability - resolving a real token,
+    the outstanding amount without the invoice number or customer, expiry,
+    replacement, revocation, already-paid, deleted and changed invoices, and a
+    pending bank payment that creates no second collection:
+    -p /stripe/payment-link/basic, /authorization, /changed, /replacement,
+    /uncertain, /deleted, /finance, /api, /paid, /processing, /form.
+  * the ACH return itself arriving as a signed charge.dispute event and passing
+    through the refund/dispute guards, including the closed-period and
+    separation-of-duties replays:
+    -p /stripe/ach/return-lost, -p /stripe/ach/return-won,
+    -p /stripe/ach/return-closed-period, -p /stripe/ach/return-sod,
+    -p /stripe/ach/sod, -p /stripe/ach/closed-period.
+- Sections H and I demonstrate the public resolver and the refund, period and
+  approval guards the Stripe return path reuses, driven through the ordinary
+  HTTP API rather than through a signed provider event.
+- SQLite only, one process, synthetic organizations, customers and money.
+#+end_example

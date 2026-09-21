@@ -383,12 +383,13 @@ venture_mfa_web_ui_login_submit(HtmxRequest *request, GHashTable *params, gpoint
 static void
 venture_mfa_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/account/mfa", venture_mfa_web_ui_status, self);
-	htmx_router_get(router, "/account/mfa/enrol", venture_mfa_web_ui_enrol, self);
-	htmx_router_post(router, "/account/mfa/enrol", venture_mfa_web_ui_enrol_start, self);
-	htmx_router_post(router, "/account/mfa/confirm", venture_mfa_web_ui_confirm, self);
-	htmx_router_post(router, "/account/mfa/disable", venture_mfa_web_ui_disable, self);
-	htmx_router_post(router, "/account/mfa/recovery", venture_mfa_web_ui_recovery, self);
-	htmx_router_get(router, "/login/mfa", venture_mfa_web_ui_login_form, self);
-	htmx_router_post(router, "/login/mfa", venture_mfa_web_ui_login_submit, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/mfa", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_status, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/mfa/enrol", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_enrol, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/mfa/enrol", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_enrol_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/mfa/confirm", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_confirm, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/mfa/disable", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_disable, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/mfa/recovery", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_recovery, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/login/mfa", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_login_form, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/login/mfa", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_mfa_web_ui_login_submit, self);
 }

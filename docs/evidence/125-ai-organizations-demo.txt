@@ -1,0 +1,14 @@
+Issue #125: organization-owned AI and explicit platform grants
+
+Built artifact: build/debug/venture (DEBUG=1, local worktree).
+Provider: synthetic loopback OpenAI-compatible HTTP fixture.
+Command: python tools/venture-test-ai-settings.py --evidence DIRECTORY
+The following is verbatim sanitized output from the successful built-server
+browser harness; assertions inspect actual requests and persisted records.
+
+Built DEBUG server: two organizations configured independent write-only chat credentials; reload showed blank secret fields.
+A first-organization chat used its own provider; another organization's record context never entered the provider request.
+A cross-organization attachment was refused before any provider request.
+Platform offer creation did not select it; an explicit metadata grant and recipient selection enabled its synthetic connection test.
+Revoking the platform grant made the selected source unavailable without trying the organization's previous key.
+Demonstration complete. All users, credentials, records and HTTP responses were synthetic; no paid provider or existing database was used.

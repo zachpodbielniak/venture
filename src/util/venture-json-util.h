@@ -173,6 +173,18 @@ venture_json_error_to_string(
 	gboolean	 pretty
 );
 
+/**
+ * venture_json_append_canonical:
+ * @output: destination fingerprint material
+ * @node: bounded parsed JSON value
+ *
+ * Appends deterministic hash material, sorting object keys and preserving
+ * array order. The encoding retains accounting-approval fingerprint bytes,
+ * including trailing delimiters; it is not a JSON wire representation.
+ * Callers bound untrusted input size and nesting before this synchronous walk.
+ */
+void venture_json_append_canonical(GString *output, JsonNode *node);
+
 G_END_DECLS
 
 #endif /* VENTURE_JSON_UTIL_H */

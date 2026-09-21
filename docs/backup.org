@@ -151,3 +151,11 @@ active organization before anything runs: the service reads the organization
 off the record it is handed, and without that check an admin of one
 organization could have snapshotted, verified or drilled another's by posting
 its number. A record from elsewhere is reported as not found.
+
+* Whole-workspace recovery
+
+An accounting pack is not an operational tenant backup. It omits credentials,
+attachments and application state needed to restore a workspace. The separate
+[[file:tenant-recovery.org][tenant recovery utility]] snapshots a stopped application and its PostgreSQL
+database into an encrypted archive, verifies workspace identity, and restores
+only into an empty destination. Keep the recovery key outside that archive.

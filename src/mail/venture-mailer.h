@@ -9,11 +9,41 @@ G_DECLARE_INTERFACE(VentureMailer, venture_mailer, VENTURE, MAILER, GObject)
 /**
  * VentureMailerInterface:
  * @send: one submission; uncertain acceptance must report MAIL_UNCERTAIN
+ * @prepare: (nullable): resolve a concrete transport on the caller's thread
+ * @get_binding: (nullable): return immutable connection identity, without I/O
  */
 struct _VentureMailerInterface {
 	GTypeInterface parent_iface;
 	gboolean (*send)(VentureMailer *self, VentureMailMessage *message, GCancellable *cancellable, GError **error);
+	VentureMailer *(*prepare)(VentureMailer *self, VentureMailMessage *message, GError **error);
+	void (*get_binding)(VentureMailer *self, gint64 *connection_id, gint64 *version);
+	/*< private >*/
+	gpointer padding[8];
 };
+/**
+ * venture_mailer_prepare:
+ * @self: transport or organization-aware selector
+ * @message: message supplying the verified business organization
+ * @error: (out) (optional): configuration or authorization refusal
+ *
+ * Resolves an immutable concrete transport on the caller's thread before
+ * any worker runs. Selectors may read the database here, never from send.
+ * Concrete transports implement send and leave prepare unset. The returned
+ * transport must not itself require preparation. No message is submitted.
+ *
+ * Returns: (transfer full) (nullable): concrete transport, or NULL on refusal
+ */
+VentureMailer *venture_mailer_prepare(VentureMailer *self, VentureMailMessage *message, GError **error);
+/**
+ * venture_mailer_get_binding:
+ * @self: prepared concrete transport
+ * @connection_id: (out): immutable integration identity, or zero for an explicitly injected transport
+ * @version: (out): configuration version, or zero when unbound
+ *
+ * Reads identity without database access. The outbox persists it before any
+ * submission and rejects changing a retained message's connection identity.
+ */
+void venture_mailer_get_binding(VentureMailer *self, gint64 *connection_id, gint64 *version);
 /**
  * venture_mailer_send:
  * @self: the transport

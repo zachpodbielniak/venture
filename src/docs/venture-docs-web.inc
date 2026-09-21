@@ -136,7 +136,7 @@ venture_docs_web_register(
 	HtmxRouter		*router,
 	VentureWebServer	*self
 ){
-	htmx_router_get(router, "/docs", venture_docs_web_index, self);
-	htmx_router_get(router, "/docs/", venture_docs_web_index, self);
-	htmx_router_get(router, "/docs/:page", venture_docs_web_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/docs", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_docs_web_index, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/docs/", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_docs_web_index, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/docs/:page", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_docs_web_page, self);
 }

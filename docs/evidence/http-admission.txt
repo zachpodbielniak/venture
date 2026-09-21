@@ -1,0 +1,27 @@
+HTTP admission demonstration — private synthetic workspaces
+
+Source: f9011be plus 9e3b4f8 and startup-order repair 0f36860. Changed configuration/web objects were rebuilt
+with the project's DEBUG/Werror flags into a private copy of the f9011be
+archive; the server was relinked with the same vendor archives and main object.
+This focused artifact check is not the final combined DEBUG build/suite gate.
+Driver: docs/evidence/http-admission-demonstration.py
+Command: python3 docs/evidence/http-admission-demonstration.py --binary build/debug/venture
+Captured from a real PTY:
+
+Artifact SHA256: 7de04717a704b78b41131c3ca94bda6948b74a45be792ae87eb1affc4fe6396d
+PASS limited workspace: two dynamic requests admitted; third returns 429, Retry-After 60 and no-store
+PASS separate neighbor process retains its own admission budget
+PASS exhausted workspace still serves public build health
+LIMIT: this is a two-process admission demonstration, not capacity, storage, job fairness or hosted-launch qualification
+Private evidence: /tmp/venture-admission-demo-pfqo5tmm
+
+The driver retained private SQLite/config/log evidence and stopped both owned
+processes. No external service or existing workspace was contacted.
+
+Verification: all 15 tenant cases passed on SQLite and on a disposable PostgreSQL
+schema. Removing rate admission makes the burst test fail (200 instead of 429);
+removing only the concurrency guard makes the nested test fail the same way.
+Restoring the old startup order makes the fresh-database regression fail because
+it finds one workspace binding instead of zero. Each guard was restored, the
+fresh-database case passed again, and the rebuilt server retained the exact SHA256
+above. No warning level, assertion or limit was relaxed.

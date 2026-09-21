@@ -145,6 +145,10 @@ venture_federation_request(VentureContext *context, gint64 peer_id,
 	peer = venture_database_get(database, VENTURE_TYPE_FEDERATION_PEER, peer_id, error);
 	if (!peer)
 		return NULL;
+	/* Retained platform bindings do not authorize hosted background work.
+	 * Check before discovery, and repeat after each nested network wait. */
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(database), G_OBJECT(peer), TRUE, error))
+		return NULL;
 	g_object_get(peer, "origin", &origin, "public-key", &pin, "active", &active, NULL);
 	if (!active || venture_entity_is_deleted(peer))
 		goto refused;
@@ -183,6 +187,8 @@ venture_federation_request(VentureContext *context, gint64 peer_id,
 	if (!current || venture_entity_is_deleted(current) ||
 		venture_entity_get_version(current) != venture_entity_get_version(peer))
 		goto refused;
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(database), G_OBJECT(current), TRUE, error))
+		return NULL;
 	body = venture_federation_sign(context, identity, operation, &signature, error);
 	if (!body)
 		return NULL;
@@ -198,6 +204,8 @@ venture_federation_request(VentureContext *context, gint64 peer_id,
 	if (answer && (!current || venture_entity_is_deleted(current) ||
 		venture_entity_get_version(current) != venture_entity_get_version(peer)))
 		goto refused;
+	if (answer && !venture_tenant_service_check_resource(venture_tenant_service_get(database), G_OBJECT(current), TRUE, error))
+		return NULL;
 	return g_steal_pointer(&answer);
 refused:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,

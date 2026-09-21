@@ -115,6 +115,21 @@ gchar *
 venture_time_to_relative_string(GDateTime *when);
 
 /**
+ * venture_time_today:
+ * @timezone: (nullable): the zone whose calendar date "today" means; %NULL
+ *   means the process-local zone
+ *
+ * The calendar date current in @timezone, encoded as midnight UTC on that
+ * date -- the same instant a date picker submits for it. A business date
+ * must be read in the configured zone, not the zone the process happens to
+ * run in, or an evening acceptance issues tomorrow's invoice.
+ *
+ * Returns: (transfer full): midnight UTC on today's date in @timezone
+ */
+GDateTime *
+venture_time_today(GTimeZone *timezone);
+
+/**
  * venture_time_get_timezone:
  * @name: (nullable): an IANA timezone name
  *
@@ -138,6 +153,21 @@ gboolean
 venture_time_equal(
 	GDateTime	*a,
 	GDateTime	*b
+);
+
+/**
+ * venture_time_is_calendar_date:
+ * @date: an instant
+ *
+ * A date picker submits a calendar date as midnight UTC; a precise instant
+ * almost never lands there. Settlement's date rules and the recurring sweep
+ * both need the distinction, so it lives in one place.
+ *
+ * Returns: %TRUE if @date is exactly midnight UTC
+ */
+gboolean
+venture_time_is_calendar_date(
+	GDateTime	*date
 );
 
 G_END_DECLS

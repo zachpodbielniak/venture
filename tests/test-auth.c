@@ -1227,6 +1227,39 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
 		"/tickets/1/assist?what=triage"), ==, SOUP_STATUS_UNAUTHORIZED);
 
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/organizations/1/settings/stripe"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/organizations/1/settings/stripe", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/support"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/support", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* Invitation ceremony is public only in explicitly hosted mode. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/invitation"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/invitation", NULL, "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account/oidc"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/oidc", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/oidc/link", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/oidc"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/ai"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", NULL, "operation=disable", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/settings/ai/platform"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/settings/ai/platform", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/oidc", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* Public callbacks carry their own state and browser proof; an empty
+	 * callback must fail authentication without redirecting into a session. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/auth/oidc/callback"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/mail"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/attribution"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/attribution", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/bankfeed/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/calendar_account/1/settings"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/mail_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/calendar_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bankfeed/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+
 	/* Payment actions authenticate before exposing module configuration. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/invoices/1/checkout", NULL, "", NULL, NULL),
@@ -1459,7 +1492,9 @@ test_auth_api_refuses_anonymous_requests(
 			"/payroll/1/post", "/api/v1/payroll_run/1/post", "/purchase_order/1/approve",
 			"/api/v1/purchase_order/1/approve", "/sales_order/1/confirm", "/api/v1/sales_order/1/confirm",
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
-			"/api/v1/capture/1/convert", "/settings/backups"
+			"/api/v1/capture/1/convert", "/settings/backups",
+			"/api/v1/invoice/1/actions/payment_link", "/api/v1/stripe_payment_link/1/actions/revoke",
+			"/api/v1/stripe_event/1/actions/retry"
 		};
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
@@ -1557,7 +1592,13 @@ test_auth_api_refuses_anonymous_requests(
 	 * reached from the forge page.
 	 */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/forges/1/settings", NULL, "token=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/forges/1/token", NULL, "token=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/forges/1/settings", NULL, "token=x", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/forges/1/secret", NULL, "secret=x", NULL, NULL),
@@ -1783,6 +1824,9 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/forge/1/token", NULL, "{\"token\":\"x\"}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge/1/settings", NULL, "{\"token\":\"x\"}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/forge/1/webhook-secret", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -1807,6 +1851,10 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/quote", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/u/unknown"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* The documentation site is public by design -- it is the shipped
 	 * shipped documentation, not this install's data -- so it answers
 	 * anonymously rather than redirecting. Pinned here so a route added
@@ -1819,6 +1867,25 @@ test_auth_api_refuses_anonymous_requests(
 	 * away before routing and lands on the ordinary signed-out redirect. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/%2e%2e%2fventure.db"), ==, SOUP_STATUS_BAD_REQUEST);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/docs/../venture.db"), ==, SOUP_STATUS_FOUND);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/project_time/1/actions/approve", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/client_project/1/actions/bill", NULL, "{\"date\":\"2026-01-12\"}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Delivery actions use the same authenticated metadata-driven route. */
+	{
+		const gchar *paths[] = {
+			"/api/v1/quote/1/actions/handoff", "/api/v1/deal/1/actions/handoff",
+			"/api/v1/client_project/1/actions/plan_work", "/api/v1/client_project/1/actions/manage",
+			"/api/v1/client_project/1/actions/change_scope", "/api/v1/project_deliverable/1/actions/accept",
+			"/api/v1/project_deliverable/1/actions/bill", "/api/v1/project_deliverable/1/actions/link_invoice"
+		};
+		for (i = 0; i < G_N_ELEMENTS(paths); i++)
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", paths[i], NULL, "{}", NULL, NULL),
+				==, SOUP_STATUS_UNAUTHORIZED);
+	}
 
 }
 
@@ -2657,6 +2724,15 @@ test_auth_forge_records_are_owner_only(
 	                 ==, SOUP_STATUS_FORBIDDEN);
 
 	/* The credential routes are owner-only even for a logged-in editor. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/forges/1/settings",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forges/1/settings",
+	                                        editor, "operation=disconnect", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/forge/1/settings",
+	                                        editor, "{}", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forges/1/token",
 	                                        editor, "token=stolen", NULL, NULL),
 	                 ==, SOUP_STATUS_FORBIDDEN);
@@ -2700,12 +2776,11 @@ test_auth_forge_records_are_owner_only(
 }
 
 /*
- * A mail_account names the IMAP host and which environment variable holds
- * the password. An editor who could write one could point the next sweep
- * at a host they control, or name VENTURE_SMTP_PASSWORD as secret_env.
+ * Shared connector metadata is readable, but assigning a connector remains
+ * organization administration. Legacy environment names grant no credentials.
  */
 static void
-test_auth_mail_account_is_owner_only(
+test_auth_mail_account_delegation(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
@@ -2722,7 +2797,7 @@ test_auth_mail_account_is_owner_only(
 	g_assert_cmpuint(server_fixture_request(fixture, "GET",
 	                                        "/api/v1/mail_account", editor,
 	                                        NULL, NULL, NULL),
-	                 ==, SOUP_STATUS_FORBIDDEN);
+	                 ==, SOUP_STATUS_OK);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/mail_account", editor,
 		"{\"address\":\"ops@example.test\",\"imap_host\":\"attacker.example\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
@@ -2751,11 +2826,10 @@ test_auth_mail_account_is_owner_only(
 	                                        editor, NULL, NULL, NULL),
 	                 ==, SOUP_STATUS_OK);
 
-	/* Syncing one account by id acts on the owner-only row, so an editor
-	 * who may run the organization's sweep still may not name an account. */
+	/* Missing accounts stay indistinguishable from inaccessible accounts. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/mail_accounts/1/sync", editor, "{}", NULL, NULL),
-		==, SOUP_STATUS_FORBIDDEN);
+		==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/mail_accounts/999999/sync", owner, "{}", NULL, NULL),
 		==, SOUP_STATUS_NOT_FOUND);
@@ -4139,6 +4213,26 @@ test_orgaccess_export_signal(ServerFixture *fixture, gconstpointer user_data)
 	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
 }
 
+/* The list page renders type-level actions for the active organization.
+ * The registry prototype is shared by every request and every other
+ * reader of a type's specs, so the organization must not be written to it. */
+static void
+test_orgaccess_list_leaves_prototype_untouched(ServerFixture *fixture, gconstpointer user_data)
+{
+	VentureEntity *prototype;
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *body = NULL;
+
+	prototype = venture_entity_registry_get_prototype(
+		venture_context_get_entity_registry(fixture->context), "company");
+	g_assert_nonnull(prototype);
+	g_assert_cmpint(venture_entity_get_organization_id(prototype), ==, 0);
+	server_fixture_create_user(fixture, "list-owner", "password", VENTURE_USER_ROLE_OWNER, NULL);
+	cookie = server_fixture_login(fixture, "list-owner", "password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/company", cookie, NULL, &body, NULL), ==, 200);
+	g_assert_cmpint(venture_entity_get_organization_id(prototype), ==, 0);
+}
+
 static void
 orgaccess_cli_wait(GObject *source, GAsyncResult *result, gpointer data)
 {
@@ -4497,12 +4591,11 @@ test_auth_health_sweep_is_judged_in_its_organization(
 }
 
 /*
- * A calendar_account names the CalDAV host and which environment variable
- * holds the app password: owner-only, for the reasons a mail_account is.
+ * Calendar accounts follow the same explicit delegation as mail accounts.
  * A calendar_event link is the sync's memory of both sides; nobody edits it.
  */
 static void
-test_auth_calendar_account_is_owner_only(
+test_auth_calendar_account_delegation(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
@@ -4519,7 +4612,7 @@ test_auth_calendar_account_is_owner_only(
 	g_assert_cmpuint(server_fixture_request(fixture, "GET",
 	                                        "/api/v1/calendar_account", editor,
 	                                        NULL, NULL, NULL),
-	                 ==, SOUP_STATUS_FORBIDDEN);
+	                 ==, SOUP_STATUS_OK);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/calendar_account", editor,
 		"{\"url\":\"https://attacker.example/\",\"owner\":\"ben\",\"secret_env\":\"VENTURE_SMTP_PASSWORD\"}",
@@ -4632,12 +4725,265 @@ test_auth_sidebar_asks_the_five_questions(
 	venture_config_set_module_enabled(fixture->config, "quotes", TRUE);
 }
 
+static void test_auth_mail_settings_administration(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *owner = NULL;
+	(void)unused;
+	server_fixture_create_member(fixture, "mail-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "mail-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", editor,
+		"operation=disconnect&connection_id=1&version=1", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "mail-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "mail-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", owner, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+}
+static void test_auth_commerce_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL, *form = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	gint64 id, version;
+	(void)unused;
+	g_object_set(fixture->config, "commerce-enabled", TRUE, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/commerce"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	server_fixture_create_member(fixture, "commerce-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "commerce-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/commerce", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "commerce-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "commerce-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner,
+		"operation=configure&connection_id=0&version=0&shop=fixture.myshopify.com&access_token=synthetic-commerce-secret", &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "fixture.myshopify.com"));
+	g_assert_null(strstr(page, "synthetic-commerce-secret"));
+	g_clear_pointer(&page, g_free);
+	binding = venture_integration_service_find(venture_integration_service_get(fixture->database), 1, "commerce.shopify", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+	id = venture_entity_get_id(VENTURE_ENTITY(binding)); version = venture_entity_get_version(VENTURE_ENTITY(binding));
+	form = g_strdup_printf("operation=configure&connection_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT "&shop=fixture.myshopify.com&access_token=rotated-commerce-secret", id, version);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner, form, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "rotated-commerce-secret"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner, form, NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("operation=disconnect&connection_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, id, version + 1);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/commerce", owner, form, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "No Shopify account"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/commerce", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "synthetic-commerce-secret"));
+	g_assert_null(strstr(page, "rotated-commerce-secret"));
+}
+/* A transport that only counts. Cross-organization import must be refused
+ * before any connector is built, so the count is the evidence. */
+typedef struct { GObject parent; guint calls; } CountingTransport;
+typedef struct { GObjectClass parent; } CountingTransportClass;
+GType counting_transport_get_type(void);
+static void counting_transport_iface(VentureBankFeedTransportInterface *iface);
+G_DEFINE_TYPE_WITH_CODE(CountingTransport, counting_transport, G_TYPE_OBJECT,
+	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_BANK_FEED_TRANSPORT, counting_transport_iface))
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(CountingTransport, g_object_unref)
+static gchar *
+counting_transport_get(VentureBankFeedTransport *transport, const gchar *url, const gchar *authorization, GError **error)
+{
+	(void)url; (void)authorization; (void)error;
+	((CountingTransport *)transport)->calls++;
+	return g_strdup("{\"orders\":[]}");
+}
+static void counting_transport_iface(VentureBankFeedTransportInterface *iface) { iface->get = counting_transport_get; }
+static void counting_transport_class_init(CountingTransportClass *klass) { (void)klass; }
+static void counting_transport_init(CountingTransport *self) { (void)self; }
+
+/* An editor who is a member of organization 1 names another organization in
+ * the import body. The access policy refuses it as not found, and nothing
+ * reaches the shop. */
+static void test_auth_commerce_import_cross_organization(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *body = NULL, *page = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other organization", "slug", "other", NULL);
+	g_autoptr(CountingTransport) transport = g_object_new(counting_transport_get_type(), NULL);
+	g_autoptr(VentureCommerceService) service = NULL;
+	guint status;
+	(void)unused;
+	g_object_set(fixture->config, "commerce-enabled", TRUE, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(other), !=, venture_context_get_default_organization_id(fixture->context));
+	service = venture_commerce_service_new(fixture->database, venture_context_get_default_organization_id(fixture->context),
+		VENTURE_BANK_FEED_TRANSPORT(transport), &error);
+	g_assert_no_error(error); g_assert_nonnull(service);
+	venture_context_set_commerce_service(fixture->context, service);
+	server_fixture_create_member(fixture, "commerce-importer", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "commerce-importer", "editor-long-password");
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"connector\":\"shopify\"}", venture_entity_get_id(other));
+	status = server_fixture_request(fixture, "POST", "/api/v1/commerce/import", editor, body, &page, NULL);
+	g_assert_cmpuint(status, ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(page, "not_found"));
+	g_assert_cmpuint(transport->calls, ==, 0);
+}
+static void test_auth_ai_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *editor = NULL, *owner = NULL, *page = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("fixture-key-32-bytes-for-tests!!!", 32);
+	g_autoptr(GError) error = NULL;
+	(void)unused;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error)); g_assert_no_error(error);
+	server_fixture_create_member(fixture, "ai-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "ai-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/settings/ai/platform", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "ai-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "ai-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", owner,
+		"operation=configure&purpose=chat&version=0&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=synthetic-write-only-ai-secret&monthly_requests=20&concurrency_limit=1", &page, NULL), ==, SOUP_STATUS_FOUND);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Effective source: organization"));
+	g_assert_null(strstr(page, "synthetic-write-only-ai-secret")); g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "synthetic-write-only-ai-secret"));
+	g_assert_nonnull(strstr(page, "name=\"api_key\" type=\"password\"")); g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", owner,
+		"operation=disable&purpose=chat&version=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Effective source: disabled"));
+}
+/* An organization editor -- a member holding the EDITOR organization role,
+ * not the FINANCE one the generic member helper grants -- is refused every
+ * AI and mail settings page on both the read and the write, with the role
+ * status rather than a redirect, since the session itself is valid. */
+static void test_auth_settings_organization_editor(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) member = NULL;
+	g_autofree gchar *editor = NULL;
+	gint64 id;
+	(void)unused;
+	server_fixture_create_user(fixture, "org-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, &id);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", id,
+		"organization-id", venture_context_get_default_organization_id(fixture->context),
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	editor = server_fixture_login(fixture, "org-editor", "editor-long-password");
+	g_assert_nonnull(editor);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", editor,
+		"operation=configure&purpose=chat&version=0&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=editor-refused-ai-secret&monthly_requests=20&concurrency_limit=1", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai", editor,
+		"operation=disable&purpose=chat&version=0", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/settings/ai/platform", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/settings/ai/platform", editor,
+		"operation=offer&purpose=chat&billing_organization_id=1&title=Editor%20offer&provider=openai&model=fixture-model&base_url=https%3A%2F%2Fapi.openai.com&api_key=editor-refused-platform-secret&version=0", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/mail", editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", editor,
+		"operation=configure&version=0&connection_id=0&host=smtp.example.invalid&from=billing%40example.invalid&username=editor&password=editor-refused-mail-secret", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureBankAccount) bank = venture_bank_account_new();
+	g_autoptr(VentureAccount) ledger = venture_account_new();
+	g_autoptr(VentureBankConnection) connection = venture_bank_connection_new();
+	g_autofree gchar *path = NULL, *editor = NULL, *owner = NULL, *page = NULL;
+	g_object_set(fixture->config, "bankfeed-enabled", TRUE, NULL);
+	/* The preceding fixture may have masked this optional module before
+	 * setup migrated the repository. Enabling it must create its tables. */
+	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	g_object_set(ledger, "organization-id", (gint64)1, "code", "UI-CASH", "name", "Settings cash",
+		"kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(ledger), NULL, &error));
+	g_object_set(bank, "organization-id", (gint64)1, "name", "Settings bank", "currency", "USD",
+		"account-id", venture_entity_get_id(VENTURE_ENTITY(ledger)), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(bank), NULL, &error));
+	g_object_set(connection, "organization-id", (gint64)1, "name", "Settings feed", "provider", "teller",
+		"provider-account-id", "acc_settings", "bank-account-id", venture_entity_get_id(VENTURE_ENTITY(bank)), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(connection), NULL, &error));
+	g_assert_no_error(error);
+	path = g_strdup_printf("/bankfeed/%" G_GINT64_FORMAT "/settings", venture_entity_get_id(VENTURE_ENTITY(connection)));
+	server_fixture_create_member(fixture, "feed-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "feed-editor", "editor-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, editor, "operation=configure", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	server_fixture_create_member(fixture, "feed-owner", "owner-long-password", VENTURE_USER_ROLE_OWNER, NULL);
+	owner = server_fixture_login(fixture, "feed-owner", "owner-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "<textarea"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, owner,
+		"operation=configure&binding_id=0&version=0&environment=sandbox&access_token=write-only-ui-token", &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "write-only-ui-token"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, owner, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(page, "write-only-ui-token"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, owner,
+		"operation=configure&binding_id=0&version=0&environment=sandbox&access_token=stale-secret", &page, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_null(strstr(page, "stale-secret"));
+}
+static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureEntity) user = NULL, account = NULL;
+	g_autofree gchar *path = NULL, *alice = NULL, *bob = NULL, *page = NULL;
+	g_object_set(fixture->config, "imap-allowed-endpoints", "imap.ui.test:993", NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+	server_fixture_create_member(fixture, "connector-alice", "alice-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "connector-bob", "bob-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+		venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, "connector-alice", NULL);
+		user = venture_database_find_one(fixture->database, query, &error);
+	}
+	g_assert_no_error(error); g_assert_nonnull(user);
+	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", (gint64)1,
+		"private-owner-id", venture_entity_get_id(user), "address", "private@ui.test", "imap-host", "imap.ui.test",
+		"imap-port", (gint64)993, "imap-tls", "tls", "username", "private", "folders", "INBOX", NULL);
+	g_assert_true(venture_database_save(fixture->database, account, NULL, &error));
+	g_assert_no_error(error);
+	path = g_strdup_printf("/connectors/mail_account/%" G_GINT64_FORMAT "/settings", venture_entity_get_id(account));
+	alice = server_fixture_login(fixture, "connector-alice", "alice-long-password");
+	bob = server_fixture_login(fixture, "connector-bob", "bob-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, bob, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, alice, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Private account"));
+	g_assert_nonnull(strstr(page, "Last sync attempt: Never"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, alice,
+		"operation=configure&binding_id=0&version=0&password=PRIVATE_UI_PASSWORD", &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Settings saved")); g_assert_null(strstr(page, "PRIVATE_UI_PASSWORD"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, alice, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Configured")); g_assert_null(strstr(page, "PRIVATE_UI_PASSWORD"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, alice,
+		"operation=configure&binding_id=0&version=0&password=STALE_UI_PASSWORD", &page, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_null(strstr(page, "STALE_UI_PASSWORD"));
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, bob,
+		"operation=configure&binding_id=0&version=0&password=OTHER_UI_PASSWORD", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+}
+
+
 int
 main(
 	int	  argc,
 	char	**argv
 ){
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/auth/commerce-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_settings, server_fixture_tear_down);
+	g_test_add("/auth/commerce-import-cross-organization", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_import_cross_organization, server_fixture_tear_down);
+	g_test_add("/auth/ai-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_ai_settings, server_fixture_tear_down);
 	g_test_add("/auth/equity-input", ServerFixture, NULL, server_fixture_set_up, test_auth_equity_input, server_fixture_tear_down);
 
 #define ADD(path, func) \
@@ -4741,8 +5087,8 @@ main(
 	           server_fixture_set_up, test_auth_forge_records_are_owner_only,
 
 	           server_fixture_tear_down);
-	g_test_add("/auth/mail-account-is-owner-only", ServerFixture, NULL,
-	           server_fixture_set_up, test_auth_mail_account_is_owner_only,
+	g_test_add("/auth/mail-account-delegation", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_mail_account_delegation,
 	           server_fixture_tear_down);
 	g_test_add("/auth/ticket-board-filters-compose", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_ticket_board_filters_compose,
@@ -4846,9 +5192,14 @@ main(
 	g_test_add("/auth/health-sweep-is-judged-in-its-organization", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_health_sweep_is_judged_in_its_organization,
 	           server_fixture_tear_down);
-	g_test_add("/auth/calendar-account-is-owner-only", ServerFixture, NULL,
-	           server_fixture_set_up, test_auth_calendar_account_is_owner_only,
+	g_test_add("/auth/calendar-account-delegation", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_calendar_account_delegation,
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
+	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
+	g_test_add("/auth/connector-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_connector_settings, server_fixture_tear_down);
+	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
+	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);
+	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
 	return g_test_run();
 }

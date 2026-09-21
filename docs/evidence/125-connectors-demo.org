@@ -1,0 +1,35 @@
+#+title: Private connector demonstration — issue 125
+
+* Browser recording
+
+[[https://git.podbielniak.com/attachments/9f96fd94-9805-40c7-988b-f247bce30ad5][Watch the actual DEBUG server settings recording]]
+
+Recorded against =build/debug/venture= from the private-connector worktree,
+with an isolated SQLite database, ephemeral integration/session keys and
+synthetic users and credentials. Chromium used the real browser/API routes.
+The recording was opened as a contact sheet and inspected before attachment.
+
+Alice is the assigned private owner. She saves a mailbox credential, reloads
+its blank password field, tests an intentionally nonexistent IMAP hostname,
+reloads the retained error, rotates the credential and disconnects it. She
+then configures a private calendar. Bob signs in and receives 404 for Alice's
+calendar settings. No real provider authenticated; no mailbox was imported.
+The fixture endpoint is =imap.demo.test=, so its DNS failure is intentional.
+
+Verbatim final runner output:
+
+#+begin_example
+Verified built-server private mail/calendar settings, assigned-owner rotation, blank secret reload, disconnect and another member 404 refusal.
+The deliberately nonexistent imap.demo.test fails resolution; retained redacted health is shown. No live provider authenticated and no mailbox was imported.
+#+end_example
+
+* Imported records and revocation
+
+The GTest transport fixtures separately run actual import services, persistence
+and access checks. Private mail does not create CRM interactions. Private
+calendar events use typed record fields, do not create/export shared
+activities, and retain their identity after remote removal and restoration.
+The inflight-revocation tests disconnect a binding from a fake transport's
+=response-ready= callback; the completed response must not be imported.
+These are deterministic synthetic provider demonstrations, not evidence of
+production IMAP/CalDAV interoperability or hosted-tenant recovery.

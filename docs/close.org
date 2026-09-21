@@ -55,3 +55,35 @@ venturectl report close_workspace 2026-01 organization_id=1
 Completion reruns the current accounting checks; cached tie-out flags cannot authorize closing changed books. Reopening retains historical signoffs but requires a new preparer and reviewer sequence. Generic writes cannot create or edit workspace evidence, and the checklist must contain every required kind for both roles; missing or duplicate tasks fail signoff. Unmatched transactions in a different currency fail reconciliation instead of being summed as book-currency minor units, and overflowing totals are refused.
 
 The preparer and reviewer must be different authenticated accounts. For authenticated requests, signoff identity uses the account ID, so two API tokens owned by one person cannot supply both signatures. Trusted internal service calls without an authenticated principal use the explicit actor name.
+
+* Completing the checklist through the ordinary record pages
+
+Open a fiscal period and select =Open close workspace=. The generated
+=close_workspace= detail page offers =Run close checks=, =Sign close=,
+=Complete close= and =Reopen close=. Each related =close_task= page offers
+=Complete check= and =Waive check=, both requiring notes. A discrepancy's
+=Explain discrepancy= action retains the explanation before signoff.
+These are registered =VentureAction= operations: the web form, REST API,
+CLI and enabled assistant/MCP action surfaces call the same close service.
+No separate handler constructs checklist or signature records.
+
+Authenticated users need organization owner, administrator or finance
+membership and the editor minimum. A viewer cannot complete a task. The
+close module must be enabled. The service performs multiple writes in one
+transaction, so these actions cannot be staged. A signed-off or completed
+checklist cannot be changed through its completion/waiver action: reopen
+the workspace, then complete the new review cycle. Currency, when supplied
+at opening, must be a supported ISO code.
+
+#+begin_src sh
+venturectl act fiscal_period 1 open_close currency=USD
+venturectl list close_task workspace_id=1
+venturectl act close_task 1 complete 'notes=Compared the control balance with the statement'
+venturectl act close_task 2 waive 'notes=No assets exist in this organization'
+venturectl act close_discrepancy 1 explain 'explanation=Reviewed timing difference; supporting workpaper attached'
+venturectl act close_workspace 1 run_checks
+venturectl act close_workspace 1 sign role=preparer
+# A different authenticated account signs as reviewer.
+venturectl act close_workspace 1 sign role=reviewer
+venturectl act close_workspace 1 complete
+#+end_src

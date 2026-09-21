@@ -123,6 +123,14 @@ venturectl federation '{"action":"sync","id":1}'
 
 An edit is saved locally before any network request. It cannot change the source identity, merge base or granted field list. Pull refreshes and merges without pushing. Sync fetches current remote state, merges and then pushes conflict-free changes using the remote record's expected version. A remote refusal or outage leaves local edits available. A changed peer pin never silently retargets an existing working copy.
 
+Hosted workspaces keep federation platform-only. Retained peer/replica rows
+never enable automatic reconnect in hosted mode, including while an unrelated
+operator maintenance scope pumps a nested main loop. An explicit local operator
+maintenance operation may call the federation service; ordinary hosted calls
+are refused before discovery or signing. The service revalidates authority after
+network waits. Standalone opt-in federation and its signed discovery protocol
+retain their existing behavior.
+
 When enabled, the reconnect scheduler attempts one existing local copy every =sync_interval= seconds, rotating through the copies on the main context. It does not use a database worker thread. Set the interval to zero for manual synchronization. An unavailable peer is retried on the next rotation. Automatic sync does not discover or import newly granted records; pull the collection again to import those. Every local editor on this installation can collaborate on its local copies; trust is between servers, not a remote user-to-local user account mapping.
 
 ** Merge rules
@@ -169,7 +177,7 @@ Ed25519 uses OpenSSL EVP's one-shot sign/verify APIs, not handwritten cryptograp
 
 ** Merge regression coverage
 
-The federation suite contains 34 behavior tests. Fixtures use two independent file-backed databases, separate Ed25519 identities and real loopback HTTPS listeners with certificate verification. They never contact production peers. The nine-case merge matrix crosses unchanged, independent and equal edits on each side; each case attempts synchronization three times while the home listener is down, reconnects, and synchronizes three more times. Assertions inspect persisted local drafts, authoritative remote values, remote versions and an unshared private field. Equal edits and repeated successful synchronization must not create duplicate remote updates.
+The federation suite contains 35 behavior tests. Fixtures use two independent file-backed databases, separate Ed25519 identities and real loopback HTTPS listeners with certificate verification. They never contact production peers. The nine-case merge matrix crosses unchanged, independent and equal edits on each side; each case attempts synchronization three times while the home listener is down, reconnects, and synchronizes three more times. Assertions inspect persisted local drafts, authoritative remote values, remote versions and an unshared private field. Equal edits and repeated successful synchronization must not create duplicate remote updates.
 
 Additional regressions cover:
 

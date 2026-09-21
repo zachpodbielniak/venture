@@ -1390,6 +1390,8 @@
 		var data = new FormData();
 
 		data.append("file", file, file.name);
+		data.append("organization_id", (document.getElementById("chat-organization") || {}).value || "");
+		data.append("thread", (document.getElementById("chat-thread") || {}).value || "");
 
 		return window.fetch("/ui/chat/upload", {
 			method: "POST",

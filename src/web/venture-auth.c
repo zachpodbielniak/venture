@@ -83,12 +83,33 @@ venture_auth_new(VentureContext *context)
 		self->secret = g_strdup(secret);
 	}
 
+	{
+		gboolean hosted = FALSE;
+		g_autofree gchar *workspace = NULL;
+		g_object_get(config, "hosted-enabled", &hosted, "hosted-workspace-id", &workspace, NULL);
+		if (hosted) {
+			gchar *bound = g_compute_hmac_for_string(G_CHECKSUM_SHA256,
+				(const guchar *)self->secret, strlen(self->secret), workspace, -1);
+			g_free(self->secret);
+			self->secret = bound;
+		}
+	}
+
 	g_object_get(config,
 	             "security-require-auth", &self->required,
 	             "security-session-lifetime", &self->lifetime,
 	             "security-cookie-secure", &self->cookie_secure,
 	             "security-password-iterations", &iterations,
 	             NULL);
+
+	/* TLS may terminate before this process. The immutable hosted public
+	 * origin, not the backend transport, determines browser cookie security. */
+	{
+		gboolean hosted = FALSE;
+		g_autofree gchar *origin = NULL;
+		g_object_get(config, "hosted-enabled", &hosted, "hosted-origin", &origin, NULL);
+		if (hosted && g_str_has_prefix(origin, "https://")) self->cookie_secure = TRUE;
+	}
 
 	self->password_iterations = (guint)iterations;
 
@@ -172,6 +193,68 @@ venture_auth_is_required(VentureAuth *self)
 }
 
 /* --- Session cookies ----------------------------------------------------- */
+
+static gchar *
+venture_auth_sign_identity(VentureAuth *self, gint64 user, gint64 issued,
+	gint64 expires, gint64 identity, gboolean mfa)
+{
+	g_autofree gchar *binding = venture_oidc_service_dup_session_binding(
+		venture_oidc_service_get(venture_context_get_database(self->context)), identity, NULL);
+	g_autofree gchar *payload = NULL;
+	if (!binding) return NULL;
+	payload = g_strdup_printf("%s:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT
+		":%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ":%s", mfa ? "mfa-oidc" : "oidc", user, issued, expires, identity, binding);
+	return g_compute_hmac_for_string(G_CHECKSUM_SHA256, (const guchar *)self->secret,
+		strlen(self->secret), payload, -1);
+}
+
+static gchar *
+venture_auth_make_identity_cookie(VentureAuth *self, gint64 user, gint64 identity, gboolean mfa)
+{
+	gint64 issued = g_get_real_time(), lifetime = mfa ? 300 : self->lifetime;
+	gint64 expires = issued / G_USEC_PER_SEC + lifetime;
+	g_autofree gchar *signature = venture_auth_sign_identity(self, user, issued, expires, identity, mfa);
+	g_autofree gchar *value = NULL;
+	g_autoptr(HtmxCookie) cookie = NULL;
+	if (!signature) return NULL;
+	value = g_strdup_printf("%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT
+		":%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ":%s", user, issued, expires, identity, signature);
+	cookie = htmx_cookie_new(mfa ? "venture_mfa" : VENTURE_AUTH_COOKIE_NAME, value);
+	htmx_cookie_set_path(cookie, mfa ? "/login" : "/");
+	htmx_cookie_set_max_age(cookie, lifetime);
+	htmx_cookie_set_http_only(cookie, TRUE);
+	htmx_cookie_set_same_site(cookie, HTMX_COOKIE_SAME_SITE_LAX);
+	htmx_cookie_set_secure(cookie, self->cookie_secure);
+	return htmx_cookie_to_set_cookie(cookie);
+}
+
+/* Signed identity provenance survives MFA, so disabling a provider also
+ * invalidates an in-flight challenge and every session it previously made. */
+static gint64
+venture_auth_verify_identity_cookie(VentureAuth *self, const gchar *value,
+	gboolean mfa, gint64 *out_issued, gint64 *out_identity)
+{
+	g_auto(GStrv) parts = g_strsplit(value, ":", -1);
+	g_autofree gchar *signature = NULL;
+	g_autoptr(VentureUser) user = NULL;
+	g_autoptr(GDateTime) invalidated = NULL;
+	gint64 id, issued, expires, identity;
+	if (out_identity) *out_identity = 0;
+	if (g_strv_length(parts) != 5 ||
+		!g_ascii_string_to_signed(parts[0], 10, 1, G_MAXINT64, &id, NULL) ||
+		!g_ascii_string_to_signed(parts[1], 10, 1, G_MAXINT64, &issued, NULL) ||
+		!g_ascii_string_to_signed(parts[2], 10, 1, G_MAXINT64, &expires, NULL) ||
+		!g_ascii_string_to_signed(parts[3], 10, 1, G_MAXINT64, &identity, NULL)) return 0;
+	signature = venture_auth_sign_identity(self, id, issued, expires, identity, mfa);
+	if (!signature || !venture_constant_time_equal(signature, parts[4]) || g_get_real_time() / G_USEC_PER_SEC >= expires) return 0;
+	user = venture_oidc_service_identity_user(venture_oidc_service_get(venture_context_get_database(self->context)), identity, NULL);
+	if (!user || venture_entity_get_id(VENTURE_ENTITY(user)) != id) return 0;
+	g_object_get(user, "sessions-invalidated-at", &invalidated, NULL);
+	if (invalidated && issued < g_date_time_to_unix(invalidated) * G_USEC_PER_SEC + g_date_time_get_microsecond(invalidated)) return 0;
+	if (out_issued) *out_issued = issued;
+	if (out_identity) *out_identity = identity;
+	return id;
+}
 
 /*
  * Signs a session payload. The MAC covers the user id and the expiry
@@ -267,7 +350,9 @@ venture_auth_verify_cookie(
 	if (venture_string_is_empty(value))
 		return 0;
 
-	parts = g_strsplit(value, ":", 4);
+	parts = g_strsplit(value, ":", -1);
+	if (g_strv_length(parts) == 5)
+		return venture_auth_verify_identity_cookie(self, value, FALSE, out_issued_at, NULL);
 
 	/* A cookie from before the issue time was added has three parts and
 	 * simply fails here, which signs those sessions out once. */
@@ -802,19 +887,26 @@ venture_auth_make_challenge_cookie(
 static gint64
 venture_auth_verify_challenge(
 	VentureAuth	*self,
-	const gchar	*value
+	const gchar	*value,
+	gint64		*out_identity
 ){
 	g_auto(GStrv) parts = NULL;
 	g_autofree gchar *expected = NULL;
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) invalidated = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	gboolean active = FALSE;
 	gint64 user_id;
 	gint64 issued_at;
 	gint64 expires_at;
 
+	if (out_identity) *out_identity = 0;
 	if (venture_string_is_empty(value))
 		return 0;
 
-	parts = g_strsplit(value, ":", 4);
+	parts = g_strsplit(value, ":", -1);
+	if (g_strv_length(parts) == 5)
+		return venture_auth_verify_identity_cookie(self, value, TRUE, NULL, out_identity);
 
 	if ((NULL == parts[0]) || (NULL == parts[1]) || (NULL == parts[2]) ||
 	    (NULL == parts[3]))
@@ -837,6 +929,10 @@ venture_auth_verify_challenge(
 	if (g_date_time_to_unix(now) >= expires_at)
 		return 0;
 
+	user = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_USER, user_id, NULL);
+	if (user) g_object_get(user, "active", &active, "sessions-invalidated-at", &invalidated, NULL);
+	if (!user || !active || venture_entity_is_deleted(user) ||
+		(invalidated && issued_at < g_date_time_to_unix(invalidated) * G_USEC_PER_SEC + g_date_time_get_microsecond(invalidated))) return 0;
 	return user_id;
 }
 
@@ -874,10 +970,11 @@ venture_auth_login_with_mfa(
 	return TRUE;
 }
 
-gint64
-venture_auth_mfa_challenge_user(
+static gint64
+venture_auth_challenge_from_request(
 	VentureAuth	*self,
-	HtmxRequest	*request
+	HtmxRequest	*request,
+	gint64		*out_identity
 ){
 	SoupServerMessage *message;
 	SoupMessageHeaders *headers;
@@ -902,7 +999,41 @@ venture_auth_mfa_challenge_user(
 		return 0;
 
 	return venture_auth_verify_challenge(self,
-		g_hash_table_lookup(cookies, VENTURE_AUTH_MFA_COOKIE_NAME));
+		g_hash_table_lookup(cookies, VENTURE_AUTH_MFA_COOKIE_NAME), out_identity);
+}
+
+gint64
+venture_auth_mfa_challenge_user(VentureAuth *self, HtmxRequest *request)
+{
+	return venture_auth_challenge_from_request(self, request, NULL);
+}
+
+gboolean
+venture_auth_login_identity(VentureAuth *self, gint64 identity_id,
+	gchar **out_cookie, gboolean *out_mfa_pending, GError **error)
+{
+	g_autoptr(VentureUser) user = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	VentureDatabase *database;
+	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
+	g_return_val_if_fail(out_cookie != NULL && out_mfa_pending != NULL, FALSE);
+	*out_cookie = NULL; *out_mfa_pending = FALSE;
+	database = venture_context_get_database(self->context);
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	user = venture_oidc_service_identity_user(venture_oidc_service_get(database), identity_id, error);
+	if (!user) return FALSE;
+	*out_mfa_pending = venture_auth_mfa_enabled_for(self, venture_entity_get_id(VENTURE_ENTITY(user)));
+	*out_cookie = venture_auth_make_identity_cookie(self, venture_entity_get_id(VENTURE_ENTITY(user)), identity_id, *out_mfa_pending);
+	if (!*out_cookie) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "The provider binding changed; restart sign-in");
+		return FALSE;
+	}
+	if (!*out_mfa_pending) {
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_object_set(user, "last-login-at", now, NULL);
+		venture_database_save(database, VENTURE_ENTITY(user), NULL, NULL);
+	}
+	return TRUE;
 }
 
 gboolean
@@ -919,12 +1050,13 @@ venture_auth_complete_mfa(
 	VentureDatabase *database;
 	VentureActor actor;
 	gint64 user_id;
+	gint64 identity_id = 0;
 	gboolean active;
 
 	g_return_val_if_fail(VENTURE_IS_AUTH(self), FALSE);
 	g_return_val_if_fail(NULL != out_cookie, FALSE);
 
-	user_id = venture_auth_mfa_challenge_user(self, request);
+	user_id = venture_auth_challenge_from_request(self, request, &identity_id);
 
 	if (0 == user_id)
 	{
@@ -958,7 +1090,14 @@ venture_auth_complete_mfa(
 	                                code, &actor, remote_address, error))
 		return FALSE;
 
-	*out_cookie = venture_auth_open_session(self, user);
+	if (identity_id) {
+		g_autofree gchar *unused = venture_auth_open_session(self, user);
+		*out_cookie = venture_auth_make_identity_cookie(self, user_id, identity_id, FALSE);
+	} else *out_cookie = venture_auth_open_session(self, user);
+	if (!*out_cookie) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "The provider binding changed; restart sign-in");
+		return FALSE;
+	}
 
 	return TRUE;
 }
@@ -1106,6 +1245,7 @@ venture_auth_ensure_owner(
 	g_return_val_if_fail(VENTURE_IS_AUTH(self), NULL);
 
 	database = venture_context_get_database(self->context);
+	if (venture_tenant_service_is_enabled(venture_tenant_service_get(database))) return NULL;
 	query = venture_query_new(VENTURE_TYPE_USER);
 	existing = venture_database_count(database, query, error);
 

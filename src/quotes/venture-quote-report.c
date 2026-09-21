@@ -93,6 +93,6 @@ quote_report(VentureContext *context, VentureDateRange *period, JsonObject *opti
 void
 venture_quotes_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("quotes", "Quotes",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "quotes", "Quotes",
 		"Proposal outcomes, value and acceptance speed for the issued cohort, in one organization and currency.", quote_report)));
 }

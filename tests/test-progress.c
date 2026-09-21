@@ -8,6 +8,7 @@
 #include <venture.h>
 #include <string.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -54,7 +55,7 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureCompany) company = NULL;
 	(void)data;
 	f->config = venture_config_new();
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -72,12 +73,13 @@ teardown(Fixture *f, gconstpointer data)
 {
 	(void)data;
 	g_clear_object(&f->context);
+	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db);
 	g_clear_object(&f->config);
 }
 
 static VentureEntity *
-accepted_quote(Fixture *f)
+accepted_quote_mode(Fixture *f, const gchar *mode)
 {
 	g_autoptr(VentureEntity) quote = VENTURE_ENTITY(venture_quote_new());
 	g_autoptr(VentureEntity) line = VENTURE_ENTITY(venture_quote_line_new());
@@ -87,7 +89,7 @@ accepted_quote(Fixture *f)
 	actor_init(&actor);
 	venture_entity_set_organization_id(quote, f->org);
 	g_object_set(quote, "number", "Q-1", "company-id", f->company, "currency", "USD",
-		"billing-mode", "progress", NULL);
+		"billing-mode", mode, NULL);
 	save(f, quote);
 	venture_entity_set_organization_id(line, f->org);
 	g_object_set(line, "quote-id", venture_entity_get_id(quote), "description", "Contract",
@@ -116,6 +118,12 @@ accepted_quote(Fixture *f)
 		action, "manual", NULL, &actor, &error));
 	g_assert_no_error(error);
 	return venture_database_get(f->db, VENTURE_TYPE_QUOTE, venture_entity_get_id(quote), NULL);
+}
+
+static VentureEntity *
+accepted_quote(Fixture *f)
+{
+	return accepted_quote_mode(f, "progress");
 }
 
 static void
@@ -230,11 +238,217 @@ test_generic_write_refused(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
+static VentureEntity *
+retainer_action(Fixture *f, const gchar *type, gint64 id, const gchar *name,
+	const gchar *json, GError **error)
+{
+	g_autoptr(JsonNode) node = venture_json_parse(json, error);
+	g_autoptr(GHashTable) parameters = node ? venture_action_parameters_from_json(node, error) : NULL;
+	VentureActor actor;
+	actor_init(&actor);
+	return parameters ? venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		type, id, name, parameters, &actor, VENTURE_USER_ROLE_EDITOR, error) : NULL;
+}
+
+/* Retainers cannot be created by generic CRUD. These actions must expose
+ * actual collection/release and post both partial releases exactly once. */
+static void
+test_retainer_actions(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) retainer = NULL, result = NULL;
+	g_autoptr(VentureMoney) remaining = NULL, cash = NULL, balance = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autofree gchar *parameters = g_strdup_printf("{\"amount\":\"250 USD\",\"liability_account_id\":%" G_GINT64_FORMAT "}", liability(f));
+	VentureAction *action = venture_action_registry_lookup(venture_database_get_action_registry(f->db), "company", "collect_retainer");
+	gint64 id;
+	(void)unused;
+	g_assert_nonnull(action);
+	{
+		g_autofree gchar *bad = g_strdup_printf("{\"amount\":\"250 USD\",\"liability_account_id\":%" G_GINT64_FORMAT "}", account_id(f, "4000"));
+		result = retainer_action(f, "company", f->company, "collect_retainer", bad, &error);
+		g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	}
+	retainer = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
+	g_assert_no_error(error); g_assert_nonnull(retainer);
+	id = venture_entity_get_id(retainer);
+	result = retainer_action(f, "customer_retainer", id, "release", "{\"amount\":\"300 USD\"}", &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	result = retainer_action(f, "customer_retainer", id, "release", "{\"amount\":\"100 EUR\"}", &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	result = retainer_action(f, "customer_retainer", id, "release", "{\"amount\":\"100 USD\"}", &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	result = retainer_action(f, "customer_retainer", id, "release", "{\"amount\":\"150 USD\"}", &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_object_get(result, "remaining", &remaining, NULL);
+	g_assert_cmpint(venture_money_get_amount(remaining), ==, 0); g_clear_object(&result);
+	result = retainer_action(f, "customer_retainer", id, "release", "{\"amount\":\"1 USD\"}", &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	now = venture_time_now();
+	cash = venture_posting_service_account_balance(venture_database_get_posting_service(f->db), account_id(f, "1000"), f->org, "USD", now, &error);
+	g_assert_no_error(error); g_assert_cmpint(venture_money_get_amount(cash), ==, 25000);
+	balance = venture_posting_service_account_balance(venture_database_get_posting_service(f->db), liability(f), f->org, "USD", now, &error);
+	g_assert_no_error(error); g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
+}
+
+static void
+test_retainer_authority(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER,
+		"username", "biller", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL, result = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autofree gchar *parameters = g_strdup_printf("{\"amount\":\"1 USD\",\"liability_account_id\":%" G_GINT64_FORMAT "}", liability(f));
+	VentureAuthPrincipal principal;
+	gboolean stageable = TRUE;
+	VentureAction *action = venture_action_registry_lookup(venture_database_get_action_registry(f->db), "company", "collect_retainer");
+	(void)unused;
+	g_object_get(action, "stageable", &stageable, NULL); g_assert_false(stageable);
+	save(f, user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"organization-id", f->org, "user-id", venture_entity_get_id(user),
+		"role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	save(f, member);
+	principal.user_id = venture_entity_get_id(user); principal.token_id = 0;
+	principal.name = (gchar *)"biller"; principal.role = VENTURE_USER_ROLE_EDITOR; principal.authenticated = TRUE;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+	g_clear_object(&scope);
+	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL); save(f, member);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); g_clear_object(&result);
+	g_clear_object(&scope);
+	g_object_set(member, "active", FALSE, NULL); save(f, member);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	/* A revoked membership hides the company: the hidden refusal. */
+	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_clear_object(&scope);
+	venture_config_set_module_enabled(f->config, "quotes", FALSE);
+	result = retainer_action(f, "company", f->company, "collect_retainer", parameters, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	venture_config_set_module_enabled(f->config, "quotes", TRUE);
+}
+
+/* A date picker submits midnight UTC. Generated invoice dates must have
+ * that same calendar meaning, read in the configured business zone, while
+ * earlier and future payments stay refused. */
+static void
+test_invoice_calendar_receipt(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) quote = accepted_quote_mode(f, data ? "full" : "progress");
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) today = venture_time_today(venture_context_get_timezone(f->context));
+	g_autoptr(GDateTime) yesterday = g_date_time_add_days(today, -1);
+	g_autoptr(GDateTime) tomorrow = g_date_time_add_days(today, 1);
+	g_autoptr(GDateTime) issued = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) future = g_date_time_add_hours(now, 1);
+	g_autoptr(VentureMoney) balance = NULL;
+	VentureActor actor;
+	gint64 id = 0;
+	actor_init(&actor);
+	if (data)
+	{
+		g_object_get(quote, "invoice-id", &id, NULL);
+		invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, id, &error);
+	}
+	else
+		invoice = venture_progress_service_invoice(venture_progress_service_get(f->db), VENTURE_QUOTE(quote), 50, NULL, &actor, &error);
+	g_assert_no_error(error); g_assert_nonnull(invoice);
+	id = venture_entity_get_id(invoice);
+	g_object_get(invoice, "issued-at", &issued, NULL);
+	g_assert_cmpint(g_date_time_compare(issued, today), ==, 0);
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, yesterday, &actor, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, tomorrow, &actor, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, future, &actor, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, today, &actor, &error));
+	g_assert_no_error(error);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), id, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(balance); g_assert_true(venture_money_is_zero(balance));
+}
+
+/* The business calendar is locale.timezone, not the zone the process runs
+ * in. Of UTC-12 and UTC+14 at most one shares the process-local date at any
+ * instant, so the other is a zone whose "today" provably differs from it. */
+static const gchar *
+zone_with_other_date(GDateTime *local_today)
+{
+	static const gchar *const zones[] = { "Etc/GMT+12", "Pacific/Kiritimati" };
+	gsize i;
+	for (i = 0; i < G_N_ELEMENTS(zones); i++)
+	{
+		g_autoptr(GTimeZone) zone = g_time_zone_new_identifier(zones[i]);
+		g_autoptr(GDateTime) today = NULL;
+		g_assert_nonnull(zone);
+		today = venture_time_today(zone);
+		if (!venture_time_equal(today, local_today)) return zones[i];
+	}
+	g_assert_not_reached();
+	return NULL;
+}
+
+static void
+test_invoice_calendar_zone(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GDateTime) local_today = venture_time_today(NULL);
+	const gchar *name = zone_with_other_date(local_today);
+	g_autoptr(GTimeZone) zone = g_time_zone_new_identifier(name);
+	g_autoptr(GDateTime) today = venture_time_today(zone);
+	g_autoptr(GDateTime) issued = NULL;
+	g_autoptr(GDateTime) service_today = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	gint64 id = 0;
+	actor_init(&actor);
+	g_object_set(f->config, "locale-timezone", name, NULL);
+	service_today = venture_settlement_service_today(venture_settlement_service_get(f->db));
+	g_assert_true(venture_time_equal(service_today, today));
+	quote = accepted_quote_mode(f, data ? "full" : "progress");
+	if (data)
+	{
+		g_object_get(quote, "invoice-id", &id, NULL);
+		invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, id, &error);
+	}
+	else
+		invoice = venture_progress_service_invoice(venture_progress_service_get(f->db), VENTURE_QUOTE(quote), 50, NULL, &actor, &error);
+	g_assert_no_error(error); g_assert_nonnull(invoice);
+	id = venture_entity_get_id(invoice);
+	g_object_get(invoice, "issued-at", &issued, NULL);
+	g_assert_cmpint(g_date_time_compare(issued, today), ==, 0);
+	g_assert_cmpint(g_date_time_compare(issued, local_today), !=, 0);
+	/* The process-local date is either before the issue date or a day the
+	 * business zone has not reached; a same-day receipt is on today's date
+	 * in the business zone, east of UTC included. */
+	g_assert_false(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, local_today, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), id, today, &actor, &error));
+	g_assert_no_error(error);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), id, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(balance); g_assert_true(venture_money_is_zero(balance));
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/progress/invoice-remaining", Fixture, NULL, setup, test_progress_invoice_remaining, teardown);
+	g_test_add("/progress/retainer-authority", Fixture, NULL, setup, test_retainer_authority, teardown);
+	g_test_add("/progress/calendar-progress", Fixture, NULL, setup, test_invoice_calendar_receipt, teardown);
+	g_test_add("/progress/calendar-full", Fixture, GINT_TO_POINTER(1), setup, test_invoice_calendar_receipt, teardown);
+	g_test_add("/progress/calendar-zone-progress", Fixture, NULL, setup, test_invoice_calendar_zone, teardown);
+	g_test_add("/progress/calendar-zone-full", Fixture, GINT_TO_POINTER(1), setup, test_invoice_calendar_zone, teardown);
+	g_test_add("/progress/retainer-actions", Fixture, NULL, setup, test_retainer_actions, teardown);
 	g_test_add("/progress/retainer", Fixture, NULL, setup, test_retainer_then_release, teardown);
 	g_test_add("/progress/retention", Fixture, NULL, setup, test_retention_hold_and_release, teardown);
 	g_test_add("/progress/generic-write", Fixture, NULL, setup, test_generic_write_refused, teardown);

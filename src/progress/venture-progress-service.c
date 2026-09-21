@@ -225,6 +225,7 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 	g_autoptr(VentureInvoiceLine) line = NULL;
 	g_autoptr(VentureProgressBilling) billing = NULL;
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) issue_date = NULL;
 	g_autofree gchar *number = NULL;
 	g_autofree gchar *quote_number = NULL;
 	gint64 org, company;
@@ -279,8 +280,14 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 	if (!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 		goto fail;
 	now = venture_time_now();
+	/* Business dates match date-picker receipts in the configured zone;
+	 * creation/billing retain precise timestamps separately from the
+	 * invoice's accounting date. */
+	issue_date = venture_settlement_service_today(venture_settlement_service_get(self->database));
+	if (issue_date == NULL)
+		goto fail;
 	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
-		invoice, "sent", now, actor, error))
+		invoice, "sent", issue_date, actor, error))
 		goto fail;
 	billing = venture_progress_billing_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(billing), org);
@@ -288,6 +295,9 @@ venture_progress_service_invoice_impl(VentureProgressService *self, VentureQuote
 		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), "kind", "progress",
 		"percent", percent, "amount", slice, "billed-at", now, NULL);
 	if (!save_owned(self, VENTURE_ENTITY(billing), actor, error))
+		goto fail;
+	if (!venture_project_service_record_progress(venture_project_service_get(self->database),
+		VENTURE_ENTITY(billing), actor, error))
 		goto fail;
 	if (!venture_database_commit(self->database, error))
 		goto fail;
@@ -303,6 +313,9 @@ venture_progress_service_collect_retainer_impl(VentureProgressService *self, gin
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureCustomerRetainer) retainer = NULL;
+	g_autoptr(VentureEntity) liability = NULL;
+	gint kind = 0;
+	gboolean active = FALSE;
 	gint64 cash;
 	g_autoptr(GDateTime) now = NULL;
 	g_return_val_if_fail(VENTURE_IS_PROGRESS_SERVICE(self), NULL);
@@ -313,6 +326,16 @@ venture_progress_service_collect_retainer_impl(VentureProgressService *self, gin
 	}
 	if (!venture_database_begin(self->database, error))
 		return NULL;
+	liability = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, liability_account_id, error);
+	if (liability == NULL)
+		goto fail;
+	g_object_get(liability, "kind", &kind, "active", &active, NULL);
+	if (venture_entity_get_organization_id(liability) != organization_id ||
+		venture_entity_is_deleted(liability) || !active || kind != VENTURE_ACCOUNT_KIND_LIABILITY)
+	{
+		refuse(error, "retainers require an active liability account in the same organization");
+		goto fail;
+	}
 	cash = account_code(self, organization_id, "cash", "1000", error);
 	if (cash == 0)
 		goto fail;
@@ -452,6 +475,82 @@ fail:
 }
 
 static gboolean
+retainer_allowed(VentureAction *action, VentureEntity *entity,
+	const VentureActor *actor, GError **error)
+{
+	static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER,
+		VENTURE_ORGANIZATION_ROLE_ADMIN, VENTURE_ORGANIZATION_ROLE_FINANCE };
+	VentureProgressService *self = venture_action_get_data(action);
+	VentureAccessPolicy *policy = venture_database_get_access_policy(self->database);
+	const VentureAuthPrincipal *principal = venture_access_policy_get_actor(policy);
+	(void)actor;
+	if (!venture_action_require_organization(action, entity, self->database, error))
+		return FALSE;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "customer_retainer") == G_TYPE_INVALID)
+		return refuse(error, "the quotes module is disabled");
+	if (principal && !venture_access_policy_has_organization_role(policy, principal,
+		venture_entity_get_organization_id(entity), roles, G_N_ELEMENTS(roles)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Organization finance authorization is required");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static VentureEntity *
+retainer_invoke(VentureAction *action, VentureEntity *entity, GHashTable *parameters,
+	const VentureActor *actor, GError **error)
+{
+	VentureProgressService *self = venture_action_get_data(action);
+	g_autoptr(VentureMoney) amount = venture_money_from_json(g_hash_table_lookup(parameters, "amount"), NULL, error);
+	if (amount == NULL)
+		return NULL;
+	if (VENTURE_IS_COMPANY(entity))
+	{
+		JsonNode *account = g_hash_table_lookup(parameters, "liability_account_id");
+		return venture_progress_service_collect_retainer(self, venture_entity_get_organization_id(entity),
+			venture_entity_get_id(entity), json_node_get_int(account), amount, actor, error);
+	}
+	if (!venture_progress_service_release_retainer(self, VENTURE_CUSTOMER_RETAINER(entity), amount, actor, error))
+		return NULL;
+	return venture_database_get(self->database, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error);
+}
+
+static void
+retainer_actions_register(VentureDatabase *database)
+{
+	static const struct { const gchar *type, *name, *label, *description; } actions[] = {
+		{ "company", "collect_retainer", "Collect customer retainer", "Record received cash against a customer liability; this does not charge a payment provider" },
+		{ "customer_retainer", "release", "Release earned retainer", "Recognize earned revenue from the remaining liability; this does not settle an invoice" }
+	};
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(actions); i++)
+	{
+		g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+		g_autoptr(VentureAction) action = NULL;
+		g_autoptr(GError) error = NULL;
+		VentureFieldSpec *field = venture_field_spec_new("amount", "Amount with currency", VENTURE_FIELD_KIND_MONEY);
+		field->required = TRUE;
+		g_ptr_array_add(parameters, field);
+		if (i == 0)
+		{
+			field = venture_field_spec_new("liability_account_id", "Customer liability account", VENTURE_FIELD_KIND_REFERENCE);
+			field->reference_type = g_strdup("account");
+			field->required = TRUE;
+			g_ptr_array_add(parameters, field);
+		}
+		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+			"type-name", actions[i].type, "name", actions[i].name, "label", actions[i].label,
+			"description", actions[i].description, "parameters", parameters,
+			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+		if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+			retainer_allowed, retainer_invoke, venture_progress_service_get(database), NULL, &error))
+			g_error("Retainer action registration: %s", error->message);
+	}
+}
+
+static gboolean
 progress_allowed(VentureAction *action, VentureEntity *entity, const VentureActor *actor, GError **error)
 {
 	(void)action;
@@ -482,11 +581,14 @@ venture_progress_actions_register(VentureDatabase *database)
 	g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
 	g_autoptr(GError) error = NULL;
 	g_ptr_array_add(parameters, venture_field_spec_new("percent", "Percent of original", VENTURE_FIELD_KIND_INTEGER));
-	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "quote", "name", "progress_invoice",
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "quote", "name", "progress_invoice",
 		"label", "Progress invoice", "description", "Invoice a slice of remaining contract value",
 		"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	venture_action_registry_register(venture_database_get_action_registry(database), action,
 		progress_allowed, progress_invoke, venture_progress_service_get(database), NULL, &error);
+	if (error != NULL)
+		g_error("Progress action registration: %s", error->message);
+	retainer_actions_register(database);
 }
 
 /* Bind consent before this operation creates derived rows or enters nested

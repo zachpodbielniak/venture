@@ -323,9 +323,9 @@ REPORT(overdue_deals, 4)
 void
 venture_pipeline_reports_register(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("stage_duration", "Stage duration", "Stage occupancy clipped to the period", stage_duration)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("funnel", "Stage funnel", "Stage visits entered and advanced in the period", funnel)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("forecast", "Forecast", "Current open weighted and committed; won in the period", forecast)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("loss_reasons", "Loss reasons", "Count and value lost in the period", loss_reasons)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("overdue_deals", "Overdue deals", "Open deals beyond their stage's rotting threshold", overdue_deals)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "stage_duration", "Stage duration", "Stage occupancy clipped to the period", stage_duration)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "funnel", "Stage funnel", "Stage visits entered and advanced in the period", funnel)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "forecast", "Forecast", "Current open weighted and committed; won in the period", forecast)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "loss_reasons", "Loss reasons", "Count and value lost in the period", loss_reasons)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "overdue_deals", "Overdue deals", "Open deals beyond their stage's rotting threshold", overdue_deals)));
 }

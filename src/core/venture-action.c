@@ -20,7 +20,7 @@ struct _VentureAction
 	GDestroyNotify destroy;
 };
 G_DEFINE_FINAL_TYPE(VentureAction, venture_action, G_TYPE_OBJECT)
-enum { PROP_ZERO, PROP_TYPE_NAME, PROP_NAME, PROP_LABEL, PROP_DESCRIPTION,
+enum { PROP_ZERO, PROP_DATA_CLASS, PROP_TYPE_NAME, PROP_NAME, PROP_LABEL, PROP_DESCRIPTION,
 	PROP_PARAMETERS, PROP_STAGEABLE, PROP_ROLES, PROP_TYPE_LEVEL, PROP_SUBJECT_PARAMETER, PROP_SERVICE_TRANSACTION };
 
 static void
@@ -31,6 +31,7 @@ action_set_property(GObject *object, guint id, const GValue *value, GParamSpec *
 	GPtrArray *parameters;
 	switch (id)
 	{
+	case PROP_DATA_CLASS: if (g_value_get_enum(value) != VENTURE_DATA_CLASS_UNKNOWN) venture_data_class_declare_resource(object, g_value_get_enum(value)); break;
 	case PROP_TYPE_NAME: self->type_name = g_value_dup_string(value); break;
 	case PROP_NAME: self->name = g_value_dup_string(value); break;
 	case PROP_LABEL: self->label = g_value_dup_string(value); break;
@@ -54,6 +55,7 @@ action_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 	VentureAction *self = VENTURE_ACTION(object);
 	switch (id)
 	{
+	case PROP_DATA_CLASS: g_value_set_enum(value, venture_data_class_for_resource(object)); break;
 	case PROP_TYPE_NAME: g_value_set_string(value, self->type_name); break;
 	case PROP_NAME: g_value_set_string(value, self->name); break;
 	case PROP_LABEL: g_value_set_string(value, self->label); break;
@@ -96,6 +98,7 @@ venture_action_class_init(VentureActionClass *klass)
 	object->set_property = action_set_property;
 	object->get_property = action_get_property;
 	object->finalize = action_finalize;
+	g_object_class_install_property(object, PROP_DATA_CLASS, g_param_spec_enum("data-class", "Authority class", "Explicit VentureDataClass; unknown fails closed in hosted mode", VENTURE_TYPE_DATA_CLASS, VENTURE_DATA_CLASS_UNKNOWN, flags));
 	g_object_class_install_property(object, PROP_TYPE_NAME, g_param_spec_string("type-name", "Type", "Canonical record type", NULL, flags));
 	g_object_class_install_property(object, PROP_NAME, g_param_spec_string("name", "Name", "Action key", NULL, flags));
 	g_object_class_install_property(object, PROP_LABEL, g_param_spec_string("label", "Label", "Button label", NULL, flags));
@@ -287,6 +290,8 @@ venture_action_registry_allowed(VentureActionRegistry *self, VentureAction *acti
 	VentureEntity *entity, const VentureActor *actor, VentureUserRole role, GError **error)
 {
 	g_autoptr(GDateTime) deleted = NULL;
+	g_autoptr(VentureDatabase) database = g_weak_ref_get(&self->database);
+	if (database && !venture_tenant_service_check_resource(venture_tenant_service_get(database), G_OBJECT(action), TRUE, error)) return FALSE;
 	if (venture_action_registry_lookup(self, action->type_name, action->name) != action ||
 		G_OBJECT_TYPE(entity) != venture_entity_registry_lookup(venture_entity_registry_get_default(), action->type_name))
 	{
@@ -503,7 +508,7 @@ action_registry_perform_internal(VentureActionRegistry *self, const gchar *type_
 		!venture_action_prepare_target(action, entity, params, error) ||
 		!venture_action_require_organization(action, entity, db, error) ||
 		!venture_action_registry_allowed(self, action, entity, actor, role, error) ||
-		!venture_access_policy_check_write(venture_database_get_access_policy(db), entity, "write", error)) goto fail;
+		!venture_access_policy_check_action(venture_database_get_access_policy(db), entity, action, error)) goto fail;
 	venture_accounting_operation_suspend(db);
 	g_signal_emit(self, signals[PERFORMING], 0, action, entity, &veto_error);
 	venture_accounting_operation_resume(db);
@@ -518,7 +523,7 @@ action_registry_perform_internal(VentureActionRegistry *self, const gchar *type_
 	if (!entity || !venture_action_prepare_target(action, entity, params, error) ||
 		!venture_action_require_organization(action, entity, db, error) ||
 		!venture_action_registry_allowed(self, action, entity, actor, role, error) ||
-		!venture_access_policy_check_write(venture_database_get_access_policy(db), entity, "write", error)) goto fail;
+		!venture_access_policy_check_action(venture_database_get_access_policy(db), entity, action, error)) goto fail;
 	result = action->invoke(action, entity, params, actor, error);
 	if (!result) goto fail;
 	if (!action->service_transaction && !venture_database_commit(db, error)) return NULL;
@@ -554,7 +559,7 @@ venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_n
 		!venture_action_prepare_target(action, subject, params, error) ||
 		!venture_action_require_organization(action, subject, database, error) ||
 		!venture_action_registry_allowed(self, action, subject, actor, role, error) ||
-		!venture_access_policy_check_write(venture_database_get_access_policy(database), subject, "write", error))
+		!venture_access_policy_check_action(venture_database_get_access_policy(database), subject, action, error))
 		return NULL;
 	if (!action->service_transaction && venture_accounting_operation_is_financial(subject))
 	{

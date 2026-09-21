@@ -109,7 +109,7 @@ venture_field_spec_new(
  * Builds a field spec from its declarative description. Recognised members:
  * `type`, `label`, `help`, `required`, `default`, `choices`, `references`,
  * `min`, `max`, `max_length`, `pattern`, `unit`, `indexed`, `unique`,
- * `sensitive`, `searchable`, `immutable`, `order`, `list`.
+ * `sensitive`, `searchable`, `immutable`, `retain_reference`, `order`, `list`.
  *
  * Returns: (transfer full) (nullable): the field spec, or %NULL on error
  */

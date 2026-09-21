@@ -9,7 +9,9 @@
  * @sql: the complete embedded SQL batch
  * @error: (out) (optional): failure
  *
- * Returns: TRUE if all statements succeeded, without committing
+ * A strict first-line -- requires-table: name directive skips the batch when
+ * that optional module table is absent. The directive remains checksummed.
+ * Returns: TRUE if all statements succeeded or the declared table is absent, without committing
  */
 gboolean venture_migrations_execute_sql(OrmConnection *connection,
 	const gchar *sql, GError **error);

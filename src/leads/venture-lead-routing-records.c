@@ -30,6 +30,7 @@ static const VentureFieldDecl lead_routing_rule_fields[] = {
 	VENTURE_FIELD("assign-to", "Assign to", "Username for assign_user", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("team-id", "Team", "Rota for round_robin", "team", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("venture-id", "Venture", "Target for assign_venture", "venture", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("territory-id", "Territory", "Optional territory and owning team; existing rule position decides precedence", "sales_territory", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("cursor", "Cursor", "Persisted round-robin position", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };

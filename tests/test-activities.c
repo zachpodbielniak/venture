@@ -3,6 +3,7 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct
 {
@@ -35,7 +36,7 @@ fixture_set_up(Fixture *fixture, gconstpointer data)
 	g_object_set(fixture->config, "state-dir", fixture->state_dir,
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)port,
 		"security-require-auth", data != NULL, NULL);
-	fixture->database = venture_database_new("sqlite://:memory:", &error);
+	fixture->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	fixture->context = venture_context_new(fixture->config, fixture->database);
 	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
@@ -55,6 +56,7 @@ fixture_tear_down(Fixture *fixture, gconstpointer data)
 	g_clear_object(&fixture->session);
 	g_clear_object(&fixture->server);
 	g_clear_object(&fixture->context);
+	venture_test_accounting_database_cleanup(fixture->database);
 	g_clear_object(&fixture->database);
 	g_clear_object(&fixture->config);
 	venture_test_remove_tree(fixture->state_dir);
@@ -415,6 +417,8 @@ test_auth(Fixture *f, gconstpointer data)
 	g_autofree gchar *body = NULL;
 	g_assert_cmpuint(request(f, "GET", "/worklist", NULL, NULL, &body), ==, 302);
 	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/company/1/actions/log_call", "application/json", "{}", &body), ==, 401);
+	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(f, "GET", "/api/v1/activities.ics", NULL, NULL, &body), ==, 401);
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(request(f, "POST", "/api/v1/activities/1/complete", "application/json", "{}", &body), ==, 401);
@@ -435,6 +439,8 @@ static void
 test_migration(Fixture *f, gconstpointer data)
 {
 	g_autoptr(OrmResult) result = venture_database_query_raw(f->database,
+		g_getenv("VENTURE_TEST_ACCOUNTING_POSTGRES_URI") != NULL ?
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM pg_indexes WHERE schemaname=current_schema() AND indexname='activities_notification_target'" :
 		"SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type='index' AND name='activities_notification_target'", NULL, NULL);
 	g_assert_nonnull(result);
 	g_assert_true(orm_result_next(result));
@@ -875,11 +881,300 @@ test_related_edit(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
+/* Logging a lead-only call must write its history and followup once, even
+ * when the same provider request is replayed after a completed transaction. */
+static void
+test_log_call(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureLead) lead = venture_lead_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) input = venture_json_parse(
+		"{\"subject\":\"Discovery\",\"owner\":\"local\","
+		"\"call_direction\":\"inbound\",\"call_duration\":120,"
+		"\"call_occurred_at\":\"2026-01-10T10:00:00Z\",\"call_outcome\":\"callback\","
+		"\"outcome\":\"Discuss estimate\",\"call_external_source\":\"fixture-v1\",\"call_external_id\":\"call-1\","
+		"\"call_followup_due_at\":\"2026-01-11T10:00:00Z\"}", &error);
+	g_autoptr(GHashTable) params = venture_action_parameters_from_json(input, &error);
+	g_autoptr(VentureEntity) call = NULL, replay = NULL, interaction = NULL, followup = NULL;
+	gint64 history_id, followup_id, lead_id;
+	gboolean outbound = TRUE;
+	g_object_set(lead, "name", "Synthetic inquiry", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(lead), NULL, &error));
+	g_assert_no_error(error);
+	call = venture_action_registry_perform(venture_database_get_action_registry(f->database),
+		"lead", venture_entity_get_id(VENTURE_ENTITY(lead)), "log_call", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(call);
+	g_object_get(call, "call-interaction-id", &history_id, "call-followup-id", &followup_id, NULL);
+	g_assert_cmpint(history_id, >, 0);
+	g_assert_cmpint(followup_id, >, 0);
+	interaction = venture_database_get(f->database, VENTURE_TYPE_INTERACTION, history_id, &error);
+	followup = venture_database_get(f->database, VENTURE_TYPE_ACTIVITY, followup_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(interaction);
+	g_assert_nonnull(followup);
+	g_object_get(interaction, "lead-id", &lead_id, "outbound", &outbound, NULL);
+	g_assert_cmpint(lead_id, ==, venture_entity_get_id(VENTURE_ENTITY(lead)));
+	g_assert_false(outbound);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_ACTIVITY), ==, 2);
+	replay = venture_action_registry_perform(venture_database_get_action_registry(f->database),
+		"lead", venture_entity_get_id(VENTURE_ENTITY(lead)), "log_call", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(replay), ==, venture_entity_get_id(call));
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_ACTIVITY), ==, 2);
+}
+
+static JsonNode *
+call_details(void)
+{
+	g_autoptr(GError) error = NULL;
+	JsonNode *node = venture_json_parse(
+		"{\"subject\":\"Discovery\",\"owner\":\"local\",\"call_direction\":\"inbound\","
+		"\"call_duration\":120,\"call_occurred_at\":\"2026-01-10T10:00:00Z\","
+		"\"call_outcome\":\"callback\",\"outcome\":\"Discuss estimate\","
+		"\"call_external_source\":\"fixture-v1\",\"call_external_id\":\"call-1\","
+		"\"call_followup_due_at\":\"2026-01-11T10:00:00Z\"}", &error);
+	g_assert_no_error(error);
+	return node;
+}
+
+static VentureEntity *
+call_company(Fixture *f)
+{
+	VentureEntity *company = VENTURE_ENTITY(venture_company_new());
+	g_object_set(company, "name", "Call customer", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(f->database, company, NULL, NULL));
+	return company;
+}
+
+static void
+test_call_refusals(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) company = call_company(f), result = NULL;
+	g_autoptr(JsonNode) details = call_details();
+	JsonObject *input = json_node_get_object(details);
+	g_autoptr(GError) error = NULL;
+	VentureActivityService *service = venture_database_get_activity_service(f->database);
+	g_autofree gchar *large = g_strnfill(65537, 'x');
+	json_object_set_int_member(input, "call_duration", -1);
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	json_object_set_int_member(input, "call_duration", 0);
+	json_object_set_string_member(input, "call_recording_url", "https://user:do-not-log@example.com/recording");
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_null(strstr(error->message, "do-not-log"));
+	g_clear_error(&error);
+	json_object_remove_member(input, "call_recording_url");
+	json_object_set_string_member(input, "call_transcript", large);
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	json_object_remove_member(input, "call_transcript");
+	json_object_set_string_member(input, "call_followup_remind_at", "2026-01-12T10:00:00Z");
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	json_object_remove_member(input, "call_followup_remind_at");
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_clear_object(&result);
+	/* An identity cannot be reused to revise history or schedule more work. */
+	json_object_set_string_member(input, "outcome", "Changed replay");
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_ACTIVITY), ==, 2);
+	/* Caller-supplied organization fields never choose another scope. */
+	venture_entity_set_organization_id(company, 999);
+	result = venture_activity_service_log_call(service, company, input, NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
+static gboolean
+reject_call_followup(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
+{
+	gint kind;
+	g_object_get(row, "kind", &kind, NULL);
+	if (*(gboolean *)data && kind == VENTURE_ACTIVITY_KIND_FOLLOWUP)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Injected followup failure");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static void
+test_call_followup_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) company = call_company(f), result = NULL;
+	g_autoptr(JsonNode) details = call_details();
+	g_autoptr(GError) error = NULL;
+	gboolean *reject = g_new(gboolean, 1);
+	gint64 audits = count_rows(f, VENTURE_TYPE_AUDIT_ENTRY);
+	*reject = TRUE;
+	venture_database_add_save_validator(f->database, VENTURE_TYPE_ACTIVITY, reject_call_followup, reject, g_free);
+	result = venture_activity_service_log_call(venture_database_get_activity_service(f->database),
+		company, json_node_get_object(details), NULL, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_ACTIVITY), ==, 0);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 0);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_AUDIT_ENTRY), ==, audits);
+	g_clear_error(&error);
+	*reject = FALSE;
+	result = venture_activity_service_log_call(venture_database_get_activity_service(f->database),
+		company, json_node_get_object(details), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_ACTIVITY), ==, 2);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+}
+
+static void
+test_call_staged(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) company = call_company(f), planned_call = planned(f, "Planned call");
+	g_autoptr(JsonNode) details = call_details();
+	g_autoptr(GHashTable) params = venture_action_parameters_from_json(details, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *id = NULL;
+	VentureActionRegistry *registry = venture_database_get_action_registry(f->database);
+	VentureConfirmationStore *store = venture_context_get_confirmations(f->context);
+	VentureConfirmation *confirmation = venture_confirmation_store_stage_action(store,
+		venture_action_registry_lookup(registry, "company", "log_call"), company, params,
+		NULL, VENTURE_USER_ROLE_EDITOR, "test", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 0);
+	id = g_strdup(venture_confirmation_get_id(confirmation));
+	g_assert_true(venture_confirmation_store_approve_as(store, id, "local", VENTURE_USER_ROLE_OWNER, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+	g_object_set(planned_call, "kind", VENTURE_ACTIVITY_KIND_CALL, NULL);
+	g_assert_true(venture_database_save(f->database, planned_call, NULL, &error));
+	confirmation = venture_confirmation_store_stage_action(store,
+		venture_action_registry_lookup(registry, "activity", "log_call"), planned_call, params,
+		NULL, VENTURE_USER_ROLE_EDITOR, "test", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	g_free(id);
+	id = g_strdup(venture_confirmation_get_id(confirmation));
+	g_object_set(planned_call, "subject", "Revised plan", NULL);
+	g_assert_true(venture_database_save(f->database, planned_call, NULL, &error));
+	g_assert_false(venture_confirmation_store_approve_as(store, id, "local", VENTURE_USER_ROLE_OWNER, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+}
+
+static void
+test_call_report_and_timeline(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) company = call_company(f), call = NULL, second = NULL;
+	g_autoptr(JsonNode) details = call_details(), timeline = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDateRange) period = venture_context_parse_period(f->context, "2026-01", &error);
+	g_autoptr(VentureReportResult) report = NULL;
+	g_autofree gchar *path = NULL, *body = NULL;
+	JsonObject *input = json_node_get_object(details);
+	guint i, calls = 0;
+	json_object_set_string_member(input, "call_transcript", "<script>untrusted transcript</script>");
+	json_object_set_string_member(input, "call_recording_url", "https://example.com/recording");
+	call = venture_activity_service_log_call(venture_database_get_activity_service(f->database), company, input, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(call);
+	json_object_set_string_member(input, "call_external_id", "call-2");
+	json_object_set_string_member(input, "call_occurred_at", "2026-02-01T00:00:00Z");
+	json_object_remove_member(input, "call_followup_due_at");
+	second = venture_activity_service_log_call(venture_database_get_activity_service(f->database), company, input, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(second);
+	report = venture_report_generate(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "calls"),
+		f->context, period, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(report), ==, 1);
+	g_assert_cmpfloat(g_value_get_double(venture_report_result_get_cell(report, 0, "calls")), ==, 1);
+	g_assert_cmpfloat(g_value_get_double(venture_report_result_get_cell(report, 0, "inbound")), ==, 1);
+	g_assert_cmpfloat(g_value_get_double(venture_report_result_get_cell(report, 0, "seconds")), ==, 120);
+	timeline = venture_desk_activity(f->context, "company", venture_entity_get_id(company), 100, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < json_array_get_length(json_node_get_array(timeline)); i++)
+	{
+		JsonObject *event = json_array_get_object_element(json_node_get_array(timeline), i);
+		if (g_strcmp0(venture_json_object_get_string(event, "kind", ""), "call") == 0) calls++;
+	}
+	g_assert_cmpuint(calls, ==, 2);
+	path = g_strdup_printf("/e/activity/%" G_GINT64_FORMAT, venture_entity_get_id(call));
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
+	g_assert_null(strstr(body, "<script>untrusted transcript"));
+	g_assert_nonnull(strstr(body, "&lt;script&gt;untrusted transcript"));
+	g_clear_pointer(&body, g_free);
+	g_free(path);
+	path = g_strdup_printf("/e/company/%" G_GINT64_FORMAT, venture_entity_get_id(company));
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "Log a call"));
+	g_assert_nonnull(strstr(body, "logged a call"));
+	venture_config_set_module_enabled(f->config, "activities", FALSE);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "calls"));
+	venture_config_set_module_enabled(f->config, "activities", TRUE);
+	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "calls"));
+}
+
+/* Completion must not persist unrelated unsaved edits from a service caller. */
+static void
+test_call_saved_plan(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) plan = planned(f, "Original plan"), call = NULL, replay = NULL, company = call_company(f);
+	g_autoptr(JsonNode) details = call_details();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL;
+	VentureActivityService *service = venture_database_get_activity_service(f->database);
+	g_object_set(plan, "kind", VENTURE_ACTIVITY_KIND_CALL, "body", "Saved notes", NULL);
+	g_assert_true(venture_database_save(f->database, plan, NULL, &error));
+	call = venture_activity_service_log_call(service, plan, json_node_get_object(details), NULL, &error);
+	g_assert_null(call);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 0);
+	g_clear_error(&error);
+	g_object_set(plan, "company-id", venture_entity_get_id(company), NULL);
+	g_assert_true(venture_database_save(f->database, plan, NULL, &error));
+	g_object_set(plan, "body", "Unsaved unrelated replacement", NULL);
+	call = venture_activity_service_log_call(service, plan, json_node_get_object(details), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(call);
+	g_object_get(call, "body", &body, NULL);
+	g_assert_cmpstr(body, ==, "Saved notes");
+	replay = venture_activity_service_log_call(service, plan, json_node_get_object(details), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(replay), ==, venture_entity_get_id(call));
+	g_assert_cmpint(count_rows(f, VENTURE_TYPE_INTERACTION), ==, 1);
+	g_object_set(call, "call-duration", 999, NULL);
+	g_assert_false(venture_database_save(f->database, call, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/activities/records", test_records);
+	g_test_add("/activities/call-saved-plan", Fixture, NULL, fixture_set_up, test_call_saved_plan, fixture_tear_down);
+	g_test_add("/activities/log-call", Fixture, NULL, fixture_set_up, test_log_call, fixture_tear_down);
+	g_test_add("/activities/call-refusals", Fixture, NULL, fixture_set_up, test_call_refusals, fixture_tear_down);
+	g_test_add("/activities/call-followup-rollback", Fixture, NULL, fixture_set_up, test_call_followup_rollback, fixture_tear_down);
+	g_test_add("/activities/call-staged", Fixture, NULL, fixture_set_up, test_call_staged, fixture_tear_down);
+	g_test_add("/activities/call-report-timeline", Fixture, NULL, fixture_set_up, test_call_report_and_timeline, fixture_tear_down);
 	g_test_add("/activities/complete", Fixture, NULL, fixture_set_up, test_complete, fixture_tear_down);
 	g_test_add("/activities/bypass", Fixture, NULL, fixture_set_up, test_bypass, fixture_tear_down);
 	g_test_add("/activities/actions", Fixture, NULL, fixture_set_up, test_actions, fixture_tear_down);

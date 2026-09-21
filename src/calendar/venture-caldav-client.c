@@ -88,7 +88,21 @@ static void fake_finalize(GObject *object)
 	g_hash_table_unref(self->events);
 	G_OBJECT_CLASS(venture_fake_caldav_client_parent_class)->finalize(object);
 }
-static void venture_fake_caldav_client_class_init(VentureFakeCalDavClientClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
+static guint fake_response_ready;
+static void venture_fake_caldav_client_class_init(VentureFakeCalDavClientClass *klass)
+{
+	G_OBJECT_CLASS(klass)->finalize = fake_finalize;
+	/**
+	 * VentureFakeCalDavClient::response-ready:
+	 * @self: fake transport
+	 *
+	 * Emitted synchronously after copying a successful fetch response, before
+	 * returning it to the consumer. Fixtures may revoke authorization here
+	 * to exercise state changes while a real provider request was pending.
+	 */
+	fake_response_ready = g_signal_new("response-ready", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+		0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+}
 static void venture_fake_caldav_client_init(VentureFakeCalDavClient *self)
 {
 	self->events = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, fake_event_free);
@@ -141,13 +155,16 @@ static gchar *fake_fetch(VentureCalDavClient *client, const gchar *href, gchar *
 {
 	VentureFakeCalDavClient *self = VENTURE_FAKE_CALDAV_CLIENT(client);
 	FakeEvent *e;
+	gchar *response;
 	(void)cancellable;
 	if (!fake_ready(self, error)) return NULL;
 	e = g_hash_table_lookup(self->events, href);
 	if (!e) { g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No event at %s", href); return NULL; }
 	self->fetches++;
 	if (etag) *etag = g_strdup(e->etag);
-	return g_strdup(e->ics);
+	response = g_strdup(e->ics);
+	g_signal_emit(client, fake_response_ready, 0);
+	return response;
 }
 static gchar *fake_put(VentureCalDavClient *client, const gchar *href, const gchar *ics, const gchar *etag, GCancellable *cancellable, GError **error)
 {
@@ -285,6 +302,9 @@ static GBytes *soup_request(VentureSoupCalDavClient *self, const gchar *method, 
 	url = g_strconcat(self->base, href, NULL);
 	message = soup_message_new(method, url);
 	if (!message) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "The CalDAV URL is not valid"); return NULL; }
+	/* An allowed calendar cannot delegate network authority or credentials
+	 * to a redirect target outside the operator-approved origin. */
+	soup_message_add_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	headers = soup_message_get_request_headers(message);
 	soup_message_headers_append(headers, "Authorization", self->authorization);
 	if (depth) soup_message_headers_append(headers, "Depth", depth);

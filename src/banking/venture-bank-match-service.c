@@ -2137,7 +2137,7 @@ bank_report(VentureContext *context, VentureDateRange *period, JsonObject *optio
 void
 venture_bank_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"bank_reconciliation", "Bank reconciliation", "Statement evidence and posted balance; requires statement_id.", bank_report)));
 }
 

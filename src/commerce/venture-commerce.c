@@ -26,16 +26,40 @@ venture_commerce_connector_fetch_orders(VentureCommerceConnector *self, GDateTim
 	return VENTURE_COMMERCE_CONNECTOR_GET_IFACE(self)->fetch_orders(self, from, to, error);
 }
 
+G_DEFINE_INTERFACE(VentureCommerceConnectorFactory, venture_commerce_connector_factory, G_TYPE_OBJECT)
+static void venture_commerce_connector_factory_default_init(VentureCommerceConnectorFactoryInterface *iface) { (void)iface; }
+const gchar *
+venture_commerce_connector_factory_get_name(VentureCommerceConnectorFactory *self)
+{
+	g_return_val_if_fail(VENTURE_IS_COMMERCE_CONNECTOR_FACTORY(self), NULL);
+	return VENTURE_COMMERCE_CONNECTOR_FACTORY_GET_IFACE(self)->get_name ?
+		VENTURE_COMMERCE_CONNECTOR_FACTORY_GET_IFACE(self)->get_name(self) : NULL;
+}
+VentureCommerceConnector *
+venture_commerce_connector_factory_create(VentureCommerceConnectorFactory *self, const gchar *account_id,
+	JsonNode *settings, VentureBankFeedTransport *transport, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_COMMERCE_CONNECTOR_FACTORY(self), NULL);
+	if (VENTURE_COMMERCE_CONNECTOR_FACTORY_GET_IFACE(self)->create == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "Commerce factory cannot construct an account client");
+		return NULL;
+	}
+	return VENTURE_COMMERCE_CONNECTOR_FACTORY_GET_IFACE(self)->create(self, account_id, settings, transport, error);
+}
+
 struct _VentureCommerceConnectorRegistry
 {
 	GObject parent_instance;
 	GHashTable *connectors;
+	GHashTable *factories;
 };
 G_DEFINE_FINAL_TYPE(VentureCommerceConnectorRegistry, venture_commerce_connector_registry, G_TYPE_OBJECT)
 static void
 venture_commerce_connector_registry_finalize(GObject *object)
 {
 	g_hash_table_unref(VENTURE_COMMERCE_CONNECTOR_REGISTRY(object)->connectors);
+	g_hash_table_unref(VENTURE_COMMERCE_CONNECTOR_REGISTRY(object)->factories);
 	G_OBJECT_CLASS(venture_commerce_connector_registry_parent_class)->finalize(object);
 }
 static void
@@ -46,6 +70,7 @@ venture_commerce_connector_registry_class_init(VentureCommerceConnectorRegistryC
 static void
 venture_commerce_connector_registry_init(VentureCommerceConnectorRegistry *self)
 {
+	self->factories = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
 	self->connectors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
 }
 VentureCommerceConnectorRegistry *
@@ -74,7 +99,11 @@ gboolean
 venture_commerce_connector_registry_remove(VentureCommerceConnectorRegistry *self, const gchar *name)
 {
 	g_return_val_if_fail(VENTURE_IS_COMMERCE_CONNECTOR_REGISTRY(self), FALSE);
-	return g_hash_table_remove(self->connectors, name);
+	{
+		gboolean legacy = g_hash_table_remove(self->connectors, name);
+		gboolean factory = g_hash_table_remove(self->factories, name);
+		return legacy || factory;
+	}
 }
 static gint
 compare_connectors(gconstpointer a, gconstpointer b)
@@ -95,6 +124,23 @@ venture_commerce_connector_registry_list(VentureCommerceConnectorRegistry *self)
 	return result;
 }
 
+void
+venture_commerce_connector_registry_add_factory(VentureCommerceConnectorRegistry *self, VentureCommerceConnectorFactory *factory)
+{
+	const gchar *name;
+	g_return_if_fail(VENTURE_IS_COMMERCE_CONNECTOR_REGISTRY(self));
+	g_return_if_fail(VENTURE_IS_COMMERCE_CONNECTOR_FACTORY(factory));
+	name = venture_commerce_connector_factory_get_name(factory);
+	g_return_if_fail(name != NULL && *name != '\0');
+	g_hash_table_replace(self->factories, g_strdup(name), factory);
+}
+VentureCommerceConnectorFactory *
+venture_commerce_connector_registry_lookup_factory(VentureCommerceConnectorRegistry *self, const gchar *name)
+{
+	g_return_val_if_fail(VENTURE_IS_COMMERCE_CONNECTOR_REGISTRY(self), NULL);
+	return g_hash_table_lookup(self->factories, name);
+}
+
 struct _VentureShopifyConnector
 {
 	GObject parent_instance;
@@ -103,6 +149,7 @@ struct _VentureShopifyConnector
 	VentureBankFeedTransport *transport;
 };
 static void shopify_iface(VentureCommerceConnectorInterface *iface);
+static gboolean commerce_shopify_settings(const gchar *shop, const gchar *token, GError **error);
 G_DEFINE_TYPE_WITH_CODE(VentureShopifyConnector, venture_shopify_connector, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_COMMERCE_CONNECTOR, shopify_iface))
 
@@ -175,6 +222,62 @@ shopify_amounts_supported(JsonObject *raw, const gchar *currency, GError **error
 unsupported:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
 		"Shopify orders with taxes, discounts, tips, shipping, refunds or partial payments require explicit accounting mapping");
+	return FALSE;
+}
+
+/* Validate the provider shape before typed JSON accessors: a malformed item
+ * must refuse the batch, not disappear from it or trigger a GLib assertion. */
+static gboolean
+shopify_numeric_identity(JsonNode *node)
+{
+	gint64 value;
+	const gchar *text, *p;
+	if (node == NULL || !JSON_NODE_HOLDS_VALUE(node)) return FALSE;
+	if (json_node_get_value_type(node) == G_TYPE_INT64) return json_node_get_int(node) > 0;
+	if (json_node_get_value_type(node) != G_TYPE_STRING) return FALSE;
+	text = json_node_get_string(node);
+	if (venture_string_is_empty(text) || strlen(text) > 19 || text[0] == '0') return FALSE;
+	for (p = text; *p; p++) if (!g_ascii_isdigit(*p)) return FALSE;
+	return g_ascii_string_to_signed(text, 10, 1, G_MAXINT64, &value, NULL);
+}
+static gboolean
+shopify_orders_valid(JsonArray *orders, GError **error)
+{
+	guint i, j;
+	if (json_array_get_length(orders) > 250) goto malformed;
+	for (i = 0; i < json_array_get_length(orders); i++)
+	{
+		JsonNode *node = json_array_get_element(orders, i);
+		JsonObject *order;
+		JsonArray *lines;
+		if (!JSON_NODE_HOLDS_OBJECT(node)) goto malformed;
+		order = json_node_get_object(node);
+		if (!shopify_numeric_identity(json_object_get_member(order, "id"))) goto malformed;
+		if (shopify_cancelled(order)) continue;
+		node = json_object_get_member(order, "customer");
+		if (node && JSON_NODE_HOLDS_OBJECT(node))
+		{
+			JsonNode *id = json_object_get_member(json_node_get_object(node), "id");
+			if (id && !shopify_numeric_identity(id)) goto malformed;
+		}
+		node = json_object_get_member(order, "line_items");
+		if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node)) goto malformed;
+		lines = json_node_get_array(node);
+		if (json_array_get_length(lines) == 0) goto malformed;
+		for (j = 0; j < json_array_get_length(lines); j++)
+		{
+			JsonObject *line;
+			node = json_array_get_element(lines, j);
+			if (!JSON_NODE_HOLDS_OBJECT(node)) goto malformed;
+			line = json_node_get_object(node);
+			node = json_object_get_member(line, "quantity");
+			if (node == NULL || !JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_INT64 || json_node_get_int(node) <= 0) goto malformed;
+			if (venture_json_object_get_string(line, "price", NULL) == NULL) goto malformed;
+		}
+	}
+	return TRUE;
+malformed:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify returned malformed order identities, lines or quantities");
 	return FALSE;
 }
 
@@ -305,6 +408,7 @@ shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *t
 	gint64 since = 0;
 	guint page;
 
+	if (!commerce_shopify_settings(self->shop, self->token, error)) return NULL;
 	if (venture_string_is_empty(self->shop) || self->transport == NULL ||
 		(from != NULL && to != NULL && g_date_time_compare(from, to) >= 0))
 	{
@@ -332,9 +436,12 @@ shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *t
 		guint i;
 		if (body == NULL)
 			return NULL;
-		root = venture_json_parse(body, error);
+		root = venture_json_parse(body, NULL);
 		if (root == NULL)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Shopify returned invalid JSON");
 			return NULL;
+		}
 		node = JSON_NODE_HOLDS_OBJECT(root) ? json_object_get_member(json_node_get_object(root), "orders") : NULL;
 		if (node == NULL || !JSON_NODE_HOLDS_ARRAY(node))
 		{
@@ -342,6 +449,7 @@ shopify_fetch(VentureCommerceConnector *connector, GDateTime *from, GDateTime *t
 			return NULL;
 		}
 		orders = json_node_get_array(node);
+		if (!shopify_orders_valid(orders, error)) return NULL;
 		batch = shopify_parse_orders(orders, error);
 		if (batch == NULL)
 			return NULL;
@@ -408,6 +516,7 @@ struct _VentureCommerceService
 	VentureDatabase *database;
 	gint64 organization_id;
 	VentureCommerceConnectorRegistry *registry;
+	VentureBankFeedTransport *transport;
 };
 G_DEFINE_TYPE(VentureCommerceService, venture_commerce_service, G_TYPE_OBJECT)
 static void
@@ -415,6 +524,7 @@ venture_commerce_service_finalize(GObject *object)
 {
 	VentureCommerceService *self = VENTURE_COMMERCE_SERVICE(object);
 	g_clear_object(&self->registry);
+	g_clear_object(&self->transport);
 	g_clear_object(&self->database);
 	G_OBJECT_CLASS(venture_commerce_service_parent_class)->finalize(object);
 }
@@ -425,22 +535,22 @@ venture_commerce_service_class_init(VentureCommerceServiceClass *klass)
 }
 static void venture_commerce_service_init(VentureCommerceService *self) { (void)self; }
 
+#include "venture-commerce-accounts-private.inc"
+
 VentureCommerceService *
 venture_commerce_service_new(VentureDatabase *database, gint64 organization_id,
 	VentureBankFeedTransport *transport, GError **error)
 {
 	g_autoptr(VentureCommerceService) self = NULL;
-	const gchar *token = g_getenv("VENTURE_COMMERCE_SHOPIFY_TOKEN");
-	const gchar *shop = g_getenv("VENTURE_COMMERCE_SHOPIFY_SHOP");
+
 	(void)error;
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	self = g_object_new(VENTURE_TYPE_COMMERCE_SERVICE, NULL);
 	self->database = g_object_ref(database);
 	self->organization_id = organization_id;
 	self->registry = venture_commerce_connector_registry_new();
-	if (token != NULL && *token != '\0')
-		venture_commerce_connector_registry_add(self->registry,
-			venture_shopify_connector_new(shop, token, transport));
+	self->transport = transport ? g_object_ref(transport) : venture_bank_feed_transport_new_http();
+	venture_commerce_connector_registry_add_factory(self->registry, commerce_shopify_factory_new());
 	return g_steal_pointer(&self);
 }
 
@@ -452,77 +562,7 @@ venture_commerce_service_get_registry(VentureCommerceService *self)
 }
 
 
-static gint64
-find_company_by(VentureCommerceService *self, const gchar *field, const gchar *value, GError **error)
-{
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(VentureEntity) row = NULL;
-	if (venture_string_is_empty(value))
-		return 0;
-	query = venture_query_new(VENTURE_TYPE_COMPANY);
-	venture_query_set_organization(query, self->organization_id);
-	if (!venture_query_add_filter_string(query, field, VENTURE_FILTER_OP_EQ, value, error))
-		return 0;
-	row = venture_database_find_one(self->database, query, error);
-	if (row == NULL)
-		return error != NULL && *error != NULL ? -1 : 0;
-	return venture_entity_get_id(row);
-}
-
-static gboolean
-ensure_company(VentureCommerceService *self, JsonObject *spec, GError **error)
-{
-	gint64 company_id = venture_json_object_get_int(spec, "company_id", 0);
-	const gchar *external = venture_json_object_get_string(spec, "customer_external_id", NULL);
-	const gchar *email = venture_json_object_get_string(spec, "customer_email", NULL);
-	const gchar *name = venture_json_object_get_string(spec, "customer_name", NULL);
-	g_autoptr(VentureEntity) company = NULL;
-	if (company_id > 0)
-		return TRUE;
-	company_id = find_company_by(self, "external-id", external, error);
-	if (company_id < 0)
-		return FALSE;
-	if (company_id == 0)
-		company_id = find_company_by(self, "email", email, error);
-	if (company_id < 0)
-		return FALSE;
-	if (company_id > 0)
-	{
-		json_object_set_int_member(spec, "company_id", company_id);
-		return TRUE;
-	}
-	if (venture_string_is_empty(external) && venture_string_is_empty(email))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			"Commerce import needs a customer or company_id");
-		return FALSE;
-	}
-	company = VENTURE_ENTITY(venture_company_new());
-	venture_entity_set_organization_id(company, self->organization_id);
-	g_object_set(company, "name", name != NULL && name[0] != '\0' ? name : (email != NULL ? email : external),
-		"kind", VENTURE_COMPANY_KIND_CUSTOMER, "email", email, "external-id", external,
-		"source", "shopify", "active", TRUE, NULL);
-	if (!venture_database_save(self->database, company, NULL, error))
-		return FALSE;
-	json_object_set_int_member(spec, "company_id", venture_entity_get_id(company));
-	return TRUE;
-}
-
-static VentureEntity *
-find_invoice(VentureCommerceService *self, const gchar *external_id, GError **error)
-{
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
-	g_autoptr(GPtrArray) rows = NULL;
-	if (venture_string_is_empty(external_id)) return NULL;
-	venture_query_set_organization(query, self->organization_id);
-	venture_query_set_include_deleted(query, TRUE);
-	if (!venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ, external_id, error))
-		return NULL;
-	rows = venture_database_find(self->database, query, error);
-	if (rows == NULL) return NULL;
-	if (rows->len == 0) return NULL;
-	return g_object_ref(g_ptr_array_index(rows, 0));
-}
+#include "venture-commerce-identity-private.inc"
 
 gint
 venture_commerce_service_import_for_organization(VentureCommerceService *self, gint64 organization_id,
@@ -535,12 +575,13 @@ venture_commerce_service_import_for_organization(VentureCommerceService *self, g
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Choose an organization to import into");
 		return -1;
 	}
-	/* Share the live plugin registry, rather than reconstructing just the
-	 * built-in connector and losing plugins for non-default organizations. */
+	/* Factories are shared; credential-bearing clients are constructed only
+	 * after resolving this organization's exact account snapshot. */
 	scoped = g_object_new(VENTURE_TYPE_COMMERCE_SERVICE, NULL);
 	scoped->database = g_object_ref(self->database);
 	scoped->organization_id = organization_id;
 	g_set_object(&scoped->registry, self->registry);
+	g_set_object(&scoped->transport, self->transport);
 	return venture_commerce_service_import(scoped, connector_name, from, to, actor, error);
 }
 
@@ -553,31 +594,65 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 	g_autofree gchar *from_text = from ? g_date_time_format_iso8601(from) : g_strdup("");
 	g_autofree gchar *to_text = to ? g_date_time_format_iso8601(to) : g_strdup("");
 	g_autoptr(VentureCommerceConnector) connector = NULL;
+	g_autoptr(VentureCommerceConnectorFactory) factory = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(VentureBankFeedTransport) guard = NULL;
+	g_autoptr(JsonNode) settings = NULL;
+	g_autofree gchar *account = NULL, *consent_account = NULL, *consent_revision = NULL;
+	const gchar *name = connector_name ? connector_name : "shopify";
 	g_autoptr(GPtrArray) orders = NULL;
 	guint i;
 	gint imported = 0;
 	gboolean can_post = FALSE;
 	g_return_val_if_fail(VENTURE_IS_COMMERCE_SERVICE(self), -1);
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "invoice") == G_TYPE_INVALID)
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "commerce_import_link") == G_TYPE_INVALID)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Commerce module is disabled (commerce.enabled)");
 		return -1;
 	}
-	connector = venture_commerce_connector_registry_lookup(self->registry,
-		connector_name != NULL ? connector_name : "shopify");
-	if (connector == NULL)
 	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No commerce connector named %s",
-			connector_name != NULL ? connector_name : "shopify");
+		g_autoptr(VentureEntity) target = VENTURE_ENTITY(venture_invoice_new());
+		venture_entity_set_organization_id(target, self->organization_id);
+		if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), target, "write", error)) return -1;
+	}
+	factory = venture_commerce_connector_registry_lookup_factory(self->registry, name);
+	if (factory == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			"Commerce imports require a stateless connector factory and an explicit organization account; migrate legacy live-client plugins");
 		return -1;
 	}
-	/* Fetch may iterate the main context while a registry reload removes
-	 * its ownership. Keep this operation's connector alive independently. */
-	g_object_ref(connector);
+	g_object_ref(factory);
+	binding = commerce_binding(self, self->organization_id, name, error);
+	if (binding == NULL) return -1;
+	guard = commerce_guard_new(self, binding);
+	settings = venture_integration_service_resolve_version(venture_integration_service_get(self->database),
+		self->organization_id, venture_entity_get_id(VENTURE_ENTITY(binding)),
+		venture_entity_get_version(VENTURE_ENTITY(binding)), FALSE, error);
+	if (settings == NULL) return -1;
+	g_object_get(binding, "account-id", &account, NULL);
+	connector = venture_commerce_connector_factory_create(factory, account, settings, guard, error);
+	if (connector == NULL) return -1;
 	orders = venture_commerce_connector_fetch_orders(connector, from, to, error);
-	if (orders == NULL) return -1;
+	if (orders == NULL || !commerce_guard_check((CommerceGuardTransport *)guard, error)) return -1;
+	/* Work on private objects: a plugin may retain its normalized response. */
+	for (i = 0; i < orders->len; i++)
+	{
+		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT), copy = NULL;
+		g_autofree gchar *wire = NULL;
+		json_node_set_object(node, g_ptr_array_index(orders, i));
+		wire = venture_json_to_string(node, FALSE);
+		copy = venture_json_parse(wire, NULL);
+		json_object_unref(g_ptr_array_index(orders, i));
+		g_ptr_array_index(orders, i) = json_object_ref(json_node_get_object(copy));
+	}
 	/* Provider results are part of consent: a later changed order needs a new proposal. */
 	g_variant_builder_add(inputs, "s", connector_name ? connector_name : "shopify");
+	consent_account = commerce_identity_key(binding, "approval", "");
+	consent_revision = g_strdup_printf("%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
+		venture_entity_get_id(VENTURE_ENTITY(binding)), venture_entity_get_version(VENTURE_ENTITY(binding)));
+	g_variant_builder_add(inputs, "s", consent_account);
+	g_variant_builder_add(inputs, "s", consent_revision);
 	g_variant_builder_add(inputs, "s", from_text);
 	g_variant_builder_add(inputs, "s", to_text);
 	for (i = 0; i < orders->len; i++)
@@ -602,13 +677,22 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 	{
 		JsonObject *spec = g_ptr_array_index(orders, i);
 		const gchar *external = venture_json_object_get_string(spec, "external_id", NULL);
+		g_autofree gchar *remote = g_strdup(external), *key = NULL, *namespaced = NULL;
 		g_autoptr(VentureEntity) existing = NULL;
 		g_autoptr(VentureEntity) invoice = NULL;
-		existing = find_invoice(self, external, error);
+		if (venture_string_is_empty(remote) || strlen(remote) > 1024)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Commerce order needs a bounded remote identity");
+			goto fail;
+		}
+		existing = commerce_identity_find(self, binding, "order", remote, error);
 		if (error && *error) goto fail;
 		if (existing != NULL) continue;
-		if (!ensure_company(self, spec, error))
-			goto fail;
+		if (!commerce_legacy_clear(self, VENTURE_TYPE_INVOICE, "order", remote, error)) goto fail;
+		if (!commerce_identity_customer(self, binding, spec, actor, error)) goto fail;
+		key = commerce_identity_key(binding, "order", remote);
+		namespaced = g_strconcat("commerce:", key, NULL);
+		json_object_set_string_member(spec, "external_id", namespaced);
 		if (!json_object_has_member(spec, "send"))
 			json_object_set_boolean_member(spec, "send", TRUE);
 		invoice = venture_document_service_compose_invoice(venture_document_service_get(self->database),
@@ -637,12 +721,118 @@ venture_commerce_service_import(VentureCommerceService *self, const gchar *conne
 				venture_entity_get_id(invoice), now, actor, error))
 				goto fail;
 		}
+		if (!commerce_identity_save(self, binding, "order", remote, venture_entity_get_id(invoice), "Provider import", actor, error)) goto fail;
 		imported++;
 	}
+	if (!commerce_guard_check((CommerceGuardTransport *)guard, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) return -1;
 	if (operation != NULL && !venture_accounting_operation_finish(operation, error)) return -1;
 	return imported;
 fail:
 	venture_database_rollback(self->database);
 	return -1;
+}
+
+gboolean
+venture_commerce_service_adopt_invoice(VentureCommerceService *self, gint64 organization_id,
+	gint64 connection_id, gint64 expected_version, gint64 invoice_id, const gchar *reason, const VentureActor *actor, GError **error)
+{
+	static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+	VentureAccessPolicy *policy = venture_database_get_access_policy(self->database);
+	const VentureAuthPrincipal *principal = venture_access_policy_get_actor(policy);
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(VentureCommerceService) scoped = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, existing = NULL, company = NULL;
+	g_autoptr(JsonNode) settings = NULL;
+	g_autofree gchar *remote = NULL, *prefix = NULL, *customer_remote = NULL, *provider = NULL;
+	const gchar *connector_name;
+	gint64 company_id = 0;
+	if (venture_string_is_empty(reason) || strlen(reason) > 4096)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Legacy adoption requires a provider and a bounded audit reason");
+		return FALSE;
+	}
+	if (principal && !venture_access_policy_has_organization_role(policy, principal, organization_id, roles, G_N_ELEMENTS(roles)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Organization integration administration is required");
+		return FALSE;
+	}
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	binding = VENTURE_INTEGRATION_CONNECTION(venture_database_get(self->database, VENTURE_TYPE_INTEGRATION_CONNECTION, connection_id, error));
+	if (binding == NULL) goto fail;
+	g_object_get(binding, "provider", &provider, NULL);
+	if (!g_str_has_prefix(provider ? provider : "", "commerce."))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Select a commerce account for legacy adoption");
+		goto fail;
+	}
+	connector_name = provider + strlen("commerce.");
+	settings = venture_integration_service_resolve_version(venture_integration_service_get(self->database), organization_id,
+		venture_entity_get_id(VENTURE_ENTITY(binding)), expected_version, FALSE, error);
+	if (settings == NULL) goto fail;
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (invoice == NULL) goto fail;
+	if (venture_entity_get_organization_id(invoice) != organization_id || venture_entity_is_deleted(invoice))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Legacy invoice is unavailable in this organization");
+		goto fail;
+	}
+	g_object_get(invoice, "external-id", &remote, "company-id", &company_id, NULL);
+	prefix = g_strconcat(connector_name, ":", NULL);
+	if (remote == NULL || !g_str_has_prefix(remote, prefix) || strlen(remote) <= strlen(prefix) || strlen(remote) > 1024)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Only an explicitly named legacy provider invoice can be adopted");
+		goto fail;
+	}
+	scoped = g_object_new(VENTURE_TYPE_COMMERCE_SERVICE, NULL);
+	scoped->database = g_object_ref(self->database);
+	scoped->organization_id = organization_id;
+	existing = commerce_identity_find(scoped, binding, "order", remote, error);
+	if (error && *error) goto fail;
+	if (existing != NULL)
+	{
+		gint64 target = 0;
+		g_object_get(existing, "invoice-id", &target, NULL);
+		if (target != invoice_id)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "This provider identity already belongs to another invoice");
+			goto fail;
+		}
+		return venture_database_commit(self->database, error);
+	}
+	company = venture_database_get(self->database, VENTURE_TYPE_COMPANY, company_id, error);
+	if (company == NULL) goto fail;
+	if (venture_entity_get_organization_id(company) != organization_id)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Legacy customer is outside the invoice organization");
+		goto fail;
+	}
+	g_object_get(company, "external-id", &customer_remote, NULL);
+	g_clear_pointer(&prefix, g_free);
+	prefix = g_strconcat(connector_name, ":customer:", NULL);
+	if (customer_remote != NULL && g_str_has_prefix(customer_remote, prefix))
+	{
+		g_clear_object(&existing);
+		existing = commerce_identity_find(scoped, binding, "customer", customer_remote, error);
+		if (error && *error) goto fail;
+		if (existing == NULL)
+		{
+			if (!commerce_identity_save(scoped, binding, "customer", customer_remote, company_id, reason, actor, error)) goto fail;
+		}
+		else
+		{
+			gint64 target = 0;
+			g_object_get(existing, "company-id", &target, NULL);
+			if (target != company_id)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Legacy customer identity is already claimed");
+				goto fail;
+			}
+		}
+	}
+	if (!commerce_identity_save(scoped, binding, "order", remote, invoice_id, reason, actor, error)) goto fail;
+	return venture_database_commit(self->database, error);
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
 }

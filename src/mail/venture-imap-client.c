@@ -153,7 +153,21 @@ static void fake_finalize(GObject *object)
 	g_free(self->selected);
 	G_OBJECT_CLASS(venture_fake_imap_client_parent_class)->finalize(object);
 }
-static void venture_fake_imap_client_class_init(VentureFakeImapClientClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
+static guint fake_response_ready;
+static void venture_fake_imap_client_class_init(VentureFakeImapClientClass *klass)
+{
+	G_OBJECT_CLASS(klass)->finalize = fake_finalize;
+	/**
+	 * VentureFakeImapClient::response-ready:
+	 * @self: fake transport
+	 *
+	 * Emitted synchronously after copying a successful fetch response, before
+	 * returning it to the consumer. Fixtures may revoke authorization here
+	 * to exercise state changes while a real provider request was pending.
+	 */
+	fake_response_ready = g_signal_new("response-ready", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+		0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+}
 static void venture_fake_imap_client_init(VentureFakeImapClient *self)
 {
 	self->folders = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, fake_folder_free);
@@ -268,20 +282,25 @@ static FakeMessage *fake_fetchable(VentureFakeImapClient *self, guint32 uid, GEr
 static GBytes *fake_fetch(VentureImapClient *client, guint32 uid, GCancellable *cancellable, GError **error)
 {
 	FakeMessage *message = fake_fetchable(VENTURE_FAKE_IMAP_CLIENT(client), uid, error);
+	GBytes *response = message ? g_bytes_ref(message->raw) : NULL;
 	(void)cancellable;
-	return message ? g_bytes_ref(message->raw) : NULL;
+	if (response) g_signal_emit(client, fake_response_ready, 0);
+	return response;
 }
 static GBytes *fake_fetch_truncated(VentureImapClient *client, guint32 uid, gsize text_limit, GCancellable *cancellable, GError **error)
 {
 	FakeMessage *message = fake_fetchable(VENTURE_FAKE_IMAP_CLIENT(client), uid, error);
 	const gchar *data, *split;
 	gsize length, header;
+	GBytes *response;
 	(void)cancellable;
 	if (!message) return NULL;
 	data = g_bytes_get_data(message->raw, &length);
 	split = g_strstr_len(data, (gssize)length, "\r\n\r\n");
 	header = split ? (gsize)(split - data) + 4 : length;
-	return g_bytes_new(data, header + MIN(text_limit, length - header));
+	response = g_bytes_new(data, header + MIN(text_limit, length - header));
+	g_signal_emit(client, fake_response_ready, 0);
+	return response;
 }
 static void fake_set_deadline(VentureImapClient *client, gint64 monotonic_deadline)
 {

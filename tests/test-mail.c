@@ -4,6 +4,7 @@
 #include <glib/gstdio.h>
 #include <unistd.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 /* A mail record must participate in every generated surface. */
 static void
@@ -24,7 +25,7 @@ typedef struct {
 static void setup(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -41,7 +42,7 @@ static void teardown(Fixture *f, gconstpointer data)
 {
 	g_clear_object(&f->outbox);
 	g_clear_object(&f->mailer);
-	g_clear_object(&f->db);
+	venture_test_accounting_database_cleanup(f->db); g_clear_object(&f->db);
 }
 static VentureMailMessage *enqueue(Fixture *f, const gchar *key)
 {
@@ -242,6 +243,7 @@ static void test_smtp_uncertain_wire(void)
 	mailer = venture_smtp_mailer_new(config);
 	g_object_set(message, "to", "reader@example.test", "bcc", "private@example.test", "subject", "Test",
 		"text-body", "Hello", "html-body", "<p>Hello</p>",
+		"private-unsubscribe-url", "https://example.test/marketing/u/token",
 		"private-text-body", "https://example.test/portal/secret-token", "message-id", "stable@example.test", NULL);
 	thread = g_thread_new("local-smtp", smtp_server, &f);
 	g_assert_false(venture_mailer_send(VENTURE_MAILER(mailer), message, NULL, &error));
@@ -255,6 +257,8 @@ static void test_smtp_uncertain_wire(void)
 	g_assert_null(strstr(f.bodies[0], "Bcc:"));
 	g_assert_nonnull(strstr(f.bodies[0], "https://example.test/portal/secret-token"));
 	g_assert_null(strstr(f.bodies[0], "<p>Hello</p>"));
+	g_assert_nonnull(strstr(f.bodies[0], "List-Unsubscribe: <https://example.test/marketing/u/token>"));
+	g_assert_nonnull(strstr(f.bodies[1], "List-Unsubscribe-Post: List-Unsubscribe=One-Click"));
 	g_assert_cmpuint(f.recipients, ==, 4);
 	g_free(f.bodies[0]); g_free(f.bodies[1]); g_object_unref(f.listener);
 }
@@ -404,7 +408,7 @@ static void test_attachment_snapshot(Fixture *f, gconstpointer data)
 	g_assert_no_error(error); g_assert_cmpint(fd, >=, 0); close(fd);
 	g_assert_true(g_file_set_contents(path, "original attachment", -1, &error));
 	g_object_set(document, "organization-id", f->org, "title", "receipt.txt", "path", path, "mime-type", "text/plain", NULL);
-	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(document), NULL, &error));
+	g_assert_true(venture_document_service_save_attachment(venture_document_service_get(f->db), VENTURE_ENTITY(document), g_get_tmp_dir(), NULL, &error));
 	g_assert_no_error(error);
 	refs = g_strdup_printf("[{\"type\":\"document\",\"id\":%" G_GINT64_FORMAT "}]", venture_entity_get_id(VENTURE_ENTITY(document)));
 	g_object_set(f->outbox, "attachment-root", g_get_tmp_dir(), NULL);

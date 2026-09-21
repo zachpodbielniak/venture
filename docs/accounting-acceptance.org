@@ -1,0 +1,181 @@
+#+title: Synthetic accounting acceptance scenarios
+#+description: Reproducible opening, trading, close and recovery evidence
+
+* Scope
+
+=test-accounting-acceptance= composes the existing cutover, settlement,
+payables, banking, reporting, close and backup services. All companies,
+amounts and provider-independent bank rows are synthetic. The scenarios
+exercise the same repository and services used by the application; they do
+not simulate a deployment, browser onboarding, external bank feed or an
+accountant's independent approval.
+
+The opening-import and trading scenarios have separate empty databases.
+Together they cover brought-forward books and a current trading period;
+they are not evidence that one customer migration has been reconciled.
+Currency arithmetic in this pack is USD integer cents. The wider cutover,
+settlement and statement suites cover foreign currency and credit/refund
+cases; their existence does not imply those cases were exercised in this
+pack.
+
+* Opening import and settlement
+
+=/accounting-acceptance/opening-import= supplies a structured synthetic
+QuickBooks-format opening payload to =VentureCutoverService=. The format
+selection exercises the existing importer, without contacting QuickBooks.
+The 1 January 2026 opening balances are independently specified:
+
+| Control | Debit | Credit |
+|---------+-------+--------|
+| Cash | 500.00 | |
+| Accounts receivable | 105.00 | |
+| Accounts payable | | 50.00 |
+| Opening equity | | 555.00 |
+
+The outstanding invoice includes 100.00 net and 5.00 historical tax. Import
+must bring forward its 105.00 receivable without recognizing that old sale
+or its tax again in January. The test checks income, sales-tax control and
+opening clearing are zero, asks the cutover service to reconcile, and
+checks its trial-balance evidence. Repeating the payload must leave one
+invoice and one bill.
+
+A 105.00 receipt on 5 January and a 50.00 vendor payment on 6 January settle
+those imported documents through their ordinary services. Cash becomes
+555.00, AR and AP become zero, January profit remains zero, and the balance
+sheet difference is zero. Historical export and restore must preserve
+those statements and every archived public field and relationship after
+identity remapping.
+
+* Trading, bank reconciliation, close and correction
+
+=/accounting-acceptance/full-cycle= generates the fiscal calendar and
+records an invoice for 100.00 plus 5.00 tax on 10 January, a partial 40.00
+receipt on 20 January, a 50.00 vendor bill on 12 January, and its 50.00
+payment on 22 January. It also calls the existing dated tax-allocation
+correction service. Correctly allocated tax must not be posted twice.
+
+The bank CSV contains the two actual cash movements, with durable
+synthetic external identities. Closing a statement while those rows are
+unmatched must fail. The operator then explicitly matches each row to its
+existing receipt/payment; this does not depend on heuristic automatic
+matching. Reconciliation must report a zero difference.
+
+| January result | USD |
+|----------------+-----|
+| Revenue | 100.00 |
+| Expenses | 50.00 |
+| Profit | 50.00 |
+| Cash | -10.00 |
+| Outstanding receivable | 65.00 |
+| Outstanding payable | 0.00 |
+| Total assets | 55.00 |
+| Sales-tax liability | 5.00 |
+| Balance-sheet difference | 0.00 |
+
+Negative cash is an intentional synthetic opening assumption: this trading
+fixture begins with zero cash and is independent of the funded opening
+fixture. It is not silently filled with an unexplained opening balance.
+
+The close service checks the subledger tie-out, completes its checklist,
+records distinct preparer and reviewer signatures, and closes January.
+The close pack contains the trial balance. A backdated receipt is refused
+with =VENTURE_ERROR_CONFLICT= at the actual posting boundary.
+
+An owner then reopens the period. An explicit balanced journal reclassifies
+5.00 from account 6900 to 6400, preserving the original bill, payment and
+net profit. A fresh check alone must not reuse the previous signatures:
+completion returns =VENTURE_ERROR_VALIDATION= until both preparer and
+reviewer sign again. The corrected period is closed and exported. Restore
+preserves both the
+historical evidence and the corrected statements; the source organization's
+cash and receivable remain unchanged.
+
+* Failure and retry
+
+=/accounting-acceptance/rollback-retry= injects a failure at the customer
+credit save while collecting a 40.00 invoice. The failed transaction must
+leave no receipt and no additional journal. After removing the injected
+failure, a freshly constructed retry creates exactly one receipt and the
+three linked receipt/credit/allocation journals. AR becomes zero and cash
+becomes 40.00. Reusing the failed mutable record is intentionally avoided.
+
+* Running the evidence
+
+#+begin_src sh
+make DEBUG=1
+make DEBUG=1 test-one T=test-accounting-acceptance
+#+end_src
+
+To run the same scenarios against a dedicated PostgreSQL test database,
+set =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= to its connection URI before
+running the test command. The common accounting fixture creates a unique
+schema per scenario and drops it after a successful run. A failed run
+retains its schema as evidence. Use a disposable test database and a role
+allowed to create schemas; do not use production or personal-data stores.
+Keep credentials outside shell history and published logs.
+
+The archive helper compares complete public field values after ID/UUID
+remapping, exact record counts, ledger balances and invoice/bill balances.
+This is the existing version 4 accounting archive, not a tenant or complete
+installation backup: attachments, credentials and other excluded resources
+remain outside its contract. See [[file:backup.org][historical accounting recovery]].
+
+* Readiness evidence still required
+
+Passing this pack demonstrates these executable scenarios on the backend
+actually used. It does not establish M1 controlled parallel-use readiness,
+M2 replacement readiness, independent accounting review, PostgreSQL coverage
+unless separately run, or hosted tenant recovery. Those decisions require a
+recorded deployment exercise, source-to-destination reconciliations and
+resolution of any remaining workflow or infrastructure gaps.
+
+* Authenticated built-server walkthrough
+
+=tools/venture-accounting-server-drill.py= runs these opening and trading
+scenarios through real authenticated HTTP routes and metadata actions,
+using a supplied DEBUG =venture= binary. It provisions separate private
+SQLite source/destination servers, creates the reviewer through the normal
+user form, and never edits their databases directly. Run from the checkout:
+
+#+begin_src sh
+python3 tools/venture-accounting-server-drill.py --binary build/debug/venture
+#+end_src
+
+Use =--scenario opening= or =--scenario trading= for a bounded rerun. The
+binary's checkout supplies its migrations; rebuild that DEBUG artifact
+before qualifying a changed source tree. The driver refuses Python =-O=,
+which would remove its acceptance assertions. It requires only Python's
+standard library and the built server, not customer data or provider keys.
+
+Both servers require authentication; anonymous business reads must return
+401. Session credentials are generated privately and omitted from stdout.
+Each process binds a dynamically selected loopback port, has independent
+state/config/data paths, refuses redirects in its HTTP client, and disables
+AI, plugins and automation. There is no ambient VENTURE configuration or
+proxy fallback. Startup, request and shutdown waits are bounded. Private
+fixture directories are retained for investigation; their =server.log=
+contains the generated bootstrap password and must not be published.
+
+The independently specified cents above are checked before export and after
+restore. In trading, the ordinary posting path already allocates exactly
+500 cents tax; this walkthrough does not invoke the service-only dated tax
+repair helper. Checklist completion, signing, close and reopen use typed
+actions. One person cannot sign both roles. A refused closed-date receipt
+must neither change balances nor leave a payment record. A correction must
+preserve profit and require fresh signatures.
+
+The v4 accounting pack is restored to an empty legal organization on a
+second authenticated server. Its identity manifest must be bijective; every
+archived historical field and metadata/polymorphic reference is compared.
+Only primary identities, organization placement and derived display names
+are removed from comparison. Journal posting keys, bank external keys and
+ledger journal UUIDs are explicitly remapped and checked. All rows of the
+income statement, balance sheet and account-balance report must agree.
+Source restart preserves reports; destination restart preserves the entire
+re-exported historical record set as well as reports.
+
+See [[file:evidence/accounting-server-demonstration.org][the exact artifact transcript]]. This is a controlled synthetic M1
+server walkthrough, not independent accountant authorization, browser UI
+usability evidence, PostgreSQL deployment qualification, hosted isolation,
+or full M2 acceptance. The v4 financial pack is not a full-tenant backup:
+authentication, attachments and provider configuration remain outside it.

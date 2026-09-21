@@ -606,25 +606,27 @@ bound(gint64 first, gint64 second, gboolean two)
 static gboolean
 table_exists(VentureDedupeService *self, const gchar *table, gboolean *exists, GError **error)
 {
-	g_autoptr(OrmResult) result = NULL;
-	GList *params = g_list_append(NULL, orm_value_new_string(table));
-	const gchar *sql = venture_database_get_backend(self->database) == VENTURE_DATABASE_BACKEND_POSTGRES
-		? "SELECT CAST(COUNT(*) AS BIGINT) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?"
-		: "SELECT CAST(COUNT(*) AS BIGINT) FROM sqlite_master WHERE type = 'table' AND name = ?";
-	result = venture_database_query_raw(self->database, sql, params, error);
-	g_list_free_full(params, (GDestroyNotify)orm_value_free);
-	if (result == NULL) return FALSE;
-	*exists = orm_result_next(result) && orm_row_get_integer(orm_result_get_row(result), 0) > 0;
-	return TRUE;
+	g_autoptr(GError) local = NULL;
+	g_autoptr(OrmInspector) inspector = orm_inspector_new(venture_database_get_connection(self->database), &local);
+	if (inspector != NULL)
+		*exists = orm_inspector_has_table(inspector, table, NULL, &local);
+	if (local != NULL) {
+		g_propagate_error(error, g_steal_pointer(&local));
+		return FALSE;
+	}
+	return inspector != NULL;
 }
-/* Every reference field the registry knows that names @kind, in whatever
- * module and whether or not that module is on: the rows are still there. */
+/* Operational references follow the survivor even when their module is off.
+ * Explicitly retained evidence must keep the original subject: rewriting it
+ * would change what was authorized rather than merely where it is filed. */
 static gboolean
 repoint_references(VentureDedupeService *self, const gchar *kind, gint64 survivor_id, gint64 loser_id,
 	JsonObject *repointed, GError **error)
 {
 	VentureEntityRegistry *registry = venture_entity_registry_get_default();
 	g_auto(GStrv) names = venture_entity_registry_list_all_names(registry);
+	gboolean postgres = venture_database_get_backend(self->database) == VENTURE_DATABASE_BACKEND_POSTGRES;
+	const gchar *first_parameter = postgres ? "$1" : "?", *second_parameter = postgres ? "$2" : "?";
 	guint i, j;
 	gboolean present;
 	for (i = 0; names[i] != NULL; i++)
@@ -648,12 +650,13 @@ repoint_references(VentureDedupeService *self, const gchar *kind, gint64 survivo
 			GList *params;
 			gint64 count = 0;
 			gboolean ok;
-			if (venture_field_spec_get_kind(spec) != VENTURE_FIELD_KIND_REFERENCE ||
+			if ((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_RETAIN_REFERENCE) ||
+			    venture_field_spec_get_kind(spec) != VENTURE_FIELD_KIND_REFERENCE ||
 			    g_strcmp0(venture_field_spec_get_reference_type(spec), kind) != 0)
 				continue;
 			column = venture_entity_property_to_column(venture_field_spec_get_name(spec));
 			quoted = venture_schema_quote_identifier(column);
-			sql = g_strdup_printf("SELECT CAST(COUNT(*) AS BIGINT) FROM %s WHERE %s = ?", table, quoted);
+			sql = g_strdup_printf("SELECT CAST(COUNT(*) AS BIGINT) FROM %s WHERE %s = %s", table, quoted, first_parameter);
 			params = bound(loser_id, 0, FALSE);
 			result = venture_database_query_raw(self->database, sql, params, error);
 			g_list_free_full(params, (GDestroyNotify)orm_value_free);
@@ -662,7 +665,7 @@ repoint_references(VentureDedupeService *self, const gchar *kind, gint64 survivo
 				count = orm_row_get_integer(orm_result_get_row(result), 0);
 			if (count == 0) continue;
 			g_clear_pointer(&sql, g_free);
-			sql = g_strdup_printf("UPDATE %s SET %s = ? WHERE %s = ?", table, quoted, quoted);
+			sql = g_strdup_printf("UPDATE %s SET %s = %s WHERE %s = %s", table, quoted, first_parameter, quoted, second_parameter);
 			params = bound(survivor_id, loser_id, TRUE);
 			ok = venture_database_execute(self->database, sql, params, error);
 			g_list_free_full(params, (GDestroyNotify)orm_value_free);
@@ -1012,20 +1015,20 @@ venture_dedupe_actions_register(VentureDatabase *database)
 	registry = venture_database_get_action_registry(database);
 	g_ptr_array_add(scan_parameters, venture_field_spec_new("kind", "Kind (company or contact)", VENTURE_FIELD_KIND_STRING));
 	g_ptr_array_add(scan_parameters, venture_field_spec_new("organization_id", "Organization", VENTURE_FIELD_KIND_INTEGER));
-	scan = g_object_new(VENTURE_TYPE_ACTION, "type-name", "duplicate_candidate", "name", "scan",
+	scan = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "duplicate_candidate", "name", "scan",
 		"label", "Scan for duplicates", "description", "Propose pairs of companies or contacts that look like one; merges nothing",
 		"parameters", scan_parameters, "stageable", FALSE, "type-level", TRUE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, scan, scan_allowed, scan_invoke, self, NULL, &error))
 		g_error("Dedupe scan action registration: %s", error->message);
 	g_ptr_array_add(merge_parameters, venture_field_spec_new("survivor", "Record to keep", VENTURE_FIELD_KIND_INTEGER));
-	merge = g_object_new(VENTURE_TYPE_ACTION, "type-name", "duplicate_candidate", "name", "merge",
+	merge = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "duplicate_candidate", "name", "merge",
 		"label", "Merge", "description", "Fold the other record into the survivor: references, fields, timeline note, audit",
 		"parameters", merge_parameters, "stageable", TRUE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, merge, open_allowed, merge_invoke, self, NULL, &error))
 		g_error("Dedupe merge action registration: %s", error->message);
-	dismiss = g_object_new(VENTURE_TYPE_ACTION, "type-name", "duplicate_candidate", "name", "dismiss",
+	dismiss = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", "duplicate_candidate", "name", "dismiss",
 		"label", "Not a duplicate", "description", "Close the proposal; later scans leave the pair alone",
 		"parameters", no_parameters, "stageable", FALSE, "service-transaction", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);

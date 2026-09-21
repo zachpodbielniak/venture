@@ -104,8 +104,9 @@ venture_kb_service_get_context(VentureKbService *self);
  * venture_kb_service_get_embedder:
  * @self: the service
  *
- * Returns: (transfer none): the embedder, for callers that need the model
- *   name or want to embed something that is not an article
+ * Returns: (transfer none) (nullable): the most recently selected organization
+ *   embedder, or NULL before indexing/search. Arbitrary text requires an
+ *   explicit venture_embedder_new_for_organization() client.
  */
 VentureEmbedder *
 venture_kb_service_get_embedder(VentureKbService *self);

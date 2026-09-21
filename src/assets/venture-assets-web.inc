@@ -25,7 +25,7 @@ venture_web_asset_action(HtmxRequest *request, GHashTable *params, gpointer data
 	if (gate != NULL)
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	if (g_strcmp0(operation, "place-in-service") == 0)
 		operation = "place";

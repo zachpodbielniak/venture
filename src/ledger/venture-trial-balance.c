@@ -161,7 +161,7 @@ fail:
 void
 venture_ledger_register_report(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"trial_balance", "Trial balance",
 		"Posted account balances as of the period end, for one legal entity, separately per book currency",
 		trial_balance)));

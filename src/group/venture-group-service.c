@@ -486,11 +486,11 @@ report_bs(VentureContext *c, VentureDateRange *p, JsonObject *o, GError **e)
 void
 venture_group_register_reports(VentureReportRegistry *registry)
 {
-	VentureReport *tb = VENTURE_REPORT(venture_func_report_new("consolidated_trial_balance",
+	VentureReport *tb = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "consolidated_trial_balance",
 		"Consolidated trial balance", "Combined trial balance with org dimension and FX.", report_tb));
-	VentureReport *income = VENTURE_REPORT(venture_func_report_new("consolidated_income_statement",
+	VentureReport *income = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "consolidated_income_statement",
 		"Consolidated income statement", "Combined income with eliminations and FX.", report_is));
-	VentureReport *sheet = VENTURE_REPORT(venture_func_report_new("consolidated_balance_sheet",
+	VentureReport *sheet = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "consolidated_balance_sheet",
 		"Consolidated balance sheet", "Combined balance sheet with org dimension and FX.", report_bs));
 	g_object_set(tb, "financial", TRUE, NULL);
 	g_object_set(income, "financial", TRUE, NULL);

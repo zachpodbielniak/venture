@@ -28,7 +28,7 @@ equity_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (gate != NULL)
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	venture_auth_to_actor(principal, &actor);
 	/* Authenticate before reading untrusted fields. JSON-GLib's typed
@@ -130,7 +130,8 @@ equity_page(HtmxRequest *request, GHashTable *params, gpointer data)
 static void
 venture_equity_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/equity", equity_page, self);
-	htmx_router_post(router, "/equity/post", equity_post, self);
-	htmx_router_post(router, "/api/v1/equity/post", equity_post, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/equity", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, equity_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/equity/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, equity_post, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/equity/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, equity_post, self);
 }

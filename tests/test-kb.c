@@ -619,6 +619,11 @@ kb_service_or_skip(Fixture *fixture)
 		return NULL;
 	}
 
+	/* Live provider tests require an explicit organization binding. */
+	if (!venture_kb_service_get_embedder(service)) {
+		g_test_skip("no organization embedding binding configured");
+		g_object_unref(service); return NULL;
+	}
 	probe = venture_embedder_embed(venture_kb_service_get_embedder(service),
 	                               "probe", &dims, &error);
 

@@ -1,0 +1,246 @@
+#+title: Post-parity delivery and acceptance
+#+description: Issue 125 scope, defaults and executable acceptance evidence
+
+* Delivery contract
+
+Issue 125 is delivered on =epic/post-parity-5= as one pull request. Its
+starting point is master =848a93d=. Independent implementation lanes use
+worktrees; at most three agents run concurrently. Integrated increments
+must pass a DEBUG build and suite before the next increment is accepted.
+The pull request remains WIP until its requirements and review fixes have
+been verified. Passing unit tests alone establishes neither replacement
+readiness nor hosted-launch readiness.
+
+The operator authorized choosing defaults on 2026-09-19 and explicitly
+excluded Lightsite provisioning. No service creation, entitlement changes,
+suspension or cancellation is sent to Lightsite. Its existing ownership of
+campaign pages is unchanged. The separate form/capture integration contract
+remains in scope. Previously deferred payroll tax calculation, mobile,
+paid enrichment, voice/live chat and broad Money navigation refactoring
+remain deferred.
+
+* Selected defaults
+
+** Projects and billing
+
+Reuse client projects, tickets/worklogs, approved project time/cost,
+quotes, progress invoicing and settlement. Support time and materials and
+fixed contractual milestones, with partial progress invoicing and retainers
+through the existing services. Project scope, ownership, delivery acceptance
+and changes are explicit records/actions. Staff authorize scope and
+acceptance; customer portals retain their existing document visibility and
+quote acceptance boundary. New customer task editing is excluded.
+
+Project financials distinguish contractual budget, billed allocations,
+approved unbilled work, recorded actual cost and management profit. Freeze
+labour cost at time approval using the applicable rate; unknown historical
+cost remains unknown rather than being recomputed from today's rate.
+Separate currencies and retain source references. Management profit is not
+a substitute for posted general-ledger revenue recognition. Reporting must
+state its date basis and treatment of corrections.
+
+** Tenant boundary
+
+A tenant is an isolated workspace containing one or more legal/accounting
+organizations. A customer company is never a tenant. The hosted default is
+one application process and PostgreSQL database/role per tenant, plus
+separate state, attachment and backup roots. Platform routing/provisioning
+selects the tenant; organization selectors never select another database.
+Trusted platform operators own executable plugins and host configuration.
+Tenant administration is distinct from platform administration.
+
+This topology preserves the current main-context database ownership and
+process-wide registries. Do not introduce shared-table hosting by assuming
+that the organization picker is a tenant boundary. Any future shared-table
+implementation requires its own database-enforced isolation contract and
+adversarial qualification.
+
+** Integrations and subscriptions
+
+Organization integrations are explicitly configured, disabled or assigned
+an eligible platform service. Missing configuration fails closed. Stripe
+has one account per organization; historical account and test/live binding
+survive credential rotation and account replacement. A personal mailbox or
+calendar remains private to its authorized user.
+
+Subscription collection uses verified provider settlement, durable attempt
+identity and explicit failures/recovery. Invoice generation is not payment.
+No Lightsite provisioning is attempted. Platform AI grants must attribute
+usage to the organization, enforce quotas and fail closed on revocation;
+private provider failure must never silently fall back to shared access.
+
+** Operational qualification
+
+Use synthetic data. Proposed service qualification profiles are 100, 1,000
+and 3,000 provisioned tenants, each with 10 users, 100,000 business rows and
+1 GiB of attachments. At least 10 percent of tenants are active at once,
+with two concurrent users per active tenant and one ordinary request per
+user per second. Report the actual hardware, workload mix, active process
+count, event/job rates and measured storage footprint with every result.
+Targets are p95 below 500 ms for ordinary reads, below 1 second for ordinary
+writes, and fewer than 0.1 percent unexpected errors; bounded background
+jobs are measured separately. These are acceptance targets, not measured
+capacity claims.
+
+Default recovery targets are a 15-minute recovery point and a four-hour
+single-tenant restore time. Require encrypted off-site backups and a restore
+drill that reconciles financial and operational references while a neighbor
+continues running. Accounting export alone is not a tenant backup. Retain
+daily operational backups for 30 days by default; statutory accounting
+retention and legal holds must be configurable and are not erased by that
+expiry. No jurisdictional or certification claim is made. Hosted launch
+requires an independent isolation/security review and recorded deployment
+evidence.
+
+* Acceptance ledger
+
+Every row starts unverified. An implementation or document is not marked
+verified without the corresponding execution evidence.
+
+| Area | State | Required evidence |
+|------+-------+-------------------|
+| Accounting loop | Synthetic scenarios verified on SQLite/PostgreSQL | Synthetic opening/import through settlement, reconciliation, close/correction and restored tie-outs, SQLite and PostgreSQL |
+| CRM and project handoff | Capture-to-payment and twelve delivery scenarios verified on SQLite/PostgreSQL; deployment acceptance pending | Quote/deal through scope, work, acceptance, invoice and receipt; replay and changed-scope cases |
+| Project financials | Frozen-cost and delivery report/action scenarios verified | Exact budget, cost, unbilled, billed and profit with unknown historical costs and source rows |
+| Organization integrations | Stripe, SMTP, bank-feed, private mailbox/calendar and organization AI settings verified on SQLite/PostgreSQL (=docs/evidence/125-mail-demo.txt=, =125-bankfeed-demo.org=, =125-connectors-demo.org=, =125-ai-organizations-demo.txt=); combined suite 115/115 at =b98dc64=; forge vault and commerce accounts have lane demonstrations only (=docs/forge-vault-demonstration.org=, =docs/evidence/commerce-accounts-demonstration.org=) | Settings, secret redaction, account binding, rotation, revocation and A/B organization tests |
+| Subscription collection | Controlled-provider settlement, failed collection, paused/manual recovery and duplicate refusal verified on SQLite/PostgreSQL (=docs/stripe-automatic-demonstration.org=); combined DEBUG suite 115/115 passed at =e477111= | Verified automatic settlement, failed collection, recovery and duplicate refusal; no provisioning |
+| Calls (#122) | Service scenarios verified on SQLite/PostgreSQL; integrated suite 107/107 passed at f01b4b3 | One historical event and optional follow-up, including replay and lead-only calls |
+| OCR (#123) | Fifteen lane scenarios verified on SQLite/PostgreSQL, including real OCR; combined DEBUG suite 111/111 passed at 602545a | Bounded local extraction, provenance, retry/cancel and reviewed-correction preservation |
+| ACH and links (#124) | Delayed settlement, return/balance conflict, posting retry, separation of duties and account/environment isolation verified on SQLite/PostgreSQL (=test-stripe=); carried through combined suites 112/112 at =97637d2= to 115/115 at =e477111= | Delayed settlement, returns, pending balance changes and account/environment isolation |
+| Marketing (#120) | Thirty-three lane scenarios verified on SQLite/PostgreSQL (=docs/marketing-demonstration.org=) and the authenticated built-server walkthrough in =docs/evidence/125-attribution-server.org=; combined integration gate pending | Snapshotted audience, consent, suppression at delivery, restart and uncertainty |
+| Attribution (#121) | Thirty-five lane scenarios verified on SQLite/PostgreSQL and the authenticated built-server walkthrough in =docs/evidence/125-attribution-server.org=; combined integration gate pending | Consent-bound capture, Lightsite form contract, dedupe and reconciled attribution |
+| OIDC | Twenty-two cases including the real Keycloak browser flow verified on SQLite/PostgreSQL (=docs/evidence/125-oidc-demo.txt=); combined DEBUG suite 114/114 passed at =dd64d91= | Verified identity, explicit linking, local roles and recovery |
+| Territories/quotas | Fifteen scenarios verified on SQLite/PostgreSQL with the built-server browser demonstration in =docs/evidence/125-sales-performance-demo.txt=; combined integration gate pending | Deterministic routing, frozen credit, periods and currency-separated attainment |
+| Tenant lifecycle and isolation | Physical provision/export/restore-quarantine/upgrade/offboard drill passed (=docs/evidence/125-tenant-lifecycle.txt=); fifteen tenant and eleven hosted-service cases verified on SQLite/PostgreSQL; component review in =docs/evidence/125-hosted-isolation-review.org=; final combined adversarial A/B deployment and independent isolation review pending | Provision/suspend/export/restore/offboard, independent roots and adversarial A/B tests |
+| Governance and recovery | Control inventory in [[file:hosted-controls.org][hosted controls]]; neighbor-preserving physical PostgreSQL backup/restore drill passed (=docs/evidence/125-tenant-recovery.txt=); local archive catalog, holds and explicit retention verified, 28 operator cases (=docs/evidence/backup-retention-demonstration.org=); authorized erasure/anonymization workflow, offsite retention and separately administered audit sink pending | Data/control inventory, retention/holds, backup/restore and audit evidence |
+| Capacity and operations | Pending | Measured profiles, fairness, limits, restart/failover and deployment runbook |
+| Final review | Pending | Repeated skill-review repair, exact-head DEBUG and live PostgreSQL checks |
+
+* Migration reservations
+
+The existing child reservations remain =000420= (marketing), =000430=
+(attribution), =000440= (OCR), and =000450= (ACH). New reservations made
+after checking the ledger are =000460= (project profitability), =000470=
+(organization integrations), =000480= (project delivery), =000490= (call history),
+=000500= (Stripe account bindings), =000510= (active integration uniqueness),
+and =000520= (automatic collection), =000530= (OIDC), =000540= (mail account binding), =000550= (bank-feed identity),
+=000560= (organization AI), =000570= (private connectors), =000580=
+(territories/quotas), =000590= (tenant boundary/lifecycle) and =000610=
+(commerce account identity; no inferred legacy ownership). =000600= remains
+reserved for organization forge account migration and is not applied. Applied
+migrations remain append-only and paired for both backends.
+
+The combined Stripe-settings/project-delivery revision =ba1393e= passed its
+clean DEBUG build and all 108 test binaries. Later OCR, active-account index
+and CRM ownership repairs have individual lane evidence above; their next
+combined build/suite is recorded separately, never inferred from that result.
+
+* Combined verification checkpoint
+
+Revision =602545a= passed a clean dependency DEBUG build and all 111 test
+binaries. The run enabled the real Tesseract container wrapper and local
+Poppler SDK. It includes CRM ownership, OCR/attachment ownership and the
+active integration constraint. Log evidence lives with the implementation
+session as =venture-125-ocr-integrated-{clean,build,suite}.log=.
+The later version-checked resolver fix has its own passing SQLite and
+PostgreSQL regression, including a failing run with that check removed.
+Remaining rows above still require their own implementation and evidence.
+
+* Organization provider and private-import checkpoint
+
+Revision =97637d2= passed all 112 DEBUG test binaries. This includes
+organization SMTP, account-bound bank-feed settings and the report-delivery
+transport preflight repair. A prior run's only remaining failure was the
+real OCR wrapper's container startup exceeding its unchanged deadline;
+the rerun used the same real Tesseract 5.5.3 executable provisioned locally.
+It did not skip OCR or relax an assertion.
+
+The private connector lane =1da0c1d= passed all 113 DEBUG test binaries,
+DEBUG build and warning-free GIR. It is integrated as =a246ad5=: its source,
+tests, migrations, dependency pins and build rules are byte-identical to
+that tested lane. The sole additional file is the already-verified SMTP
+relay transcript. Five connector and fifteen calendar cases pass on isolated
+PostgreSQL; IMAP's new completion-time revocation also passes there. Removing
+the completion guards makes both mail and calendar import after disconnect,
+and the regressions fail. Restoring a removed private calendar UID and
+upgrading populated shared credential rows are covered explicitly.
+
+Private ownership, same-organization webhook selection, retired environment
+credential refusal and settings health are documented in
+[[file:connectors.org][mailbox/calendar connectors]]. This is provider/import correctness evidence,
+not hosted-tenant isolation or recovery qualification. The full epic remains
+WIP while its other lanes and operational acceptance remain outstanding.
+
+* OIDC integrated verification
+
+Revision =dd64d91= passed the DEBUG build, warning-free GIR generation and all
+114 integrated test binaries with the native real Tesseract executable enabled.
+The prior run caught a missing OIDC documentation index entry; it was corrected
+before this complete green rerun. Organization AI integration follows this
+verified baseline; its combined gate is pending.
+
+* Organization AI integrated verification
+
+Revision =b98dc64= passed all 115 DEBUG test binaries, the DEBUG build and
+warning-free GIR generation with real native OCR enabled. The first suite
+identified two reconciliation fixtures without a migrated organization schema;
+the repair provisions that schema without relaxing provider ownership checks.
+Automatic collection is integrated next; its clean dependency build and combined
+suite are separate gates and are not covered by this checkpoint.
+
+* Automatic collection integrated verification
+
+Revision =e477111= passed all 115 DEBUG test binaries after a clean dependency
+build, including real native OCR, and warning-free GIR generation. The pinned
+Stripe client is =fbc66e52ddaa8e6294aaa5c48d36bf206c286105=.
+Hosted workspace integration follows this checkpoint and has a separate gate.
+
+* Original gap-list disposition
+
+This maps the original numbered items in issues 73 and 74 to the supported
+workflow, rather than treating a closed issue or registered record as proof of
+replacement readiness. “Existing” means present before this epic; “Epic” means
+implemented on this PR or a prepared integration lane. Execution checkpoints
+above and the acceptance ledger remain authoritative. Provider compatibility,
+operational qualification and the explicit limits below are not implied by a
+passing synthetic scenario.
+
+** Run-the-business list (issue 73)
+
+| Item | Disposition and supported boundary | Workflow and regression entry point |
+|------+------------------------------------+-------------------------------------|
+| 1 Bills cutover | Existing mapped opening AP, credits and assets; epic accounting reconciliation covers retained balances | [[file:cutover.org][Cutover]], =test-cutover= and =test-accounting-acceptance= |
+| 2 Sales tax | Existing explicit jurisdiction/rate windows and filing preparation. No automatic rate lookup, marketplace rules or purchase use-tax accrual | [[file:sales-tax.org][Sales tax]], =test-sales-tax= and =test-tax-filing= |
+| 3 Payroll | Deliberately provider/import based; native payroll tax remains deferred | [[file:payroll.org][Payroll]] |
+| 4 Inbound capture mail | Existing bounded IMAP/MIME capture; epic adds encrypted organization/private account ownership and revocation | [[file:mail.org][Mail]], [[file:connectors.org][Connectors]], =test-mail-sync= and =test-mail-surfaces= |
+| 5 Receipt OCR | Epic bounded local Tesseract/PDF extraction with reviewed drafts; no automatic posting | [[file:capture.org][Capture]], =test-ocr= |
+| 6 Billable hours | Existing approved project time/cost; epic frozen cost and delivery handoff. Running timer/richer timesheet UI remains deferred | [[file:projects.org][Projects]], [[file:project-delivery.org][Delivery]], =test-projects= |
+| 7 Dunning | Existing explicit policy/sweep and queued notices; epic automatic collection retains independent verified settlement | [[file:dunning.org][Dunning]], =test-dunning= and =test-stripe= |
+| 8 MFA/SSO | Existing TOTP; epic optional OIDC with explicit linking/local roles and local recovery | [[file:security.org][Security]], [[file:oidc.org][OIDC]], =test-mfa= and =test-oidc= |
+| 9 Mobile | Deliberately deferred; no native/PWA parity claim | Delivery contract above |
+| 10 Other payment rails | Epic Stripe ACH and invoice links; wire/check remain explicit manual receipts | [[file:stripe.org][Stripe]], =test-stripe= |
+| 11 Report delivery | Existing scheduled report packs; epic organization transport selection and preflight regression repair | [[file:reporting.org][Reports]], =test-report-delivery= |
+| 12 Accountant role | Existing organization-scoped accountant/read-only authority; epic retains that boundary through accounting acceptance | [[file:orgaccess.org][Organization access]], =test-orgaccess= |
+
+** CRM list (issue 74)
+
+| Item | Disposition and supported boundary | Workflow and regression entry point |
+|------+------------------------------------+-------------------------------------|
+| 1 Email sync | Existing IMAP import and SMTP timeline logging; epic private account isolation. No proprietary Gmail/Outlook API compatibility claim | [[file:mail.org][Mail]], [[file:connectors.org][Connectors]], =test-mail-sync= |
+| 2 Calendar | Existing shared CalDAV two-way sync and booking links; epic private read-only imports. No proprietary provider OAuth/calendar APIs | [[file:calendar.org][Calendar]], =test-calendar= and =test-calendar-surfaces= |
+| 3 Email tracking | Existing sequence open/click observations; epic marketing reuse. Observations do not prove human attention | [[file:sequences.org][Sequences]], =test-sequence-tracking= |
+| 4 Lead scoring | Existing deterministic rule/history service | [[file:leads.org][Leads]], =test-leads= |
+| 5 Web attribution | Epic consented site observations, form contract and reconciled first/last-touch reports; combined integration pending | [[file:attribution.org][Attribution]], =test-attribution= |
+| 6 Enrichment | Deliberately deferred pending provider/budget selection | Delivery contract above |
+| 7 Territories/quotas | Existing routing/round-robin; epic deterministic territories and frozen period/currency quota credit | [[file:sales-performance.org][Sales performance]], =test-lead-routing= and =test-sales-performance= |
+| 8 Deal products | Existing deal lines and quote handoff | [[file:pipelines.org][Pipelines]], =test-deal-lines= |
+| 9 Marketing | Epic consent-bound audience/send workflow; combined integration pending. Lightsite owns landing pages; its provisioning is excluded | [[file:marketing.org][Marketing]], =test-marketing= and =test-marketing-mail= |
+| 10 Mobile | Deliberately deferred | Delivery contract above |
+| 11 Duplicate merge | Existing candidate/review/merge UI and retained forwarding; epic carries consent/attribution through merges | [[file:dedupe.org][Dedupe]], =test-dedupe= |
+| 12 Migration importers | Existing mapped Salesforce/HubSpot/Zoho CSV manifests with source identities, preview and rollback; no vendor API or attachment import | [[file:crm-import.org][CRM import]], =test-crm-import= |
+| 13 Chat/calls | Epic structured call history and exactly-one optional follow-up; live chat/voice chatbot remains deferred | [[file:activities.org][Activities]], =test-activities= |
+* Additional integration reservation
+
+=000600= is reserved for organization forge account migration. =000610= is
+reserved for commerce accounts if that adapter needs schema changes. These are
+centrally assigned to the forge and commerce lanes; neither reuses a child slot.

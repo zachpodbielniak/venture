@@ -3013,7 +3013,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	for (i = 0; i < G_N_ELEMENTS(builtins); i++)
 	{
 		venture_report_registry_add(self,
-			VENTURE_REPORT(venture_func_report_new(builtins[i].name,
+			VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, builtins[i].name,
 			                                       builtins[i].title,
 			                                       builtins[i].description,
 			                                       builtins[i].func)));
@@ -3030,7 +3030,10 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_leads_register_reports(self);
 	venture_activity_register_reports(self);
 	venture_pipeline_reports_register(self);
+	venture_sales_reports_register(self);
 	venture_sequences_register_reports(self);
+	venture_marketing_register_reports(self);
+	venture_attribution_register_reports(self);
 	venture_autojournal_register_reports(self);
 	venture_statements_register_reports(self);
 	venture_budgets_register_reports(self);

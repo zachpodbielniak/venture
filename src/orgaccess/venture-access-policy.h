@@ -54,6 +54,27 @@ gboolean venture_access_policy_requires_approval(VentureAccessPolicy *self, cons
  */
 VentureAccessScope *venture_access_policy_enter(VentureAccessPolicy *self, const VentureAuthPrincipal *actor);
 /**
+ * venture_access_policy_enter_organization:
+ * @self: policy
+ * @actor: (nullable): copied principal; NULL is trusted internal work
+ * @organization_id: positive organization boundary
+ *
+ * Restricts user reads, writes and proposals to one organization, including
+ * global administrators. Nested user scopes retain the boundary; attempting
+ * to change an enclosing organization refuses all records. A trusted internal
+ * scope is independent, and restores its predecessor on release. This is a
+ * synchronous scope: callbacks must enter their own captured authority.
+ * Returns: (transfer full): scope, released in reverse entry order
+ */
+VentureAccessScope *venture_access_policy_enter_organization(VentureAccessPolicy *self,
+	const VentureAuthPrincipal *actor, gint64 organization_id);
+/**
+ * venture_access_policy_get_organization:
+ * @self: policy
+ * Returns: current positive organization, zero if unbound, or -1 if refused
+ */
+gint64 venture_access_policy_get_organization(VentureAccessPolicy *self);
+/**
  * venture_access_policy_get_actor:
  * @self: the policy
  *
@@ -236,5 +257,47 @@ gboolean venture_orgaccess_confirmation_visible(VentureDatabase *database, Ventu
  * Returns: whether its minting user remains active
  */
 gboolean venture_orgaccess_limit_token(VentureAuth *auth, VentureDatabase *database, VentureAuthPrincipal *principal);
+/**
+ * venture_access_policy_get_personal_owner:
+ * @self: repository policy
+ * @entity: record whose ownership is declared by field metadata
+ *
+ * Returns: positive user ID for private data, zero for shared data, or -1
+ *   for an invalid ownership chain; -1 must never be treated as shared
+ */
+gint64 venture_access_policy_get_personal_owner(VentureAccessPolicy *self, VentureEntity *entity);
+/**
+ * venture_access_policy_record_is_personal:
+ * @self: repository policy
+ * @entity: record to classify from field metadata
+ *
+ * Includes invalid ownership chains, which must fail closed. Optional zero
+ * references are shared; unconditional personal references remain private.
+ * Returns: whether organization-wide publication must exclude this record
+ */
+gboolean venture_access_policy_record_is_personal(VentureAccessPolicy *self, VentureEntity *entity);
+/**
+ * venture_access_policy_install_privacy:
+ * @database: repository receiving its one metadata-driven privacy validator
+ *
+ * Installs immutable optional ownership and new-owner membership checks for
+ * all record types, including types registered by plugins later.
+ */
+void venture_access_policy_install_privacy(VentureDatabase *database);
+
+/**
+ * venture_access_policy_check_action:
+ * @self: policy
+ * @entity: declared action subject
+ * @action: classified service operation
+ * @error: (out) (optional): authorization refusal
+ *
+ * Preserves subject, organization and extension-policy checks while permitting
+ * dedicated administrative services to operate on protected control records.
+ * Actual repository mutations still require check_write().
+ * Returns: whether the declared operation is authorized
+ */
+gboolean venture_access_policy_check_action(VentureAccessPolicy *self, VentureEntity *entity,
+	VentureAction *action, GError **error);
 G_END_DECLS
 #endif

@@ -209,7 +209,7 @@ venture_web_ui_duplicates_action(
 	if (NULL != gate)
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
-	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, &error))
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 	if (!venture_web_require_for_type(self, principal, VENTURE_TYPE_DUPLICATE_CANDIDATE,
 	                                  VENTURE_USER_ROLE_EDITOR, &error))

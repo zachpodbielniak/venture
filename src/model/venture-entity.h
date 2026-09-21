@@ -99,6 +99,51 @@ struct _VentureEntityClass
 	gpointer padding[8];
 };
 
+/**
+ * venture_entity_class_set_unique_partition:
+ * @klass: entity class with installed fields
+ * @property: persistent integer property partitioning organization uniqueness
+ *
+ * Extends UNIQUE_ORGANIZATION identifiers to (organization, partition, value).
+ * NULL and zero share the legacy unbound partition. Declare once in class_init;
+ * partition values must be checked by the owning subsystem's save validator.
+ */
+void venture_entity_class_set_unique_partition(VentureEntityClass *klass, const gchar *property);
+/**
+ * venture_entity_class_get_unique_partition:
+ * @klass: entity class
+ * Returns: (nullable): borrowed partition property, or NULL for organization scope
+ */
+const gchar *venture_entity_class_get_unique_partition(VentureEntityClass *klass);
+/**
+ * venture_entity_class_set_field_unique_scope:
+ * @klass: the entity class
+ * @property: field carrying UNIQUE_ORGANIZATION
+ * @partition: (nullable): persistent integer partition, or organization alone
+ * @condition: (nullable): persistent boolean enabling uniqueness, or always
+ *
+ * Overrides the class partition for one identifier. Declare once after fields
+ * are installed. A condition permits retained inactive history without
+ * weakening other unique identifiers on the same entity. The database index
+ * enforces this scope across writers; save validators still authorize changes.
+ */
+void venture_entity_class_set_field_unique_scope(VentureEntityClass *klass,
+	const gchar *property, const gchar *partition, const gchar *condition);
+/**
+ * venture_entity_class_get_field_unique_partition:
+ * @klass: the entity class
+ * @property: the unique field
+ * Returns: (nullable): borrowed effective partition, falling back to the class
+ */
+const gchar *venture_entity_class_get_field_unique_partition(VentureEntityClass *klass, const gchar *property);
+/**
+ * venture_entity_class_get_field_unique_condition:
+ * @klass: the entity class
+ * @property: the unique field
+ * Returns: (nullable): borrowed boolean property restricting uniqueness
+ */
+const gchar *venture_entity_class_get_field_unique_condition(VentureEntityClass *klass, const gchar *property);
+
 /* --- Identity ------------------------------------------------------------ */
 
 /**

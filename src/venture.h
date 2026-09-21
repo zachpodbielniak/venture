@@ -45,6 +45,7 @@
 #include "venture-types.h"
 #include "venture-enums.h"
 #include "venture-error.h"
+#include "model/venture-data-class.h"
 
 /* --- Boxed value types --------------------------------------------------- */
 
@@ -76,6 +77,7 @@
 #include "close/venture-close-records.h"
 #include "tax/venture-tax-records.h"
 #include "capture/venture-capture-records.h"
+#include "ocr/venture-ocr-records.h"
 #include "claims/venture-claim-records.h"
 #include "payroll/venture-payroll-records.h"
 #include "banking/venture-bank-records.h"
@@ -92,6 +94,11 @@
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
+#include "model/venture-integration-connection.h"
+#include "oidc/venture-oidc-records.h"
+#include "ai/venture-ai-organization-records.h"
+#include "sales/venture-sales-records.h"
+#include "tenant/venture-tenant-records.h"
 #include "model/venture-module.h"
 #include "orgaccess/venture-access-records.h"
 #include "periods/venture-period-records.h"
@@ -102,6 +109,8 @@
 #include "billing/venture-billing-records.h"
 #include "projects/venture-project-records.h"
 #include "mail/venture-mail-records.h"
+#include "attribution/venture-attribution-records.h"
+#include "marketing/venture-marketing-records.h"
 #include "mail/venture-mail-sync-records.h"
 
 #include "leads/venture-lead-records.h"
@@ -146,6 +155,8 @@
 #include "docs/venture-org-html.h"
 #include "docs/venture-docs-site.h"
 
+#include "commerce/venture-commerce-records.h"
+
 /* --- Server-only subsystems ---------------------------------------------- */
 
 #ifdef VENTURE_SERVER_BUILD
@@ -173,6 +184,7 @@
 #include "mail/venture-mailer.h"
 #include "mail/venture-mailer-registry.h"
 #include "mail/venture-smtp-mailer.h"
+#include "mail/venture-organization-mailer.h"
 #include "mail/venture-mail-outbox.h"
 #include "mail/venture-mail-template.h"
 #include "mail/venture-imap-client.h"
@@ -187,6 +199,8 @@
 #include "tax/venture-tax-filing-adapter.h"
 #include "tax/venture-tax-filing-service.h"
 #include "capture/venture-capture-service.h"
+#include "ocr/venture-ocr-engine.h"
+#include "ocr/venture-ocr-service.h"
 #include "claims/venture-claims-service.h"
 #include "payroll/venture-payroll-service.h"
 #include "accounting/venture-accounting-home.h"
@@ -204,6 +218,8 @@
 #include "backup/venture-backup-service.h"
 #include "report/venture-report-pack-service.h"
 #include "sequences/venture-sequence-service.h"
+#include "marketing/venture-marketing-service.h"
+#include "attribution/venture-attribution-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
@@ -211,6 +227,10 @@
 #include "core/venture-confirmation-store.h"
 
 #include "core/venture-context.h"
+#include "core/venture-integration.h"
+#include "core/venture-process-lease.h"
+#include "core/venture-connector.h"
+#include "oidc/venture-oidc-service.h"
 #include "mail/venture-mail-consumers.h"
 #include "core/venture-federation.h"
 #include "ledger/venture-posting-rule.h"
@@ -244,6 +264,9 @@
 #include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"
+#include "ai/venture-ai-provider-service.h"
+#include "sales/venture-sales-service.h"
+#include "tenant/venture-tenant-service.h"
 #include "ai/venture-ai-assist.h"
 #include "ai/venture-ai-factory.h"
 #include "ai/venture-ai-skills.h"
@@ -258,6 +281,7 @@
 #include "kb/venture-kb-ingest.h"
 #include "kb/venture-kb-crossref.h"
 #include "forge/venture-forge-client.h"
+#include "forge/venture-forge-credentials.h"
 #include "forge/venture-forgejo-client.h"
 #include "forge/venture-forge-rules.h"
 #include "forge/venture-work-tools.h"

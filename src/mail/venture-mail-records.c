@@ -14,12 +14,14 @@ static const VentureFieldDecl message_fields[] = {
 	/* The HTML twin of the private text body: an HTML-only template's bearer
 	 * link would otherwise vanish when the private text replaces the bodies. */
 	VENTURE_FIELD("private-html-body", "Private HTML body", "Service-owned delivery content", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("private-unsubscribe-url", "Private unsubscribe URL", "Service-owned one-click endpoint", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("attachments", "Attachments", "Document references: JSON array of type and id", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	STR("related-type", "Related type"), INT("related-id", "Related record"),
 	STR("state", "State"), INT("attempts", "Attempts"),
 	DATE("next-attempt-at", "Next attempt"), DATE("lease-until", "Lease expires"),
 	VENTURE_FIELD_TEXT("last-error", "Last error", NULL),
 	STR("message-id", "Message-ID"), DATE("sent-at", "Sent at"),
+	INT("connection-id", "Delivery account"), INT("connection-version", "Delivery configuration version"),
 	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
 VENTURE_DEFINE_ENTITY(VentureMailMessage, venture_mail_message, message_fields)

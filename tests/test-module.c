@@ -94,8 +94,10 @@ test_module_everything_is_on_by_default(void)
 		VentureModule *module;
 
 		module = g_ptr_array_index(modules, i);
-		if (!g_strcmp0(venture_module_get_name(module), "federation") ||
+		if (!g_strcmp0(venture_module_get_name(module), "ocr") ||
+		    !g_strcmp0(venture_module_get_name(module), "federation") ||
 		    !g_strcmp0(venture_module_get_name(module), "stripe") ||
+		    !g_strcmp0(venture_module_get_name(module), "oidc") ||
 		    !g_strcmp0(venture_module_get_name(module), "payroll") ||
 		    !g_strcmp0(venture_module_get_name(module), "bankfeed") ||
 		    !g_strcmp0(venture_module_get_name(module), "commerce") ||
@@ -166,10 +168,13 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "billing", FALSE);
 	venture_config_set_module_enabled(config, "quotes", FALSE);
 	venture_config_set_module_enabled(config, "leads", FALSE);
+	venture_config_set_module_enabled(config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(config, "activities", FALSE);
 	venture_config_set_module_enabled(config, "payables", FALSE);
 	venture_config_set_module_enabled(config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(config, "pipelines", FALSE);
+	venture_config_set_module_enabled(config, "marketing", FALSE);
+	venture_config_set_module_enabled(config, "attribution", FALSE);
 	venture_config_set_module_enabled(config, "sequences", FALSE);
 	venture_config_set_module_enabled(config, "projects", FALSE);
 	venture_config_set_module_enabled(config, "recurring", FALSE);
@@ -623,10 +628,13 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "billing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
+	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
+	venture_config_set_module_enabled(fixture->config, "marketing", FALSE);
+	venture_config_set_module_enabled(fixture->config, "attribution", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
 	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);
@@ -1022,10 +1030,13 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "billing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
+	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
+	venture_config_set_module_enabled(fixture->config, "marketing", FALSE);
+	venture_config_set_module_enabled(fixture->config, "attribution", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
 	venture_config_set_module_enabled(fixture->config, "recurring", FALSE);

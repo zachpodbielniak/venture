@@ -3,9 +3,11 @@
 #include <string.h>
 #include <glib/gstdio.h>
 #include "venture-test-util.h"
+#include "venture-test-accounting.h"
 
 typedef struct {
 	VentureDatabase *db;
+	VentureConfig *config;
 	VentureFakeImapClient *imap;
 	VentureMailSyncService *service;
 	gchar *root;
@@ -45,7 +47,9 @@ static void setup(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) company = NULL, contact = NULL;
-	f->db = venture_database_new("sqlite://:memory:", &error);
+	f->config = venture_config_new();
+	g_object_set(f->config, "imap-allowed-endpoints", "imap.venture.test:993", "connectors-allow-plaintext-loopback", TRUE, NULL);
+	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
@@ -64,18 +68,32 @@ static void setup(Fixture *f, gconstpointer data)
 	f->contact = venture_entity_get_id(contact);
 	f->imap = venture_fake_imap_client_new();
 	f->service = venture_mail_sync_service_new(f->db, VENTURE_IMAP_CLIENT(f->imap));
-	g_object_set(f->service, "attachment-root", f->root, NULL);
-	g_setenv("VENTURE_IMAP_SECRET", "app-password", TRUE);
+	g_object_set(f->service, "attachment-root", f->root, "config", f->config, NULL);
+
 }
 
 static void teardown(Fixture *f, gconstpointer data)
 {
 	g_autofree gchar *real = realpath(f->root, NULL);
 	g_clear_object(&f->service);
+	g_clear_object(&f->config);
 	g_clear_object(&f->imap);
-	g_clear_object(&f->db);
+	venture_test_accounting_database_cleanup(f->db); g_clear_object(&f->db);
 	if (real) venture_test_remove_within(f->root, real);
 	g_free(f->root);
+}
+
+static void configure_account(Fixture *f, VentureEntity *record, const gchar *password)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	json_object_set_string_member(values, "password", password);
+	binding = venture_connector_configure(f->db, f->config, record, values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
 }
 
 static VentureEntity *account(Fixture *f, const gchar *secret_env)
@@ -85,6 +103,7 @@ static VentureEntity *account(Fixture *f, const gchar *secret_env)
 		"username", "ops@venture.test", "secret-env", secret_env, "folders", "INBOX",
 		"capture-address", "receipts@venture.test", "capture-folder", "Receipts", "active", TRUE, NULL);
 	save(f, a);
+	if (!g_strcmp0(secret_env, "VENTURE_IMAP_SECRET")) configure_account(f, a, "app-password");
 	return a;
 }
 
@@ -451,7 +470,7 @@ static VentureMailSyncService *socket_service(Fixture *f)
 {
 	g_autoptr(VentureImapClient) client = g_object_new(VENTURE_TYPE_SOCKET_IMAP_CLIENT, "allow-plaintext", TRUE, NULL);
 	VentureMailSyncService *service = venture_mail_sync_service_new(f->db, client);
-	g_object_set(service, "attachment-root", f->root, NULL);
+	g_object_set(service, "attachment-root", f->root, "config", f->config, NULL);
 	return service;
 }
 static VentureEntity *socket_account(Fixture *f, Stub *stub, const gchar *folders, const gchar *secret_env)
@@ -459,7 +478,12 @@ static VentureEntity *socket_account(Fixture *f, Stub *stub, const gchar *folder
 	VentureEntity *a = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org,
 		"address", "ops@venture.test", "imap-host", "127.0.0.1", "imap-port", (gint64)stub->port, "imap-tls", "none",
 		"username", "ops@venture.test", "secret-env", secret_env, "folders", folders, "active", TRUE, NULL);
+	g_autofree gchar *allowed = NULL, *combined = NULL;
+	g_object_get(f->config, "imap-allowed-endpoints", &allowed, NULL);
+	combined = g_strdup_printf("%s,127.0.0.1:%u", allowed, stub->port);
+	g_object_set(f->config, "imap-allowed-endpoints", combined, NULL);
 	save(f, a);
+	configure_account(f, a, !g_strcmp0(secret_env, "VENTURE_IMAP_UTF8") ? "p\xc3\xa4sswo\xcc\x88rd" : "app-password");
 	return a;
 }
 
@@ -516,16 +540,15 @@ static void test_html_to_text(void)
 }
 
 /* --- Configuration and the original behaviour ----------------------------------- */
-/* Rule 1: a missing secret fails the sync with an error naming the variable. */
+/* An unconfigured account refuses without consulting its legacy environment name. */
 static void test_missing_secret(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_MISSING");
 	g_autoptr(GError) error = NULL;
 	(void)data;
-	g_unsetenv("VENTURE_IMAP_MISSING");
 	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_IMAP_MISSING"));
+	g_assert_nonnull(strstr(error->message, "unconfigured"));
 	g_assert_cmpint(venture_fake_imap_client_get_connects(f->imap), ==, 0);
 }
 
@@ -535,13 +558,11 @@ static void test_secret_env_prefix(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) a = account(f, "VENTURE_SMTP_PASSWORD");
 	g_autoptr(GError) error = NULL;
-	g_setenv("VENTURE_SMTP_PASSWORD", "not-for-imap", TRUE);
 	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
-	g_assert_nonnull(strstr(error->message, "VENTURE_IMAP_"));
+	g_assert_nonnull(strstr(error->message, "unconfigured"));
 	g_assert_null(strstr(error->message, "not-for-imap"));
 	g_assert_cmpint(venture_fake_imap_client_get_connects(f->imap), ==, 0);
-	g_unsetenv("VENTURE_SMTP_PASSWORD");
 }
 
 /* Rules 2 and 3: UID high-water mark, raw documents, matched interactions, threads, unmatched senders. */
@@ -972,7 +993,6 @@ static void test_socket_authentication(Fixture *f, gconstpointer data)
 	g_autofree gchar *wanted = g_strdup_printf("ops@venture.test\n%s", secret);
 	g_autoptr(GError) error = NULL;
 	Stub stub;
-	g_setenv("VENTURE_IMAP_UTF8", secret, TRUE);
 	/* SASL-IR: the credentials ride on the command. */
 	run_auth_case(f, "IMAP4rev1 AUTH=PLAIN SASL-IR", secret, 0, &stub, &error);
 	g_assert_no_error(error);
@@ -1004,7 +1024,6 @@ static void test_socket_authentication(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(error->message, secret));
 	g_assert_null(strstr(error->message, "Invalid credentials"));
 	stub_clear(&stub);
-	g_unsetenv("VENTURE_IMAP_UTF8");
 }
 
 /* An oversized message is listed with its size and read as its header plus
@@ -1308,13 +1327,14 @@ static void test_deleted_company(Fixture *f, gconstpointer data)
 static void test_capture_address_exact(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) a = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org, "address", "ops@venture.test",
-		"imap-host", "imap.venture.test", "imap-tls", "tls", "username", "ops", "secret-env", "VENTURE_IMAP_SECRET", "folders", "INBOX",
+		"imap-host", "imap.venture.test", "imap-port", (gint64)993, "imap-tls", "tls", "username", "ops", "secret-env", "VENTURE_IMAP_SECRET", "folders", "INBOX",
 		"capture-address", "ops+receipts@venture.test", "active", TRUE, NULL);
 	g_autoptr(VentureEntity) tagged_account = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *plain = mail("Ada <ada@example.test>", "ops@venture.test", "Plain", "plain@example.test", NULL, "For the timeline.");
 	g_autofree gchar *receipt = mail("Shop <shop@store.test>", "ops+receipts@venture.test", "Receipt", "rcpt@store.test", NULL, "Total 3.00");
 	save(f, a);
+	configure_account(f, a, "app-password");
 	venture_fake_imap_client_add_message(f->imap, "INBOX", 1, plain);
 	venture_fake_imap_client_add_message(f->imap, "INBOX", 2, receipt);
 	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 2);
@@ -1759,7 +1779,11 @@ static void test_migration(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(checks); i++) {
-		g_autoptr(OrmResult) result = venture_database_query_raw(f->db, checks[i], NULL, &error);
+		const gchar *sql = checks[i];
+		g_autoptr(OrmResult) result = NULL;
+		if (i == 0 && venture_database_get_backend(f->db) == VENTURE_DATABASE_BACKEND_POSTGRES)
+			sql = "SELECT CAST(COUNT(*) AS BIGINT) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('uq_mail_inbounds_organization_uid_key', 'idx_mail_inbounds_from_address', 'uq_mail_unmatched_senders_organization_address')";
+		result = venture_database_query_raw(f->db, sql, NULL, &error);
 		g_assert_no_error(error);
 		g_assert_true(orm_result_next(result));
 		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, expected[i]);
@@ -1792,10 +1816,89 @@ static void test_migration(Fixture *f, gconstpointer data)
 	}
 }
 
+/* A private copy and a shared copy of the same Message-ID must not reuse
+ * documents or suppress ordinary CRM capture across that privacy boundary. */
+static void test_private_import(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "organization-id", f->org,
+		"username", "private-mail-owner", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) member = NULL, private = NULL, shared = NULL;
+	g_autoptr(GPtrArray) documents = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 owner;
+	(void)data;
+	save(f, user);
+	owner = venture_entity_get_id(user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", f->org,
+		"user-id", owner, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	save(f, member);
+	private = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org, "private-owner-id", owner,
+		"address", "private@venture.test", "imap-host", "imap.venture.test", "imap-port", (gint64)993,
+		"imap-tls", "tls", "username", "private", "folders", "INBOX", NULL);
+	save(f, private);
+	configure_account(f, private, "synthetic-private-password");
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 5, msg_ada);
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, private, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "interaction"), ==, 0);
+	g_assert_cmpint(count_type(f, "capture_item"), ==, 0);
+	g_assert_cmpint(count_type(f, "mail_unmatched_sender"), ==, 0);
+	documents = rows(f, VENTURE_TYPE_DOCUMENT);
+	g_assert_cmpuint(documents->len, ==, 1);
+	g_assert_cmpint(venture_access_policy_get_personal_owner(venture_database_get_access_policy(f->db),
+		g_ptr_array_index(documents, 0)), ==, owner);
+	shared = account(f, "VENTURE_IMAP_SECRET");
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, shared, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "interaction"), ==, 1);
+	g_assert_cmpint(count_type(f, "document"), ==, 2);
+	g_clear_pointer(&documents, g_ptr_array_unref);
+	documents = rows(f, VENTURE_TYPE_DOCUMENT);
+	g_assert_cmpint(venture_access_policy_get_personal_owner(venture_database_get_access_policy(f->db),
+		g_ptr_array_index(documents, 1)), ==, 0);
+}
+
+typedef struct { Fixture *fixture; VentureEntity *account; } PendingRevoke;
+static void revoke_pending_connector(GObject *client, gpointer data)
+{
+	PendingRevoke *pending = data;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = venture_connector_binding_key(pending->account);
+	g_autoptr(VentureIntegrationConnection) binding = venture_integration_service_find(
+		venture_integration_service_get(pending->fixture->db), pending->fixture->org, key, &error);
+	(void)client;
+	g_assert_no_error(error); g_assert_nonnull(binding);
+	g_assert_true(venture_connector_disconnect(pending->fixture->db, pending->account,
+		venture_entity_get_id(VENTURE_ENTITY(binding)), venture_entity_get_version(VENTURE_ENTITY(binding)), NULL, &error));
+	g_assert_no_error(error);
+}
+/* A provider response arriving after disconnect must not produce imported
+ * content, even though the request began with valid credentials. */
+static void test_inflight_revocation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(GError) error = NULL;
+	PendingRevoke pending;
+	gulong handler;
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 1, msg_ada);
+	(void)data;
+	pending.fixture = f; pending.account = a;
+	handler = g_signal_connect(f->imap, "response-ready", G_CALLBACK(revoke_pending_connector), &pending);
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, -1);
+	g_assert_nonnull(error);
+	g_assert_cmpint(venture_fake_imap_client_get_fetches(f->imap), ==, 1);
+	g_assert_cmpint(count_type(f, "mail_inbound"), ==, 0);
+	g_assert_cmpint(count_type(f, "document"), ==, 0);
+	g_signal_handler_disconnect(f->imap, handler);
+}
+
 int main(int argc, char **argv)
 {
+	g_setenv("VENTURE_SMTP_PASSWORD", "not-for-imap", TRUE);
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/mail-sync/inflight-revocation", Fixture, NULL, setup, test_inflight_revocation, teardown);
 	g_test_add_func("/mail-sync/records", test_records);
+	g_test_add("/mail-sync/private-import", Fixture, NULL, setup, test_private_import, teardown);
 	g_test_add_func("/mail-sync/utf7", test_utf7);
 	g_test_add_func("/mail-sync/html-to-text", test_html_to_text);
 	g_test_add("/mail-sync/missing-secret", Fixture, NULL, setup, test_missing_secret, teardown);

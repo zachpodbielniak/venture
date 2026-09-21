@@ -5,7 +5,7 @@
  * venture_activity_register_reports:
  * @registry: report registry
  *
- * Registers the per-owner worklist and its overdue/today metrics.
+ * Registers the per-owner worklist and occurrence-based call report.
  */
 void venture_activity_register_reports(VentureReportRegistry *registry);
 #endif

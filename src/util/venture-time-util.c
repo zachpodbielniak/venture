@@ -58,32 +58,15 @@ venture_time_from_string(
 		return venture_time_now();
 
 	if (0 == g_ascii_strcasecmp(trimmed, "today"))
-	{
-		g_autoptr(GDateTime) now = NULL;
-
-		now = g_date_time_new_now_local();
-
-		return g_date_time_new(utc, g_date_time_get_year(now),
-		                       g_date_time_get_month(now),
-		                       g_date_time_get_day_of_month(now),
-		                       0, 0, 0.0);
-	}
+		return venture_time_today(NULL);
 
 	if ((0 == g_ascii_strcasecmp(trimmed, "yesterday")) ||
 	    (0 == g_ascii_strcasecmp(trimmed, "tomorrow")))
 	{
-		g_autoptr(GDateTime) now = NULL;
-		g_autoptr(GDateTime) midnight = NULL;
-		gint offset;
+		g_autoptr(GDateTime) midnight = venture_time_today(NULL);
 
-		offset = (0 == g_ascii_strcasecmp(trimmed, "yesterday")) ? -1 : 1;
-		now = g_date_time_new_now_local();
-		midnight = g_date_time_new(utc, g_date_time_get_year(now),
-		                           g_date_time_get_month(now),
-		                           g_date_time_get_day_of_month(now),
-		                           0, 0, 0.0);
-
-		return g_date_time_add_days(midnight, offset);
+		return g_date_time_add_days(midnight,
+		                            (0 == g_ascii_strcasecmp(trimmed, "yesterday")) ? -1 : 1);
 	}
 
 	/* A full ISO 8601 timestamp: let GLib do it, since it handles offsets,
@@ -292,6 +275,26 @@ venture_time_to_relative_string(GDateTime *when)
 	                       magnitude, unit, (1 == magnitude) ? "" : "s");
 }
 
+GDateTime *
+venture_time_today(GTimeZone *timezone)
+{
+	g_autoptr(GTimeZone) utc = g_time_zone_new_utc();
+	g_autoptr(GTimeZone) local = NULL;
+	g_autoptr(GDateTime) now = NULL;
+
+	if (NULL == timezone)
+		timezone = local = g_time_zone_new_local();
+
+	/* The calendar date is read in @timezone; the instant that names it is
+	 * midnight UTC, the same encoding a date picker submits. */
+	now = g_date_time_new_now(timezone);
+
+	return g_date_time_new(utc, g_date_time_get_year(now),
+	                       g_date_time_get_month(now),
+	                       g_date_time_get_day_of_month(now),
+	                       0, 0, 0.0);
+}
+
 GTimeZone *
 venture_time_get_timezone(const gchar *name)
 {
@@ -327,4 +330,19 @@ venture_time_equal(
 		return FALSE;
 
 	return (0 == g_date_time_compare(a, b));
+}
+
+gboolean
+venture_time_is_calendar_date(
+	GDateTime	*date
+){
+	g_autoptr(GDateTime) utc = NULL;
+
+	g_return_val_if_fail(NULL != date, FALSE);
+
+	utc = g_date_time_to_utc(date);
+
+	return (0 == g_date_time_get_hour(utc)) &&
+	       (0 == g_date_time_get_minute(utc)) &&
+	       (0.0 == g_date_time_get_seconds(utc));
 }

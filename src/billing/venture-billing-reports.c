@@ -462,10 +462,10 @@ due_checked(VentureContext *context, VentureDateRange *period, JsonObject *optio
 void
 venture_billing_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("mrr", "Recurring revenue", "Contracted MRR, ARR, ARPA, dated movements and the quick ratio", recurring_checked)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "mrr", "Recurring revenue", "Contracted MRR, ARR, ARPA, dated movements and the quick ratio", recurring_checked)));
 	/* Titled apart from the headline module's customer_churn, which counts
 	 * paying customers going quiet: two reports both called "Customer
 	 * churn" gave two different answers to what read as one question. */
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("churn", "Subscription churn (billing)", "Opening subscription cohort, logo and revenue churn, gross and net revenue retention", churn_checked)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("subscriptions_due", "Subscriptions due", "Renewals in the next days", due_checked)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "churn", "Subscription churn (billing)", "Opening subscription cohort, logo and revenue churn, gross and net revenue retention", churn_checked)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "subscriptions_due", "Subscriptions due", "Renewals in the next days", due_checked)));
 }

@@ -1,0 +1,1654 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Rootless, local platform operations; never callable by a tenant request."""
+
+import argparse
+import base64
+import contextlib
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+import uuid
+
+
+class Refused(Exception):
+    pass
+
+
+class RejectRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        return None
+
+
+class CommandFailure(Refused):
+    def __init__(self, diagnostic):
+        super().__init__(
+            "Container/database operation failed; inspect the registered resources privately"
+        )
+        self.diagnostic = diagnostic
+
+
+def require(condition, message):
+    if not condition:
+        raise Refused(message)
+
+
+def private(path, directory=False):
+    info = path.lstat()
+    require(info.st_uid == os.geteuid(), "Path is not owned by this operator")
+    if directory:
+        require(
+            stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700,
+            "Expected an owned mode-700 directory",
+        )
+    else:
+        require(
+            stat.S_ISREG(info.st_mode)
+            and info.st_nlink == 1
+            and stat.S_IMODE(info.st_mode) in (0o600, 0o400),
+            "Expected an owned single-link mode-600/400 regular file",
+        )
+    return path
+
+
+def write_private(path, content):
+    """Atomic publication within an already private operator directory."""
+    fd, name = tempfile.mkstemp(prefix=".publish-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(content.encode() if isinstance(content, str) else content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.lexists(name):
+            os.unlink(name)
+
+
+def read_private(path, limit):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        require(
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and info.st_nlink == 1
+            and stat.S_IMODE(info.st_mode) in (0o600, 0o400)
+            and info.st_size <= limit,
+            "Private input must be an owned, bounded, single-link mode-600/400 regular file",
+        )
+        with os.fdopen(fd, "rb") as source:
+            fd = -1
+            value = source.read(limit + 1)
+        require(len(value) <= limit, "Private input exceeded its size limit")
+        return value
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def password_material(path):
+    value = read_private(path, 1025)
+    require(
+        12 <= len(value.rstrip(b"\n")) <= 1024
+        and b"\0" not in value
+        and b"\n" not in value.rstrip(b"\n"),
+        "Administrator password must be one nonempty private line",
+    )
+    value.decode("utf-8")
+    return value
+
+
+def read_json(path):
+    return json.loads(read_private(path, 65536))
+
+
+def uuid_text(value):
+    require(str(uuid.UUID(value)) == value, "Expected a canonical workspace UUID")
+    return value
+
+
+def origin_text(value):
+    parsed = urllib.parse.urlsplit(value)
+    require(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path in ("", "/"),
+        "Origin must be a credential-free HTTPS origin",
+    )
+    require(
+        parsed.hostname.isascii() and parsed.netloc == parsed.netloc.lower(),
+        "Origin must use a lowercase ASCII hostname",
+    )
+    parsed.port  # Reject invalid/out-of-range ports before writing configuration.
+    return "https://" + parsed.netloc
+
+
+def run(
+    arguments,
+    payload=None,
+    timeout=120,
+    allowed=(0,),
+    pass_fds=(),
+    environment=None,
+    return_status=False,
+):
+    try:
+        result = subprocess.run(
+            arguments,
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+            pass_fds=pass_fds,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise Refused(
+            "Operation exceeded its deadline; retained state needs inspection"
+        ) from error
+    # Commands may process credentials. Never echo argv, stdin or provider output.
+    if result.returncode not in allowed:
+        raise CommandFailure(result.stderr[-8192:])
+    return result.returncode if return_status else result.stdout
+
+
+class BackupCatalog:
+    """Private metadata for authenticated encrypted files, under the tenant flock.
+
+    Tombstones live outside application snapshots. This is a local retention
+    ledger, not an offsite inventory or evidence of physical-media erasure.
+    """
+
+    def __init__(self, tenant):
+        self.tenant = tenant
+        require(getattr(tenant, "maintenance_fd", None) is not None,
+                "Backup catalog requires the tenant maintenance lock")
+        self.path = tenant.control / "backup-catalog.json"
+        if os.path.lexists(self.path):
+            self.data = json.loads(read_private(self.path, 16 * 1024 * 1024))
+            require(self.data.get("schema") == 1
+                    and self.data.get("workspace_id") == tenant.manifest["workspace_id"]
+                    and isinstance(self.data.get("revision"), int)
+                    and isinstance(self.data.get("entries"), dict),
+                    "Backup catalog identity or schema mismatch")
+            for copy_id, item in self.data["entries"].items():
+                uuid_text(copy_id)
+                uuid_text(item["archive_id"])
+                require(item["copy_id"] == copy_id
+                        and item["workspace_id"] == self.data["workspace_id"]
+                        and item["state"] in ("retained", "retired", "deleted")
+                        and re.fullmatch(r"[a-f0-9]{64}", item["sha256"]),
+                        "Malformed backup catalog entry")
+        else:
+            require(not tenant.manifest.get("backup_catalog_required", False),
+                    "Registered backup catalog is missing; recover the original ledger before archive use")
+            self.data = {"schema": 1, "workspace_id": tenant.manifest["workspace_id"],
+                         "revision": 0, "entries": {}, "plan": None, "journal": None}
+
+    def save(self):
+        if os.path.lexists(self.path):
+            persisted = json.loads(read_private(self.path, 16 * 1024 * 1024))
+            require(persisted.get("revision") == self.data["revision"]
+                    and persisted.get("workspace_id") == self.data["workspace_id"],
+                    "Backup catalog changed; reload before publication")
+        else:
+            require(self.data["revision"] == 0, "Backup catalog disappeared before publication")
+        self.data["revision"] += 1
+        content = json.dumps(self.data, sort_keys=True) + "\n"
+        require(len(content.encode()) <= 16 * 1024 * 1024,
+                "Backup catalog reached its bounded capacity; retain evidence and review")
+        write_private(self.path, content)
+        registration = self.refresh_registration()
+        if not registration.get("backup_catalog_required", False):
+            registration["backup_catalog_required"] = True
+            self.tenant.save()
+
+    def refresh_registration(self):
+        current = read_json(self.tenant.directory / "manifest.json")
+        require(current["workspace_id"] == self.data["workspace_id"]
+                and current["tenant_id"] == self.tenant.slug
+                and current["host_id"] == self.tenant.platform.host["host_id"],
+                "Workspace registration changed")
+        self.tenant.manifest = current
+        return current
+
+    @staticmethod
+    def file_identity(info):
+        return {"device": info.st_dev, "inode": info.st_ino, "size": info.st_size,
+                "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+    @contextlib.contextmanager
+    def opened(self, path, allow_missing=False):
+        # Walk every parent without following symlinks, then use that exact
+        # directory descriptor for the final comparison and unlink.
+        path = Path(os.path.abspath(path))
+        require(not path.is_relative_to(self.tenant.platform.root),
+                "Recovery archives must be outside the platform registration/data root")
+        directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        descriptor = None
+        try:
+            for part in path.parent.parts[1:]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+                os.close(directory)
+                directory = child
+            parent = os.fstat(directory)
+            require(parent.st_uid == os.geteuid() and stat.S_IMODE(parent.st_mode) == 0o700,
+                    "Archive parent must be an owned mode-700 directory")
+            parent_id = {"device": parent.st_dev, "inode": parent.st_ino}
+            try:
+                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                     dir_fd=directory)
+            except FileNotFoundError:
+                if not allow_missing:
+                    raise
+                yield directory, None, {"parent": parent_id, "path": str(path)}
+                return
+            info = os.fstat(descriptor)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                    and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) in (0o600, 0o400),
+                    "Archive must be an owned private single-link regular file")
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            require(self.file_identity(info) == self.file_identity(os.fstat(descriptor)),
+                    "Archive changed while hashing")
+            yield directory, descriptor, {"parent": parent_id, "path": str(path),
+                                         "file": self.file_identity(info), "sha256": digest.hexdigest()}
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
+
+    def check_restore(self, manifest, digest):
+        require(manifest["workspace_id"] == self.data["workspace_id"],
+                "Archive workspace identity differs from registration")
+        retired = {entry["archive_id"] for entry in self.data["entries"].values()
+                   if entry["state"] == "deleted"}
+        retired_digests = {entry["sha256"] for entry in self.data["entries"].values()
+                           if entry["state"] == "deleted"}
+        require(not self.data.get("journal"), "Unresolved retention journal blocks archive use")
+        require(manifest.get("archive_id") not in retired and digest not in retired_digests,
+                "Archive is retired by this workspace's retention ledger")
+
+    def register(self, path, manifest, kind, reason):
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        require(kind in ("export", "upgrade", "replica"), "Unknown archive source")
+        require(manifest.get("tenant_id") == self.tenant.slug, "Archive tenant differs")
+        archive_id = uuid_text(manifest.get("archive_id", ""))
+        created = int(datetime.datetime.strptime(manifest["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                      .replace(tzinfo=datetime.timezone.utc).timestamp())
+        now = int(time.time())
+        require(0 < created <= now + 300, "Invalid authenticated archive creation time")
+        with self.opened(path) as (_, _, identity):
+            require(manifest.get("encrypted_sha256") == identity["sha256"],
+                    "Archive bytes differ from the authenticated verification snapshot")
+            self.check_restore(manifest, identity["sha256"])
+            for entry in self.data["entries"].values():
+                if entry["archive_id"] == archive_id:
+                    require(entry["sha256"] == identity["sha256"],
+                            "Copied archive UUID has different encrypted content")
+                # A retired path may be re-enrolled: the entry recorded a file
+                # that left, and the archive_id/sha check above still binds content.
+                if entry["path"] == identity["path"] and entry["state"] != "retired":
+                    require(entry["state"] == "retained" and entry["archive_id"] == archive_id
+                            and all(entry[key] == identity[key] for key in identity),
+                            "Registered archive path was reused or replaced")
+                    return entry
+            copy_id = str(uuid.uuid4())
+            entry = {**identity, "copy_id": copy_id, "archive_id": archive_id,
+                     "workspace_id": self.data["workspace_id"], "created_at": created,
+                     "registered_at": now, "kind": kind, "state": "retained", "reason": reason}
+            self.data["entries"][copy_id] = entry
+            self.save()
+            self.tenant.event("backup-register", reason, copy_id)
+            return entry
+
+    def expiry(self, entry, days, registration):
+        basis = entry["created_at"]
+        if registration.get("phase") == "offboarded":
+            require(isinstance(registration.get("offboarded_at"), int),
+                    "Offboarded registration has no retention clock")
+            basis = max(basis, registration["offboarded_at"])
+        return basis + days * 86400
+
+    def validate_entry(self, entry, identity, missing=False):
+        require(identity["parent"] == entry["parent"], "Archive parent directory was replaced")
+        if not missing:
+            require(all(entry[key] == identity[key] for key in identity),
+                    "Registered archive file was replaced or changed")
+
+    @staticmethod
+    def missing_message(copy_id, entry):
+        return ("Registered archive copy %s is missing at %s; restore the file or record "
+                "its departure with backup-retire --copy %s" % (copy_id, entry["path"], copy_id))
+
+    @contextlib.contextmanager
+    def retained(self, copy_id, entry):
+        # A retained entry whose file is gone is neither an empty plan nor a
+        # traceback: retention fails closed until an operator retires the entry.
+        with contextlib.ExitStack() as stack:
+            try:
+                directory, descriptor, identity = stack.enter_context(
+                    self.opened(entry["path"], allow_missing=True))
+            except FileNotFoundError:
+                raise Refused(self.missing_message(copy_id, entry)) from None
+            require(descriptor is not None, self.missing_message(copy_id, entry))
+            self.validate_entry(entry, identity)
+            yield directory, descriptor, identity
+
+    def retire(self, copy_id, reason):
+        """Tombstone a retained entry whose file has already left this host."""
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        entry = self.data["entries"].get(uuid_text(copy_id))
+        require(entry, "No registered archive copy " + copy_id)
+        require(entry["state"] == "retained",
+                "Archive copy %s is already %s" % (copy_id, entry["state"]))
+        self.refresh_registration()
+        present = True
+        try:
+            with self.opened(entry["path"], allow_missing=True) as (_, descriptor, identity):
+                # A replaced parent directory is not a departed archive: the
+                # file may be intact under the directory that was swapped out.
+                self.validate_entry(entry, identity, descriptor is None)
+                present = descriptor is not None
+        except FileNotFoundError:
+            raise Refused("Archive parent directory for copy %s is missing at %s; restore it "
+                          "before retiring the entry" % (copy_id, entry["path"])) from None
+        # A live archive leaves only through a reviewed plan; retire never unlinks.
+        require(not present, "Archive copy %s is still present at %s; expire it with "
+                "retention-plan/retention-execute instead" % (copy_id, entry["path"]))
+        entry.update(state="retired", retired_at=int(time.time()), retire_reason=reason)
+        self.save()
+        self.tenant.event("backup-retire", reason, copy_id)
+        return entry
+
+    def plan(self, days, reason, now=None):
+        require(isinstance(days, int) and 1 <= days <= 36500, "Retention days must be 1–36500")
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        now = int(time.time()) if now is None else now
+        registration = self.refresh_registration()
+        candidates = []
+        for copy_id, entry in sorted(self.data["entries"].items()):
+            if entry["state"] != "retained":
+                continue
+            # A corrupt catalog/file cannot be treated as an empty successful plan.
+            with self.retained(copy_id, entry):
+                pass
+            if not registration.get("hold", False) and self.expiry(entry, days, registration) <= now:
+                candidates.append(copy_id)
+        plan = {"plan_id": str(uuid.uuid4()), "created_at": now, "days": days,
+                "hold": registration.get("hold", False), "candidates": candidates,
+                "revision": self.data["revision"] + 1, "reason": reason}
+        self.data["plan"] = plan
+        self.save()
+        self.tenant.event("retention-plan", reason, plan["plan_id"])
+        return plan
+
+    def execute(self, plan_id, reason, now=None):
+        require(not self.data.get("journal"), "Recover the pending retention journal first")
+        plan = self.data.get("plan")
+        require(plan and plan["plan_id"] == plan_id and plan["revision"] == self.data["revision"],
+                "Retention plan is absent or stale; create and review a new plan")
+        now = int(time.time()) if now is None else now
+        require(plan["created_at"] <= now <= plan["created_at"] + 86400,
+                "Retention plan expired or clock moved backwards")
+        registration = self.refresh_registration()
+        require(not registration.get("hold", False), "Workspace is on hold")
+        for copy_id in plan["candidates"]:
+            entry = self.data["entries"][copy_id]
+            require(entry["state"] == "retained" and self.expiry(entry, plan["days"], registration) <= now,
+                    "Archive is no longer eligible under current offboarding/retention policy")
+            with self.retained(copy_id, entry):
+                pass
+        self.tenant.event("retention-execute", reason, "begin:" + plan_id)
+        self.data["journal"] = {"plan_id": plan_id, "reason": reason,
+                                "started_at": now, "pending": list(plan["candidates"])}
+        self.save()
+        for copy_id in list(plan["candidates"]):
+            entry = self.data["entries"][copy_id]
+            registration = self.refresh_registration()
+            require(not registration.get("hold", False), "Workspace is on hold")
+            require(self.expiry(entry, plan["days"], registration) <= now, "Retention policy changed")
+            with self.retained(copy_id, entry) as (directory, descriptor, identity):
+                require(self.file_identity(os.stat(Path(entry["path"]).name, dir_fd=directory,
+                                                    follow_symlinks=False)) == identity["file"],
+                        "Archive name changed before deletion")
+                # Same-operator writers must honor maintenance.lock; an operator
+                # with arbitrary filesystem write access is outside this boundary.
+                os.unlink(Path(entry["path"]).name, dir_fd=directory)
+                os.fsync(directory)
+                require(os.fstat(descriptor).st_nlink == 0, "Archive gained an unregistered hard link")
+            entry.update(state="deleted", deleted_at=int(time.time()), deletion_outcome="unlinked")
+            self.data["journal"]["pending"].remove(copy_id)
+            self.save()
+        self.data["journal"] = None
+        self.data["plan"] = None
+        self.save()
+        self.tenant.event("retention-execute", reason, "complete:" + plan_id)
+
+    def recover(self, reason):
+        journal = self.data.get("journal")
+        require(journal, "No retention journal is pending")
+        registration = self.refresh_registration()
+        # Recovery does not unlink another file, including when a hold appeared
+        # after an interrupted deletion. It records facts and preserves survivors.
+        for copy_id in list(journal["pending"]):
+            entry = self.data["entries"][copy_id]
+            with self.opened(entry["path"], allow_missing=True) as (_, descriptor, identity):
+                self.validate_entry(entry, identity, descriptor is None)
+                if descriptor is None:
+                    entry.update(state="deleted", deleted_at=int(time.time()),
+                                 deletion_outcome="missing-after-durable-intent")
+            journal["pending"].remove(copy_id)
+            self.save()
+        self.data["journal"] = None
+        self.data["plan"] = None
+        self.save()
+        self.tenant.event("retention-recover", reason,
+                          "reconciled-without-unlink:hold=" + str(bool(registration.get("hold", False))))
+
+
+class Platform:
+    def __init__(self, root, check_runtime=True):
+        self.root = private(root, True).resolve()
+        self.host = read_json(self.root / "host.json")
+        require(self.host.get("schema") == 1, "Unsupported host registration")
+        uuid_text(self.host["host_id"])
+        require(
+            not check_runtime or run(
+                ["podman", "info", "--format", "{{.Host.Security.Rootless}}"],
+                timeout=30,
+            ).strip()
+            == b"true",
+            "This deployment contract requires rootless Podman",
+        )
+
+    def reserve(self, tenant, manifest):
+        path = self.root / "registration.lock"
+        fd = os.open(
+            path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
+        )
+        try:
+            info = os.fstat(fd)
+            require(
+                stat.S_ISREG(info.st_mode)
+                and info.st_uid == os.geteuid()
+                and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) == 0o600,
+                "Unsafe host registration lock",
+            )
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise Refused(
+                    "Another workspace registration is in progress"
+                ) from error
+            require(not os.path.lexists(tenant.directory), "Tenant slug already exists")
+            for child in self.root.iterdir():
+                if (
+                    not re.fullmatch(r"[a-z][a-z0-9-]{0,47}", child.name)
+                    or not child.is_dir()
+                ):
+                    continue
+                private(child, True)
+                registration = child / "manifest.json"
+                if not registration.exists():
+                    continue
+                other = read_json(registration)
+                require(
+                    other.get("workspace_id") != manifest["workspace_id"],
+                    "Workspace UUID is already registered on this host",
+                )
+                require(
+                    other.get("origin") != manifest["origin"],
+                    "Public origin is already registered on this host",
+                )
+            tenant.directory.mkdir(mode=0o700)
+            for child in ("control", "state", "config"):
+                (tenant.directory / child).mkdir(mode=0o700)
+            write_private(
+                tenant.directory / "manifest.json", json.dumps(manifest) + "\n"
+            )
+        finally:
+            os.close(fd)
+
+    def labels(self, tenant, role):
+        return [
+            "--label",
+            "io.venture.host=" + self.host["host_id"],
+            "--label",
+            "io.venture.tenant=" + tenant,
+            "--label",
+            "io.venture.role=" + role,
+        ]
+
+    def tenant(self, slug):
+        require(re.fullmatch(r"[a-z][a-z0-9-]{0,47}", slug), "Invalid tenant slug")
+        return Tenant(self, slug)
+
+    def image(self, name):
+        rows = json.loads(run(["podman", "image", "inspect", name], timeout=30))
+        require(len(rows) == 1, "Image must resolve to exactly one local image")
+        image = "sha256:" + rows[0]["Id"].removeprefix("sha256:")
+        require(
+            re.fullmatch(r"sha256:[a-f0-9]{64}", image),
+            "Image has no immutable identity",
+        )
+        return image
+
+
+class Tenant:
+    def __init__(self, platform, slug):
+        self.platform, self.slug = platform, slug
+        self.directory = platform.root / slug
+        self.control = self.directory / "control"
+        self.manifest = None
+
+    @contextlib.contextmanager
+    def locked(self, allow_abandoned=False):
+        private(self.directory, True)
+        private(self.control, True)
+        path = self.control / "maintenance.lock"
+        inherited = os.environ.get("VENTURE_TENANT_MAINTENANCE_FD")
+        if inherited is not None:
+            require(inherited.isdigit() and 3 <= int(inherited) <= 1023,
+                    "Invalid inherited maintenance descriptor")
+            fd = os.dup(int(inherited))
+        else:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            info = os.fstat(fd)
+            selected = private(path).stat()
+            require((info.st_dev, info.st_ino) == (selected.st_dev, selected.st_ino),
+                    "Inherited maintenance descriptor names another file")
+            require(
+                stat.S_ISREG(info.st_mode)
+                and info.st_uid == os.geteuid()
+                and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) == 0o600,
+                "Unsafe tenant maintenance lock",
+            )
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise Refused("Tenant maintenance is already in progress") from error
+            self.manifest = read_json(self.directory / "manifest.json")
+            require(
+                self.manifest.get("schema") == 1
+                and self.manifest.get("host_id") == self.platform.host["host_id"]
+                and self.manifest.get("tenant_id") == self.slug,
+                "Tenant registration mismatch",
+            )
+            uuid_text(self.manifest["workspace_id"])
+            require(
+                allow_abandoned
+                or not (self.control / "maintenance-container").exists(),
+                "Abandoned maintenance marker requires explicit recovery before another operation",
+            )
+            self.maintenance_fd = fd
+            yield
+        finally:
+            self.maintenance_fd = None
+            os.close(fd)
+
+    def save(self):
+        write_private(
+            self.directory / "manifest.json",
+            json.dumps(self.manifest, sort_keys=True) + "\n",
+        )
+
+    def event(self, operation, reason, outcome):
+        require(
+            reason and len(reason) <= 512 and not any(ord(c) < 32 for c in reason),
+            "A single-line reason of 1–512 characters is required",
+        )
+        # This local chain detects accidental damage. Independent remote retention
+        # is required to defend against an operator rewriting the entire chain.
+        path = self.control / "operations.jsonl"
+        previous = "0" * 64
+        if path.exists():
+            content = private(path).read_bytes()
+            if content:
+                previous = json.loads(content.splitlines()[-1])["sha256"]
+        item = {
+            "workspace_id": self.manifest["workspace_id"],
+            "time": int(time.time()),
+            "operator_uid": os.geteuid(),
+            "operation": operation,
+            "reason": reason,
+            "outcome": outcome,
+            "previous": previous,
+        }
+        item["sha256"] = hashlib.sha256(
+            json.dumps(item, sort_keys=True).encode()
+        ).hexdigest()
+        fd = os.open(
+            path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            os.write(fd, (json.dumps(item, sort_keys=True) + "\n").encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def container(self, role, running=None):
+        key = "app_container" if role == "application" else "db_container"
+        identity = self.manifest.get(key, "")
+        require(
+            re.fullmatch(r"[a-f0-9]{64}", identity),
+            "Provisioning is incomplete; registered resource repair is required",
+        )
+        rows = json.loads(run(["podman", "inspect", identity], timeout=30))
+        require(
+            len(rows) == 1 and rows[0]["Id"] == identity, "Container identity changed"
+        )
+        row = rows[0]
+        labels = row["Config"].get("Labels") or {}
+        require(
+            labels.get("io.venture.host") == self.platform.host["host_id"]
+            and labels.get("io.venture.tenant") == self.slug
+            and labels.get("io.venture.role") == role,
+            "Container ownership mismatch",
+        )
+        expected = self.manifest["app_image" if role == "application" else "db_image"]
+        require(
+            row["Image"].removeprefix("sha256:") == expected.removeprefix("sha256:"),
+            "Container image differs from registration",
+        )
+        networks = row.get("NetworkSettings", {}).get("Networks", {})
+        require(
+            set(networks) == {self.manifest["network"]},
+            "Container network differs from registration",
+        )
+        if role == "database":
+            require(
+                any(
+                    m.get("Name") == self.manifest["volume"]
+                    and m.get("Destination") == "/var/lib/postgresql"
+                    and m.get("RW") is True
+                    for m in row["Mounts"]
+                ),
+                "Database volume differs from registration",
+            )
+        if running is not None:
+            require(
+                row["State"]["Running"] == running,
+                "Container maintenance state differs from the requested operation",
+            )
+        if role == "application":
+            for source, target, writable in (
+                ("state", "/var/lib/venture", True),
+                ("config", "/etc/venture", False),
+            ):
+                require(
+                    any(
+                        m.get("Source") == str(self.directory / source)
+                        and m.get("Destination") == target
+                        and m.get("RW") == writable
+                        for m in row["Mounts"]
+                    ),
+                    "Application mount differs from registration",
+                )
+        return row
+
+    def postgres(self, sql, database="postgres"):
+        self.container("database", True)
+        return run(
+            [
+                "podman",
+                "exec",
+                "-i",
+                "--user",
+                "postgres",
+                self.manifest["db_container"],
+                "psql",
+                "-X",
+                "-qAt",
+                "--set",
+                "ON_ERROR_STOP=1",
+                "-U",
+                "postgres",
+                "-d",
+                database,
+            ],
+            sql.encode(),
+            timeout=300,
+        )
+
+    def app_arguments(self):
+        for name in ("state", "config"):
+            private(self.directory / name, True)
+        private(self.control / "runtime.env")
+        arguments = [
+            *self.platform.labels(self.slug, "application"),
+            "--network",
+            self.manifest["network"],
+            "--user",
+            "0:0",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,size=128m",
+            "--memory",
+            self.manifest["app_memory"],
+            "--cpus",
+            str(self.manifest["app_cpus"]),
+            "--pids-limit",
+            "128",
+            "--env-file",
+            str(self.control / "runtime.env"),
+            "--volume",
+            str(self.directory / "state") + ":/var/lib/venture:Z",
+            "--volume",
+            str(self.directory / "config") + ":/etc/venture:ro,Z",
+        ]
+        identity = self.directory / "config" / "identity.env"
+        if identity.exists():
+            lines = private(identity).read_text().splitlines()
+            values = dict(line.split("=", 1) for line in lines)
+            require(
+                set(values) == {"VENTURE_INTEGRATION_KEY", "VENTURE_SESSION_SECRET"}
+                and len(lines) == 2,
+                "Identity file may contain only the two documented application secrets",
+            )
+            require(
+                len(base64.b64decode(values["VENTURE_INTEGRATION_KEY"], validate=True))
+                == 32
+                and re.fullmatch(r"[a-f0-9]{64}", values["VENTURE_SESSION_SECRET"]),
+                "Invalid application identity secret",
+            )
+            arguments += ["--env-file", str(identity)]
+        return arguments
+
+    def app_command(self, extra):
+        return [
+            self.manifest["app_image"],
+            "--config",
+            "/etc/venture/config.yaml",
+            "--state-dir",
+            "/var/lib/venture",
+            "--no-plugins",
+            *extra,
+        ]
+
+    def offline(self, extra, image=None):
+        self.container("application", False)
+        self.container("database", True)
+        arguments = self.app_arguments()
+        password = self.control / "bootstrap-password"
+        if "--tenant-admin" in extra:
+            private(password)
+            arguments += [
+                "--volume",
+                str(password) + ":/run/venture-bootstrap-password:ro,Z",
+            ]
+        command = self.app_command(extra)
+        if image is not None:
+            command[0] = image
+        return self.maintenance(
+            [
+                "podman",
+                "create",
+                *arguments,
+                "--label",
+                "io.venture.role=maintenance",
+                "--entrypoint",
+                self.manifest["binary"],
+                *command,
+            ]
+        )
+
+    def probe_image(self, image):
+        output = self.maintenance(
+            [
+                "podman",
+                "create",
+                *self.platform.labels(self.slug, "maintenance"),
+                "--network",
+                "none",
+                "--user",
+                "0:0",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--read-only",
+                "--memory",
+                "128m",
+                "--pids-limit",
+                "32",
+                "--entrypoint",
+                self.manifest["binary"],
+                image,
+                "--help",
+            ],
+            timeout=30,
+        )
+        require(
+            all(
+                flag in output
+                for flag in (
+                    b"--tenant-status",
+                    b"--tenant-state",
+                    b"--tenant-admin",
+                    b"--tenant-password-file",
+                    b"--tenant-revoke-credentials",
+                )
+            ),
+            "Selected application image lacks the hosted maintenance interface",
+        )
+
+    def maintenance(self, arguments, timeout=900):
+        password = self.control / "bootstrap-password"
+        identity = run(arguments).decode().strip()
+        require(
+            re.fullmatch(r"[a-f0-9]{64}", identity),
+            "Maintenance container identity is invalid",
+        )
+        write_private(self.control / "maintenance-container", identity + "\n")
+        try:
+            return run(["podman", "start", "--attach", identity], timeout=timeout)
+        except CommandFailure as failure:
+            diagnostic = failure.diagnostic.decode("utf-8", errors="replace")
+            secret_paths = [
+                self.control / "runtime.env",
+                self.directory / "config" / "identity.env",
+            ]
+            for secret_path in secret_paths:
+                if secret_path.exists():
+                    for line in private(secret_path).read_text().splitlines():
+                        name, _, value = line.partition("=")
+                        if (
+                            any(word in name for word in ("PASSWORD", "KEY", "SECRET"))
+                            and value
+                        ):
+                            diagnostic = diagnostic.replace(value, "[redacted]")
+            if password.exists():
+                value = private(password).read_text().rstrip("\n")
+                if value:
+                    diagnostic = diagnostic.replace(value, "[redacted]")
+            diagnostic = re.sub(
+                r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/:\s@]+):[^@\s/]+@",
+                r"\1:[redacted]@",
+                diagnostic,
+            )
+            write_private(self.control / "last-maintenance-error.txt", diagnostic)
+            raise
+        finally:
+            # A timed-out Podman client need not stop its container. Remove only
+            # this exact created identity before releasing the platform lock.
+            run(["podman", "rm", "--force", identity], timeout=45)
+            (self.control / "maintenance-container").unlink()
+
+    def identity_status(self):
+        result = json.loads(self.offline(["--tenant-status"]))
+        require(
+            result.get("workspace_id") == self.manifest["workspace_id"]
+            and result.get("origin") == self.manifest["origin"],
+            "Persisted workspace identity differs from registration",
+        )
+        require(
+            result.get("state") in ("active", "read_only", "suspended"),
+            "Unknown persisted workspace state",
+        )
+        return result
+
+    def create_app(self):
+        identity = (
+            run(
+                [
+                    "podman",
+                    "create",
+                    *self.app_arguments(),
+                    "--publish",
+                    "127.0.0.1:" + str(self.manifest["port"]) + ":8747",
+                    "--entrypoint",
+                    self.manifest["binary"],
+                    *self.app_command([]),
+                ]
+            )
+            .decode()
+            .strip()
+        )
+        require(
+            re.fullmatch(r"[a-f0-9]{64}", identity),
+            "Application container identity is invalid",
+        )
+        return identity
+
+    def stop(self, reason):
+        row = self.container("application")
+        self.event("stop", reason, "begin")
+        if row["State"]["Running"]:
+            run(["podman", "stop", "--time", "30", row["Id"]], timeout=45)
+        self.container("application", False)
+        self.event("stop", reason, "complete")
+
+    def start(self, reason):
+        require(
+            self.manifest.get("phase") in ("ready", "recovery-review"),
+            "Workspace is not qualified to start",
+        )
+        old = self.container("application", False)["Id"]
+        status = self.identity_status()
+        require(
+            self.manifest["phase"] != "recovery-review"
+            or status["state"] == "suspended",
+            "Restored access must remain suspended until explicit review",
+        )
+        self.event("start", reason, "begin")
+        # Recreate before starting to consume rotated/restored environment files.
+        # Publish the new immutable ID before removing the old stopped container.
+        self.manifest["app_container"] = self.create_app()
+        self.save()
+        run(["podman", "rm", old])
+        run(["podman", "start", self.manifest["app_container"]])
+        deadline = time.monotonic() + 120
+        http = urllib.request.build_opener(RejectRedirect())
+        while time.monotonic() < deadline:
+            request = urllib.request.Request(
+                "http://127.0.0.1:" + str(self.manifest["port"]) + "/api/v1/health",
+                headers={"Host": urllib.parse.urlsplit(self.manifest["origin"]).netloc},
+            )
+            try:
+                with http.open(request, timeout=2) as response:
+                    if response.status == 200:
+                        self.event("start", reason, "complete")
+                        return
+            except OSError:
+                pass
+            if not self.container("application")["State"]["Running"]:
+                break
+            time.sleep(0.5)
+        self.event("start", reason, "health-failed")
+        raise Refused(
+            "Application did not become healthy; inspect registered container privately"
+        )
+
+    def set_state(self, value, reason):
+        require(
+            self.manifest.get("phase") in ("ready", "recovery-review"),
+            "Workspace is not qualified for lifecycle changes",
+        )
+        require(
+            value == "suspended"
+            or self.manifest["phase"] != "recovery-review"
+            or self.manifest.get("recovery_admin"),
+            "Recover a named administrator and review restored access before reactivation",
+        )
+        self.container("application", False)
+        self.event("state:" + value, reason, "begin")
+        self.offline(["--tenant-state", value, "--tenant-reason", reason])
+        result = self.identity_status()
+        require(
+            result["state"] == value,
+            "Persisted state did not match the requested state",
+        )
+        if self.manifest["phase"] == "recovery-review" and value != "suspended":
+            self.manifest["phase"] = "ready"
+            self.save()
+        self.event("state:" + value, reason, "complete")
+
+    def activate_restored(self, reason):
+        require(
+            self.manifest.get("phase") in ("restore-target", "quarantining"),
+            "Activation requires a restored target registration",
+        )
+        marker = read_json(self.control / "last-restore.json")
+        require(
+            marker.get("workspace_id") == self.manifest["workspace_id"],
+            "Completed restore identity is missing",
+        )
+        self.identity_status()
+        self.event("activate-restored", reason, "begin")
+        self.manifest["phase"] = "quarantining"
+        self.save()
+        path = self.directory / "config" / "identity.env"
+        values = dict(
+            line.split("=", 1)
+            for line in read_private(path, 4096).decode().splitlines()
+        )
+        values["VENTURE_SESSION_SECRET"] = secrets.token_hex(32)
+        write_private(
+            path, "".join(name + "=" + value + "\n" for name, value in values.items())
+        )
+        self.offline(["--tenant-revoke-credentials", "--tenant-reason", reason])
+        require(
+            self.identity_status()["state"] == "suspended",
+            "Restore quarantine did not suspend the workspace",
+        )
+        self.manifest["phase"] = "recovery-review"
+        self.manifest.pop("recovery_admin", None)
+        self.save()
+        self.event("activate-restored", reason, "quarantined-stopped")
+
+    def recover_admin(self, username, password_file, reason):
+        require(
+            self.manifest.get("phase") in ("ready", "recovery-review"),
+            "Workspace is not qualified for administrator recovery",
+        )
+        require(
+            re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", username),
+            "Invalid administrator username",
+        )
+        self.container("application", False)
+        password = password_material(password_file)
+        self.event("recover-admin", reason, "begin")
+        path = self.control / "bootstrap-password"
+        write_private(path, password)
+        try:
+            self.offline(
+                [
+                    "--tenant-admin",
+                    username,
+                    "--tenant-password-file",
+                    "/run/venture-bootstrap-password",
+                    "--tenant-recover",
+                    "--tenant-reason",
+                    reason,
+                ]
+            )
+        finally:
+            path.unlink()
+        self.manifest["recovery_admin"] = username
+        self.save()
+        self.event("recover-admin", reason, "complete-stopped")
+
+    def recover_maintenance(self, reason):
+        marker = self.control / "maintenance-container"
+        identity = private(marker).read_text().strip()
+        require(
+            re.fullmatch(r"[a-f0-9]{64}", identity),
+            "Invalid abandoned maintenance identity",
+        )
+        exists = run(
+            ["podman", "container", "exists", identity],
+            timeout=30,
+            allowed=(0, 1),
+            return_status=True,
+        )
+        if exists == 1:
+            self.event("recover-maintenance", reason, "already-removed-inspect-outcome")
+            marker.unlink()
+            return
+        rows = json.loads(run(["podman", "inspect", identity], timeout=30))
+        require(
+            len(rows) == 1 and rows[0]["Id"] == identity,
+            "Abandoned maintenance container is unavailable; inspect before repairing its marker",
+        )
+        labels = rows[0]["Config"].get("Labels") or {}
+        require(
+            labels.get("io.venture.host") == self.platform.host["host_id"]
+            and labels.get("io.venture.tenant") == self.slug
+            and labels.get("io.venture.role") == "maintenance",
+            "Abandoned maintenance marker names an unrelated container",
+        )
+        self.event("recover-maintenance", reason, "begin")
+        run(["podman", "rm", "--force", identity], timeout=45)
+        marker.unlink()
+        self.event("recover-maintenance", reason, "stopped-inspect-outcome")
+
+    def archive(self, operation, archive, key_file, kind="export"):
+        require(kind in ("export", "upgrade"), "Unknown backup origin")
+        if operation != "verify":
+            self.container("application", False)
+            self.container("database", True)
+        environment = {
+            **os.environ,
+            "VENTURE_TENANT_MAINTENANCE_FD": str(self.maintenance_fd),
+            "VENTURE_TENANT_ARCHIVE_KIND": kind,
+        }
+        result = run(
+            [
+                str(Path(__file__).resolve().with_name("venture-tenant-backup")),
+                "--root",
+                str(self.platform.root),
+                "--tenant",
+                self.slug,
+                "--key-file",
+                str(key_file),
+                operation,
+                str(archive),
+            ],
+            timeout=1800,
+            pass_fds=(self.maintenance_fd,),
+            environment=environment,
+        )
+        # The authenticated backup child may initialize catalog authority in
+        # this registration. An upgrade's next phase save must retain it.
+        current = read_json(self.directory / "manifest.json")
+        require(current["workspace_id"] == self.manifest["workspace_id"]
+                and current["tenant_id"] == self.slug
+                and current["host_id"] == self.platform.host["host_id"],
+                "Backup changed workspace registration identity")
+        self.manifest = current
+        return result
+
+    def upgrade(self, image, archive, key_file, reason):
+        require(
+            self.manifest.get("phase") == "ready",
+            "Upgrade requires a qualified stopped workspace",
+        )
+        old = self.container("application", False)["Id"]
+        target = self.platform.image(image)
+        require(
+            target != self.manifest["app_image"], "Upgrade image is already installed"
+        )
+        self.identity_status()
+        self.event("upgrade", reason, "begin")
+        self.probe_image(target)
+        self.archive("create", archive, key_file, kind="upgrade")
+        self.manifest["phase"] = "upgrading"
+        self.manifest["previous_image"] = self.manifest["app_image"]
+        self.manifest["upgrade_archive"] = str(archive.resolve())
+        self.save()
+        try:
+            self.offline(["--migrate"], image=target)
+            result = json.loads(self.offline(["--tenant-status"], image=target))
+            require(
+                result.get("workspace_id") == self.manifest["workspace_id"]
+                and result.get("origin") == self.manifest["origin"],
+                "Upgrade changed workspace identity",
+            )
+            self.manifest["app_image"] = target
+            self.manifest["app_container"] = self.create_app()
+            self.manifest["phase"] = "ready"
+            self.save()
+            run(["podman", "rm", old])
+            self.event("upgrade", reason, "complete-stopped")
+        except Exception:
+            self.manifest["phase"] = "upgrade-failed"
+            self.save()
+            self.event("upgrade", reason, "failed-retained")
+            raise
+
+
+def initialize(root):
+    require(
+        not os.path.lexists(root),
+        "Host root already exists; initialization never adopts or overwrites it",
+    )
+    root.mkdir(mode=0o700)
+    write_private(
+        root / "host.json",
+        json.dumps({"schema": 1, "host_id": str(uuid.uuid4())}) + "\n",
+    )
+
+
+def provision(platform, args):
+    tenant = platform.tenant(args.tenant)
+    require(
+        not os.path.lexists(tenant.directory),
+        "Tenant slug already exists; provisioning never adopts it",
+    )
+    require(
+        args.empty or args.workspace_id is None,
+        "An existing UUID may only be supplied for an empty recovery target",
+    )
+    origin = origin_text(args.origin)
+    workspace = uuid_text(args.workspace_id) if args.workspace_id else str(uuid.uuid4())
+    image = platform.image(args.image)
+    db_image = platform.image(args.postgres_image)
+    require(1024 <= args.port <= 65535, "Choose a loopback port between 1024 and 65535")
+    require(
+        re.fullmatch(r"/[a-zA-Z0-9_./-]+", args.binary),
+        "Application binary must be an absolute image path",
+    )
+    require(
+        re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", args.admin),
+        "Invalid administrator username",
+    )
+    password = b""
+    if not args.empty:
+        require(
+            args.password_file is not None,
+            "Provisioning requires a private administrator password file",
+        )
+        password = password_material(args.password_file)
+    suffix = secrets.token_hex(8)
+    manifest = {
+        "schema": 1,
+        "host_id": platform.host["host_id"],
+        "tenant_id": args.tenant,
+        "workspace_id": workspace,
+        "origin": origin,
+        "phase": "provisioning",
+        "hold": False,
+        "app_image": image,
+        "db_image": db_image,
+        "app_container": "",
+        "db_container": "",
+        "network": "venture-net-" + suffix,
+        "volume": "venture-pg-" + suffix,
+        "database": "venture",
+        "db_role": "venture",
+        "postgres_major": 18,
+        "port": args.port,
+        "binary": args.binary,
+        "app_memory": "512m",
+        "app_cpus": 1,
+    }
+    platform.reserve(tenant, manifest)
+    with tenant.locked():
+        tenant.event("provision", args.reason, "begin")
+        try:
+            tenant.probe_image(image)
+            db_password, admin_password = secrets.token_hex(32), secrets.token_hex(32)
+            write_private(
+                tenant.control / "postgres.env",
+                "POSTGRES_PASSWORD=" + admin_password + "\n",
+            )
+            write_private(
+                tenant.control / "runtime.env",
+                "VENTURE_DATABASE_URI=postgresql://venture@database/venture\nVENTURE_DB_PASSWORD="
+                + db_password
+                + "\nVENTURE_STATE_DIR=/var/lib/venture\nVENTURE_SERVER_BIND_ADDRESS=0.0.0.0\nVENTURE_SERVER_PORT=8747\n",
+            )
+            if not args.empty:
+                write_private(
+                    tenant.directory / "config" / "identity.env",
+                    "VENTURE_INTEGRATION_KEY="
+                    + base64.b64encode(secrets.token_bytes(32)).decode()
+                    + "\nVENTURE_SESSION_SECRET="
+                    + secrets.token_hex(32)
+                    + "\n",
+                )
+                write_private(
+                    tenant.directory / "config" / "config.yaml",
+                    "hosted:\n  enabled: true\n  workspace_id: "
+                    + json.dumps(workspace)
+                    + "\n  origin: "
+                    + json.dumps(origin)
+                    + "\ndatabase:\n  auto_migrate: false\n",
+                )
+                write_private(tenant.control / "bootstrap-password", password)
+            run(
+                [
+                    "podman",
+                    "network",
+                    "create",
+                    *platform.labels(args.tenant, "network"),
+                    manifest["network"],
+                ]
+            )
+            run(
+                [
+                    "podman",
+                    "volume",
+                    "create",
+                    *platform.labels(args.tenant, "database-volume"),
+                    manifest["volume"],
+                ]
+            )
+            identity = (
+                run(
+                    [
+                        "podman",
+                        "run",
+                        "-d",
+                        *platform.labels(args.tenant, "database"),
+                        "--network",
+                        manifest["network"],
+                        "--network-alias",
+                        "database",
+                        "--env-file",
+                        str(tenant.control / "postgres.env"),
+                        "--volume",
+                        manifest["volume"] + ":/var/lib/postgresql",
+                        "--memory",
+                        "384m",
+                        "--cpus",
+                        "1",
+                        "--pids-limit",
+                        "128",
+                        db_image,
+                        "-c",
+                        "max_connections=30",
+                        "-c",
+                        "shared_buffers=32MB",
+                    ]
+                )
+                .decode()
+                .strip()
+            )
+            require(
+                re.fullmatch(r"[a-f0-9]{64}", identity),
+                "Database container identity is invalid",
+            )
+            tenant.manifest["db_container"] = identity
+            tenant.save()
+            deadline = time.monotonic() + 120
+            while True:
+                ready = subprocess.run(
+                    [
+                        "podman",
+                        "exec",
+                        "--user",
+                        "postgres",
+                        identity,
+                        "pg_isready",
+                        "-h",
+                        "127.0.0.1",
+                        "-U",
+                        "postgres",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+                if ready.returncode == 0:
+                    break
+                require(
+                    time.monotonic() < deadline,
+                    "Database startup exceeded its deadline",
+                )
+                time.sleep(0.5)
+            major = tenant.postgres("SHOW server_version_num;\n").strip()
+            require(
+                major.isdigit() and int(major) // 10000 == 18,
+                "This deployment profile requires PostgreSQL 18",
+            )
+            tenant.postgres(
+                "CREATE ROLE venture LOGIN PASSWORD '"
+                + db_password
+                + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+                "CREATE DATABASE venture OWNER venture;\n"
+            )
+            tenant.manifest["app_container"] = tenant.create_app()
+            tenant.save()
+            if not args.empty:
+                tenant.offline(["--migrate"])
+                tenant.offline(
+                    [
+                        "--tenant-admin",
+                        args.admin,
+                        "--tenant-password-file",
+                        "/run/venture-bootstrap-password",
+                        "--tenant-reason",
+                        args.reason,
+                    ]
+                )
+                tenant.identity_status()
+                (tenant.control / "bootstrap-password").unlink()
+            tenant.manifest["phase"] = "restore-target" if args.empty else "ready"
+            tenant.save()
+            tenant.event("provision", args.reason, "complete-stopped")
+        except Exception:
+            tenant.manifest["phase"] = "provision-failed"
+            tenant.save()
+            tenant.event("provision", args.reason, "failed-retained")
+            raise
+    print(
+        json.dumps(
+            {
+                "workspace_id": workspace,
+                "tenant_id": args.tenant,
+                "phase": tenant.manifest["phase"],
+                "running": False,
+            }
+        )
+    )
+
+
+def parser():
+    command = argparse.ArgumentParser(description=__doc__)
+    command.add_argument(
+        "--root", required=True, type=Path, help="Private operator-owned root"
+    )
+    command.add_argument(
+        "--license",
+        action="version",
+        version="SPDX-License-Identifier: AGPL-3.0-or-later",
+    )
+    sub = command.add_subparsers(dest="operation", required=True)
+    sub.add_parser("init", help="Create a new private host registration")
+    create = sub.add_parser(
+        "provision", help="Create an isolated stopped workspace; no Lightsite operation"
+    )
+    create.add_argument("tenant")
+    create.add_argument("--origin", required=True)
+    create.add_argument(
+        "--image",
+        required=True,
+        help="Existing application image, resolved to immutable ID",
+    )
+    create.add_argument(
+        "--postgres-image", required=True, help="Existing PostgreSQL 18 image"
+    )
+    create.add_argument(
+        "--port", required=True, type=int, help="Host loopback port for the TLS proxy"
+    )
+    create.add_argument(
+        "--workspace-id", help="Preserve the original UUID for an empty recovery target"
+    )
+    create.add_argument("--binary", default="/usr/bin/venture")
+    create.add_argument("--admin", default="workspace-admin")
+    create.add_argument("--password-file", type=Path)
+    create.add_argument(
+        "--empty",
+        action="store_true",
+        help="Empty recovery target; no schema, secrets or administrator",
+    )
+    create.add_argument("--reason", required=True)
+    for name in (
+        "status",
+        "start",
+        "stop",
+        "state",
+        "offboard",
+        "hold",
+        "activate-restored",
+        "recover-maintenance",
+        "recover-admin",
+        "export",
+        "restore",
+        "upgrade",
+        "backup-list",
+        "backup-enroll",
+        "backup-retire",
+        "retention-plan",
+        "retention-execute",
+        "retention-recover",
+        "archive-register",
+        "archive-check",
+    ):
+        explanations = {
+            "backup-list": "Read the private archive catalog and permanent tombstones",
+            "backup-enroll": "Authenticate and explicitly enroll a local encrypted replica",
+            "backup-retire": "Tombstone a retained entry whose file already left; never unlinks",
+            "retention-plan": "Persist a reviewable expiry plan; default retention is 30 days",
+            "retention-execute": "Execute one exact unexpired plan under the tenant lock",
+            "retention-recover": "Reconcile interrupted expiry without unlinking more files",
+            "archive-register": "Internal authenticated backup helper; inherited lock required",
+            "archive-check": "Internal restore tombstone check; inherited lock required",
+        }
+        child = sub.add_parser(name, help=explanations.get(name))
+        child.add_argument("tenant")
+        if name not in ("status", "backup-list", "archive-check"):
+            child.add_argument("--reason", required=True)
+        if name == "recover-admin":
+            child.add_argument("--username", required=True)
+            child.add_argument("--password-file", required=True, type=Path)
+        if name in ("export", "restore", "upgrade", "backup-enroll"):
+            child.add_argument("--archive", required=True, type=Path)
+            child.add_argument("--key-file", required=True, type=Path)
+        if name in ("archive-register", "archive-check"):
+            child.add_argument("--archive", required=True, type=Path)
+            child.add_argument("--archive-manifest", required=True, type=Path)
+        if name == "archive-register":
+            child.add_argument("--kind", choices=("export", "upgrade", "replica"), required=True)
+        if name == "backup-retire":
+            child.add_argument("--copy", required=True, help="Catalog copy_id of the departed archive")
+        if name == "retention-plan":
+            child.add_argument("--days", type=int, default=30, help="Retention in days, 1–36500 (default: 30)")
+        if name == "retention-execute":
+            child.add_argument("--plan", required=True)
+        if name == "upgrade":
+            child.add_argument("--image", required=True)
+        if name == "state":
+            child.add_argument("value", choices=("active", "read_only", "suspended"))
+        if name == "hold":
+            child.add_argument("value", choices=("on", "off"))
+    return command
+
+
+def main():
+    args = parser().parse_args()
+    os.umask(0o077)
+    if hasattr(args, "reason"):
+        require(
+            args.reason
+            and len(args.reason) <= 512
+            and not any(ord(c) < 32 for c in args.reason),
+            "A single-line reason of 1–512 characters is required",
+        )
+    if args.operation == "init":
+        initialize(args.root)
+        return
+    catalog_operations = ("backup-list", "backup-retire", "retention-plan", "retention-execute",
+                          "retention-recover", "archive-register", "archive-check")
+    if args.operation in ("archive-register", "archive-check"):
+        require(os.environ.get("VENTURE_TENANT_MAINTENANCE_FD"),
+                "Archive helper requires the inherited backup maintenance lock")
+    platform = Platform(args.root, check_runtime=args.operation not in catalog_operations)
+    if args.operation == "provision":
+        provision(platform, args)
+        return
+    tenant = platform.tenant(args.tenant)
+    with tenant.locked(
+        allow_abandoned=args.operation in ("status", "recover-maintenance")
+    ):
+        if args.operation in catalog_operations or args.operation == "backup-enroll":
+            catalog = BackupCatalog(tenant)
+            if args.operation == "backup-list":
+                print(json.dumps(catalog.data, sort_keys=True))
+            elif args.operation == "retention-plan":
+                print(json.dumps(catalog.plan(args.days, args.reason), sort_keys=True))
+            elif args.operation == "retention-execute":
+                catalog.execute(args.plan, args.reason)
+            elif args.operation == "retention-recover":
+                catalog.recover(args.reason)
+            elif args.operation == "backup-retire":
+                print(json.dumps(catalog.retire(args.copy, args.reason), sort_keys=True))
+            elif args.operation == "backup-enroll":
+                manifest = json.loads(tenant.archive("verify", args.archive, args.key_file))
+                print(json.dumps(catalog.register(args.archive, manifest, "replica", args.reason), sort_keys=True))
+            else:
+                manifest = read_json(args.archive_manifest)
+                if args.operation == "archive-register":
+                    catalog.register(args.archive, manifest, args.kind, args.reason)
+                else:
+                    with catalog.opened(args.archive) as (_, _, identity):
+                        require(manifest.get("encrypted_sha256") == identity["sha256"],
+                                "Archive changed after authentication")
+                        catalog.check_restore(manifest, identity["sha256"])
+        elif args.operation == "status":
+            app = tenant.container("application")
+            tenant.container("database")
+            result = {
+                key: tenant.manifest[key]
+                for key in ("tenant_id", "workspace_id", "origin", "phase")
+            }
+            result["running"] = app["State"]["Running"]
+            result["hold"] = tenant.manifest.get("hold", False)
+            result["maintenance_pending"] = (
+                tenant.control / "maintenance-container"
+            ).exists()
+            if (
+                not result["running"]
+                and not result["maintenance_pending"]
+                and result["phase"] != "restore-target"
+            ):
+                result["persisted"] = tenant.identity_status()
+            print(json.dumps(result, sort_keys=True))
+        elif args.operation == "recover-maintenance":
+            tenant.recover_maintenance(args.reason)
+        elif args.operation == "stop":
+            tenant.stop(args.reason)
+        elif args.operation == "start":
+            tenant.start(args.reason)
+        elif args.operation == "state":
+            tenant.set_state(args.value, args.reason)
+        elif args.operation == "offboard":
+            tenant.stop(args.reason)
+            tenant.set_state("suspended", args.reason)
+            tenant.manifest["phase"] = "offboarded"
+            tenant.manifest["offboarded_at"] = int(time.time())
+            tenant.save()
+            tenant.event("offboard", args.reason, "retained")
+        elif args.operation == "activate-restored":
+            tenant.activate_restored(args.reason)
+        elif args.operation == "recover-admin":
+            tenant.recover_admin(args.username, args.password_file, args.reason)
+        elif args.operation in ("export", "restore"):
+            if args.operation == "restore":
+                require(
+                    tenant.manifest.get("phase") == "restore-target",
+                    "Restore requires an empty-target registration",
+                )
+            tenant.event(args.operation, args.reason, "begin")
+            tenant.archive(
+                "create" if args.operation == "export" else "restore",
+                args.archive,
+                args.key_file,
+            )
+            tenant.event(args.operation, args.reason, "complete-stopped")
+        elif args.operation == "upgrade":
+            tenant.upgrade(args.image, args.archive, args.key_file, args.reason)
+        elif args.operation == "hold":
+            tenant.event("hold:" + args.value, args.reason, "begin")
+            tenant.manifest["hold"] = args.value == "on"
+            tenant.save()
+            tenant.event("hold:" + args.value, args.reason, "complete")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (
+        Refused,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        IndexError,
+        subprocess.SubprocessError,
+    ) as error:
+        # OSError/JSON errors can contain private paths or payload fragments.
+        detail = (
+            str(error)
+            if isinstance(error, Refused)
+            else "Invalid or inaccessible private registration; inspect it locally"
+        )
+        print("venture-tenantctl: " + detail, file=sys.stderr)
+        sys.exit(2)

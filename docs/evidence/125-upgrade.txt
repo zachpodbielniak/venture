@@ -1,0 +1,25 @@
+Released-master SQLite upgrade demonstration
+Baseline source: 848a93d (clean DEBUG build).
+Candidate source: e477111 (automatic collection integration; final epic qualification pending).
+Captured in a real terminal from the built artifacts using tools/venture-upgrade-drill.py.
+Command:
+python3 tools/venture-upgrade-drill.py --baseline-binary /home/fai/venture-wt/125-baseline/build/debug/venture --candidate-binary /home/fai/venture-wt/epic-post-parity-5/build/debug/venture
+
+{
+  "baseline_binary_sha256": "517a040abd0d0957e135a1d92b7cab10a91741521e5d3d12cdcafb19d07d2d89",
+  "candidate_binary_sha256": "5c758e4768e70229702027772a0adca35c7d62347e5269dcc71dcd83ed479657",
+  "baseline_migrations": 46,
+  "candidate_migrations": 60,
+  "tables_reconciled": 6,
+  "rows_reconciled": 33,
+  "retained_rows_equal": true,
+  "posted_journal": "USD 123.45 debit and credit",
+  "fixture": "/tmp/venture-upgrade-drill-nh7jz7jc",
+  "scope": "SQLite released-history upgrade; not hosted capacity or full replacement acceptance"
+}
+
+This reconciles original columns of companies, accounts, journals, journal_lines,
+forges and forge_repos. It also verifies retained migration names/checksums are
+an exact prefix. The original database is stopped before the candidate copy.
+It does not qualify hosted isolation, PostgreSQL upgrade, capacity or full
+replacement readiness. Re-run on the final integrated artifact.

@@ -32,7 +32,8 @@ record. It performs no network I/O. A delivery sweep must run after commit.
 
 =VentureMailer= is a GInterface with synchronous and async send/finish
 methods. =VentureLogMailer= records independent message snapshots in memory
-and supports injected errors for tests. No test should send real mail.
+and supports injected errors for tests. Ordinary tests send no external mail;
+the opt-in relay fixture submits only to its disposable local container.
 
 The =sequence_delivery=, =billing_notice=, =quote_delivery= and =collection_notice= adapters each
 read one source row, construct the message, use a source-type/id-derived
@@ -58,27 +59,65 @@ owns what enters it.
 
 * SMTP configuration
 
+The operator first enables =mail= and =integrations= and provides the
+installation encryption key described in [[file:integrations.org][Organization integrations]].
+The only installation-wide SMTP policy is the endpoint allowlist and,
+optionally, an operator-owned CA bundle:
+
 #+begin_src yaml
 mail:
-  host: smtp.example.net
-  port: 587
-  security: starttls                 # starttls | tls | none
-  username: accounts@example.net     # empty means no authentication
-  password_env: VENTURE_SMTP_PASSWORD # NAME only; never a password
-  from_address: accounts@example.net
-  from_name: Accounts
-  reply_to: support@example.net
+  allowed_endpoints: smtp.example.net:587,smtp.other.example:465
+  tls_ca_file: ""                 # empty uses system trust
 #+end_src
 
-Set the named variable in the server's environment. Authentication over
-=none= is refused by mail-glib. TLS certificates are verified. The adapter
-uses mail-glib's one-attempt delivery interface; GMime composes the MIME and
-sets the durable Message-ID on the snapshot. Venture never implements SMTP.
-SMTP errors are recorded as fixed, credential-free outcome descriptions.
+An empty allowlist refuses every organization SMTP endpoint. Entries match
+an exact DNS hostname or IPv4 address and port; there are no wildcards.
+The operator owns DNS/egress policy for those hosts. An organization cannot
+supply a local CA/DKIM file, another transport's endpoint or an environment
+variable reference. Passwords beginning =env:= are literal passwords.
+Certificates are verified. =starttls= and =implicit= TLS are supported;
+unencrypted SMTP is refused. The socket I/O timeout is at most 30 seconds,
+and mail-glib retries are zero because the outbox owns retry decisions.
 
-The mailer reads a configuration snapshot when first requested. Restart the
-server after changing SMTP settings. =venture_context_get_mailer()= and
-=venture_context_get_mail_outbox()= return NULL when =modules.mail: false=.
+As an organization owner/admin, open *Mail settings* on its record, or
+=/organizations/<id>/settings/mail=. Connect its host, port, authentication
+method, username, password and sender. Optional sender name/reply address
+and bounded timeout use the form's documented defaults. Credential fields
+always render blank, including after errors. Rotation requires complete
+settings and the exact displayed connection ID/version. Host, port,
+authentication identity and sender identify an account; changing them
+requires disconnect followed by connect. A stale form cannot overwrite a
+replacement connection even if their numeric versions happen to match.
+
+*Send test message* submits only its retained test message, using the
+selected connection/version, and reports its outbox outcome. It does not
+sweep other queued mail. Repeating the same form token reuses that test
+message. Relay acceptance is =sent=; it is not proof of inbox delivery.
+Disconnect keeps encrypted historical identity but stops further selection.
+Credential rotation takes effect on the next preparation without restarting
+or changing another organization. No credential cache is retained.
+
+Production context mail selection never reads legacy =mail.host=,
+=mail.username=, =mail.password_env= or another organization's account.
+Migrate installation configuration by deliberately connecting each intended
+organization; no default organization is inferred. The legacy C constructor
+remains available only for explicitly injected adapters and existing socket
+fixtures. Disabled =mail= makes the context mailer/outbox unavailable;
+disabled =integrations= refuses production selection.
+
+Before a transport worker starts, =VentureMailer.prepare= resolves settings
+on the caller's repository thread. The concrete transport contains immutable
+in-memory settings. The outbox commits =connection_id= and
+=connection_version= before external I/O. A retry may use rotated credentials
+for that same binding, but cannot move to a replacement account. A binding
+or preparation refusal is a known pre-submission =dead= outcome; inspect it,
+repair settings and deliberately retry, or enqueue a new message when a
+previous account was replaced. An unattempted message selects its account
+on its first attempt. Historical sent mail is not assigned an inferred
+account on upgrade.
+
+GMime and mail-glib compose and submit the message. SMTP errors retained on
+the outbox are fixed, credential-free descriptions.
 
 * Operator commands
 
@@ -172,7 +211,8 @@ anonymous action refusals.
 
 =VentureMailerRegistry= owns named transport implementations. The context uses
 its =smtp= slot; =venture_context_set_mailer()= replaces it for tests or plugins.
-Async send completes on the initiating main context and never accesses the database.
+Async completion returns on the initiating context. Selection may read the
+database before launching a worker; transport workers never access it.
 
 SMTP tests enforce organization write authority and policy-plugin vetoes before invoking the mail transport, just as an outbox enqueue does.
 
@@ -180,25 +220,28 @@ SMTP tests enforce organization write authority and policy-plugin vetoes before 
 
 The =mail_sync= module requires =mail=, =crm= and =leads= and suggests
 =capture=. It owns =mail_account=, =mail_inbound= and
-=mail_unmatched_sender=. =mail_account= is owner-only: the row names the
-IMAP host and which environment variable holds the password, so an editor
-who could change either could point the next sweep at a host they control
-or name a different secret in the process environment. =mail_inbound= is
-written by the sweep and refuses generic writes, like a webhook delivery.
-=mail_unmatched_sender= stays ordinary CRM data.
+=mail_unmatched_sender=. Accounts are assigned by organization administrators.
+Credentials are encrypted, scoped to the saved account and organization, and
+managed through [[file:connectors.org][connector settings]]. =mail_inbound= is written by the
+sweep and refuses generic writes. =mail_unmatched_sender= stays ordinary CRM data.
 
 ** Accounts
 
-An account names a mailbox address, IMAP host, port and security (=tls= or
-=starttls=), username, the folders to watch, an optional capture address and
-capture folder, and =secret_env=: the NAME of a =VENTURE_IMAP_*= environment
-variable holding the password or app token. The row never holds the secret.
-A name that is not =VENTURE_IMAP_= followed by letters, digits or underscores
-is refused before any connection, so a row cannot exfiltrate
-=VENTURE_SMTP_PASSWORD= or the session secret. A sync whose variable is unset
-fails with a =VENTURE_ERROR_CONFIG= error naming that variable and never
-opens a connection. Security =none= is refused: the client always
-authenticates, and would put the credential on the wire.
+An account names its mailbox address, explicit IMAP host and port, TLS or
+STARTTLS security, login username, watched folders, optional capture address
+and capture folder. =secret_env= is retained only as unused historical metadata;
+no process environment password is resolved. Configure an explicit binding
+before syncing. The operator must allow the exact host and port in
+=imap.allowed_endpoints=. Production plaintext authentication is refused.
+
+=private_owner_id= selects privacy at creation. Zero explicitly shares the
+business mailbox with the organization. A positive active member ID creates
+a private mailbox: its messages and raw documents belong to that member,
+produce no CRM interactions, unmatched senders or capture items, and are
+not published to organization notifications, automation, webhooks or knowledge
+cross-references. Message-ID deduplication and threading are partitioned by
+that ownership. Private ownership cannot later be changed or removed.
+
 
 | Field                  | Meaning                                                                                      |
 |------------------------+----------------------------------------------------------------------------------------------|
@@ -471,14 +514,12 @@ injectable connect and fetch errors, sizes, internal dates and UIDVALIDITY.
 GMime, already a server dependency through mail-glib, parses the fetched
 bytes.
 
-OAuth (XOAUTH2 for Google and Microsoft) would attach in
-=socket_authenticate()= as one more mechanism, selected by a =secret_kind= on
-the account rather than by what the server advertises, since it needs a
-refreshed token where PLAIN and LOGIN take the stored secret; the token
-refresh would live in a separate service that writes the access token to the
-same secret source, and nothing in the sync service would change. Calendar
-synchronisation would be a sibling =VentureCalendarClient= interface feeding
-the activities module the way this one feeds interactions.
+OAuth (XOAUTH2 for Google and Microsoft) is not implemented. A future
+provider must refresh tokens through the same account-bound encrypted
+credential service and preserve completion-time revocation checks; it must
+not reintroduce environment credentials. The current IMAP transport uses
+passwords or provider app tokens. CalDAV uses its separate typed client and
+the shared credential lifecycle documented in [[file:connectors.org][mailbox and calendar connectors]].
 
 ** Upgrades and tests
 
@@ -489,7 +530,7 @@ module off the tables are absent and it passes. No row is rewritten: old
 cursors and keys stay readable as described above.
 
 =test-mail-sync= covers the field tables and module, the missing-secret
-refusal, the =VENTURE_IMAP_*= prefix, the high-water mark, idempotent rerun
+refusal without environment fallback, encrypted credential rotation, private import isolation, the high-water mark, idempotent rerun
 and the key check before fetch, legacy cursors and keys, contact and company
 matching, threading, unmatched senders (deleted, restored, dismissed,
 converted with backfill), capture with attachments, exact and +tag capture
@@ -512,3 +553,37 @@ refused login that echoes the password, and a truncated fetch with
 sync account_id=, =mail contact= and =mail dismiss= commands, =test-automation=
 the =mail_sync= handler, and =test-auth= the anonymous refusal of every route,
 owner-only account sync and the inbound write refusal.
+
+* Organization-routing verification
+
+Migration =000540_mail_account_binding= checks the metadata-added evidence
+columns while allowing the mail module to be absent. Old rows remain
+unbound; it never sends or rewrites historical deliveries.
+
+=test-mail-routing= checks organization isolation, missing configuration,
+rotation/disconnect/replacement, operator endpoint revocation, unsupported
+file/transport settings, literal credentials, caller-thread preparation,
+pre-submission persistence and selected-message delivery. The same database
+fixtures run on isolated PostgreSQL when
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= is set. Settings HTTP tests cover
+write-only credentials, stale forms and organization administration.
+
+#+begin_src sh
+make DEBUG=1 test-one T=test-mail-routing
+make DEBUG=1 test-mail-relay
+#+end_src
+
+The second command explicitly starts a pinned disposable Mailpit container,
+generates a one-day localhost test certificate and requires authenticated
+STARTTLS. Two organizations use different usernames, passwords and senders.
+A rejected credential rotation in A must not interrupt B; the relay's HTTP
+API independently verifies the three accepted messages and their senders.
+It needs Fedora packages =podman=, =openssl=, =curl=, =bash= and =coreutils=;
+=ShellCheck= validates the runner. It installs no host packages. The runner
+stops its container and removes only its three known fixture files on
+success; failures retain their directory and propagate a nonzero status.
+
+C callers can use =venture_organization_mailer_dup_schema()= to derive
+write-only settings inputs, and =venture_mail_outbox_deliver_one()= to
+restrict a deliberate test to its message and exact configuration. The
+ordinary outbox claim, veto, retry and uncertainty rules remain shared.

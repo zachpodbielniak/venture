@@ -639,249 +639,269 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 	 * the schema builder resolves foreign keys after every type is known,
 	 * so a type may reference one that has not been registered yet.
 	 */
-	static GType (*const builtins[]) (void) = {
-		venture_organization_get_type,
-		venture_venture_get_type,
+	static const struct {
+		GType (*get_type)(void);
+		VentureDataClass classification;
+	} builtins[] = {
+		{ venture_tenant_workspace_get_type, VENTURE_DATA_CLASS_TENANT_ADMIN },
+		{ venture_tenant_membership_get_type, VENTURE_DATA_CLASS_TENANT_ADMIN },
+		{ venture_tenant_invitation_get_type, VENTURE_DATA_CLASS_TENANT_ADMIN },
+		{ venture_tenant_support_grant_get_type, VENTURE_DATA_CLASS_TENANT_ADMIN },
+		{ venture_tenant_event_get_type, VENTURE_DATA_CLASS_TENANT_ADMIN },
+		{ venture_organization_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_venture_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_product_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inventory_item_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inventory_txn_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sale_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_expense_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_account_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ledger_entry_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_journal_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_journal_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_exchange_rate_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_tax_category_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_tax_code_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_contact_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_interaction_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deal_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_campaign_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_newsletter_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_subscriber_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_post_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_idea_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_research_note_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_knowledge_base_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_kb_article_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_kb_chunk_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_kb_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ticket_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ticket_comment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ticket_relation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_company_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_document_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_record_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_chat_thread_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_chat_message_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_ai_skill_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_forge_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_forge_repo_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_forge_rule_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_ticket_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_agent_session_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_agent_turn_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_forge_run_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_milestone_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_release_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_build_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_environment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deployment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_incident_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_invoice_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_invoice_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_stripe_price_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_stripe_customer_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_stripe_payment_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_stripe_authorization_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_stripe_checkout_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_stripe_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_processor_payout_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_processor_payout_item_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_processor_dispute_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_processor_exception_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_payment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_payment_allocation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_customer_credit_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_refund_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_invoice_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_dashboard_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_dashboard_widget_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_saved_view_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_watch_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_notification_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_sla_policy_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_macro_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_worklog_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sprint_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_agent_budget_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_federation_replica_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_federation_peer_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_federation_grant_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_webhook_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_webhook_delivery_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_routing_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_plugin_config_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_user_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_api_token_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_audit_entry_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_fiscal_year_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_fiscal_period_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_report_snapshot_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_fixed_asset_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_depreciation_entry_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deferral_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deferral_entry_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_organization_membership_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_team_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_team_membership_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_plan_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_plan_price_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_customer_subscription_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_subscription_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_dunning_step_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_billing_notice_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_billing_request_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_customer_payment_method_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_client_project_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_project_rate_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_project_time_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_project_cost_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_project_billing_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_mail_message_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_mail_template_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_mail_account_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_mail_inbound_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_mail_unmatched_sender_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_price_list_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_price_list_item_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_quote_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_quote_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_quote_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_quote_delivery_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_quote_action_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_form_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_assignment_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_activity_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_activity_type_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_vendor_bill_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_vendor_bill_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bill_payment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bill_payment_allocation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_vendor_credit_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_vendor_bill_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bill_refund_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_account_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_statement_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_transaction_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_match_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_reconciliation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_transfer_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_bank_connection_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sequence_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sequence_step_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sequence_enrollment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sequence_delivery_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_suppression_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_posting_profile_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_cutover_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_cutover_row_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_setup_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_control_map_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_progress_billing_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_customer_retainer_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_contract_retention_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_customer_portal_access_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_supplier_portal_access_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_custom_field_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_layout_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_custom_field_value_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_saved_report_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_report_pack_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_dimension_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_approval_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_approval_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_accounting_backup_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_pipeline_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_pipeline_stage_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deal_stage_entry_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_loss_reason_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_recurring_schedule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_recurring_occurrence_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_collection_policy_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_collection_step_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_collection_case_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_collection_notice_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_financial_batch_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_close_workspace_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_close_task_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_close_workpaper_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_close_discrepancy_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_close_signoff_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_capture_item_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ocr_job_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ocr_batch_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_tax_filing_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_contractor_tax_form_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_contractor_tax_pack_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_expense_claim_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_expense_claim_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_payroll_run_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_payroll_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_purchase_order_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_purchase_order_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_goods_receipt_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_goods_receipt_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inventory_cost_layer_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sales_order_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sales_order_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_fulfillment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_budget_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_budget_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_equity_transaction_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_intercompany_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_elimination_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_tax_depreciation_entry_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_headline_setting_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_dunning_policy_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_dunning_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_routing_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_scoring_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_score_history_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_tax_jurisdiction_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_tax_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_backup_schedule_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_backup_run_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_calendar_account_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_calendar_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_booking_page_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_crm_import_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_crm_import_row_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deal_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sequence_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sequence_tracking_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_duplicate_candidate_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_user_mfa_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_mfa_recovery_code_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_mfa_policy_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_integration_connection_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_oidc_identity_get_type, VENTURE_DATA_CLASS_PERSONAL },
+		{ venture_sales_territory_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sales_quota_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sales_credit_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_commerce_import_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_sales_assignment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ai_configuration_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ai_platform_offer_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_ai_grant_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_ai_usage_period_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ai_usage_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_project_scope_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_project_deliverable_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_list_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_member_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_consent_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_send_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_recipient_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_site_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_visitor_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_touch_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_submission_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_attribution_binding_get_type, VENTURE_DATA_CLASS_TENANT },
 
-		venture_product_get_type,
-		venture_inventory_item_get_type,
-		venture_inventory_txn_get_type,
 
-		venture_sale_get_type,
-
-		venture_expense_get_type,
-		venture_account_get_type,
-		venture_ledger_entry_get_type,
-		venture_journal_get_type,
-		venture_journal_line_get_type,
-		venture_exchange_rate_get_type,
-		venture_tax_category_get_type,
-		venture_tax_code_get_type,
-
-		venture_contact_get_type,
-		venture_interaction_get_type,
-		venture_deal_get_type,
-
-		venture_campaign_get_type,
-		venture_newsletter_get_type,
-		venture_subscriber_get_type,
-		venture_post_get_type,
-
-		venture_idea_get_type,
-		venture_research_note_get_type,
-
-		venture_knowledge_base_get_type,
-		venture_kb_article_get_type,
-		venture_kb_chunk_get_type,
-		venture_kb_link_get_type,
-
-		venture_ticket_get_type,
-		venture_ticket_comment_get_type,
-		venture_ticket_relation_get_type,
-		venture_company_get_type,
-		venture_document_get_type,
-		venture_record_link_get_type,
-
-		venture_chat_thread_get_type,
-		venture_chat_message_get_type,
-		venture_ai_skill_get_type,
-
-		venture_forge_get_type,
-		venture_forge_repo_get_type,
-		venture_forge_rule_get_type,
-		venture_ticket_link_get_type,
-		venture_agent_session_get_type,
-		venture_agent_turn_get_type,
-		venture_forge_run_get_type,
-
-		venture_milestone_get_type,
-		venture_release_get_type,
-		venture_build_get_type,
-		venture_environment_get_type,
-		venture_deployment_get_type,
-		venture_incident_get_type,
-
-		venture_invoice_get_type,
-		venture_invoice_line_get_type,
-		venture_stripe_price_link_get_type,
-		venture_stripe_customer_link_get_type,
-		venture_stripe_checkout_get_type,
-		venture_stripe_event_get_type,
-		venture_processor_payout_get_type,
-		venture_processor_payout_item_get_type,
-		venture_processor_dispute_get_type,
-		venture_processor_exception_get_type,
-		venture_payment_get_type,
-		venture_payment_allocation_get_type,
-		venture_customer_credit_get_type,
-		venture_refund_get_type,
-		venture_invoice_event_get_type,
-
-		venture_dashboard_get_type,
-		venture_dashboard_widget_get_type,
-
-		venture_saved_view_get_type,
-		venture_watch_get_type,
-		venture_notification_get_type,
-		venture_sla_policy_get_type,
-		venture_macro_get_type,
-		venture_worklog_get_type,
-		venture_sprint_get_type,
-		venture_agent_budget_get_type,
-
-		venture_federation_replica_get_type,
-		venture_federation_peer_get_type,
-		venture_federation_grant_get_type,
-		venture_webhook_get_type,
-		venture_webhook_delivery_get_type,
-		venture_routing_rule_get_type,
-
-		venture_plugin_config_get_type,
-
-		venture_user_get_type,
-		venture_api_token_get_type,
-		venture_audit_entry_get_type
-		, venture_fiscal_year_get_type
-		, venture_fiscal_period_get_type
-		, venture_report_snapshot_get_type
-		, venture_fixed_asset_get_type
-		, venture_depreciation_entry_get_type
-		, venture_deferral_get_type
-		, venture_deferral_entry_get_type
-		, venture_organization_membership_get_type
-		, venture_team_get_type
-		, venture_team_membership_get_type
-		, venture_plan_get_type
-		, venture_plan_price_get_type
-		, venture_customer_subscription_get_type
-		, venture_subscription_event_get_type
-		, venture_dunning_step_get_type
-		, venture_billing_notice_get_type
-		, venture_billing_request_get_type
-		, venture_customer_payment_method_get_type
-		, venture_client_project_get_type
-		, venture_project_rate_get_type
-		, venture_project_time_get_type
-		, venture_project_cost_get_type
-		, venture_project_billing_get_type
-		, venture_mail_message_get_type
-		, venture_mail_template_get_type
-		, venture_mail_account_get_type
-		, venture_mail_inbound_get_type
-		, venture_mail_unmatched_sender_get_type
-
-		, venture_price_list_get_type
-		, venture_price_list_item_get_type
-		, venture_quote_get_type
-		, venture_quote_line_get_type
-		, venture_quote_event_get_type
-		, venture_quote_delivery_get_type
-		, venture_quote_action_get_type
-		, venture_lead_get_type
-		, venture_lead_form_get_type
-		, venture_lead_assignment_rule_get_type
-		, venture_activity_get_type
-		, venture_activity_type_get_type
-		, venture_vendor_bill_get_type
-		, venture_vendor_bill_line_get_type
-		, venture_bill_payment_get_type
-		, venture_bill_payment_allocation_get_type
-		, venture_vendor_credit_get_type
-		, venture_vendor_bill_event_get_type
-		, venture_bill_refund_get_type
-		, venture_bank_account_get_type
-		, venture_bank_statement_get_type
-		, venture_bank_transaction_get_type
-		, venture_bank_match_get_type
-		, venture_reconciliation_get_type
-		, venture_bank_rule_get_type
-		, venture_bank_transfer_get_type
-		, venture_bank_connection_get_type
-
-		, venture_sequence_get_type
-		, venture_sequence_step_get_type
-		, venture_sequence_enrollment_get_type
-		, venture_sequence_delivery_get_type
-		, venture_suppression_get_type
-		, venture_posting_profile_get_type
-		, venture_accounting_cutover_get_type
-		, venture_accounting_cutover_row_get_type
-		, venture_accounting_setup_get_type
-		, venture_accounting_control_map_get_type
-		, venture_progress_billing_get_type
-		, venture_customer_retainer_get_type
-		, venture_contract_retention_get_type
-		, venture_customer_portal_access_get_type
-		, venture_supplier_portal_access_get_type
-		, venture_accounting_custom_field_get_type
-		, venture_accounting_layout_get_type
-		, venture_custom_field_value_get_type
-		, venture_saved_report_get_type
-		, venture_report_pack_get_type
-		, venture_accounting_dimension_get_type
-		, venture_accounting_approval_rule_get_type
-		, venture_accounting_approval_get_type
-		, venture_accounting_backup_get_type
-		, venture_pipeline_get_type,
-		venture_pipeline_stage_get_type,
-		venture_deal_stage_entry_get_type,
-		venture_loss_reason_get_type,
-		venture_recurring_schedule_get_type,
-		venture_recurring_occurrence_get_type,
-		venture_collection_policy_get_type,
-		venture_collection_step_get_type,
-		venture_collection_case_get_type,
-		venture_collection_notice_get_type,
-		venture_financial_batch_get_type,
-		venture_close_workspace_get_type,
-		venture_close_task_get_type,
-		venture_close_workpaper_get_type,
-		venture_close_discrepancy_get_type,
-		venture_close_signoff_get_type,
-		venture_capture_item_get_type,
-		venture_tax_filing_get_type,
-		venture_contractor_tax_form_get_type,
-		venture_contractor_tax_pack_get_type,
-		venture_expense_claim_get_type,
-		venture_expense_claim_line_get_type,
-		venture_payroll_run_get_type,
-		venture_payroll_line_get_type,
-		venture_purchase_order_get_type,
-		venture_purchase_order_line_get_type,
-		venture_goods_receipt_get_type,
-		venture_goods_receipt_line_get_type,
-		venture_inventory_cost_layer_get_type,
-		venture_sales_order_get_type,
-		venture_sales_order_line_get_type,
-		venture_fulfillment_get_type,
-		venture_budget_get_type,
-		venture_budget_line_get_type,
-		venture_equity_transaction_get_type,
-		venture_intercompany_link_get_type,
-		venture_elimination_get_type,
-		venture_tax_depreciation_entry_get_type,
-		venture_headline_setting_get_type,
-		venture_dunning_policy_get_type,
-		venture_dunning_event_get_type,
-		venture_lead_routing_rule_get_type,
-		venture_lead_scoring_rule_get_type,
-		venture_lead_score_history_get_type,
-		venture_tax_jurisdiction_get_type,
-		venture_tax_rule_get_type,
-		venture_backup_schedule_get_type,
-		venture_backup_run_get_type,
-		venture_calendar_account_get_type,
-		venture_calendar_event_get_type,
-		venture_booking_page_get_type,
-		venture_crm_import_get_type,
-		venture_crm_import_row_get_type,
-		venture_deal_line_get_type,
-		venture_sequence_link_get_type,
-		venture_sequence_tracking_event_get_type,
-		venture_duplicate_candidate_get_type,
-		venture_user_mfa_get_type,
-		venture_mfa_recovery_code_get_type,
-		venture_mfa_policy_get_type,
 	};
 	gsize i;
 
@@ -893,7 +913,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 	{
 		g_autoptr(GError) local_error = NULL;
 
-		if (!venture_entity_registry_register(self, builtins[i](),
+		venture_data_class_declare_type(builtins[i].get_type(), builtins[i].classification);
+
+		if (!venture_entity_registry_register(self, builtins[i].get_type(),
 		                                      &local_error))
 		{
 			/* A built-in failing to register is a programming error

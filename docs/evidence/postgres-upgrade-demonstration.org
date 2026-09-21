@@ -1,0 +1,67 @@
+#+title: Populated PostgreSQL released-history upgrade demonstration
+#+description: Exact DEBUG artifact transcript and independent financial preservation checks
+
+* Command and scope
+
+Executed 20 September 2026 against the dedicated disposable local PostgreSQL
+fixture service, with released master =848a93d= and the candidate checkpoint
+=4600ede=. Both artifacts are DEBUG builds; exact executable hashes follow.
+The candidate was copied to a stable path before execution. Authentication is
+disabled only in these private loopback migration fixtures: the separate
+[[file:../accounting-acceptance.org][Accounting acceptance]] evidence covers authenticated business workflows.
+
+#+begin_src sh
+python3 tools/venture-upgrade-drill.py \
+  --postgres-uri-env VENTURE_TEST_UPGRADE_URI \
+  --baseline-binary /home/fai/venture-wt/125-baseline/build/debug/venture \
+  --candidate-binary build/debug/venture-upgrade-qualified
+#+end_src
+
+The selected variable contained only the disposable fixture URI; its password
+is not included here. No personal/shared schema was reset. The application's
+baseline and candidate each used a newly created database, and both were
+removed after success. Retained filesystem evidence is private.
+
+* Verbatim stdout
+
+Exit status: 0.
+
+#+begin_example
+{
+  "baseline_binary_sha256": "517a040abd0d0957e135a1d92b7cab10a91741521e5d3d12cdcafb19d07d2d89",
+  "candidate_binary_sha256": "9fc531d178426867b8fb31f546a606daac1e87cdabce669ea81a04860c214a6b",
+  "baseline_migrations": 46,
+  "candidate_migrations": 62,
+  "tables_reconciled": 12,
+  "rows_reconciled": 62,
+  "retained_rows_equal": true,
+  "posted_journal": "USD 123.45 debit and credit",
+  "fixture": "/tmp/venture-upgrade-drill-2_5k64dk",
+  "financial_reports_equal": true,
+  "partial_receipt": "invoice10500 receipt4000 AR6500 tax500 income10000 USD cents",
+  "backend": "PostgreSQL",
+  "disposable_databases_removed": true,
+  "scope": "Released-history upgrade; authentication disabled in isolated fixture; not hosted capacity or full replacement acceptance"
+}
+#+end_example
+
+* Meaning and separate checks
+
+The API-created invoice has 10000 cents net plus 500 tax; its 4000 receipt
+leaves 6500 AR. The separate opening journal has equal 12345-cent debit and
+credit. Every original field across the 12 populated/retained table sets and
+every prior migration version/name/checksum agree exactly. All report rows,
+not merely the independent control totals, are compared.
+
+The SQLite mode also passed on these exact binary hashes with 46→62
+migrations and 12 tables/62 rows. Five pure ownership tests pass, covering
+unowned access/removal refusal, failed creation never authorizing deletion,
+owned same-service clone requirements, unique fixture identity and private
+credential transport, and refusal of connection query options. Documentation
+was built with the real renderer/checker. Component review inspected the
+transcript before the diff, fixture lifecycle, API business writes, exact
+comparisons and failure retention.
+
+This is released-history compatibility evidence, not physical backup/restore,
+capacity, customer migration authorization, hosted isolation or final PR-head
+qualification. The final combined artifact must run this driver again.

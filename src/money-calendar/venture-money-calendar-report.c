@@ -169,7 +169,7 @@ void
 venture_money_calendar_register_reports(VentureReportRegistry *registry)
 {
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"money_calendar", "Money calendar",
 		"Every dated money event in the period: recurring schedules expanded forward, "
 		"bills and invoices on their due dates (overdue carried to today), dunning steps, "

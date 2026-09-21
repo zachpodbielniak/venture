@@ -114,6 +114,21 @@ struct _VentureMoneyCalendarSourceInterface
 
 const gchar *venture_money_calendar_source_get_kind(VentureMoneyCalendarSource *self);
 const gchar *venture_money_calendar_source_get_module(VentureMoneyCalendarSource *self);
+/**
+ * venture_money_calendar_source_expand:
+ * @self: the event source
+ * @context: the application context
+ * @organization_id: the organization whose events are requested
+ * @range: the requested calendar date range
+ * @today: the day to which overdue events are carried
+ * @events: (element-type VentureMoneyCalendarEvent): destination array owning its events
+ * @error: (out) (optional): the error
+ *
+ * Appends this source's events to @events. The caller owns the array and
+ * must arrange to unref each event when removing it.
+ *
+ * Returns: TRUE on success
+ */
 gboolean venture_money_calendar_source_expand(VentureMoneyCalendarSource *self,
 	VentureContext *context, gint64 organization_id, const VentureDateRange *range,
 	GDateTime *today, GPtrArray *events, GError **error);

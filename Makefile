@@ -70,6 +70,8 @@ CORE_SRCS += src/orgaccess/venture-access-records.c
 CORE_SRCS += src/billing/venture-billing-records.c
 CORE_SRCS += src/projects/venture-project-records.c
 CORE_SRCS += src/leads/venture-lead-records.c
+CORE_SRCS += src/tenant/venture-tenant-records.c
+CORE_SRCS += src/sales/venture-sales-records.c
 CORE_SRCS += src/activities/venture-activity-records.c
 CORE_SRCS += src/payables/venture-payable-records.c
 CORE_SRCS += src/close/venture-close-records.c
@@ -109,7 +111,8 @@ SERVER_ONLY_SRCS := \
 
 SERVER_ONLY_SRCS += src/banking/venture-bank-match-service.c
 SERVER_ONLY_SRCS += $(filter-out src/bankfeed/venture-bankfeed-records.c,$(wildcard src/bankfeed/*.c))
-SERVER_ONLY_SRCS += $(wildcard src/commerce/*.c)
+CORE_SRCS += src/commerce/venture-commerce-records.c
+SERVER_ONLY_SRCS += $(filter-out src/commerce/venture-commerce-records.c,$(wildcard src/commerce/*.c))
 
 SERVER_ONLY_SRCS += $(filter-out src/periods/venture-period-records.c,$(wildcard src/periods/*.c))
 
@@ -128,11 +131,15 @@ SERVER_ONLY_SRCS += $(filter-out src/quotes/venture-quote-records.c,$(wildcard s
 CORE_SRCS += src/goods/venture-goods-records.c
 SERVER_ONLY_SRCS += $(filter-out src/goods/venture-goods-records.c,$(wildcard src/goods/*.c))
 SERVER_ONLY_SRCS += src/leads/venture-lead-service.c src/leads/venture-lead-reports.c
+SERVER_ONLY_SRCS += $(filter-out src/tenant/venture-tenant-records.c,$(wildcard src/tenant/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/sales/venture-sales-records.c,$(wildcard src/sales/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/activities/venture-activity-records.c,$(wildcard src/activities/*.c))
 SERVER_ONLY_SRCS += src/payables/venture-payables-service.c src/payables/venture-payable-reports.c
-SERVER_ONLY_SRCS += src/close/venture-close-service.c
+SERVER_ONLY_SRCS += $(filter-out src/close/venture-close-records.c,$(wildcard src/close/*.c))
 SERVER_ONLY_SRCS += src/tax/venture-tax-filing-adapter.c src/tax/venture-tax-filing-service.c
 SERVER_ONLY_SRCS += src/capture/venture-capture-service.c
+CORE_SRCS += src/ocr/venture-ocr-records.c
+SERVER_ONLY_SRCS += $(filter-out src/ocr/venture-ocr-records.c,$(wildcard src/ocr/*.c))
 SERVER_ONLY_SRCS += src/claims/venture-claims-service.c
 SERVER_ONLY_SRCS += src/payroll/venture-payroll-service.c
 SERVER_ONLY_SRCS += src/accounting/venture-accounting-home.c
@@ -141,6 +148,10 @@ CORE_SRCS += src/pipelines/venture-pipeline-records.c
 SERVER_ONLY_SRCS += $(filter-out src/pipelines/venture-pipeline-records.c,$(wildcard src/pipelines/*.c))
 CORE_SRCS += src/sequences/venture-sequence-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wildcard src/sequences/*.c))
+CORE_SRCS += src/attribution/venture-attribution-records.c
+SERVER_ONLY_SRCS += $(filter-out src/attribution/venture-attribution-records.c,$(wildcard src/attribution/*.c))
+CORE_SRCS += src/marketing/venture-marketing-records.c
+SERVER_ONLY_SRCS += $(filter-out src/marketing/venture-marketing-records.c,$(wildcard src/marketing/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
 CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
@@ -180,6 +191,10 @@ CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
 CORE_SRCS += src/orgaccess/venture-mfa-records.c
 SERVER_ONLY_SRCS := $(filter-out src/orgaccess/venture-mfa-records.c,$(SERVER_ONLY_SRCS))
 
+CORE_SRCS += src/oidc/venture-oidc-records.c
+CORE_SRCS += src/ai/venture-ai-organization-records.c
+SERVER_ONLY_SRCS := $(filter-out src/ai/venture-ai-organization-records.c,$(SERVER_ONLY_SRCS))
+SERVER_ONLY_SRCS += $(filter-out src/oidc/venture-oidc-records.c,$(wildcard src/oidc/*.c))
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -217,6 +232,7 @@ PUBLIC_HDRS := \
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/reconciliation/*.h))
 PUBLIC_HDRS += $(wildcard src/assets/*.h)
 PUBLIC_HDRS += $(wildcard src/orgaccess/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/tenant/*.h))
 PUBLIC_HDRS += $(wildcard src/billing/*.h)
 PUBLIC_HDRS += $(wildcard src/projects/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
@@ -233,7 +249,10 @@ PUBLIC_HDRS += $(wildcard src/banking/*.h)
 PUBLIC_HDRS += $(wildcard src/bankfeed/*.h)
 PUBLIC_HDRS += $(wildcard src/commerce/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/pipelines/*.h))
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sales/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
+PUBLIC_HDRS += $(wildcard src/marketing/*.h)
+PUBLIC_HDRS += $(wildcard src/attribution/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
@@ -254,6 +273,7 @@ PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
+PUBLIC_HDRS += $(wildcard src/oidc/*.h)
 PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
@@ -608,9 +628,11 @@ ifeq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
 endif
 
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
+deps: $(OIDC_GLIB_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-attribution $(OUTDIR)/tests/test-marketing: | $(OUTDIR)/venturectl
 
 # ---------------------------------------------------------------------------
 # The documentation site
@@ -641,3 +663,14 @@ install-docs-site: docs-site
 	done
 
 install: install-docs-site
+
+.PHONY: test-mail-relay
+test-mail-relay: $(OUTDIR)/tests/test-mail-routing
+	@test "$(BUILD_TYPE)" = debug || { echo 'Use make DEBUG=1 test-mail-relay' >&2; exit 1; }
+	@tools/venture-test-smtp-relay.sh "$(OUTDIR)/tests/test-mail-routing"
+
+# Session transport tests execute the independently linked generic CLI.
+$(OUTDIR)/tests/test-cli-session: $(OUTDIR)/venturectl
+
+# This regression invokes the actual offline command dispatcher.
+$(OUTDIR)/tests/test-hosted-maintenance: | $(OUTDIR)/venture

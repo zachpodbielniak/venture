@@ -339,6 +339,11 @@ venture_module_to_json(VentureModule *self)
 	((const gchar *const []){ __VA_ARGS__, NULL })
 
 static GType (*const venture_module_core_types[]) (void) = {
+	venture_tenant_workspace_get_type,
+	venture_tenant_membership_get_type,
+	venture_tenant_invitation_get_type,
+	venture_tenant_support_grant_get_type,
+	venture_tenant_event_get_type,
 	venture_organization_get_type,
 	venture_venture_get_type,
 	venture_document_get_type,
@@ -474,8 +479,8 @@ static const gchar *const venture_module_requires_sales[] = { "sales", NULL };
 static const gchar *const venture_module_requires_invoicing[] = {
 	"finance", "crm", "ledger", NULL
 };
-static const gchar *const venture_module_requires_tickets[] = { "tickets", NULL };
 static const gchar *const venture_module_requires_ai[] = { "ai", NULL };
+static const gchar *const forge_requires[] = { "tickets", "integrations", NULL };
 static const gchar *const venture_module_requires_forge[] = { "forge", NULL };
 
 static const gchar *const venture_module_suggests_crm[] = { "crm", NULL };
@@ -526,11 +531,12 @@ static const gchar *const venture_module_reports_factory[] = {
 
 static GType (*const venture_module_stripe_types[]) (void) = {
 	venture_stripe_price_link_get_type, venture_stripe_customer_link_get_type,
-	venture_stripe_checkout_get_type, venture_stripe_event_get_type,
+	venture_stripe_payment_link_get_type, venture_stripe_checkout_get_type, venture_stripe_event_get_type,
+	venture_stripe_authorization_get_type,
 	venture_processor_payout_get_type, venture_processor_payout_item_get_type,
 	venture_processor_dispute_get_type, venture_processor_exception_get_type, NULL
 };
-static const gchar *const venture_module_requires_stripe[] = { "receivables", NULL };
+static const gchar *const venture_module_requires_stripe[] = { "receivables", "integrations", NULL };
 
 static GType (*const venture_module_ledger_types[]) (void) = {
 	venture_journal_get_type, venture_journal_line_get_type,
@@ -564,7 +570,8 @@ static const gchar *const projects_reports[] = { "project_margin", NULL };
 static GType (*const projects_types[]) (void) = {
 	venture_client_project_get_type, venture_project_rate_get_type,
 	venture_project_time_get_type, venture_project_cost_get_type,
-	venture_project_billing_get_type, NULL
+	venture_project_billing_get_type, venture_project_scope_get_type,
+	venture_project_deliverable_get_type, NULL
 };
 static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_due", NULL };
 static GType (*const billing_types[]) (void) = {
@@ -582,6 +589,20 @@ static GType (*const venture_module_mail_types[]) (void) = {
 	venture_mail_message_get_type, venture_mail_template_get_type, NULL
 };
 static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
+static const gchar *const attribution_requires[] = { "leads", "integrations", NULL };
+static GType (*const attribution_types[]) (void) = {
+	venture_attribution_site_get_type, venture_attribution_visitor_get_type,
+	venture_attribution_touch_get_type, venture_attribution_submission_get_type,
+	venture_attribution_binding_get_type, NULL
+};
+static const gchar *const attribution_reports[] = { "attribution", NULL };
+static const gchar *const marketing_requires[] = { "mail", "sequences", "leads", NULL };
+static GType (*const marketing_types[]) (void) = {
+	venture_marketing_list_get_type, venture_marketing_member_get_type,
+	venture_marketing_consent_get_type, venture_marketing_send_get_type,
+	venture_marketing_recipient_get_type, venture_marketing_event_get_type, NULL
+};
+static const gchar *const marketing_reports[] = { "marketing_performance", NULL };
 static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
 static GType (*const venture_module_mail_sync_types[]) (void) = {
 	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type, NULL
@@ -614,7 +635,7 @@ static GType (*const venture_module_activities_types[]) (void) = {
 	venture_activity_get_type, venture_activity_type_get_type, NULL
 };
 static const gchar *const venture_module_activities_requires[] = { "crm", NULL };
-static const gchar *const venture_module_activities_reports[] = { "worklist", NULL };
+static const gchar *const venture_module_activities_reports[] = { "worklist", "calls", NULL };
 static GType (*const venture_module_payables_types[]) (void) = {
 	venture_vendor_bill_get_type, venture_vendor_bill_line_get_type,
 	venture_bill_payment_get_type, venture_bill_payment_allocation_get_type,
@@ -628,7 +649,8 @@ static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
 static const gchar *const bankfeed_requires[] = { "banking", NULL };
 static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_type, NULL };
-static const gchar *const commerce_requires[] = { "invoicing", "receivables", NULL };
+static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
+static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
 
 static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
@@ -669,6 +691,8 @@ static const gchar *const venture_module_suggests_close[] = {
 	"banking", "receivables", "payables", "assets", NULL
 };
 static const gchar *const venture_module_reports_close[] = { "close_workspace", NULL };
+static GType (*const venture_module_ocr_types[]) (void) = { venture_ocr_job_get_type, venture_ocr_batch_get_type, NULL };
+static const gchar *const venture_module_requires_ocr[] = { "capture", NULL };
 static GType (*const venture_module_capture_types[]) (void) = {
 	venture_capture_item_get_type, NULL
 };
@@ -789,6 +813,16 @@ static const gchar *const dedupe_requires[] = { "crm", NULL };
 static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
 static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
 
+static GType (*const integration_types[]) (void) = { venture_integration_connection_get_type, NULL };
+static GType (*const oidc_types[]) (void) = { venture_oidc_identity_get_type, NULL };
+static const gchar *const oidc_requires[] = { "orgaccess", "mfa", "integrations", NULL };
+static const gchar *const sales_requires[] = { "orgaccess", "leads", "pipelines", NULL };
+static const gchar *const sales_reports[] = { "sales_attainment", NULL };
+static GType (*const sales_types[]) (void) = { venture_sales_territory_get_type, venture_sales_quota_get_type,
+	venture_sales_credit_get_type, venture_sales_assignment_get_type, NULL };
+static const gchar *const ai_provider_requires[] = { "orgaccess", "integrations", NULL };
+static GType (*const ai_provider_types[]) (void) = { venture_ai_configuration_get_type,
+	venture_ai_platform_offer_get_type, venture_ai_grant_get_type, venture_ai_usage_period_get_type, venture_ai_usage_get_type, NULL };
 static const gchar *const mfa_requires[] = { "orgaccess", NULL };
 static GType (*const mfa_types[]) (void) = { venture_user_mfa_get_type, venture_mfa_recovery_code_get_type, venture_mfa_policy_get_type, NULL };
 
@@ -843,11 +877,6 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		venture_module_requires_receivables, NULL,
 		venture_module_receivables_types, venture_module_reports_receivables, NULL,
 		FALSE
-	},
-	{
-		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",
-		venture_module_requires_stripe, NULL, venture_module_stripe_types,
-		NULL, "stripe-enabled", FALSE
 	},
 	{
 		"outreach", "Outreach",
@@ -917,10 +946,20 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		FALSE
 	},
 	{
+		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
+		venture_module_requires_core, NULL,
+		venture_module_orgaccess_types, NULL, NULL, FALSE
+	},
+	{
+		"integrations", "Organization integrations",
+		"Organization-owned provider accounts and protected credential rotation.",
+		mfa_requires, NULL, integration_types, NULL, NULL, FALSE
+	},
+	{
 		"forge", "Git forges",
 		"Repositories, issues, branches, pull requests, and AI coding runs "
 		"against a Forgejo or Gitea instance.",
-		venture_module_requires_tickets, venture_module_suggests_forge,
+		forge_requires, venture_module_suggests_forge,
 		venture_module_forge_types, NULL, "forge-enabled", FALSE
 	},
 	{
@@ -960,11 +999,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"projects", "Client projects", "Approved time and billable costs invoiced through settlement.",
 		projects_requires, NULL, projects_types, projects_reports, NULL, FALSE
 	},
-	{
-		"orgaccess", "Organization access", "Membership, organization roles and team ownership.",
-		venture_module_requires_core, NULL,
-		venture_module_orgaccess_types, NULL, NULL, FALSE
-	},
+
 	{
 		"mail", "Transactional mail", "Durable outbound messages and templates.",
 		venture_module_requires_core, NULL, venture_module_mail_types, NULL, NULL, FALSE
@@ -999,10 +1034,6 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		bankfeed_requires, NULL, bankfeed_types, NULL, "bankfeed-enabled", FALSE
 	},
 	{
-		"commerce", "Commerce connectors", "Import orders as invoices through document compose.",
-		commerce_requires, NULL, NULL, NULL, "commerce-enabled", FALSE
-	},
-	{
 		"pipelines", "Sales pipelines", "Configurable stages, history and forecasts.",
 		venture_module_requires_crm, NULL, venture_module_pipelines_types,
 		venture_module_reports_pipelines, NULL, FALSE
@@ -1010,6 +1041,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"sequences", "Follow-up sequences", "Durable timed follow-ups and suppression.",
 		sequence_requires, NULL, sequence_types, sequence_reports, NULL, FALSE
+	},
+	{
+		"marketing", "Marketing", "Approved audiences, consent and durable bulk mail.",
+		marketing_requires, NULL, marketing_types, marketing_reports, NULL, FALSE
 	},
 	{ "autojournal", "Automatic journals", "Configurable source accounting.",
 		autojournal_requires, NULL, autojournal_types, autojournal_reports, NULL, FALSE
@@ -1041,6 +1076,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"capture", "Document capture", "Receipt and supplier-invoice inbox that becomes expenses or bills.",
 		venture_module_requires_capture, venture_module_suggests_capture,
 		venture_module_capture_types, NULL, NULL, FALSE
+	},
+	{
+		"ocr", "Local OCR", "Bounded local extraction and durable capture review jobs.",
+		venture_module_requires_ocr, NULL, venture_module_ocr_types, NULL, "ocr-enabled", FALSE
 	},
 	{
 		"claims", "Expense claims", "Employee reimbursements, mileage and receipt-backed expense claims.",
@@ -1144,6 +1183,32 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"mfa", "Second factor",
 		"TOTP enrolment, verification at sign-in, recovery codes and the require-MFA organization setting.",
 		mfa_requires, NULL, mfa_types, NULL, NULL, FALSE
+	},
+
+	{
+		"attribution", "Attribution", "Consent-bound first-party analytics and verified form capture.",
+		attribution_requires, NULL, attribution_types, attribution_reports, NULL, FALSE
+	},
+	{
+		"commerce", "Commerce connectors", "Import orders as invoices through document compose.",
+		commerce_requires, NULL, commerce_types, NULL, "commerce-enabled", FALSE
+	},
+	{
+		"stripe", "Stripe", "Hosted Checkout and verified payment settlement.",
+		venture_module_requires_stripe, NULL, venture_module_stripe_types,
+		NULL, "stripe-enabled", FALSE
+	},
+	{
+		"oidc", "Organization sign-in", "Explicit OIDC identity links with local roles, MFA and recovery.",
+		oidc_requires, NULL, oidc_types, NULL, "oidc-enabled", FALSE
+	},
+	{
+		"ai_providers", "Organization AI", "Explicit provider ownership, platform grants and durable usage quotas.",
+		ai_provider_requires, NULL, ai_provider_types, NULL, NULL, FALSE
+	},
+	{
+		"sales_performance", "Territories and quotas", "Deterministic ownership, immutable booked credit and period attainment.",
+		sales_requires, NULL, sales_types, sales_reports, NULL, FALSE
 	}
 };
 

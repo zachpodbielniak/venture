@@ -48,6 +48,10 @@ VentureMoney *venture_progress_service_remaining(VentureProgressService *self,
  * @actor: (nullable): audit actor; NULL for internal service work
  * @error: (out) (optional): return location for an error
  *
+ * Issues the invoice for today's calendar date (midnight UTC encoding),
+ * allowing a receipt entered for the same date. Billing/audit timestamps
+ * retain their precise instants.
+ *
  * Returns: (transfer full) (nullable): owned result
  */
 VentureEntity *venture_progress_service_invoice(VentureProgressService *self,

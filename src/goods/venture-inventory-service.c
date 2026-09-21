@@ -954,13 +954,13 @@ valuation_report(VentureContext *context, VentureDateRange *period, JsonObject *
 void
 venture_goods_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("committed_spend",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "committed_spend",
 		"Committed spend", "Open purchase orders valued at remaining unordered quantity.",
 		committed_spend_report)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("reorder_worklist",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "reorder_worklist",
 		"Reorder worklist", "Inventory items at or below their reorder point.",
 		reorder_report)));
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new("inventory_valuation",
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "inventory_valuation",
 		"Inventory valuation", "FIFO cost layers remaining, reconciling to the inventory control account.",
 		valuation_report)));
 }

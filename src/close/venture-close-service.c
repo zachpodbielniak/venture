@@ -551,6 +551,10 @@ venture_close_service_open(VentureCloseService *self, gint64 period_id,
 			g_object_get(organization, "default-currency", &book, NULL);
 		use_currency = book;
 	}
+	if (use_currency != NULL && *use_currency && !venture_currency_is_valid(use_currency)) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "Close currency must be an ISO 4217 code");
+		goto fail;
+	}
 	g_object_set(workspace, "name", name, "fiscal-period-id", period_id, "status", "preparing",
 		"currency", use_currency != NULL && use_currency[0] != '\0' ? use_currency : "USD", NULL);
 	venture_entity_set_organization_id(workspace, venture_entity_get_organization_id(period));
@@ -637,12 +641,28 @@ venture_close_service_complete_task(VentureCloseService *self, VentureEntity *ta
 	gboolean waive, const gchar *notes, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureEntity) workspace = NULL;
+	g_autofree gchar *status = NULL;
+	gint64 workspace_id = 0;
 	g_return_val_if_fail(VENTURE_IS_CLOSE_SERVICE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_CLOSE_TASK(task), FALSE);
 	db = service_db(self);
 	if (db == NULL)
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed");
 	if (!begin_op(self, db, error))
 		return FALSE;
+	g_object_get(task, "workspace-id", &workspace_id, NULL);
+	workspace = venture_database_get(db, VENTURE_TYPE_CLOSE_WORKSPACE, workspace_id, error);
+	if (!workspace) return finish_op(self, db, FALSE, error);
+	g_object_get(workspace, "status", &status, NULL);
+	if (g_strcmp0(status, "signed_off") == 0 || g_strcmp0(status, "completed") == 0) {
+		refuse(error, VENTURE_ERROR_CONFLICT, "Reopen the close before changing signed checklist evidence");
+		return finish_op(self, db, FALSE, error);
+	}
+	if (venture_string_is_empty(notes)) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "A checklist finding or waiver requires notes");
+		return finish_op(self, db, FALSE, error);
+	}
 	g_object_set(task, "status", waive ? "waived" : "done", NULL);
 	if (notes != NULL)
 		g_object_set(task, "notes", notes, NULL);
@@ -1143,7 +1163,7 @@ close_report(VentureContext *context, VentureDateRange *period, JsonObject *opti
 void
 venture_close_register_reports(VentureReportRegistry *registry)
 {
-	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new(
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"close_workspace", "Close workspace",
 		"Accountant close status, signoffs and subledger tie-outs", close_report)));
 }

@@ -62,11 +62,48 @@ gint venture_mail_outbox_deliver_due(VentureMailOutbox *self, gint64 organizatio
  */
 gboolean venture_mail_outbox_retry(VentureMailOutbox *self, gint64 organization_id, gint64 id, const VentureActor *actor, GError **error);
 /**
+ * venture_mail_outbox_cancel:
+ * @self: outbox
+ * @organization_id: exact owning organization
+ * @id: queued or failed message
+ * @reason: bounded cancellation explanation
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): unknown identity, unsafe state or persistence error
+ *
+ * Cancels only a known pre-submission state, retaining the message and its
+ * retry evidence. A repeated cancellation succeeds. Sending, uncertain and
+ * accepted messages cannot be cancelled: the recipient may already have them.
+ * Cancellation remains available when the mail module is disabled.
+ *
+ * Returns: whether cancellation is retained
+ */
+gboolean venture_mail_outbox_cancel(VentureMailOutbox *self, gint64 organization_id, gint64 id,
+	const gchar *reason, const VentureActor *actor, GError **error);
+/**
  * venture_mail_check_removal:
  * @entity: record proposed for deletion, restoration or purge
  * @error: (out) (optional): retained-outbox refusal
  * Returns: whether removal is allowed; mail identities must remain retained
  */
 gboolean venture_mail_check_removal(VentureEntity *entity, GError **error);
+/**
+ * venture_mail_outbox_deliver_one:
+ * @self: outbox
+ * @org: verified organization
+ * @id: exact persisted message
+ * @expected_connection: required provider connection, or zero for ordinary delivery
+ * @expected_version: required configuration version, or zero with an unbound expectation
+ * @cancellable: (nullable): cancellation
+ * @error: (out) (optional): persistence or validation refusal
+ *
+ * Uses the ordinary claim, veto, binding, send and outcome lifecycle for
+ * only this message. A connection test can require its selected settings;
+ * mismatches persist a known pre-submission refusal and submit nothing.
+ * Transport results remain on the message, including failure/uncertainty.
+ *
+ * Returns: one when attempted, zero when not due, or minus one on repository failure
+ */
+gint venture_mail_outbox_deliver_one(VentureMailOutbox *self, gint64 org, gint64 id,
+	gint64 expected_connection, gint64 expected_version, GCancellable *cancellable, GError **error);
 G_END_DECLS
 #endif

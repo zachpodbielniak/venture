@@ -8,3 +8,47 @@ debit Cash and credit a configured liability, then release into income.
 Retention is held as a liability against AR and released the same way.
 
 Equal-percentage instalments receive distinct invoice numbers. Explicit progress amounts must use the contract currency, and failed currency arithmetic rolls back releases.
+
+* Customer retainers through the shared action forms
+
+A company's =Collect customer retainer= action records cash already received
+against an active liability account in the same organization. Supply an
+explicit currency with the amount. It does not charge a provider. The
+resulting =customer_retainer= offers =Release earned retainer= to recognize
+an earned portion as income; it neither issues nor settles an invoice.
+Both actions require organization finance, owner or administrator authority
+and the quotes module. The service owns the transaction and accounting
+consent, so these actions cannot be staged as a generic record change.
+
+#+begin_src sh
+venturectl act company 1 collect_retainer 'amount=250 USD' liability_account_id=12
+venturectl act customer_retainer 1 release 'amount=100 USD'
+venturectl act customer_retainer 1 release 'amount=150 USD'
+#+end_src
+
+Each explicit collection represents a separate cash receipt. Each release
+reduces the remaining liability; an over-release or a different currency is
+refused and leaves the journal and remaining balance unchanged. Do not
+record the same cash again as an ordinary invoice receipt. Linking the
+retainer to a project retains traceability, but invoice-billed project
+margin does not count this earned ledger income as a project invoice.
+
+* Invoice dates and same-day receipts
+
+Generated progress invoices and full invoices handed off from accepted
+quotes use today's calendar date in the configured business zone
+(=locale.timezone=, read through =venture_settlement_service_today()=),
+encoded as midnight UTC like date-picker input. The default zone is
+=America/New_York=; a deployment elsewhere sets =locale.timezone= before
+relying on generated dates. The zone the server process runs in plays no
+part: an evening acceptance in New York on a UTC host is
+still issued for the New York date. Quote acceptance, record creation, audit
+and progress-billing activity retain their precise timestamps. A same-day
+manual receipt is therefore valid; a previous-day receipt remains forbidden.
+Explicit future timestamps and tomorrow's date are refused on both sides of
+UTC: east of it, today's calendar date is still allowed when its encoded UTC
+midnight is later than the current instant; west of it, tomorrow's calendar
+date is still refused when its encoded UTC midnight has already passed.
+Existing historical issue timestamps are not rewritten. The
+=/progress/calendar-zone-*= cases pin this by configuring a zone whose date
+differs from the suite host's.

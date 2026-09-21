@@ -250,6 +250,7 @@ typedef struct
 	SoupSession	*session;
 	SoupMessage	*message;
 	gint64		 webhook_id;
+	gint64		 organization_id;
 	gchar		*event;
 	gchar		*delivery_id;
 	gchar		*target_type;
@@ -285,6 +286,7 @@ static VentureEntity *
 venture_webhook_record_delivery(
 	VentureContext	*context,
 	gint64		 webhook_id,
+	gint64		 organization_id,
 	const gchar	*event,
 	const gchar	*target_type,
 	gint64		 target_id,
@@ -334,7 +336,7 @@ venture_webhook_record_delivery(
 	             "failure-reason", failure,
 	             NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(delivery),
-		venture_context_get_default_organization_id(context));
+		organization_id);
 
 	if (!venture_database_save(database, VENTURE_ENTITY(delivery), &actor,
 	                           NULL))
@@ -343,7 +345,7 @@ venture_webhook_record_delivery(
 	webhook = venture_database_get(database, VENTURE_TYPE_WEBHOOK, webhook_id,
 	                               NULL);
 
-	if (NULL != webhook)
+	if (NULL != webhook && venture_entity_get_organization_id(webhook) == organization_id)
 	{
 		gint64 failures = 0;
 
@@ -406,7 +408,7 @@ venture_webhook_sent(
 			                           (gsize)VENTURE_WEBHOOK_EXCERPT * 2));
 	}
 
-	venture_webhook_record_delivery(job->context, job->webhook_id, job->event,
+	venture_webhook_record_delivery(job->context, job->webhook_id, job->organization_id, job->event,
 		job->target_type, job->target_id, job->target_label, job->body,
 		status, text,
 		(NULL != error) ? error->message : NULL, duration);
@@ -437,6 +439,9 @@ venture_webhook_send(
 	g_autoptr(GBytes) bytes = NULL;
 	SoupMessageHeaders *headers;
 
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, NULL)) return;
+
 	g_object_get(webhook, "url", &url, "secret", &secret, NULL);
 
 	if (venture_string_is_empty(url))
@@ -445,6 +450,7 @@ venture_webhook_send(
 	job = g_new0(VentureWebhookJob, 1);
 	job->context = g_object_ref(context);
 	job->webhook_id = venture_entity_get_id(webhook);
+	job->organization_id = venture_entity_get_organization_id(webhook);
 	job->event = g_strdup(event);
 	job->delivery_id = g_uuid_string_random();
 	job->target_type = g_strdup(target_type);
@@ -458,7 +464,7 @@ venture_webhook_send(
 
 	if (NULL == job->message)
 	{
-		venture_webhook_record_delivery(context, job->webhook_id, event,
+		venture_webhook_record_delivery(context, job->webhook_id, job->organization_id, event,
 			target_type, target_id, target_label, job->body, 0, NULL,
 			"That is not a URL anything can be posted to", 0);
 		venture_webhook_job_free(job);
@@ -504,11 +510,12 @@ venture_webhook_send(
 /* --- The hook -------------------------------------------------------------- */
 
 static GPtrArray *
-venture_webhook_active(VentureContext *context)
+venture_webhook_active(VentureContext *context, gint64 organization_id)
 {
 	g_autoptr(VentureQuery) query = NULL;
 
 	query = venture_query_new(VENTURE_TYPE_WEBHOOK);
+	venture_query_set_organization(query, organization_id);
 	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
 	                                "true", NULL);
 	venture_query_set_limit(query, 0);
@@ -525,6 +532,7 @@ venture_webhook_on_audit(
 ){
 	VentureContext *context;
 	g_autoptr(GPtrArray) webhooks = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autofree gchar *target_type = NULL;
 	g_autofree gchar *target_label = NULL;
 	g_autofree gchar *actor = NULL;
@@ -533,7 +541,6 @@ venture_webhook_on_audit(
 	gint64 target_id = 0;
 	guint i;
 
-	(void)database;
 	context = user_data;
 
 	if (!venture_context_module_enabled(context, "webhooks"))
@@ -543,15 +550,26 @@ venture_webhook_on_audit(
 	             "target-type", &target_type, "target-id", &target_id,
 	             "target-label", &target_label, NULL);
 
-	if (venture_webhook_type_is_quiet(target_type) || (0 == target_id))
+	if (venture_webhook_type_is_quiet(target_type) || (0 == target_id) || venture_entity_get_organization_id(entry) <= 0)
 		return;
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	{
+		g_autoptr(VentureEntity) target = NULL;
+		GType type = venture_entity_registry_lookup_any(venture_context_get_entity_registry(context), target_type);
+		if (type == G_TYPE_INVALID) return;
+		target = venture_database_get(database, type, target_id, NULL);
+		/* Private data is never published through organization-wide
+		 * notification excerpts or outbound integration events. */
+		if (!target || venture_entity_get_organization_id(target) != venture_entity_get_organization_id(entry) || venture_access_policy_record_is_personal(venture_database_get_access_policy(database), target)) return;
+	}
+
 
 	event = venture_webhook_event_name(target_type, action);
 
 	if (NULL == event)
 		return;
 
-	webhooks = venture_webhook_active(context);
+	webhooks = venture_webhook_active(context, venture_entity_get_organization_id(entry));
 
 	for (i = 0; (NULL != webhooks) && (i < webhooks->len); i++)
 	{
@@ -678,6 +696,9 @@ venture_webhook_test(
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(VENTURE_IS_WEBHOOK(webhook), NULL);
 
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, error)) return NULL;
+
 	g_object_get(webhook, "url", &url, "secret", &secret, NULL);
 
 	if (venture_string_is_empty(url))
@@ -775,7 +796,7 @@ venture_webhook_test(
 	}
 
 	delivery = venture_webhook_record_delivery(context,
-		venture_entity_get_id(webhook), "webhook.test", "webhook",
+		venture_entity_get_id(webhook), venture_entity_get_organization_id(webhook), "webhook.test", "webhook",
 		venture_entity_get_id(webhook), label, body, status, text,
 		(NULL != wait.error) ? wait.error->message
 		                     : (wait.finished ? NULL : "It did not answer"),

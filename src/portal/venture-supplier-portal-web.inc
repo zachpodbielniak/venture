@@ -145,7 +145,8 @@ venture_supplier_portal_invite_api(HtmxRequest *request, GHashTable *params, gpo
 static void
 venture_supplier_portal_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/supplier/:token/bills/:id/print", venture_supplier_portal_print, self);
-	htmx_router_get(router, "/supplier/:token", venture_supplier_portal_web, self);
-	htmx_router_post(router, "/api/v1/supplier_portal/invite", venture_supplier_portal_invite_api, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/supplier/:token/bills/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_supplier_portal_print, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/supplier/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_supplier_portal_web, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/supplier_portal/invite", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_supplier_portal_invite_api, self);
 }

@@ -1,0 +1,54 @@
+Synthetic physical PostgreSQL recovery demonstration — 2026-09-20
+
+Command, run from the tenant-operations worktree:
+  tools/venture-tenant-recovery-drill.py \
+    --image localhost/venture-125-recovery:97637d2 \
+    --application-revision 97637d2 \
+    --venture-binary /usr/local/bin/venture
+
+Verbatim non-secret result:
+{
+  "application_head": "97637d2",
+  "application_image": "sha256:0fb3deabb3cdff3c18b358cbe5532a1e9c6311e5c298b7acbbb2d199ea7b27fd",
+  "postgres_major": 18,
+  "tables_reconciled": 214,
+  "rows_reconciled": 205,
+  "all_row_sha256_equal": true,
+  "attachment_and_identity_equal": true,
+  "neighbor_health_checks": 189,
+  "neighbor_failures": 0,
+  "neighbor_rows_unchanged": true,
+  "backup_seconds": 5.14,
+  "restore_seconds": 10.494,
+  "archive_bytes": 1157695,
+  "financial_posting": "USD123.45 debit and credit",
+  "live_provider_contacted": false
+}
+
+The two source stacks and separate empty recovery destination use distinct
+rootless Podman networks, application processes, persistent PostgreSQL volumes,
+database roles and state/configuration roots. No existing tenant is accepted.
+The actual DEBUG application uploads the attachment and creates company,
+accounting, bank-binding, document and capture records. A foreign source
+session receives 401 from its neighbor. The application is stopped before the
+archive is created; decrypted archive identity/image/version/digests are checked
+before any destination write. Restored rows are compared before startup can
+legitimately update operational state. The restored application then starts,
+accepts local login and reads its retained company/provider settings.
+
+The driver checked the restored rows and the transcript records its result.
+No credential, key file, archive plaintext or private business data is published. This is a
+small synthetic recovery proof, not a scale test, cross-host off-site proof,
+provider-authentication proof or the final hosted-boundary security review.
+
+Failure evidence:
+- Removing the container tenant-label comparison fails the ownership case.
+- Requiring a literal sha256: prefix fails against real Podman image IDs; the
+  regression now accepts either representation of exactly the same digest.
+- The deterministic GTest invokes real GnuPG, tar, permissions, file locking,
+  archive publication and restore staging with only Podman transport replaced.
+  It rejects tampering/wrong keys, authenticated traversal and link payloads,
+  wrong workspace IDs despite matching local slugs, live apps, privileged DB
+  roles, nonempty targets, wrong mounts, failed dumps and failed restore.
+- Bash syntax and ShellCheck pass. The real DEBUG-style GTest passes and removes
+  its successful fixture using venture_test_remove_tree().

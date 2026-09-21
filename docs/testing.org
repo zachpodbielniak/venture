@@ -82,16 +82,20 @@ The arithmetic against known data, not merely that reports run. Also that an unr
 ** =test-bankfeed=
 
 Fake feed import through the bank match seam, idempotent sync of the same
-window, missing =VENTURE_BANKFEED_TELLER_KEY=, injected Teller transport
+window, service start with no installation credential, injected Teller transport
 with no network, and a rolled-back batch on a bad line.
 
 
 ** =test-commerce=
 
-Fake Shopify-like connector imports an order as a sent invoice (and a sale
-when paid) through document compose and settlement. A second import of the
-same external id writes nothing. Missing =VENTURE_COMMERCE_SHOPIFY_TOKEN=
-refuses to start. A later invalid order rolls the batch back.
+Stateless connector factories and explicit organization vault accounts import
+orders through document compose and settlement. Coverage includes account-scoped
+replay, two organizations/shops with equal remote IDs, legacy adoption without
+rewriting invoices, exact totals and rollback, malformed provider shapes,
+rotation/disconnect/module disable during fetch, and main-thread vault checks
+for asynchronous plugin transports. Ambient Shopify credentials are ignored;
+missing organization configuration refuses import, not startup. PostgreSQL uses
+the isolated =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= fixture.
 
 ** =test-banking=
 
@@ -605,3 +609,357 @@ card's Booked vs received line equals the report's own metric and reads
 report=, =bucket=week= reaches the report, the JSON agrees between the two,
 the report page keeps the option in its links, and a bad bucket comes back
 422 from both.
+
+* Organization integration credentials
+
+=make DEBUG=1 test-one T=test-integrations= exercises organization/account
+binding, authenticated encryption and redaction, rotation, stale versions,
+disconnection, historical identity and generic-write/permission refusals.
+See [[file:integrations.org][the integration contract]] for what this foundation
+does and the provider-level acceptance work still pending.
+
+* Accounting replacement acceptance
+
+=test-accounting-acceptance= now proves opening cash/AR/AP import and replay,
+settlement and archive tie-outs; trading through explicit bank matches,
+reconciliation, financial statements, signed close, refusal, reopening and
+correction; and a successful retry after an injected posting rollback.
+All three scenarios pass SQLite and schema-isolated PostgreSQL. See
+[[file:accounting-acceptance.org][the exact expected balances and commands]].
+This is synthetic executable evidence, not a completed deployment exercise.
+
+* Project profitability and actions
+
+=test-projects= verifies frozen labour cost, unknown historical evidence,
+currency and organization integrity, immutable billed evidence, period-based
+management financials, source identities, rounding/overflow, and the generic
+approve/bill actions with finance access and stale-proposal checks. The nine
+cases pass SQLite and schema-isolated PostgreSQL; migration and anonymous-route
+coverage run separately. See [[file:projects.org][the profitability contract]].
+
+* Structured calls
+
+=test-activities= has 36 cases, including atomic call history/followup,
+lead-only timeline, replay/conflict, staged and stale completion, bounded
+inputs and escaped transcripts. All pass on SQLite and the isolated
+PostgreSQL fixture; standalone file-upgrade coverage remains SQLite.
+=test-desk= passes 16 cases and =test-migrations= passes nine including its
+optional PostgreSQL check through migration 000610. See [[file:activities.org][the call contract]].
+* Sales to delivery acceptance
+
+=test-project-delivery= has twelve SQLite and PostgreSQL scenarios covering
+accepted-quote and won-deal handoff, replay conflicts, ordinary-ticket work,
+acceptance, project and quote invoicing, association of an existing invoice,
+additive scope, full-billing history, atomic rollback/retry, module boundaries,
+revoked membership and stale staged decisions. The related project, progress,
+module and migration suites exercise their existing contracts too. See
+[[file:project-delivery.org][the operator workflow and financial date semantics]].
+
+* CRM to collection
+
+=test-crm-acceptance= crosses capture/deduplication, ownership-preserving lead
+conversion, ordinary activities and transactional mail, quote acceptance,
+project delivery and partial invoicing through payment. Its log transport
+sends no real mail. The scenario checks source identities and exact minor-unit
+balances; see [[file:crm-acceptance.org][the reproducible walkthrough and limits]].
+
+* OCR and attachment ownership
+
+The OCR lane passed fifteen cases on SQLite and isolated PostgreSQL,
+including real Tesseract 5.5.3 and a mixed native/scanned PDF. Five independent
+attachment tests cover service-owned paths, organization boundaries, legacy
+aliases, nested directories, size bounds, symlinks and FIFOs. At that lane
+revision capture (6), mail (23), mail sync (38), documents (5), authorization
+(92), modules (19), configuration (32) and migrations (7) passed their relevant
+lane checks; the migration suite has since grown to nine cases through
+migration 000610.
+Engine-independent tests still run without optional OCR libraries; real OCR
+requires the explicit test executable described in [[file:ocr.org][the OCR guide]].
+The combined epic revision is validated separately in the acceptance ledger.
+* Organization SMTP routing
+
+=test-mail-routing= verifies main-thread credential selection, account-bound
+retry and persistence-before-submission. Its database cases support
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. =make DEBUG=1 test-mail-relay= adds
+an authenticated STARTTLS Mailpit fixture with two accounts and independent
+relay-message assertions. See [[file:mail.org][Transactional mail]] for prerequisites,
+cleanup and the distinction between acceptance and inbox delivery.
+
+* Organization bank-feed credentials
+
+=test-bankfeed= now runs seventeen cases on SQLite and isolated PostgreSQL
+(=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=). Account-scoped encrypted settings
+replace ambient Teller credentials. The suite covers equal provider account
+identifiers in two organizations, rotation, disconnect, immutable import
+identity, legacy-key migration with the module enabled and disabled, and
+revocation while a response is outstanding. A deleted bank is refused before
+any provider request; its regression test fails without the deleted-row guard. Removing the completion-time
+credential check makes =/bankfeed/inflight-revocation= fail because the
+revoked run succeeds; restoring it refuses the import. The settings route
+has anonymous/editor refusal and write-only/stale-form checks in =test-auth=.
+
+Provider transport fixtures are synthetic: these checks do not demonstrate
+a live Teller enrollment or production mutual TLS. Production/development
+configuration requires a valid certificate/private-key pair; sandbox is an
+explicit selection. The ordinary DEBUG build and generated GIR also cover
+the owned settings-schema and immutable-client extension points.
+
+* Private mailbox and calendar connectors
+
+=test-connectors= covers the shared IMAP/CalDAV credential lifecycle,
+private-owner read/audit/vault boundaries, membership revocation, changed
+selections and populated additive upgrades. Its database fixtures support
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. =test-mail-sync= and =test-calendar=
+exercise private import suppression, real stored snapshots and revocation
+between transport completion and persistence using the fake clients'
+synchronous =response-ready= signal. Restoring a removed private calendar
+UID preserves its retained record identity.
+
+The generic routes remain covered by =test-auth=, with assigned-owner
+settings, blank saved secrets, stale forms and another member's 404 refusal.
+The mail/calendar surface suites verify that CLI sync reports the explicit
+operator allowlist refusal instead of resolving old environment labels.
+=test-webhook= checks that a shared event selects only its organization's
+hooks and a private event selects none. These provider fixtures make no live
+mailbox or calendar service claim; the separate browser recording is in
+[[file:evidence/125-connectors-demo.org][the connector demonstration]].
+
+* Organization OpenID Connect
+
+=test-oidc= verifies signed-token handling, PKCE/state/nonce, explicit local
+linking, organization scope, replay refusal, provider/user/membership revocation,
+local-MFA continuation and bounded network failure. Its lane passed 22 SQLite
+and isolated PostgreSQL cases and a real Keycloak 26.7.3 browser exercise;
+[[file:oidc.org][OIDC documentation]] records the operator procedure and evidence limitations.
+The combined epic build also checks anonymous route protection and local login.
+
+* Organization AI providers
+
+=test-ai-organizations= exercises private/platform provider selection, grant
+revocation, quota accounting, concurrency, configuration revisions and redaction.
+Its PostgreSQL fixtures use =VENTURE_TEST_ACCOUNTING_POSTGRES_URI=. Provider tests
+use local controlled HTTP peers; they do not spend against a live model account.
+See [[file:ai-organizations.org][the contract and built-artifact demonstration]].
+
+* Recurring invoice automatic collection
+
+=test-stripe= includes controlled-provider authorization, recurring collection,
+persisted idempotency and retries, signed settlement and restart scenarios.
+Application HTTP responses never constitute payment evidence. See
+[[file:stripe-automatic-demonstration.org][the built-artifact collection transcript]] and
+[[file:stripe.org][the provider/account contract]]. PostgreSQL fixture runs use
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI=.
+* Offline credential maintenance
+
+=make DEBUG=1 test-one T=test-process-lease= checks separate-process exclusion
+and crash recovery. =test-integrations= verifies master-key rotation, full rollback,
+read-only key checking and private retained history across page boundaries. Both
+accept =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= for an isolated PostgreSQL fixture.
+See [[file:integration-key-maintenance.org][the maintenance contract]].
+* Tenant recovery tooling
+
+=test-tenant-recovery= is part of the ordinary DEBUG suite. It invokes the
+real backup tool with a deterministic Podman transport fixture; encryption,
+archive parsing, private permissions, maintenance locking and filesystem
+publication use real local tools. Install =jq=, =gnupg2=, =tar=, =coreutils=,
+=diffutils= (for =cmp=), =gawk=, =findutils=, =util-linux= and =python3= before
+running it: the backup tool drives =venture-tenantctl= (a Python program) for
+catalog registration and refuses to start without =python3=, and
+=test-tenant-lifecycle= is itself a Python harness. Container builds include
+these test dependencies. The test refuses wrong ownership/workspace/image,
+live processes, unsafe archive entries, bad credentials and nonempty targets,
+and verifies successful content restoration and failure cleanup. It does
+not substitute for a physical PostgreSQL recovery drill.
+
+* Hosted lifecycle boundaries
+
+=test-tenant-lifecycle= checks the local operator boundary with real filesystem
+permissions/locks and controlled container responses. =test-tenant-recovery= also
+checks inherited maintenance-descriptor identity. These cases are separate from
+physical restore, deployment security and capacity qualification. See
+[[file:tenant-operations.org][the lifecycle runbook]].
+
+* Sales and hosted integration regressions
+
+=test-sales-performance= covers organization/team routing, immutable booking
+credit and reversals, exact currency-separated quotas, retained evidence while
+disabled, and upgrades without invented historical credit.
+
+=test-hosted-maintenance= invokes the built server with bounded subprocesses.
+It checks that the process lease precedes offline lifecycle/key commands, hosted
+maintenance needs an explicit reason, command combinations are refused, and a
+suspended workspace remains suspended after rotation. The old key then fails
+verification and the new key succeeds. =test-stripe='s
+=/stripe/automatic-tenant-lifecycle= checks background collection refusal in
+read-only and suspended states, unchanged scheduling rows, and explicit resumption.
+These integration cases supplement the independent service and process-lease tests.
+
+* Hosted integration: CRM rollback and sales credit
+
+The 122-binary integration run exposed =/crm-import/rollback-exact=: the
+sales ledger correctly refused deleting a won deal. CRM rollback now uses
+the canonical stage transition before removal. The regression asserts the
+retained booking plus reversal net to zero, alongside exact retained CRM
+rows and repeat rollback. All 13 CRM import cases pass after this repair.
+** =test-marketing= and =test-marketing-mail=
+
+Marketing tests retain a frozen deduplicated audience and rendered content,
+preserve declared evidence and membership references through CRM merge while
+ordinary references move to the survivor, require source/address/purpose
+evidence, refuse forged history and reserved
+withdrawal identities, and verify same-organization references and editor
+roles. Queued delivery rechecks address, suppression and permission immediately
+before transport, including a synchronous automation withdrawal during the
+last bookkeeping save. Unsubscribe survives a deleted source, unrelated signed-in
+principal, and disabled marketing/mail/sequences modules; necessary transactional mail remains
+independent and applicable sequence enrollment exits through its existing rule.
+
+File reconnect expires a retained sending lease to =uncertain= without a new
+submission or outbox identity. Explicit retry retains that identity. Throttle
+coverage distinguishes enqueue time from the later actual delivery clock;
+pause defers without spending attempts and cancellation refuses unknown SMTP
+outcomes. Public serialization omits private URLs, tokens and payloads.
+Tracking checks UTC daily deduplication and stable click destinations; reviewed
+temporary feedback does not suppress while hard-bounce evidence does. Approval
+cohort reports verify half-open boundaries, organization isolation, and overlapping
+SMTP acceptance/hard-bounce counts without inventing delivery or reading proof.
+
+A real loopback HTTP server and the built =venturectl= exercise authenticated
+preview/approve/pause/resume plus anonymous one-click unsubscribe and replay.
+GET never withdraws permission. =test-auth= pins the new public unknown-token
+routes and protected action. =test-mail= inspects both attempts' actual SMTP
+wire headers, including the same Message-ID and RFC 8058 header pair.
+
+The paired 420 migration preserves existing CRM/suppression rows without
+inventing consent, supports enabling a previously disabled module, and rolls
+back a missing identity-index check without losing retained history. Set
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= to run the complete marketing suite in
+fresh per-fixture PostgreSQL schemas; the reconnect case reuses only its own
+schema. No fixture resets =public=. The opt-in test database is disposable;
+these checks cover logical reconnect and transaction behavior, not physical
+recovery performance. See [[file:marketing-demonstration.org][the built-artifact transcripts]].
+
+* First-party attribution and signed Lightsite intake (#121 / #125)
+
+The attribution fixture reuses canonical lead capture/conversion and settlement,
+with schema-isolated SQLite/PostgreSQL helpers. It tests separate anonymous and
+email permissions, exact source/campaign binding, stable event/submission replay,
+withdrawal and expiration, site/visitor quotas, retained conversion evidence,
+signed current account configuration, frozen first/last source selection, and
+separate won-value/issued-net/applied-cash/refund measures. Financial events use
+actual monotonically later receipt instants: no future-dated financial event is
+allowed merely to make a fixture convenient.
+
+The Node.js browser harness is invoked by =test-attribution= and is therefore a
+required development-test dependency, included in the builder and =list-deps=
+packages. It uses only Node built-ins and no network. It proves no storage or
+tracking before explicit consent, forms without analytics, no implied email
+permission, stable in-memory retries, offline withdrawal stopping new tracking,
+and serialized consent responses. The ordinary runtime image does not gain
+Node for this feature.
+
+Regression evidence includes generic forged evidence being accepted before the
+save guard, immutable site identity changing before its guard, site deletion
+breaking withdrawal, capture matching another mailbox incorrectly granting email
+permission, and synchronous automation changing that mailbox between matching
+and consent. Browser tests also reproduced an older consent response erasing the
+newer grant's stored policy. Each was observed red and repaired. Report registration
+and explicit conversion-rate expectations were tested red before implementation.
+The end-to-end campaign fixture exposed the JSON-field storage contract: metadata
+JSON is serialized string storage, so mapping validation/lookup must parse it,
+not cast its property pointer to =JsonNode=.
+
+The canonical JSON extraction has a byte-for-byte accounting fingerprint
+compatibility test; removing object-key sorting failed the regression, then the
+restored implementation passed. Marketing and attribution headers are explicitly
+included in =PUBLIC_HDRS=; inspect their function declarations in the generated
+GIR as well as requiring a warning-free scanner, rather than mistaking an omitted
+public API for a clean annotation check.
+
+Final review regressions also cover a repeated untracked inquiry followed by a
+consented observation: first/last source evidence and lookback remain separate.
+Private visitor references, replay keys and referrer origins are excluded from
+ordinary serialization and audit diffs contain only redacted change markers.
+The browser treats a retention-forgotten capability's 404 withdrawal as complete,
+while offline failures remain pending and cannot resume tracking. These failures
+were reproduced before the respective repairs.
+
+The report transport fixture invokes the built =venturectl= and verifies matching
+JSON/CSV source rows plus model/details preservation in page links. Its isolated
+loopback server disables authentication solely for option-transport testing;
+=test-auth= separately exercises the protected settings routes. The authority
+fixture exercises real organization membership for site/configuration changes
+and the type-level retention action. The financial journey includes canonical
+CRM merge, retained original references and separate EUR/USD buckets. Logical
+reconnect preserves exact submission replay and refused withdrawn capabilities.
+See [[file:attribution-demonstration.org][the built-artifact transcripts]].
+
+A reentrant =entity-saved= regression reproduces withdrawal during observation.
+The standalone withdrawal contract refuses BUSY before any nested mutation;
+a follow-up call after the observation commits redacts its linkage and refuses
+future tracking. The real public HTTP withdrawal path remains a successful
+standalone transaction. This avoids an outer rollback undoing an already
+reported privacy decision.
+
+* Close action accessibility (epic #125)
+
+The generated-action regression first failed because =close_task.complete=
+was absent from the shared action registry. It now drives opening, all
+18 checklist tasks, checks, preparer/reviewer separation and completion
+through typed actions. It refuses viewer completion, post-completion task
+changes and opening when the close module is disabled. All 11 close tests
+pass on SQLite and a disposable PostgreSQL schema; neither result is a
+claim of hosted capacity. The authenticated deployment walkthrough also
+uses the built server and independent preparer/reviewer sessions.
+
+The added =/close/action-authority= case passes on both SQLite and
+PostgreSQL: an organization editor is hidden from the period (not found), an
+accountant may read it but the action's own finance gate refuses with its
+message, promotion to finance enables opening, an invalid currency is
+refused, and membership revocation hides the workspace and period again.
+This extends the close suite to 12 cases.
+
+* Retainer action accessibility (epic #125)
+
+The action-level regression failed because =company.collect_retainer= was
+absent. Its repaired path collects USD 250, releases USD 100 then USD 150,
+asserts cash USD 250 and zero remaining liability, and refuses another
+release, mixed currency and a non-liability account. The six-case SQLite
+suite also covers finance membership, immediate revocation, disabled quotes
+and generic-write refusal. The original five cases pass in a disposable
+PostgreSQL schema; the expanded six-case PostgreSQL run is recorded with
+its subsequent verification checkpoint. Actual authenticated server evidence
+is separate from these service/action tests.
+
+* Generated invoice calendar dates (epic #125)
+
+The authenticated project walkthrough first refused an ordinary same-day
+receipt because a generated progress invoice was issued at a precise
+instant. The regression =/progress/calendar-progress= failed on the issue
+date comparison before normalization. Normalization alone then failed under
+=TZ=Pacific/Kiritimati= with “A financial event cannot be dated in the
+future”: today's date encoding can be ahead of the UTC clock. Settlement
+now makes an exception for exactly today's calendar date while retaining
+strict source chronology and refusing future instants/tomorrow.
+
+All ten progress/retainer tests pass on SQLite and PostgreSQL. Both
+calendar cases (progress and full quote handoff) also pass when separately
+launched in =Pacific/Kiritimati=. The four authenticated project scenarios
+pass without the former precise-receipt diagnostic workaround. Retainer
+finance authority, revocation and module-off cases also passed in the
+expanded six-case PostgreSQL run before these two calendar cases were added.
+
+The same calendar-date artifact also passes all 61 receivables cases,
+19 quote cases and three independent accounting-acceptance cases. These
+include chronology, rollback, allocations and restored financial tie-outs;
+none required weakening source-event ordering.
+
+* Hosted HTTP startup ordering (epic #125)
+
+The executable regression =/hosted-maintenance/admission-before-database=
+sets each hosted dispatch bound to zero and verifies both refusal and the
+absence of the database file. It failed before validation moved ahead of
+database opening. The combined artifact passes both =test-hosted-maintenance= cases,
+the 20 =test-http-limits= transport cases, the one =test-caldav-http= case
+and the 15 =test-tenant= cases; the real HTTP/TLS demonstration
+also verifies each invalid setting before database creation.

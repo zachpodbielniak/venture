@@ -61,6 +61,9 @@ typedef struct
 	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
 
 static const VentureConfigSetting venture_config_settings[] = {
+	VC_BOOL("ocr-enabled", "ocr", "enabled", FALSE, "Enable bounded local OCR explicitly"),
+	VC_STR("ocr-executable", "ocr", "executable", "tesseract", "Local OCR executable, chosen by the operator"),
+	VC_STR("ocr-language", "ocr", "language", "eng", "Installed OCR languages joined with +"),
 	VC_BOOL("federation-enabled", "federation", "enabled", FALSE,
 	        "Opt in to federation; records remain private without grants"),
 	VC_INT("federation-sync-interval", "federation", "sync_interval", 60,
@@ -86,7 +89,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("server-max-request-size-mb", "server", "max_request_size_mb", 32,
 	        "Largest request body accepted, in megabytes"),
 	VC_INT ("server-request-timeout", "server", "request_timeout", 60,
-	        "Seconds a request may run"),
+	        "Absolute seconds to receive a request, or keep an idle connection"),
+	VC_INT ("server-max-connections", "server", "max_connections", 128,
+	        "Maximum accepted HTTP connections per workspace process"),
+	VC_INT ("server-max-buffered-request-mb", "server", "max_buffered_request_mb", 64,
+	        "Aggregate body bytes awaiting request dispatch, in MiB"),
 
 	VC_STR ("database-uri", "database", "uri", "sqlite://venture.db",
 	        "Connection URI"),
@@ -98,6 +105,16 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Apply pending migrations at startup"),
 	VC_INT ("database-busy-timeout", "database", "busy_timeout", 5,
 	        "Seconds to wait for a lock"),
+
+	VC_BOOL("hosted-enabled", "hosted", "enabled", FALSE, "Pin this database to one hosted workspace"),
+	VC_STR("hosted-workspace-id", "hosted", "workspace_id", "", "Immutable hosted workspace UUID"),
+	VC_STR("hosted-origin", "hosted", "origin", "", "Immutable public HTTPS tenant origin"),
+	VC_INT("hosted-http-requests-per-minute", "hosted", "http_requests_per_minute", 600,
+	       "Workspace dynamic HTTP requests per minute, 1 through 1000000"),
+	VC_INT("hosted-http-burst", "hosted", "http_burst", 120,
+	       "Workspace dynamic HTTP burst capacity, 1 through 1000000"),
+	VC_INT("hosted-http-concurrency", "hosted", "http_concurrency", 8,
+	       "Maximum nested dynamic HTTP handlers, 1 through 256"),
 
 	VC_BOOL("security-require-auth", "security", "require_auth", TRUE,
 	        "Require authentication for every request"),
@@ -115,32 +132,19 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("security-login-rate-limit", "security", "login_rate_limit", 10,
 	        "Sign-in attempts allowed per address per minute; 0 disables"),
 
-	/*
-	 * Knowledge bases.
-	 *
-	 * The default provider is a local ollama because embedding is the one
-	 * AI feature that runs against every document you own rather than the
-	 * occasional question: sending a whole handbook to a metered API to
-	 * find out it was already indexed is a bill nobody expected. It also
-	 * keeps the corpus on this machine, which is the point of some of
-	 * these bases. Set kb-embedding-provider to "openai" for any
-	 * OpenAI-compatible /v1/embeddings endpoint.
-	 */
+	/* Preserve legacy embedding settings for migration; explicit encrypted
+	 * organization bindings authorize every actual embedding request. */
 	VC_BOOL("kb-enabled", "kb", "enabled", TRUE,
 	        "Whether knowledge bases and retrieval are available"),
 	VC_STR ("kb-embedding-provider", "kb", "embedding_provider", "ollama",
-	        "ollama, or openai for any OpenAI-compatible endpoint"),
+	        "Legacy migration hint; configure the organization embedding binding"),
 	VC_STR ("kb-embedding-url", "kb", "embedding_url",
 	        "http://127.0.0.1:11434",
-	        "Base URL of the embedding service"),
+	        "Legacy embedding URL; not used for provider requests"),
 	VC_STR ("kb-embedding-model", "kb", "embedding_model",
-	        "nomic-embed-text:v1.5", "Model used to embed passages"),
-	/*
-	 * Named, not stored. Same indirection as the database password: a key
-	 * in the config file is a key in every backup of it.
-	 */
+	        "nomic-embed-text:v1.5", "Legacy embedding model; select it explicitly in organization settings"),
 	VC_STR ("kb-embedding-key-env", "kb", "embedding_key_env", "",
-	        "Environment variable holding the embedding API key, if needed"),
+	        "Legacy embedding key reference; ambient credentials are not used"),
 	/*
 	 * Chunk size is in characters rather than tokens because the tokeniser
 	 * is the model's and we do not have it. 1200 is roughly 300 tokens,
@@ -180,10 +184,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "fiscal_year_start_month", 1, "Month the fiscal year begins"),
 
 	VC_BOOL("ai-enabled", "ai", "enabled", TRUE, "Enable AI features"),
-	VC_STR ("ai-provider", "ai", "provider", "claude", "AI provider"),
-	VC_STR ("ai-model", "ai", "model", "claude-sonnet-5", "Model identifier"),
+	VC_STRV("ai-allowed-base-urls", "ai", "allowed_base_urls", "Exact platform-approved alternate provider base URLs; HTTPS unless explicit loopback testing is enabled"),
+	VC_BOOL("ai-allow-loopback", "ai", "allow_loopback", FALSE, "Permit literal HTTP loopback endpoints from the exact AI base URL allowlist for isolated tests"),
+	VC_INT ("ai-provider-deadline-seconds", "ai", "provider_deadline_seconds", 60, "Total provider deadline, 1 through 60 seconds, below the durable reservation lease"),
+	VC_STR ("ai-provider", "ai", "provider", "claude", "Legacy provider hint; configure each organization explicitly"),
+	VC_STR ("ai-model", "ai", "model", "claude-sonnet-5", "Legacy model hint; organization bindings choose the model"),
 	VC_STR ("ai-api-key-env", "ai", "api_key_env", "",
-	        "Environment variable holding the API key"),
+	        "Legacy key reference; ambient credentials are not used"),
 	VC_ENUM("ai-policy", "ai", "policy", venture_ai_policy_get_type,
 	        "How much authority AI tool calls have"),
 	VC_STRV("ai-auto-approve-tools", "ai", "auto_approve_tools",
@@ -218,12 +225,18 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
 	        "Enable hosted Stripe payments; requires deployment credentials"),
+	VC_BOOL("oidc-enabled", "oidc", "enabled", FALSE,
+	        "Enable explicitly linked organization OpenID Connect sign-in"),
+	VC_BOOL("oidc-allow-loopback", "oidc", "allow_loopback", FALSE,
+	        "Permit HTTP loopback issuers only for isolated test deployments"),
+	VC_STRV("oidc-allowed-issuers", "oidc", "allowed_issuers",
+	        "Exact platform-approved issuer URLs; empty refuses all providers"),
 	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
 	        "Enable imported payroll runs; native tax calculation is out of scope"),
 	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,
-	        "Enable pluggable bank feeds; requires VENTURE_BANKFEED_TELLER_KEY"),
+	        "Enable pluggable bank feeds; each organization binds its own provider credentials in settings"),
 	VC_BOOL("commerce-enabled", "commerce", "enabled", FALSE,
-	        "Enable commerce connectors; requires VENTURE_COMMERCE_SHOPIFY_TOKEN"),
+	        "Enable commerce connectors with explicit organization account settings"),
 	VC_BOOL("group-enabled", "group", "enabled", FALSE,
 	        "Enable intercompany links, eliminations and consolidated statements"),
 
@@ -305,6 +318,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	/* Not part of the YAML document: set from --state-dir or derived. */
 	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state"),
+	VC_STR("imap-allowed-endpoints", "imap", "allowed_endpoints", "", "Operator-allowed IMAP host:port pairs, comma-separated; empty denies all"),
+	VC_STR("calendar-allowed-origins", "calendar", "allowed_origins", "", "Operator-allowed CalDAV HTTPS origins, comma-separated; empty denies all"),
+	VC_BOOL("connectors-allow-plaintext-loopback", "connectors", "allow_plaintext_loopback", FALSE, "Allow explicitly configured loopback IMAP fixtures without TLS; never permits remote plaintext"),
+	VC_STR("mail-allowed-endpoints", "mail", "allowed_endpoints", "", "Operator-allowed organization SMTP host:port pairs, comma-separated; empty denies all"),
+	VC_STR("mail-tls-ca-file", "mail", "tls_ca_file", "", "Operator-owned SMTP CA bundle; empty uses system trust"),
 	VC_STR("mail-host", "mail", "host", "", "SMTP relay host"),
 	VC_INT("mail-port", "mail", "port", 587, "SMTP relay port"),
 	VC_STR("mail-security", "mail", "security", "starttls", "starttls, tls or none"),
@@ -1389,6 +1407,14 @@ venture_config_validate(
 			            "modules: %s", local_error->message);
 			return FALSE;
 		}
+#ifdef VENTURE_SERVER_BUILD
+		if (venture_module_registry_is_enabled(modules, "ocr")) {
+			g_autofree gchar *executable = NULL;
+			g_object_get(self, "ocr-executable", &executable, NULL);
+			if (!venture_ocr_local_check(executable, error)) return FALSE;
+		}
+#endif
+
 	}
 
 	return TRUE;

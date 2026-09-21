@@ -65,6 +65,7 @@ group_api(HtmxRequest *request, GHashTable *params, gpointer data)
 static void
 venture_group_web_register(HtmxRouter *router, VentureWebServer *self)
 {
-	htmx_router_get(router, "/group", group_page, self);
-	htmx_router_get(router, "/api/v1/group/reports", group_api, self);
+	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/group", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, group_page, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/group/reports", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, group_api, self);
 }

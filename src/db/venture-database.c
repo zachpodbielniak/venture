@@ -13,6 +13,7 @@
 #include "activities/venture-activity-private.h"
 #include "pipelines/venture-pipelines-private.h"
 #include "report/venture-headline-private.h"
+#include "sales/venture-sales-private.h"
 
 #include <string.h>
 
@@ -20,7 +21,10 @@ static gboolean
 stripe_owned(VentureEntity *entity)
 {
 	GType type = G_OBJECT_TYPE(entity);
-	return type == venture_stripe_checkout_get_type() ||
+	return type == venture_stripe_payment_link_get_type() ||
+		type == venture_stripe_authorization_get_type() ||
+		type == venture_stripe_customer_link_get_type() ||
+		type == venture_stripe_checkout_get_type() ||
 		type == venture_stripe_event_get_type() ||
 		type == venture_processor_payout_get_type() ||
 		type == venture_processor_payout_item_get_type() ||
@@ -244,6 +248,13 @@ venture_database_init(VentureDatabase *self)
 	self->activities = venture_activity_service_new(self);
 	venture_headline_install_validators(self);
 	venture_mail_sync_install_validators(self);
+	venture_stripe_install_validators(self);
+	venture_document_install_validators(self);
+	venture_bankfeed_install_validators(self);
+	venture_access_policy_install_privacy(self);
+	venture_connector_install(self);
+	venture_marketing_install(self);
+	venture_attribution_install(self);
 }
 
 VentureQuoteService *
@@ -659,7 +670,7 @@ venture_database_begin_serializable(VentureDatabase *self, GError **error)
 	{
 		g_rec_mutex_unlock(&self->lock);
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
-			"Accounting approval must begin before the enclosing business transaction");
+			"A serializable operation must begin outside an enclosing business transaction");
 		return FALSE;
 	}
 	self->transaction = orm_connection_begin_transaction_with_isolation(self->connection,
@@ -1180,13 +1191,28 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_dunning_check_write,
 		venture_sales_tax_check_write,
 		venture_backup_schedule_check_write,
-		venture_crm_import_check_write
+		venture_crm_import_check_write,
+		venture_integration_check_write,
+		venture_commerce_check_write,
+		venture_ai_provider_check_write,
+		venture_sales_check_write,
+		venture_projects_check_write,
+		venture_oidc_check_write,
+		venture_forge_check_write
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(guards); i++)
 		if (!guards[i](self, entity, removal, error))
 			return FALSE;
 	return TRUE;
+}
+
+static gboolean
+database_save_after_sales(VentureDatabase *self, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	gboolean handled = FALSE;
+	gboolean ok = venture_sequences_save_hook(self, entity, actor, database_save_unwrapped, &handled, error);
+	return handled || !ok ? ok : database_save_unwrapped(self, entity, actor, error);
 }
 
 static gboolean
@@ -1291,12 +1317,12 @@ database_save_dispatch(
 		gboolean ok = venture_pipelines_save(self, entity, actor, &handled, error);
 		if (handled || !ok)
 			return ok;
-		ok = venture_sequences_save_hook(self, entity, actor, database_save_unwrapped, &handled, error);
+		ok = venture_sales_save_hook(self, entity, actor, database_save_after_sales, &handled, error);
 		if (handled || !ok)
 			return ok;
 	}
 
-	return database_save_unwrapped(self, entity, actor, error);
+	return database_save_after_sales(self, entity, actor, error);
 }
 
 /* Only hooks that can post need a whole-operation boundary here. Draft
@@ -1729,7 +1755,7 @@ venture_database_find(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_QUERY(query), NULL);
 
-	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self))) return venture_access_policy_find(self->access_policy, query, error);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self)) || venture_access_policy_get_organization(self->access_policy) != 0) return venture_access_policy_find(self->access_policy, query, error);
 
 	sql = venture_query_to_sql(query, venture_database_dialect(self), FALSE,
 	                           &params);
@@ -1774,7 +1800,7 @@ venture_database_count(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), -1);
 	g_return_val_if_fail(VENTURE_IS_QUERY(query), -1);
 
-	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self))) return venture_access_policy_count(self->access_policy, query, error);
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self)) || venture_access_policy_get_organization(self->access_policy) != 0) return venture_access_policy_count(self->access_policy, query, error);
 
 	sql = venture_query_to_sql(query, venture_database_dialect(self), TRUE,
 	                           &params);
@@ -1838,6 +1864,8 @@ venture_database_delete(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
@@ -1937,6 +1965,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
 		return FALSE;
+	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error))
+		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
 	if (!venture_quotes_check_removal(self, entity, error))
@@ -1982,6 +2012,7 @@ venture_database_purge(
 	if (!venture_accounting_operation_guard_write(self, entity, actor, error))
 		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
+	if (!venture_sales_check_purge(self, entity, error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
 
@@ -2011,6 +2042,8 @@ venture_database_purge(
 	if (!venture_periods_check_removal(self, entity, error))
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
+		return FALSE;
+	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
@@ -2607,6 +2640,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 	if (NULL == self->actions)
 	{
 		self->actions = g_object_new(VENTURE_TYPE_ACTION_REGISTRY, "database", self, NULL);
+		venture_tenant_actions_register(self);
 		venture_journal_actions_register(self);
 		venture_cutover_actions_register(self);
 		venture_setup_actions_register(self);
@@ -2621,6 +2655,15 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_crm_import_actions_register(self);
 		venture_dedupe_actions_register(self);
 		venture_mfa_actions_register(self);
+		venture_ocr_actions_register(self);
+		venture_projects_actions_register(self);
+		venture_activity_actions_register(self);
+		venture_commerce_actions_register(self);
+		venture_stripe_actions_register(self);
+		venture_ai_provider_actions_register(self);
+		venture_marketing_actions_register(self);
+		venture_attribution_actions_register(self);
+		venture_close_actions_register(self);
 	}
 	return self->actions;
 }

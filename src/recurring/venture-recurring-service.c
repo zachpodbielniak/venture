@@ -538,19 +538,52 @@ generate_one(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 	return TRUE;
 }
 
+/* The zone an implicit sweep reads its calendar date in: the business zone
+ * (locale.timezone) that check_date() judges generated dates against, so an
+ * occurrence dated the process zone's later day waits for the next sweep
+ * instead of being posted and refused as future-dated. An explicit as_of
+ * keeps each schedule's own zone, which is what its callers and tests mean. */
+static GTimeZone *
+sweep_zone(VentureRecurringService *self)
+{
+	g_autofree gchar *name = NULL;
+	g_object_get(venture_settlement_service_get(self->database), "timezone", &name, NULL);
+	return venture_time_get_timezone(name);
+}
+
+/* Whether an implicit sweep may generate an occurrence dated @at: exactly
+ * the dates settlement's check_date() accepts, judged against the business
+ * date, so a sweep never posts what settlement would refuse and roll back.
+ * Today's business date as a date picker encodes it is always due, even
+ * where its midnight UTC is still ahead; any other future instant waits;
+ * a calendar date after the business date waits even once its midnight UTC
+ * has passed. */
+static gboolean
+implicit_due(GDateTime *at, GDateTime *as_of, GDateTime *today)
+{
+	if (venture_time_equal(at, today))
+		return TRUE;
+	if (g_date_time_compare(at, as_of) > 0)
+		return FALSE;
+	return !(venture_time_is_calendar_date(at) && g_date_time_compare(at, today) > 0);
+}
+
 static gint
 run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *as_of,
-	gboolean dry_run, const VentureActor *actor, GError **error)
+	GTimeZone *zone, gboolean dry_run, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
 	g_autoptr(GDateTime) local_as_of = NULL;
+	g_autoptr(GDateTime) today = NULL;
 	gint64 index;
 	gint created = 0;
 	gint frequency;
 	guint n;
 	if (flag(schedule, "paused"))
 		return 0;
+	if (zone != NULL)
+		today = venture_settlement_service_today(venture_settlement_service_get(self->database));
 	g_object_get(schedule, "end-at", &end, "cycle-index", &index, NULL);
 	start = schedule_start(schedule);
 	frequency = choice(schedule, "frequency");
@@ -569,7 +602,11 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 		g_autofree gchar *stamp = NULL;
 		g_autofree gchar *key = NULL;
 		g_autoptr(VentureEntity) existing = NULL;
-		if (at == NULL || day_compare(at, local_as_of) > 0)
+		if (at == NULL)
+			break;
+		/* An implicit sweep is judged the way settlement will judge the
+		 * generated date; an explicit as_of keeps the schedule's own day. */
+		if (zone != NULL ? !implicit_due(at, as_of, today) : day_compare(at, local_as_of) > 0)
 			break;
 		if (end != NULL && day_compare(at, end) > 0)
 			break;
@@ -679,6 +716,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GDateTime) clock = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
 	gboolean can_post = FALSE;
 	gint total = 0;
 	guint i;
@@ -688,7 +726,14 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	if (organization_id <= 0)
 		return refuse(error, "An organization is required") ? -1 : -1;
 	clock = as_of ? g_date_time_ref(as_of) : venture_time_now();
-	as_of_text = as_of != NULL ? g_date_time_format_iso8601(clock) : g_date_time_format(clock, "%F");
+	if (as_of == NULL)
+		zone = sweep_zone(self);
+	if (as_of != NULL) as_of_text = g_date_time_format_iso8601(clock);
+	else
+	{
+		g_autoptr(GDateTime) business = g_date_time_to_timezone(clock, zone);
+		as_of_text = g_date_time_format(business, "%F");
+	}
 	query = venture_query_new(VENTURE_TYPE_RECURRING_SCHEDULE);
 	venture_query_set_organization(query, organization_id);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
@@ -704,10 +749,11 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 			g_autoptr(GDateTime) start = schedule_start(schedule);
 			if (start != NULL)
 			{
-				g_autoptr(GDateTime) local = g_date_time_to_timezone(clock, g_date_time_get_timezone(start));
+				g_autoptr(GDateTime) local = g_date_time_to_timezone(clock, zone);
 				g_autofree gchar *day = g_date_time_format(local, "%F");
-				/* UTC midnight and each schedule's local midnight invalidate
-				 * omitted-date consent without depending on retry seconds. */
+				/* One business-zone (locale.timezone) calendar day, the same
+				 * day for every schedule, invalidates omitted-date consent
+				 * without depending on retry seconds. */
 				g_string_append_printf(effective_days, "%" G_GINT64_FORMAT ":%s;",
 					venture_entity_get_id(schedule), day);
 			}
@@ -735,7 +781,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	}
 	for (i = 0; i < rows->len; i++)
 	{
-		gint n = run_schedule(self, g_ptr_array_index(rows, i), clock, dry_run, actor, error);
+		gint n = run_schedule(self, g_ptr_array_index(rows, i), clock, zone, dry_run, actor, error);
 		if (n < 0)
 		{
 			if (!dry_run)
@@ -1537,7 +1583,7 @@ worklist_report(VentureContext *context, VentureDateRange *period, JsonObject *o
 void
 venture_recurring_register_reports(VentureReportRegistry *registry)
 {
-	VentureReport *worklist = VENTURE_REPORT(venture_func_report_new("collections_worklist", "Collections worklist",
+	VentureReport *worklist = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "collections_worklist", "Collections worklist",
 		"Overdue invoices with owner, promised payment and dispute notes.", worklist_report));
 	venture_report_registry_add(registry, worklist);
 }
@@ -1702,7 +1748,7 @@ register_one(VentureActionRegistry *registry, const gchar *type_name, const gcha
 	gboolean type_level, GPtrArray *parameters, VentureActionAllowed allowed, VentureActionInvoke invoke,
 	gpointer data)
 {
-	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "type-name", type_name, "name", name,
+	g_autoptr(VentureAction) action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", type_name, "name", name,
 		"label", label, "description", label, "parameters", parameters, "stageable", TRUE,
 		"type-level", type_level, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	g_autoptr(GError) error = NULL;

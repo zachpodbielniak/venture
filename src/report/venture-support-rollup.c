@@ -1323,7 +1323,7 @@ venture_support_rollup_register_reports(VentureReportRegistry *registry)
 	g_return_if_fail(VENTURE_IS_REPORT_REGISTRY(registry));
 
 	venture_report_registry_add(registry,
-		VENTURE_REPORT(venture_func_report_new("support_rollup",
+		VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "support_rollup",
 			"Support rollup",
 			"Support cost and ticket volume per customer: tickets raised, "
 			"closed and open, service levels missed, median minutes to the "

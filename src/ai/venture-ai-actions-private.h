@@ -3,7 +3,7 @@ static gchar *
 venture_ai_tool_action(AiToolUse *tool_use, GCancellable *cancellable, GError **error, gpointer data)
 {
 	VentureAiService *self = data;
-	g_autoptr(VentureAccessScope) scope = venture_orgaccess_enter_ai(self->context, self->current_principal);
+	g_autoptr(VentureAccessScope) scope = venture_ai_service_enter_scope(self);
 	VentureDatabase *db = venture_context_get_database(self->context);
 	VentureActionRegistry *registry = venture_database_get_action_registry(db);
 	g_auto(GStrv) types = venture_entity_registry_list_names(venture_context_get_entity_registry(self->context));

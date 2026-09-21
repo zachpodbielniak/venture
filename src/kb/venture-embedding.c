@@ -47,120 +47,36 @@ venture_embedder_init(VentureEmbedder *self)
 }
 
 VentureEmbedder *
-venture_embedder_new(
-	VentureConfig	 *config,
-	GError		**error
-){
-	g_autoptr(VentureEmbedder) self = NULL;
-	g_autoptr(GObject) client = NULL;
-	g_autofree gchar *provider = NULL;
-	g_autofree gchar *url = NULL;
-	g_autofree gchar *model = NULL;
-	g_autofree gchar *key_env = NULL;
-	const AiEmbeddingModelInfo *info;
-	AiProviderType provider_type;
-	AiConfig *ai_config;
-
+venture_embedder_new(VentureConfig *config, GError **error)
+{
 	g_return_val_if_fail(VENTURE_IS_CONFIG(config), NULL);
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		"Select an organization embedding binding; ambient kb.embedding_* credentials are no longer used");
+	return NULL;
+}
 
-	g_object_get(config,
-	             "kb-embedding-provider", &provider,
-	             "kb-embedding-url", &url,
-	             "kb-embedding-model", &model,
-	             "kb-embedding-key-env", &key_env,
-	             NULL);
-
-	/*
-	 * Deliberately its own provider and model, read from kb.* rather than
-	 * ai.*. The assistant and the index answer different questions: the
-	 * assistant is whichever model writes well, and embedding is whichever
-	 * model the corpus was indexed with -- and that one cannot be changed
-	 * casually, because every stored vector was made by it. Tying them
-	 * together would mean switching chat models silently invalidated the
-	 * whole index.
-	 *
-	 * It also allows the arrangement most installs want: a hosted model
-	 * for the conversation, a local one for the documents, so the corpus
-	 * never leaves the machine.
-	 */
-	if (0 == g_strcmp0(provider, "ollama"))
-	{
-		client = G_OBJECT(ai_ollama_client_new());
-		provider_type = AI_PROVIDER_OLLAMA;
+VentureEmbedder *venture_embedder_new_for_organization(VentureContext *context, gint64 organization_id, GError **error)
+{
+	VentureDatabase *database;
+	g_autoptr(AiProvider) provider = NULL;
+	VentureEmbedder *self;
+	const AiEmbeddingModelInfo *info;
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	database = venture_context_get_database(context);
+	provider = venture_ai_provider_service_create_provider(
+		venture_ai_provider_service_get(database), organization_id, "embedding",
+		venture_access_policy_get_actor(venture_database_get_access_policy(database)), error);
+	if (!provider) return NULL;
+	if (!AI_IS_EMBEDDER(provider)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "The selected organization provider cannot embed"); return NULL;
 	}
-	else if ((0 == g_strcmp0(provider, "openai")) ||
-	         (0 == g_strcmp0(provider, "openai-compatible")))
-	{
-		client = G_OBJECT(ai_openai_client_new());
-		provider_type = AI_PROVIDER_OPENAI;
-	}
-	else
-	{
-		/*
-		 * Refused rather than defaulted. Falling back to ollama here
-		 * would index the whole corpus with a model nobody chose, and
-		 * the result would look like weak retrieval rather than like a
-		 * configuration error.
-		 */
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		            "\"%s\" is not an embedding provider I know. Use "
-		            "\"ollama\", or \"openai\" for any OpenAI-compatible "
-		            "endpoint.",
-		            (NULL != provider) ? provider : "");
-		return NULL;
-	}
-
-	/*
-	 * ai-glib implements embedding on the Ollama and OpenAI clients only.
-	 * Claude has no embeddings API and Gemini's is shaped differently, so
-	 * this cannot currently fail -- but checking it here means adding a
-	 * provider above without an AiEmbedder fails at construction rather
-	 * than at the first indexing run.
-	 */
-	if (!AI_IS_EMBEDDER(client))
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		            "The %s client cannot produce embeddings", provider);
-		return NULL;
-	}
-
 	self = g_object_new(VENTURE_TYPE_EMBEDDER, NULL);
-	self->client = AI_EMBEDDER(g_steal_pointer(&client));
-	self->provider = g_strdup(provider);
-
-	ai_config = ai_client_get_config(AI_CLIENT(self->client));
-
-	if (!venture_string_is_empty(url))
-		ai_config_set_base_url(ai_config, provider_type, url);
-
-	/*
-	 * Named, not stored. The same indirection as the database password:
-	 * a key written into the config file is a key in every backup of it.
-	 */
-	if (!venture_string_is_empty(key_env))
-	{
-		const gchar *value;
-
-		value = g_getenv(key_env);
-
-		if (!venture_string_is_empty(value))
-			ai_config_set_api_key(ai_config, provider_type, value);
-	}
-
-	self->model = venture_string_is_empty(model)
-		? g_strdup(ai_embedder_get_default_embedding_model(self->client))
-		: g_strdup(model);
-
-	/*
-	 * The width, when the provider publishes one. It is not required --
-	 * an unlisted local model is passed through and the server decides --
-	 * but knowing it lets a mismatch against an already-indexed base be
-	 * reported before anything is written rather than after.
-	 */
+	self->client = g_object_ref(AI_EMBEDDER(provider));
+	self->provider = g_strdup(ai_provider_get_name(provider));
+	self->model = g_strdup(ai_embedder_get_default_embedding_model(self->client));
 	info = ai_embedder_get_model_info(self->client, self->model);
-	self->dims = (NULL != info) ? info->dimensions : 0;
-
-	return g_steal_pointer(&self);
+	self->dims = info ? info->dimensions : 0;
+	return self;
 }
 
 const gchar *

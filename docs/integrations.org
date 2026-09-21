@@ -1,0 +1,141 @@
+#+title: Organization integration credentials
+#+description: Provider binding, encrypted credentials and lifecycle boundaries
+
+* A connection belongs to one organization
+
+=integration_connection= is the durable binding between a verified
+organization, provider, account and environment. The =integrations= module
+requires organization access. There is at most one enabled connection per
+organization/provider. Disabled connections remain as historical evidence;
+delete, restore, purge and generic writes are refused. Provider IDs may
+coincide in two organizations without sharing credentials.
+
+=VentureIntegrationService= owns configuration, credential rotation,
+disconnect, lookup and credential resolution. Provider adapters use this
+service rather than reading another organization's row or an installation
+default. The service is provider-neutral: adapters validate their particular
+settings and account identity before storing a JSON object. This storage
+boundary does not by itself implement or verify any provider connection.
+
+* Encryption and recovery
+
+The platform supplies =VENTURE_INTEGRATION_KEY= as the canonical base64
+encoding of 32 cryptographically random bytes, separately from the database.
+The variable's contents must be provisioned through the deployment's secret
+management; they must not be placed in a repository, URL or command argument.
+Ordinary startup without integrations does not require a key. Attempting to
+configure or resolve a connection without a valid key fails with a redacted
+configuration error. There is no fallback to a session-signing key or another
+provider's credentials.
+
+AES-256-GCM uses a fresh random 96-bit nonce and a 128-bit authentication tag.
+The authenticated data includes the record UUID, organization, provider,
+account and test/live environment. Moving ciphertext to a different identity
+fails authentication. Settings are bounded to 64 KiB before encryption.
+The database stores only ciphertext; metadata marks it sensitive, excluding
+it from generic JSON, forms, audit differences and the assistant. Errors do
+not echo credential values or JSON parser diagnostics. The private key copy
+is cleared when released.
+
+Restore requires both the database and its original encryption key. Keep the
+key backup separately encrypted and access-controlled. Changing this master
+key without re-encrypting the stored data is refused in a running process;
+a restart with a different key cannot decrypt it. To move stored credentials
+to a new master key, run the offline re-encryption described in
+[[file:integration-key-maintenance.org][Integration key maintenance]]:
+=--check-integration-key= proves which key opens the stored rows and
+=--rotate-integration-key= rewrites them under the new one. Credential
+rotation for the same provider account is supported and does not require
+changing the master key.
+
+* Rotation and disconnect
+
+The caller supplies the expected record version. Rotation keeps the
+organization/account/environment identity, increases =credential_revision=
+and persists newly encrypted settings. The public revision also ensures that
+a credential-only change produces an audit difference and is not skipped as
+an empty update. A stale settings screen is a conflict.
+
+Account or environment replacement requires disconnecting the old binding
+first. The replacement has a new row/UUID. New work refuses the disabled
+binding immediately; a verified late provider callback may explicitly name
+its historical binding and request resolution with =allow_disabled=. That
+flag is a trusted adapter capability, never a public query parameter. The
+adapter must still authenticate the event and verify its business-object
+linkage. An old event never selects the new account merely because it is
+currently enabled.
+
+Provider caches must key on connection ID and version, not merely provider
+or organization. The resolver re-reads the row on each call; callers must not
+retain clear credentials indefinitely across rotation/disconnect.
+
+* Authorization and surfaces
+
+Configuration and disconnect require an organization owner/admin in the
+current repository access scope. A NULL scope is trusted platform code, not
+an anonymous request. Record metadata and safe connection status may be read
+through ordinary authorized record surfaces; credentials are never emitted.
+Provider settings routes must check authentication and organization authority
+before calling the service, and must never expose =resolve()= as an API/tool.
+Sensitive configuration is applied directly after authorization, not queued
+as a generic record diff whose sensitive fields would be omitted.
+
+Provider adapters build on this shared storage/authorization boundary.
+Organization SMTP settings, rotation, relay testing and account-bound outbox
+recovery are described in [[file:mail.org][mail delivery]]. Stripe settings and
+account routing are described in [[file:stripe.org][Stripe settlement]]. See
+[[file:post-parity.org][the epic ledger]] for the remaining adapters and
+acceptance work. Installation credentials are never silently migrated:
+configure an explicitly selected organization and refuse ambiguous assignment.
+
+* Verification
+
+=test-integrations= checks registered metadata, two organizations with the
+same provider account ID, encryption/redaction, credential-only rotation,
+stale versions, disabled/new account separation, retained historical
+credentials, generic write/deletion refusal and unauthorized configuration. It also checks real organization-admin
+authority and revocation, 64 KiB limits, truncated/transplanted ciphertext,
+wrong keys after service restart, audit redaction and environment-key errors.
+The registration test fails on the pre-feature tree because the type is
+absent. These unit checks establish the storage contract, not end-to-end
+provider or hosted-tenant readiness.
+
+* Active identity and upgrades
+
+A database partial unique index enforces one enabled connection per
+organization and provider, including independent processes/connections.
+Disabled bindings retain their account identity and ciphertext for historical
+callbacks and may coexist with a replacement. The service still checks
+permissions, revisions and account identity; an index grants no authority.
+
+Migration =000510= checks the metadata-generated index. An existing database
+with ambiguous enabled bindings refuses upgrade and leaves its rows intact.
+Investigate the retained identities and disable the incorrect binding through
+the authorized service before retrying; never discard ciphertext or select
+an account by row order. A disabled module receives the same constraint when
+its tables are created later.
+
+Entity plugins can declare a field-specific uniqueness scope with
+=venture_entity_class_set_field_unique_scope()= after installing the field.
+The field must carry =UNIQUE_ORGANIZATION=. Its optional integer partition
+and boolean condition are persistent properties; NULL partition explicitly
+means organization-only, overriding a class partition. Other fields retain
+their existing scope. This permits, for example, one active reservation while
+historical external identities remain unique. Subclasses inherit metadata
+and cannot mutate the parent's declaration. Scope changes need an explicit
+migration and duplicate-data handling; they are not a dynamic settings API.
+
+=test-integrations= exercises direct SQL attempts to create/reactivate a
+second enabled account and refusal of an ambiguous historical upgrade,
+including preservation of enabled state and ciphertext. The regression
+initially accepted the duplicate, demonstrating why a process-local check
+was insufficient.
+
+* Versioned adapter snapshots
+
+An adapter that records a configuration version or caches clients by version
+uses =venture_integration_service_resolve_version()=. The version check and
+decryption use the same row snapshot; a rotation between selection and
+resolution returns a redacted conflict. Resolve again rather than labelling
+new credentials with the earlier version. The unversioned resolver remains
+available for consumers that do not retain a configuration identity.
