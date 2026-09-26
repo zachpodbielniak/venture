@@ -506,6 +506,16 @@ Use `billing change ID plan_price=N [at_period_end=true]`,
 `billing pause ID`, `billing resume ID`, `billing mark-payment-failed ID`
 and `billing recover ID` for lifecycle actions. Never update subscription
 status directly; the service refuses it.
+`billing cancel ID` without `at_period_end=true` credits the unused days of
+an invoiced period (a trial or an unbilled period gives nothing): a
+`customer_credit` credit note, tax included when the period's invoice was
+taxed, applied to what that invoice still owes. The result's
+`proration_amount` is that credit, negative. A `plan_price` may carry
+`tax_code_id`; its invoices are taxed at that rate (exempt customers stay
+exempt), and a price in use is immutable, so taxing an existing plan means a
+new price and moving customers to it (the plan page's "Move its N
+customers to..." does all or none). MRR counts a plan discount while it
+covers the period being billed.
 
 `billing renew --as-of DATE [--dry-run]` sweeps due periods;
 `billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.

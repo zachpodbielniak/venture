@@ -711,7 +711,7 @@ venture_plan_web_append_move(GString *html, gint64 plan_id, VentureEntity *price
 
 	if (customers == 0)
 		return;
-	g_string_append(html, "<tr class=\"price-move\"><td colspan=\"5\">");
+	g_string_append(html, "<tr><td colspan=\"5\">");
 	for (i = 0; i < prices->len; i++)
 	{
 		gboolean active = FALSE;

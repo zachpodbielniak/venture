@@ -286,6 +286,13 @@ first seven columns were empty.
   parameter (or a subject parameter), call both on any new checking path,
   and run in `venture_entity_get_organization_id(entity)`, not a re-read
   parameter or the default.
+- **Whether a subscription's period was discounted is counted, not read.**
+  `discount-periods-used` stops at the discount's N, so the Nth invoice and
+  the one after both leave it at N. MRR and the cancellation credit count
+  the start and renewal events that issued an invoice instead
+  (`period_discount()` in `venture-billing-service.c`). A cancellation's
+  event must never carry `invoice-id`: the Stripe adapter and `collect`
+  find a subscription by the one event naming an invoice.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
