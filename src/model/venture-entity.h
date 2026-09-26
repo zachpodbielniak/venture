@@ -526,6 +526,38 @@ venture_entity_class_get_field_order(
 );
 
 /**
+ * venture_entity_class_set_labels:
+ * @klass: a #VentureEntityClass
+ * @singular: what one record is called, in sentence case: "Form submission"
+ * @plural: (nullable): what several are called, when English does not
+ *   follow from @singular
+ *
+ * Names the type the way a person would. Without it the name is derived
+ * from the type's own name ("attribution_submission" reads "Attribution
+ * submission"), which is right for most types and wrong for the ones whose
+ * internal name describes the machinery rather than the thing.
+ */
+void
+venture_entity_class_set_labels(
+	VentureEntityClass	*klass,
+	const gchar		*singular,
+	const gchar		*plural
+);
+
+/**
+ * venture_entity_type_dup_label:
+ * @type: a #VentureEntity subtype
+ * @plural: whether to name several records rather than one
+ *
+ * Returns: (transfer full): what a person calls @type
+ */
+gchar *
+venture_entity_type_dup_label(
+	GType		type,
+	gboolean	plural
+);
+
+/**
  * venture_entity_class_set_column_flags:
  * @klass: a #VentureEntityClass
  * @property_name: the GObject property name

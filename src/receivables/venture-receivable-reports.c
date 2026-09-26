@@ -326,7 +326,12 @@ customer_statement(VentureContext *context, VentureDateRange *period, JsonObject
 			continue;
 		}
 		date = g_date_time_format_iso8601(row->date);
-		source = g_strdup_printf("%s #%" G_GINT64_FORMAT, venture_entity_get_entity_name(row->record), venture_entity_get_id(row->record));
+		/* A statement is read by the customer: "Invoice event #1", the
+		 * type as a person names it, never its table name. */
+		{
+			g_autofree gchar *kind = venture_entity_type_dup_label(G_OBJECT_TYPE(row->record), FALSE);
+			source = g_strdup_printf("%s #%" G_GINT64_FORMAT, kind, venture_entity_get_id(row->record));
+		}
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "date", date);
 		venture_report_result_set_text(result, "source", source);

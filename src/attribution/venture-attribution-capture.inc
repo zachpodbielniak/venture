@@ -194,7 +194,13 @@ static VentureEntity *capture_payload(VentureAttributionService *self, VentureEn
 	}
 	submission = g_object_new(VENTURE_TYPE_ATTRIBUTION_SUBMISSION, "organization-id", org, "site-id", venture_entity_get_id(site),
 		"visitor-id", visitor ? venture_entity_get_id(visitor) : (gint64)0, "submitted-at", now, "submission-key", key,
-		"payload-hash", hash, "connection-id", connection ? venture_entity_get_id(connection) : (gint64)0, "connection-version", connection_version, NULL);
+		"payload-hash", hash, "connection-id", connection ? venture_entity_get_id(connection) : (gint64)0, "connection-version", connection_version,
+		/* Who wrote in and what they wrote, on the submission itself: a
+		 * capture that merges into an existing contact changes nothing on
+		 * the contact, so this is the only place the message survives. */
+		"sender-name", venture_json_object_get_string(fields, "name", ""),
+		"sender-email", venture_json_object_get_string(fields, "email", ""),
+		"message", venture_json_object_get_string(fields, "notes", ""), NULL);
 	if (!snapshot_touches(self, site, visitor, submission, now, error)) return NULL;
 	form = get_row(self, VENTURE_TYPE_LEAD_FORM, org, number(site, "lead-form-id"), error); if (!form) return NULL;
 	token = string(form, "public-token"); source = string(submission, "first-source");

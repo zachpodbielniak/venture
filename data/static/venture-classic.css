@@ -3852,3 +3852,162 @@ textarea.assist-text {
 	border-radius: var(--radius);
 	cursor: copy;
 }
+
+/* ==========================================================================
+   Record view -- one reading of every record
+   ========================================================================== */
+
+/*
+ * The same markup as the industrial look, read editorially: a quiet trail
+ * above the title, the status as a pill beside it, what the record is
+ * about on the left and the facts that are filled in on the right. Field
+ * captions are sentence case -- they are read, not scanned.
+ */
+
+.crumbs {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	color: var(--text-faint);
+}
+
+.crumbs .crumb + .crumb::before { content: "\203A"; margin-right: 6px; }
+.crumbs a.crumb { color: var(--text-muted); text-decoration: none; }
+.crumbs a.crumb:hover { color: var(--accent); }
+
+.title-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-3);
+	min-width: 0;
+}
+
+.title-line h1 { margin: 0; overflow-wrap: anywhere; }
+
+.record-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+	gap: var(--space-5);
+	align-items: start;
+}
+
+.record-main { display: flex; flex-direction: column; gap: var(--space-5);
+               min-width: 0; }
+.record-main > * { margin-top: 0; margin-bottom: 0; }
+.record-aside { display: flex; flex-direction: column; gap: var(--space-5);
+                min-width: 0; position: sticky; top: var(--space-4); }
+
+@media (max-width: 1100px) {
+	.record-layout { grid-template-columns: minmax(0, 1fr); }
+	.record-aside { order: -1; position: static; }
+}
+
+.prose {
+	font-size: 15px;
+	line-height: 1.65;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	max-width: 70ch;
+}
+
+dl.facts { margin: 0; display: flex; flex-direction: column; }
+
+dl.facts .fact {
+	display: grid;
+	grid-template-columns: minmax(96px, 38%) 1fr;
+	gap: var(--space-3);
+	padding: var(--space-2) 0;
+	border-bottom: 1px solid var(--border);
+	font-size: 14px;
+}
+
+dl.facts .fact:last-child { border-bottom: 0; }
+dl.facts dt { color: var(--text-muted); font-size: 13px; }
+dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+details.all-fields, details.form-section { margin-top: var(--space-3); }
+
+details.all-fields > summary,
+details.form-section > summary {
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-muted);
+	padding: var(--space-2) 0;
+}
+
+details.form-section > summary { padding: var(--space-4) var(--space-5); }
+details.all-fields > summary:hover,
+details.form-section > summary:hover { color: var(--text); }
+details .count { color: var(--text-faint); font-weight: 400; }
+details[open].form-section > summary { border-bottom: 1px solid var(--border); }
+
+.field .field-label {
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--text-muted);
+}
+
+.form-section { margin-bottom: var(--space-4); }
+.form-prose textarea { min-height: 7em; }
+.form-prose .field + .field { margin-top: var(--space-4); }
+
+/* A record's actions: one card, a row of buttons; an action that asks for
+ * something opens its form in place under its own name. */
+.record-actions .card-body { display: flex; flex-wrap: wrap; gap: var(--space-2);
+                             align-items: flex-start; }
+.record-actions form { margin: 0; }
+.record-actions details.record-action { flex: 0 0 auto; }
+.record-actions details[open].record-action { flex: 1 1 100%; }
+.record-actions details.record-action > summary { list-style: none; display: inline-flex; }
+.record-actions details.record-action > summary::-webkit-details-marker { display: none; }
+.record-actions details[open].record-action > form {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	margin-top: var(--space-3);
+	padding-top: var(--space-3);
+	border-top: 1px solid var(--border);
+}
+.record-actions details[open].record-action > form > .btn { align-self: flex-start; }
+
+/* Everything that points at a record, in one card: a short heading per
+ * kind of record, its names, and a way to add another. */
+.related-records .card-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.related-group + .related-group { border-top: 1px solid var(--border); padding-top: var(--space-4); }
+.related-group h3 { margin: 0 0 var(--space-2); font-size: 14px; font-weight: 600;
+                    text-transform: none; letter-spacing: 0; font-family: var(--font); }
+.related-group h3 .count { color: var(--text-faint); font-weight: 400; margin-left: 4px; }
+.related-group ul.related { margin: 0 0 var(--space-2); padding: 0; list-style: none; }
+.related-group ul.related li { padding: 3px 0; }
+
+/* ==========================================================================
+   Sidebar groups -- a map, not a list
+   ========================================================================== */
+
+/* Every heading after the overview folds; the group you are in is open. */
+details.nav-group > summary.nav-section {
+	list-style: none;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-3) var(--space-2) var(--space-2);
+	border-radius: var(--radius-sm);
+	transition: color var(--transition);
+}
+
+details.nav-group > summary.nav-section::-webkit-details-marker { display: none; }
+details.nav-group > summary.nav-section::after { content: "\203A"; font-size: 13px;
+                                                  transition: transform var(--transition); }
+details[open].nav-group > summary.nav-section::after { transform: rotate(90deg); }
+details.nav-group > summary.nav-section:hover { color: var(--text); }
+details.nav-group:has(.nav-item.active) > summary.nav-section { color: var(--text); }

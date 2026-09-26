@@ -937,13 +937,14 @@ test_web_navigation_lists_accounting_types(
 }
 
 /*
- * The sidebar is grouped by the five questions an owner asks -- what is
- * coming in, what is going out, what is growing, who the customers are,
- * who needs help -- not by the module that happens to own a page. The
- * grouping is a second table over the first: the link table stays in
- * place (its URLs, module gates and roles are untouched), and a section
- * names the paths it gathers. Asserted on membership, so a page moved to
- * the wrong question is a test failure and not a support call.
+ * The sidebar is grouped by the questions an owner asks -- what came in,
+ * what went out, who the customers are, who needs help, what is growing --
+ * and then the money that is neither: the bank, and the books behind both.
+ * Not by the module that happens to own a page. The grouping is a second
+ * table over the first: the link table stays in place (its URLs, module
+ * gates and roles are untouched), and a section names the paths it
+ * gathers. Asserted on membership, so a page moved to the wrong question
+ * is a test failure and not a support call.
  */
 static void
 test_web_navigation_groups_by_question(
@@ -954,21 +955,31 @@ test_web_navigation_groups_by_question(
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 		"/e/refund", "/e/collection_case", "/e/customer_subscription",
-		"/sales-orders", "/bankfeed", NULL
+		"/sales-orders", NULL
 	};
 	static const gchar *const money_out[] = {
 		"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
 		"/e/recurring_schedule", NULL
 	};
+	static const gchar *const customers[] = {
+		"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
+		NULL
+	};
+	static const gchar *const support[] = {
+		"/tickets", "/sprints", "/kb", NULL
+	};
 	static const gchar *const growth[] = {
 		"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
 		NULL
 	};
-	static const gchar *const customers[] = {
-		"/e/company", "/e/contact", "/worklist", NULL
+	static const gchar *const bank[] = {
+		"/bankfeed", "/money/calendar", NULL
 	};
-	static const gchar *const support[] = {
-		"/tickets", "/sprints", "/kb", NULL
+	static const gchar *const books[] = {
+		"/accounting", "/e/account", "/e/journal", "/e/journal_line",
+		"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
+		"/budgets", "/equity", "/group", "/capture", "/setup",
+		"/e/accounting_cutover", NULL
 	};
 	static const struct {
 		const gchar *heading;
@@ -976,9 +987,11 @@ test_web_navigation_groups_by_question(
 	} expected[] = {
 		{ "Money in", money_in },
 		{ "Money out", money_out },
-		{ "Growth", growth },
 		{ "Customers", customers },
 		{ "Support", support },
+		{ "Growth", growth },
+		{ "Bank", bank },
+		{ "Books", books },
 	};
 	const VentureWebNavSection *sections;
 	const VentureWebNavLink *links;
@@ -992,7 +1005,7 @@ test_web_navigation_groups_by_question(
 	g_assert_nonnull(sections);
 	links = venture_web_navigation();
 
-	/* The five, in the order they are asked, and nothing else. */
+	/* The questions, in the order they are asked, and nothing else. */
 	for (i = 0; i < G_N_ELEMENTS(expected); i++)
 	{
 		g_assert_cmpstr(sections[i].heading, ==, expected[i].heading);

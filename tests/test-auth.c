@@ -4642,12 +4642,14 @@ test_auth_calendar_account_delegation(
 }
 
 /*
- * The sidebar, as drawn, asks the five questions in order right after the
+ * The sidebar, as drawn, asks its questions in order right after the
  * overview, and every page it gathers appears once, under its question. A
  * heading the regrouping emptied (Sales pipelines, whose one row is now
- * under Growth) is not drawn over nothing. With a module off, its row goes
- * -- exactly as before -- and the question keeps its heading as long as
- * another row answers it.
+ * under Growth; Money and Accounting, folded into Bank and Books) is not
+ * drawn over nothing. Every heading after the overview folds, and the one
+ * holding the current page is the one drawn open. With a module off, its
+ * row goes -- exactly as before -- and the question keeps its heading as
+ * long as another row answers it.
  */
 static void
 test_auth_sidebar_asks_the_five_questions(
@@ -4656,12 +4658,14 @@ test_auth_sidebar_asks_the_five_questions(
 ){
 	static const gchar *const headings[] = {
 		"<div class=\"nav-section\">Overview</div>",
-		"<div class=\"nav-section\">Money in</div>",
-		"<div class=\"nav-section\">Money out</div>",
-		"<div class=\"nav-section\">Growth</div>",
-		"<div class=\"nav-section\">Customers</div>",
-		"<div class=\"nav-section\">Support</div>",
-		"<div class=\"nav-section\">Business</div>",
+		"<summary class=\"nav-section\">Money in</summary>",
+		"<summary class=\"nav-section\">Money out</summary>",
+		"<summary class=\"nav-section\">Customers</summary>",
+		"<summary class=\"nav-section\">Support</summary>",
+		"<summary class=\"nav-section\">Growth</summary>",
+		"<summary class=\"nav-section\">Bank</summary>",
+		"<summary class=\"nav-section\">Books</summary>",
+		"<summary class=\"nav-section\">Business</summary>",
 	};
 	g_autofree gchar *cookie = NULL;
 	g_autofree gchar *page = NULL;
@@ -4703,14 +4707,25 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_true(invoice < money_out);
 	g_assert_null(strstr(invoice + 1, "href=\"/e/invoice\""));
 
-	/* The heading it left behind is gone; the ones it shares stay. */
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Sales pipelines</div>"));
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Invoicing</div>"));
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Quotes</div>"));
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Activities</div>"));
-	g_assert_nonnull(strstr(page, "<div class=\"nav-section\">Money</div>"));
-	g_assert_nonnull(strstr(page, "<div class=\"nav-section\">Accounting</div>"));
+	/* The headings it left behind are gone. */
+	g_assert_null(strstr(page, "class=\"nav-section\">Sales pipelines<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Invoicing<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Quotes<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Activities<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Relations<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Money<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Accounting<"));
 	g_assert_nonnull(strstr(page, "href=\"/deals\""));
+
+	/* Reports is an overview page: no question is open over it. */
+	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money-in\" open>"));
+	g_clear_pointer(&page, g_free);
+
+	/* On an invoice list, Money in is the group drawn open. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/invoice",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money-in\" open>"));
+	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"books\" open>"));
 	g_clear_pointer(&page, g_free);
 
 	/* Module off: the row goes, the question stays. */

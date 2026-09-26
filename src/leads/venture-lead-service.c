@@ -429,6 +429,8 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 		if (duplicate != NULL)
 		{
 			g_autofree gchar *source = string_field(entity, "source");
+			g_autofree gchar *notes = string_field(entity, "notes");
+			g_autofree gchar *body = NULL;
 			if (g_strcmp0(policy, "merge") != 0)
 			{
 				refuse(error, VENTURE_ERROR_ALREADY_EXISTS, "duplicate lead, contact or company");
@@ -439,7 +441,11 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 				g_object_set(duplicate, "last-activity-at", now, NULL);
 				if (!write_record(self, duplicate, actor, error)) goto fail;
 			}
-			if (!history(self, duplicate, "Lead capture", source, actor, error)) goto fail;
+			/* A merge leaves the existing record as it was, so the
+			 * history entry is where their message is kept. */
+			body = venture_string_is_empty(notes) ? g_strdup(source)
+				: g_strdup_printf("%s\n\n%s", source != NULL ? source : "", notes);
+			if (!history(self, duplicate, "Lead capture", body, actor, error)) goto fail;
 			if (!venture_database_commit(self->database, error)) return NULL;
 			return g_steal_pointer(&duplicate);
 		}

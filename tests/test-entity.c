@@ -202,10 +202,11 @@ test_entity_display_name_falls_back(void)
 
 	contact = venture_contact_new();
 
-	/* With nothing to go on, the label still identifies the record. */
+	/* With nothing to go on, the label still identifies the record --
+	 * by what a person calls the type, not its table name. */
 	unnamed = venture_entity_get_display_name(VENTURE_ENTITY(contact));
 	g_assert_nonnull(unnamed);
-	g_assert_true(g_str_has_prefix(unnamed, "contact #"));
+	g_assert_true(g_str_has_prefix(unnamed, "Contact #"));
 
 	g_object_set(contact, "name", "Ada Lovelace", NULL);
 	named = venture_entity_get_display_name(VENTURE_ENTITY(contact));

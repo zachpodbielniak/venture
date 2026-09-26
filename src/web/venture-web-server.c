@@ -1530,16 +1530,20 @@ venture_accountant_web_navigation(VentureWebServer *self, HtmxRequest *request);
 static void
 venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *request, GString *html, const gchar *active);
 /*
- * The five questions an owner asks, and the pages that answer each. The
- * link table above is not reordered for them: a row named here is drawn
- * under its question, everything else stays under the heading it carries.
- * A page is named under one question only; test-plugin holds it to that.
+ * The questions an owner asks, and the pages that answer each. The link
+ * table above is not reordered for them: a row named here is drawn under
+ * its question, everything else stays under the heading it carries. A page
+ * is named under one question only; test-plugin holds it to that.
+ *
+ * The order is the order of a working day -- what came in, what went out,
+ * who the customers are, who needs help, what is growing -- and then the
+ * money that is neither: the bank, and the books behind both.
  */
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 	"/e/refund", "/e/collection_case", "/e/customer_subscription",
-	"/sales-orders", "/bankfeed",
+	"/sales-orders",
 	NULL
 };
 
@@ -1549,13 +1553,8 @@ static const gchar *const venture_web_nav_money_out[] = {
 	NULL
 };
 
-static const gchar *const venture_web_nav_growth[] = {
-	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
-	NULL
-};
-
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/worklist",
+	"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
 	NULL
 };
 
@@ -1564,12 +1563,35 @@ static const gchar *const venture_web_nav_support[] = {
 	NULL
 };
 
+static const gchar *const venture_web_nav_growth[] = {
+	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+	NULL
+};
+
+/* Where the money is, day to day: the feeds and what is falling due. */
+static const gchar *const venture_web_nav_bank[] = {
+	"/bankfeed", "/money/calendar",
+	NULL
+};
+
+/* The accounting behind both directions of money, in one place rather
+ * than split between a "Money" heading and an "Accounting" one. */
+static const gchar *const venture_web_nav_books[] = {
+	"/accounting", "/e/account", "/e/journal", "/e/journal_line",
+	"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
+	"/budgets", "/equity", "/group", "/capture", "/setup",
+	"/e/accounting_cutover",
+	NULL
+};
+
 static const VentureWebNavSection venture_web_nav_sections[] = {
 	{ "Money in", venture_web_nav_money_in },
 	{ "Money out", venture_web_nav_money_out },
-	{ "Growth", venture_web_nav_growth },
 	{ "Customers", venture_web_nav_customers },
 	{ "Support", venture_web_nav_support },
+	{ "Growth", venture_web_nav_growth },
+	{ "Bank", venture_web_nav_bank },
+	{ "Books", venture_web_nav_books },
 	{ NULL, NULL }
 };
 
@@ -1624,28 +1646,60 @@ venture_web_append_nav_item(
 }
 
 /*
- * The five questions, each drawn from the rows it names. A row whose
- * module is off is not offered, and the heading follows the first row
- * actually shown, so a question every one of whose modules is off leaves
- * no heading over nothing -- the same rule the table's own headings keep.
+ * A heading and its rows, folded. The group holding the page you are on
+ * is open; the others are one click away, and the script beneath the
+ * sidebar reopens the ones a person left open. Seventy rows at once is a
+ * list nobody reads; nine headings is a map.
+ *
+ * <details>, so it works with scripting off, and the heading keeps its
+ * nav-section class so it is styled like the headings that do not fold.
+ */
+static void
+venture_web_append_nav_group(
+	GString		*html,
+	const gchar	*heading,
+	const gchar	*items,
+	gboolean	 open
+){
+	g_autofree gchar *slug = NULL;
+
+	slug = g_ascii_strdown(heading, -1);
+	g_strdelimit(slug, " ", '-');
+
+	g_string_append_printf(html, "<details class=\"nav-group\" "
+	                       "data-nav-group=\"%s\"%s><summary class=\"nav-section\">",
+	                       slug, open ? " open" : "");
+	venture_html_escape_append(html, heading);
+	g_string_append(html, "</summary>");
+	g_string_append(html, items);
+	g_string_append(html, "</details>");
+}
+
+/*
+ * The questions, each drawn from the rows it names. A row whose module is
+ * off is not offered, and a question every one of whose modules is off
+ * leaves no heading over nothing -- the same rule the table's own
+ * headings keep.
  */
 static void
 venture_web_append_nav_sections(
 	VentureWebServer	*self,
 	GString			*html,
+	const VentureWebNavLink	*links,
 	const gchar		*active
 ){
 	const VentureWebNavSection *sections;
-	const VentureWebNavLink *links;
 	gsize i;
 
 	sections = venture_web_navigation_sections();
-	links = venture_web_navigation();
 
 	for (i = 0; NULL != sections[i].heading; i++)
 	{
-		gboolean shown = FALSE;
+		g_autoptr(GString) items = NULL;
+		gboolean open = FALSE;
 		gsize j;
+
+		items = g_string_new(NULL);
 
 		for (j = 0; NULL != sections[i].paths[j]; j++)
 		{
@@ -1659,18 +1713,17 @@ venture_web_append_nav_sections(
 				if (!venture_web_module_enabled(self, links[k].module))
 					continue;
 
-				if (!shown)
-				{
-					venture_web_append_nav_heading(html,
-						sections[i].heading);
-					shown = TRUE;
-				}
-
-				venture_web_append_nav_item(html, &links[k], active);
+				open = open || (0 == g_strcmp0(active, links[k].path));
+				venture_web_append_nav_item(items, &links[k], active);
 			}
 		}
+
+		if (0 != items->len)
+			venture_web_append_nav_group(html, sections[i].heading,
+			                             items->str, open);
 	}
 }
+
 
 static gchar *
 venture_web_page(
@@ -1764,49 +1817,76 @@ venture_web_page(
 		const gchar *section = NULL;
 		const gchar *shown = NULL;
 		gboolean questions_shown = FALSE;
+		g_autoptr(GString) items = NULL;
+		gboolean open = FALSE;
 
 		links = venture_accountant_web_navigation(self, request);
+		items = g_string_new(NULL);
 
 		g_string_append(html, "<div class=\"nav\">");
 
-		for (i = 0; NULL != links[i].path; i++)
+		/*
+		 * Rows are gathered under their heading and drawn when the next
+		 * heading starts. The first heading -- the overview -- is drawn
+		 * open and unfolded, the questions follow it, and every other
+		 * heading folds.
+		 */
+		for (i = 0; ; i++)
 		{
+			gboolean end;
+
+			end = (NULL == links[i].path);
+
 			/* A section heading belongs to the first link that carries
 			 * it and every link after, until the next heading. */
-			if (NULL != links[i].section)
+			if (!end && (NULL != links[i].section))
 				section = links[i].section;
 
-			/* A row one of the five questions gathers is drawn there,
-			 * not here. */
-			if (venture_web_nav_link_claimed(links[i].path))
+			/* A row one of the questions gathers is drawn there, not
+			 * here. */
+			if (!end && venture_web_nav_link_claimed(links[i].path))
 				continue;
 
 			/* A link whose module is off is not offered. The heading
 			 * follows the first link actually shown under it, so a
 			 * section emptied by configuration leaves no orphan. */
-			if (!venture_web_module_enabled(self, links[i].module))
+			if (!end && !venture_web_module_enabled(self, links[i].module))
 				continue;
 
-			if ((NULL != section) && (section != shown))
+			if (end || ((NULL != section) && (section != shown)))
 			{
-				/* The five questions come right after the first
-				 * heading: the overview stays on top, the questions
-				 * follow, and the rest keep their place. */
-				if ((NULL != shown) && !questions_shown)
+				/* Close the heading being gathered. */
+				if (NULL != shown)
 				{
-					venture_web_append_nav_sections(self, html, active);
-					questions_shown = TRUE;
+					if (!questions_shown)
+					{
+						venture_web_append_nav_heading(html, shown);
+						g_string_append(html, items->str);
+						venture_web_append_nav_sections(self, html,
+							links, active);
+						questions_shown = TRUE;
+					}
+					else
+					{
+						venture_web_append_nav_group(html, shown,
+							items->str, open);
+					}
 				}
 
-				venture_web_append_nav_heading(html, section);
+				if (end)
+					break;
+
+				g_string_truncate(items, 0);
+				open = FALSE;
 				shown = section;
 			}
 
-			venture_web_append_nav_item(html, &links[i], active);
+			open = open || (0 == g_strcmp0(active, links[i].path));
+			venture_web_append_nav_item(items, &links[i], active);
 		}
 
 		if (!questions_shown)
-			venture_web_append_nav_sections(self, html, active);
+			venture_web_append_nav_sections(self, html, links, active);
 
 		/* The operator's own pages, after the built-in ones. */
 		venture_web_append_dashboard_nav(self, request, html, active);
@@ -1921,6 +2001,19 @@ venture_web_page(
 		"var n=document.querySelector('.sidebar .nav');"
 		"if(!n)return;"
 		"var k='venture.nav.scroll',t=null;"
+		/* Reopen the groups a person left open, and remember each
+		 * toggle. Before the scroll is restored, so it is measured
+		 * against the sidebar as it will actually be drawn. The group
+		 * holding the current page is open anyway and is not stored. */
+		"var g='venture.nav.open',o=[];"
+		"try{o=JSON.parse(localStorage.getItem(g)||'[]')||[];}catch(e){}"
+		"var gs=n.querySelectorAll('details[data-nav-group]');"
+		"Array.prototype.forEach.call(gs,function(d){"
+		"if(o.indexOf(d.getAttribute('data-nav-group'))>=0)d.open=true;"
+		"d.addEventListener('toggle',function(){var s=[];"
+		"Array.prototype.forEach.call(gs,function(x){"
+		"if(x.open&&!x.querySelector('.active'))s.push(x.getAttribute('data-nav-group'));});"
+		"try{localStorage.setItem(g,JSON.stringify(s));}catch(e){}});});"
 		"var v=sessionStorage.getItem(k);"
 		"if(v)n.scrollTop=parseInt(v,10)||0;"
 		"var a=n.querySelector('.nav-item.active');"
@@ -4669,6 +4762,25 @@ venture_web_ui_search(
  *
  * Returns: (transfer full): the query-string, starting with "?", or ""
  */
+/*
+ * The record view: how a record, its list and its form read to a person.
+ * Defined in venture-web-record-view.inc, beside the detail renderer it
+ * builds on; declared here because the list and the form come first.
+ */
+static gchar *venture_web_type_label(GType type, gboolean plural);
+static void venture_web_append_crumbs(GString *html, GType type,
+	const gchar *type_name, gboolean link_list);
+static GPtrArray *venture_web_list_columns(GPtrArray *specs,
+	GPtrArray *records);
+static void venture_web_append_list_cell(VentureWebServer *self,
+	GString *html, VentureEntity *record, VentureFieldSpec *spec);
+static guint venture_web_form_group(VentureFieldSpec *spec,
+	guint *facts_seen);
+static gboolean venture_web_value_is_empty(VentureEntity *record,
+	VentureFieldSpec *spec);
+static gchar *venture_web_choice_label(VentureFieldSpec *spec,
+	const gchar *nick);
+
 static gchar *
 venture_web_list_query_string(
 	HtmxRequest	*request,
@@ -5521,6 +5633,8 @@ venture_web_ui_list(
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) records = NULL;
 	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GPtrArray) columns = NULL;
+	g_autofree gchar *heading = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureEntity *prototype;
@@ -5623,16 +5737,13 @@ venture_web_ui_list(
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
 	path = g_strdup_printf("/e/%s", type_name);
+	heading = venture_web_type_label(entity_type, TRUE);
 	content = g_string_new(NULL);
 
-	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">"
-	                         "<h1>");
-	{
-		g_autofree gchar *heading = NULL;
-
-		heading = venture_web_label_from_name(type_name);
-		venture_html_escape_append(content, heading);
-	}
+	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">");
+	venture_web_append_crumbs(content, entity_type, type_name, FALSE);
+	g_string_append(content, "<h1>");
+	venture_html_escape_append(content, heading);
 	g_string_append(content, "</h1><span class=\"subtitle\">");
 	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
 	                       (1 == total) ? "" : "s");
@@ -5660,8 +5771,18 @@ venture_web_ui_list(
 	venture_web_append_save_view_form(content, request, type_name, FALSE);
 
 	if (venture_web_type_accepts_writes(entity_type, NULL))
+	{
+		g_autofree gchar *singular = NULL;
+		g_autofree gchar *lower = NULL;
+
+		/* "New contact", not "New": the button says what it makes. */
+		singular = venture_web_type_label(entity_type, FALSE);
+		lower = g_ascii_strdown(singular, -1);
 		g_string_append_printf(content,
-			"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
+			"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New ", type_name);
+		venture_html_escape_append(content, lower);
+		g_string_append(content, "</a>");
+	}
 	g_string_append(content, "</div></div>");
 
 	/* The registry prototype is one process-wide object per type; a
@@ -5700,7 +5821,10 @@ venture_web_ui_list(
 	shown = 0;
 	current_order = htmx_request_get_query_param(request, "order");
 
-	for (i = 0; i < specs->len; i++)
+	/* What somebody scans this list for; see venture_web_list_columns(). */
+	columns = venture_web_list_columns(specs, records);
+
+	for (i = 0; i < columns->len; i++)
 	{
 		VentureFieldSpec *spec;
 		const gchar *field_name;
@@ -5709,12 +5833,7 @@ venture_web_ui_list(
 		gboolean sorted_asc;
 		gboolean sorted_desc;
 
-		spec = g_ptr_array_index(specs, i);
-
-		/* A list with forty columns is unreadable; the first several
-		 * declared fields are the ones that identify a record. */
-		if (!venture_field_spec_get_show_in_list(spec) || (shown >= 7))
-			continue;
+		spec = g_ptr_array_index(columns, i);
 
 		/*
 		 * Each header is a link that sorts by its column, and clicking
@@ -5764,95 +5883,9 @@ venture_web_ui_list(
 				"<td class=\"tick\"><input type=\"checkbox\" data-bulk-id=\"%"
 				G_GINT64_FORMAT "\"></td>", venture_entity_get_id(record));
 
-		for (i = 0; i < specs->len; i++)
-		{
-			VentureFieldSpec *spec;
-			g_auto(GValue) value = G_VALUE_INIT;
-			g_autofree gchar *text = NULL;
-
-			spec = g_ptr_array_index(specs, i);
-
-			if (!venture_field_spec_get_show_in_list(spec) || (shown >= 7))
-				continue;
-
-			if (!venture_entity_get_field(record,
-			                              venture_field_spec_get_name(spec),
-			                              &value))
-			{
-				g_string_append(content, "<td></td>");
-				shown++;
-				continue;
-			}
-
-			if (G_VALUE_HOLDS(&value, VENTURE_TYPE_MONEY))
-			{
-				const VentureMoney *money;
-
-				money = g_value_get_boxed(&value);
-				text = (NULL != money)
-					? venture_money_to_display_string(money, TRUE)
-					: g_strdup("");
-
-				g_string_append(content, "<td class=\"num\">");
-			}
-			else if (G_VALUE_HOLDS(&value, G_TYPE_DATE_TIME))
-			{
-				text = venture_time_to_date_string(
-					g_value_get_boxed(&value),
-					venture_context_get_timezone(self->context));
-
-				if (NULL == text)
-					text = g_strdup("");
-
-				g_string_append(content, "<td>");
-			}
-			else if (G_VALUE_HOLDS_STRING(&value))
-			{
-				text = venture_truncate(g_value_get_string(&value), 60);
-
-				if (NULL == text)
-					text = g_strdup("");
-
-				g_string_append(content, "<td>");
-			}
-			else if (G_VALUE_HOLDS_ENUM(&value))
-			{
-				/* The nick, not the JSON rendering: a status cell
-				 * reading &quot;active&quot; is the quoting of a
-				 * serialisation leaking into a table. */
-				text = g_strdup(venture_enum_to_nick(G_VALUE_TYPE(&value),
-				                                     g_value_get_enum(&value)));
-
-				if (NULL == text)
-					text = g_strdup("");
-
-				g_string_append(content, "<td>");
-			}
-			else if (G_VALUE_HOLDS_BOOLEAN(&value))
-			{
-				text = g_strdup(g_value_get_boolean(&value) ? "yes" : "");
-				g_string_append(content, "<td>");
-			}
-			else
-			{
-				g_autoptr(JsonNode) node = NULL;
-
-				node = venture_json_node_from_value(&value);
-				text = venture_json_to_string(node, FALSE);
-
-				if (0 == g_strcmp0(text, "null"))
-				{
-					g_free(text);
-					text = g_strdup("");
-				}
-
-				g_string_append(content, "<td class=\"num\">");
-			}
-
-			venture_html_escape_append(content, text);
-			g_string_append(content, "</td>");
-			shown++;
-		}
+		for (i = 0; i < columns->len; i++)
+			venture_web_append_list_cell(self, content, record,
+			                             g_ptr_array_index(columns, i));
 
 		g_string_append_printf(content,
 			"<td class=\"row-actions\">"
@@ -5923,7 +5956,7 @@ venture_web_ui_list(
 	g_string_append(content, "</div>");
 
 	return venture_web_html_response(
-		venture_web_page(self, request, path, type_name, content->str), 200);
+		venture_web_page(self, request, path, heading, content->str), 200);
 }
 
 static HtmxResponse *
@@ -6594,10 +6627,15 @@ venture_web_append_form_field_scoped(
 
 			for (i = 0; (NULL != choices) && (NULL != choices[i]); i++)
 			{
+				g_autofree gchar *shown = NULL;
+
+				/* The value posts as the nick; the person reads
+				 * "In progress", not "in_progress". */
+				shown = venture_web_choice_label(spec, choices[i]);
 				g_string_append_printf(content, "<option value=\"%s\"%s>",
 					choices[i],
 					(0 == g_strcmp0(choices[i], current)) ? " selected" : "");
-				venture_html_escape_append(content, choices[i]);
+				venture_html_escape_append(content, shown);
 				g_string_append(content, "</option>");
 			}
 
@@ -6755,6 +6793,10 @@ venture_web_ui_form(
 	GType entity_type;
 	const gchar *type_name;
 	const gchar *id_text;
+	GString *groups[4];
+	guint counts[4] = { 0, 0, 0, 0 };
+	guint facts_seen = 0;
+	gboolean more_filled = FALSE;
 	gint64 id;
 	guint i;
 
@@ -6796,10 +6838,31 @@ venture_web_ui_form(
 	specs = venture_entity_get_field_specs(record);
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>");
-	g_string_append(content, (0 != id) ? "Edit " : "New ");
-	venture_html_escape_append(content, type_name);
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">");
+	venture_web_append_crumbs(content, entity_type, type_name, TRUE);
+	g_string_append(content, "<h1>");
+
+	/* "New contact" or "Edit Jane Doe": what is being made, or which one
+	 * is being changed. */
+	if (0 != id)
+	{
+		g_autofree gchar *name = NULL;
+
+		name = venture_entity_get_display_name(record);
+		g_string_append(content, "Edit ");
+		venture_html_escape_append(content, name);
+	}
+	else
+	{
+		g_autofree gchar *singular = NULL;
+		g_autofree gchar *lower = NULL;
+
+		singular = venture_web_type_label(entity_type, FALSE);
+		lower = g_ascii_strdown(singular, -1);
+		g_string_append(content, "New ");
+		venture_html_escape_append(content, lower);
+	}
+
 	g_string_append(content, "</h1></div></div>");
 
 	if (0 != id)
@@ -6813,9 +6876,6 @@ venture_web_ui_form(
 		g_string_append_printf(content, "<form method=\"post\" action=\"/e/%s\">",
 		                       type_name);
 	}
-
-	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-	                         "<div class=\"form-grid\">");
 
 	{
 		gint64 org = (0 != id)
@@ -6832,10 +6892,22 @@ venture_web_ui_form(
 		venture_custom_fields_order_specs(venture_context_get_database(self->context), org, type_name, specs);
 	}
 
+	/*
+	 * Four groups, each drawn from the field's role: the essentials in
+	 * view, what somebody writes given full width, the rest under "More
+	 * details", and the machinery under "Advanced". Folded groups are
+	 * <details>, so every input is still in the form and still posts.
+	 */
+	groups[0] = g_string_new(NULL);
+	groups[1] = g_string_new(NULL);
+	groups[2] = g_string_new(NULL);
+	groups[3] = g_string_new(NULL);
+
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec;
 		VentureColumnFlags flags;
+		guint group;
 
 		spec = g_ptr_array_index(specs, i);
 		flags = venture_field_spec_get_flags(spec);
@@ -6857,10 +6929,51 @@ venture_web_ui_form(
 			if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
 				return venture_web_error_response(error);
 		}
-		venture_web_append_form_field(self, content, spec, record);
+
+		group = venture_web_form_group(spec, &facts_seen);
+		counts[group]++;
+
+		/* Something already filled in keeps its group open on an edit:
+		 * a folded value is one nobody checks before saving. */
+		if ((0 != id) && (2 == group) &&
+		    !venture_web_value_is_empty(record, spec))
+			more_filled = TRUE;
+
+		venture_web_append_form_field(self, groups[group], spec, record);
 	}
 
-	g_string_append(content, "</div></div></div>");
+	if (counts[0] > 0)
+		g_string_append_printf(content,
+			"<section class=\"card form-section\"><div class=\"card-body\">"
+			"<div class=\"form-grid\">%s</div></div></section>",
+			groups[0]->str);
+
+	if (counts[1] > 0)
+		g_string_append_printf(content,
+			"<section class=\"card form-section form-prose\">"
+			"<div class=\"card-body\">%s</div></section>",
+			groups[1]->str);
+
+	if (counts[2] > 0)
+		g_string_append_printf(content,
+			"<details class=\"card form-section form-more\"%s>"
+			"<summary>More details <span class=\"count\">%u</span>"
+			"</summary><div class=\"card-body\"><div class=\"form-grid\">"
+			"%s</div></div></details>",
+			(more_filled || (0 == counts[0])) ? " open" : "",
+			counts[2], groups[2]->str);
+
+	if (counts[3] > 0)
+		g_string_append_printf(content,
+			"<details class=\"card form-section form-advanced\">"
+			"<summary>Advanced <span class=\"count\">%u</span></summary>"
+			"<div class=\"card-body\"><p class=\"field-help\">Set by "
+			"VENTURE or an integration. Change these only if you know "
+			"why.</p><div class=\"form-grid\">%s</div></div></details>",
+			counts[3], groups[3]->str);
+
+	for (i = 0; i < G_N_ELEMENTS(groups); i++)
+		g_string_free(groups[i], TRUE);
 
 	/*
 	 * Which entity this belongs to, on every form. It is the field most
@@ -6895,7 +7008,8 @@ venture_web_ui_form(
 
 			g_string_append(content,
 				"<div class=\"card\"><div class=\"card-body\">"
-				"<div class=\"field\"><label>Entity"
+				"<div class=\"field\"><label><span class=\"field-label\">"
+				"Belongs to</span>"
 				"<select name=\"organization_id\">");
 
 			for (j = 0; j < organizations->len; j++)
@@ -7742,6 +7856,7 @@ venture_web_append_knowledge(
 #include "cutover/venture-cutover-panel.inc"
 #include "setup/venture-setup-panel.inc"
 #include "backup/venture-backup-web.inc"
+#include "venture-web-record-view.inc"
 
 static void
 venture_web_append_related(
@@ -7752,6 +7867,7 @@ venture_web_append_related(
 	g_autofree GType *types = NULL;
 	const gchar *own_name;
 	guint n_types;
+	guint groups = 0;
 	guint i;
 
 	own_name = venture_entity_get_entity_name(record);
@@ -7842,18 +7958,40 @@ venture_web_append_related(
 
 			related_name = venture_entity_get_entity_name(prototype);
 
-			g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-			                         "<h2>");
-			venture_html_escape_append(content, related_name);
+			if (0 == groups++)
+				g_string_append(content,
+					"<section class=\"card related-records\">"
+					"<div class=\"card-head\"><h2>Related</h2></div>"
+					"<div class=\"card-body\">");
 
-			/* Named by the field, because a type can point at the same
-			 * target twice -- a ticket has both a parent ticket and
-			 * child tickets. */
-			g_string_append(content, " <span class=\"muted\">by ");
-			venture_html_escape_append(content,
-			                           venture_field_spec_get_label(spec));
-			g_string_append_printf(content, "</span> <span class=\"count\">%u"
-			                                "</span></h2><ul class=\"related\">",
+			g_string_append(content, "<div class=\"related-group\">"
+			                         "<h3>");
+			{
+				g_autofree gchar *plural = NULL;
+				g_autofree gchar *target = NULL;
+
+				plural = venture_web_type_label(types[i], TRUE);
+				target = venture_web_type_label(G_OBJECT_TYPE(record), FALSE);
+				venture_html_escape_append(content, plural);
+
+				/* Named by the field only when it says something the
+				 * type does not: a ticket has both a parent ticket and
+				 * child tickets, a billing request names a company as
+				 * its customer. "Contacts, as company" says nothing. */
+				if (0 != g_ascii_strcasecmp(
+					venture_field_spec_get_label(spec), target))
+				{
+					g_autofree gchar *lower = NULL;
+
+					lower = g_ascii_strdown(
+						venture_field_spec_get_label(spec), -1);
+					g_string_append(content, " <span class=\"muted\">as ");
+					venture_html_escape_append(content, lower);
+					g_string_append(content, "</span>");
+				}
+			}
+			g_string_append_printf(content, " <span class=\"count\">%u"
+			                                "</span></h3><ul class=\"related\">",
 			                       related->len);
 
 			for (k = 0; k < related->len; k++)
@@ -7873,14 +8011,22 @@ venture_web_append_related(
 
 			{
 				g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
+				g_autofree gchar *singular = venture_web_type_label(types[i], FALSE);
+				g_autofree gchar *lower = g_ascii_strdown(singular, -1);
+
 				g_strdelimit(wire, "-", '_');
 				g_string_append_printf(content,
-					"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
-					"New %s</a></div></div>", related_name, wire, venture_entity_get_id(record),
-					venture_entity_get_organization_id(record), related_name);
+					"</ul><a class=\"btn btn-sm btn-ghost\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
+					"New ", related_name, wire, venture_entity_get_id(record),
+					venture_entity_get_organization_id(record));
+				venture_html_escape_append(content, lower);
+				g_string_append(content, "</a></div>");
 			}
 		}
 	}
+
+	if (groups > 0)
+		g_string_append(content, "</div></section>");
 }
 
 /*
@@ -8131,11 +8277,7 @@ venture_web_append_ticket_relations(
 		    (0 == g_strcmp0(type_names[i], "audit_entry")))
 			continue;
 
-		g_string_append(content, "<option value=\"");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "\">");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "</option>");
+		venture_web_append_type_option(self, content, type_names[i]);
 	}
 
 	/* Searched rather than typed, the same as the link form below it. */
@@ -8319,11 +8461,7 @@ venture_web_append_links(
 		    (0 == g_strcmp0(type_names[i], "audit_entry")))
 			continue;
 
-		g_string_append(content, "<option value=\"");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "\">");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "</option>");
+		venture_web_append_type_option(self, content, type_names[i]);
 	}
 
 	/*
@@ -9232,7 +9370,6 @@ venture_web_ui_detail(
 	GType entity_type;
 	const gchar *type_name;
 	gint64 id;
-	guint i;
 
 	self = user_data;
 
@@ -9266,61 +9403,49 @@ venture_web_ui_detail(
 			return forward;
 	}
 
-	specs = venture_entity_get_field_specs(record);
-	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
-
+	specs = venture_web_visible_specs(record);
 	title = venture_entity_get_display_name(record);
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>");
-	venture_html_escape_append(content, title);
-	g_string_append(content, "</h1><span class=\"subtitle\">");
-	venture_html_escape_append(content, type_name);
-	g_string_append(content, "</span></div><div class=\"page-actions\">");
-	/* Watching comes first so it sits beside the title on every page;
-	 * the audit log and a notification are not things to follow. */
-	if (venture_data_class_for_type(entity_type) != VENTURE_DATA_CLASS_TENANT_ADMIN &&
-	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
-	    (VENTURE_TYPE_NOTIFICATION != entity_type) &&
-	    (VENTURE_TYPE_WATCH != entity_type))
-		venture_web_append_watch_button(self, content, principal, record);
-
-	if (venture_web_type_accepts_writes(entity_type, NULL))
-		g_string_append_printf(content,
-			"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT "/edit\">Edit</a> ", type_name, id);
-	g_string_append_printf(content, "<a class=\"btn\" href=\"/e/%s\">All %s</a>", type_name, type_name);
-	g_string_append(content, "</div></div>");
-
-	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-	                         "<dl class=\"detail detail-grid\">");
-
-	for (i = 0; i < specs->len; i++)
 	{
-		VentureFieldSpec *spec;
+		g_autoptr(GString) actions = NULL;
 
-		spec = g_ptr_array_index(specs, i);
+		actions = g_string_new(NULL);
 
-		/* A sensitive value is not shown for reading either. */
-		if (0 != (venture_field_spec_get_flags(spec) &
-		          VENTURE_COLUMN_FLAG_SENSITIVE))
-			continue;
+		/* Watching comes first so it sits beside the title on every page;
+		 * the audit log and a notification are not things to follow. */
+		if (venture_data_class_for_type(entity_type) != VENTURE_DATA_CLASS_TENANT_ADMIN &&
+		    (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
+		    (VENTURE_TYPE_NOTIFICATION != entity_type) &&
+		    (VENTURE_TYPE_WATCH != entity_type))
+			venture_web_append_watch_button(self, actions, principal, record);
 
-		g_string_append(content, "<dt>");
-		venture_html_escape_append(content, venture_field_spec_get_label(spec));
-		g_string_append(content, "</dt><dd>");
-		venture_web_append_detail_value(self, content, record, spec);
-		g_string_append(content, "</dd>");
+		/* One primary action. The way back to the list is the
+		 * breadcrumb, not a second button competing with it. */
+		if (venture_web_type_accepts_writes(entity_type, NULL))
+			g_string_append_printf(actions,
+				"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT "/edit\">Edit</a>", type_name, id);
+
+		content = g_string_new(NULL);
+		venture_web_append_record_head(content, record, specs, type_name,
+		                               actions->str);
 	}
 
-	g_string_append(content, "</dl></div></div>");
+	/*
+	 * Two columns: what the record is about on the left, its details on
+	 * the right. Everything the page appends after this point -- the
+	 * type's own blocks, related records, the activity -- is the left
+	 * column, and the side panel closes the layout at the end.
+	 */
+	g_string_append(content, "<div class=\"record-layout\"><div class=\"record-main\">");
+	venture_web_append_record_content(self, content, record, specs);
 
 	if (venture_web_module_enabled(self, "federation") &&
 		venture_entity_type_get_federation_access(entity_type) &&
 		venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL))
 	{
-		g_string_append(content, "<section class=\"card\"><h2>Federation sharing</h2><p>This record stays private unless explicitly granted. Use its UUID to select exact fields and peers.</p><code>");
-		venture_html_escape_append(content, venture_entity_get_uuid(record));
-		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
+		/* The identifier a grant names is under "All fields", with the
+		 * rest of the record's machinery, not printed on the page. */
+		g_string_append(content, "<section class=\"card\"><div class=\"card-head\"><h2>Federation sharing</h2></div><div class=\"card-body\"><p>This record stays private unless explicitly granted. A grant names it by the stable identifier under All fields.</p><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></div></section>");
 	}
 
 	venture_stripe_web_settings_link(self, content, record, principal);
@@ -9465,8 +9590,19 @@ venture_web_ui_detail(
 	    (VENTURE_TYPE_NOTIFICATION != entity_type))
 		venture_web_append_activity(self, content, record);
 
-	return venture_web_html_response(
-		venture_web_page(self, request, NULL, title, content->str), 200);
+	g_string_append(content, "</div>");
+	venture_web_append_record_aside(self, content, record, specs);
+	g_string_append(content, "</div>");
+
+	{
+		g_autofree gchar *active = NULL;
+
+		active = g_strdup_printf("/e/%s", type_name);
+
+		return venture_web_html_response(
+			venture_web_page(self, request, active, title, content->str),
+			200);
+	}
 }
 
 /*

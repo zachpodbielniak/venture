@@ -222,6 +222,9 @@ venture_field_spec_new_from_json(
 	if (venture_field_spec_json_bool(object, "transient", FALSE))
 		self->flags |= VENTURE_COLUMN_FLAG_TRANSIENT;
 
+	if (venture_field_spec_json_bool(object, "technical", FALSE))
+		self->flags |= VENTURE_COLUMN_FLAG_TECHNICAL;
+
 	self->show_in_list = venture_field_spec_json_bool(object, "list", TRUE);
 
 	if (json_object_has_member(object, "order"))
@@ -459,6 +462,95 @@ venture_field_spec_get_display_order(const VentureFieldSpec *self)
 }
 
 /* --- Derived representations --------------------------------------------- */
+
+/*
+ * Whether a field's name says it is machinery. Two hundred record types
+ * declare fields, and the ones nobody reads are named the same way
+ * everywhere: a replay key, a payload digest, the revision of some
+ * configuration a row was accepted under, a provider's string id. Naming
+ * is the one signal every existing table already carries, so it is the
+ * default; VENTURE_COLUMN_FLAG_TECHNICAL says it outright where the name
+ * does not.
+ */
+static gboolean
+venture_field_spec_name_is_machinery(
+	const gchar		*name,
+	VentureFieldKind	 kind
+){
+	static const gchar *const suffixes[] = {
+		"-key", "-hash", "-digest", "-uuid", "-etag", "-nonce",
+		"-signature", "-checksum", "-fingerprint", "-identity",
+		"-version", "-cursor", "-token", "-lease-until", NULL
+	};
+	gsize i;
+
+	if (NULL == name)
+		return FALSE;
+
+	for (i = 0; NULL != suffixes[i]; i++)
+	{
+		if (g_str_has_suffix(name, suffixes[i]))
+			return TRUE;
+	}
+
+	/* A string named like an id is somebody else's identifier -- a
+	 * provider's customer id, an external reference. A reference to one
+	 * of our own records is REFERENCE-kinded and followable, and stays. */
+	return (VENTURE_FIELD_KIND_STRING == kind) &&
+	       (g_str_has_suffix(name, "-id") || (0 == g_strcmp0(name, "id")));
+}
+
+VentureFieldRole
+venture_field_spec_get_role(const VentureFieldSpec *self)
+{
+	g_return_val_if_fail(NULL != self, VENTURE_FIELD_ROLE_TECHNICAL);
+
+	if (0 != (self->flags & (VENTURE_COLUMN_FLAG_TECHNICAL |
+	                         VENTURE_COLUMN_FLAG_SENSITIVE)))
+		return VENTURE_FIELD_ROLE_TECHNICAL;
+
+	if (VENTURE_FIELD_KIND_JSON == self->kind)
+		return VENTURE_FIELD_ROLE_STRUCTURED;
+
+	if (venture_field_spec_name_is_machinery(self->name, self->kind))
+		return VENTURE_FIELD_ROLE_TECHNICAL;
+
+	if (VENTURE_FIELD_KIND_TEXT == self->kind)
+		return VENTURE_FIELD_ROLE_CONTENT;
+
+	/* The lifecycle field goes by one of three names across the tree;
+	 * "kind" and "type" say what a record is, not where it has got to. */
+	if ((VENTURE_FIELD_KIND_ENUM == self->kind) &&
+	    ((0 == g_strcmp0(self->name, "status")) ||
+	     (0 == g_strcmp0(self->name, "stage")) ||
+	     (0 == g_strcmp0(self->name, "state"))))
+		return VENTURE_FIELD_ROLE_STATUS;
+
+	return VENTURE_FIELD_ROLE_FACT;
+}
+
+const gchar *
+venture_field_spec_get_choice_label(
+	const VentureFieldSpec	*self,
+	const gchar		*value
+){
+	gsize i;
+
+	g_return_val_if_fail(NULL != self, NULL);
+
+	if ((NULL == value) || (NULL == self->choices) ||
+	    (NULL == self->choice_labels))
+		return NULL;
+
+	for (i = 0; (NULL != self->choices[i]) &&
+	            (NULL != self->choice_labels[i]); i++)
+	{
+		if (0 == g_strcmp0(self->choices[i], value))
+			return self->choice_labels[i];
+	}
+
+	return NULL;
+}
 
 GType
 venture_field_spec_get_value_type(const VentureFieldSpec *self)

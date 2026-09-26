@@ -4056,3 +4056,195 @@ textarea.assist-text {
 }
 
 .secret:hover { border-color: var(--accent); }
+
+/* ==========================================================================
+   Record view -- one reading of every record
+   ========================================================================== */
+
+/*
+ * A record page is a headline, the content that matters, and its details.
+ * The trail above the title says where the page sits; the status is a
+ * badge beside the name; the left column is what the record is about and
+ * the right column is the facts that are filled in. Machinery is one
+ * click away under "All fields", never on the page by default.
+ *
+ * Field captions here are sentence case, not the micro register. A label
+ * like "Email permission outcome" is read, not scanned, and tracked-out
+ * capitals make a four-word caption a chore; the micro register stays on
+ * the chrome -- navigation, buttons, badges, column heads.
+ */
+
+.crumbs {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	font-family: var(--font-mono);
+	font-size: var(--micro-size);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: var(--micro-track);
+	color: var(--text-faint);
+}
+
+.crumbs::before { content: ">>>"; color: var(--accent); }
+.crumbs .crumb + .crumb::before { content: "/"; margin-right: 6px;
+                                  color: var(--text-faint); }
+.crumbs a.crumb { color: var(--text-muted); text-decoration: none; }
+.crumbs a.crumb:hover { color: var(--accent); }
+
+.title-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-3);
+	min-width: 0;
+}
+
+.title-line h1 { margin: 0; overflow-wrap: anywhere; }
+.status-badge { font-size: 11px; }
+
+.record-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+	gap: var(--space-5);
+	align-items: start;
+}
+
+.record-main { display: flex; flex-direction: column; gap: var(--space-5);
+               min-width: 0; }
+.record-main > * { margin-top: 0; margin-bottom: 0; }
+.record-aside { display: flex; flex-direction: column; gap: var(--space-5);
+                min-width: 0; position: sticky; top: var(--space-4); }
+
+@media (max-width: 1100px) {
+	.record-layout { grid-template-columns: minmax(0, 1fr); }
+	/* On one column the facts come first: they answer "what is this". */
+	.record-aside { order: -1; position: static; }
+}
+
+/* Prose somebody wrote, at a size somebody reads. */
+.prose {
+	font-size: 14px;
+	line-height: 1.65;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	max-width: 72ch;
+}
+
+dl.facts { margin: 0; display: flex; flex-direction: column; }
+
+dl.facts .fact {
+	display: grid;
+	grid-template-columns: minmax(96px, 38%) 1fr;
+	gap: var(--space-3);
+	padding: var(--space-2) 0;
+	border-bottom: 1px solid var(--border);
+	font-size: 13px;
+}
+
+dl.facts .fact:last-child { border-bottom: 0; }
+dl.facts dt { color: var(--text-muted); font-size: 12.5px; }
+dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* A disclosure: the summary is a quiet control, the count says how much
+ * is behind it. */
+details.all-fields, details.form-section { margin-top: var(--space-3); }
+
+details.all-fields > summary,
+details.form-section > summary {
+	cursor: pointer;
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	font-family: var(--font-mono);
+	font-size: var(--micro-size);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: var(--micro-track);
+	color: var(--text-muted);
+	padding: var(--space-2) 0;
+}
+
+details.form-section > summary { padding: var(--space-3) var(--space-4); }
+details.all-fields > summary::-webkit-details-marker,
+details.form-section > summary::-webkit-details-marker { display: none; }
+details.all-fields > summary::before,
+details.form-section > summary::before { content: "+"; color: var(--accent); }
+details[open].all-fields > summary::before,
+details[open].form-section > summary::before { content: "\2212"; }
+details.all-fields > summary:hover,
+details.form-section > summary:hover { color: var(--text); }
+details .count { color: var(--text-faint); font-weight: 400; }
+details[open].form-section > summary { border-bottom: 1px solid var(--border); }
+
+/* Captions a person reads: sentence case, small, muted. */
+.field .field-label {
+	font-family: var(--font);
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 12.5px;
+	font-weight: 500;
+}
+
+.form-section { margin-bottom: var(--space-4); }
+.form-prose textarea { min-height: 7em; }
+.form-prose .field + .field { margin-top: var(--space-4); }
+
+/* A record's actions: one card, a row of buttons; an action that asks for
+ * something opens its form in place under its own name. */
+.record-actions .card-body { display: flex; flex-wrap: wrap; gap: var(--space-2);
+                             align-items: flex-start; }
+.record-actions form { margin: 0; }
+.record-actions details.record-action { flex: 0 0 auto; }
+.record-actions details[open].record-action { flex: 1 1 100%; }
+.record-actions details.record-action > summary { list-style: none; display: inline-flex; }
+.record-actions details.record-action > summary::-webkit-details-marker { display: none; }
+.record-actions details[open].record-action > form {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	margin-top: var(--space-3);
+	padding-top: var(--space-3);
+	border-top: 1px solid var(--border);
+}
+.record-actions details[open].record-action > form > .btn { align-self: flex-start; }
+
+/* Everything that points at a record, in one card: a short heading per
+ * kind of record, its names, and a way to add another. */
+.related-records .card-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.related-group + .related-group { border-top: 1px solid var(--border); padding-top: var(--space-4); }
+.related-group h3 { margin: 0 0 var(--space-2); font-size: 14px; font-weight: 600;
+                    text-transform: none; letter-spacing: 0; font-family: var(--font); }
+.related-group h3 .count { color: var(--text-faint); font-weight: 400; margin-left: 4px; }
+.related-group ul.related { margin: 0 0 var(--space-2); padding: 0; list-style: none; }
+.related-group ul.related li { padding: 3px 0; }
+
+/* ==========================================================================
+   Sidebar groups -- a map, not a list
+   ========================================================================== */
+
+/*
+ * Every heading after the overview folds. The group you are in is open,
+ * the ones you opened stay open (the sidebar's own script remembers them),
+ * and the rest are a line each: nine headings read at a glance where
+ * seventy rows did not. The heading is the summary, drawn exactly like the
+ * headings that do not fold, with a count-free chevron on the right.
+ */
+details.nav-group > summary.nav-section {
+	list-style: none;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-3) var(--space-4) var(--space-2);
+	transition: color var(--transition);
+}
+
+details.nav-group > summary.nav-section::-webkit-details-marker { display: none; }
+details.nav-group > summary.nav-section::after { content: "+"; color: var(--text-faint); }
+details[open].nav-group > summary.nav-section::after { content: "\2212"; }
+details.nav-group > summary.nav-section:hover { color: var(--text); }
+details.nav-group:has(.nav-item.active) > summary.nav-section { color: var(--text); }
+details[open].nav-group { padding-bottom: var(--space-2); }
