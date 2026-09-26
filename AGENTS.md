@@ -735,7 +735,9 @@ than one that fails.
   `VENTURE_COLUMN_FLAG_SAME_PARENT` on a reference makes the save refuse a
   target under another parent and the form narrow its options; the parent
   is derived by `venture_entity_class_get_shared_parent()`. Never let it
-  pick `organization-id`.
+  pick `organization-id`. Deals, tickets and sales orders carry it too; an
+  empty parent on either end is not a mismatch (imports match people with
+  no company yet).
 - **An invoice line is taxed by a rate record** (`tax-code-id`), made at
   `/tax-rates/new` from a percent and stored as an exact fraction. The
   exemption lives on the customer; the invoice freezes it at issue.

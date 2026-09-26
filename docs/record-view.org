@@ -127,6 +127,18 @@ editable. The form marks the select =data-same-parent= and each option
 =data-parent=, and the page hides the options under another parent;
 the themed picker leaves out hidden options.
 
+Two cases are not a mismatch. A record that names no parent -- an
+internal ticket raised by somebody, with no company -- has nothing to
+share, and a target filed under no parent is not under another one: an
+import matches a person before anybody has said where they work.
+
+The flag is on every "person at this customer" reference: an invoice's
+and a quote's "Attention of", a deal's contact, a ticket's "Raised by" and
+a sales order's contact. It is deliberately not on an interaction or an
+activity, where a meeting with the customer may well include somebody
+from a partner, nor on machinery an integration writes (Stripe customers,
+dunning events, sequence enrolments).
+
 ** When something is refused
 
 Every route reports a failure as JSON, and a person never sees it:

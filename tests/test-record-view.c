@@ -799,6 +799,105 @@ test_attention_of_same_customer(Fixture *f, gconstpointer data)
 }
 
 /*
+ * A deal's contact, a ticket's "Raised by" and a sales order's contact are
+ * somebody at that record's company, by the same flag as an invoice's
+ * "Attention of": refused at the save from any writer, narrowed in the
+ * form. An internal ticket with no company still takes anybody. If this
+ * regresses, Tesla's founder is the contact on Amazon's deal and a
+ * support reply is read by the wrong customer.
+ */
+static void
+test_attention_of_deals_and_tickets(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) amazon = NULL, tesla = NULL, buyer = NULL, elon = NULL;
+	g_autoptr(VentureEntity) deal = NULL, ticket = NULL, order = NULL, internal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *deal_page = NULL, *ticket_page = NULL;
+	GType types[3];
+	guint i;
+
+	(void)data;
+
+	amazon = g_object_new(VENTURE_TYPE_COMPANY, "name", "Amazon", NULL);
+	tesla = g_object_new(VENTURE_TYPE_COMPANY, "name", "Tesla", NULL);
+	save(f, amazon);
+	save(f, tesla);
+	buyer = g_object_new(VENTURE_TYPE_CONTACT, "name", "Andy Buyer",
+		"company-id", venture_entity_get_id(amazon), NULL);
+	elon = g_object_new(VENTURE_TYPE_CONTACT, "name", "Elon",
+		"company-id", venture_entity_get_id(tesla), NULL);
+	save(f, buyer);
+	save(f, elon);
+
+	types[0] = VENTURE_TYPE_DEAL;
+	types[1] = VENTURE_TYPE_TICKET;
+	types[2] = VENTURE_TYPE_SALES_ORDER;
+	for (i = 0; i < G_N_ELEMENTS(types); i++)
+		g_assert_cmpstr(venture_entity_class_get_shared_parent(
+			g_type_class_peek(types[i]), "contact-id"), ==, "company-id");
+
+	deal = g_object_new(VENTURE_TYPE_DEAL, "name", "Warehouse robots",
+		"company-id", venture_entity_get_id(amazon),
+		"contact-id", venture_entity_get_id(elon), NULL);
+	venture_entity_set_organization_id(deal, f->organization_id);
+	g_assert_false(venture_database_save(f->database, deal, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "Contact"));
+	g_clear_error(&error);
+
+	ticket = g_object_new(VENTURE_TYPE_TICKET, "title", "Robot stuck",
+		"company-id", venture_entity_get_id(amazon),
+		"contact-id", venture_entity_get_id(elon), NULL);
+	venture_entity_set_organization_id(ticket, f->organization_id);
+	g_assert_false(venture_database_save(f->database, ticket, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "Raised by"));
+	g_clear_error(&error);
+
+	order = g_object_new(VENTURE_TYPE_SALES_ORDER, "number", "SO-9",
+		"status", "draft", "currency", "USD",
+		"company-id", venture_entity_get_id(amazon),
+		"contact-id", venture_entity_get_id(elon), NULL);
+	venture_entity_set_organization_id(order, f->organization_id);
+	g_assert_false(venture_database_save(f->database, order, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* Somebody at the account is accepted, on every one of them. */
+	g_object_set(deal, "contact-id", venture_entity_get_id(buyer), NULL);
+	save(f, deal);
+	g_object_set(ticket, "contact-id", venture_entity_get_id(buyer), NULL);
+	save(f, ticket);
+	g_object_set(order, "contact-id", venture_entity_get_id(buyer), NULL);
+	save(f, order);
+
+	/* Somebody filed under no company is not at another one: an import
+	 * matches people before anybody says where they work. */
+	{
+		g_autoptr(VentureEntity) loner = NULL, imported = NULL;
+
+		loner = g_object_new(VENTURE_TYPE_CONTACT, "name", "Bob", NULL);
+		save(f, loner);
+		imported = g_object_new(VENTURE_TYPE_DEAL, "name", "Imported",
+			"company-id", venture_entity_get_id(amazon),
+			"contact-id", venture_entity_get_id(loner), NULL);
+		save(f, imported);
+	}
+
+	/* Your own work names no company, so it has no parent to share. */
+	internal = g_object_new(VENTURE_TYPE_TICKET, "title", "Asked on a call",
+		"contact-id", venture_entity_get_id(elon), NULL);
+	save(f, internal);
+
+	deal_page = get(f, "/e/deal/new");
+	ticket_page = get(f, "/e/ticket/new");
+	g_assert_nonnull(strstr(deal_page,
+		"<select name=\"contact-id\" data-same-parent=\"company-id\">"));
+	g_assert_nonnull(strstr(ticket_page,
+		"<select name=\"contact-id\" data-same-parent=\"company-id\">"));
+}
+
+/*
  * A refusal reaches a person as words, never as JSON: a browser posting
  * a form with scripting off gets a page in the app saying what to fix,
  * the page's own form handling gets the JSON it shows above the form,
@@ -890,6 +989,8 @@ main(int argc, char *argv[])
 	           test_invoice_sheet_exemption, tear_down);
 	g_test_add("/record-view/attention-of-same-customer", Fixture, NULL, set_up,
 	           test_attention_of_same_customer, tear_down);
+	g_test_add("/record-view/attention-of-deals-and-tickets", Fixture, NULL, set_up,
+	           test_attention_of_deals_and_tickets, tear_down);
 	g_test_add("/record-view/errors-for-people", Fixture, NULL, set_up,
 	           test_errors_for_people, tear_down);
 	g_test_add("/record-view/tax-rate-page", Fixture, NULL, set_up,

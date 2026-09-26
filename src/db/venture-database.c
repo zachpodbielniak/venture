@@ -1076,7 +1076,10 @@ venture_database_check_same_parent(
 			continue;
 
 		g_object_get(entity, name, &target_id, parent, &parent_id, NULL);
-		if (0 == target_id)
+		/* No parent named is nothing to share: an internal ticket raised
+		 * by a customer's contact names no company, and the form offers
+		 * everybody until one is chosen. */
+		if (0 == target_id || 0 == parent_id)
 			continue;
 		if (NULL != previous)
 		{
@@ -1094,7 +1097,10 @@ venture_database_check_same_parent(
 		if (NULL == target)
 			continue;
 		g_object_get(target, parent, &theirs, NULL);
-		if (theirs == parent_id)
+		/* Somebody filed under no company is not somebody at another:
+		 * an imported deal names its account and a person the import
+		 * matched before anyone said where they work. */
+		if (theirs == parent_id || 0 == theirs)
 			continue;
 
 		{
