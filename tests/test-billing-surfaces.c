@@ -303,6 +303,117 @@ test_plan_discounts(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(page, "href=\"/e/invoice/"));
 }
 
+/* The fixture's plan and its first price. */
+static VentureEntity *
+fixture_plan(Fixture *f)
+{
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_PLAN);
+	VentureEntity *plan = venture_database_find_one(f->database, q, NULL);
+	g_assert_nonnull(plan);
+	return plan;
+}
+
+/*
+ * A customer's quoted code is typed beside the discount list on the new
+ * subscription page, and reaches the service from the form and, as
+ * discount_code, from REST; a code the plan does not offer comes back in
+ * words. If this regresses, the code box is decoration: the subscription
+ * starts at full price and nobody is told why.
+ */
+static void
+test_discount_code_surfaces(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) plan = fixture_plan(f);
+	g_autoptr(VenturePlanDiscount) offer = venture_plan_discount_new();
+	g_autoptr(VentureQuery) q = NULL;
+	g_autoptr(GPtrArray) subs = NULL;
+	g_autofree gchar *page = NULL, *body = NULL, *form = NULL, *json = NULL;
+	gint64 company = 0, price = 0, discount_id = 0;
+	(void)data;
+	g_object_set(offer, "plan-id", venture_entity_get_id(plan), "name", "Spring", "percent-off", (gint64)25,
+		"code", "SPRING25", "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(offer));
+	{
+		g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+		g_object_get(sub, "company-id", &company, "plan-price-id", &price, NULL);
+	}
+	g_assert_cmpuint(request(f, "GET", "/billing/subscriptions/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Have a code?"));
+	g_assert_nonnull(strstr(page, "name=\"discount-code\""));
+
+	form = g_strdup_printf("billing_action=start&company-id=%" G_GINT64_FORMAT "&plan-price-id=%" G_GINT64_FORMAT
+		"&at=2026-01-01&discount-id=&discount-code=spring25", company, price);
+	g_assert_cmpuint(request(f, "POST", "/billing/subscriptions/start", "application/x-www-form-urlencoded", form, &body), ==, 303);
+	g_clear_pointer(&body, g_free);
+	json = g_strdup_printf("{\"company_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT
+		",\"at\":\"2026-01-01\",\"discount_code\":\"Spring25\"}", company, price);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/billing/start", "application/json", json, &body), ==, 200);
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&json, g_free);
+	json = g_strdup_printf("{\"company_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT
+		",\"at\":\"2026-01-01\",\"discount_code\":\"WINTER\"}", company, price);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/billing/start", "application/json", json, &body), ==, 422);
+	g_assert_nonnull(strstr(body, "the code WINTER is not one this plan offers"));
+
+	q = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+	venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, NULL);
+	subs = venture_database_find(f->database, q, NULL);
+	g_assert_cmpuint(subs->len, ==, 3);
+	g_object_get(g_ptr_array_index(subs, 1), "discount-id", &discount_id, NULL);
+	g_assert_cmpint(discount_id, ==, venture_entity_get_id(VENTURE_ENTITY(offer)));
+	g_object_get(g_ptr_array_index(subs, 2), "discount-id", &discount_id, NULL);
+	g_assert_cmpint(discount_id, ==, venture_entity_get_id(VENTURE_ENTITY(offer)));
+}
+
+/*
+ * A trialing subscription's page says whether its customer has been told
+ * the trial is ending, and the reminder's lead time comes from the
+ * configuration on a running install. If this regresses, somebody chasing
+ * a surprised customer cannot tell whether they were warned, or a changed
+ * billing.trial_reminder_days waits for a restart.
+ */
+static void
+test_trial_reminder_page(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) plan = fixture_plan(f);
+	g_autoptr(VenturePlanPrice) trial = venture_plan_price_new();
+	g_autoptr(VentureBillingRequest) start = venture_billing_request_new();
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *page = NULL, *path = NULL, *body = NULL;
+	gint64 company_id = 0, id = 0, days = 0;
+	(void)data;
+	{
+		g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+		g_object_get(sub, "company-id", &company_id, NULL);
+	}
+	company = venture_database_get(f->database, VENTURE_TYPE_COMPANY, company_id, NULL);
+	g_object_set(company, "email", "accounts@customer.test", NULL);
+	save(f, company);
+	g_object_set(trial, "plan-id", venture_entity_get_id(plan), "currency", "USD", "active", TRUE,
+		"trial-days", (gint64)14, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(trial), "amount", "30 USD", NULL));
+	save(f, VENTURE_ENTITY(trial));
+	g_object_set(start, "action", "start", "company-id", company_id,
+		"plan-price-id", venture_entity_get_id(VENTURE_ENTITY(trial)), NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(start), "at", "2026-01-01", NULL));
+	save(f, VENTURE_ENTITY(start));
+	g_object_get(start, "subscription-id", &id, NULL);
+
+	path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, id);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Trial reminder: not sent yet. The renewal sweep mails the customer 3 days before"));
+
+	/* Ten days out: too early at three days, due at twelve. */
+	g_object_set(f->config, "billing-trial-reminder-days", (gint64)12, NULL);
+	g_object_get(venture_billing_service_get(f->database), "trial-reminder-days", &days, NULL);
+	g_assert_cmpint(days, ==, 12);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/billing/renew-sweep", "application/json",
+		"{\"at\":\"2026-01-05\"}", &body), ==, 200);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Trial reminder: queued for accounts@customer.test"));
+}
+
 static void
 test_rest(Fixture *f, gconstpointer data)
 {
@@ -446,5 +557,7 @@ main(int argc, char **argv)
 	g_test_add("/billing-surfaces/cli", Fixture, NULL, setup, test_cli, teardown);
 	g_test_add("/billing-surfaces/assistant-stale", Fixture, NULL, setup, test_assistant_stale, teardown);
 	g_test_add("/billing-surfaces/report-days", Fixture, NULL, setup, test_report_days, teardown);
+	g_test_add("/billing-surfaces/discount-code", Fixture, NULL, setup, test_discount_code_surfaces, teardown);
+	g_test_add("/billing-surfaces/trial-reminder-page", Fixture, NULL, setup, test_trial_reminder_page, teardown);
 	return g_test_run();
 }

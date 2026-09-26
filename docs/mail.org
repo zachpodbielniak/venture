@@ -186,6 +186,34 @@ sends nothing and is not an error. The receipt is at
 =GET /payments/:id/receipt=, and the payment's page says whether it was
 sent and to whom.
 
+* Subscription notices
+
+Two messages keep a subscription customer from being surprised by an
+invoice. Both go to the subscription's billing contact, else the customer
+company's email; with neither, or with the =mail= module off, nothing is
+queued and the billing action is unaffected. Both are queued by
+=VentureBillingService= inside the instruction's own transaction, so a
+notice exists exactly when the change it describes committed, and both are
+plain text with no link or attachment.
+
+- *Trial ending.* The renewal sweep (=billing renew=, =POST
+  /api/v1/billing/renew-sweep=) queues =Your trial ends on DATE= -- "your
+  first invoice will be $X", worked out as the renewal will: a switch
+  scheduled for renewal, the discount and any part-period difference --
+  to a trialing subscription whose trial ends within
+  =billing.trial_reminder_days= (default 3; zero sends none). It is keyed
+  =trial-reminder:<subscription uuid>=, so it is sent once however often
+  the sweep runs. A trial set to end at renewal is never invoiced and is
+  not reminded; a dry run queues nothing. There is no timer: a reminder is
+  as timely as the sweep's schedule. The subscription's page says whether
+  it was queued or sent, and to whom.
+- *Price change.* =change= (now or at renewal) and =change-seats= queue what
+  changed (plan, price and seats before and after), when it takes effect,
+  and the next invoice's date and amount, including any part-period charge
+  or credit. It is keyed =price-change:<subscription_event uuid>=: one per
+  change, and the renewal that carries a scheduled change out is not
+  another. =billing.price_change_notices: false= sends none.
+
 The PDFs are written by =VenturePdfWriter=, a small writer with no
 library behind it: the two standard Helvetica faces, WinAnsi text (a
 character outside it becomes "?"), rules, fills and wrapped text. It is

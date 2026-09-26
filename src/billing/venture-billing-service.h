@@ -52,5 +52,35 @@ gboolean venture_billing_check_removal(VentureDatabase *database, VentureEntity 
  * Returns: TRUE when the instruction can be staged
  */
 gboolean venture_billing_prepare_request(VentureBillingService *self, VentureBillingRequest *request, GError **error);
+/**
+ * venture_billing_service_next_invoice:
+ * @self: the billing service
+ * @subscription: a saved subscription
+ * @error: (out) (optional): error location
+ *
+ * What the subscription's next invoice will charge, worked out as the
+ * renewal will: any price it switches to at renewal, the discount while it
+ * still covers invoices and the part-period difference carried to it.
+ * Nothing is written.
+ *
+ * Returns: (transfer full) (nullable): the amount, or %NULL with no error
+ *   set when nothing more will be invoiced (paused, ended or ending at
+ *   renewal)
+ */
+VentureMoney *venture_billing_service_next_invoice(VentureBillingService *self,
+	VentureCustomerSubscription *subscription, GError **error);
+/**
+ * venture_billing_service_trial_reminder:
+ * @self: the billing service
+ * @subscription: a saved subscription
+ *
+ * The trial-ending reminder queued for @subscription by a renewal sweep,
+ * if one was. At most one ever exists: it is keyed by the subscription.
+ *
+ * Returns: (transfer full) (nullable): the reminder's mail_message, or
+ *   %NULL when none was queued or the mail module is off
+ */
+VentureEntity *venture_billing_service_trial_reminder(VentureBillingService *self,
+	VentureCustomerSubscription *subscription);
 G_END_DECLS
 #endif

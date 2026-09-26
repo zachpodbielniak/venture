@@ -9,8 +9,18 @@ struct _VentureBillingService
 	VentureDatabase *database;
 	VentureEntity *writing;
 	gboolean busy;
+	gint64 trial_reminder_days;	/* billing.trial_reminder_days; zero sends none */
+	gboolean price_change_notices;	/* billing.price_change_notices */
 };
 G_DEFINE_FINAL_TYPE(VentureBillingService, venture_billing_service, G_TYPE_OBJECT)
+
+/* Numbered away from 1 so another property can be added beside the
+ * database without renumbering these. */
+enum
+{
+	PROP_TRIAL_REMINDER_DAYS = 10,
+	PROP_PRICE_CHANGE_NOTICES
+};
 
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
@@ -48,6 +58,10 @@ get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 {
 	if (id == 1)
 		g_value_set_object(value, VENTURE_BILLING_SERVICE(object)->database);
+	else if (id == PROP_TRIAL_REMINDER_DAYS)
+		g_value_set_int64(value, VENTURE_BILLING_SERVICE(object)->trial_reminder_days);
+	else if (id == PROP_PRICE_CHANGE_NOTICES)
+		g_value_set_boolean(value, VENTURE_BILLING_SERVICE(object)->price_change_notices);
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -62,6 +76,10 @@ set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 		if (self->database != NULL)
 			g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	}
+	else if (id == PROP_TRIAL_REMINDER_DAYS)
+		self->trial_reminder_days = g_value_get_int64(value);
+	else if (id == PROP_PRICE_CHANGE_NOTICES)
+		self->price_change_notices = g_value_get_boolean(value);
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -94,6 +112,16 @@ venture_billing_service_class_init(VentureBillingServiceClass *klass)
 	g_object_class_install_property(object, 1,
 		g_param_spec_object("database", "Database", "Owning database", VENTURE_TYPE_DATABASE,
 			G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
+	/* Bound from the configuration by the context; a database with no
+	 * context -- a test, a tool -- keeps these defaults. */
+	g_object_class_install_property(object, PROP_TRIAL_REMINDER_DAYS,
+		g_param_spec_int64("trial-reminder-days", "Trial reminder days",
+			"Days before a free trial ends that its customer is reminded; zero or less sends none",
+			G_MININT64, G_MAXINT64, 3, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object, PROP_PRICE_CHANGE_NOTICES,
+		g_param_spec_boolean("price-change-notices", "Price change notices",
+			"Mail the customer when a subscription's price or seats change",
+			TRUE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 	/**
 	 * VentureBillingService::changing:
 	 * @self: the service
@@ -111,7 +139,8 @@ venture_billing_service_class_init(VentureBillingServiceClass *klass)
 static void
 venture_billing_service_init(VentureBillingService *self)
 {
-	(void)self;
+	self->trial_reminder_days = 3;
+	self->price_change_notices = TRUE;
 }
 
 static VentureEntity *
@@ -486,6 +515,321 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	return TRUE;
 }
 
+/* --- Customer notices ----------------------------------------------------
+ *
+ * The customer hears about two things before an invoice surprises them: a
+ * free trial about to turn into a charge, and a change to what they pay.
+ * Both are queued through the outbox inside the instruction's own
+ * transaction, so a notice exists exactly when the change it describes was
+ * committed, and both carry an idempotency key, so a repeated sweep or a
+ * retried request mails nobody twice. Queuing is not sending: delivery is
+ * the outbox's, after commit, like every other message.
+ */
+
+static gboolean
+mail_available(void)
+{
+	return venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message") != G_TYPE_INVALID;
+}
+
+/*
+ * Where a subscription's mail goes: its billing contact, who is the person
+ * who agreed to it, else the customer company's address. NULL when neither
+ * has one -- a notice nobody can receive is skipped, never an error that
+ * stops the change it describes.
+ */
+static gchar *
+customer_address(VentureBillingService *self, VentureEntity *sub, gint64 org, gchar **name)
+{
+	static const struct { const gchar *field; const gchar *type; } sources[] = {
+		{ "contact-id", "contact" }, { "company-id", "company" }
+	};
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(sources); i++)
+	{
+		g_autoptr(VentureEntity) who = NULL;
+		g_autofree gchar *email = NULL;
+		GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), sources[i].type);
+		if (type == G_TYPE_INVALID || number(sub, sources[i].field) <= 0)
+			continue;
+		who = venture_database_get(self->database, type, number(sub, sources[i].field), NULL);
+		if (who == NULL || venture_entity_is_deleted(who) || venture_entity_get_organization_id(who) != org)
+			continue;
+		g_object_get(who, "email", &email, NULL);
+		if (venture_string_is_empty(email))
+			continue;
+		g_strstrip(email);
+		if (strpbrk(email, "\r\n") != NULL || strchr(email, '@') == NULL)
+			continue;
+		*name = venture_entity_get_display_name(who);
+		return g_steal_pointer(&email);
+	}
+	return NULL;
+}
+
+/*
+ * What the next invoice will charge, worked out the way issue() will work
+ * it out -- the price it switches to at renewal, the discount while it
+ * still covers invoices, and the part-period difference carried to it --
+ * without writing anything: the discount is counted on a copy. A credit
+ * larger than the charge leaves nothing to pay, never a negative invoice.
+ * NULL with no error when nothing more will be invoiced.
+ */
+static VentureMoney *
+preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org, GError **error)
+{
+	g_autoptr(VentureEntity) copy = venture_entity_duplicate(sub);
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) discounted = NULL;
+	g_autoptr(VentureMoney) adjustment = NULL;
+	g_autofree gchar *label = NULL;
+	gint state = choice(sub, "status");
+	if (state > 2 || flag(sub, "cancel-at-period-end"))
+		return NULL;
+	price = load(self, VENTURE_TYPE_PLAN_PRICE, number(sub, "plan-price-id"), org, error);
+	if (price == NULL)
+		return NULL;
+	if (number(sub, "pending-plan-price-id") != 0)
+	{
+		g_autoptr(VentureEntity) next = load(self, VENTURE_TYPE_PLAN_PRICE, number(sub, "pending-plan-price-id"), org, error);
+		if (next == NULL)
+			return NULL;
+		keep_discount_for(copy, price, next);
+		g_set_object(&price, next);
+	}
+	amount = price_amount(price, number(sub, "seats"), error);
+	if (amount == NULL)
+		return NULL;
+	discounted = apply_discount(self, copy, amount, org, &label, error);
+	if (discounted == NULL)
+		return NULL;
+	g_object_get(sub, "pending-adjustment", &adjustment, NULL);
+	if (adjustment != NULL && !venture_money_is_zero(adjustment))
+	{
+		VentureMoney *total = venture_money_add(discounted, adjustment, error);
+		if (total == NULL)
+			return NULL;
+		if (venture_money_get_amount(total) < 0)
+		{
+			venture_money_free(total);
+			total = venture_money_new_zero(venture_money_get_currency(discounted));
+		}
+		g_clear_pointer(&discounted, venture_money_free);
+		discounted = total;
+	}
+	return g_steal_pointer(&discounted);
+}
+
+/* "Starter at $30.00 a month per seat, 2 seats" -- the terms as the
+ * customer would say them. */
+static gchar *
+terms_text(VentureBillingService *self, gint64 price_id, gint64 seats, gint64 org)
+{
+	g_autoptr(VentureEntity) price = load(self, VENTURE_TYPE_PLAN_PRICE, price_id, org, NULL);
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autofree gchar *plan_name = NULL, *price_name = NULL;
+	GString *text;
+	if (price == NULL)
+		return g_strdup("your previous plan");
+	plan = load(self, VENTURE_TYPE_PLAN, number(price, "plan-id"), org, NULL);
+	if (plan != NULL)
+		g_object_get(plan, "name", &plan_name, NULL);
+	price_name = venture_entity_get_display_name(price);
+	text = g_string_new(NULL);
+	g_string_append_printf(text, "%s at %s", plan_name != NULL ? plan_name : "Your plan", price_name);
+	if (flag(price, "per-seat"))
+		g_string_append_printf(text, ", %" G_GINT64_FORMAT " seat%s", seats, seats == 1 ? "" : "s");
+	return g_string_free(text, FALSE);
+}
+
+static gboolean
+queue_notice(VentureBillingService *self, VentureEntity *sub, gint64 org, const gchar *to,
+	const gchar *subject, const gchar *body, const gchar *key, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+	g_autoptr(VentureMailMessage) queued = NULL;
+	venture_entity_set_organization_id(VENTURE_ENTITY(message), org);
+	g_object_set(message, "to", to, "subject", subject, "text-body", body, "idempotency-key", key,
+		"related-type", "customer_subscription", "related-id", venture_entity_get_id(sub), NULL);
+	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
+	return queued != NULL;
+}
+
+static gchar *
+trial_reminder_key(VentureEntity *sub)
+{
+	return g_strdup_printf("trial-reminder:%s", venture_entity_get_uuid(sub));
+}
+
+/*
+ * A trial that ends within the configured number of days tells its
+ * customer the date and what the first invoice will be. Keyed by the
+ * subscription, so it is sent once whatever the sweep cadence. A trial
+ * already ended is the renewal's business, and one set to end at renewal
+ * will never be invoiced, so neither is reminded.
+ */
+static gboolean
+trial_reminder(VentureBillingService *self, VentureEntity *sub, GDateTime *at, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) trial_end = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *to = NULL, *name = NULL, *key = NULL, *day = NULL, *money = NULL, *terms = NULL;
+	g_autofree gchar *subject = NULL, *body = NULL;
+	gint64 org = venture_entity_get_organization_id(sub);
+	gint64 days = MIN(self->trial_reminder_days, 366);
+	if (days <= 0 || choice(sub, "status") != 0 || flag(sub, "cancel-at-period-end") || !mail_available())
+		return TRUE;
+	g_object_get(sub, "trial-end", &trial_end, NULL);
+	if (trial_end == NULL || g_date_time_compare(trial_end, at) <= 0 ||
+		g_date_time_difference(trial_end, at) > days * G_TIME_SPAN_DAY)
+		return TRUE;
+	to = customer_address(self, sub, org, &name);
+	if (to == NULL)
+		return TRUE;
+	amount = preview_next_invoice(self, sub, org, error);
+	if (amount == NULL)
+		return error == NULL || *error == NULL;
+	key = trial_reminder_key(sub);
+	day = venture_time_to_date_string(trial_end, NULL);
+	money = venture_money_to_display_string(amount, TRUE);
+	terms = terms_text(self, number(sub, "pending-plan-price-id") != 0 ? number(sub, "pending-plan-price-id") :
+		number(sub, "plan-price-id"), number(sub, "seats"), org);
+	subject = g_strdup_printf("Your trial ends on %s", day);
+	body = g_strdup_printf("Hello %s,\n\nYour trial ends on %s; your first invoice will be %s.\n\n"
+		"That is for %s. Nothing needs doing to carry on.\n", name, day, money, terms);
+	return queue_notice(self, sub, org, to, subject, body, key, actor, error);
+}
+
+/*
+ * A change to what the customer pays -- another price now or at renewal,
+ * or a different number of seats -- says what changed, when it takes
+ * effect and what the next invoice will be. Keyed by the change's event,
+ * so each change is told once and two changes are told twice.
+ */
+static gboolean
+price_change_notice(VentureBillingService *self, VentureEntity *sub, VentureEntity *event, gint64 from_price,
+	gint64 from_seats, gboolean scheduled, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) effective = NULL;
+	g_autoptr(GDateTime) renews = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *to = NULL, *name = NULL, *key = NULL, *before = NULL, *after = NULL;
+	g_autofree gchar *effective_day = NULL, *renew_day = NULL, *subject = NULL;
+	GString *body;
+	gint64 org = venture_entity_get_organization_id(sub);
+	gint64 to_price = scheduled ? number(sub, "pending-plan-price-id") : number(sub, "plan-price-id");
+	gint64 seats = number(sub, "seats");
+	if (!self->price_change_notices || !mail_available() || (to_price == from_price && seats == from_seats))
+		return TRUE;
+	to = customer_address(self, sub, org, &name);
+	if (to == NULL)
+		return TRUE;
+	g_object_get(sub, "current-period-end", &renews, NULL);
+	if (scheduled)
+		effective = g_date_time_ref(renews);
+	else
+		g_object_get(event, "at", &effective, NULL);
+	amount = preview_next_invoice(self, sub, org, error);
+	if (amount == NULL && error != NULL && *error != NULL)
+		return FALSE;
+	before = terms_text(self, from_price, from_seats, org);
+	after = terms_text(self, to_price, seats, org);
+	effective_day = venture_time_to_date_string(effective, NULL);
+	renew_day = venture_time_to_date_string(renews, NULL);
+	subject = g_strdup(scheduled ? "Your subscription changes at renewal" : "Your subscription has changed");
+	body = g_string_new(NULL);
+	g_string_append_printf(body, "Hello %s,\n\nYour subscription is changing from %s to %s.\n\n", name, before, after);
+	g_string_append_printf(body, scheduled ? "This takes effect on %s, when it renews; until then nothing changes.\n"
+		: "This took effect on %s.\n", effective_day);
+	if (amount != NULL)
+	{
+		g_autofree gchar *money = venture_money_to_display_string(amount, TRUE);
+		g_autoptr(VentureMoney) adjustment = NULL;
+		g_string_append_printf(body, "Your next invoice, on %s, will be %s", renew_day, money);
+		g_object_get(sub, "pending-adjustment", &adjustment, NULL);
+		if (adjustment != NULL && venture_money_get_amount(adjustment) > 0)
+		{
+			g_autofree gchar *part = venture_money_to_display_string(adjustment, TRUE);
+			g_string_append_printf(body, ", including %s for the rest of this period on the new terms", part);
+		}
+		else if (adjustment != NULL && venture_money_get_amount(adjustment) < 0)
+		{
+			g_autoptr(VentureMoney) credit = venture_money_multiply_rational(adjustment, -1, 1, NULL);
+			g_autofree gchar *part = credit != NULL ? venture_money_to_display_string(credit, TRUE) : NULL;
+			if (part != NULL)
+				g_string_append_printf(body, ", after a credit of %s for the rest of this period", part);
+		}
+		g_string_append(body, ".\n");
+	}
+	else
+		g_string_append_printf(body, "No further invoice is due: the subscription ends on %s.\n", renew_day);
+	key = g_strdup_printf("price-change:%s", venture_entity_get_uuid(event));
+	{
+		g_autofree gchar *text = g_string_free(body, FALSE);
+		return queue_notice(self, sub, org, to, subject, text, key, actor, error);
+	}
+}
+
+/*
+ * A code the customer quoted, to the discount it names: one of the chosen
+ * price's plan, compared without regard to case, since customers type codes
+ * however they read them. A code nobody offers, retired or past its date is
+ * refused in words the customer could be told; the rest of the discount's
+ * rules are then discount_available()'s, as for a chosen discount.
+ */
+static gboolean
+resolve_discount_code(VentureBillingService *self, VentureEntity *request, VentureEntity *price, gint64 org,
+	GDateTime *at, GError **error)
+{
+	g_autofree gchar *code = NULL;
+	g_autoptr(VentureQuery) q = NULL;
+	g_autoptr(GPtrArray) offers = NULL;
+	g_autofree gchar *why = NULL;
+	guint i;
+	g_object_get(request, "discount-code", &code, NULL);
+	if (code == NULL || *g_strstrip(code) == '\0')
+		return TRUE;
+	if (number(request, "discount-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "choose a discount or enter a code, not both");
+	q = venture_query_new(VENTURE_TYPE_PLAN_DISCOUNT);
+	venture_query_set_organization(q, org);
+	venture_query_set_limit(q, 0);
+	if (!venture_query_add_filter_int(q, "plan-id", VENTURE_FILTER_OP_EQ, number(price, "plan-id"), error) ||
+		!venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, error))
+		return FALSE;
+	offers = venture_database_find(self->database, q, error);
+	if (offers == NULL)
+		return FALSE;
+	for (i = 0; i < offers->len; i++)
+	{
+		VentureEntity *offer = g_ptr_array_index(offers, i);
+		g_autofree gchar *candidate = NULL;
+		g_autoptr(GDateTime) ends = NULL;
+		g_object_get(offer, "code", &candidate, "ends-at", &ends, NULL);
+		if (candidate == NULL || g_ascii_strcasecmp(g_strstrip(candidate), code) != 0)
+			continue;
+		if (!flag(offer, "active"))
+		{
+			g_free(why);
+			why = g_strdup_printf("the code %s is no longer offered", code);
+			continue;
+		}
+		if (ends != NULL && g_date_time_compare(at, ends) > 0)
+		{
+			g_autofree gchar *day = venture_time_to_date_string(ends, NULL);
+			g_free(why);
+			why = g_strdup_printf("the code %s expired on %s", code, day);
+			continue;
+		}
+		g_object_set(request, "discount-id", venture_entity_get_id(offer), NULL);
+		return TRUE;
+	}
+	if (why == NULL)
+		why = g_strdup_printf("the code %s is not one this plan offers", code);
+	return refuse(error, VENTURE_ERROR_VALIDATION, why);
+}
+
 static gboolean
 perform(VentureBillingService *self, VentureEntity *request, const VentureActor *actor, GError **error)
 {
@@ -543,7 +887,8 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		/* Billing from the first day, when the customer wants to pay now. */
 		if (flag(request, "skip-trial"))
 			trial = 0;
-		if (!discount_available(self, number(request, "discount-id"), price, org, at, error))
+		if (!resolve_discount_code(self, request, price, org, at, error) ||
+			!discount_available(self, number(request, "discount-id"), price, org, at, error))
 			return FALSE;
 		state = trial > 0 ? 0 : 1;
 		sub = new_record(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, org);
@@ -794,6 +1139,9 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	}
 	if (!write_record(self, event, actor, error))
 		return FALSE;
+	if ((g_strcmp0(verb, "change") == 0 || g_strcmp0(verb, "change-seats") == 0) &&
+		!price_change_notice(self, sub, event, old_price, old_seats, scheduled, actor, error))
+		return FALSE;
 	g_object_set(request, "subscription-id", venture_entity_get_id(sub), "invoice-id", invoice_id,
 		"proration-amount", prorated, "processed", (gint64)1, NULL);
 	return TRUE;
@@ -829,6 +1177,8 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 		gint64 id = venture_entity_get_id(sub);
 		if (steps == NULL)
 		{
+			if (!dry && !trial_reminder(self, sub, at, actor, error))
+				return FALSE;
 			if (state != 0 && state != 1 && !(state < 4 && flag(sub, "cancel-at-period-end")))
 				continue;
 			g_object_get(sub, "current-period-end", &date, NULL);
@@ -1103,4 +1453,33 @@ venture_billing_prepare_request(VentureBillingService *self, VentureBillingReque
 		return refuse(error, VENTURE_ERROR_CONFLICT, "subscription changed before this action could be staged");
 	g_object_set(e, "expected-version", venture_entity_get_version(sub), NULL);
 	return TRUE;
+}
+
+VentureMoney *
+venture_billing_service_next_invoice(VentureBillingService *self, VentureCustomerSubscription *subscription,
+	GError **error)
+{
+	VentureEntity *sub = VENTURE_ENTITY(subscription);
+	g_return_val_if_fail(VENTURE_IS_BILLING_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_CUSTOMER_SUBSCRIPTION(subscription), NULL);
+	return preview_next_invoice(self, sub, venture_entity_get_organization_id(sub), error);
+}
+
+VentureEntity *
+venture_billing_service_trial_reminder(VentureBillingService *self, VentureCustomerSubscription *subscription)
+{
+	g_autoptr(VentureQuery) q = NULL;
+	g_autofree gchar *key = NULL;
+	GType type = venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message");
+	g_return_val_if_fail(VENTURE_IS_BILLING_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_CUSTOMER_SUBSCRIPTION(subscription), NULL);
+	if (type == G_TYPE_INVALID || self->database == NULL)
+		return NULL;
+	key = trial_reminder_key(VENTURE_ENTITY(subscription));
+	q = venture_query_new(type);
+	venture_query_set_organization(q, venture_entity_get_organization_id(VENTURE_ENTITY(subscription)));
+	venture_query_set_include_deleted(q, TRUE);
+	if (!venture_query_add_filter_string(q, "idempotency-key", VENTURE_FILTER_OP_EQ, key, NULL))
+		return NULL;
+	return venture_database_find_one(self->database, q, NULL);
 }
