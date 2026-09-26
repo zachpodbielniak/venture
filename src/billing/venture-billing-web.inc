@@ -125,8 +125,7 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 {
 	VentureWebServer *self = user_data;
 	g_autoptr(GString) html = g_string_new(NULL);
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) prices = NULL;
+	g_autoptr(GPtrArray) unpriced = g_ptr_array_new_with_free_func(g_object_unref);
 	HtmxResponse *gate;
 	gint64 organization;
 	guint i;
@@ -153,37 +152,24 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 		"<input type=\"number\" name=\"seats\" value=\"1\" min=\"1\" step=\"1\"></label></div>"
 		"<label class=\"doc-field\"><span class=\"field-label\">Plan<span class=\"required\">*</span></span>"
 		"<select name=\"plan-price-id\" required><option value=\"\">Choose a plan\xe2\x80\xa6</option>");
-	query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
-	venture_query_set_limit(query, 0);
-	if (organization > 0)
-		venture_query_set_organization(query, organization);
-	prices = venture_database_find(venture_context_get_database(self->context), query, NULL);
-	for (i = 0; prices != NULL && i < prices->len; i++)
+	venture_plan_web_append_price_options(self, html, organization, 0, unpriced);
+	g_string_append(html, "</select><span class=\"field-help\">Every offered price, under its plan. "
+		"<a href=\"/plans/new\">Make a new plan</a>.</span></label>");
+	/* A plan that is offered but has no price cannot be sold; say so
+	 * where somebody is looking for it. */
+	for (i = 0; i < unpriced->len; i++)
 	{
-		VentureEntity *option = g_ptr_array_index(prices, i);
-		g_autoptr(VentureEntity) plan = NULL;
-		g_autofree gchar *name = NULL, *label = NULL;
-		gint64 plan_id = 0;
-		gboolean active = FALSE;
-		g_object_get(option, "plan-id", &plan_id, "active", &active, NULL);
-		if (!active)
-			continue;
-		plan = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN, plan_id, NULL);
-		if (plan == NULL)
-			continue;
-		g_object_get(plan, "name", &name, NULL);
-		label = venture_entity_get_display_name(option);
-		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(option));
+		VentureEntity *plan = g_ptr_array_index(unpriced, i);
+		g_autofree gchar *name = venture_entity_get_display_name(plan);
+		g_string_append(html, "<p class=\"field-help\"><strong>");
 		venture_html_escape_append(html, name);
-		g_string_append(html, " \xe2\x80\x94 ");
-		venture_html_escape_append(html, label);
-		g_string_append(html, "</option>");
+		g_string_append_printf(html, "</strong> has no price yet \xe2\x80\x94 "
+			"<a href=\"/e/plan/%" G_GINT64_FORMAT "\">add one</a> to offer it.</p>", venture_entity_get_id(plan));
 	}
-	g_string_append(html, "</select><span class=\"field-help\">No plan yet? Plans and their prices are under "
-		"<a href=\"/e/plan\">Plans</a>.</span></label></div></section>"
+	g_string_append(html, "</div></section>"
 		"<aside class=\"doc-aside\"><section class=\"card\"><div class=\"card-body explainer\">"
 		"<h3>Subscription or repeating invoice?</h3>"
-		"<p><strong>A subscription</strong> is a customer on a plan: a price per month or year, maybe per seat, "
+		"<p><strong>A subscription</strong> is a customer on a plan: a price a month, a quarter or a year, maybe per seat, "
 		"maybe a free trial. Change the plan mid-month and the difference for the days left is added to the next "
 		"invoice, or credited.</p><p><strong>A repeating invoice</strong> sends the same lines on a schedule "
 		"\xe2\x80\x94 rent, a retainer, hosting. Editing it changes the invoices still to come; nothing is "
@@ -293,36 +279,11 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 	/* Changing the plan: the one decision that affects money, laid out as
 	 * the two choices it is, each saying what it does. */
 	{
-		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
-		g_autoptr(GPtrArray) prices = NULL;
-		venture_query_set_organization(query, venture_entity_get_organization_id(record));
-		venture_query_set_limit(query, 0);
-		prices = venture_database_find(venture_context_get_database(self->context), query, NULL);
 		g_string_append_printf(html, "<section class=\"card\"><div class=\"card-head\"><h2>Change the plan</h2></div>"
 			"<div class=\"card-body\"><form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\" class=\"plan-change\">"
 			"<input type=\"hidden\" name=\"billing_action\" value=\"change\">"
 			"<label class=\"doc-field\"><span class=\"field-label\">New plan</span><select name=\"plan-price-id\" required>", id);
-		for (i = 0; prices != NULL && i < prices->len; i++)
-		{
-			VentureEntity *option = g_ptr_array_index(prices, i);
-			g_autoptr(VentureEntity) plan = NULL;
-			g_autofree gchar *name = NULL, *label = NULL;
-			gint64 plan_id = 0;
-			gboolean active = FALSE;
-			g_object_get(option, "plan-id", &plan_id, "active", &active, NULL);
-			if (!active || venture_entity_get_id(option) == price_id)
-				continue;
-			plan = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN, plan_id, NULL);
-			if (plan == NULL)
-				continue;
-			g_object_get(plan, "name", &name, NULL);
-			label = venture_entity_get_display_name(option);
-			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(option));
-			venture_html_escape_append(html, name);
-			g_string_append(html, " \xe2\x80\x94 ");
-			venture_html_escape_append(html, label);
-			g_string_append(html, "</option>");
-		}
+		venture_plan_web_append_price_options(self, html, venture_entity_get_organization_id(record), price_id, NULL);
 		g_string_append(html, "</select></label><fieldset class=\"choice-cards\"><legend class=\"field-label\">When</legend>"
 			"<label class=\"choice-card\"><input type=\"radio\" name=\"at-period-end\" value=\"true\" checked>"
 			"<span><strong>At renewal");

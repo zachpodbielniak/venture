@@ -4,7 +4,8 @@
 * Selling Lightsite
 
 =billing= requires =invoicing= and =receivables=. A =plan= describes Starter
-or Pro; a =plan_price= describes one version of its monthly or yearly terms.
+or Pro; a =plan_price= describes one version of what it costs for one
+period -- every month, every 3 months, every 6 months or every year.
 The customer's commitment is a =customer_subscription=. The example
 plugin's =subscription= remains a recurring cost paid by the business.
 
@@ -17,7 +18,7 @@ the CLI, REST, automation or an approved assistant proposal.
 | Record | Meaning |
 |--------+---------|
 | =plan= | Organization, optional venture, name, organization-unique code, description, active flag |
-| =plan_price= | Plan, currency, month/year interval, exact amount, per-seat flag, trial days, active flag |
+| =plan_price= | Plan, currency, interval (=month=, =quarter=, =half_year=, =year=), exact amount, per-seat flag, trial days, active flag |
 | =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment |
 | =subscription_event= | Immutable effective-dated change, old/new terms and seats, proration, invoice and frozen MRR |
 | =dunning_step= | Active notice, retry, pause or cancel action at an overdue-day offset |
@@ -238,7 +239,32 @@ annual normalization, scheduled terms, migrations and report definitions.
 staged approval and stale assistant proposals. The shared module, report,
 migration and authentication suites cover their integration points.
 
+* Periods
+
+Every period is a whole number of calendar months --
+=venture_billing_interval_months()= answers 1, 3, 6 or 12 -- so a renewal
+stays on the customer's billing day and MRR divides a price by its months
+exactly. A change part-way through a period prorates over that period's
+days, with each price scaled to the period first, so a monthly and a yearly
+price compare over the same days. =quarter= and =half_year= were appended
+to the enum; a stored price reads back by value, so their order is fixed.
+
 * In the web interface
+
+*Plans* are under Money in, next to Subscriptions. A plan is made at
+=/plans/new= with its prices on the same sheet: one row per period it is
+sold by, each with its amount (the business's currency is assumed), a
+per-seat box and a free trial. The plan and its prices are saved in one
+transaction, and a plan with no price is refused, because nobody could be
+put on it. A plan's page lists its prices with how many customers are on
+each, adds a price for another period, and retires or re-offers one --
+retiring stops a price being offered without moving anybody off it.
+
+The subscription pages offer every active price of every active plan,
+grouped under the plan's name, and name any active plan that has no price
+yet with a link to price it. A new record's "Active" box starts ticked on
+every generated form: a plan or price saved inactive was never offered,
+and nothing said why.
 
 New invoice asks "How often?" first, with three answers that each say what they mean:
 

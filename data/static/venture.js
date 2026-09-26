@@ -2109,10 +2109,25 @@
 		}
 
 		function build() {
+			var group = null;
+
 			list.innerHTML = "";
 
 			Array.prototype.forEach.call(select.options, function (option, i) {
 				var row = document.createElement("div");
+				var parent = option.parentNode;
+
+				/* Options under an <optgroup> -- a plan's prices --
+				 * are listed under its label, as the native menu does. */
+				if (parent && parent.tagName === "OPTGROUP" && parent !== group
+				    && !option.hidden && !option.disabled) {
+					var heading = document.createElement("div");
+
+					group = parent;
+					heading.className = "picker-group";
+					heading.textContent = parent.label;
+					list.appendChild(heading);
+				}
 
 				/* A hidden option is one the page has ruled out -- a
 				 * contact at another customer -- and must not be

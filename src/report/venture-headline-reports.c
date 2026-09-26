@@ -1136,7 +1136,7 @@ headline_load_cadence(
 			g_hash_table_replace(interval,
 				headline_key(venture_entity_get_id(price)),
 				GINT_TO_POINTER((1 == kind) ? HEADLINE_GAP_YEAR
-				                            : HEADLINE_GAP_MONTH));
+				                : HEADLINE_GAP_MONTH * venture_billing_interval_months(kind)));
 		}
 
 		for (i = 0; i < events->len; i++)

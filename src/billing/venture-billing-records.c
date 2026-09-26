@@ -8,6 +8,9 @@ venture_billing_interval_get_type(void)
 	static const GEnumValue values[] = {
 		{ 0, "VENTURE_BILLING_INTERVAL_MONTH", "month" },
 		{ 1, "VENTURE_BILLING_INTERVAL_YEAR", "year" },
+		/* Appended, never inserted: stored prices read back by value. */
+		{ 2, "VENTURE_BILLING_INTERVAL_QUARTER", "quarter" },
+		{ 3, "VENTURE_BILLING_INTERVAL_HALF_YEAR", "half_year" },
 		{ 0, NULL, NULL }
 	};
 	if (g_once_init_enter(&type))
@@ -17,6 +20,43 @@ venture_billing_interval_get_type(void)
 	}
 	return (GType)type;
 }
+/*
+ * Every period is a whole number of calendar months, which is what keeps
+ * renewals on the customer's billing day and lets MRR divide a price by
+ * its months exactly.
+ */
+gint
+venture_billing_interval_months(gint interval)
+{
+	switch (interval)
+	{
+	case 1:
+		return 12;
+	case 2:
+		return 3;
+	case 3:
+		return 6;
+	default:
+		return 1;
+	}
+}
+
+const gchar *
+venture_billing_interval_phrase(gint interval)
+{
+	switch (interval)
+	{
+	case 1:
+		return "a year";
+	case 2:
+		return "a quarter";
+	case 3:
+		return "every 6 months";
+	default:
+		return "a month";
+	}
+}
+
 GType
 venture_billing_status_get_type(void)
 {
@@ -81,15 +121,17 @@ venture_billing_dunning_action_get_type(void)
 	return (GType)type;
 }
 static const VentureFieldDecl plan_fields[] = {
-	VENTURE_FIELD_REF("venture-id", "Venture id", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("name", "Name", NULL),
-	VENTURE_FIELD("code", "Code", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("code", "Code", "Short unique name; made from the name when a plan is created on its page", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VenturePlan, venture_plan, plan_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlan, venture_plan, plan_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Plan", "Plans");
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/plans/new");)
 
-/* A price reads as what it charges: "30.00 USD a month per seat". */
+/* A price reads as what it charges: "$30.00 a month per seat". */
 static gchar *
 plan_price_display_name(VentureEntity *self)
 {
@@ -101,15 +143,15 @@ plan_price_display_name(VentureEntity *self)
 	if (amount == NULL)
 		return g_strdup_printf("Price #%" G_GINT64_FORMAT, venture_entity_get_id(self));
 	text = venture_money_to_display_string(amount, TRUE);
-	return g_strdup_printf("%s a %s%s", text, interval == 1 ? "year" : "month", per_seat ? " per seat" : "");
+	return g_strdup_printf("%s %s%s", text, venture_billing_interval_phrase(interval), per_seat ? " per seat" : "");
 }
 static const VentureFieldDecl plan_price_fields[] = {
 	VENTURE_FIELD_REF("plan-id", "Plan", NULL, "plan", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("currency", "Currency", NULL),
-	VENTURE_FIELD_ENUM("interval", "Interval", NULL, venture_billing_interval_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("interval", "Billed every", NULL, venture_billing_interval_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
 	VENTURE_FIELD("per-seat", "Per seat", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("trial-days", "Trial days", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("trial-days", "Free trial days", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog mapping for hosted collection", "product", VENTURE_COLUMN_FLAG_NONE),
 };

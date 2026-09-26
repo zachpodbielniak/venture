@@ -119,6 +119,110 @@ request(Fixture *fixture, const gchar *method, const gchar *path, const gchar *m
 	return status;
 }
 
+/* The prices a plan offers, active or not, oldest first. */
+static GPtrArray *
+plan_prices(Fixture *f, gint64 plan)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+	venture_query_add_filter_int(query, "plan-id", VENTURE_FILTER_OP_EQ, plan, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	return venture_database_find(f->database, query, NULL);
+}
+
+/*
+ * A plan is made with its prices -- one per period -- on one page, and
+ * is offered to a new subscription the moment it is saved. If this
+ * regresses, a plan is a name with nothing to charge, made on one page,
+ * priced on another, and missing from the one place it is needed.
+ */
+static void
+test_plan_sheet(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *page = NULL, *body = NULL, *location = NULL, *name = NULL;
+	g_autoptr(GPtrArray) prices = NULL;
+	g_autoptr(VentureEntity) plan = NULL;
+	gboolean active = FALSE;
+	gint64 plan_id;
+
+	(void)data;
+	g_assert_cmpuint(request(f, "GET", "/plans/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "name=\"price-0-interval\""));
+	g_assert_nonnull(strstr(page, "<option value=\"quarter\">Every 3 months</option>"));
+
+	g_assert_cmpuint(request(f, "POST", "/plans/new", "application/x-www-form-urlencoded",
+		"name=Growth&description=For+teams"
+		"&price-0-interval=month&price-0-amount=49&price-0-per-seat=true"
+		"&price-2-interval=year&price-2-amount=490&price-2-per-seat=true&price-2-trial-days=14",
+		&body), ==, 303);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN);
+		venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ, "Growth", NULL);
+		plan = venture_database_find_one(f->database, query, NULL);
+	}
+	g_assert_nonnull(plan);
+	g_object_get(plan, "active", &active, NULL);
+	g_assert_true(active);
+	plan_id = venture_entity_get_id(plan);
+	prices = plan_prices(f, plan_id);
+	g_assert_cmpuint(prices->len, ==, 2);
+	name = venture_entity_get_display_name(g_ptr_array_index(prices, 1));
+	g_assert_cmpstr(name, ==, "$490.00 a year per seat");
+
+	/* Offered straight away, under the plan's name. */
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", "/billing/subscriptions/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "<optgroup label=\"Growth\">"));
+	g_assert_nonnull(strstr(page, "$49.00 a month per seat</option>"));
+}
+
+/*
+ * A plan's page lists its prices and adds one for another period, and a
+ * price that is retired stops being offered without touching the
+ * customers already on it. A plan with no price yet is named on the new
+ * subscription page with a way to price it, not silently left out.
+ */
+static void
+test_plan_prices(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autoptr(GPtrArray) prices = NULL;
+	g_autofree gchar *page = NULL, *body = NULL, *path = NULL, *form = NULL, *retire = NULL;
+	gboolean active = TRUE;
+
+	(void)data;
+	plan = g_object_new(VENTURE_TYPE_PLAN, "name", "Unpriced", "code", "unpriced", "active", TRUE, NULL);
+	save(f, plan);
+
+	g_assert_cmpuint(request(f, "GET", "/billing/subscriptions/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Unpriced"));
+	g_assert_nonnull(strstr(page, "has no price yet"));
+
+	/* A price made on the ordinary form starts offered. */
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", "/e/plan_price/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "name=\"active\" value=\"true\" checked"));
+
+	path = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, venture_entity_get_id(plan));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Add a price"));
+
+	form = g_strdup_printf("/plans/%" G_GINT64_FORMAT "/prices", venture_entity_get_id(plan));
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded",
+		"action=add&interval=half_year&amount=150", &body), ==, 303);
+	prices = plan_prices(f, venture_entity_get_id(plan));
+	g_assert_cmpuint(prices->len, ==, 1);
+
+	retire = g_strdup_printf("action=retire&price=%" G_GINT64_FORMAT,
+		venture_entity_get_id(g_ptr_array_index(prices, 0)));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded", retire, &body), ==, 303);
+	g_clear_pointer(&prices, g_ptr_array_unref);
+	prices = plan_prices(f, venture_entity_get_id(plan));
+	g_object_get(g_ptr_array_index(prices, 0), "active", &active, NULL);
+	g_assert_false(active);
+}
+
 static void
 test_rest(Fixture *f, gconstpointer data)
 {
@@ -255,6 +359,8 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/billing-surfaces/rest", Fixture, NULL, setup, test_rest, teardown);
 	g_test_add("/billing-surfaces/web", Fixture, NULL, setup, test_web, teardown);
+	g_test_add("/billing-surfaces/plan-sheet", Fixture, NULL, setup, test_plan_sheet, teardown);
+	g_test_add("/billing-surfaces/plan-prices", Fixture, NULL, setup, test_plan_prices, teardown);
 	g_test_add("/billing-surfaces/staged", Fixture, NULL, setup, test_staged, teardown);
 	g_test_add("/billing-surfaces/cli", Fixture, NULL, setup, test_cli, teardown);
 	g_test_add("/billing-surfaces/assistant-stale", Fixture, NULL, setup, test_assistant_stale, teardown);

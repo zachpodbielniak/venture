@@ -12,6 +12,22 @@ G_BEGIN_DECLS
  */
 GType venture_billing_interval_get_type(void) G_GNUC_CONST;
 /**
+ * venture_billing_interval_months:
+ * @interval: a #VentureBillingInterval value
+ *
+ * Returns: how many calendar months one period of @interval lasts: 1, 3,
+ *   6 or 12
+ */
+gint venture_billing_interval_months(gint interval);
+/**
+ * venture_billing_interval_phrase:
+ * @interval: a #VentureBillingInterval value
+ *
+ * Returns: (transfer none): how a price says its period: "a month",
+ *   "a quarter", "every 6 months", "a year"
+ */
+const gchar *venture_billing_interval_phrase(gint interval);
+/**
  * venture_billing_status_get_type:
  * Returns: the billing vocabulary GType
  */

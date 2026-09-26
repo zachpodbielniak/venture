@@ -4419,3 +4419,17 @@ table.line-items td.line-tax select:disabled { opacity: .45; }
 .form-error[hidden] { display: none; }
 .error-page .error-message { font-size: 15px; max-width: 60ch; margin: var(--space-3) auto; }
 .error-page .error-detail { max-width: 60ch; margin: var(--space-3) auto; text-align: left; }
+
+/* A price box says its currency, so "49" is enough to type. */
+.money-input { display: inline-flex; align-items: center; gap: 8px; width: 100%; }
+.money-input input { flex: 1; min-width: 90px; text-align: right; }
+.money-input .unit { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted); }
+
+/* Adding a price beneath a plan's prices. */
+.price-add { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.price-add h3 { margin: 0 0 var(--space-3); font-size: 15px; }
+table.line-items select[name$="-interval"] { min-width: 170px; }
+table.line-items .checkbox { white-space: nowrap; }
+.doc-sheet textarea + table.line-items, .doc-sheet label + table.line-items { margin-top: var(--space-4); }
+.picker-group { padding: 10px 12px 4px; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase;
+	color: var(--text-muted); font-family: var(--font-mono); }

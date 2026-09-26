@@ -230,6 +230,61 @@ test_lifecycle(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "subscription_event"), ==, 6);
 }
 
+/*
+ * A quarterly price renews three months on, charges the quarter's price,
+ * and a change part-way through prorates over the quarter's days. If this
+ * regresses, a quarterly plan bills monthly at the quarterly price.
+ */
+static void
+test_quarterly(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, venture_entity_registry_lookup(venture_entity_registry_get_default(), "plan_price"), f->price, NULL);
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GDateTime) end = NULL;
+	g_autofree gchar *text = NULL, *name = NULL;
+	gint64 id;
+
+	(void)data;
+	field(p, "interval", "quarter");
+	field(p, "amount", "90 USD");
+	save(f, p);
+	g_assert_cmpint(venture_billing_interval_months(2), ==, 3);
+	name = venture_entity_get_display_name(p);
+	g_assert_cmpstr(name, ==, "$90.00 a quarter per seat");
+
+	id = start(f);
+	s = subscription(f, id);
+	g_object_get(s, "current-period-end", &end, NULL);
+	text = g_date_time_format(end, "%F");
+	g_assert_cmpstr(text, ==, "2026-04-01");
+
+	/* One more seat halfway through a 90-day quarter: half of $90. */
+	a = request(f, "change-seats", id, "2026-02-15");
+	g_object_set(a, "seats", (gint64)3, NULL);
+	save(f, a);
+	g_object_get(a, "proration-amount", &amount, NULL);
+	g_assert_cmpint(venture_money_get_amount(amount), ==, 4500);
+
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-04-01");
+	save(f, a);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
+		integer(a, "invoice-id"), NULL, NULL);
+	g_assert_nonnull(balance);
+	/* Three seats at $90 plus the $45 carried from the change. */
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 27000 + 4500);
+	g_clear_object(&s);
+	g_clear_pointer(&end, g_date_time_unref);
+	g_clear_pointer(&text, g_free);
+	s = subscription(f, id);
+	g_object_get(s, "current-period-end", &end, NULL);
+	text = g_date_time_format(end, "%F");
+	g_assert_cmpstr(text, ==, "2026-07-01");
+}
+
 /* Remaining days get their original allocation, including remainder cents. */
 static void
 test_seats_proration(Fixture *f, gconstpointer data)
@@ -953,6 +1008,7 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/billing/catalog", test_catalog);
 	g_test_add("/billing/start-and-guard", Fixture, NULL, setup, test_start_and_guard, teardown);
+	g_test_add("/billing/quarterly", Fixture, NULL, setup, test_quarterly, teardown);
 	g_test_add("/billing/renewal", Fixture, NULL, setup, test_renewal, teardown);
 	g_test_add("/billing/trial", Fixture, NULL, setup, test_trial, teardown);
 	g_test_add("/billing/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);

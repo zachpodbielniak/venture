@@ -7249,6 +7249,13 @@ venture_web_ui_form(
 		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE))
 			continue;
 
+		/* A new record is made to be used: "Active" starts ticked. A plan
+		 * or price saved with it unticked was never offered anywhere, and
+		 * nothing on the page said why. */
+		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_BOOLEAN &&
+		    g_strcmp0(venture_field_spec_get_name(spec), "active") == 0)
+			g_object_set(record, "active", TRUE, NULL);
+
 		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_REFERENCE)
 		{
 			g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
@@ -8189,8 +8196,9 @@ venture_web_append_knowledge(
  * the new-subscription page shares them. */
 static void document_append_parties(VentureWebServer *self, GString *html,
 	gint64 organization);
-#include "billing/venture-billing-web.inc"
 #include "payables/venture-bill-compose-web.inc"
+#include "billing/venture-plan-web.inc"
+#include "billing/venture-billing-web.inc"
 #include "documents/venture-financial-documents-web.inc"
 
 static void
@@ -9926,6 +9934,7 @@ venture_web_ui_detail(
 	}
 	venture_attribution_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
+	venture_plan_web_panel(self, content, record, principal);
 
 	/*
 	 * What can be done to it goes beside its details, at the top of the
@@ -30360,6 +30369,9 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/plans/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/:id/prices", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_prices, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/billing/subscriptions/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/widget-kinds", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_widget_kinds, self);

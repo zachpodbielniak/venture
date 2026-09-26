@@ -184,13 +184,13 @@ mrr(VentureEntity *price, gint64 seats, gint state, GError **error)
 		return NULL;
 	if (state != 1 && state != 2)
 		return venture_money_new_zero(venture_money_get_currency(total));
-	return venture_money_multiply_rational(total, 1, choice(price, "interval") == 1 ? 12 : 1, error);
+	return venture_money_multiply_rational(total, 1, venture_billing_interval_months(choice(price, "interval")), error);
 }
 
 static GDateTime *
 next_period(VentureEntity *price, GDateTime *at)
 {
-	return g_date_time_add_months(at, choice(price, "interval") == 1 ? 12 : 1);
+	return g_date_time_add_months(at, venture_billing_interval_months(choice(price, "interval")));
 }
 
 static GDateTime *
@@ -203,7 +203,7 @@ anchored_period(VentureEntity *sub, VentureEntity *price, GDateTime *start)
 		return next_period(price, start);
 	months = (g_date_time_get_year(start) - g_date_time_get_year(anchor)) * 12 +
 		g_date_time_get_month(start) - g_date_time_get_month(anchor);
-	return g_date_time_add_months(anchor, months + (choice(price, "interval") == 1 ? 12 : 1));
+	return g_date_time_add_months(anchor, months + venture_billing_interval_months(choice(price, "interval")));
 }
 
 static gboolean
@@ -240,13 +240,17 @@ proration(VentureEntity *old_price, VentureEntity *new_price, gint64 old_seats,
 	/* A price change does not change the period already being served. */
 	period_months = (g_date_time_get_year(end) - g_date_time_get_year(start)) * 12 +
 		g_date_time_get_month(end) - g_date_time_get_month(start);
-	period_months = period_months == 12 ? 12 : 1;
+	/* The period is whole months -- 1, 3, 6 or 12 -- and each price is
+	 * scaled to it, so a monthly and a yearly price compare over the
+	 * same days. */
+	if (period_months != 3 && period_months != 6 && period_months != 12)
+		period_months = 1;
 	normalized_old = venture_money_multiply_rational(old_amount, period_months,
-		choice(old_price, "interval") == 1 ? 12 : 1, error);
+		venture_billing_interval_months(choice(old_price, "interval")), error);
 	if (normalized_old == NULL)
 		return NULL;
 	comparable = venture_money_multiply_rational(new_amount, period_months,
-		choice(new_price, "interval") == 1 ? 12 : 1, error);
+		venture_billing_interval_months(choice(new_price, "interval")), error);
 	if (comparable == NULL)
 		return NULL;
 	delta = venture_money_subtract(comparable, normalized_old, error);
