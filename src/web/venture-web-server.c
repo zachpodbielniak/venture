@@ -1547,20 +1547,21 @@ venture_accountant_web_navigation(VentureWebServer *self, HtmxRequest *request);
 static void
 venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *request, GString *html, const gchar *active);
 /*
- * The questions an owner asks, and the pages that answer each. The link
- * table above is not reordered for them: a row named here is drawn under
- * its question, everything else stays under the heading it carries. A page
- * is named under one question only; test-plugin holds it to that.
+ * The sidebar's map, and the pages under each part of it. The link table
+ * above is not reordered for it: a row named here is drawn under its
+ * section, and only the overview keeps the heading it carries. A page is
+ * named once; test-plugin holds it to that.
  *
- * The order is the order of a working day -- what came in, what went out,
- * who the customers are, who needs help, what is growing -- and then the
- * money that is neither: the bank, and the books behind both.
+ * Seven areas, in the order of a working day: the money (what came in,
+ * what went out, the bank and the books behind both -- one place, not
+ * three), the customers, the growth work, the support desk, what is being
+ * built, and the settings. Every page of the app is in exactly one.
  */
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 	"/e/refund", "/e/collection_case", "/e/customer_subscription",
-	"/sales-orders",
+	"/sales-orders", "/e/product", "/e/inventory_item",
 	NULL
 };
 
@@ -1570,29 +1571,11 @@ static const gchar *const venture_web_nav_money_out[] = {
 	NULL
 };
 
-static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
-	NULL
-};
-
-static const gchar *const venture_web_nav_support[] = {
-	"/tickets", "/sprints", "/kb",
-	NULL
-};
-
-static const gchar *const venture_web_nav_growth[] = {
-	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
-	NULL
-};
-
-/* Where the money is, day to day: the feeds and what is falling due. */
 static const gchar *const venture_web_nav_bank[] = {
 	"/bankfeed", "/money/calendar",
 	NULL
 };
 
-/* The accounting behind both directions of money, in one place rather
- * than split between a "Money" heading and an "Accounting" one. */
 static const gchar *const venture_web_nav_books[] = {
 	"/accounting", "/e/account", "/e/journal", "/e/journal_line",
 	"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
@@ -1601,15 +1584,68 @@ static const gchar *const venture_web_nav_books[] = {
 	NULL
 };
 
+static const gchar *const venture_web_nav_customers[] = {
+	"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
+	NULL
+};
+
+static const gchar *const venture_web_nav_growth[] = {
+	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+	NULL
+};
+
+static const gchar *const venture_web_nav_support[] = {
+	"/tickets", "/sprints", "/kb",
+	NULL
+};
+
+static const gchar *const venture_web_nav_ideas[] = {
+	"/e/idea", "/e/research_note",
+	NULL
+};
+
+static const gchar *const venture_web_nav_code[] = {
+	"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge",
+	NULL
+};
+
+static const gchar *const venture_web_nav_factory[] = {
+	"/factory", "/e/milestone", "/e/release", "/e/build",
+	"/e/environment", "/e/deployment", "/e/incident",
+	NULL
+};
+
+static const gchar *const venture_web_nav_business[] = {
+	"/e/venture", "/entities", "/modules",
+	NULL
+};
+
+static const gchar *const venture_web_nav_people[] = {
+	"/account", "/account/tokens", "/users", "/assistant",
+	NULL
+};
+
+static const gchar *const venture_web_nav_system[] = {
+	"/settings", "/automations", "/plugins", "/webhooks", "/federation",
+	"/e/mail_message", "/e/audit_entry",
+	NULL
+};
+
 static const VentureWebNavSection venture_web_nav_sections[] = {
-	{ "Money in", venture_web_nav_money_in },
-	{ "Money out", venture_web_nav_money_out },
-	{ "Customers", venture_web_nav_customers },
-	{ "Support", venture_web_nav_support },
-	{ "Growth", venture_web_nav_growth },
-	{ "Bank", venture_web_nav_bank },
-	{ "Books", venture_web_nav_books },
-	{ NULL, NULL }
+	{ "Money in", "Money", venture_web_nav_money_in },
+	{ "Money out", "Money", venture_web_nav_money_out },
+	{ "Bank", "Money", venture_web_nav_bank },
+	{ "Books", "Money", venture_web_nav_books },
+	{ "Customers", NULL, venture_web_nav_customers },
+	{ "Growth", NULL, venture_web_nav_growth },
+	{ "Support", NULL, venture_web_nav_support },
+	{ "Ideas", "Build", venture_web_nav_ideas },
+	{ "Code", "Build", venture_web_nav_code },
+	{ "Factory", "Build", venture_web_nav_factory },
+	{ "Your business", "Settings", venture_web_nav_business },
+	{ "People and access", "Settings", venture_web_nav_people },
+	{ "System", "Settings", venture_web_nav_system },
+	{ NULL, NULL, NULL }
 };
 
 const VentureWebNavSection *
@@ -1693,10 +1729,11 @@ venture_web_append_nav_group(
 }
 
 /*
- * The questions, each drawn from the rows it names. A row whose module is
- * off is not offered, and a question every one of whose modules is off
- * leaves no heading over nothing -- the same rule the table's own
- * headings keep.
+ * The sections, each drawn from the rows it names. Consecutive sections of
+ * one group are one folding area with a small label per section inside
+ * it; a section with no group is an area of its own. A row whose module is
+ * off is not offered, and a label or an area with nothing under it is not
+ * drawn -- the same rule the table's own headings keep.
  */
 static void
 venture_web_append_nav_sections(
@@ -1710,37 +1747,66 @@ venture_web_append_nav_sections(
 
 	sections = venture_web_navigation_sections();
 
-	for (i = 0; NULL != sections[i].heading; i++)
+	for (i = 0; NULL != sections[i].heading; )
 	{
-		g_autoptr(GString) items = NULL;
+		g_autoptr(GString) area = NULL;
+		const gchar *group;
 		gboolean open = FALSE;
 		gsize j;
 
-		items = g_string_new(NULL);
+		area = g_string_new(NULL);
+		group = sections[i].group;
 
-		for (j = 0; NULL != sections[i].paths[j]; j++)
+		/* Every section of this area. */
+		for (j = i; NULL != sections[j].heading; j++)
 		{
-			gsize k;
+			g_autoptr(GString) items = NULL;
+			gsize p;
 
-			for (k = 0; NULL != links[k].path; k++)
+			if ((j > i) && ((NULL == group) ||
+			                (0 != g_strcmp0(group, sections[j].group))))
+				break;
+
+			items = g_string_new(NULL);
+
+			for (p = 0; NULL != sections[j].paths[p]; p++)
 			{
-				if (0 != g_strcmp0(links[k].path, sections[i].paths[j]))
-					continue;
+				gsize k;
 
-				if (!venture_web_module_enabled(self, links[k].module))
-					continue;
+				for (k = 0; NULL != links[k].path; k++)
+				{
+					if (0 != g_strcmp0(links[k].path, sections[j].paths[p]))
+						continue;
 
-				open = open || (0 == g_strcmp0(active, links[k].path));
-				venture_web_append_nav_item(items, &links[k], active);
+					if (!venture_web_module_enabled(self, links[k].module))
+						continue;
+
+					open = open || (0 == g_strcmp0(active, links[k].path));
+					venture_web_append_nav_item(items, &links[k], active);
+				}
 			}
+
+			if (0 == items->len)
+				continue;
+
+			if (NULL != group)
+			{
+				g_string_append(area, "<div class=\"nav-sub\">");
+				venture_html_escape_append(area, sections[j].heading);
+				g_string_append(area, "</div>");
+			}
+
+			g_string_append(area, items->str);
 		}
 
-		if (0 != items->len)
-			venture_web_append_nav_group(html, sections[i].heading,
-			                             items->str, open);
+		if (0 != area->len)
+			venture_web_append_nav_group(html,
+				(NULL != group) ? group : sections[i].heading,
+				area->str, open);
+
+		i = j;
 	}
 }
-
 
 static gchar *
 venture_web_page(
@@ -6039,9 +6105,17 @@ venture_web_ui_reports(
 	reports = venture_report_registry_list(
 		venture_context_get_report_registry(self->context));
 
+	/*
+	 * One scannable list with a filter, not forty cards to scroll past:
+	 * the name opens the report, the sentence says what it answers, and
+	 * the export sits at the end of the row. Typing narrows the list.
+	 */
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>Reports</h1></div></div>"
-	                       "<div class=\"grid cols-2\">");
+	                       "<h1>Reports</h1><span class=\"subtitle\">Every question the books "
+	                       "and the records can answer.</span></div><div class=\"page-actions\">"
+	                       "<input type=\"search\" placeholder=\"Find a report\xe2\x80\xa6\" "
+	                       "aria-label=\"Find a report\" data-report-filter autofocus></div></div>"
+	                       "<div class=\"card\"><table class=\"data report-index\"><tbody>");
 
 	for (i = 0; i < reports->len; i++)
 	{
@@ -6051,23 +6125,23 @@ venture_web_ui_reports(
 		if (venture_statements_owns_report(self->context, venture_report_get_name(report)))
 			continue;
 
-		g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-		                         "<h2>");
+		g_string_append_printf(content, "<tr data-report-row><td class=\"row-title\">"
+			"<a href=\"/reports/%s\">", venture_report_get_name(report));
 		venture_html_escape_append(content, venture_report_get_title(report));
-		g_string_append(content, "</h2><p class=\"muted\">");
+		g_string_append(content, "</a></td><td class=\"muted\">");
 		venture_html_escape_append(content,
 			venture_report_get_description(report));
-		g_string_append(content, "</p>");
 		g_string_append_printf(content,
-			"<a class=\"btn btn-primary btn-sm\" href=\"/reports/%s\">Open</a> "
-			"<a class=\"btn btn-sm\" "
-			"href=\"/api/v1/reports/%s?format=csv\">CSV</a>",
-			venture_report_get_name(report),
+			"</td><td class=\"row-end\"><a class=\"btn btn-sm btn-ghost\" "
+			"href=\"/api/v1/reports/%s?format=csv\">CSV</a></td></tr>",
 			venture_report_get_name(report));
-		g_string_append(content, "</div></div>");
 	}
 
-	g_string_append(content, "</div>");
+	g_string_append(content, "</tbody></table></div>"
+		"<script>(function(){var f=document.querySelector('[data-report-filter]');if(!f)return;"
+		"f.addEventListener('input',function(){var q=f.value.toLowerCase();"
+		"document.querySelectorAll('[data-report-row]').forEach(function(r){"
+		"r.hidden=q&&r.textContent.toLowerCase().indexOf(q)<0;});});})();</script>");
 
 	venture_statements_append_index(self->context, content);
 
@@ -9437,6 +9511,8 @@ venture_web_ui_detail(
 	HtmxResponse *redirect;
 	GType entity_type;
 	const gchar *type_name;
+	g_autoptr(GString) composer = g_string_new(NULL);
+	g_autoptr(GString) ticket_relations = g_string_new(NULL);
 	gint64 id;
 
 	self = user_data;
@@ -9580,7 +9656,7 @@ venture_web_ui_detail(
 	/* What else this ticket is about, for the many tickets that are
 	 * about something other than code. */
 	if (VENTURE_TYPE_TICKET == entity_type)
-		venture_web_append_ticket_relations(self, content, record);
+		venture_web_append_ticket_relations(self, ticket_relations, record);
 
 	/* The desk: service level, macros, time. Above the composer, because
 	 * "apply the canned reply" and "write a reply" are the same moment. */
@@ -9597,14 +9673,14 @@ venture_web_ui_detail(
 
 	if (VENTURE_TYPE_TICKET == entity_type)
 	{
-		g_string_append(content,
+		g_string_append(composer,
 			"<div class=\"card comment-composer\">"
 			"<div class=\"card-head\"><h2>Add a comment</h2></div>"
 			"<div class=\"card-body\">");
-		g_string_append_printf(content,
+		g_string_append_printf(composer,
 			"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
 			"/comment\">", id);
-		g_string_append(content,
+		g_string_append(composer,
 			"<textarea name=\"body\" rows=\"3\" required "
 			"placeholder=\"What happened?\"></textarea>"
 			"<div class=\"comment-actions\">"
@@ -9642,36 +9718,70 @@ venture_web_ui_detail(
 	}
 	venture_attribution_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
-	venture_web_append_record_actions(self, content, record, principal);
-	venture_bank_append_actions(content, record);
-	venture_cutover_append_actions(content, record);
-	venture_setup_append_actions(content, record);
-	if (venture_context_module_enabled(self->context, "backup"))
-		venture_backup_append_actions(content, record);
-	venture_web_sequence_panel(self, content, principal, record);
 
-	/* Everything that points at this record, then what it is linked to
-	 * and what the knowledge base says about it: context, after the
-	 * record's own business. */
-	venture_web_append_related(self, content, record);
+	/*
+	 * What can be done to it goes beside its details, at the top of the
+	 * right-hand column: the controls sit next to the facts they act on,
+	 * not halfway down a scroll. Everything else about the record --
+	 * its history, what points at it, its follow-ups and links -- is one
+	 * row of tabs instead of a stack of cards to scroll past.
+	 */
+	{
+		g_autoptr(GString) actions = g_string_new(NULL);
+		g_autoptr(GString) activity = g_string_new(NULL);
+		g_autoptr(GString) related = g_string_new(NULL);
+		g_autoptr(GString) followups = g_string_new(NULL);
+		g_autoptr(GString) links = g_string_new(NULL);
+		const gchar *labels[4];
+		GString *panels[4];
+		guint count = 0;
 
-	/* A link is not offered on a link; the audit log is not linkable. */
-	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
-	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
-		venture_web_append_links(self, content, record);
+		venture_web_append_record_actions(self, actions, record, principal);
+		venture_bank_append_actions(actions, record);
+		venture_cutover_append_actions(actions, record);
+		venture_setup_append_actions(actions, record);
+		if (venture_context_module_enabled(self->context, "backup"))
+			venture_backup_append_actions(actions, record);
 
-	if (venture_web_module_enabled(self, "kb"))
-		venture_web_append_knowledge(self, content, record);
+		venture_web_sequence_panel(self, followups, principal, record);
+		venture_web_append_related(self, related, record);
 
-	/* What happened, last. The audit log has its own page; this is the
-	 * record's own story, with its conversation woven in. */
-	if ((VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
-	    (VENTURE_TYPE_NOTIFICATION != entity_type))
-		venture_web_append_activity(self, content, record);
+		/* A link is not offered on a link; the audit log is not linkable. */
+		if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
+		    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
+			venture_web_append_links(self, links, record);
 
-	g_string_append(content, "</div>");
-	venture_web_append_record_aside(self, content, record, specs);
-	g_string_append(content, "</div>");
+		if (venture_web_module_enabled(self, "kb"))
+			venture_web_append_knowledge(self, links, record);
+
+		/* The audit log has its own page; this is the record's own
+		 * story, with its conversation woven in. */
+		if ((VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
+		    (VENTURE_TYPE_NOTIFICATION != entity_type))
+		{
+			/* A ticket's reply box heads its conversation. */
+			g_string_append(activity, composer->str);
+			venture_web_append_activity(self, activity, record);
+		}
+
+		/* What else a ticket is about sits with its links. */
+		g_string_prepend(links, ticket_relations->str);
+
+#define VENTURE_WEB_TAB(label, panel) \
+		if (0 != (panel)->len) { labels[count] = (label); panels[count] = (panel); count++; }
+		VENTURE_WEB_TAB((VENTURE_TYPE_TICKET == entity_type) ? "Conversation" : "Activity", activity)
+		VENTURE_WEB_TAB("Related", related)
+		VENTURE_WEB_TAB("Follow-ups", followups)
+		VENTURE_WEB_TAB("Links and knowledge", links)
+#undef VENTURE_WEB_TAB
+
+		venture_web_append_tabs(content, labels, panels, count);
+
+		g_string_append(content, "</div>");
+		venture_web_append_record_aside(self, content, record, specs,
+		                                actions->str);
+		g_string_append(content, "</div>");
+	}
 
 	{
 		g_autofree gchar *active = NULL;

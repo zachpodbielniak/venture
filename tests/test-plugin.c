@@ -955,22 +955,11 @@ test_web_navigation_groups_by_question(
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 		"/e/refund", "/e/collection_case", "/e/customer_subscription",
-		"/sales-orders", NULL
+		"/sales-orders", "/e/product", "/e/inventory_item", NULL
 	};
 	static const gchar *const money_out[] = {
 		"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
 		"/e/recurring_schedule", NULL
-	};
-	static const gchar *const customers[] = {
-		"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
-		NULL
-	};
-	static const gchar *const support[] = {
-		"/tickets", "/sprints", "/kb", NULL
-	};
-	static const gchar *const growth[] = {
-		"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
-		NULL
 	};
 	static const gchar *const bank[] = {
 		"/bankfeed", "/money/calendar", NULL
@@ -981,17 +970,51 @@ test_web_navigation_groups_by_question(
 		"/budgets", "/equity", "/group", "/capture", "/setup",
 		"/e/accounting_cutover", NULL
 	};
+	static const gchar *const customers[] = {
+		"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
+		NULL
+	};
+	static const gchar *const growth[] = {
+		"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+		NULL
+	};
+	static const gchar *const support[] = {
+		"/tickets", "/sprints", "/kb", NULL
+	};
+	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
+	static const gchar *const code[] = {
+		"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge", NULL
+	};
+	static const gchar *const factory[] = {
+		"/factory", "/e/milestone", "/e/release", "/e/build",
+		"/e/environment", "/e/deployment", "/e/incident", NULL
+	};
+	static const gchar *const business[] = { "/e/venture", "/entities", "/modules", NULL };
+	static const gchar *const people[] = {
+		"/account", "/account/tokens", "/users", "/assistant", NULL
+	};
+	static const gchar *const system[] = {
+		"/settings", "/automations", "/plugins", "/webhooks", "/federation",
+		"/e/mail_message", "/e/audit_entry", NULL
+	};
 	static const struct {
 		const gchar *heading;
+		const gchar *group;
 		const gchar *const *paths;
 	} expected[] = {
-		{ "Money in", money_in },
-		{ "Money out", money_out },
-		{ "Customers", customers },
-		{ "Support", support },
-		{ "Growth", growth },
-		{ "Bank", bank },
-		{ "Books", books },
+		{ "Money in", "Money", money_in },
+		{ "Money out", "Money", money_out },
+		{ "Bank", "Money", bank },
+		{ "Books", "Money", books },
+		{ "Customers", NULL, customers },
+		{ "Growth", NULL, growth },
+		{ "Support", NULL, support },
+		{ "Ideas", "Build", ideas },
+		{ "Code", "Build", code },
+		{ "Factory", "Build", factory },
+		{ "Your business", "Settings", business },
+		{ "People and access", "Settings", people },
+		{ "System", "Settings", system },
 	};
 	const VentureWebNavSection *sections;
 	const VentureWebNavLink *links;
@@ -1009,6 +1032,7 @@ test_web_navigation_groups_by_question(
 	for (i = 0; i < G_N_ELEMENTS(expected); i++)
 	{
 		g_assert_cmpstr(sections[i].heading, ==, expected[i].heading);
+		g_assert_cmpstr(sections[i].group, ==, expected[i].group);
 		g_assert_nonnull(sections[i].paths);
 
 		for (j = 0; NULL != expected[i].paths[j]; j++)

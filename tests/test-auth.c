@@ -4658,14 +4658,16 @@ test_auth_sidebar_asks_the_five_questions(
 ){
 	static const gchar *const headings[] = {
 		"<div class=\"nav-section\">Overview</div>",
-		"<summary class=\"nav-section\">Money in</summary>",
-		"<summary class=\"nav-section\">Money out</summary>",
+		"<summary class=\"nav-section\">Money</summary>",
+		"<div class=\"nav-sub\">Money in</div>",
+		"<div class=\"nav-sub\">Money out</div>",
+		"<div class=\"nav-sub\">Bank</div>",
+		"<div class=\"nav-sub\">Books</div>",
 		"<summary class=\"nav-section\">Customers</summary>",
-		"<summary class=\"nav-section\">Support</summary>",
 		"<summary class=\"nav-section\">Growth</summary>",
-		"<summary class=\"nav-section\">Bank</summary>",
-		"<summary class=\"nav-section\">Books</summary>",
-		"<summary class=\"nav-section\">Business</summary>",
+		"<summary class=\"nav-section\">Support</summary>",
+		"<summary class=\"nav-section\">Build</summary>",
+		"<summary class=\"nav-section\">Settings</summary>",
 	};
 	g_autofree gchar *cookie = NULL;
 	g_autofree gchar *page = NULL;
@@ -4699,8 +4701,8 @@ test_auth_sidebar_asks_the_five_questions(
 	}
 
 	/* A gathered row sits under its question, and only there. */
-	money_in = strstr(page, headings[1]);
-	money_out = strstr(page, headings[2]);
+	money_in = strstr(page, headings[2]);
+	money_out = strstr(page, headings[3]);
 	invoice = strstr(page, "href=\"/e/invoice\"");
 	g_assert_nonnull(invoice);
 	g_assert_true(invoice > money_in);
@@ -4713,19 +4715,19 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_null(strstr(page, "class=\"nav-section\">Quotes<"));
 	g_assert_null(strstr(page, "class=\"nav-section\">Activities<"));
 	g_assert_null(strstr(page, "class=\"nav-section\">Relations<"));
-	g_assert_null(strstr(page, "class=\"nav-section\">Money<"));
 	g_assert_null(strstr(page, "class=\"nav-section\">Accounting<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Business<"));
 	g_assert_nonnull(strstr(page, "href=\"/deals\""));
 
 	/* Reports is an overview page: no question is open over it. */
-	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money-in\" open>"));
+	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
 	g_clear_pointer(&page, g_free);
 
-	/* On an invoice list, Money in is the group drawn open. */
+	/* On an invoice list, Money is the area drawn open. */
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/invoice",
 		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money-in\" open>"));
-	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"books\" open>"));
+	g_assert_nonnull(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
+	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"customers\" open>"));
 	g_clear_pointer(&page, g_free);
 
 	/* Module off: the row goes, the question stays. */

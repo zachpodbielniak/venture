@@ -113,10 +113,11 @@ venture_web_payables_workbench(HtmxRequest *request, GHashTable *params, gpointe
 		}
 	}
 	{
-		g_autoptr(GString) content = g_string_new("<div class=\"page-head\"><h1>Pay bills</h1></div>");
+		g_autoptr(GString) content = g_string_new(NULL);
 		g_autoptr(VentureQuery) query = NULL;
 		g_autoptr(GPtrArray) rows = NULL;
-		guint i;
+		g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+		guint i, shown = 0;
 		gate = venture_web_ui_require_session(self, request);
 		if (gate != NULL)
 			return gate;
@@ -125,25 +126,70 @@ venture_web_payables_workbench(HtmxRequest *request, GHashTable *params, gpointe
 			return gate;
 		query = venture_query_new(VENTURE_TYPE_VENDOR_BILL);
 		venture_query_set_organization(query, venture_web_active_organization(self, request));
+		venture_query_add_order(query, "due-date", VENTURE_SORT_ASCENDING, NULL);
 		rows = venture_database_find(venture_context_get_database(self->context), query, &error);
 		if (rows == NULL)
 			return venture_web_error_response(error);
-		g_string_append(content, "<form method=\"post\" action=\"/payables/pay\" class=\"card\"><div class=\"card-head\"><h2>Approved bills</h2></div><table><thead><tr><th></th><th>Number</th><th>Status</th></tr></thead><tbody>");
+		/* One form, with the action where every page keeps it: pick the
+		 * bills, pick how, pay. Oldest due first, because that is the
+		 * order they get paid in. */
+		g_string_append(content, "<form method=\"post\" action=\"/payables/pay\">"
+			"<div class=\"page-head\"><div class=\"page-title\"><nav class=\"crumbs\" aria-label=\"Breadcrumb\">"
+			"<span class=\"crumb\">Money out</span></nav><h1>Pay bills</h1>"
+			"<span class=\"subtitle\">Approved supplier bills waiting to be paid.</span></div>"
+			"<div class=\"page-actions\"><label class=\"inline-field\"><span class=\"field-label\">Pay by</span>"
+			"<select name=\"adapter\"><option value=\"transfer\">Bank transfer</option><option value=\"ach\">ACH</option>"
+			"<option value=\"check\">Check</option><option value=\"card\">Card</option><option value=\"manual\">Recorded by hand</option></select></label>"
+			"<button class=\"btn btn-primary\" type=\"submit\">Pay selected</button></div></div>"
+			"<div class=\"card\"><div class=\"table-wrap\"><table class=\"data selectable\"><thead><tr>"
+			"<th class=\"tick\"><input type=\"checkbox\" data-bulk-all title=\"Select all\"></th>"
+			"<th>Bill</th><th>Supplier</th><th>Billed</th><th>Due</th><th>Status</th></tr></thead><tbody>");
 		for (i = 0; i < rows->len; i++)
 		{
-			g_autofree gchar *status = NULL;
-			g_autofree gchar *number = NULL;
-			g_object_get(g_ptr_array_index(rows, i), "status", &status, "number", &number, NULL);
+			VentureEntity *bill = g_ptr_array_index(rows, i);
+			g_autofree gchar *status = NULL, *number = NULL, *billed = NULL, *due_text = NULL, *label = NULL;
+			g_autoptr(GDateTime) billed_at = NULL, due = NULL;
+			g_autoptr(VentureEntity) supplier = NULL;
+			g_autofree gchar *supplier_name = NULL;
+			gint64 company = 0;
+			gboolean overdue;
+			g_object_get(bill, "status", &status, "number", &number, "company-id", &company,
+				"bill-date", &billed_at, "due-date", &due, NULL);
 			if (g_strcmp0(status, "approved") != 0 && g_strcmp0(status, "partially_paid") != 0)
 				continue;
-			g_string_append_printf(content, "<tr><td><input type=\"checkbox\" name=\"bill\" value=\"%" G_GINT64_FORMAT "\"></td><td>",
-				venture_entity_get_id(g_ptr_array_index(rows, i)));
+			shown++;
+			supplier = company > 0 ? venture_database_get(venture_context_get_database(self->context),
+				VENTURE_TYPE_COMPANY, company, NULL) : NULL;
+			supplier_name = supplier != NULL ? venture_entity_get_display_name(supplier) : g_strdup("");
+			billed = venture_time_to_date_string(billed_at, venture_context_get_timezone(self->context));
+			due_text = venture_time_to_date_string(due, venture_context_get_timezone(self->context));
+			overdue = due != NULL && g_date_time_compare(due, today) < 0;
+			label = venture_web_label_from_name(status);
+			g_string_append_printf(content, "<tr><td class=\"tick\"><input type=\"checkbox\" name=\"bill\" "
+				"value=\"%" G_GINT64_FORMAT "\" data-bulk-id=\"%" G_GINT64_FORMAT "\"></td>"
+				"<td class=\"row-title\"><a href=\"/e/vendor_bill/%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(bill), venture_entity_get_id(bill), venture_entity_get_id(bill));
 			venture_html_escape_append(content, number);
-			g_string_append(content, "</td><td>");
-			venture_html_escape_append(content, status);
-			g_string_append(content, "</td></tr>");
+			g_string_append(content, "</a></td><td>");
+			venture_html_escape_append(content, supplier_name);
+			g_string_append(content, "</td><td><time>");
+			venture_html_escape_append(content, billed != NULL ? billed : "");
+			g_string_append_printf(content, "</time></td><td%s><time>", overdue ? " class=\"overdue\"" : "");
+			venture_html_escape_append(content, due_text != NULL ? due_text : "\xe2\x80\x94");
+			g_string_append_printf(content, "</time>%s</td><td><span class=\"badge %s\">",
+				overdue ? " <span class=\"badge negative\">Overdue</span>" : "",
+				g_strcmp0(status, "approved") == 0 ? "info" : "warning");
+			venture_html_escape_append(content, label);
+			g_string_append(content, "</span></td></tr>");
 		}
-		g_string_append(content, "</tbody></table><label class=\"field\"><span class=\"field-label\">Adapter</span><select name=\"adapter\"><option>transfer</option><option>manual</option><option>card</option><option>check</option><option>ach</option></select></label><button class=\"btn\" type=\"submit\">Pay selected</button></form>");
+		g_string_append(content, "</tbody></table></div>");
+		if (shown == 0)
+			g_string_append(content, "<div class=\"empty\"><h3>Nothing to pay</h3><p class=\"muted\">"
+				"Approved supplier bills appear here until they are paid.</p></div>");
+		g_string_append(content, "</div></form>"
+			"<script>(function(){var a=document.querySelector('[data-bulk-all]');if(!a)return;"
+			"a.addEventListener('change',function(){document.querySelectorAll('[data-bulk-id]')"
+			".forEach(function(b){b.checked=a.checked;});});})();</script>");
 		return venture_web_html_response(venture_web_page(self, request, "/payables", "Pay bills", content->str), 200);
 	}
 }
@@ -168,12 +214,21 @@ venture_web_payables_workbench_pay(HtmxRequest *request, GHashTable *params, gpo
 	gate = venture_web_require_module_ui(self, request, "payables");
 	if (gate != NULL)
 		return gate;
+	/* Every ticked bill. A form posts one "bill" per box, and the form
+	 * lookup keeps only one of them, which paid the first bill and
+	 * quietly left the rest; the body is read for all of them. */
 	{
-		const gchar *raw = htmx_request_get_form_value(request, "bill");
-		if (raw != NULL)
+		const gchar *body = htmx_request_get_body(request);
+		g_auto(GStrv) pairs = g_strsplit(body != NULL ? body : "", "&", -1);
+		guint k;
+		for (k = 0; pairs[k] != NULL; k++)
 		{
-			gint64 id = g_ascii_strtoll(raw, NULL, 10);
-			g_array_append_val(ids, id);
+			if (g_str_has_prefix(pairs[k], "bill="))
+			{
+				gint64 id = g_ascii_strtoll(pairs[k] + 5, NULL, 10);
+				if (id > 0)
+					g_array_append_val(ids, id);
+			}
 		}
 	}
 	venture_auth_to_actor(principal, &actor);

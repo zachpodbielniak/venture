@@ -4024,3 +4024,187 @@ details[open].add-form > summary { margin-bottom: var(--space-3); }
  * a column of red would be a column shouting; it lights on hover. */
 table.data td.row-title a { color: var(--text); font-weight: 600; text-decoration: none; }
 table.data td.row-title a:hover { color: var(--accent); text-decoration: underline; }
+
+/* ==========================================================================
+   Room to read -- space, legibility and welcoming inputs
+   ========================================================================== */
+
+/*
+ * The page uses the screen it is given: a wide window is a wide page, not
+ * a column with two margins of nothing. Type is a size up everywhere a
+ * person reads, headlines are a size down so a title is not a third of
+ * the first screen, and controls are tall enough to hit without aiming.
+ */
+body { font-size: 15px; line-height: 1.6; }
+
+.main {
+	max-width: 1680px;
+	padding: var(--space-5) var(--space-6) var(--space-7);
+}
+
+h1 { font-size: clamp(24px, 2vw, 32px); line-height: 1.05; }
+
+.page-head {
+	margin-bottom: var(--space-5);
+	padding-bottom: var(--space-3);
+	align-items: center;
+}
+
+.page-title { gap: 4px; }
+.page-title .subtitle { font-size: 14px; }
+
+/* Actions sit in one place on every page: top right, beside the title,
+ * primary last. */
+.page-actions { gap: var(--space-2); align-items: center; }
+
+.card-body { padding: var(--space-5); }
+
+/* Inputs are an invitation, not a slot: tall, softly ruled, a clear edge
+ * on hover and a clear ring on focus, the label above in plain words. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]),
+select, textarea {
+	min-height: 42px;
+	padding: 10px 12px;
+	font-size: 15px;
+	border-color: var(--border);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):hover,
+select:hover, textarea:hover { border-color: var(--text-muted); }
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):focus,
+select:focus, textarea:focus {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+textarea { min-height: 96px; }
+
+.field .field-label, .doc-field .field-label {
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--text);
+}
+
+.field-help { font-size: 13px; }
+.form-grid { gap: var(--space-5) var(--space-5); }
+
+table.data td { padding: 12px var(--space-4); font-size: 14.5px; }
+
+/* The sidebar: areas, and a quiet label for each part of an area. */
+.nav-sub {
+	padding: var(--space-3) var(--space-4) 4px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--text-faint);
+	letter-spacing: 0.04em;
+}
+
+details.nav-group > summary.nav-section { font-size: 11.5px; padding-top: var(--space-4); }
+
+/* --- A document being written: invoice or quote ------------------------- */
+
+.doc-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+	gap: var(--space-5);
+	align-items: start;
+}
+
+@media (max-width: 1100px) { .doc-layout { grid-template-columns: minmax(0, 1fr); } }
+
+.doc-aside { display: flex; flex-direction: column; gap: var(--space-4);
+             position: sticky; top: var(--space-4); }
+
+.doc-parties {
+	display: grid;
+	grid-template-columns: 2fr 1.5fr 1fr;
+	gap: var(--space-4);
+	margin-bottom: var(--space-5);
+}
+
+@media (max-width: 800px) { .doc-parties { grid-template-columns: 1fr; } }
+
+.doc-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.doc-field + .doc-field { margin-top: var(--space-4); }
+.doc-parties .doc-field + .doc-field { margin-top: 0; }
+
+table.line-items { width: 100%; border-collapse: collapse; }
+table.line-items th {
+	text-align: left;
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--text-muted);
+	padding: 0 6px var(--space-2);
+	border-bottom: 1px solid var(--border);
+}
+table.line-items th.num, table.line-items td.num { text-align: right; }
+table.line-items td { padding: 8px 6px; vertical-align: top;
+                      border-bottom: 1px solid var(--border); }
+table.line-items td.line-item { width: 42%; }
+table.line-items td.line-item input { margin-bottom: 6px; }
+table.line-items td.num input { text-align: right; min-width: 70px; }
+table.line-items .line-product { min-height: 34px; padding: 6px 10px; font-size: 13.5px;
+                                 color: var(--text-muted); }
+table.line-items .line-amount { font-family: var(--font-mono); padding-top: 18px;
+                                font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.line-items .line-remove { width: 36px; padding-top: 12px; }
+.add-line { margin-top: var(--space-3); }
+
+dl.totals { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+dl.totals > div { display: flex; justify-content: space-between; gap: var(--space-3); }
+dl.totals dt { color: var(--text-muted); }
+dl.totals dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+dl.totals .grand { border-top: 1px solid var(--border-strong); padding-top: 10px; margin-top: 4px;
+                   font-size: 20px; font-weight: 700; }
+dl.totals .grand dt { color: var(--text); }
+
+/* A label and its control on one line, for a choice that sits beside the
+ * page's action. */
+.inline-field { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; }
+.inline-field select { width: auto; min-width: 170px; }
+td.overdue { color: var(--negative); }
+
+/* A record's secondary panels, as tabs rather than a scroll of cards. */
+.record-tabs { display: flex; flex-direction: column; gap: var(--space-4); }
+.record-tabs .tab-radio { position: absolute; opacity: 0; pointer-events: none; }
+.record-tabs .tab-list { display: flex; gap: var(--space-1); flex-wrap: wrap;
+                         border-bottom: 1px solid var(--border); }
+.record-tabs .tab-list label {
+	padding: 10px 16px;
+	cursor: pointer;
+	font-weight: 600;
+	font-size: 14px;
+	color: var(--text-muted);
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px;
+}
+.record-tabs .tab-list label:hover { color: var(--text); }
+.record-tabs .tab-panel { display: none; flex-direction: column; gap: var(--space-4); }
+.record-tabs .tab-panel > * { margin: 0; }
+#record-tab-0:checked ~ .tab-panel[data-tab="0"],
+#record-tab-1:checked ~ .tab-panel[data-tab="1"],
+#record-tab-2:checked ~ .tab-panel[data-tab="2"],
+#record-tab-3:checked ~ .tab-panel[data-tab="3"] { display: flex; }
+#record-tab-0:checked ~ .tab-list label[for="record-tab-0"],
+#record-tab-1:checked ~ .tab-list label[for="record-tab-1"],
+#record-tab-2:checked ~ .tab-list label[for="record-tab-2"],
+#record-tab-3:checked ~ .tab-list label[for="record-tab-3"] { color: var(--text); border-bottom-color: var(--accent); }
+.record-tabs .tab-radio:focus-visible + .tab-radio, .record-tabs .tab-list label:focus-visible { outline: 2px solid var(--accent); }
+.record-aside .record-actions .card-body { flex-direction: column; align-items: stretch; }
+.record-aside .record-actions .btn, .record-aside .record-actions summary.btn { width: 100%; justify-content: flex-start; }
+table.line-items th { white-space: nowrap; }
+
+/* A table nobody gave a class is still a table: read like the others. */
+.main table:not([class]) { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.main table:not([class]) th {
+	text-align: left; font-size: 12.5px; font-weight: 600; color: var(--text-muted);
+	padding: 10px var(--space-4); border-bottom: 1px solid var(--border-strong);
+}
+.main table:not([class]) td { padding: 10px var(--space-4); border-bottom: 1px solid var(--border);
+                               vertical-align: top; }
+.main table:not([class]) tbody tr:hover { background: var(--surface-hover); }
+.card > table:not([class]), .card > form > table:not([class]) { margin: 0; }
+table.report-index td.row-title { width: 28%; white-space: nowrap; }
+table.report-index td.row-end, table.data td.row-end { text-align: right; width: 1%; white-space: nowrap; }
+tr[hidden] { display: none; }

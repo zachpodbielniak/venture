@@ -16,21 +16,21 @@ This is grouping and labels only. Every page keeps its URL; nothing is moved or 
 
 * The section map
 
-| Heading   | Question               | Pages                                                                                                                                              |
-|-----------+------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
-| Money in  | What came in?          | Sales, Invoices, New invoice, New quote, Payments, Allocations, Customer credits, Refunds, Collections, Subscriptions, Sales orders                |
-| Money out | What went out?         | Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
-| Customers | Who are the customers? | Companies, Contacts, My day, Duplicates                                                                                                            |
-| Support   | Who needs help?        | Tickets, Sprints, Knowledge                                                                                                                        |
-| Growth    | What is growing?       | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
-| Bank      | Where is the money?    | Bank feeds, Money calendar                                                                                                                         |
-| Books     | What do the books say? | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
+Seven areas after the overview. Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
 
-A page is listed under one question only. Bank and Books are the money that is neither in nor out: the old "Money" heading (accounts, tax, journals, fiscal years, the money calendar) and the "Accounting" heading are folded into them, so the accounting lives in one place. The headings that stay as they were, in the order they are drawn: Overview (Dashboard, Dashboards, Reports) before the questions; then Business, Thinking, Code, Factory and System. A heading the regrouping emptied -- Relations, Activities, Sales pipelines, Invoicing, Quotes, Money, Accounting -- is no longer drawn.
+| Area      | Part              | Pages                                                                                                                                              |
+|-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
+| Money     | Money in          | Sales, Invoices, New invoice, New quote, Payments, Allocations, Customer credits, Refunds, Collections, Subscriptions, Sales orders, Products, Inventory |
+|           | Money out         | Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
+|           | Bank              | Bank feeds, Money calendar                                                                                                                         |
+|           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
+| Customers |                   | Companies, Contacts, My day, Duplicates                                                                                                            |
+| Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
+| Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
+| Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Milestones, Releases, Builds, Environments, Deployments, Incidents |
+| Settings  | Your business, People and access, System | Ventures, Entities, Modules; Your account, API tokens, Users, Assistant; Settings, Automations, Plugins, Webhooks, Federation, Mail outbox, Audit log |
 
-Pages that have not yet been filed under a question are drawn under the heading their row in the link table carries, so a module added later is never hidden: it appears where it always would have until a row is appended to the section that answers its question.
-
-The record pages read the same map: a contact's page is headed "Customers / Contacts", and the group it belongs to is the one drawn open.
+Every page is named once. Only the overview (Dashboard, Dashboards, Reports) keeps the heading its row carries; the old headings -- Business, Money, Accounting, Relations, Thinking, Code, Factory, System -- are gone. A section with a group is drawn inside that group's area with its heading as a label; the area is open when the current page is in it.
 
 * How it is built
 

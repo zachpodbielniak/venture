@@ -685,7 +685,8 @@ venture_web_append_record_aside(
 	VentureWebServer	*self,
 	GString			*html,
 	VentureEntity		*record,
-	GPtrArray		*specs
+	GPtrArray		*specs,
+	const gchar		*actions
 ){
 	g_autofree gchar *title = NULL;
 	guint shown;
@@ -694,8 +695,9 @@ venture_web_append_record_aside(
 
 	title = venture_entity_get_display_name(record);
 
-	g_string_append(html, "<aside class=\"record-aside\">"
-	                      "<section class=\"card record-facts\">"
+	g_string_append(html, "<aside class=\"record-aside\">");
+	g_string_append(html, (NULL != actions) ? actions : "");
+	g_string_append(html, "<section class=\"card record-facts\">"
 	                      "<div class=\"card-head\"><h2>Details</h2></div>"
 	                      "<div class=\"card-body\"><dl class=\"facts\">");
 
@@ -838,6 +840,55 @@ venture_web_append_type_option(
 	g_string_append(html, "\">");
 	venture_html_escape_append(html, label);
 	g_string_append(html, "</option>");
+}
+
+/*
+ * A row of tabs over @n panels, the first one showing. Radio buttons and
+ * CSS, so switching needs no script and every panel is still in the page
+ * for a test, a search or a screen reader. One panel is drawn as itself,
+ * with no tab row over it; none draws nothing.
+ */
+static void
+venture_web_append_tabs(
+	GString		*html,
+	const gchar	**labels,
+	GString		**panels,
+	guint		  n
+){
+	guint i;
+
+	if (0 == n)
+		return;
+
+	if (1 == n)
+	{
+		g_string_append(html, panels[0]->str);
+		return;
+	}
+
+	g_string_append(html, "<div class=\"record-tabs\">");
+
+	for (i = 0; i < n; i++)
+		g_string_append_printf(html, "<input type=\"radio\" class=\"tab-radio\" "
+		                       "name=\"record-tab\" id=\"record-tab-%u\"%s>",
+		                       i, (0 == i) ? " checked" : "");
+
+	g_string_append(html, "<div class=\"tab-list\" role=\"tablist\">");
+
+	for (i = 0; i < n; i++)
+	{
+		g_string_append_printf(html, "<label for=\"record-tab-%u\" role=\"tab\">", i);
+		venture_html_escape_append(html, labels[i]);
+		g_string_append(html, "</label>");
+	}
+
+	g_string_append(html, "</div>");
+
+	for (i = 0; i < n; i++)
+		g_string_append_printf(html, "<div class=\"tab-panel\" data-tab=\"%u\" "
+		                       "role=\"tabpanel\">%s</div>", i, panels[i]->str);
+
+	g_string_append(html, "</div>");
 }
 
 /* --- Lists ----------------------------------------------------------------- */
