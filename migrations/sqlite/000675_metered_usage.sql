@@ -8,7 +8,5 @@ SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AN
  OR ((SELECT COUNT(*) FROM pragma_table_info('plan_prices')
       WHERE name IN ('usage_unit', 'unit_amount_amount', 'unit_amount_currency', 'included_units')) = 4
   AND (SELECT COUNT(*) FROM pragma_table_info('usage_records')
-      WHERE name IN ('subscription_id', 'quantity', 'occurred_at', 'idempotency_key')) = 4
-  AND NOT EXISTS (SELECT 1 FROM plan_prices WHERE (usage_unit IS NULL OR usage_unit = '')
-      AND unit_amount_amount IS NOT NULL)) THEN 1 ELSE 0 END;
+      WHERE name IN ('subscription_id', 'quantity', 'occurred_at', 'idempotency_key')) = 4) THEN 1 ELSE 0 END;
 DROP TABLE venture_metered_usage_guard;

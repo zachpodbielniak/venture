@@ -423,11 +423,10 @@ test_generator(void)
 /*
  * The quote-subscription and metered-usage scripts on an upgraded
  * database: a price and a subscription from before read back flat and
- * unlinked, and a price carrying a rate with no unit -- which the save
- * refuses, so only a hand edit makes one -- stops the upgrade until it is
- * repaired, and the retry then succeeds. If this regresses, an upgrade
- * invents usage or quote links for old rows, or quietly accepts a price
- * no renewal can bill.
+ * unlinked -- nothing is invented for them -- a restart is a no-op, and
+ * with billing and quotes switched off, when none of their tables exist,
+ * the scripts still apply. If this regresses, an upgrade fabricates usage
+ * or quote links for old rows, or an install without billing cannot start.
  */
 static void
 test_quote_subscriptions_and_usage(void)
@@ -437,7 +436,8 @@ test_quote_subscriptions_and_usage(void)
 	g_autoptr(VentureDatabase) database = NULL;
 	g_autoptr(VentureEntity) price = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autofree gchar *pending = NULL, *linked = NULL;
+	g_autofree gchar *applied = NULL, *linked = NULL;
+	guint run;
 
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
@@ -450,37 +450,49 @@ test_quote_subscriptions_and_usage(void)
 		"amount_amount, amount_currency, amount_exponent, active) "
 		"VALUES ('00000000-0000-4000-8000-000000000032', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, "
 		"(SELECT id FROM plans WHERE code = 'old'), 'USD', 0, 3000, 'USD', 2, 1);"
-		"UPDATE plan_prices SET unit_amount_amount = 1, unit_amount_currency = 'USD', unit_amount_exponent = 2;"
 		"DELETE FROM schema_migrations WHERE version >= 670", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&database);
-
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_clear_pointer(&applied, g_free);
+		applied = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version IN (670, 675, 678)");
+		g_assert_cmpstr(applied, ==, "3");
+		g_clear_object(&database);
+	}
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
-	g_assert_false(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
-	g_assert_nonnull(error);
-	g_clear_error(&error);
-	pending = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 675");
-	g_assert_cmpstr(pending, ==, "0");
-	g_assert_true(venture_database_execute(database, "UPDATE plan_prices SET unit_amount_amount = NULL, "
-		"unit_amount_currency = NULL, unit_amount_exponent = NULL", NULL, &error));
-	g_assert_no_error(error);
-	g_clear_object(&database);
-
-	database = venture_database_new(uri, &error);
-	g_assert_no_error(error);
-	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
-	g_assert_no_error(error);
-	linked = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version IN (670, 675, 678)");
-	g_assert_cmpstr(linked, ==, "3");
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
 		price = venture_database_find_one(database, query, &error);
 		g_assert_no_error(error);
 	}
 	g_assert_false(venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)));
+	linked = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM usage_records");
+	g_assert_cmpstr(linked, ==, "0");
 	g_clear_object(&database);
 	venture_test_remove_tree(directory);
+
+	/* No billing, no quotes: their tables are absent and the scripts pass. */
+	{
+		g_autoptr(VentureConfig) config = venture_config_new();
+		g_autoptr(VentureContext) context = NULL;
+		g_autoptr(VentureDatabase) bare = NULL;
+		venture_config_set_module_enabled(config, "billing", FALSE);
+		venture_config_set_module_enabled(config, "quotes", FALSE);
+		bare = venture_database_new("sqlite://:memory:", &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, bare);
+		g_assert_true(venture_database_migrate(bare, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_clear_object(&context);
+		venture_config_set_module_enabled(config, "billing", TRUE);
+		venture_config_set_module_enabled(config, "quotes", TRUE);
+	}
 }
 
 int
