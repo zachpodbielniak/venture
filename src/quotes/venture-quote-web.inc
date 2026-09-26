@@ -56,19 +56,35 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 		venture_html_escape_append(html, date);
 		g_string_append(html, "</p>");
 	}
-	g_string_append(html, "<table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax %</th></tr></thead><tbody>");
+	g_string_append(html, "<table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax</th></tr></thead><tbody>");
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
 		g_autofree gchar *description = NULL;
-		gint64 quantity, discount, tax;
+		g_autofree gchar *rate_name = NULL;
+		gint64 quantity, discount, tax, code;
 		g_object_get(line, "description", &description, "quantity", &quantity,
-			"discount-percent", &discount, "tax-percent", &tax, NULL);
+			"discount-percent", &discount, "tax-percent", &tax, "tax-code-id", &code, NULL);
+		/* A line taxed by a rate record says which rate, as the invoice
+		 * will; the whole percent is only for lines written before. */
+		if (code != 0)
+		{
+			g_autoptr(VentureEntity) rate = venture_database_get(
+				venture_context_get_database(self->context), VENTURE_TYPE_TAX_CODE, code, NULL);
+			if (rate != NULL && venture_entity_get_organization_id(rate) ==
+				venture_entity_get_organization_id(quote))
+				rate_name = venture_entity_get_display_name(rate);
+		}
 		g_string_append(html, "<tr><td>");
 		venture_html_escape_append(html, description);
 		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "</td><td>", quantity);
 		quote_money_html(html, line, "unit-price");
-		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "</td><td>%" G_GINT64_FORMAT "</td></tr>", discount, tax);
+		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "</td><td>", discount);
+		if (rate_name != NULL)
+			venture_html_escape_append(html, rate_name);
+		else
+			g_string_append_printf(html, "%" G_GINT64_FORMAT "%%", tax);
+		g_string_append(html, "</td></tr>");
 	}
 	g_string_append(html, "</tbody></table><table>");
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)

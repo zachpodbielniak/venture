@@ -6,7 +6,9 @@
 static const gchar *const document_header_fields[] = { "number", "company-id", "contact-id", "terms", "notes", NULL };
 static const gchar *const document_invoice_fields[] = { "tax-exempt", NULL };
 static const gchar *const document_line_fields[] = { "description", "quantity", "unit-price", "product-id", "discount-percent", "tax-percent", NULL };
-static const gchar *const document_invoice_line_fields[] = { "tax-code-id", NULL };
+/* Both kinds of line are taxed by a rate record, so a quote asks for
+ * exactly what the invoice it becomes will. */
+static const gchar *const document_taxed_line_fields[] = { "tax-code-id", NULL };
 
 static gboolean
 document_read_fields(HtmxRequest *request, VentureEntity *record, const gchar *const *fields,
@@ -89,7 +91,7 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 				continue;
 			line = g_object_new(quote ? VENTURE_TYPE_QUOTE_LINE : VENTURE_TYPE_INVOICE_LINE, NULL);
 			if (!document_read_fields(request, line, document_line_fields, prefix, error) ||
-				(!quote && !document_read_fields(request, line, document_invoice_line_fields, prefix, error)))
+				!document_read_fields(request, line, document_taxed_line_fields, prefix, error))
 			{
 				json_object_unref(spec);
 				return NULL;
@@ -289,14 +291,9 @@ document_append_line_row(GString *html, const gchar *index, const gchar *product
 		"<td class=\"num\"><input type=\"number\" name=\"line-%s-discount-percent\" placeholder=\"0\" min=\"0\" max=\"100\" "
 		"step=\"any\" aria-label=\"Discount percent\" data-discount></td>",
 		index, index, products, index, index, index);
-	/* An invoice line is taxed by a rate record; a quote line still
-	 * carries a whole percent, which is all its table can hold. */
-	if (taxes != NULL)
-		g_string_append_printf(html, "<td class=\"line-tax\"><select name=\"line-%s-tax-code-id\" "
-			"aria-label=\"Tax\" data-no-picker data-tax>%s</select></td>", index, taxes);
-	else
-		g_string_append_printf(html, "<td class=\"num\"><input type=\"number\" name=\"line-%s-tax-percent\" "
-			"placeholder=\"0\" min=\"0\" step=\"any\" aria-label=\"Tax percent\" data-tax></td>", index);
+	/* A line is taxed by a rate record, on a quote as on an invoice. */
+	g_string_append_printf(html, "<td class=\"line-tax\"><select name=\"line-%s-tax-code-id\" "
+		"aria-label=\"Tax\" data-no-picker data-tax>%s</select></td>", index, taxes);
 	g_string_append(html, "<td class=\"num line-amount\" data-amount>0.00</td>"
 		VENTURE_WEB_LINE_DELETE "</tr>");
 }
@@ -315,7 +312,7 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 		venture_web_module_enabled(self, "recurring");
 	gint64 organization = venture_web_active_organization(self, request);
 	g_autofree gchar *products = document_product_options(self, organization);
-	g_autofree gchar *taxes = quote ? NULL : document_tax_options(self, organization);
+	g_autofree gchar *taxes = document_tax_options(self, organization);
 	const gchar *noun = quote ? "quote" : "invoice";
 
 	g_string_append(html, "<form method=\"post\" class=\"doc-compose\" data-doc-compose>"
@@ -371,8 +368,9 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 
 	g_string_append_printf(html, "<table class=\"line-items\"><thead><tr>"
 		"<th>Item</th><th class=\"num\">Qty</th><th class=\"num\">Unit price</th>"
-		"<th class=\"num\">Discount %%</th><th%s>Tax%s</th><th class=\"num\">Amount</th><th></th>"
-		"</tr></thead><tbody data-lines>", quote ? " class=\"num\"" : "", quote ? " %" : "");
+		"<th class=\"num\">Discount %%</th><th>Tax</th><th class=\"num\">Amount</th>"
+		"<th><span class=\"visually-hidden\">Remove</span></th>"
+		"</tr></thead><tbody data-lines>");
 	document_append_line_row(html, "0", products, taxes);
 	g_string_append(html, "</tbody></table>"
 		"<button type=\"button\" class=\"btn btn-ghost add-line\" data-add-line>+ Add a line</button>"

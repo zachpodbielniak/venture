@@ -413,7 +413,8 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), organization_id);
 		g_object_set(line, "quote-id", venture_entity_get_id(VENTURE_ENTITY(quote)),
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
-			"product-id", venture_json_object_get_int(row, "product_id", 0), NULL);
+			"product-id", venture_json_object_get_int(row, "product_id", 0),
+			"tax-code-id", venture_json_object_get_int(row, "tax_code_id", 0), NULL);
 		if (!money_from_row(VENTURE_ENTITY(line), row, error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			goto fail;

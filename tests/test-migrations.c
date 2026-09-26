@@ -114,11 +114,13 @@ test_token_actor_names(void)
 		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner');"
 		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
 		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Changed', 'token:deploy-bot');"
-		"DELETE FROM schema_migrations WHERE version IN (640, 645)", NULL, &error));
+		"DELETE FROM schema_migrations WHERE version >= 640", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&database);
 
-	/* A restart applies the two scripts again, as an upgrade would. */
+	/* A restart applies the two scripts again, as an upgrade would. Every
+	 * later script is forgotten too: history with a hole below an applied
+	 * version is refused, which is the runner working, not this test. */
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));

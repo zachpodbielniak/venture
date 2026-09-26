@@ -676,6 +676,51 @@ test_invoice_sheet_tax(Fixture *f, gconstpointer data)
 }
 
 /*
+ * The quote sheet taxes a line the way the invoice sheet does: a rate
+ * picked from "No tax" and the tax rates, posted as the line's tax code,
+ * and the quote's tax worked out exactly from it. If this regresses, a
+ * quote is taxed at a whole percent that cannot say 8.875% and disagrees
+ * with the invoice it becomes.
+ */
+static void
+test_quote_sheet_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) rate = NULL;
+	g_autoptr(VentureEntity) customer = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *page = NULL, *body = NULL, *location = NULL;
+	gint64 id;
+
+	(void)data;
+
+	rate = tax_rate(f, "NY", "New York sales tax", 8875, 100000);
+	customer = g_object_new(VENTURE_TYPE_COMPANY, "name", "Harbour Library", NULL);
+	save(f, customer);
+
+	page = get(f, "/quotes/compose");
+	g_assert_nonnull(strstr(page, "<option value=\"\" data-rate=\"0\">No tax</option>"));
+	g_assert_nonnull(strstr(page, "New York sales tax \xc2\xb7 8.875%</option>"));
+	g_assert_nonnull(strstr(page, "name=\"line-0-tax-code-id\""));
+	g_assert_null(strstr(page, "name=\"line-0-tax-percent\""));
+
+	body = g_strdup_printf("compose-form=1&company-id=%" G_GINT64_FORMAT
+		"&line-0-description=Shelving&line-0-quantity=1&line-0-unit-price=400.00"
+		"&line-0-tax-code-id=%" G_GINT64_FORMAT,
+		venture_entity_get_id(customer), venture_entity_get_id(rate));
+	g_assert_cmpuint(post_form(f, "/quotes/compose", body, &location), ==, 302);
+	g_assert_true(g_str_has_prefix(location, "/e/quote/"));
+	id = g_ascii_strtoll(location + strlen("/e/quote/"), NULL, 10);
+	quote = venture_database_get(f->database, VENTURE_TYPE_QUOTE, id, &error);
+	g_assert_no_error(error);
+	g_object_get(quote, "tax", &tax, NULL);
+	g_assert_nonnull(tax);
+	/* 8.875% of 400.00 is 35.50 exactly. */
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 3550);
+}
+
+/*
  * A line taxed at a rate keeps the rate; an exemption ticked on the sheet
  * is frozen onto the invoice with its certificate and, by default,
  * remembered on the customer so the next invoice fills it in. If this
@@ -985,6 +1030,8 @@ main(int argc, char *argv[])
 	           test_repeating_invoice, tear_down);
 	g_test_add("/record-view/invoice-sheet-tax", Fixture, NULL, set_up,
 	           test_invoice_sheet_tax, tear_down);
+	g_test_add("/record-view/quote-sheet-tax", Fixture, NULL, set_up,
+	           test_quote_sheet_tax, tear_down);
 	g_test_add("/record-view/invoice-sheet-exemption", Fixture, NULL, set_up,
 	           test_invoice_sheet_exemption, tear_down);
 	g_test_add("/record-view/attention-of-same-customer", Fixture, NULL, set_up,

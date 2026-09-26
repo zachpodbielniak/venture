@@ -167,29 +167,40 @@ add(VentureMoney **sum, VentureMoney *value, GError **error)
 	return TRUE;
 }
 
+/*
+ * A line's amounts. A rate record, when the line names one, is used
+ * exactly as an invoice line uses it -- numerator over denominator, the
+ * discount taken first -- so the invoice an accepted quote becomes asks
+ * for the same total. Without one the old whole percent still applies.
+ */
 static gboolean
-line_amounts(VentureEntity *line, VentureMoney **subtotal, VentureMoney **discount,
-	VentureMoney **tax, VentureMoney **total, GError **error)
+line_amounts(VentureQuoteService *self, VentureEntity *q, VentureEntity *line,
+	VentureMoney **subtotal, VentureMoney **discount, VentureMoney **tax,
+	VentureMoney **total, GError **error)
 {
 	g_autoptr(VentureMoney) unit = NULL;
-	g_autoptr(VentureMoney) net = NULL;
 	gint64 quantity = integer(line, "quantity");
 	gint64 dp = integer(line, "discount-percent");
 	gint64 tp = integer(line, "tax-percent");
+	gint64 code = integer(line, "tax-code-id");
+	gint64 numerator = tp;
+	gint64 denominator = 100;
 	g_object_get(line, "unit-price", &unit, NULL);
 	if (quantity <= 0 || quantity > 1000000000 || dp < 0 || dp > 100 || tp < 0 || tp > 100 ||
 		unit == NULL || venture_money_get_amount(unit) < 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "positive quantity and price, and percentages 0..100 required");
+	if (code != 0)
+	{
+		g_autoptr(VentureEntity) rate = get(self, VENTURE_TYPE_TAX_CODE,
+			venture_entity_get_organization_id(q), code, error);
+		if (rate == NULL ||
+			!venture_tax_code_get_rate(VENTURE_TAX_CODE(rate), &numerator, &denominator, error))
+			return FALSE;
+	}
 	*subtotal = venture_money_multiply_int(unit, quantity, error);
 	if (*subtotal == NULL) return FALSE;
-	*discount = venture_money_multiply_rational(*subtotal, dp, 100, error);
-	if (*discount == NULL) return FALSE;
-	net = venture_money_subtract(*subtotal, *discount, error);
-	if (net == NULL) return FALSE;
-	*tax = venture_money_multiply_rational(net, tp, 100, error);
-	if (*tax == NULL) return FALSE;
-	*total = venture_money_add(net, *tax, error);
-	return *total != NULL;
+	return venture_quote_rate_parts(*subtotal, dp, numerator, denominator,
+		discount, NULL, tax, total, error);
 }
 
 static gboolean
@@ -221,7 +232,7 @@ compute(VentureQuoteService *self, VentureEntity *q, GError **error)
 		g_autoptr(VentureMoney) d = NULL;
 		g_autoptr(VentureMoney) t = NULL;
 		g_autoptr(VentureMoney) a = NULL;
-		if (!line_amounts(g_ptr_array_index(lines, i), &s, &d, &t, &a, error) ||
+		if (!line_amounts(self, q, g_ptr_array_index(lines, i), &s, &d, &t, &a, error) ||
 			!add(&subtotal, s, error) || !add(&discount, d, error) ||
 			!add(&tax, t, error) || !add(&total, a, error)) return FALSE;
 	}
@@ -457,7 +468,8 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 		g_object_set(r, "invoice-id", venture_entity_get_id(invoice), "description", description,
 			"quantity", (gdouble)integer(l, "quantity"), "unit-price", unit,
 			"position", integer(l, "position"), "discount-percent", integer(l, "discount-percent"),
-			"tax-percent", integer(l, "tax-percent"), NULL);
+			"tax-percent", integer(l, "tax-percent"),
+			"tax-code-id", integer(l, "tax-code-id"), NULL);
 		if (!venture_database_save(self->database, r, actor, error)) return FALSE;
 	}
 	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),

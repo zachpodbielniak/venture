@@ -738,7 +738,9 @@ than one that fails.
   pick `organization-id`. Deals, tickets and sales orders carry it too; an
   empty parent on either end is not a mismatch (imports match people with
   no company yet).
-- **An invoice line is taxed by a rate record** (`tax-code-id`), made at
+- **An invoice line is taxed by a rate record** (`tax-code-id`), and so is
+  a quote line -- the accepted quote copies it onto the invoice, so the
+  two totals agree. The rate is made at
   `/tax-rates/new` from a percent and stored as an exact fraction. The
   exemption lives on the customer; the invoice freezes it at issue.
 
