@@ -958,7 +958,7 @@ test_web_navigation_groups_by_question(
 		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item", NULL
 	};
 	static const gchar *const money_out[] = {
-		"/e/expense", "/payables", "/purchasing", "/claims", "/payroll", NULL
+		"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll", NULL
 	};
 	static const gchar *const bank[] = {
 		"/bankfeed", "/money/calendar", NULL
@@ -966,7 +966,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const books[] = {
 		"/accounting", "/e/account", "/e/journal", "/e/journal_line",
 		"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
-		"/budgets", "/equity", "/group", "/capture", "/setup",
+		"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
 		"/e/accounting_cutover", NULL
 	};
 	static const gchar *const customers[] = {

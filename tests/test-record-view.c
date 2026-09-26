@@ -479,6 +479,10 @@ post_form(Fixture *f, const gchar *path, const gchar *body, gchar **location)
 		g_main_context_iteration(NULL, TRUE);
 
 	g_assert_no_error(reply.error);
+	/* A refusal says why; keep it in the test log. */
+	if (soup_message_get_status(message) >= 400 && NULL != reply.bytes)
+		g_test_message("%s: %.*s", path, (gint)g_bytes_get_size(reply.bytes),
+		               (const gchar *)g_bytes_get_data(reply.bytes, NULL));
 	g_clear_pointer(&reply.bytes, g_bytes_unref);
 	if (NULL != location)
 		*location = g_strdup(soup_message_headers_get_one(
@@ -546,6 +550,67 @@ test_repeating_invoice(Fixture *f, gconstpointer data)
 	(void)kind;
 }
 
+/*
+ * A bill entered on the sheet is the bill and its lines, written together,
+ * and "Save and approve" approves it through the payables service -- the
+ * same step as the bill page's Approve. A draft stays a draft. If this
+ * regresses, a bill is a header with no lines, entered one form at a time.
+ */
+static void
+test_bill_sheet(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) supplier = NULL;
+	g_autoptr(VentureEntity) bill = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *status = NULL;
+	gint64 id;
+
+	(void)data;
+
+	supplier = g_object_new(VENTURE_TYPE_COMPANY, "name", "Hosting Co", NULL);
+	g_assert_true(venture_entity_set_field_from_string(supplier, "kind", "supplier", &error));
+	g_assert_no_error(error);
+	save(f, supplier);
+
+	body = g_strdup_printf("company-id=%" G_GINT64_FORMAT "&number=HC-1&bill-date=2026-09-01"
+		"&due-date=2026-10-01&line-0-description=Servers&line-0-quantity=1&line-0-unit-price=40.00"
+		"&line-2-description=Backups&line-2-quantity=2&line-2-unit-price=5.00",
+		venture_entity_get_id(supplier));
+	g_assert_cmpuint(post_form(f, "/bills/compose", body, &location), ==, 302);
+	g_assert_true(g_str_has_prefix(location, "/e/vendor_bill/"));
+	id = g_ascii_strtoll(location + strlen("/e/vendor_bill/"), NULL, 10);
+
+	bill = venture_database_get(f->database, VENTURE_TYPE_VENDOR_BILL, id, &error);
+	g_assert_no_error(error);
+	g_object_get(bill, "status", &status, NULL);
+	g_assert_cmpstr(status, ==, "draft");
+
+	query = venture_query_new(VENTURE_TYPE_VENDOR_BILL_LINE);
+	venture_query_add_filter_int(query, "bill-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	lines = venture_database_find(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(lines->len, ==, 2);
+
+	/* Save and approve: approved in the same request. */
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&location, g_free);
+	g_clear_pointer(&status, g_free);
+	g_clear_object(&bill);
+	body = g_strdup_printf("company-id=%" G_GINT64_FORMAT "&number=HC-2&bill-date=2026-09-01"
+		"&line-0-description=Servers&line-0-quantity=1&line-0-unit-price=40.00&approve=1",
+		venture_entity_get_id(supplier));
+	g_assert_cmpuint(post_form(f, "/bills/compose", body, &location), ==, 302);
+	id = g_ascii_strtoll(location + strlen("/e/vendor_bill/"), NULL, 10);
+	bill = venture_database_get(f->database, VENTURE_TYPE_VENDOR_BILL, id, &error);
+	g_assert_no_error(error);
+	g_object_get(bill, "status", &status, NULL);
+	g_assert_cmpstr(status, ==, "approved");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -562,6 +627,8 @@ main(int argc, char *argv[])
 	           test_grouped_form, tear_down);
 	g_test_add("/record-view/repeating-invoice", Fixture, NULL, set_up,
 	           test_repeating_invoice, tear_down);
+	g_test_add("/record-view/bill-sheet", Fixture, NULL, set_up,
+	           test_bill_sheet, tear_down);
 
 	return g_test_run();
 }

@@ -307,9 +307,11 @@ venture_web_append_value(
 		return;
 	}
 
-	/* An enumeration declared by a YAML type is a string with choices. */
+	/* An enumeration declared by a YAML type is a string with choices,
+	 * and a status kept as a string is a word all the same. */
 	if (G_VALUE_HOLDS_STRING(&value) &&
-	    (VENTURE_FIELD_KIND_ENUM == venture_field_spec_get_kind(spec)))
+	    ((VENTURE_FIELD_KIND_ENUM == venture_field_spec_get_kind(spec)) ||
+	     (VENTURE_FIELD_ROLE_STATUS == venture_field_spec_get_role(spec))))
 	{
 		g_autofree gchar *label = NULL;
 

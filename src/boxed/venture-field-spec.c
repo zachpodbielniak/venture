@@ -528,7 +528,11 @@ venture_field_spec_get_role(const VentureFieldSpec *self)
 
 	/* The lifecycle field goes by one of three names across the tree;
 	 * "kind" and "type" say what a record is, not where it has got to. */
-	if ((VENTURE_FIELD_KIND_ENUM == self->kind) &&
+	/* Some services keep the lifecycle as a plain string their own
+	 * transitions guard, rather than an enumeration: it is still the
+	 * record's status. */
+	if (((VENTURE_FIELD_KIND_ENUM == self->kind) ||
+	     (VENTURE_FIELD_KIND_STRING == self->kind)) &&
 	    ((0 == g_strcmp0(self->name, "status")) ||
 	     (0 == g_strcmp0(self->name, "stage")) ||
 	     (0 == g_strcmp0(self->name, "state"))))

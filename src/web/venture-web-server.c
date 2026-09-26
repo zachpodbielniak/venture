@@ -1159,7 +1159,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "billing"
 	},
 	{
-		"/e/recurring_schedule", "Repeating invoices",
+		"/e/recurring_schedule", "Repeating invoices & bills",
 		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
 		NULL, "recurring"
 	},
@@ -1519,7 +1519,9 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
 	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
 	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
+	{ "/e/vendor_bill", "Bills", VENTURE_ICON("<path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/><path d=\"M14 3v5h5\"/><path d=\"M9 13h6\"/>"), NULL, "payables" },
 	{ "/payables", "Pay bills", VENTURE_ICON("<path d=\"M4 12h16M14 6l6 6-6 6\"/>"), NULL, "payables" },
+	{ "/e/fixed_asset", "Assets", VENTURE_ICON("<rect x=\"3\" y=\"7\" width=\"18\" height=\"12\" rx=\"1\"/><path d=\"M8 7V5h8v2\"/><path d=\"M3 12h18\"/>"), NULL, "assets" },
 	{ "/claims", "Claims", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "claims" },
 	{ "/payroll", "Payroll", VENTURE_ICON("<path d=\"M4 6h16M4 12h16M4 18h10\"/>"), NULL, "payroll" },
 	{ "/purchasing", "Purchasing", VENTURE_ICON("<path d=\"M4 7h16M4 12h10M4 17h7\"/>"), NULL, "goods" },
@@ -1566,7 +1568,7 @@ static const gchar *const venture_web_nav_money_in[] = {
 };
 
 static const gchar *const venture_web_nav_money_out[] = {
-	"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
+	"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll",
 	NULL
 };
 
@@ -1578,7 +1580,7 @@ static const gchar *const venture_web_nav_bank[] = {
 static const gchar *const venture_web_nav_books[] = {
 	"/accounting", "/e/account", "/e/journal", "/e/journal_line",
 	"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
-	"/budgets", "/equity", "/group", "/capture", "/setup",
+	"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
 	"/e/accounting_cutover",
 	NULL
 };
@@ -1902,7 +1904,7 @@ venture_web_page(
 			{ "Quote", "/quotes/compose", "quotes" },
 			{ "Subscription", "/billing/subscriptions/new", "billing" },
 			{ "Expense", "/e/expense/new", "finance" },
-			{ "Supplier bill", "/e/vendor_bill/new", "payables" },
+			{ "Supplier bill", "/bills/compose", "payables" },
 			{ "Contact", "/e/contact/new", "crm" },
 			{ "Company", "/e/company/new", "crm" },
 			{ "Deal", "/e/deal/new", "crm" },
@@ -8029,6 +8031,7 @@ venture_web_append_knowledge(
 static void document_append_parties(VentureWebServer *self, GString *html,
 	gint64 organization);
 #include "billing/venture-billing-web.inc"
+#include "payables/venture-bill-compose-web.inc"
 
 static void
 venture_web_append_related(
@@ -9641,7 +9644,7 @@ venture_web_ui_detail(
 	venture_web_deal_buttons(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
-		venture_web_append_asset_actions(content, record);
+		venture_web_append_asset_actions(self, content, record);
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
@@ -29873,6 +29876,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/vendor_bill/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bills/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payables", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/bills/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bill_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bills/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bill_compose, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/payables/pay", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench_pay, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/payables/pay", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/claims", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_claims_workbench, self);

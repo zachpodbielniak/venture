@@ -238,27 +238,104 @@ venture_web_payables_workbench_pay(HtmxRequest *request, GHashTable *params, gpo
 	return venture_web_redirect_to("/payables");
 }
 
+/*
+ * A bill's page says where it stands and what can still change: a draft
+ * is not in the books and can be edited freely; an approved bill is, so
+ * its amount and dates are fixed and a change goes through a credit or a
+ * void. The action that moves it on sits with the sentence.
+ */
 static void
 venture_web_append_payables_actions(VentureWebServer *self, GString *content, VentureEntity *record)
 {
-	g_autofree gchar *state = NULL;
-	const gchar *action;
-	const gchar *label;
+	g_autofree gchar *state = NULL, *due_text = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id, supplier = 0;
 	if (!VENTURE_IS_VENDOR_BILL(record) || !venture_web_module_enabled(self, "payables"))
 		return;
-	g_object_get(record, "status", &state, NULL);
+	id = venture_entity_get_id(record);
+	g_object_get(record, "status", &state, "due-date", &due, "company-id", &supplier, NULL);
+	due_text = due != NULL ? venture_time_to_date_string(due, venture_context_get_timezone(self->context)) : NULL;
+	balance = venture_payables_service_bill_balance(venture_payables_service_get(venture_context_get_database(self->context)),
+		id, NULL, NULL);
+
+	g_string_append(content, "<section class=\"card next-up\"><div class=\"card-head\"><h2>What happens next</h2></div><div class=\"card-body\">");
 	if (g_strcmp0(state, "draft") == 0)
 	{
-		action = "approve";
-		label = "Approve";
+		g_string_append_printf(content, "<p class=\"next-up-lead\">A draft: not in the books yet. Check the lines, then approve it "
+			"to post it and put it on the list to pay.</p>"
+			"<form method=\"post\" action=\"/bills/%" G_GINT64_FORMAT "/approve\"><button class=\"btn btn-primary\" type=\"submit\">Approve</button></form>"
+			"<p class=\"muted small\">Need to change it? Edit it now \xe2\x80\x94 nothing is fixed until it is approved.</p>", id);
 	}
 	else if (g_strcmp0(state, "approved") == 0 || g_strcmp0(state, "partially_paid") == 0)
 	{
-		action = "pay";
-		label = "Pay";
+		g_autofree gchar *owed = balance != NULL ? venture_money_to_display_string(balance, TRUE) : NULL;
+		g_string_append(content, "<p class=\"next-up-lead\">");
+		if (owed != NULL)
+		{
+			g_string_append(content, "<strong>");
+			venture_html_escape_append(content, owed);
+			g_string_append(content, "</strong> to pay");
+		}
+		else
+			g_string_append(content, "To pay");
+		if (due_text != NULL)
+		{
+			g_string_append(content, ", due <strong>");
+			venture_html_escape_append(content, due_text);
+			g_string_append(content, "</strong>");
+		}
+		g_string_append_printf(content, ".</p><form method=\"post\" action=\"/bills/%" G_GINT64_FORMAT "/pay\">"
+			"<button class=\"btn btn-primary\" type=\"submit\">Pay it now</button></form>"
+			"<p class=\"muted small\">The amount is in the books, so it cannot be edited. If the supplier lowers it, record "
+			"their <a href=\"/e/vendor_credit/new?company_id=%" G_GINT64_FORMAT "\">credit</a>; if it was wrong and nothing "
+			"is paid yet, void it and enter it again.</p>", id, supplier);
+		if (g_strcmp0(state, "approved") == 0)
+			g_string_append_printf(content, "<form method=\"post\" action=\"/bills/%" G_GINT64_FORMAT "/void\">"
+				"<button class=\"btn btn-ghost btn-sm\" type=\"submit\">Void this bill</button></form>", id);
 	}
+	else if (g_strcmp0(state, "paid") == 0)
+		g_string_append(content, "<p class=\"next-up-lead\">Paid. Nothing more to do.</p>"
+			"<p class=\"muted small\">If the supplier refunds part of it, record the refund; it reopens the bill for what is owed.</p>");
 	else
-		return;
-	g_string_append_printf(content, "<form method=\"post\" action=\"/bills/%" G_GINT64_FORMAT "/%s\">"
-		"<button class=\"btn\" type=\"submit\">%s</button></form>", venture_entity_get_id(record), action, label);
+		g_string_append(content, "<p class=\"next-up-lead\">Void. Its posting was reversed; it is kept as evidence.</p>");
+	g_string_append(content, "</div></section>");
+
+	/* The lines, as the supplier printed them: the bill is its lines. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_VENDOR_BILL_LINE);
+		g_autoptr(GPtrArray) lines = NULL;
+		guint i;
+		venture_query_set_limit(query, 0);
+		venture_query_add_filter_int(query, "bill-id", VENTURE_FILTER_OP_EQ, id, NULL);
+		venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
+		lines = venture_database_find(venture_context_get_database(self->context), query, NULL);
+		if (lines != NULL && lines->len > 0)
+		{
+			g_string_append(content, "<section class=\"card\"><div class=\"card-head\"><h2>Lines</h2></div>"
+				"<table class=\"data\"><thead><tr><th>What it was for</th><th class=\"num\">Qty</th>"
+				"<th class=\"num\">Unit price</th><th class=\"num\">Tax</th></tr></thead><tbody>");
+			for (i = 0; i < lines->len; i++)
+			{
+				VentureEntity *line = g_ptr_array_index(lines, i);
+				g_autofree gchar *description = NULL, *quantity = NULL, *price_text = NULL, *tax_text = NULL;
+				g_autoptr(VentureMoney) price = NULL, tax = NULL;
+				g_object_get(line, "description", &description, "quantity", &quantity, "unit-price", &price,
+					"tax-amount", &tax, NULL);
+				price_text = price != NULL ? venture_money_to_display_string(price, TRUE) : g_strdup("");
+				tax_text = tax != NULL && venture_money_get_amount(tax) != 0
+					? venture_money_to_display_string(tax, TRUE) : g_strdup("");
+				g_string_append(content, "<tr><td>");
+				venture_html_escape_append(content, description);
+				g_string_append(content, "</td><td class=\"num\">");
+				venture_html_escape_append(content, quantity);
+				g_string_append(content, "</td><td class=\"num\">");
+				venture_html_escape_append(content, price_text);
+				g_string_append(content, "</td><td class=\"num\">");
+				venture_html_escape_append(content, tax_text);
+				g_string_append(content, "</td></tr>");
+			}
+			g_string_append(content, "</tbody></table></section>");
+		}
+	}
 }

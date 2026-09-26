@@ -4320,3 +4320,78 @@ table.data tbody tr, .main table:not([class]) tbody tr { transition: background 
 @media (prefers-reduced-motion: reduce) {
 	.how-often-choice:hover, .card { transform: none; transition: none; }
 }
+
+/* ==========================================================================
+   Checkboxes and radios -- drawn, in both looks
+   ========================================================================== */
+
+/*
+ * A box you can hit and a tick you can see. The native control is
+ * replaced (appearance: none) and drawn from tokens: a ruled square, the
+ * accent when set, and a tick cut from the ground colour so it reads on
+ * every theme. Radios are the same size with a dot.
+ */
+input[type="checkbox"], input[type="radio"] {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 20px;
+	height: 20px;
+	margin: 0;
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	vertical-align: middle;
+	cursor: pointer;
+	border: 1.5px solid var(--text-muted);
+	background: var(--surface-raised);
+	border-radius: var(--radius-sm);
+	transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+input[type="radio"] { border-radius: 50%; }
+
+input[type="checkbox"]::before, input[type="radio"]::before {
+	content: "";
+	transform: scale(0);
+	transition: transform var(--transition);
+}
+input[type="checkbox"]::before {
+	width: 10px;
+	height: 6px;
+	border-left: 2.5px solid var(--bg);
+	border-bottom: 2.5px solid var(--bg);
+	background: none;
+	margin-top: -3px;
+	transform: rotate(-45deg) scale(0);
+}
+input[type="radio"]::before {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--bg);
+}
+
+input[type="checkbox"]:hover, input[type="radio"]:hover { border-color: var(--accent); }
+input[type="checkbox"]:checked, input[type="radio"]:checked {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+input[type="checkbox"]:checked::before { transform: rotate(-45deg) scale(1); }
+input[type="radio"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* A yes/no field reads as one line: the box, then what it means. */
+.field label:has(> input[type="checkbox"]) {
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+	min-height: 42px;
+	cursor: pointer;
+}
+.field label:has(> input[type="checkbox"]) > input[type="checkbox"] { order: -1; }
+.checkbox { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
+.checkbox input { width: 20px; }
+.next-up form { margin: var(--space-2) 0 var(--space-3); }
