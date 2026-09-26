@@ -1152,6 +1152,298 @@ test_collect_and_recover(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
 }
 
+static gint64
+money_field(VentureEntity *e, const gchar *name)
+{
+	g_autoptr(VentureMoney) value = NULL;
+	g_object_get(e, name, &value, NULL);
+	return value != NULL ? venture_money_get_amount(value) : 0;
+}
+
+static VentureEntity *
+last_of(Fixture *f, const gchar *name)
+{
+	g_autoptr(VentureQuery) q = venture_query_new(venture_entity_registry_lookup(venture_entity_registry_get_default(), name));
+	g_autoptr(GPtrArray) rows = NULL;
+	venture_query_add_order(q, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(q, 1);
+	rows = venture_database_find(f->db, q, NULL);
+	g_assert_nonnull(rows);
+	g_assert_cmpuint(rows->len, ==, 1);
+	return g_object_ref(g_ptr_array_index(rows, 0));
+}
+
+static gint64
+tax_rate(Fixture *f, gint64 numerator, gint64 denominator)
+{
+	g_autoptr(VentureEntity) code = record(f, "tax_code");
+	g_object_set(code, "code", "STD", "name", "Standard", "rate-numerator", numerator,
+		"rate-denominator", denominator, "active", TRUE, NULL);
+	save(f, code);
+	return venture_entity_get_id(code);
+}
+
+/*
+ * Cancelling now credits the unused days of the invoiced period, spread
+ * over the period's days exactly as a downgrade is: $60 for January,
+ * cancelled on the 17th, is 1 day at $1.94 and 14 at $1.93 = $28.96
+ * back, applied to the unpaid invoice. The preview the page shows is the
+ * same figure. A trial and a cancellation at renewal give nothing. If this
+ * regresses, a customer who leaves mid-month pays for days they never get,
+ * or the button promises a different amount than the books record.
+ */
+static void
+test_cancel_credit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(VentureEntity) event = NULL;
+	g_autoptr(VentureEntity) p = NULL;
+	g_autoptr(VentureMoney) preview = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GDateTime) when = g_date_time_new_utc(2026, 1, 17, 0, 0, 0);
+	g_autoptr(GError) error = NULL;
+	gint64 id = start(f), first_invoice, days = 0;
+
+	(void)data;
+	s = subscription(f, id);
+	preview = venture_billing_service_cancel_credit(venture_billing_service_get(f->db),
+		VENTURE_CUSTOMER_SUBSCRIPTION(s), when, &days, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(preview), ==, 2896);
+	g_assert_cmpint(days, ==, 15);
+	event = last_of(f, "subscription_event");
+	first_invoice = integer(event, "invoice-id");
+	g_clear_object(&event);
+
+	a = request(f, "cancel", id, "2026-01-17");
+	save(f, a);
+	status_is(f, id, "cancelled");
+	g_assert_cmpint(money_field(a, "proration-amount"), ==, -2896);
+	event = last_of(f, "subscription_event");
+	g_assert_cmpint(money_field(event, "proration-amount"), ==, -2896);
+	g_assert_cmpint(count(f, "customer_credit"), ==, 1);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), first_invoice, NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 6000 - 2896);
+	g_clear_object(&a);
+
+	/* Scheduled for renewal: nothing more billed, nothing given back. */
+	id = start(f);
+	a = request(f, "cancel", id, "2026-01-17");
+	g_object_set(a, "at-period-end", TRUE, NULL);
+	save(f, a);
+	g_assert_cmpint(money_field(a, "proration-amount"), ==, 0);
+	g_assert_cmpint(count(f, "customer_credit"), ==, 1);
+	g_clear_object(&a);
+
+	/* A trial was never invoiced, so there is nothing to credit. */
+	g_clear_object(&s);
+	s = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	p = record(f, "plan_price");
+	g_object_set(p, "plan-id", integer(s, "plan-id"), "currency", "USD", "active", TRUE, "trial-days", (gint64)14, NULL);
+	field(p, "amount", "30 USD");
+	save(f, p);
+	g_clear_object(&a);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", venture_entity_get_id(p), NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	g_clear_object(&a);
+	status_is(f, id, "trialing");
+	a = request(f, "cancel", id, "2026-01-05");
+	save(f, a);
+	g_assert_cmpint(money_field(a, "proration-amount"), ==, 0);
+	g_assert_cmpint(count(f, "customer_credit"), ==, 1);
+}
+
+/*
+ * A price's tax rate reaches the invoice line, so settlement taxes it
+ * exactly -- 10% on $60 is $66 owed -- and an exempt customer stays
+ * exempt. Cancelling credits the tax on the unused days too. If this
+ * regresses, subscription revenue is invoiced untaxed and the return is
+ * short, or a charity is charged tax.
+ */
+static void
+test_price_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) exempt = record(f, "company");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureEntity) credit = NULL;
+	gint64 code = tax_rate(f, 10, 100), id;
+
+	(void)data;
+	{
+		g_autoptr(OrmResult) result = venture_database_query_raw(f->db,
+			"SELECT CAST(COUNT(*) AS BIGINT) FROM schema_migrations WHERE version = 650", NULL, NULL);
+		g_assert_true(orm_result_next(result));
+		g_assert_cmpint(orm_row_get_integer(orm_result_get_row(result), 0), ==, 1);
+	}
+	g_object_set(p, "tax-code-id", code, NULL);
+	save(f, p);
+	id = start(f);
+	line = last_of(f, "invoice_line");
+	g_assert_cmpint(integer(line, "tax-code-id"), ==, code);
+	g_assert_cmpint(money_field(line, "tax-amount"), ==, 600);
+	a = last_of(f, "subscription_event");
+	g_assert_cmpint(invoice_total(f, a), ==, 6600);
+	g_clear_object(&a);
+
+	a = request(f, "cancel", id, "2026-01-17");
+	save(f, a);
+	/* $28.96 unused plus 10% of it, half-even: $2.90. */
+	g_assert_cmpint(money_field(a, "proration-amount"), ==, -3186);
+	credit = last_of(f, "customer_credit");
+	g_assert_cmpint(money_field(credit, "tax-amount"), ==, 290);
+	g_clear_object(&a);
+
+	g_object_set(exempt, "name", "Charity", "tax-exempt", TRUE, "tax-exempt-reason", "501(c)(3)", NULL);
+	save(f, exempt);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", venture_entity_get_id(exempt), "plan-price-id", f->price, "seats", (gint64)2, NULL);
+	save(f, a);
+	g_assert_cmpint(invoice_total(f, a), ==, 6000);
+}
+
+/*
+ * MRR is what the period is billed at: 50% off the first period makes
+ * January's MRR $30, and it returns to $60 at the renewal the discount no
+ * longer covers -- an expansion, not a new customer. An amount off a
+ * yearly price is taken per year, then divided by twelve. If this
+ * regresses, MRR overstates revenue for every discounted customer.
+ */
+static void
+test_mrr_discount(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) yearly = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	gint64 plan = integer(p, "plan-id"), half, flat, id;
+
+	(void)data;
+	half = discount(f, plan, "Half off", 50, NULL, 1);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "seats", (gint64)2, "discount-id", half, NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	g_clear_object(&a);
+	a = last_of(f, "subscription_event");
+	g_assert_cmpint(money_field(a, "to-mrr"), ==, 3000);
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	g_assert_cmpint(invoice_total(f, a), ==, 6000);
+	g_clear_object(&a);
+	a = last_of(f, "subscription_event");
+	g_assert_cmpint(money_field(a, "from-mrr"), ==, 3000);
+	g_assert_cmpint(money_field(a, "to-mrr"), ==, 6000);
+	g_clear_object(&a);
+
+	g_object_set(yearly, "plan-id", plan, "currency", "USD", "active", TRUE, NULL);
+	field(yearly, "interval", "year");
+	field(yearly, "amount", "600 USD");
+	save(f, yearly);
+	flat = discount(f, plan, "Loyal", 0, "120 USD", 0);
+	a = request(f, "start", 0, "2026-03-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", venture_entity_get_id(yearly), "discount-id", flat, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = last_of(f, "subscription_event");
+	g_assert_cmpint(money_field(a, "to-mrr"), ==, 4000);
+
+	/* Reports last: each builds a context whose audit listener outlives it. */
+	r = report(f, "mrr", "2026-01");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 3000);
+	{
+		g_autoptr(JsonNode) json = venture_report_result_to_json(r);
+		const gchar *note = json_object_get_string_member(json_node_get_object(json), "note");
+		g_assert_nonnull(g_strstr_len(note, -1, "discounts are included"));
+	}
+	g_clear_object(&r);
+	r = report(f, "mrr", "2026-02");
+	g_assert_cmpint(metric_amount(r, "mrr"), ==, 6000);
+	g_assert_cmpint(metric_amount(r, "expansion"), ==, 3000);
+}
+
+/*
+ * Moving a retired price's customers is one change per subscription in
+ * one transaction: a refusal for one customer moves nobody and names who,
+ * and a move at renewal schedules every one of them. If this regresses,
+ * half a customer base ends up on the new price after an error, with no
+ * record of which half.
+ */
+static void
+test_move_customers(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) old = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) next = record(f, "plan_price");
+	g_autoptr(VentureEntity) other = record(f, "company");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(GDateTime) at = g_date_time_new_utc(2026, 1, 17, 0, 0, 0);
+	g_autoptr(GDateTime) later = g_date_time_new_utc(2026, 1, 25, 0, 0, 0);
+	g_autoptr(GError) error = NULL;
+	VentureBillingService *service = venture_billing_service_get(f->db);
+	gint64 first, second, requests;
+	guint moved = 0;
+
+	(void)data;
+	g_object_set(next, "plan-id", integer(old, "plan-id"), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(next, "amount", "40 USD");
+	save(f, next);
+	g_object_set(other, "name", "Second customer", NULL);
+	save(f, other);
+	first = start(f);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", venture_entity_get_id(other), "plan-price-id", f->price, NULL);
+	save(f, a);
+	second = integer(a, "subscription-id");
+	g_clear_object(&a);
+	/* The second customer changed seats on the 20th, so a move dated the
+	 * 17th is out of order for them, and must undo the first's move too. */
+	a = request(f, "change-seats", second, "2026-01-20");
+	g_object_set(a, "seats", (gint64)2, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	g_object_set(old, "active", FALSE, NULL);
+	save(f, old);
+	requests = count(f, "billing_request");
+	g_assert_false(venture_billing_service_move_customers(service, VENTURE_PLAN_PRICE(old), VENTURE_PLAN_PRICE(next),
+		FALSE, at, NULL, &moved, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(g_strstr_len(error->message, -1, "Second customer"));
+	g_clear_error(&error);
+	g_assert_cmpuint(moved, ==, 0);
+	g_assert_cmpint(count(f, "billing_request"), ==, requests);
+	s = subscription(f, first);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, f->price);
+	g_clear_object(&s);
+
+	/* At renewal: both keep today's price until then. */
+	g_assert_true(venture_billing_service_move_customers(service, VENTURE_PLAN_PRICE(old), VENTURE_PLAN_PRICE(next),
+		TRUE, later, NULL, &moved, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(moved, ==, 2);
+	g_assert_cmpint(count(f, "billing_request"), ==, requests + 2);
+	s = subscription(f, first);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, f->price);
+	g_assert_cmpint(integer(s, "pending-plan-price-id"), ==, venture_entity_get_id(next));
+	g_clear_object(&s);
+
+	/* Right now, prorated: the price changes today. */
+	g_date_time_unref(later);
+	later = g_date_time_new_utc(2026, 1, 26, 0, 0, 0);
+	g_assert_true(venture_billing_service_move_customers(service, VENTURE_PLAN_PRICE(old), VENTURE_PLAN_PRICE(next),
+		FALSE, later, NULL, &moved, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(moved, ==, 2);
+	s = subscription(f, second);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, venture_entity_get_id(next));
+	g_assert_cmpint(money_field(s, "pending-adjustment"), >, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1194,5 +1486,9 @@ main(int argc, char **argv)
 	g_test_add("/billing/uniqueness", Fixture, NULL, setup, test_uniqueness, teardown);
 	g_test_add("/billing/collect-and-recover", Fixture, NULL, setup, test_collect_and_recover, teardown);
 	g_test_add_func("/billing/upgrade-disabled-restart", test_upgrade_disabled_restart);
+	g_test_add("/billing/cancel-credit", Fixture, NULL, setup, test_cancel_credit, teardown);
+	g_test_add("/billing/price-tax", Fixture, NULL, setup, test_price_tax, teardown);
+	g_test_add("/billing/mrr-discount", Fixture, NULL, setup, test_mrr_discount, teardown);
+	g_test_add("/billing/move-customers", Fixture, NULL, setup, test_move_customers, teardown);
 	return g_test_run();
 }

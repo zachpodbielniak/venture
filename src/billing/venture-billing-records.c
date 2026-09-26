@@ -154,6 +154,8 @@ static const VentureFieldDecl plan_price_fields[] = {
 	VENTURE_FIELD("trial-days", "Free trial days", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog mapping for hosted collection", "product", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("tax-code-id", "Tax", "Rate charged on each invoice; empty uses the customer's address, as any invoice line does",
+		"tax_code", VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlanPrice, venture_plan_price, plan_price_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = plan_price_display_name;
