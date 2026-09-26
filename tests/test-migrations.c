@@ -121,7 +121,7 @@ test_token_actor_names(void)
 	g_assert_no_error(error);
 	g_clear_object(&database);
 
-	/* A restart applies the two scripts again, as an upgrade would. */
+	/* A restart applies the scripts again, as an upgrade would. */
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
@@ -420,6 +420,81 @@ test_generator(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * The quote-subscription and metered-usage scripts on an upgraded
+ * database: a price and a subscription from before read back flat and
+ * unlinked -- nothing is invented for them -- a restart is a no-op, and
+ * with billing and quotes switched off, when none of their tables exist,
+ * the scripts still apply. If this regresses, an upgrade fabricates usage
+ * or quote links for old rows, or an install without billing cannot start.
+ */
+static void
+test_quote_subscriptions_and_usage(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *applied = NULL, *linked = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO plans (uuid, organization_id, created_at, updated_at, version, name, code, active) "
+		"VALUES ('00000000-0000-4000-8000-000000000031', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'Old', 'old', 1);"
+		"INSERT INTO plan_prices (uuid, organization_id, created_at, updated_at, version, plan_id, currency, interval, "
+		"amount_amount, amount_currency, amount_exponent, active) "
+		"VALUES ('00000000-0000-4000-8000-000000000032', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, "
+		"(SELECT id FROM plans WHERE code = 'old'), 'USD', 0, 3000, 'USD', 2, 1);"
+		"DELETE FROM schema_migrations WHERE version >= 670", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_clear_pointer(&applied, g_free);
+		applied = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version IN (670, 675, 678)");
+		g_assert_cmpstr(applied, ==, "3");
+		g_clear_object(&database);
+	}
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+		price = venture_database_find_one(database, query, &error);
+		g_assert_no_error(error);
+	}
+	g_assert_false(venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)));
+	linked = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM usage_records");
+	g_assert_cmpstr(linked, ==, "0");
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+
+	/* No billing, no quotes: their tables are absent and the scripts pass. */
+	{
+		g_autoptr(VentureConfig) config = venture_config_new();
+		g_autoptr(VentureContext) context = NULL;
+		g_autoptr(VentureDatabase) bare = NULL;
+		venture_config_set_module_enabled(config, "billing", FALSE);
+		venture_config_set_module_enabled(config, "quotes", FALSE);
+		bare = venture_database_new("sqlite://:memory:", &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, bare);
+		g_assert_true(venture_database_migrate(bare, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_clear_object(&context);
+		venture_config_set_module_enabled(config, "billing", TRUE);
+		venture_config_set_module_enabled(config, "quotes", TRUE);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -430,6 +505,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/postgresql", test_postgresql);
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
 	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
+	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);

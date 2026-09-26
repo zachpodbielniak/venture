@@ -59,7 +59,9 @@ static const VentureFieldDecl quote_fields[] = {
 	VENTURE_FIELD_MONEY("subtotal", "Subtotal", NULL),
 	VENTURE_FIELD_MONEY("discount", "Discount", NULL),
 	VENTURE_FIELD_MONEY("tax", "Tax", NULL),
-	VENTURE_FIELD_MONEY("total", "Total", NULL)
+	VENTURE_FIELD_MONEY("total", "Total", NULL),
+	VENTURE_FIELD_REF("subscription-id", "Started subscription", "Set by Start subscription on an accepted quote",
+		"customer_subscription", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureQuote, venture_quote, quote_fields,
 	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/quotes/compose");)
@@ -72,7 +74,9 @@ static const VentureFieldDecl quote_line_fields[] = {
 	VENTURE_FIELD_MONEY("unit-price", "Unit-price", NULL),
 	VENTURE_FIELD("discount-percent", "Discount percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("plan-price-id", "Subscription price", "A plan price started as a subscription once the quote is accepted; the quantity is its seats",
+		"plan_price", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureQuoteLine, venture_quote_line, quote_line_fields)
 
@@ -106,7 +110,9 @@ static const VentureFieldDecl quote_action_fields[] = {
 	VENTURE_FIELD("expected-version", "Expected version", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("accepted-by", "Accepted by", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("reason", "Reason", NULL, VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("result-quote-id", "Result-quote", NULL, "quote", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("result-quote-id", "Result-quote", NULL, "quote", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("result-subscription-id", "Started subscription", "Set by start-subscription",
+		"customer_subscription", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureQuoteAction, venture_quote_action, quote_action_fields)
 

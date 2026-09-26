@@ -565,6 +565,163 @@ test_cli(Fixture *f, gconstpointer data)
 	}
 }
 
+/* Runs venturectl against the fixture's server; returns its stdout. */
+static gchar *
+run_cli(Fixture *f, const gchar *const *extra, gboolean *ok)
+{
+	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_autoptr(GPtrArray) argv = g_ptr_array_new();
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GError) error = NULL;
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	guint i;
+	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
+	g_ptr_array_add(argv, (gpointer)"build/debug/venturectl");
+	g_ptr_array_add(argv, (gpointer)"--server");
+	g_ptr_array_add(argv, f->url);
+	for (i = 0; extra[i] != NULL; i++)
+		g_ptr_array_add(argv, (gpointer)extra[i]);
+	g_ptr_array_add(argv, NULL);
+	child = g_subprocess_launcher_spawnv(launcher, (const gchar *const *)argv->pdata, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
+	while (!result.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_test_message("venturectl stderr: %s", result.err != NULL ? result.err : "");
+	*ok = g_subprocess_get_successful(child);
+	g_free(result.err);
+	return result.out;
+}
+
+static gint64
+fixture_company(Fixture *f)
+{
+	g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+	gint64 company = 0;
+	g_object_get(sub, "company-id", &company, NULL);
+	return company;
+}
+
+static gint64
+fixture_price(Fixture *f)
+{
+	g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+	gint64 price = 0;
+	g_object_get(sub, "plan-price-id", &price, NULL);
+	return price;
+}
+
+static void
+quote_act(Fixture *f, gint64 quote, const gchar *verb)
+{
+	g_autoptr(VentureEntity) current = venture_database_get(f->database, VENTURE_TYPE_QUOTE, quote, NULL);
+	g_autoptr(VentureQuoteAction) act = venture_quote_action_new();
+	g_object_set(act, "quote-id", quote, "action", verb, "expected-version", venture_entity_get_version(current),
+		"accepted-by", "Alex Buyer", NULL);
+	save(f, VENTURE_ENTITY(act));
+}
+
+/*
+ * An accepted quote with a plan line offers Start subscription on its
+ * page, venturectl starts it, and then each page names the other: the
+ * quote "Started subscription", the subscription "From quote". If this
+ * regresses, the one-step handoff is only reachable from C, or the two
+ * records stop saying where each came from.
+ */
+static void
+test_quote_subscription(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureQuote) quote = venture_quote_new();
+	g_autoptr(VentureQuoteLine) line = venture_quote_line_new();
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autofree gchar *page = NULL, *path = NULL, *out = NULL, *sub_path = NULL;
+	gchar *id_text;
+	gint64 quote_id, subscription_id = 0;
+	gboolean ok = FALSE;
+	(void)data;
+	g_object_set(quote, "number", "Q-WEB", "company-id", fixture_company(f), "currency", "USD", NULL);
+	save(f, VENTURE_ENTITY(quote));
+	quote_id = venture_entity_get_id(VENTURE_ENTITY(quote));
+	g_object_set(line, "quote-id", quote_id, "description", "Starter plan", "plan-price-id", fixture_price(f),
+		"quantity", (gint64)1, NULL);
+	save(f, VENTURE_ENTITY(line));
+	quote_act(f, quote_id, "send");
+	quote_act(f, quote_id, "accept");
+	path = g_strdup_printf("/e/quote/%" G_GINT64_FORMAT, quote_id);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	id_text = g_strdup_printf("action=\"/quotes/%" G_GINT64_FORMAT "/start-subscription\"", quote_id);
+	g_assert_nonnull(strstr(page, id_text));
+	g_free(id_text);
+	id_text = g_strdup_printf("%" G_GINT64_FORMAT, quote_id);
+	{
+		const gchar *argv[] = { "quote", "start-subscription", id_text, NULL };
+		out = run_cli(f, argv, &ok);
+	}
+	g_free(id_text);
+	g_assert_true(ok);
+	g_assert_nonnull(strstr(out, "result_subscription_id"));
+	stored = venture_database_get(f->database, VENTURE_TYPE_QUOTE, quote_id, NULL);
+	g_object_get(stored, "subscription-id", &subscription_id, NULL);
+	g_assert_cmpint(subscription_id, >, 0);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Started subscription"));
+	sub_path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, subscription_id);
+	g_assert_nonnull(strstr(page, sub_path));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", sub_path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "From quote"));
+	g_assert_nonnull(strstr(page, "Q-WEB"));
+}
+
+/*
+ * Usage is recorded through the generic REST create and the typed CLI
+ * verb, a repeated key is refused, and the subscription page says the
+ * period's usage so far. If this regresses, `billing usage` sends its
+ * numbers as strings the server refuses, or nobody can see what the next
+ * invoice will charge for.
+ */
+static void
+test_usage(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VenturePlanPrice) metered = venture_plan_price_new();
+	g_autoptr(VentureBillingRequest) action = venture_billing_request_new();
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureEntity) plan_price = venture_database_get(f->database, VENTURE_TYPE_PLAN_PRICE, fixture_price(f), NULL);
+	g_autofree gchar *body = NULL, *json = NULL, *page = NULL, *path = NULL, *out = NULL, *id_text = NULL;
+	gint64 plan = 0, sub = 0;
+	gboolean ok = FALSE;
+	(void)data;
+	g_object_get(plan_price, "plan-id", &plan, NULL);
+	g_object_set(metered, "plan-id", plan, "currency", "USD", "active", TRUE, "usage-unit", "API calls",
+		"included-units", (gint64)1000, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(metered), "amount", "30 USD", NULL));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(metered), "unit-amount", "0.01 USD", NULL));
+	save(f, VENTURE_ENTITY(metered));
+	g_object_set(action, "action", "start", "company-id", fixture_company(f),
+		"plan-price-id", venture_entity_get_id(VENTURE_ENTITY(metered)), "at", now, NULL);
+	save(f, VENTURE_ENTITY(action));
+	g_object_get(action, "subscription-id", &sub, NULL);
+	json = g_strdup_printf("{\"subscription_id\":%" G_GINT64_FORMAT ",\"quantity\":1240,\"idempotency_key\":\"rest-1\"}", sub);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/usage_records", "application/json", json, &body), <, 300);
+	id_text = g_strdup_printf("%" G_GINT64_FORMAT, sub);
+	{
+		const gchar *argv[] = { "billing", "usage", id_text, "quantity=10", "key=cli-1", NULL };
+		out = run_cli(f, argv, &ok);
+		g_assert_true(ok);
+		g_clear_pointer(&out, g_free);
+		out = run_cli(f, argv, &ok);
+		g_assert_false(ok);
+	}
+	path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, sub);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Usage this period"));
+	g_assert_nonnull(strstr(page, "1,250 API calls"));
+	g_assert_nonnull(strstr(page, "1,000 included"));
+	g_assert_nonnull(strstr(page, "$2.50"));
+}
+
 static void
 test_assistant_stale(Fixture *f, gconstpointer data)
 {
@@ -615,6 +772,8 @@ main(int argc, char **argv)
 	g_test_add("/billing-surfaces/plan-discounts", Fixture, NULL, setup, test_plan_discounts, teardown);
 	g_test_add("/billing-surfaces/staged", Fixture, NULL, setup, test_staged, teardown);
 	g_test_add("/billing-surfaces/cli", Fixture, NULL, setup, test_cli, teardown);
+	g_test_add("/billing-surfaces/quote-subscription", Fixture, NULL, setup, test_quote_subscription, teardown);
+	g_test_add("/billing-surfaces/usage", Fixture, NULL, setup, test_usage, teardown);
 	g_test_add("/billing-surfaces/assistant-stale", Fixture, NULL, setup, test_assistant_stale, teardown);
 	g_test_add("/billing-surfaces/report-days", Fixture, NULL, setup, test_report_days, teardown);
 	g_test_add("/billing-surfaces/cancel-buttons", Fixture, NULL, setup, test_cancel_buttons, teardown);

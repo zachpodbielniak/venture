@@ -304,6 +304,63 @@ period is billed on the day, as for a price with no trial. The invoice line
 names the plan, the price, the seats, the period and any discount, rather
 than "renewal".
 
+* Starting a subscription from a quote
+
+A quote line may name a plan price (=plan_price_id=); its =quantity= is the
+seats. The line is priced at the plan price, takes no discount or tax of its
+own (the subscription's invoices would not charge them), a flat price takes
+one seat, and a quote proposes one subscription. Accepting the quote leaves
+that line out of the acceptance invoice -- the subscription's first invoice
+bills it -- and a quote that is only a subscription issues no acceptance
+invoice at all.
+
+On the accepted quote, *Start subscription* (quote action
+=start-subscription=; =POST /quotes/:id/start-subscription=,
+=POST /api/v1/quotes/:id/start-subscription=, =venturectl quote
+start-subscription ID=) runs this service's own =start= through
+=venture_billing_service_execute()= for the quote's customer and contact,
+with the line's price and seats, now. The start instruction carries
+=quote_id=; the service refuses a quote that is not accepted, is for another
+customer, or already started a subscription -- by its own =subscription_id=
+or because a subscription already names it -- so a second start fails
+whether it comes from the quote or around it. The subscription records
+=quote_id=, the quote records =subscription_id= and the action its
+=result_subscription_id=. The quote page says "Started subscription ..." and
+the subscription page "From quote ...". A plan discount is not carried from
+a quote; add it on the subscription's plan instead. Whole-operation approval
+is taken before the quote's transaction when the start will issue an invoice.
+
+* Usage-based pricing
+
+A plan price is metered when it names a =usage_unit= ("API calls"); it then
+needs a =unit_amount= per unit in its own currency, and may include
+=included_units= each period. The base =amount= is still charged each period
+(it may be zero). A =usage_record= reports use: =subscription_id=, a positive
+whole =quantity=, =occurred_at= (now when empty) and an optional
+=idempotency_key=, unique per organization including deleted rows. A repeated
+key is refused as a conflict naming the first record, so a sender retrying a
+lost response is not counted twice. Usage is refused for a flat price, an
+ended subscription, or a time before the current period -- that period is
+already invoiced -- and billed usage cannot be edited, deleted or restored.
+
+At renewal the invoice charges the new period's base price in advance and
+the ended period's usage in arrears, as its own line on the same invoice:
+"240 API calls x $0.01 (1,240 used, 1,000 included), 2026-01-01 to
+2026-02-01". Usage is counted in [start, end), so a report at exactly the
+renewal instant belongs to the new period and is billed once. The charge is
+the whole count times the rate, rounded once, half to even, to the currency
+(1,235 calls at $0.001 is $1.24). The rate is the one in force at the end of
+the period, even when a scheduled change moves the price at that renewal.
+Usage within the included units adds no line; usage during a free trial is
+not charged; the plan discount applies to the base charge only.
+Known gap: a subscription cancelled (immediately or at period end) is not
+sent a final usage invoice for its last period.
+
+Record usage with =POST /api/v1/usage_records= (or =usage_record=) or
+=venturectl billing usage SUB quantity=N [key=K] [at=DATE]=, which sends the
+numbers as JSON integers. The subscription page shows the period's usage so
+far and what it adds up to.
+
 * Periods
 
 Every period is a whole number of calendar months --

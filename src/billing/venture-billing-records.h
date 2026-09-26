@@ -54,6 +54,20 @@ VENTURE_DECLARE_ENTITY(VenturePlanPrice, venture_plan_price, PLAN_PRICE)
  * venture_plan_price_new:
  * Returns: (transfer full): a billing plan_price record
  */
+/**
+ * venture_plan_price_is_metered:
+ * @self: a plan price
+ *
+ * Returns: whether the price charges for counted use as well as its amount
+ */
+gboolean venture_plan_price_is_metered(VenturePlanPrice *self);
+/**
+ * venture_billing_format_count:
+ * @count: a whole number of units
+ *
+ * Returns: (transfer full): @count with its thousands grouped, "1,240"
+ */
+gchar *venture_billing_format_count(gint64 count);
 #define VENTURE_TYPE_PLAN_DISCOUNT (venture_plan_discount_get_type())
 VENTURE_DECLARE_ENTITY(VenturePlanDiscount, venture_plan_discount, PLAN_DISCOUNT)
 /**
@@ -99,6 +113,12 @@ VENTURE_DECLARE_ENTITY(VentureBillingRequest, venture_billing_request, BILLING_R
 /**
  * venture_billing_request_new:
  * Returns: (transfer full): a stageable billing instruction
+ */
+#define VENTURE_TYPE_USAGE_RECORD (venture_usage_record_get_type())
+VENTURE_DECLARE_ENTITY(VentureUsageRecord, venture_usage_record, USAGE_RECORD)
+/**
+ * venture_usage_record_new:
+ * Returns: (transfer full): one report of a metered subscription's use
  */
 G_END_DECLS
 #endif

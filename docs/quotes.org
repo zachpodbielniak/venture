@@ -55,6 +55,12 @@ they are being saved.
 - =decline= requires a reason. =venture_quote_service_sweep()= expires sent
   quotes whose validity elapsed, within one exact organization.
 
+A line naming a plan price (=plan_price_id=) proposes a subscription: it is
+priced at the plan price, its quantity is the seats, it takes no discount or
+tax, and a quote has at most one. Acceptance leaves it out of the acceptance
+invoice, and =start-subscription= on the accepted quote starts it through the
+billing service -- once. See [[file:billing.org][SaaS billing]].
+
 A quote with =billing-mode=progress= is accepted without issuing the full invoice; progress slices are billed through =VentureProgressService=.
 
 The invoice number is =QUOTE-= followed by the quote number. Existing
@@ -77,6 +83,7 @@ venturectl quote send 1
 venturectl quote accept 1 'by=Alex Buyer'
 venturectl quote decline 1 'reason=Budget deferred'
 venturectl quote revise 1
+venturectl quote start-subscription 1
 #+end_src
 
 REST actions are =POST /api/v1/quotes/:id/send=, =accept=, =decline= and

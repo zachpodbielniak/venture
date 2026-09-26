@@ -317,6 +317,115 @@ price(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GError *
 	return TRUE;
 }
 
+/*
+ * A line naming a plan price is a subscription the quote proposes: its
+ * quantity is the seats and its price is the plan's, so the proposal says
+ * what the subscription will charge. It carries no discount or tax of its
+ * own because the subscription's invoices would not charge them, and a
+ * quote proposes one subscription, which is what Start subscription
+ * starts.
+ */
+static gboolean
+plan_line(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GError **error)
+{
+	g_autoptr(VentureEntity) plan_price = NULL;
+	g_autoptr(GPtrArray) siblings = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autofree gchar *currency = NULL;
+	g_autofree gchar *price_currency = NULL;
+	gint64 org = venture_entity_get_organization_id(q);
+	gboolean active = FALSE, per_seat = FALSE;
+	guint i;
+	if (integer(line, "plan-price-id") == 0) return TRUE;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "plan_price") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription line needs the billing module");
+	plan_price = get(self, VENTURE_TYPE_PLAN_PRICE, org, integer(line, "plan-price-id"), error);
+	if (plan_price == NULL) return FALSE;
+	g_object_get(plan_price, "active", &active, "per-seat", &per_seat, "amount", &amount, "currency", &price_currency, NULL);
+	g_object_get(q, "currency", &currency, NULL);
+	g_object_get(line, "unit-price", &unit, NULL);
+	if (!active || amount == NULL)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "that plan price is not offered");
+	if (g_strcmp0(currency, price_currency) != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "the plan price is in another currency than the quote");
+	if (integer(line, "discount-percent") != 0 || integer(line, "tax-percent") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"a subscription line takes no discount or tax of its own; its invoices charge the plan price");
+	if (integer(line, "quantity") < 1 || (!per_seat && integer(line, "quantity") != 1))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"a subscription line's quantity is its seats: one or more for a per-seat price, one otherwise");
+	if (unit != NULL && !venture_money_equal(unit, amount))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription line is priced at its plan price");
+	siblings = find(self, VENTURE_TYPE_QUOTE_LINE, org, "quote-id", venture_entity_get_id(q), error);
+	if (siblings == NULL) return FALSE;
+	for (i = 0; i < siblings->len; i++)
+	{
+		VentureEntity *other = g_ptr_array_index(siblings, i);
+		if (venture_entity_get_id(other) != venture_entity_get_id(line) && integer(other, "plan-price-id") != 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "a quote proposes one subscription; it already has a plan line");
+	}
+	g_object_set(line, "unit-price", amount, NULL);
+	return TRUE;
+}
+
+/* The quote's plan line, or NULL with no error when it has none. */
+static VentureEntity *
+find_plan_line(VentureQuoteService *self, gint64 org, gint64 quote_id, GError **error)
+{
+	g_autoptr(GPtrArray) lines = find(self, VENTURE_TYPE_QUOTE_LINE, org, "quote-id", quote_id, error);
+	guint i;
+	if (lines == NULL) return NULL;
+	for (i = 0; i < lines->len; i++)
+		if (integer(g_ptr_array_index(lines, i), "plan-price-id") != 0)
+			return g_object_ref(g_ptr_array_index(lines, i));
+	return NULL;
+}
+
+/*
+ * Start subscription is the billing service's own start, with the line's
+ * price and seats and the quote's customer, so every rule of a start
+ * applies. The billing service also refuses a quote that already has a
+ * subscription, which catches a start made around the quote.
+ */
+static gboolean
+start_subscription(VentureQuoteService *self, VentureEntity *q, VentureEntity *request, GDateTime *now,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureBillingRequest) start = NULL;
+	g_autoptr(GError) missing = NULL;
+	gint64 org = venture_entity_get_organization_id(q);
+	gint64 subscription_id = 0;
+	if (integer(q, "subscription-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription was already started from this quote");
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "customer_subscription") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "starting a subscription needs the billing module");
+	line = find_plan_line(self, org, venture_entity_get_id(q), &missing);
+	if (line == NULL)
+	{
+		if (missing != NULL)
+		{
+			g_propagate_error(error, g_steal_pointer(&missing));
+			return FALSE;
+		}
+		return refuse(error, VENTURE_ERROR_VALIDATION, "the quote has no line naming a plan price");
+	}
+	if (integer(q, "company-id") == 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription needs the quote's customer");
+	start = venture_billing_request_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(start), org);
+	g_object_set(start, "action", "start", "company-id", integer(q, "company-id"),
+		"contact-id", integer(q, "contact-id"), "plan-price-id", integer(line, "plan-price-id"),
+		"seats", integer(line, "quantity"), "at", now, "quote-id", venture_entity_get_id(q), NULL);
+	if (!venture_billing_service_execute(venture_billing_service_get(self->database), start, actor, error))
+		return FALSE;
+	g_object_get(start, "subscription-id", &subscription_id, NULL);
+	g_object_set(q, "subscription-id", subscription_id, NULL);
+	g_object_set(request, "result-subscription-id", subscription_id, NULL);
+	return TRUE;
+}
+
 static gboolean
 save_draft(VentureQuoteService *self, VentureEntity *r, const VentureActor *actor, GError **error)
 {
@@ -340,10 +449,11 @@ save_draft(VentureQuoteService *self, VentureEntity *r, const VentureActor *acto
 		if (previous == NULL)
 		{
 			g_object_set(r, "revision", (gint64)1, "parent-id", (gint64)0,
-				"invoice-id", (gint64)0, "acceptance-token", NULL, "issued-at", NULL, NULL);
+				"invoice-id", (gint64)0, "subscription-id", (gint64)0, "acceptance-token", NULL, "issued-at", NULL, NULL);
 		}
 		else if (integer(r, "revision") != integer(previous, "revision") ||
-			integer(r, "parent-id") != integer(previous, "parent-id") || integer(r, "invoice-id") != 0)
+			integer(r, "parent-id") != integer(previous, "parent-id") || integer(r, "invoice-id") != 0 ||
+			integer(r, "subscription-id") != 0)
 		{
 			refuse(error, VENTURE_ERROR_VALIDATION, "revision and handoff fields are service-owned");
 			goto done;
@@ -359,7 +469,7 @@ save_draft(VentureQuoteService *self, VentureEntity *r, const VentureActor *acto
 			refuse(error, VENTURE_ERROR_VALIDATION, "lines of sent proposals are frozen; moving lines is refused");
 			goto done;
 		}
-		if (!price(self, r, q, error) || !write_record(self, r, actor, error) ||
+		if (!plan_line(self, r, q, error) || !price(self, r, q, error) || !write_record(self, r, actor, error) ||
 			!compute(self, q, error) || !write_record(self, q, actor, error)) goto done;
 	}
 	ok = TRUE;
@@ -416,6 +526,8 @@ event(VentureQuoteService *self, VentureEntity *q, const gchar *kind, VentureEnt
 	return write_record(self, r, actor, error);
 }
 
+static gboolean win_deal(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const VentureActor *actor, GError **error);
+
 static gboolean
 handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const VentureActor *actor, GError **error)
 {
@@ -428,10 +540,20 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	g_autoptr(GDateTime) due = NULL;
 	g_autoptr(GDateTime) issue_date = NULL;
 	gint64 org = venture_entity_get_organization_id(q);
-	guint i;
+	guint i, one_off = 0;
 	g_object_get(q, "billing-mode", &mode, NULL);
 	if (g_strcmp0(mode, "progress") == 0)
 		return TRUE;
+	lines = find(self, VENTURE_TYPE_QUOTE_LINE, org, "quote-id", venture_entity_get_id(q), error);
+	if (lines == NULL) return FALSE;
+	/* A plan line is billed by the subscription it starts, from its first
+	 * invoice; invoicing it here too would charge the first period twice.
+	 * A quote that is only a subscription issues no acceptance invoice. */
+	for (i = 0; i < lines->len; i++)
+		if (integer(g_ptr_array_index(lines, i), "plan-price-id") == 0)
+			one_off++;
+	if (one_off == 0)
+		return win_deal(self, q, now, actor, error);
 	/* The quote acceptance is an instant; the invoice is issued for a
 	 * calendar day in the business zone so an ordinary same-day receipt
 	 * is not backdated. */
@@ -444,14 +566,14 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 		"contact-id", integer(q, "contact-id"), "venture-id", integer(q, "venture-id"),
 		"issued-at", issue_date, "terms", terms, NULL);
 	if (!venture_database_save(self->database, invoice, actor, error)) return FALSE;
-	lines = find(self, VENTURE_TYPE_QUOTE_LINE, org, "quote-id", venture_entity_get_id(q), error);
-	if (lines == NULL) return FALSE;
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *l = g_ptr_array_index(lines, i);
-		g_autoptr(VentureEntity) r = VENTURE_ENTITY(venture_invoice_line_new());
+		g_autoptr(VentureEntity) r = NULL;
 		g_autofree gchar *description = NULL;
 		g_autoptr(VentureMoney) unit = NULL;
+		if (integer(l, "plan-price-id") != 0) continue;
+		r = VENTURE_ENTITY(venture_invoice_line_new());
 		g_object_get(l, "description", &description, "unit-price", &unit, NULL);
 		venture_entity_set_organization_id(r, org);
 		g_object_set(r, "invoice-id", venture_entity_get_id(invoice), "description", description,
@@ -462,6 +584,15 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	}
 	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
 		VENTURE_INVOICE(invoice), "sent", issue_date, actor, error)) return FALSE;
+	g_object_set(q, "invoice-id", venture_entity_get_id(invoice), NULL);
+	return win_deal(self, q, now, actor, error);
+}
+
+/* Acceptance wins the quote's deal, invoice or not. */
+static gboolean
+win_deal(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const VentureActor *actor, GError **error)
+{
+	gint64 org = venture_entity_get_organization_id(q);
 	if (integer(q, "deal-id") != 0)
 	{
 		g_autoptr(VentureEntity) deal = get(self, VENTURE_TYPE_DEAL, org, integer(q, "deal-id"), error);
@@ -495,7 +626,6 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 			if (!venture_database_save(self->database, deal, actor, error)) return FALSE;
 		}
 	}
-	g_object_set(q, "invoice-id", venture_entity_get_id(invoice), NULL);
 	return TRUE;
 }
 
@@ -513,7 +643,7 @@ revise(VentureQuoteService *self, VentureEntity *q, VentureEntity *request, cons
 	venture_entity_set_organization_id(next, venture_entity_get_organization_id(q));
 	g_object_set(next, "number", new_number, "revision", revision, "parent-id", venture_entity_get_id(q),
 		"status", VENTURE_QUOTE_DRAFT, "issued-at", NULL, "valid-until", NULL,
-		"acceptance-token", NULL, "invoice-id", (gint64)0, NULL);
+		"acceptance-token", NULL, "invoice-id", (gint64)0, "subscription-id", (gint64)0, NULL);
 	if (!write_record(self, next, actor, error)) return FALSE;
 	lines = find(self, VENTURE_TYPE_QUOTE_LINE, venture_entity_get_organization_id(q), "quote-id", venture_entity_get_id(q), error);
 	if (lines == NULL) return FALSE;
@@ -621,6 +751,11 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		}
 		if (!event(self, q, verb, request, method, ip, now, actor, error) || !handoff(self, q, now, actor, error)) goto done;
 		g_object_set(q, "status", VENTURE_QUOTE_ACCEPTED, NULL);
+	}
+	else if (g_strcmp0(verb, "start-subscription") == 0 && state(q) == VENTURE_QUOTE_ACCEPTED)
+	{
+		if (!start_subscription(self, q, request, now, actor, error) ||
+			!event(self, q, verb, request, method, ip, now, actor, error)) goto done;
 	}
 	else if (g_strcmp0(verb, "decline") == 0 && state(q) == VENTURE_QUOTE_SENT)
 	{
@@ -761,6 +896,17 @@ done:
 	return FALSE;
 }
 
+/* Whether starting the quote's subscription issues an invoice now. */
+static gboolean
+subscription_posts(VentureQuoteService *self, VentureEntity *q)
+{
+	g_autoptr(VentureEntity) line = find_plan_line(self, venture_entity_get_organization_id(q), venture_entity_get_id(q), NULL);
+	g_autoptr(VentureEntity) plan = NULL;
+	if (line == NULL) return FALSE;
+	plan = get(self, VENTURE_TYPE_PLAN_PRICE, venture_entity_get_organization_id(q), integer(line, "plan-price-id"), NULL);
+	return plan == NULL || integer(plan, "trial-days") == 0;
+}
+
 /* Bind consent before this operation creates derived rows or enters nested
  * transactions. All generated financial effects share this root proposal. */
 gboolean
@@ -783,7 +929,7 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 	if (!VENTURE_IS_QUOTE_ACTION(request))
 		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
 	g_object_get(request, "action", &verb, NULL);
-	if (g_strcmp0(verb, "accept") != 0)
+	if (g_strcmp0(verb, "accept") != 0 && g_strcmp0(verb, "start-subscription") != 0)
 		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
 	quote = get(self, VENTURE_TYPE_QUOTE, venture_entity_get_organization_id(request), integer(request, "quote-id"), error);
 	if (quote == NULL)
@@ -791,7 +937,11 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 	g_object_get(quote, "billing-mode", &billing_mode, NULL);
 	/* Progress acceptance creates no invoice; its later billing operation
 	 * obtains consent when it actually posts the receivable. */
-	if (g_strcmp0(billing_mode, "progress") == 0)
+	if (g_strcmp0(verb, "accept") == 0 && g_strcmp0(billing_mode, "progress") == 0)
+		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
+	/* A subscription's first invoice posts inside the quote's transaction,
+	 * and consent must precede it; a start into a free trial posts nothing. */
+	if (g_strcmp0(verb, "start-subscription") == 0 && !subscription_posts(self, quote))
 		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
 	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
 	g_variant_builder_add(&arguments, "{sv}", "method", g_variant_new_maybe(G_VARIANT_TYPE_STRING, method != NULL ? g_variant_new_string(method) : NULL));

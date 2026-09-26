@@ -517,6 +517,13 @@ new price and moving customers to it (the plan page's "Move its N
 customers to..." does all or none). MRR counts a plan discount while it
 covers the period being billed.
 
+`billing usage SUB quantity=N [key=K] [at=DATE]` reports metered use for a
+subscription whose price has a `usage_unit` (typed JSON; the same as
+`create usage_record`). Reuse a `key` when retrying: a repeat is refused as a
+conflict, not counted twice. Usage before the current period, on a flat price
+or on an ended subscription is refused. At renewal the ended period's usage
+over `included_units` is a line on the renewal invoice, at `unit_amount`.
+
 `billing renew --as-of DATE [--dry-run]` sweeps due periods;
 `billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
 Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
@@ -599,8 +606,13 @@ the public `/book/<slug>` page, which books a contact and a meeting.
 ### Commercial quote actions
 
 `quote send ID`, `quote accept ID 'by=Full Name'`,
-`quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
+`quote decline ID 'reason=Explanation'`, `quote revise ID` and
+`quote start-subscription ID` call the quote
 service. Acceptance creates and issues the invoice in the same transaction unless `billing_mode=progress`.
+A `quote_line` with `plan_price_id` (quantity = seats, no discount or tax)
+is left off that invoice; `quote start-subscription ID` on the accepted quote
+starts the subscription once and returns `result_subscription_id`. A second
+start is refused.
 `compose quote JSON` and `compose invoice JSON` create a draft (or send) in one call.
 For a staged action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'`; obtain the quote's current

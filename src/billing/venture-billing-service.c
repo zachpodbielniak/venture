@@ -366,6 +366,44 @@ discount_take(VentureEntity *discount, const VentureMoney *amount, GError **erro
 }
 
 /*
+ * A start naming a quote is that accepted quote's subscription, for its
+ * customer, and there is only one: the quote's own record says whether it
+ * started one, and a subscription already naming it -- a start made
+ * around the quote -- is caught as well.
+ */
+static gboolean
+quote_available(VentureBillingService *self, gint64 quote_id, gint64 company_id, gint64 org, GError **error)
+{
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	gint status = 0;
+	gint64 taken;
+	if (quote_id == 0)
+		return TRUE;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "quote") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription from a quote needs the quotes module");
+	quote = load(self, VENTURE_TYPE_QUOTE, quote_id, org, error);
+	if (quote == NULL)
+		return FALSE;
+	g_object_get(quote, "status", &status, NULL);
+	if (status != VENTURE_QUOTE_ACCEPTED)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "only an accepted quote starts a subscription");
+	if (number(quote, "company-id") != company_id)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "the quote is for another customer");
+	query = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+	venture_query_set_organization(query, org);
+	venture_query_set_include_deleted(query, TRUE);
+	if (!venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, quote_id, error))
+		return FALSE;
+	taken = venture_database_count(self->database, query, error);
+	if (taken < 0)
+		return FALSE;
+	if (taken > 0 || number(quote, "subscription-id") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription was already started from this quote");
+	return TRUE;
+}
+
+/*
  * @amount less the subscription's discount, when it still covers this
  * invoice; counts the invoice against it.
  */
@@ -575,6 +613,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 		"quantity", 1.0, "unit-price", amount, "product-id", number(price, "product-id"),
 		"tax-code-id", number(price, "tax-code-id"), NULL);
 	if (!venture_database_save(self->database, line, actor, error) ||
+		!venture_billing_usage_bill(self->database, sub, invoice, period_start, actor, error) ||
 		!venture_settlement_service_transition(venture_settlement_service_get(self->database),
 			VENTURE_INVOICE(invoice), "sent", at, actor, error))
 		return FALSE;
@@ -859,7 +898,8 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		/* Billing from the first day, when the customer wants to pay now. */
 		if (flag(request, "skip-trial"))
 			trial = 0;
-		if (!discount_available(self, number(request, "discount-id"), price, org, at, error))
+		if (!discount_available(self, number(request, "discount-id"), price, org, at, error) ||
+			!quote_available(self, number(request, "quote-id"), number(request, "company-id"), org, error))
 			return FALSE;
 		state = trial > 0 ? 0 : 1;
 		sub = new_record(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, org);
@@ -869,7 +909,8 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		g_object_set(sub, "company-id", number(request, "company-id"), "contact-id", number(request, "contact-id"),
 			"plan-price-id", venture_entity_get_id(price), "external-id", external,
 			"current-period-start", start, "current-period-end", end, "trial-end", trial > 0 ? end : NULL, "billing-anchor", trial > 0 ? end : start,
-			"discount-id", number(request, "discount-id"), "discount-periods-used", (gint64)0, NULL);
+			"discount-id", number(request, "discount-id"), "discount-periods-used", (gint64)0,
+			"quote-id", number(request, "quote-id"), NULL);
 		old_seats = 0;
 		old_price = 0;
 		old_state = 0;
@@ -1438,8 +1479,11 @@ venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 	*handled = FALSE;
 	if (type != VENTURE_TYPE_CUSTOMER_SUBSCRIPTION && type != VENTURE_TYPE_SUBSCRIPTION_EVENT &&
 		type != VENTURE_TYPE_BILLING_NOTICE && type != VENTURE_TYPE_BILLING_REQUEST &&
-		type != VENTURE_TYPE_PLAN_PRICE && type != VENTURE_TYPE_PLAN && type != VENTURE_TYPE_DUNNING_STEP)
+		type != VENTURE_TYPE_PLAN_PRICE && type != VENTURE_TYPE_PLAN && type != VENTURE_TYPE_DUNNING_STEP &&
+		type != VENTURE_TYPE_USAGE_RECORD)
 		return TRUE;
+	if (type == VENTURE_TYPE_USAGE_RECORD)
+		return venture_billing_usage_check_save(database, record, error);
 	self = venture_billing_service_get(database);
 	if (self->writing == record)
 	{
@@ -1477,6 +1521,8 @@ venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 			return FALSE;
 		if (number(record, "trial-days") < 0 || number(record, "trial-days") > 366)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "trial days must be between zero and 366");
+		if (!venture_billing_price_check_metering(record, error))
+			return FALSE;
 	}
 	if (type == VENTURE_TYPE_DUNNING_STEP && number(record, "day-offset") < 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "dunning offset must be nonnegative");
@@ -1487,6 +1533,8 @@ gboolean
 venture_billing_check_removal(VentureDatabase *database, VentureEntity *record, GError **error)
 {
 	GType type = G_OBJECT_TYPE(record);
+	if (type == VENTURE_TYPE_USAGE_RECORD)
+		return venture_billing_usage_check_removal(database, record, error);
 	if (type == VENTURE_TYPE_PLAN_PRICE)
 	{
 		gboolean used;

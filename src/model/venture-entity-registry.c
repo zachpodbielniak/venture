@@ -753,6 +753,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_billing_notice_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_billing_request_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_customer_payment_method_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_usage_record_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_client_project_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_project_rate_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_project_time_get_type, VENTURE_DATA_CLASS_TENANT },

@@ -49,7 +49,17 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 	money_field(price, "amount", "50 USD"); save(f, price);
 	g_object_set(action, "action", "start", "company-id", f->customer_id,
 		"plan-price-id", venture_entity_get_id(price), "seats", (gint64)1, NULL);
-	money_field(action, "at", data && !g_strcmp0(data, "sweep") ? "2026-07-01" : "2026-09-01"); save(f, action);
+	if (data && !g_strcmp0(data, "renewal-collection"))
+	{
+		/* One period ended a day ago, so exactly one renewal is due now. */
+		g_autoptr(GDateTime) today = venture_time_now();
+		g_autoptr(GDateTime) month_ago = g_date_time_add_months(today, -1);
+		g_autoptr(GDateTime) began = g_date_time_add_days(month_ago, -1);
+		g_object_set(action, "at", began, NULL);
+	}
+	else
+		money_field(action, "at", data && !g_strcmp0(data, "sweep") ? "2026-07-01" : "2026-09-01");
+	save(f, action);
 	g_object_get(action, "subscription-id", &subscription_id, NULL);
 	if (data && !g_strcmp0(data, "action"))
 	{
@@ -153,6 +163,14 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 		g_autofree gchar *method = NULL, *status = NULL, *evidence = NULL;
 		g_object_get(stored, "status", &status, "payment-method-id", &method, "evidence", &evidence, NULL);
 		g_assert_cmpstr(status, ==, "active"); g_assert_cmpstr(method, ==, "pm_offline");
+		{
+			/* Which saved method collects is kept from the verified
+			 * evidence -- the last four digits only -- so the subscription
+			 * can say where its money comes from. */
+			g_autofree gchar *label = NULL;
+			g_object_get(stored, "method-label", &label, NULL);
+			g_assert_cmpstr(label, ==, data && !g_strcmp0(data, "bank") ? "bank account ending 6789" : "card ending 4242");
+		}
 		g_assert_nonnull(evidence); g_assert_null(strstr(evidence, "client_secret"));
 		g_test_message("Hosted permission verified: status=%s; retained minimal proof excludes client secrets", status);
 		{
@@ -268,6 +286,53 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 			g_test_message("Billing enabled live: provider payment requests=%u; stopping timer", ((FakeTransport *)transport)->payment_calls);
 			venture_stripe_collection_stop(f->context);
 			g_assert_null(g_object_get_data(G_OBJECT(f->context), "stripe-collection-source"));
+		}
+		if (data && !g_strcmp0(data, "renewal-collection"))
+		{
+			/*
+			 * A renewal for a customer with verified permission is renewed
+			 * and submitted for collection by the scheduled check, through
+			 * the same collect path as the first invoice, and the
+			 * subscription page says whether it is waiting or was collected
+			 * from which card. If this regresses, renewals sit unpaid with a
+			 * card on file, or nobody can tell a collected invoice from one
+			 * somebody paid by hand.
+			 */
+			g_autoptr(GDateTime) now = venture_time_now(), later = g_date_time_add_minutes(now, 2);
+			g_autoptr(GPtrArray) attempts = NULL, invoices = NULL;
+			g_autoptr(VentureWebServer) server = NULL;
+			g_autofree gchar *directory = NULL, *page = NULL;
+			g_autofree gchar *path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, subscription_id);
+			gint64 renewal_invoice = 0, collected = 0;
+			((FakeTransport *)transport)->reservation_database = f->database;
+			server = start_server(f, &directory);
+			g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &page), ==, 200);
+			g_assert_nonnull(strstr(page, "Waiting for payment"));
+			g_assert_nonnull(strstr(page, "it will be collected automatically from card ending 4242"));
+			g_assert_cmpint(venture_stripe_service_collect_due(service, now, 1, NULL, &error), ==, 1);
+			g_assert_no_error(error);
+			invoices = rows(f, "invoice"); g_assert_cmpuint(invoices->len, ==, 2);
+			renewal_invoice = venture_entity_get_id(g_ptr_array_index(invoices, 1));
+			g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);
+			g_assert_true(automatic_fixture_event(service, (FakeTransport *)transport, "evt_first_paid", TRUE, &error));
+			g_assert_no_error(error);
+			g_assert_cmpint(venture_stripe_service_collect_due(service, later, 1, NULL, &error), ==, 1);
+			g_assert_no_error(error);
+			g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 2);
+			attempts = rows(f, "stripe_checkout"); g_assert_cmpuint(attempts->len, ==, 2);
+			g_object_get(g_ptr_array_index(attempts, 1), "invoice-id", &collected, NULL);
+			g_assert_cmpint(collected, ==, renewal_invoice);
+			g_clear_pointer(&page, g_free);
+			g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &page), ==, 200);
+			g_assert_nonnull(strstr(page, "collection from card ending 4242 is in progress"));
+			g_assert_true(automatic_fixture_event(service, (FakeTransport *)transport, "evt_renewal_paid", TRUE, &error));
+			g_assert_no_error(error);
+			g_clear_pointer(&page, g_free);
+			g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &page), ==, 200);
+			g_assert_nonnull(strstr(page, "Collected automatically from card ending 4242"));
+			venture_web_server_stop(server); venture_test_remove_tree(directory);
+			g_test_message("Renewal invoice %" G_GINT64_FORMAT " collected automatically; provider payment requests=%u",
+				renewal_invoice, ((FakeTransport *)transport)->payment_calls);
 		}
 		if (data && !g_strcmp0(data, "reconcile"))
 		{

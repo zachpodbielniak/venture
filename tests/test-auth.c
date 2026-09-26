@@ -1496,6 +1496,9 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/invoice/1/actions/payment_link", "/api/v1/stripe_payment_link/1/actions/revoke",
 			"/api/v1/stripe_event/1/actions/retry", "/billing/subscriptions/start", "/bills/compose",
 			"/tax-rates/new", "/plans/new", "/plans/1/prices", "/plans/1/discounts", "/plans/1/prices/1/move"
+			"/tax-rates/new", "/plans/new", "/plans/1/prices", "/plans/1/discounts",
+			"/quotes/1/start-subscription", "/api/v1/quotes/1/start-subscription",
+			"/api/v1/usage_records", "/api/v1/usage_record"
 		};
 		static const gchar *const pages[] = { "/billing/subscriptions/new", "/invoices/compose?repeat=1",
 			"/invoices/1/pdf", "/payments/1/receipt",
@@ -1509,6 +1512,7 @@ test_auth_api_refuses_anonymous_requests(
 			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups",
 			"/billing/subscriptions/start", "/bills/compose", "/tax-rates/new", "/plans/new", "/plans/1/prices", "/plans/1/discounts",
 			"/plans/1/prices/1/move", NULL
+			"/quotes/1/start-subscription", NULL
 		};
 		for (i = 0; i < G_N_ELEMENTS(posts); i++)
 		{

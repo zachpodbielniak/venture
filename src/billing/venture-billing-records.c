@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <string.h>
 GType
 venture_billing_interval_get_type(void)
 {
@@ -131,18 +132,28 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlan, venture_plan, plan_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Plan", "Plans");
 	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/plans/new");)
 
-/* A price reads as what it charges: "$30.00 a month per seat". */
+/* A price reads as what it charges: "$30.00 a month per seat", and a
+ * metered one says what it counts: "... + API calls at $0.01". */
 static gchar *
 plan_price_display_name(VentureEntity *self)
 {
 	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) unit_amount = NULL;
 	g_autofree gchar *text = NULL;
+	g_autofree gchar *unit = NULL;
 	gint interval = 0;
 	gboolean per_seat = FALSE;
-	g_object_get(self, "amount", &amount, "interval", &interval, "per-seat", &per_seat, NULL);
+	g_object_get(self, "amount", &amount, "interval", &interval, "per-seat", &per_seat,
+		"usage-unit", &unit, "unit-amount", &unit_amount, NULL);
 	if (amount == NULL)
 		return g_strdup_printf("Price #%" G_GINT64_FORMAT, venture_entity_get_id(self));
 	text = venture_money_to_display_string(amount, TRUE);
+	if (venture_plan_price_is_metered(VENTURE_PLAN_PRICE(self)) && unit_amount != NULL)
+	{
+		g_autofree gchar *rate = venture_money_to_display_string(unit_amount, TRUE);
+		return g_strdup_printf("%s %s%s + %s at %s", text, venture_billing_interval_phrase(interval),
+			per_seat ? " per seat" : "", unit, rate);
+	}
 	return g_strdup_printf("%s %s%s", text, venture_billing_interval_phrase(interval), per_seat ? " per seat" : "");
 }
 static const VentureFieldDecl plan_price_fields[] = {
@@ -156,6 +167,11 @@ static const VentureFieldDecl plan_price_fields[] = {
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog mapping for hosted collection", "product", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("tax-code-id", "Tax", "Rate charged on each invoice; empty uses the customer's address, as any invoice line does",
 		"tax_code", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("usage-unit", "Usage unit", "Metered prices: what is counted, such as API calls; empty for a flat price",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("unit-amount", "Price per unit", "Metered prices: charged for each unit used beyond those included"),
+	VENTURE_FIELD("included-units", "Included units", "Metered prices: units each period includes at no extra charge",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlanPrice, venture_plan_price, plan_price_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = plan_price_display_name;
@@ -240,6 +256,7 @@ static const VentureFieldDecl customer_subscription_fields[] = {
 	VENTURE_FIELD_REF("discount-id", "Discount", "Taken off the invoices it covers", "plan_discount", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("discount-periods-used", "Discounted invoices", "How many invoices the discount has covered so far",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_REF("quote-id", "From quote", "The accepted quote this subscription was started from", "quote", VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCustomerSubscription, venture_customer_subscription, customer_subscription_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Subscription", NULL);
@@ -298,6 +315,7 @@ static const VentureFieldDecl billing_request_fields[] = {
 	VENTURE_FIELD_REF("discount-id", "Discount", "Start: a discount the plan offers", "plan_discount", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("skip-trial", "Skip the free trial", "Start: bill the first period now even when the price has a trial",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("quote-id", "Quote", "Start: the accepted quote the subscription comes from", "quote", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("expected-version", "Expected version", "Required by staged actions on an existing subscription", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", "Service result", "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("proration-amount", "Proration", "Service result"),
@@ -313,3 +331,71 @@ static const VentureFieldDecl payment_method_fields[] = {
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureCustomerPaymentMethod, venture_customer_payment_method, payment_method_fields)
+
+/*
+ * A price is metered when it names what it counts. The unit amount alone
+ * does not make one: a rate with nothing to count is refused at the save,
+ * so the two are only ever set together.
+ */
+gboolean
+venture_plan_price_is_metered(VenturePlanPrice *self)
+{
+	g_autofree gchar *unit = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_PLAN_PRICE(self), FALSE);
+	g_object_get(self, "usage-unit", &unit, NULL);
+	return unit != NULL && *unit != '\0';
+}
+
+/* Thousands grouped, as a count reads on an invoice: "1,240". */
+gchar *
+venture_billing_format_count(gint64 count)
+{
+	g_autofree gchar *digits = g_strdup_printf("%" G_GINT64_FORMAT, count < 0 ? -count : count);
+	GString *text = g_string_new(count < 0 ? "-" : NULL);
+	gsize length = strlen(digits), i;
+
+	for (i = 0; i < length; i++)
+	{
+		if (i > 0 && (length - i) % 3 == 0)
+			g_string_append_c(text, ',');
+		g_string_append_c(text, digits[i]);
+	}
+	return g_string_free(text, FALSE);
+}
+
+/* "1,240 API calls on 2026-03-05": what was used, and when. */
+static gchar *
+usage_record_display_name(VentureEntity *self)
+{
+	g_autoptr(GDateTime) at = NULL;
+	g_autofree gchar *count = NULL;
+	g_autofree gchar *day = NULL;
+	gint64 quantity = 0;
+
+	g_object_get(self, "quantity", &quantity, "occurred-at", &at, NULL);
+	count = venture_billing_format_count(quantity);
+	if (at == NULL)
+		return g_strdup_printf("%s used", count);
+	day = g_date_time_format(at, "%F");
+	return g_strdup_printf("%s used on %s", count, day);
+}
+
+/*
+ * One report of metered use. The billing service counts a period's
+ * records at renewal, in [start, end), and bills what is beyond the
+ * price's included units on the renewal invoice. The idempotency key lets
+ * a sender retry a report without it being counted twice.
+ */
+static const VentureFieldDecl usage_record_fields[] = {
+	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("quantity", "Quantity", "Whole units used, such as API calls", VENTURE_FIELD_KIND_INTEGER,
+		VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("occurred-at", "Used at", "When the use happened; now when left empty", VENTURE_FIELD_KIND_DATETIME,
+		VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("idempotency-key", "Idempotency key", "A sender's own id for this report; a repeat is refused, not counted",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureUsageRecord, venture_usage_record, usage_record_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = usage_record_display_name;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Usage", "Usage");)

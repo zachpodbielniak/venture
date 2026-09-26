@@ -295,6 +295,8 @@ venturectl billing recover 1
 venturectl billing renew --as-of 2026-04-01 --dry-run
 venturectl billing renew --as-of 2026-04-01
 venturectl billing dunning --as-of 2026-04-05
+venturectl billing usage 1 quantity=1240 key=batch-2026-03-05
+venturectl quote start-subscription 7
 venturectl --stage billing cancel 1
 venturectl report mrr 2026-03 organization_id=1 currency=USD
 venturectl report churn 2026-03 organization_id=1 currency=USD
