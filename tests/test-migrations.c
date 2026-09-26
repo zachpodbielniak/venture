@@ -114,7 +114,10 @@ test_token_actor_names(void)
 		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner');"
 		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
 		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Changed', 'token:deploy-bot');"
-		"DELETE FROM schema_migrations WHERE version IN (640, 645)", NULL, &error));
+		/* Everything from 640 on, not just the two: an install that had
+		 * not reached 640 had not applied any later script either, and the
+		 * migrator refuses an older script once a newer one is recorded. */
+		"DELETE FROM schema_migrations WHERE version >= 640", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&database);
 
