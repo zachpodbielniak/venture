@@ -511,6 +511,10 @@ Use `billing change ID plan_price=N [at_period_end=true]`,
 and `billing recover ID` for lifecycle actions. Never update subscription
 status directly; the service refuses it.
 
+Customers holding a portal link can switch price (same venture, at renewal
+by default) or cancel at renewal themselves; those changes appear as
+ordinary `subscription_event` rows with the actor `customer portal`.
+
 `billing renew --as-of DATE [--dry-run]` sweeps due periods, and also
 queues the trial-ending reminder (`billing.trial_reminder_days`, default 3)
 to each customer whose trial ends within that many days -- once per

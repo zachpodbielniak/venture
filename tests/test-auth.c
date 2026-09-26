@@ -1403,6 +1403,11 @@ test_auth_api_refuses_anonymous_requests(
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/customer_portal/invite",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* A customer's own plan change is guarded by the portal token, not a
+	 * session: without a valid one the subscription does not exist. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/portal/0000000000000000000000000000000000000000000000000000000000000000/subscriptions/1",
+		NULL, "action=cancel", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/pay",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/approve",

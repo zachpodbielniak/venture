@@ -184,6 +184,18 @@ first seven columns were empty.
   driving that from a second thread is a context-ownership failure, not
   merely a data race. Progress crosses back as plain data and is applied on
   the main thread.
+- **Customer subscription mail is queued inside the billing instruction.**
+  The trial reminder (renewal sweep) and the price-change notice
+  (`change`/`change-seats`) enqueue through the outbox in the service's own
+  transaction, keyed `trial-reminder:<subscription uuid>` and
+  `price-change:<event uuid>`. A missing address or mail switched off
+  skips the notice; it must never refuse the change. Do not move them to
+  a timer or a signal handler: the key is what makes them once-only.
+- **The portal manages a subscription only by token and only its own.**
+  `/portal/:token/subscriptions/:id` answers NOT_FOUND for anything not the
+  token's customer's, and goes through `venture_billing_service_execute()`
+  like every other writer; `tests/test-portal.c` pins the cross-customer
+  cases.
 - **The JSON wire format uses underscores.** Properties are `invoice-id` in
   C and `invoice_id` on the wire; a POST body with dashed keys is silently
   ignored field by field — the record saves and the values just aren't
