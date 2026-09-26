@@ -1182,6 +1182,7 @@ seed_billing () {
     local studio="$1"
     local agency="$2"
     local shop="$3"
+    local press="$4"
 
     step "Plans, subscriptions and a dunning ladder"
 
@@ -1195,8 +1196,18 @@ seed_billing () {
 
     yearly="$(make_record plan_price plan_id="${plan}" currency=USD \
         interval=year amount=180.00 per_seat=true trial_days=0 active=true)"
-    monthly="$(make_record plan_price plan_id="${plan}" currency=USD \
-        interval=month amount=18.00 per_seat=true trial_days=14 active=true)"
+    make_record plan_price plan_id="${plan}" currency=USD \
+        interval=month amount=18.00 per_seat=true trial_days=14 active=true > /dev/null
+
+    # The press sells its own plan: a plan belongs to a venture and is
+    # offered only to that venture's customers, so Bellhaven -- a press
+    # customer -- is on this one, not the studio's.
+    local trade
+    trade="$(make_record plan venture_id="${press}" name="Trade account" \
+        code=trade active=true \
+        description="Standing order for bookshops, billed each quarter.")"
+    monthly="$(make_record plan_price plan_id="${trade}" currency=USD \
+        interval=quarter amount=75.00 per_seat=false trial_days=14 active=true)"
 
     # What happens when a card keeps failing. Without these the dunning
     # sweep has nothing to do.
@@ -1714,7 +1725,7 @@ do_start () {
     seed_activities "${shop}" "${agency}" "${buyer}"
     seed_quotes "${press}" "${shop}" "${buyer}" "${book}"
 
-    seed_billing "${studio}" "${agency}" "${shop}"
+    seed_billing "${studio}" "${agency}" "${shop}" "${press}"
     seed_sequences "${studio}" "${buyer}"
     seed_mail
     seed_assets "${studio}"
