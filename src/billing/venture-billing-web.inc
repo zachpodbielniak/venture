@@ -152,7 +152,7 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 		"<input type=\"number\" name=\"seats\" value=\"1\" min=\"1\" step=\"1\"></label></div>"
 		"<label class=\"doc-field\"><span class=\"field-label\">Plan<span class=\"required\">*</span></span>"
 		"<select name=\"plan-price-id\" required><option value=\"\">Choose a plan\xe2\x80\xa6</option>");
-	venture_plan_web_append_price_options(self, html, organization, 0, unpriced);
+	venture_plan_web_append_price_options(self, html, organization, 0, 0, unpriced);
 	g_string_append(html, "</select><span class=\"field-help\">Every offered price, under its plan. "
 		"<a href=\"/plans/new\">Make a new plan</a>.</span></label>");
 	/* A plan that is offered but has no price cannot be sold; say so
@@ -174,7 +174,17 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 		"invoice, or credited.</p><p><strong>A repeating invoice</strong> sends the same lines on a schedule "
 		"\xe2\x80\x94 rent, a retainer, hosting. Editing it changes the invoices still to come; nothing is "
 		"prorated. <a href=\"/invoices/compose?repeat=1\">Repeat an invoice instead</a>.</p>"
-		"</div></section></aside></div></form>");
+		"</div></section></aside></div></form>"
+		/* Choosing a customer narrows the plans to their venture's and
+		 * the shared ones; the service refuses anything else anyway. */
+		"<script>(function(){var c=document.querySelector('[data-doc-company]'),"
+		"p=document.querySelector('select[name=plan-price-id]');if(!c||!p)return;"
+		"function narrow(){var o=c.selectedOptions[0],v=o&&o.dataset.venture||'0';"
+		"Array.prototype.forEach.call(p.options,function(x){if(!x.value)return;"
+		"var mine=v==='0'||x.dataset.venture==='0'||x.dataset.venture===v;x.hidden=!mine;x.disabled=!mine;});"
+		"if(p.selectedOptions[0]&&p.selectedOptions[0].hidden){p.value='';}"
+		"p.dispatchEvent(new Event('change',{bubbles:true}));}"
+		"c.addEventListener('change',narrow);narrow();})();</script>");
 	return venture_web_html_response(venture_web_page(self, request, "/e/customer_subscription",
 		"New subscription", html->str), 200);
 }
@@ -283,7 +293,19 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 			"<div class=\"card-body\"><form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\" class=\"plan-change\">"
 			"<input type=\"hidden\" name=\"billing_action\" value=\"change\">"
 			"<label class=\"doc-field\"><span class=\"field-label\">New plan</span><select name=\"plan-price-id\" required>", id);
-		venture_plan_web_append_price_options(self, html, venture_entity_get_organization_id(record), price_id, NULL);
+		{
+			/* Only plans this customer's venture sells, or shared ones. */
+			g_autoptr(VentureEntity) customer = NULL;
+			gint64 company_id = 0, venture = 0;
+
+			g_object_get(record, "company-id", &company_id, NULL);
+			customer = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY,
+				company_id, NULL);
+			if (customer != NULL)
+				g_object_get(customer, "venture-id", &venture, NULL);
+			venture_plan_web_append_price_options(self, html, venture_entity_get_organization_id(record),
+				price_id, venture, NULL);
+		}
 		g_string_append(html, "</select></label><fieldset class=\"choice-cards\"><legend class=\"field-label\">When</legend>"
 			"<label class=\"choice-card\"><input type=\"radio\" name=\"at-period-end\" value=\"true\" checked>"
 			"<span><strong>At renewal");

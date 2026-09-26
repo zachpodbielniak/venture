@@ -206,14 +206,30 @@ anchored_period(VentureEntity *sub, VentureEntity *price, GDateTime *start)
 	return g_date_time_add_months(anchor, months + venture_billing_interval_months(choice(price, "interval")));
 }
 
+/*
+ * A price is available to @company_id when it and its plan are active and
+ * the plan is the customer's venture's, or shared. A plan that names a
+ * venture is that venture's product; a customer with no venture may be
+ * put on anything, as before ventures were set.
+ */
 static gboolean
-price_available(VentureBillingService *self, VentureEntity *price, gint64 org, GError **error)
+price_available(VentureBillingService *self, VentureEntity *price, gint64 org, gint64 company_id, GError **error)
 {
 	g_autoptr(VentureEntity) plan = load(self, VENTURE_TYPE_PLAN, number(price, "plan-id"), org, error);
+	g_autoptr(VentureEntity) customer = NULL;
+	gint64 plan_venture;
 	if (plan == NULL)
 		return FALSE;
 	if (!flag(price, "active") || !flag(plan, "active"))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "plan and price must be active");
+	plan_venture = number(plan, "venture-id");
+	if (plan_venture == 0 || company_id == 0)
+		return TRUE;
+	customer = load(self, VENTURE_TYPE_COMPANY, company_id, org, error);
+	if (customer == NULL)
+		return FALSE;
+	if (number(customer, "venture-id") != 0 && number(customer, "venture-id") != plan_venture)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "that plan is sold by another venture than this customer's");
 	return TRUE;
 }
 
@@ -401,7 +417,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 				return refuse(error, VENTURE_ERROR_VALIDATION, "billing contact must belong to the subscription customer");
 		}
 		price = load(self, VENTURE_TYPE_PLAN_PRICE, number(request, "plan-price-id"), org, error);
-		if (price == NULL || !price_available(self, price, org, error))
+		if (price == NULL || !price_available(self, price, org, number(request, "company-id"), error))
 			return FALSE;
 		seats = number(request, "seats");
 		if (seats == 0)
@@ -484,7 +500,10 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 				return refuse(error, VENTURE_ERROR_VALIDATION, "only live subscriptions may change terms");
 			next_price = g_strcmp0(verb, "change") == 0 ?
 				load(self, VENTURE_TYPE_PLAN_PRICE, number(request, "plan-price-id"), org, error) : g_object_ref(price);
-			if (next_price == NULL || !price_available(self, next_price, org, error))
+			/* Only a new price is judged against the customer's venture;
+			 * changing seats keeps the terms already agreed. */
+			if (next_price == NULL || !price_available(self, next_price, org,
+				g_strcmp0(verb, "change") == 0 ? number(sub, "company-id") : 0, error))
 				return FALSE;
 			if (g_strcmp0(verb, "change-seats") == 0)
 				seats = number(request, "seats");

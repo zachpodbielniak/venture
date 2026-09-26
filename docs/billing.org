@@ -260,6 +260,15 @@ put on it. A plan's page lists its prices with how many customers are on
 each, adds a price for another period, and retires or re-offers one --
 retiring stops a price being offered without moving anybody off it.
 
+A plan belongs to a venture -- the sheet asks whose, and picks it when
+there is only one -- or is shared by every venture. A customer is put
+only on their own venture's plans or shared ones: =VentureBillingService=
+refuses anything else at start and at a plan change, from every surface.
+A customer with no venture may take any plan, and changing seats keeps
+the terms already agreed. The new-subscription page narrows the plan list
+to the chosen customer's venture; the change-plan list is narrowed on the
+server.
+
 The subscription pages offer every active price of every active plan,
 grouped under the plan's name, and name any active plan that has no price
 yet with a link to price it. A new record's "Active" box starts ticked on

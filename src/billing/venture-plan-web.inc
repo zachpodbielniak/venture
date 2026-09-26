@@ -43,6 +43,42 @@ venture_plan_append_period_select(GString *html, const gchar *name, const gchar 
 	g_string_append(html, "</select>");
 }
 
+/*
+ * Whose product the plan is. A plan belongs to one venture and is sold
+ * only to that venture's customers; "Shared" is for a plan every venture
+ * sells. With one venture it is chosen already.
+ */
+static void
+venture_plan_append_venture_select(VentureWebServer *self, GString *html, gint64 organization)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_VENTURE);
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i;
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	if (organization > 0)
+		venture_query_set_organization(query, organization);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+
+	g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Venture"
+		"<span class=\"required\">*</span></span><select name=\"venture-id\" required>");
+	if (rows == NULL || rows->len != 1)
+		g_string_append(html, "<option value=\"\">Whose plan is it?</option>");
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autofree gchar *name = venture_entity_get_display_name(row);
+
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\"%s>", venture_entity_get_id(row),
+			rows->len == 1 ? " selected" : "");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</option>");
+	}
+	g_string_append(html, "<option value=\"0\">Shared by every venture</option></select>"
+		"<span class=\"field-help\">Only this venture's customers can be put on it.</span></label>");
+}
+
 /* One price row of the plan sheet. */
 static void
 venture_plan_append_price_row(GString *html, const gchar *index, const gchar *period, const gchar *currency)
@@ -156,7 +192,9 @@ venture_plan_new_page(VentureWebServer *self, gint64 organization)
 		"<div class=\"doc-layout\"><section class=\"card doc-sheet\"><div class=\"card-body\">"
 		"<div class=\"doc-parties\"><label class=\"doc-field doc-field-wide\"><span class=\"field-label\">Name"
 		"<span class=\"required\">*</span></span><input type=\"text\" name=\"name\" required "
-		"placeholder=\"For example: Team\" autofocus></label></div>"
+		"placeholder=\"For example: Team\" autofocus></label>");
+	venture_plan_append_venture_select(self, html, organization);
+	g_string_append(html, "</div>"
 		"<label class=\"doc-field\"><span class=\"field-label\">What it includes</span>"
 		"<textarea name=\"description\" rows=\"2\" placeholder=\"Shown to you when choosing a plan\"></textarea></label>"
 		"<table class=\"line-items\"><thead><tr><th>Billed</th><th class=\"num\">Price</th><th></th>"
@@ -232,8 +270,13 @@ venture_plan_web_new(HtmxRequest *request, GHashTable *params, gpointer user_dat
 
 	if (!venture_database_begin(database, &error))
 		return venture_web_error_response(error);
-	plan = g_object_new(VENTURE_TYPE_PLAN, "name", name, "code", code,
-		"description", description != NULL ? description : "", "active", TRUE, NULL);
+	{
+		const gchar *venture = htmx_request_get_form_value(request, "venture-id");
+
+		plan = g_object_new(VENTURE_TYPE_PLAN, "name", name, "code", code,
+			"description", description != NULL ? description : "", "active", TRUE,
+			"venture-id", venture != NULL ? g_ascii_strtoll(venture, NULL, 10) : (gint64)0, NULL);
+	}
 	venture_entity_set_organization_id(plan, organization);
 	if (!venture_database_save(database, plan, &actor, &error))
 		goto fail;
@@ -449,12 +492,14 @@ venture_plan_web_panel(VentureWebServer *self, GString *html, VentureEntity *rec
 /*
  * Every price a customer can be put on, under its plan's name, for a
  * subscription's plan picker; @except is left out (the price already
- * held). Plans that are offered but have no price are returned in
+ * held), and with @venture set only that venture's plans and the shared
+ * ones are offered. Each option carries its plan's venture, so the page
+ * can narrow the list to the customer chosen. Plans that are offered but have no price are returned in
  * @unpriced, so the page can say so rather than leave them out silently.
  */
 static void
 venture_plan_web_append_price_options(VentureWebServer *self, GString *html, gint64 organization,
-	gint64 except, GPtrArray *unpriced)
+	gint64 except, gint64 venture, GPtrArray *unpriced)
 {
 	VentureDatabase *database = venture_context_get_database(self->context);
 	g_autoptr(VentureQuery) plans_query = venture_query_new(VENTURE_TYPE_PLAN);
@@ -473,9 +518,10 @@ venture_plan_web_append_price_options(VentureWebServer *self, GString *html, gin
 		g_autoptr(GPtrArray) prices = NULL;
 		g_autofree gchar *name = NULL;
 		gboolean active = FALSE, opened = FALSE, offered = FALSE;
+		gint64 plan_venture = 0;
 
-		g_object_get(plan, "name", &name, "active", &active, NULL);
-		if (!active)
+		g_object_get(plan, "name", &name, "active", &active, "venture-id", &plan_venture, NULL);
+		if (!active || (venture > 0 && plan_venture > 0 && plan_venture != venture))
 			continue;
 		venture_query_set_limit(query, 0);
 		venture_query_add_filter_int(query, "plan-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(plan), NULL);
@@ -501,7 +547,8 @@ venture_plan_web_append_price_options(VentureWebServer *self, GString *html, gin
 				opened = TRUE;
 			}
 			label = venture_entity_get_display_name(price);
-			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(price));
+			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-venture=\"%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(price), plan_venture);
 			venture_html_escape_append(html, name);
 			g_string_append(html, " \xe2\x80\x94 ");
 			venture_html_escape_append(html, label);

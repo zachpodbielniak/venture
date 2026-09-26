@@ -162,9 +162,13 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 
 		/* What the customer's record already says about tax rides on the
 		 * option, so choosing them fills the exemption in. */
+		gint64 venture = 0;
+
 		g_object_get(row, "tax-exempt", &exempt, "tax-exempt-reason", &reason,
-			"tax-exemption-number", &number, NULL);
-		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\"", venture_entity_get_id(row));
+			"tax-exemption-number", &number, "venture-id", &venture, NULL);
+		/* The customer's venture, so a plan picker can offer its plans. */
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-venture=\"%" G_GINT64_FORMAT "\"",
+			venture_entity_get_id(row), venture);
 		if (exempt)
 		{
 			g_string_append(html, " data-exempt=\"1\" data-exempt-kind=\"");

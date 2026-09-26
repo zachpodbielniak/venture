@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include <string.h>
 #include "venture-test-util.h"
 #include "venture-test-accounting.h"
 
@@ -283,6 +284,57 @@ test_quarterly(Fixture *f, gconstpointer data)
 	g_object_get(s, "current-period-end", &end, NULL);
 	text = g_date_time_format(end, "%F");
 	g_assert_cmpstr(text, ==, "2026-07-01");
+}
+
+/*
+ * A plan that belongs to a venture is sold only to that venture's
+ * customers; a plan with no venture is shared. Refused by the service, so
+ * the form, the API, the CLI and the assistant all hold to it. If this
+ * regresses, every customer can be put on every venture's plans.
+ */
+static void
+test_venture_plans(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) press = record(f, "venture");
+	g_autoptr(VentureEntity) studio = record(f, "venture");
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autoptr(VentureEntity) customer = NULL;
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	g_object_set(press, "name", "Press", "slug", "press", NULL);
+	g_object_set(studio, "name", "Studio", "slug", "studio", NULL);
+	save(f, press);
+	save(f, studio);
+
+	plan = venture_database_get(f->db, VENTURE_TYPE_PLAN, 1, NULL);
+	g_assert_nonnull(plan);
+	g_object_set(plan, "venture-id", venture_entity_get_id(studio), NULL);
+	save(f, plan);
+
+	customer = record(f, "company");
+	g_object_set(customer, "name", "A press customer", "venture-id", venture_entity_get_id(press), NULL);
+	save(f, customer);
+
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", venture_entity_get_id(customer), "plan-price-id", f->price, NULL);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "venture"));
+	g_clear_error(&error);
+	g_clear_object(&a);
+
+	/* The studio's own customer, and a customer with no venture, may. */
+	g_object_set(customer, "venture-id", venture_entity_get_id(studio), NULL);
+	save(f, customer);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", venture_entity_get_id(customer), "plan-price-id", f->price, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, NULL);
+	save(f, a);
 }
 
 /* Remaining days get their original allocation, including remainder cents. */
@@ -1009,6 +1061,7 @@ main(int argc, char **argv)
 	g_test_add_func("/billing/catalog", test_catalog);
 	g_test_add("/billing/start-and-guard", Fixture, NULL, setup, test_start_and_guard, teardown);
 	g_test_add("/billing/quarterly", Fixture, NULL, setup, test_quarterly, teardown);
+	g_test_add("/billing/venture-plans", Fixture, NULL, setup, test_venture_plans, teardown);
 	g_test_add("/billing/renewal", Fixture, NULL, setup, test_renewal, teardown);
 	g_test_add("/billing/trial", Fixture, NULL, setup, test_trial, teardown);
 	g_test_add("/billing/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);

@@ -144,24 +144,35 @@ test_plan_sheet(Fixture *f, gconstpointer data)
 	gboolean active = FALSE;
 	gint64 plan_id;
 
+	g_autoptr(VentureEntity) studio = g_object_new(VENTURE_TYPE_VENTURE, "name", "Harrow Studio", "slug", "harrow", NULL);
+	g_autofree gchar *form = NULL, *option = NULL;
+	gint64 venture = 0;
+
 	(void)data;
+	save(f, studio);
 	g_assert_cmpuint(request(f, "GET", "/plans/new", NULL, NULL, &page), ==, 200);
 	g_assert_nonnull(strstr(page, "name=\"price-0-interval\""));
+	/* The plan is a venture's product: the sheet asks whose. */
+	g_assert_nonnull(strstr(page, "<select name=\"venture-id\""));
+	g_assert_nonnull(strstr(page, "Shared by every venture"));
 	g_assert_nonnull(strstr(page, "<option value=\"quarter\">Every 3 months</option>"));
 
-	g_assert_cmpuint(request(f, "POST", "/plans/new", "application/x-www-form-urlencoded",
-		"name=Growth&description=For+teams"
+	form = g_strdup_printf("venture-id=%" G_GINT64_FORMAT "&name=Growth&description=For+teams"
 		"&price-0-interval=month&price-0-amount=49&price-0-per-seat=true"
 		"&price-2-interval=year&price-2-amount=490&price-2-per-seat=true&price-2-trial-days=14",
-		&body), ==, 303);
+		venture_entity_get_id(studio));
+	g_assert_cmpuint(request(f, "POST", "/plans/new", "application/x-www-form-urlencoded",
+		form, &body), ==, 303);
+
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN);
 		venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ, "Growth", NULL);
 		plan = venture_database_find_one(f->database, query, NULL);
 	}
 	g_assert_nonnull(plan);
-	g_object_get(plan, "active", &active, NULL);
+	g_object_get(plan, "active", &active, "venture-id", &venture, NULL);
 	g_assert_true(active);
+	g_assert_cmpint(venture, ==, venture_entity_get_id(studio));
 	plan_id = venture_entity_get_id(plan);
 	prices = plan_prices(f, plan_id);
 	g_assert_cmpuint(prices->len, ==, 2);
@@ -173,6 +184,9 @@ test_plan_sheet(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(request(f, "GET", "/billing/subscriptions/new", NULL, NULL, &page), ==, 200);
 	g_assert_nonnull(strstr(page, "<optgroup label=\"Growth\">"));
 	g_assert_nonnull(strstr(page, "$49.00 a month per seat</option>"));
+	/* Each price says whose it is, so choosing a customer narrows them. */
+	option = g_strdup_printf("data-venture=\"%" G_GINT64_FORMAT "\">Growth", venture_entity_get_id(studio));
+	g_assert_nonnull(strstr(page, option));
 }
 
 /*
