@@ -63,6 +63,7 @@
 #include "util/venture-string-util.h"
 #include "util/venture-time-util.h"
 #include "util/venture-json-util.h"
+#include "util/venture-pdf.h"
 
 /* --- Domain model -------------------------------------------------------- */
 
@@ -210,7 +211,7 @@
 #include "cutover/venture-cutover-service.h"
 #include "setup/venture-setup-service.h"
 #include "documents/venture-document-service.h"
-#include "documents/venture-document-service.h"
+#include "documents/venture-financial-documents.h"
 #include "progress/venture-progress-service.h"
 #include "portal/venture-portal-service.h"
 #include "portal/venture-supplier-portal-service.h"

@@ -2829,7 +2829,20 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
+/* An invoice is known by its number: "Invoice INV-0041". */
+static gchar *
+venture_invoice_display_name(VentureEntity *self)
+{
+	g_autofree gchar *number = NULL;
+
+	g_object_get(self, "number", &number, NULL);
+	if (venture_string_is_empty(number))
+		return g_strdup_printf("Invoice #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+	return g_strdup_printf("Invoice %s", number);
+}
+
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInvoice, venture_invoice, venture_invoice_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_invoice_display_name;
 	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");)
 
 /*

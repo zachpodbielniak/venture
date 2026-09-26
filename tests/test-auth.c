@@ -1497,6 +1497,7 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/stripe_event/1/actions/retry", "/billing/subscriptions/start", "/bills/compose"
 		};
 		static const gchar *const pages[] = { "/billing/subscriptions/new", "/invoices/compose?repeat=1",
+			"/invoices/1/pdf", "/payments/1/receipt",
 			"/bills/compose", "/bills/compose?repeat=1" };
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",

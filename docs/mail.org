@@ -166,6 +166,32 @@ organization. Use a scheduled rule, after business transactions commit.
 Inbound mail has its own handler, =venture->mail_sync=; see Inbound,
 Running it.
 
+* Invoices and receipts
+
+Sending an invoice attaches it as a PDF (=Invoice INV-0041.pdf=), drawn by
+=venture_financial_documents_invoice_pdf()= from the same records the
+invoice page reads: the seller's letterhead from the organization, the
+customer, the lines with their frozen tax, the total and any balance due,
+and the terms. The same PDF is at =GET /invoices/:id/pdf=.
+
+A recorded customer payment is answered with a receipt. Once the
+transaction that saved the payment and its allocations commits, the
+customer's company email is sent =Receipt for your payment of $X= with
+=Receipt N.pdf= attached -- the amount, date, method, reference, the
+invoices it was applied to and any amount kept as credit. It is keyed
+=receipt:<payment uuid>=, so a payment is receipted once however often it
+is saved; a rolled-back payment sends nothing. A customer with no email
+address, the =mail= or =receivables= module off, or =mail.receipts: false=
+sends nothing and is not an error. The receipt is at
+=GET /payments/:id/receipt=, and the payment's page says whether it was
+sent and to whom.
+
+The PDFs are written by =VenturePdfWriter=, a small writer with no
+library behind it: the two standard Helvetica faces, WinAnsi text (a
+character outside it becomes "?"), rules, fills and wrapped text. It is
+enough for a business document and produces the same bytes from the same
+data.
+
 * Attachments and durable snapshots
 
 =attachments= is a JSON field containing document references, for example

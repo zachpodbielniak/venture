@@ -135,7 +135,10 @@ test_web(Fixture *f, gconstpointer data)
 	g_autofree gchar *body = NULL;
 	g_autofree gchar *path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, f->subscription);
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, "billing-action"));
+	/* The page offers the subscription's actions, and leads with what
+	 * happens next. */
+	g_assert_nonnull(strstr(body, "name=\"billing_action\""));
+	g_assert_nonnull(strstr(body, "What happens next"));
 	g_assert_nonnull(strstr(body, "Subscriptions"));
 }
 

@@ -115,6 +115,9 @@ venture_context_new(
 		g_object_set(self->mail_outbox, "attachment-root", root, NULL);
 	}
 
+	/* A payment answered with a receipt, once its transaction commits. */
+	venture_financial_documents_install_receipts(self);
+
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
 	venture_federation_install_validators(database);

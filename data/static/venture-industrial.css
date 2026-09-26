@@ -4633,3 +4633,4 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.45; c
 .checkbox { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
 .checkbox input { width: 20px; }
 .next-up form { margin: var(--space-2) 0 var(--space-3); }
+.timeline-diff dt { text-transform: none; letter-spacing: 0; font-family: var(--font); }

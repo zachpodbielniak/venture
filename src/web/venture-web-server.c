@@ -8032,6 +8032,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 	gint64 organization);
 #include "billing/venture-billing-web.inc"
 #include "payables/venture-bill-compose-web.inc"
+#include "documents/venture-financial-documents-web.inc"
 
 static void
 venture_web_append_related(
@@ -9419,7 +9420,9 @@ venture_web_append_invoice_block(
 
 	g_string_append_printf(content,
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
-		"/print\" target=\"_blank\">Print</a>", id);
+		"/pdf\" target=\"_blank\">Download PDF</a> "
+		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
+		"/print\" target=\"_blank\">Print</a>", id, id);
 
 	if (venture_context_module_enabled(self->context, "mail"))
 		g_string_append_printf(content,
@@ -9638,6 +9641,7 @@ venture_web_ui_detail(
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
+	venture_web_append_payment_receipt(self, content, record);
 	quote_buttons(content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
@@ -26382,6 +26386,100 @@ venture_web_append_watch_button(
  * moved, comments and worklogs on a ticket, newest first. Rendered from
  * the same JSON the API returns.
  */
+/*
+ * One side of a change in a record's history, read the way the record's
+ * own page reads it: a status in words, a date as a day, a reference as
+ * the other record's name, money as money. The field spec says which;
+ * without one the raw value is shown as it is.
+ *
+ * Returns: (transfer full) (nullable): the text
+ */
+static gchar *
+venture_web_change_text(
+	VentureWebServer	*self,
+	VentureFieldSpec	*spec,
+	JsonNode		*node
+){
+	VentureFieldKind kind;
+
+	if ((NULL == node) || JSON_NODE_HOLDS_NULL(node))
+		return NULL;
+
+	if (NULL == spec)
+		return JSON_NODE_HOLDS_VALUE(node) ? venture_web_node_text(node)
+		                                   : venture_web_json_to_display(node);
+
+	kind = venture_field_spec_get_kind(spec);
+
+	if (JSON_NODE_HOLDS_OBJECT(node))
+		return venture_web_json_to_display(node);
+
+	if (!JSON_NODE_HOLDS_VALUE(node))
+		return NULL;
+
+	if ((VENTURE_FIELD_KIND_ENUM == kind ||
+	     VENTURE_FIELD_ROLE_STATUS == venture_field_spec_get_role(spec)) &&
+	    G_TYPE_STRING == json_node_get_value_type(node))
+		return venture_web_choice_label(spec, json_node_get_string(node));
+
+	if (VENTURE_FIELD_KIND_BOOLEAN == kind &&
+	    G_TYPE_BOOLEAN == json_node_get_value_type(node))
+		return g_strdup(json_node_get_boolean(node) ? "Yes" : "No");
+
+	if ((VENTURE_FIELD_KIND_DATE == kind || VENTURE_FIELD_KIND_DATETIME == kind) &&
+	    G_TYPE_STRING == json_node_get_value_type(node))
+	{
+		g_autoptr(GDateTime) when = venture_time_from_string(json_node_get_string(node), NULL);
+		g_autoptr(GDateTime) local = NULL;
+
+		if (NULL == when)
+			return g_strdup(json_node_get_string(node));
+		if (VENTURE_FIELD_KIND_DATE == kind ||
+		    (0 == g_date_time_get_hour(when) && 0 == g_date_time_get_minute(when) &&
+		     0 == g_date_time_get_second(when)))
+			return venture_time_to_date_string(when, venture_context_get_timezone(self->context));
+		local = g_date_time_to_timezone(when, venture_context_get_timezone(self->context));
+		return g_date_time_format(local, "%Y-%m-%d %H:%M");
+	}
+
+	if (VENTURE_FIELD_KIND_REFERENCE == kind &&
+	    G_TYPE_INT64 == json_node_get_value_type(node))
+	{
+		gint64 id = json_node_get_int(node);
+		GType target;
+		g_autoptr(VentureEntity) other = NULL;
+
+		if (0 == id)
+			return NULL;
+		target = venture_entity_registry_lookup(venture_context_get_entity_registry(self->context),
+			venture_field_spec_get_reference_type(spec));
+		if (G_TYPE_INVALID != target)
+			other = venture_database_get(venture_context_get_database(self->context), target, id, NULL);
+		return (NULL != other) ? venture_entity_get_display_name(other) : g_strdup("A deleted record");
+	}
+
+	return venture_web_node_text(node);
+}
+
+/* The spec for a history member, whichever spelling the diff used. */
+static VentureFieldSpec *
+venture_web_change_spec(GPtrArray *specs, const gchar *member)
+{
+	g_autofree gchar *dashed = g_strdup(member);
+	guint i;
+
+	g_strdelimit(dashed, "_", '-');
+	for (i = 0; (NULL != specs) && (i < specs->len); i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+
+		if (0 == g_strcmp0(venture_field_spec_get_name(spec), dashed))
+			return spec;
+	}
+
+	return NULL;
+}
+
 static void
 venture_web_append_activity(
 	VentureWebServer	*self,
@@ -26389,6 +26487,7 @@ venture_web_append_activity(
 	VentureEntity		*record
 ){
 	g_autoptr(JsonNode) events = NULL;
+	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(record);
 	JsonArray *array;
 	guint i;
 
@@ -26538,6 +26637,7 @@ venture_web_append_activity(
 				for (cursor = members; NULL != cursor; cursor = cursor->next)
 				{
 					JsonNode *pair;
+					VentureFieldSpec *spec;
 					const gchar *member;
 					g_autofree gchar *from = NULL;
 					g_autofree gchar *to = NULL;
@@ -26555,22 +26655,30 @@ venture_web_append_activity(
 					}
 
 					pair = json_object_get_member(diff, member);
+					spec = venture_web_change_spec(specs, member);
+
+					/* Machinery changes are not history a person reads. */
+					if ((NULL != spec) &&
+					    (VENTURE_FIELD_ROLE_TECHNICAL == venture_field_spec_get_role(spec)))
+						continue;
 
 					if ((NULL != pair) && JSON_NODE_HOLDS_OBJECT(pair))
 					{
 						JsonObject *fromto;
 
 						fromto = json_node_get_object(pair);
-						from = venture_web_node_text(
+						from = venture_web_change_text(self, spec,
 							json_object_get_member(fromto, "from"));
-						to = venture_web_node_text(
+						to = venture_web_change_text(self, spec,
 							json_object_get_member(fromto, "to"));
 					}
 
 					{
 						g_autofree gchar *label = NULL;
 
-						label = venture_web_label_from_name(member);
+						label = (NULL != spec)
+							? g_strdup(venture_field_spec_get_label(spec))
+							: venture_web_label_from_name(member);
 						g_string_append(content, "<dt>");
 						venture_html_escape_append(content, label);
 						g_string_append(content, "</dt><dd><s>");
@@ -29917,6 +30025,8 @@ venture_web_server_new(
 	venture_equity_web_register(router, self);
 	venture_group_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_print, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/pdf", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_financial_document, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payments/:id/receipt", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_financial_document, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/quotes/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/quotes/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/quotes/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);

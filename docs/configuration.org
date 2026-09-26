@@ -325,7 +325,9 @@ password. Empty username disables authentication. Disable the whole outbox
 with =modules.mail: false=. Organization-bound SMTP accounts additionally
 need their =host:port= listed in =allowed_endpoints= (empty denies all) and
 may trust an operator-owned CA bundle through =tls_ca_file= (empty uses
-system trust). See [[file:mail.org][transactional mail]].
+system trust). =receipts= (default true) mails the customer a receipt, with
+its PDF, when a payment is recorded; set it false to send none. See
+[[file:mail.org][transactional mail]].
 
 ** Scheduled backups
 
