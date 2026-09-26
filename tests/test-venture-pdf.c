@@ -115,6 +115,34 @@ test_wrap(void)
 	g_assert_nonnull(strstr(text, "(Thank you.) Tj"));
 }
 
+/*
+ * A word longer than the width -- an invoice number, a URL -- is broken
+ * across lines rather than run past the edge; right-aligned wrapping ends
+ * every line at its edge; and a title shrinks to fit before it wraps. If
+ * this regresses, a long invoice number is drawn over the letterhead.
+ */
+static void
+test_long_words(void)
+{
+	g_autoptr(VenturePdfWriter) pdf = venture_pdf_writer_new(595, 842);
+	const gchar *word = "INV-2026-ACME-CORPORATION-INTERNATIONAL-HOLDINGS-0000000041";
+	gdouble after, size;
+
+	after = venture_pdf_writer_wrap(pdf, 40, 100, 60, 10, FALSE, word);
+	g_assert_cmpfloat(after, >=, 100 + 3 * 10);
+
+	after = venture_pdf_writer_wrap_aligned(pdf, 555, 300, 120, 10, TRUE, VENTURE_PDF_ALIGN_RIGHT, word);
+	g_assert_cmpfloat(after, >, 300 + 10);
+
+	size = venture_pdf_writer_fit_size(pdf, 20, 12, TRUE, 200, "Invoice 41");
+	g_assert_cmpfloat(size, ==, 20);
+	size = venture_pdf_writer_fit_size(pdf, 20, 12, TRUE, 200, word);
+	g_assert_cmpfloat(size, ==, 12);
+	size = venture_pdf_writer_fit_size(pdf, 20, 8, TRUE, 300, "Invoice INV-2026-ACME-0041-EXTRA");
+	g_assert_cmpfloat(size, <, 20);
+	g_assert_cmpfloat(venture_pdf_writer_text_width(pdf, size, TRUE, "Invoice INV-2026-ACME-0041-EXTRA"), <=, 300);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -124,6 +152,7 @@ main(int argc, char *argv[])
 	g_test_add_func("/pdf/text-is-safe", test_text_is_safe);
 	g_test_add_func("/pdf/widths", test_widths);
 	g_test_add_func("/pdf/wrap", test_wrap);
+	g_test_add_func("/pdf/long-words", test_long_words);
 
 	return g_test_run();
 }

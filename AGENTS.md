@@ -716,6 +716,14 @@ than one that fails.
   (`<div class="notice negative">`), not on two words.
 ## Forms and refusals
 
+- **An API token acts as "API token #<id>", never under its name.** The
+  name is whatever the owner typed and the actor string reaches the audit
+  log, every record's activity and the inbox, which viewers read.
+  Migrations 000640/000645 rewrote the names already recorded.
+- **A PDF header is two columns and text keeps to its column.** Use
+  `venture_pdf_writer_fit_size()` and `venture_pdf_writer_wrap_aligned()`
+  for anything a person typed; a fixed-size `_text()` call is only for
+  labels and figures whose width is known.
 - **A person never sees error JSON.** `venture_web_error_response()` tags
   the response with its `GError`, and the catch-all middleware turns it
   into a page for a browser that asked for HTML without `HX-Request` or

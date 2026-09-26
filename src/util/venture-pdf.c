@@ -240,18 +240,54 @@ venture_pdf_writer_text(
 	g_string_append(self->current, ") Tj ET\n");
 }
 
+/*
+ * Emits @line and moves down, or -- when @line alone is wider than @width
+ * -- breaks it between characters into pieces that fit. Only a word with
+ * no space in it ever reaches the second case.
+ */
+static gdouble
+venture_pdf_emit_line(VenturePdfWriter *self, gdouble x, gdouble y, gdouble width, gdouble size,
+	gboolean bold, VenturePdfAlign align, const gchar *line)
+{
+	gdouble leading = size * 1.35;
+	const gchar *start = line;
+
+	while (*start != '\0')
+	{
+		const gchar *end = start, *next;
+		g_autofree gchar *piece = NULL;
+
+		/* Take characters while they fit; always at least one. */
+		for (next = g_utf8_next_char(end); ; next = g_utf8_next_char(next))
+		{
+			g_autofree gchar *candidate = g_strndup(start, next - start);
+
+			if (end != start && venture_pdf_writer_text_width(self, size, bold, candidate) > width)
+				break;
+			end = next;
+			if (*next == '\0')
+				break;
+		}
+		piece = g_strndup(start, end - start);
+		venture_pdf_writer_text(self, x, y, size, bold, align, piece);
+		y += leading;
+		start = end;
+	}
+	return y;
+}
+
 gdouble
-venture_pdf_writer_wrap(
+venture_pdf_writer_wrap_aligned(
 	VenturePdfWriter	*self,
 	gdouble			 x,
 	gdouble			 y,
 	gdouble			 width,
 	gdouble			 size,
 	gboolean		 bold,
+	VenturePdfAlign		 align,
 	const gchar		*text
 ){
 	g_auto(GStrv) paragraphs = NULL;
-	gdouble leading = size * 1.35;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_PDF_WRITER(self), y);
@@ -280,20 +316,50 @@ venture_pdf_writer_wrap(
 			if ((line->len > 0) &&
 			    (venture_pdf_writer_text_width(self, size, bold, candidate) > width))
 			{
-				venture_pdf_writer_text(self, x, y, size, bold,
-				                        VENTURE_PDF_ALIGN_LEFT, line->str);
-				y += leading;
+				y = venture_pdf_emit_line(self, x, y, width, size, bold, align, line->str);
 				g_string_assign(line, words[w]);
 			}
 			else
 				g_string_assign(line, candidate);
 		}
 
-		venture_pdf_writer_text(self, x, y, size, bold, VENTURE_PDF_ALIGN_LEFT, line->str);
-		y += leading;
+		if (line->len > 0)
+			y = venture_pdf_emit_line(self, x, y, width, size, bold, align, line->str);
+		else
+			y += size * 1.35;
 	}
 
 	return y;
+}
+
+gdouble
+venture_pdf_writer_wrap(
+	VenturePdfWriter	*self,
+	gdouble			 x,
+	gdouble			 y,
+	gdouble			 width,
+	gdouble			 size,
+	gboolean		 bold,
+	const gchar		*text
+){
+	return venture_pdf_writer_wrap_aligned(self, x, y, width, size, bold, VENTURE_PDF_ALIGN_LEFT, text);
+}
+
+gdouble
+venture_pdf_writer_fit_size(
+	VenturePdfWriter	*self,
+	gdouble			 size,
+	gdouble			 min_size,
+	gboolean		 bold,
+	gdouble			 width,
+	const gchar		*text
+){
+	g_return_val_if_fail(VENTURE_IS_PDF_WRITER(self), min_size);
+
+	for (; size > min_size; size -= 0.5)
+		if (venture_pdf_writer_text_width(self, size, bold, text != NULL ? text : "") <= width)
+			return size;
+	return min_size;
 }
 
 void

@@ -69,6 +69,78 @@ test_upgrade_restart(void)
 	venture_test_remove_tree(directory);
 }
 
+/* The single text value of @sql. */
+static gchar *
+query_text(VentureDatabase *database, const gchar *sql)
+{
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+
+	result = venture_database_query_raw(database, sql, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	return g_strdup(orm_row_get_string(orm_result_get_row(result), 0));
+}
+
+/*
+ * API token names written into the audit log and the inbox before actors
+ * were named by number are rewritten on upgrade: a name one token holds
+ * becomes "API token #<id>", a name two share becomes "API token", and a
+ * person's name is left alone. If this regresses, the names an owner gave
+ * their tokens stay readable by every viewer in every old entry.
+ */
+static void
+test_token_actor_names(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *unique = NULL, *shared = NULL, *person = NULL, *inbox = NULL, *expected = NULL, *id = NULL;
+	g_autofree gchar *approver = NULL, *approving_person = NULL;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO api_tokens (uuid, organization_id, created_at, updated_at, version, name, prefix, token_hash) "
+		"VALUES ('00000000-0000-4000-8000-000000000001', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'deploy-bot', 'aaaaaaaa', 'x'),"
+		" ('00000000-0000-4000-8000-000000000002', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'laptop', 'bbbbbbbb', 'y'),"
+		" ('00000000-0000-4000-8000-000000000003', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'laptop', 'cccccccc', 'z');"
+		"INSERT INTO audit_entries (uuid, organization_id, created_at, updated_at, version, action, actor, target_type, target_id, approved_by) "
+		"VALUES ('00000000-0000-4000-8000-000000000011', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'token:deploy-bot', 'company', 1, 'token:laptop'),"
+		" ('00000000-0000-4000-8000-000000000012', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'token:laptop', 'company', 1, NULL),"
+		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner');"
+		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
+		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Changed', 'token:deploy-bot');"
+		"DELETE FROM schema_migrations WHERE version IN (640, 645)", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+
+	/* A restart applies the two scripts again, as an upgrade would. */
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	id = query_text(database, "SELECT CAST(id AS TEXT) FROM api_tokens WHERE name = 'deploy-bot'");
+	expected = g_strdup_printf("API token #%s", id);
+	unique = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000011'");
+	shared = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000012'");
+	person = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000013'");
+	inbox = query_text(database, "SELECT actor FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000021'");
+	g_assert_cmpstr(unique, ==, expected);
+	g_assert_cmpstr(shared, ==, "API token");
+	g_assert_cmpstr(person, ==, "owner");
+	g_assert_cmpstr(inbox, ==, expected);
+	approver = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000011'");
+	approving_person = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000013'");
+	g_assert_cmpstr(approver, ==, "API token");
+	g_assert_cmpstr(approving_person, ==, "owner");
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 /* A downgrade or edited migration must fail before schema reconciliation
  * can recreate a missing application table. */
 static void
@@ -354,6 +426,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/optional-module", test_optional_module);
 	g_test_add_func("/migrations/postgresql", test_postgresql);
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
+	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);

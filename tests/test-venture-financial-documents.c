@@ -68,7 +68,7 @@ tear_down(Fixture *f, gconstpointer data)
 }
 
 static VentureEntity *
-invoice_new(Fixture *f)
+invoice_new_numbered(Fixture *f, const gchar *number)
 {
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(JsonNode) root = NULL;
@@ -79,7 +79,7 @@ invoice_new(Fixture *f)
 	json_builder_set_member_name(builder, "company_id");
 	json_builder_add_int_value(builder, f->company);
 	json_builder_set_member_name(builder, "number");
-	json_builder_add_string_value(builder, "INV-0041");
+	json_builder_add_string_value(builder, number);
 	json_builder_set_member_name(builder, "terms");
 	json_builder_add_string_value(builder, "Payment within thirty days.");
 	json_builder_set_member_name(builder, "send");
@@ -104,6 +104,12 @@ invoice_new(Fixture *f)
 	g_assert_nonnull(invoice);
 
 	return invoice;
+}
+
+static VentureEntity *
+invoice_new(Fixture *f)
+{
+	return invoice_new_numbered(f, "INV-0041");
 }
 
 static gchar *
@@ -142,6 +148,106 @@ test_invoice_pdf(Fixture *f, gconstpointer data)
 
 	name = venture_financial_documents_filename(invoice);
 	g_assert_cmpstr(name, ==, "Invoice INV-0041.pdf");
+}
+
+/* One piece of text as drawn: its box on the page, from the top. */
+typedef struct
+{
+	gdouble left, right, top, bottom;
+	gchar *text;
+} Box;
+
+static void
+box_clear(gpointer data)
+{
+	g_free(((Box *)data)->text);
+}
+
+/*
+ * Every "BT /Fn size Tf x y Td (text) Tj ET" the writer emitted, measured
+ * with the writer's own widths. A box spans the font's ascent above the
+ * baseline and its descent below.
+ */
+static GArray *
+text_boxes(GBytes *pdf)
+{
+	g_autofree gchar *text = bytes_text(pdf);
+	g_autoptr(VenturePdfWriter) measure = venture_pdf_writer_new(595, 842);
+	GArray *boxes = g_array_new(FALSE, TRUE, sizeof(Box));
+	const gchar *p = text;
+
+	g_array_set_clear_func(boxes, box_clear);
+	while ((p = strstr(p, "BT /F")) != NULL)
+	{
+		gboolean bold = p[5] == '2';
+		gdouble size, x, y;
+		gchar *end = NULL;
+		GString *literal = g_string_new(NULL);
+		Box box;
+
+		size = g_ascii_strtod(p + 7, &end);
+		x = g_ascii_strtod(strstr(end, "Tf") + 2, &end);
+		y = g_ascii_strtod(end, &end);
+		p = strstr(end, "(") + 1;
+		for (; *p != '\0' && *p != ')'; p++)
+		{
+			if (*p == '\\' && p[1] != '\0')
+				p++;
+			g_string_append_c(literal, *p);
+		}
+		box.left = x;
+		box.right = x + venture_pdf_writer_text_width(measure, size, bold, literal->str);
+		box.top = (842 - y) - size * 0.75;
+		box.bottom = (842 - y) + size * 0.2;
+		box.text = g_string_free(literal, FALSE);
+		g_array_append_val(boxes, box);
+	}
+	return boxes;
+}
+
+/*
+ * A long invoice number and a long customer name stay on the page and
+ * clear of everything else: the title shrinks and wraps on the right,
+ * names wrap in their column. If this regresses, the number is drawn
+ * straight across the business's letterhead.
+ */
+static void
+test_invoice_pdf_long_names(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) company = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, NULL);
+	g_autoptr(VentureEntity) org = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->org, NULL);
+	g_autoptr(GBytes) pdf = NULL;
+	g_autoptr(GArray) boxes = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i, j;
+
+	(void)data;
+	g_object_set(company, "name", "The Extraordinarily Long-Named International Consolidated Book Distribution Company of Bellhaven", NULL);
+	g_assert_true(venture_database_save(f->db, company, NULL, &error));
+	g_object_set(org, "name", "Wrenmouth Press and Allied Publishing Enterprises of the Northern Coast", NULL);
+	g_assert_true(venture_database_save(f->db, org, NULL, &error));
+	g_assert_no_error(error);
+	invoice = invoice_new_numbered(f, "INV-2026-ACME-CORPORATION-INTERNATIONAL-HOLDINGS-SUBSIDIARY-0000000041");
+
+	pdf = venture_financial_documents_invoice_pdf(f->context, invoice, &error);
+	g_assert_no_error(error);
+	boxes = text_boxes(pdf);
+	g_assert_cmpuint(boxes->len, >, 5);
+	for (i = 0; i < boxes->len; i++)
+	{
+		Box *a = &g_array_index(boxes, Box, i);
+
+		if (a->left < 47.5 || a->right > 547.5)
+			g_error("\"%s\" runs off the page: %.1f to %.1f", a->text, a->left, a->right);
+		for (j = i + 1; j < boxes->len; j++)
+		{
+			Box *b = &g_array_index(boxes, Box, j);
+
+			if (a->left < b->right && b->left < a->right && a->top < b->bottom && b->top < a->bottom)
+				g_error("\"%s\" overlaps \"%s\"", a->text, b->text);
+		}
+	}
 }
 
 /* Emailing an invoice attaches its PDF. */
@@ -246,6 +352,7 @@ main(int argc, char *argv[])
 	g_test_init(&argc, &argv, NULL);
 
 	g_test_add("/financial-documents/invoice-pdf", Fixture, NULL, set_up, test_invoice_pdf, tear_down);
+	g_test_add("/financial-documents/invoice-pdf-long-names", Fixture, NULL, set_up, test_invoice_pdf_long_names, tear_down);
 	g_test_add("/financial-documents/invoice-email-attaches-pdf", Fixture, NULL, set_up,
 	           test_invoice_email_attaches_pdf, tear_down);
 	g_test_add("/financial-documents/receipt-sent-on-payment", Fixture, NULL, set_up,

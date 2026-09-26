@@ -116,7 +116,7 @@ venture_pdf_writer_text_width(
  * @bold: whether to use the bold face
  * @text: (nullable): UTF-8 text, which may contain line breaks
  *
- * Draws @text broken into lines at spaces so none is wider than @width.
+ * Draws @text left-aligned, as venture_pdf_writer_wrap_aligned() does.
  *
  * Returns: the baseline below the last line drawn
  */
@@ -128,6 +128,60 @@ venture_pdf_writer_wrap(
 	gdouble			 width,
 	gdouble			 size,
 	gboolean		 bold,
+	const gchar		*text
+);
+
+/**
+ * venture_pdf_writer_wrap_aligned:
+ * @self: a #VenturePdfWriter
+ * @x: the left edge, or with %VENTURE_PDF_ALIGN_RIGHT the right edge
+ * @y: baseline of the first line, points from the top
+ * @width: widest a line may be
+ * @size: font size in points
+ * @bold: whether to use the bold face
+ * @align: which edge every line keeps to
+ * @text: (nullable): UTF-8 text, which may contain line breaks
+ *
+ * Draws @text broken into lines at spaces so none is wider than @width. A
+ * single word wider than @width -- a long invoice number, a web address --
+ * is broken between characters rather than run past the edge.
+ *
+ * Returns: the baseline below the last line drawn
+ */
+gdouble
+venture_pdf_writer_wrap_aligned(
+	VenturePdfWriter	*self,
+	gdouble			 x,
+	gdouble			 y,
+	gdouble			 width,
+	gdouble			 size,
+	gboolean		 bold,
+	VenturePdfAlign		 align,
+	const gchar		*text
+);
+
+/**
+ * venture_pdf_writer_fit_size:
+ * @self: a #VenturePdfWriter
+ * @size: the size wanted
+ * @min_size: the smallest size worth shrinking to
+ * @bold: whether to use the bold face
+ * @width: the space available
+ * @text: UTF-8 text
+ *
+ * The largest size, in half-point steps from @size down to @min_size, at
+ * which @text fits on one line of @width. Text that does not fit even at
+ * @min_size gets @min_size, and should then be wrapped.
+ *
+ * Returns: a font size in points
+ */
+gdouble
+venture_pdf_writer_fit_size(
+	VenturePdfWriter	*self,
+	gdouble			 size,
+	gdouble			 min_size,
+	gboolean		 bold,
+	gdouble			 width,
 	const gchar		*text
 );
 

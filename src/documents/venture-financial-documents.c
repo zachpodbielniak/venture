@@ -16,6 +16,14 @@
 #define DOC_RIGHT	(DOC_WIDTH - DOC_MARGIN)
 #define DOC_BOTTOM	(DOC_HEIGHT - 72.0)
 
+/*
+ * The header is two columns: the business on the left, the document's
+ * title and dates on the right. Each keeps to its half, so a long invoice
+ * number or business name wraps within it instead of running into the
+ * other -- which is what a 60-character number did.
+ */
+#define DOC_COLUMN	((DOC_RIGHT - DOC_MARGIN) / 2.0 - 12.0)
+
 /* Text colours: body ink, and the grey of a label. */
 #define INK	0.08
 #define LABEL	0.42
@@ -60,27 +68,21 @@ draw_letterhead(
 	}
 
 	venture_pdf_writer_set_grey(pdf, INK);
-	venture_pdf_writer_text(pdf, DOC_MARGIN, y, 16, TRUE, VENTURE_PDF_ALIGN_LEFT,
-	                        (NULL != name) ? name : "");
-	y += 16;
+	{
+		const gchar *shown = (NULL != name) ? name : "";
+		gdouble size = venture_pdf_writer_fit_size(pdf, 16, 11, TRUE, DOC_COLUMN, shown);
+
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, size, TRUE, shown) - size * 0.35;
+	}
 	venture_pdf_writer_set_grey(pdf, LABEL);
 	if (!venture_string_is_empty(address))
-		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, 240, 9, FALSE, address);
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, 9, FALSE, address);
 	if (!venture_string_is_empty(email))
-	{
-		venture_pdf_writer_text(pdf, DOC_MARGIN, y, 9, FALSE, VENTURE_PDF_ALIGN_LEFT, email);
-		y += 12;
-	}
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, 9, FALSE, email);
 	if (!venture_string_is_empty(phone))
-	{
-		venture_pdf_writer_text(pdf, DOC_MARGIN, y, 9, FALSE, VENTURE_PDF_ALIGN_LEFT, phone);
-		y += 12;
-	}
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, 9, FALSE, phone);
 	if (!venture_string_is_empty(website))
-	{
-		venture_pdf_writer_text(pdf, DOC_MARGIN, y, 9, FALSE, VENTURE_PDF_ALIGN_LEFT, website);
-		y += 12;
-	}
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, 9, FALSE, website);
 	venture_pdf_writer_set_grey(pdf, INK);
 
 	return y;
@@ -100,9 +102,9 @@ draw_meta(
 	venture_pdf_writer_set_grey(pdf, LABEL);
 	venture_pdf_writer_text(pdf, DOC_RIGHT - 110, y, 9, FALSE, VENTURE_PDF_ALIGN_RIGHT, label);
 	venture_pdf_writer_set_grey(pdf, INK);
-	venture_pdf_writer_text(pdf, DOC_RIGHT, y, 9, TRUE, VENTURE_PDF_ALIGN_RIGHT, value);
-
-	return y + 14;
+	/* A value keeps to the 100 points right of its label, wrapping a long
+	 * reference rather than printing over the label. */
+	return venture_pdf_writer_wrap_aligned(pdf, DOC_RIGHT, y, 100, 9, TRUE, VENTURE_PDF_ALIGN_RIGHT, value) + 1.85;
 }
 
 /* Who the document is to: name, then email and address as filled in. */
@@ -125,16 +127,12 @@ draw_party(
 
 	name = venture_entity_get_display_name(company);
 	g_object_get(company, "email", &email, "address", &address, NULL);
-	venture_pdf_writer_text(pdf, DOC_MARGIN, y, 11, TRUE, VENTURE_PDF_ALIGN_LEFT, name);
-	y += 14;
+	y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_RIGHT - DOC_MARGIN, 11, TRUE, name) - 0.85;
 	venture_pdf_writer_set_grey(pdf, LABEL);
 	if (!venture_string_is_empty(address))
-		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, 240, 9, FALSE, address);
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, 9, FALSE, address);
 	if (!venture_string_is_empty(email))
-	{
-		venture_pdf_writer_text(pdf, DOC_MARGIN, y, 9, FALSE, VENTURE_PDF_ALIGN_LEFT, email);
-		y += 12;
-	}
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y, DOC_COLUMN, 9, FALSE, email);
 	venture_pdf_writer_set_grey(pdf, INK);
 
 	return y;
@@ -253,8 +251,14 @@ venture_financial_documents_invoice_pdf(
 
 	/* The title and its dates, on the right, level with the letterhead. */
 	top = DOC_MARGIN + 18;
-	venture_pdf_writer_text(pdf, DOC_RIGHT, top, 20, TRUE, VENTURE_PDF_ALIGN_RIGHT, title);
-	top += 24;
+	{
+		/* Shrunk to fit its column first, then wrapped: a number too long
+		 * for one line at 12 points still stays on the right. */
+		gdouble size = venture_pdf_writer_fit_size(pdf, 20, 12, TRUE, DOC_COLUMN, title);
+
+		top = venture_pdf_writer_wrap_aligned(pdf, DOC_RIGHT, top, DOC_COLUMN, size, TRUE,
+			VENTURE_PDF_ALIGN_RIGHT, title) - size * 0.35 + 6;
+	}
 	issued_text = day_text(context, issued);
 	due_text = day_text(context, due);
 	top = draw_meta(pdf, top, "Issued", issued_text);
@@ -450,9 +454,9 @@ venture_financial_documents_receipt_pdf(
 			g_object_get(invoice, "number", &invoice_number, NULL);
 		label = g_strdup(!venture_string_is_empty(invoice_number) ? invoice_number : "Invoice");
 		part_text = money_text(part);
-		venture_pdf_writer_text(pdf, DOC_MARGIN + 8, y, 10, FALSE, VENTURE_PDF_ALIGN_LEFT, label);
 		venture_pdf_writer_text(pdf, column_amount, y, 10, FALSE, VENTURE_PDF_ALIGN_RIGHT, part_text);
-		y += 16;
+		/* The invoice number wraps short of the amount column. */
+		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN + 8, y, column_tax - DOC_MARGIN - 8, 10, FALSE, label) + 2.5;
 		accumulate(&applied, part);
 	}
 
