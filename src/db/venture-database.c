@@ -1039,6 +1039,91 @@ venture_database_snapshot_update(VentureDatabase *self, VentureEntity *record, g
 }
 
 /*
+ * A reference flagged SAME_PARENT must point at a record under the same
+ * parent as this one: an invoice's "Attention of" is somebody at the
+ * invoice's customer, never somebody at another. Checked when either end
+ * of the pair is written, so a record whose contact has since moved to
+ * another company stays editable.
+ */
+static gboolean
+venture_database_check_same_parent(
+	VentureDatabase	 *self,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	GError		**error
+){
+	VentureEntityClass *klass;
+	g_autofree GParamSpec **properties = NULL;
+	guint n_properties;
+	guint i;
+
+	klass = VENTURE_ENTITY_GET_CLASS(entity);
+	properties = venture_entity_class_list_persistent_properties(klass, &n_properties);
+
+	for (i = 0; i < n_properties; i++)
+	{
+		g_autoptr(VentureEntity) target = NULL;
+		g_autoptr(GError) missing = NULL;
+		const gchar *name = properties[i]->name;
+		const gchar *parent;
+		GType target_type;
+		gint64 target_id = 0, parent_id = 0, theirs = 0;
+
+		if (0 == (venture_entity_class_get_column_flags(klass, name) & VENTURE_COLUMN_FLAG_SAME_PARENT))
+			continue;
+		parent = venture_entity_class_get_shared_parent(klass, name);
+		if (NULL == parent)
+			continue;
+
+		g_object_get(entity, name, &target_id, parent, &parent_id, NULL);
+		if (0 == target_id)
+			continue;
+		if (NULL != previous)
+		{
+			gint64 old_target = 0, old_parent = 0;
+
+			g_object_get(previous, name, &old_target, parent, &old_parent, NULL);
+			if (old_target == target_id && old_parent == parent_id)
+				continue;
+		}
+
+		target_type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(),
+			venture_entity_class_get_reference(klass, name));
+		target = venture_database_get(self, target_type, target_id, &missing);
+		/* A target that is not there is the reference check's refusal. */
+		if (NULL == target)
+			continue;
+		g_object_get(target, parent, &theirs, NULL);
+		if (theirs == parent_id)
+			continue;
+
+		{
+			g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(entity);
+			g_autofree gchar *type_label = NULL, *owner = NULL;
+			const gchar *field = name;
+			guint j;
+
+			for (j = 0; NULL != specs && j < specs->len; j++)
+			{
+				VentureFieldSpec *spec = g_ptr_array_index(specs, j);
+
+				if (0 == g_strcmp0(venture_field_spec_get_name(spec), name))
+					field = venture_field_spec_get_label(spec);
+			}
+			type_label = venture_entity_type_dup_label(
+				venture_entity_registry_lookup_any(venture_entity_registry_get_default(),
+					venture_entity_class_get_reference(klass, parent)), FALSE);
+			owner = g_ascii_strdown(type_label, -1);
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"\"%s\" must be someone at this %s", field, owner);
+		}
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
  * Refuses a save whose reference fields would point at rows that are not
  * there. The declaration in the field table is the contract; without this,
  * `create expense venture_id=99999` succeeds and the dangling row surfaces
@@ -1535,7 +1620,8 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 
 	/* Inside the lock, so the row a reference was checked against cannot
 	 * vanish before the write that relies on it. */
-	if (!venture_database_check_references(self, entity, previous, error))
+	if (!venture_database_check_references(self, entity, previous, error) ||
+	    !venture_database_check_same_parent(self, entity, previous, error))
 	{
 		g_rec_mutex_unlock(&self->lock);
 		return FALSE;

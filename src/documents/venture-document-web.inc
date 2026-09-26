@@ -4,7 +4,9 @@
 #define VENTURE_DOCUMENT_MAX_LINES 200
 
 static const gchar *const document_header_fields[] = { "number", "company-id", "contact-id", "terms", "notes", NULL };
+static const gchar *const document_invoice_fields[] = { "tax-exempt", NULL };
 static const gchar *const document_line_fields[] = { "description", "quantity", "unit-price", "product-id", "discount-percent", "tax-percent", NULL };
+static const gchar *const document_invoice_line_fields[] = { "tax-code-id", NULL };
 
 static gboolean
 document_read_fields(HtmxRequest *request, VentureEntity *record, const gchar *const *fields,
@@ -22,6 +24,26 @@ document_read_fields(HtmxRequest *request, VentureEntity *record, const gchar *c
 	return TRUE;
 }
 
+/*
+ * Why a customer pays no tax, as the return wants it: the kind of
+ * exemption and the certificate that proves it, in one line that is
+ * frozen onto the invoice at issue.
+ */
+static gchar *
+document_exemption_reason(HtmxRequest *request)
+{
+	const gchar *kind = htmx_request_get_form_value(request, "exempt-kind");
+	const gchar *number = htmx_request_get_form_value(request, "exempt-number");
+
+	if (htmx_request_get_form_value(request, "tax-exempt") == NULL)
+		return NULL;
+	if (kind == NULL || *kind == '\0')
+		kind = "Exempt";
+	if (number != NULL && *number != '\0')
+		return g_strdup_printf("%s, certificate %s", kind, number);
+	return g_strdup(kind);
+}
+
 static JsonObject *
 document_spec_from_request(HtmxRequest *request, GError **error)
 {
@@ -36,10 +58,17 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 		JsonObject *spec;
 		JsonArray *lines = json_array_new();
 		guint i;
-		if (!document_read_fields(request, header, document_header_fields, "", error))
+		if (!document_read_fields(request, header, document_header_fields, "", error) ||
+			(!quote && !document_read_fields(request, header, document_invoice_fields, "", error)))
 		{
 			json_array_unref(lines);
 			return NULL;
+		}
+		if (!quote)
+		{
+			g_autofree gchar *reason = document_exemption_reason(request);
+			if (reason != NULL)
+				g_object_set(header, "tax-exempt-reason", reason, NULL);
 		}
 		node = venture_serializable_to_json(VENTURE_SERIALIZABLE(header), FALSE);
 		spec = json_object_ref(json_node_get_object(node));
@@ -59,7 +88,8 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 			if (description == NULL || description[0] == '\0')
 				continue;
 			line = g_object_new(quote ? VENTURE_TYPE_QUOTE_LINE : VENTURE_TYPE_INVOICE_LINE, NULL);
-			if (!document_read_fields(request, line, document_line_fields, prefix, error))
+			if (!document_read_fields(request, line, document_line_fields, prefix, error) ||
+				(!quote && !document_read_fields(request, line, document_invoice_line_fields, prefix, error)))
 			{
 				json_object_unref(spec);
 				return NULL;
@@ -127,12 +157,31 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 	{
 		VentureEntity *row = g_ptr_array_index(company_rows, i);
 		g_autofree gchar *name = venture_entity_get_display_name(row);
-		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(row));
+		g_autofree gchar *reason = NULL, *number = NULL;
+		gboolean exempt = FALSE;
+
+		/* What the customer's record already says about tax rides on the
+		 * option, so choosing them fills the exemption in. */
+		g_object_get(row, "tax-exempt", &exempt, "tax-exempt-reason", &reason,
+			"tax-exemption-number", &number, NULL);
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\"", venture_entity_get_id(row));
+		if (exempt)
+		{
+			g_string_append(html, " data-exempt=\"1\" data-exempt-kind=\"");
+			venture_html_escape_append(html, reason != NULL ? reason : "");
+			g_string_append(html, "\" data-exempt-number=\"");
+			venture_html_escape_append(html, number != NULL ? number : "");
+			g_string_append(html, "\"");
+		}
+		g_string_append(html, ">");
 		venture_html_escape_append(html, name);
 		g_string_append(html, "</option>");
 	}
 	g_string_append(html, "</select></label>");
 
+	/* Only the chosen customer's people: an invoice to one company is
+	 * never for the attention of somebody at another. The save refuses it
+	 * as well; this only stops it being offered. */
 	g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Attention of</span>"
 		"<select name=\"contact-id\" data-doc-contact><option value=\"\">Nobody in particular</option>");
 	for (i = 0; contact_rows != NULL && i < contact_rows->len; i++)
@@ -180,10 +229,49 @@ document_product_options(VentureWebServer *self, gint64 organization)
 	return g_string_free(html, FALSE);
 }
 
+/*
+ * The tax picker's options: no tax, then every active tax rate, each
+ * carrying its percent so the preview can add it up. A rate is a record,
+ * not a number typed on each line, so the return reads the jurisdiction
+ * it was charged under.
+ */
+static gchar *
+document_tax_options(VentureWebServer *self, gint64 organization)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_TAX_CODE);
+	g_autoptr(GPtrArray) rows = NULL;
+	GString *html = g_string_new("<option value=\"\" data-rate=\"0\">No tax</option>");
+	guint i;
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	if (organization > 0)
+		venture_query_set_organization(query, organization);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autofree gchar *name = venture_entity_get_display_name(row);
+		gint64 numerator = 0, denominator = 0;
+		gboolean active = TRUE;
+		gchar percent[G_ASCII_DTOSTR_BUF_SIZE];
+
+		g_object_get(row, "active", &active, NULL);
+		if (!active || !venture_tax_code_get_rate(VENTURE_TAX_CODE(row), &numerator, &denominator, NULL))
+			continue;
+		g_ascii_formatd(percent, sizeof percent, "%.4g", (gdouble)numerator * 100.0 / (gdouble)denominator);
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-rate=\"%s\">",
+			venture_entity_get_id(row), percent);
+		venture_html_escape_append(html, name);
+		g_string_append_printf(html, " \xc2\xb7 %s%%</option>", percent);
+	}
+	return g_string_free(html, FALSE);
+}
+
 /* One line row. The same names the composer has always read, so the API,
  * the CLI and this page post one contract. */
 static void
-document_append_line_row(GString *html, const gchar *index, const gchar *products)
+document_append_line_row(GString *html, const gchar *index, const gchar *products, const gchar *taxes)
 {
 	g_string_append_printf(html,
 		"<tr class=\"line-row\" data-line>"
@@ -195,13 +283,18 @@ document_append_line_row(GString *html, const gchar *index, const gchar *product
 		"<td class=\"num\"><input type=\"text\" name=\"line-%s-unit-price\" placeholder=\"0.00\" "
 		"inputmode=\"decimal\" aria-label=\"Unit price\" data-unit></td>"
 		"<td class=\"num\"><input type=\"number\" name=\"line-%s-discount-percent\" placeholder=\"0\" min=\"0\" max=\"100\" "
-		"step=\"any\" aria-label=\"Discount percent\" data-discount></td>"
-		"<td class=\"num\"><input type=\"number\" name=\"line-%s-tax-percent\" placeholder=\"0\" min=\"0\" step=\"any\" "
-		"aria-label=\"Tax percent\" data-tax></td>"
-		"<td class=\"num line-amount\" data-amount>0.00</td>"
-		"<td class=\"line-remove\"><button type=\"button\" class=\"btn btn-ghost btn-sm\" data-remove-line "
-		"aria-label=\"Remove line\" title=\"Remove line\">\xc3\x97</button></td></tr>",
-		index, index, products, index, index, index, index);
+		"step=\"any\" aria-label=\"Discount percent\" data-discount></td>",
+		index, index, products, index, index, index);
+	/* An invoice line is taxed by a rate record; a quote line still
+	 * carries a whole percent, which is all its table can hold. */
+	if (taxes != NULL)
+		g_string_append_printf(html, "<td class=\"line-tax\"><select name=\"line-%s-tax-code-id\" "
+			"aria-label=\"Tax\" data-no-picker data-tax>%s</select></td>", index, taxes);
+	else
+		g_string_append_printf(html, "<td class=\"num\"><input type=\"number\" name=\"line-%s-tax-percent\" "
+			"placeholder=\"0\" min=\"0\" step=\"any\" aria-label=\"Tax percent\" data-tax></td>", index);
+	g_string_append(html, "<td class=\"num line-amount\" data-amount>0.00</td>"
+		VENTURE_WEB_LINE_DELETE "</tr>");
 }
 
 /*
@@ -218,6 +311,7 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 		venture_web_module_enabled(self, "recurring");
 	gint64 organization = venture_web_active_organization(self, request);
 	g_autofree gchar *products = document_product_options(self, organization);
+	g_autofree gchar *taxes = quote ? NULL : document_tax_options(self, organization);
 	const gchar *noun = quote ? "quote" : "invoice";
 
 	g_string_append(html, "<form method=\"post\" class=\"doc-compose\" data-doc-compose>"
@@ -271,15 +365,15 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 			quote ? "Q-2026-001" : "INV-2026-001");
 	g_string_append(html, "</div>");
 
-	g_string_append(html, "<table class=\"line-items\"><thead><tr>"
+	g_string_append_printf(html, "<table class=\"line-items\"><thead><tr>"
 		"<th>Item</th><th class=\"num\">Qty</th><th class=\"num\">Unit price</th>"
-		"<th class=\"num\">Discount %</th><th class=\"num\">Tax %</th><th class=\"num\">Amount</th><th></th>"
-		"</tr></thead><tbody data-lines>");
-	document_append_line_row(html, "0", products);
+		"<th class=\"num\">Discount %%</th><th%s>Tax%s</th><th class=\"num\">Amount</th><th></th>"
+		"</tr></thead><tbody data-lines>", quote ? " class=\"num\"" : "", quote ? " %" : "");
+	document_append_line_row(html, "0", products, taxes);
 	g_string_append(html, "</tbody></table>"
 		"<button type=\"button\" class=\"btn btn-ghost add-line\" data-add-line>+ Add a line</button>"
 		"<template data-line-template>");
-	document_append_line_row(html, "__N__", products);
+	document_append_line_row(html, "__N__", products, taxes);
 	g_string_append(html, "</template></div></section>");
 
 	g_string_append_printf(html, "<aside class=\"doc-aside\"><section class=\"card doc-totals\"><div class=\"card-body\">"
@@ -306,6 +400,25 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 			"Editing the schedule changes the invoices still to come, never the ones already sent.</span>"
 			"</div></section>", start);
 	}
+	/*
+	 * Exemption. Ticked for a customer whose record says they are exempt
+	 * the moment they are chosen; ticking it by hand asks for the proof a
+	 * non-profit or reseller gives, and by default keeps it on the
+	 * customer so the next invoice fills it in.
+	 */
+	if (!quote)
+		g_string_append(html, "<section class=\"card doc-exempt\" data-exempt-card><div class=\"card-body\">"
+			"<label class=\"checkbox\"><input type=\"checkbox\" name=\"tax-exempt\" value=\"true\" data-exempt> "
+			"This customer doesn't pay tax</label>"
+			"<div class=\"exempt-detail\" data-exempt-detail hidden>"
+			"<label class=\"doc-field\"><span class=\"field-label\">Why</span><select name=\"exempt-kind\" data-exempt-kind>"
+			"<option>Non-profit (501(c)(3))</option><option>Resale</option><option>Government</option>"
+			"<option>Religious or educational</option><option>Other exemption</option></select></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">Certificate number</span>"
+			"<input type=\"text\" name=\"exempt-number\" placeholder=\"From their exemption certificate\" data-exempt-number>"
+			"<span class=\"field-help\">Printed on the invoice and kept for the tax return.</span></label>"
+			"<label class=\"checkbox\"><input type=\"checkbox\" name=\"exempt-remember\" value=\"1\" checked> "
+			"Remember for this customer</label></div></div></section>");
 	g_string_append(html, "<details class=\"card form-section\"><summary>Terms and notes</summary><div class=\"card-body\">"
 		"<label class=\"doc-field\"><span class=\"field-label\">Payment terms</span>"
 		"<textarea name=\"terms\" rows=\"2\" placeholder=\"For example: 30 days\"></textarea>"
@@ -323,31 +436,52 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 	g_string_append(html, "<script>(function(){"
 		"var f=document.querySelector('[data-doc-compose]');if(!f)return;"
 		"var body=f.querySelector('[data-lines]'),tpl=f.querySelector('[data-line-template]'),n=1;"
+		"var ex=f.querySelector('[data-exempt]'),detail=f.querySelector('[data-exempt-detail]');"
 		"function num(v){v=parseFloat(String(v||'').replace(/[^0-9.\\-]/g,''));return isNaN(v)?0:v;}"
-		"function recalc(){var sub=0,dis=0,tax=0;"
+		"function rate(r){var t=r.querySelector('[data-tax]');if(!t)return 0;"
+		"if(t.tagName==='SELECT'){var o=t.options[t.selectedIndex];return o?num(o.dataset.rate):0;}return num(t.value);}"
+		"function recalc(){var sub=0,dis=0,tax=0,free=ex&&ex.checked;"
 		"body.querySelectorAll('[data-line]').forEach(function(r){"
 		"var q=num(r.querySelector('[data-qty]').value),p=num(r.querySelector('[data-unit]').value),"
-		"d=num(r.querySelector('[data-discount]').value),t=num(r.querySelector('[data-tax]').value);"
+		"d=num(r.querySelector('[data-discount]').value),t=free?0:rate(r);"
 		"var g=q*p,dd=g*d/100,net=g-dd,tt=net*t/100;sub+=g;dis+=dd;tax+=tt;"
-		"r.querySelector('[data-amount]').textContent=(net+tt).toFixed(2);});"
+		"r.querySelector('[data-amount]').textContent=(net+tt).toFixed(2);"
+		"var s=r.querySelector('select[data-tax]');if(s)s.disabled=!!free;});"
 		"f.querySelector('[data-subtotal]').textContent=sub.toFixed(2);"
 		"f.querySelector('[data-discount-total]').textContent=(dis?'-':'')+dis.toFixed(2);"
-		"f.querySelector('[data-tax-total]').textContent=tax.toFixed(2);"
+		"f.querySelector('[data-tax-total]').textContent=free?'Exempt':tax.toFixed(2);"
 		"f.querySelector('[data-total]').textContent=(sub-dis+tax).toFixed(2);}"
+		"function showExempt(){if(detail)detail.hidden=!(ex&&ex.checked);recalc();}"
+		"function customer(c){var k=f.querySelector('[data-doc-contact]'),mine=[];"
+		"Array.prototype.forEach.call(k.options,function(o){if(!o.value)return;o.hidden=!c||o.dataset.company!==c;o.disabled=o.hidden;if(!o.hidden)mine.push(o);});"
+		"if(!k.selectedOptions[0]||k.selectedOptions[0].hidden)k.value=mine.length===1?mine[0].value:'';"
+		"k.disabled=!c;k.dispatchEvent(new Event('change',{bubbles:true}));"
+		"if(!ex)return;var o=f.querySelector('[data-doc-company]').selectedOptions[0];"
+		"var on=!!(o&&o.dataset.exempt);ex.checked=on;"
+		"if(on){var kind=f.querySelector('[data-exempt-kind]'),v=o.dataset.exemptKind||'';"
+		"if(v&&!Array.prototype.some.call(kind.options,function(x){return x.value===v;}))kind.add(new Option(v,v));"
+		"if(v)kind.value=v;f.querySelector('[data-exempt-number]').value=o.dataset.exemptNumber||'';"
+		"f.querySelector('[name=exempt-remember]').checked=false;}"
+		"else f.querySelector('[name=exempt-remember]').checked=true;"
+		"showExempt();}"
 		"f.addEventListener('input',recalc);"
 		"f.addEventListener('change',function(e){var s=e.target;"
 		"if(s.classList.contains('line-product')){var o=s.options[s.selectedIndex],r=s.closest('[data-line]');"
 		"var d=r.querySelector('input[name$=\"-description\"]'),p=r.querySelector('[data-unit]');"
 		"if(o&&o.value){if(!d.value)d.value=o.textContent;if(!p.value&&o.dataset.price)p.value=o.dataset.price;}recalc();}"
-		"if(s.matches('[data-doc-company]')){var c=s.value,k=f.querySelector('[data-doc-contact]');"
-		"Array.prototype.forEach.call(k.options,function(o){if(o.value)o.hidden=c&&o.dataset.company!==c;});"
-		"if(k.selectedOptions[0]&&k.selectedOptions[0].hidden)k.value='';}});"
+		"if(s.matches('[data-doc-company]'))customer(s.value);"
+		"if(s===ex)showExempt();"
+		"if(s.matches('[data-tax]'))recalc();});"
 		"f.querySelector('[data-add-line]').addEventListener('click',function(){"
 		"var row=tpl.innerHTML.replace(/__N__/g,String(n++));body.insertAdjacentHTML('beforeend',row);"
-		"body.lastElementChild.querySelector('input').focus();});"
+		"var last=body.lastElementChild,prev=last.previousElementSibling;"
+		"if(prev){var pt=prev.querySelector('select[data-tax]'),nt=last.querySelector('select[data-tax]');if(pt&&nt)nt.value=pt.value;}"
+		"last.querySelector('input').focus();recalc();});"
 		"body.addEventListener('click',function(e){var b=e.target.closest('[data-remove-line]');"
-		"if(!b)return;if(body.querySelectorAll('[data-line]').length>1)b.closest('[data-line]').remove();recalc();});"
-		"recalc();})();</script>");
+		"if(!b)return;var rows=body.querySelectorAll('[data-line]'),r=b.closest('[data-line]');"
+		"if(rows.length>1)r.remove();else r.querySelectorAll('input').forEach(function(i){i.value=i.name.indexOf('quantity')>0?'1':'';});recalc();});"
+		"customer(f.querySelector('[data-doc-company]').value);"
+		"})();</script>");
 
 	return g_string_free(html, FALSE);
 }
@@ -364,7 +498,7 @@ document_save_schedule(VentureWebServer *self, HtmxRequest *request, const Ventu
 {
 	static const gchar *const header[] = { "company-id", "contact-id", "terms", "notes", NULL };
 	static const gchar *const line_fields[] = { "description", "quantity", "unit-price", "product-id",
-		"discount-percent", "tax-percent", NULL };
+		"discount-percent", "tax-code-id", NULL };
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(JsonNode) root = NULL;
 	g_autoptr(VentureEntity) schedule = NULL;
@@ -397,6 +531,14 @@ document_save_schedule(VentureWebServer *self, HtmxRequest *request, const Ventu
 		else
 			json_builder_add_string_value(builder, value);
 	}
+	if (htmx_request_get_form_value(request, "tax-exempt") != NULL)
+	{
+		g_autofree gchar *reason = document_exemption_reason(request);
+		json_builder_set_member_name(builder, "tax_exempt");
+		json_builder_add_boolean_value(builder, TRUE);
+		json_builder_set_member_name(builder, "tax_exempt_reason");
+		json_builder_add_string_value(builder, reason);
+	}
 	json_builder_set_member_name(builder, "lines");
 	json_builder_begin_array(builder);
 	for (i = 0; i < VENTURE_DOCUMENT_MAX_LINES; i++)
@@ -416,7 +558,7 @@ document_save_schedule(VentureWebServer *self, HtmxRequest *request, const Ventu
 				continue;
 			g_strdelimit(wire, "-", '_');
 			json_builder_set_member_name(builder, wire);
-			if (g_strcmp0(line_fields[f], "product-id") == 0)
+			if (g_str_has_suffix(line_fields[f], "-id"))
 				json_builder_add_int_value(builder, g_ascii_strtoll(value, NULL, 10));
 			else
 				json_builder_add_string_value(builder, value);
@@ -462,6 +604,34 @@ document_save_schedule(VentureWebServer *self, HtmxRequest *request, const Ventu
 	}
 }
 
+/*
+ * "Remember for this customer": the exemption typed on the invoice goes
+ * onto the customer, whose record is what every later invoice freezes its
+ * tax from. Saved through the ordinary save, so it is audited like an
+ * edit of the customer made by hand.
+ */
+static gboolean
+document_remember_exemption(VentureWebServer *self, HtmxRequest *request, const VentureActor *actor,
+	GError **error)
+{
+	const gchar *company_id = htmx_request_get_form_value(request, "company-id");
+	const gchar *kind = htmx_request_get_form_value(request, "exempt-kind");
+	const gchar *number = htmx_request_get_form_value(request, "exempt-number");
+	g_autoptr(VentureEntity) company = NULL;
+
+	if (htmx_request_get_form_value(request, "tax-exempt") == NULL ||
+		htmx_request_get_form_value(request, "exempt-remember") == NULL ||
+		company_id == NULL || *company_id == '\0')
+		return TRUE;
+	company = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY,
+		g_ascii_strtoll(company_id, NULL, 10), error);
+	if (company == NULL)
+		return FALSE;
+	g_object_set(company, "tax-exempt", TRUE, "tax-exempt-reason", kind != NULL ? kind : "",
+		"tax-exemption-number", number != NULL ? number : "", NULL);
+	return venture_database_save(venture_context_get_database(self->context), company, actor, error);
+}
+
 static HtmxResponse *
 venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -496,6 +666,8 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
+	if (!quote && !api && !document_remember_exemption(self, request, &actor, &error))
+		return venture_web_error_response(error);
 	if (!quote && !api && htmx_request_get_form_value(request, "repeat") != NULL)
 		return document_save_schedule(self, request, &actor);
 	spec = document_spec_from_request(request, &error);

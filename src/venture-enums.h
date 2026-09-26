@@ -972,6 +972,13 @@ typedef enum
  *   replay key, a digest, a configuration revision. Presentation only: the
  *   field is kept out of summaries, list columns and the everyday form, and
  *   shown under a collapsed "Technical" heading. Storage ignores it.
+ * @VENTURE_COLUMN_FLAG_SAME_PARENT: a reference whose target must share
+ *   this record's parent -- an invoice's "Attention of" is somebody at the
+ *   invoice's customer. The parent is the reference both records carry
+ *   under the same name to the same type; see
+ *   venture_entity_class_get_shared_parent(). Checked at the save when
+ *   either end is written, and used by the form to offer only matching
+ *   records.
  *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
@@ -994,7 +1001,8 @@ typedef enum
 	VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER = 1 << 11,
 	VENTURE_COLUMN_FLAG_HOST_RESOURCE = 1 << 13,
 	VENTURE_COLUMN_FLAG_RETAIN_REFERENCE = 1 << 12,
-	VENTURE_COLUMN_FLAG_TECHNICAL = 1 << 14
+	VENTURE_COLUMN_FLAG_TECHNICAL = 1 << 14,
+	VENTURE_COLUMN_FLAG_SAME_PARENT = 1 << 15
 } VentureColumnFlags;
 
 /**

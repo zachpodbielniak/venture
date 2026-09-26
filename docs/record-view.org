@@ -113,6 +113,36 @@ plural and its button says what it makes: "New company".
 Folded sections are =<details>=: every input is still in the form and still
 posts. Choices read as words and post as the value.
 
+** A reference inside a parent
+
+A reference declared =VENTURE_COLUMN_FLAG_SAME_PARENT= must point at a
+record under the same parent as the one being saved. The parent is found,
+not listed: =venture_entity_class_get_shared_parent()= returns the first
+reference the target type declares under the same name, and to the same
+type, as the record does -- an invoice's =contact-id= shares =company-id=,
+because a contact works for a company and an invoice is to one. The
+organization is never a parent. The save refuses a mismatch when either
+end is written, so a record whose contact has since moved company stays
+editable. The form marks the select =data-same-parent= and each option
+=data-parent=, and the page hides the options under another parent;
+the themed picker leaves out hidden options.
+
+** When something is refused
+
+Every route reports a failure as JSON, and a person never sees it:
+
+- The page posts an ordinary form itself (=X-Venture-Inline=), so a
+  refusal is shown above the form with everything typed still in it, and
+  a success goes where the server sends it. A file answer is saved.
+  Opt a form out with =data-no-inline=; htmx and multipart forms are left
+  alone.
+- An htmx request's refusal is a toast.
+- With scripting off, a browser (=Accept: text/html=) is answered with a
+  page in the app saying what to fix and a button back to the form. A
+  server fault folds its detail away.
+- The API, webhooks, federation and anything that did not ask for HTML
+  get the JSON exactly as before.
+
 * Where it lives
 
 =src/boxed/venture-field-spec.c= classifies. =src/web/venture-web-record-view.inc=

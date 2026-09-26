@@ -160,6 +160,149 @@
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* Failures shown where they happened                                  */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Every route reports a failure as JSON. A person should never be
+	 * sent to it: an ordinary form is posted from here instead, so a
+	 * refusal is shown above the form with everything typed still in it,
+	 * and a success goes where the server sends it. htmx requests get the
+	 * same message as a toast. With scripting off the server answers a
+	 * browser with a page instead, so nobody sees JSON either way.
+	 */
+	function failureMessage(text) {
+		try {
+			var parsed = JSON.parse(text);
+
+			if (parsed && parsed.message) {
+				/* The service's name is for the log, not the reader. */
+				var words = parsed.message.replace(/^Venture[A-Za-z]*: /, "");
+
+				return words.charAt(0).toUpperCase() + words.slice(1);
+			}
+		} catch (ignored) {
+			/* not JSON: a proxy's page, or nothing at all */
+		}
+
+		return "That didn’t work. Nothing was saved — please try again.";
+	}
+
+	function showFormError(form, message) {
+		var box = form.querySelector("[data-form-error]");
+
+		if (!box) {
+			box = document.createElement("div");
+			box.setAttribute("data-form-error", "");
+			box.setAttribute("role", "alert");
+			box.className = "form-error";
+			form.insertBefore(box, form.firstChild);
+		}
+
+		box.textContent = "";
+		var title = document.createElement("strong");
+		title.textContent = "That didn’t save. ";
+		box.appendChild(title);
+		box.appendChild(document.createTextNode(message));
+		box.hidden = false;
+		box.scrollIntoView({ block: "center", behavior: "smooth" });
+	}
+
+	function postsInline(form) {
+		if ((form.getAttribute("method") || "").toLowerCase() !== "post"
+		    || form.hasAttribute("data-no-inline")
+		    || form.getAttribute("target")
+		    || (form.enctype || "").indexOf("multipart") === 0) {
+			return false;
+		}
+
+		for (var i = 0; i < form.attributes.length; i++) {
+			if (form.attributes[i].name.indexOf("hx-") === 0) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	function wireInlineForms() {
+		document.addEventListener("submit", function (event) {
+			var form = event.target;
+
+			/* Anything that already handled its own submit keeps it. */
+			if (event.defaultPrevented || !(form instanceof HTMLFormElement)
+			    || !postsInline(form) || !window.fetch) {
+				return;
+			}
+
+			event.preventDefault();
+
+			var data = new FormData(form);
+			var buttons = form.querySelectorAll("button[type=submit], button:not([type])");
+
+			if (event.submitter && event.submitter.name) {
+				data.append(event.submitter.name, event.submitter.value);
+			}
+
+			buttons.forEach(function (b) { b.disabled = true; });
+
+			fetch(form.getAttribute("action") || window.location.href, {
+				method: "POST",
+				body: new URLSearchParams(data),
+				credentials: "same-origin",
+				headers: { "Accept": "text/html", "X-Venture-Inline": "1" }
+			}).then(function (response) {
+				var type = response.headers.get("Content-Type") || "";
+
+				buttons.forEach(function (b) { b.disabled = false; });
+
+				if (!response.ok) {
+					return response.text().then(function (text) {
+						showFormError(form, failureMessage(text));
+					});
+				}
+
+				/* A file -- an export, a PDF -- is saved, not shown. */
+				if (type.indexOf("text/html") !== 0) {
+					return response.blob().then(function (blob) {
+						var link = document.createElement("a");
+						var named = /filename="?([^";]+)"?/.exec(
+							response.headers.get("Content-Disposition") || "");
+
+						link.href = URL.createObjectURL(blob);
+						link.download = named ? named[1] : "download";
+						document.body.appendChild(link);
+						link.click();
+						link.remove();
+					});
+				}
+
+				if (response.redirected) {
+					window.location.assign(response.url);
+					return null;
+				}
+
+				/* A page answered in place, as a plain post would. */
+				return response.text().then(function (text) {
+					document.open();
+					document.write(text);
+					document.close();
+				});
+			}).catch(function () {
+				buttons.forEach(function (b) { b.disabled = false; });
+				showFormError(form, "The server could not be reached. "
+					+ "Nothing was saved; check the connection and try again.");
+			});
+		});
+
+		document.body.addEventListener("htmx:responseError", function (event) {
+			var xhr = event.detail && event.detail.xhr;
+
+			toast(failureMessage(xhr ? xhr.responseText : ""), "negative", 7000);
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* The AI panel                                                        */
 	/* ------------------------------------------------------------------ */
 
@@ -1833,6 +1976,46 @@
 		return option ? option.textContent : "";
 	}
 
+	/*
+	 * A reference that must share the record's parent -- "Attention of"
+	 * on an invoice -- offers only the options under the parent chosen in
+	 * the same form. Runs before the pickers are built, and again on every
+	 * change of the parent; the save refuses a mismatch regardless.
+	 */
+	function wireSameParent(root) {
+		(root || document).querySelectorAll("select[data-same-parent]")
+			.forEach(function (select) {
+				var form = select.closest("form");
+				var parent = form && form.querySelector("[name=\""
+					+ select.getAttribute("data-same-parent") + "\"]");
+
+				if (!parent || select.ventureSameParent) {
+					return;
+				}
+
+				select.ventureSameParent = true;
+
+				function narrow() {
+					var chosen = parent.value;
+
+					Array.prototype.forEach.call(select.options, function (o) {
+						if (o.value) {
+							o.hidden = !!chosen && o.dataset.parent !== chosen;
+							o.disabled = o.hidden;
+						}
+					});
+
+					if (select.selectedOptions[0] && select.selectedOptions[0].hidden) {
+						select.value = "";
+						select.dispatchEvent(new Event("change", { bubbles: true }));
+					}
+				}
+
+				parent.addEventListener("change", narrow);
+				narrow();
+			});
+	}
+
 	function wirePickers(root) {
 		(root || document).querySelectorAll("select").forEach(function (select) {
 			if (select.venturePicker || select.multiple
@@ -1883,7 +2066,12 @@
 
 		function syncButton() {
 			button.textContent = pickerLabel(select);
+			button.disabled = select.disabled;
 		}
+
+		/* A script that sets the value -- a customer choosing its only
+		 * contact -- says so with a change event; the label follows. */
+		select.addEventListener("change", syncButton);
 
 		function rows() {
 			return Array.prototype.slice.call(
@@ -1925,6 +2113,13 @@
 
 			Array.prototype.forEach.call(select.options, function (option, i) {
 				var row = document.createElement("div");
+
+				/* A hidden option is one the page has ruled out -- a
+				 * contact at another customer -- and must not be
+				 * offered here either. */
+				if (option.hidden || option.disabled) {
+					return;
+				}
 
 				row.className = "picker-option"
 					+ (i === select.selectedIndex ? " selected" : "");
@@ -2610,6 +2805,7 @@
 
 		document.body.addEventListener("htmx:afterSwap", function (event) {
 			wireRowLinks(event.detail && event.detail.target);
+			wireSameParent(event.detail && event.detail.target);
 			wirePickers(event.detail && event.detail.target);
 			wireRecordPickers(event.detail && event.detail.target);
 			wireComposer();
@@ -3858,6 +4054,8 @@
 		wirePodEditor();
 		wireReplyTools(document);
 		wireChatStream(document);
+		wireSameParent(document);
+		wireInlineForms();
 		wirePickers(document);
 		wireRecordPickers(document);
 		wireHarness(document);

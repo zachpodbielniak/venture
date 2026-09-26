@@ -633,6 +633,26 @@ venture_entity_class_set_reference(
 );
 
 /**
+ * venture_entity_class_get_shared_parent:
+ * @klass: a #VentureEntityClass
+ * @property_name: a reference property of @klass
+ *
+ * The parent a reference's target shares with the record: the first
+ * reference property the target type declares under the same name, and to
+ * the same type, as one @klass declares. For an invoice's `contact-id`
+ * that is `company-id` -- a contact works for a company and an invoice is
+ * to one.
+ *
+ * Returns: (transfer none) (nullable): the shared property name, or %NULL
+ *   when @property_name is not a reference or the target shares nothing
+ */
+const gchar *
+venture_entity_class_get_shared_parent(
+	VentureEntityClass	*klass,
+	const gchar		*property_name
+);
+
+/**
  * venture_entity_class_get_reference:
  * @klass: a #VentureEntityClass
  * @property_name: the GObject property name

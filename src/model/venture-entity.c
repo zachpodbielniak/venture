@@ -563,6 +563,58 @@ venture_entity_class_set_reference(
 }
 
 const gchar *
+venture_entity_class_get_shared_parent(
+	VentureEntityClass	*klass,
+	const gchar		*property_name
+){
+	g_autofree GParamSpec **properties = NULL;
+	g_autoptr(GTypeClass) target_class = NULL;
+	const gchar *target_name;
+	GType target_type;
+	guint n_properties;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY_CLASS(klass), NULL);
+	g_return_val_if_fail(NULL != property_name, NULL);
+
+	target_name = venture_entity_class_get_reference(klass, property_name);
+	if (NULL == target_name)
+		return NULL;
+	target_type = venture_entity_registry_lookup_any(
+		venture_entity_registry_get_default(), target_name);
+	if (G_TYPE_INVALID == target_type)
+		return NULL;
+
+	target_class = g_type_class_ref(target_type);
+	properties = venture_entity_class_list_persistent_properties(
+		VENTURE_ENTITY_CLASS(target_class), &n_properties);
+
+	for (i = 0; i < n_properties; i++)
+	{
+		const gchar *name = properties[i]->name;
+		const gchar *theirs;
+		GParamSpec *ours;
+
+		theirs = venture_entity_class_get_reference(
+			VENTURE_ENTITY_CLASS(target_class), name);
+		/* Every record shares its organization; that is tenancy, not a
+		 * parent a person picks. */
+		if (NULL == theirs || 0 == g_strcmp0(name, property_name) ||
+		    0 == g_strcmp0(name, "organization-id"))
+			continue;
+
+		/* Ours, interned by the class, so the pointer outlives the
+		 * target class reference dropped on return. */
+		ours = g_object_class_find_property(G_OBJECT_CLASS(klass), name);
+		if (NULL != ours &&
+		    0 == g_strcmp0(venture_entity_class_get_reference(klass, name), theirs))
+			return ours->name;
+	}
+
+	return NULL;
+}
+
+const gchar *
 venture_entity_class_get_reference(
 	VentureEntityClass	*klass,
 	const gchar		*property_name

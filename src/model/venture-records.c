@@ -583,7 +583,9 @@ static const VentureFieldDecl venture_tax_code_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCode, venture_tax_code, venture_tax_code_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Tax rate", "Tax rates");
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/tax-rates/new");)
 
 gboolean
 venture_tax_code_get_rate(VentureTaxCode *self, gint64 *numerator, gint64 *denominator, GError **error)
@@ -2789,7 +2791,7 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_REF("company-id", "Bill to", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("contact-id", "Attention of", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("issued-at", "Issued", NULL, VENTURE_FIELD_KIND_DATETIME,

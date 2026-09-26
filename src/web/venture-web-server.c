@@ -245,7 +245,18 @@ venture_web_error_response(const GError *error)
 	json_builder_end_object(builder);
 	node = json_builder_get_root(builder);
 
-	return venture_web_json_response(node, status);
+	{
+		HtmxResponse *response = venture_web_json_response(node, status);
+
+		/* Kept on the response so the pipeline can give a person in a
+		 * browser a page instead of this JSON; see
+		 * venture_web_error_for_browser(). */
+		g_object_set_data_full(G_OBJECT(response), "venture-error",
+			(NULL != error) ? g_error_copy(error)
+			                : g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_FAILED, "Unknown error"),
+			(GDestroyNotify)g_error_free);
+		return response;
+	}
 }
 
 static HtmxResponse *
@@ -1079,7 +1090,17 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"finance"
 	},
 	{
-		"/e/tax_category", "Tax",
+		"/e/tax_code", "Tax rates",
+		VENTURE_ICON(
+			"<path d=\"M19 5L5 19\"/>"
+			"<circle cx=\"7.5\" cy=\"7.5\" r=\"2.5\"/>"
+			"<circle cx=\"16.5\" cy=\"16.5\" r=\"2.5\"/>"
+		),
+		NULL,
+		"finance"
+	},
+	{
+		"/e/tax_category", "Tax categories",
 		VENTURE_ICON(
 			"<path d=\"M19 5L5 19\"/>"
 			"<circle cx=\"7.5\" cy=\"7.5\" r=\"2.5\"/>"
@@ -1156,6 +1177,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{
 		"/e/customer_subscription", "Subscriptions",
 		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
+		NULL, "billing"
+	},
+	{
+		"/e/plan", "Plans & prices",
+		VENTURE_ICON("<path d=\"M4 7h16\"/><path d=\"M4 12h16\"/><path d=\"M4 17h10\"/>"),
 		NULL, "billing"
 	},
 	{
@@ -1562,7 +1588,7 @@ venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *req
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-	"/e/refund", "/e/collection_case", "/e/customer_subscription",
+	"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
 	"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 	NULL
 };
@@ -1579,7 +1605,7 @@ static const gchar *const venture_web_nav_bank[] = {
 
 static const gchar *const venture_web_nav_books[] = {
 	"/accounting", "/e/account", "/e/journal", "/e/journal_line",
-	"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
+	"/e/tax_code", "/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
 	"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
 	"/e/accounting_cutover",
 	NULL
@@ -3511,6 +3537,114 @@ venture_web_ui_overview(
 		venture_web_page(self, request, "/", "Dashboard", content->str), 200);
 }
 
+/* --- Errors a person sees ------------------------------------------------- */
+
+/* What went wrong, in the words a person uses, by kind of failure. */
+static const gchar *
+venture_web_error_title(const GError *error)
+{
+	if (NULL == error || VENTURE_ERROR != error->domain)
+		return "Something went wrong";
+
+	switch ((VentureError)error->code)
+	{
+	case VENTURE_ERROR_VALIDATION:
+	case VENTURE_ERROR_INVALID_ARGUMENT:
+		return "That didn\xe2\x80\x99t save \xe2\x80\x94 something needs fixing";
+	case VENTURE_ERROR_CONFLICT:
+		return "Someone else changed this first";
+	case VENTURE_ERROR_ALREADY_EXISTS:
+		return "That already exists";
+	case VENTURE_ERROR_NOT_FOUND:
+		return "We couldn\xe2\x80\x99t find that";
+	case VENTURE_ERROR_PERMISSION_DENIED:
+		return "You don\xe2\x80\x99t have access to do that";
+	case VENTURE_ERROR_BALANCE:
+		return "Those figures don\xe2\x80\x99t balance";
+	default:
+		return "Something went wrong";
+	}
+}
+
+/*
+ * A service's message without the service's name: "VentureDocumentService:
+ * at least one line is required" is read as "At least one line is
+ * required". The JSON keeps the prefix; it is useful in a log.
+ */
+static gchar *
+venture_web_error_words(const gchar *message)
+{
+	const gchar *text = message != NULL ? message : "";
+	const gchar *colon = strstr(text, ": ");
+	gchar *words;
+
+	if (g_str_has_prefix(text, "Venture") && colon != NULL && colon - text < 48 &&
+	    strchr(text, ' ') == colon + 1)
+		text = colon + 2;
+	words = g_strdup(text);
+	if (g_ascii_islower(words[0]))
+		words[0] = g_ascii_toupper(words[0]);
+	return words;
+}
+
+/*
+ * The same failure every route reports as JSON, shown to a person as a
+ * page when a browser asked for one: a plain form post with scripting off,
+ * or a link followed. Scripted callers are left the JSON -- htmx and the
+ * page's own form handling ask with a header and show it in place, and the
+ * API is the API. A server fault keeps its detail folded: it is for
+ * whoever reports it, not something the reader can act on.
+ */
+static void
+venture_web_error_for_browser(VentureWebServer *self, HtmxContext *context)
+{
+	HtmxResponse *response = htmx_context_get_response(context);
+	HtmxRequest *request = htmx_context_get_request(context);
+	SoupServerMessage *message = htmx_request_get_message(request);
+	SoupMessageHeaders *headers;
+	const GError *error;
+	const gchar *path = htmx_request_get_path(request);
+	const gchar *accept;
+	gboolean fault;
+	guint status;
+	g_autoptr(GString) body = NULL;
+
+	error = g_object_get_data(G_OBJECT(response), "venture-error");
+	if (NULL == error || NULL == message)
+		return;
+	if (g_str_has_prefix(path, "/api/") || g_str_has_prefix(path, "/hooks/") ||
+	    g_str_has_prefix(path, "/federation/") || g_str_has_prefix(path, "/mcp"))
+		return;
+	headers = soup_server_message_get_request_headers(message);
+	accept = soup_message_headers_get_one(headers, "Accept");
+	if (NULL != soup_message_headers_get_one(headers, "HX-Request") ||
+	    NULL != soup_message_headers_get_one(headers, "X-Venture-Inline") ||
+	    NULL == accept || NULL == strstr(accept, "text/html"))
+		return;
+
+	status = htmx_response_get_status(response);
+	fault = status >= 500;
+	body = g_string_new("<div class=\"empty error-page\"><h3>");
+	venture_html_escape_append(body, venture_web_error_title(error));
+	g_string_append(body, "</h3>");
+	if (fault)
+		g_string_append(body, "<p class=\"muted\">Nothing was changed. Try again in a moment; "
+			"if it keeps happening, the detail below is what to send along.</p>"
+			"<details class=\"error-detail\"><summary>Detail</summary><p>");
+	else
+		g_string_append(body, "<p class=\"error-message\">");
+	{
+		g_autofree gchar *words = venture_web_error_words(error->message);
+		venture_html_escape_append(body, words);
+	}
+	g_string_append(body, fault ? "</p></details>" : "</p>");
+	g_string_append(body, "<p><button type=\"button\" class=\"btn btn-primary\" onclick=\"history.back()\">"
+		"Go back and fix it</button> <a class=\"btn\" href=\"/\">Home</a></p></div>");
+
+	htmx_context_set_response(context, venture_web_html_response(
+		venture_web_page(self, request, NULL, venture_web_error_title(error), body->str), status));
+}
+
 /* --- The 404 -------------------------------------------------------------- */
 
 /*
@@ -3548,7 +3682,10 @@ venture_web_not_found_middleware(
 	if (!venture_web_hosted_finish(self, context)) return;
 
 	if (NULL != htmx_context_get_response(context))
+	{
+		venture_web_error_for_browser(self, context);
 		return;
+	}
 
 	request = htmx_context_get_request(context);
 	path = htmx_request_get_path(request);
@@ -6819,11 +6956,25 @@ venture_web_append_form_field_scoped(
 			g_autoptr(GPtrArray) options = NULL;
 			GType target;
 
+			const gchar *parent = NULL;
+
 			target = venture_entity_registry_lookup(
 				venture_context_get_entity_registry(self->context),
 				venture_field_spec_get_reference_type(spec));
 
-			g_string_append_printf(content, "<select name=\"%s\">", name);
+			/* A reference that must share the record's parent says which
+			 * field that is, and each option says whose it is, so the
+			 * page offers only the chosen customer's people. */
+			if (NULL != record &&
+			    0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_SAME_PARENT))
+				parent = venture_entity_class_get_shared_parent(
+					VENTURE_ENTITY_GET_CLASS(record), name);
+
+			if (NULL != parent)
+				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\">",
+					name, parent);
+			else
+				g_string_append_printf(content, "<select name=\"%s\">", name);
 			g_string_append(content, "<option value=\"\">—</option>");
 
 			if (G_TYPE_INVALID != target)
@@ -6856,10 +7007,18 @@ venture_web_append_form_field_scoped(
 					display = venture_entity_get_display_name(option);
 
 					g_string_append_printf(content,
-						"<option value=\"%" G_GINT64_FORMAT "\"%s>", id,
+						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
 						((NULL != current) &&
 						 (g_ascii_strtoll(current, NULL, 10) == id))
 							? " selected" : "");
+					if (NULL != parent)
+					{
+						gint64 owner = 0;
+
+						g_object_get(option, parent, &owner, NULL);
+						g_string_append_printf(content, " data-parent=\"%" G_GINT64_FORMAT "\"", owner);
+					}
+					g_string_append(content, ">");
 					venture_html_escape_append(content, display);
 					g_string_append(content, "</option>");
 				}
@@ -29835,6 +29994,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
+#include "tax/venture-tax-rate-web.inc"
 #include "tax/venture-sales-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
@@ -30006,6 +30166,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/close/open", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/close/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/close/:id/pack", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-rates/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tax_rate_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tax-rates/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tax_rate_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-filings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filings_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);

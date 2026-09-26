@@ -4634,3 +4634,26 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.45; c
 .checkbox input { width: 20px; }
 .next-up form { margin: var(--space-2) 0 var(--space-3); }
 .timeline-diff dt { text-transform: none; letter-spacing: 0; font-family: var(--font); }
+
+/* The line's delete: a bin, in the one red, big enough to hit. */
+table.line-items td.line-remove { width: 44px; padding-top: 10px; text-align: center; }
+.line-delete { display: inline-flex; align-items: center; justify-content: center;
+	width: 36px; height: 36px; padding: 0; border: 1px solid transparent;
+	background: transparent; color: var(--negative); cursor: pointer; }
+.line-delete:hover, .line-delete:focus-visible { background: var(--negative-soft);
+	border-color: var(--negative); outline: none; }
+table.line-items td.line-tax { min-width: 150px; }
+table.line-items td.line-tax select { width: 100%; }
+table.line-items td.line-tax select:disabled { opacity: .45; }
+
+/* Tax exemption beside the totals. */
+.doc-exempt .exempt-detail { margin-top: var(--space-3); display: grid; gap: var(--space-3); }
+.doc-exempt .exempt-detail[hidden] { display: none; }
+
+/* A refusal, above the form that caused it, with the typing kept. */
+.form-error { margin: 0 0 var(--space-4); padding: 12px 16px;
+	border-left: 3px solid var(--negative); background: var(--negative-soft);
+	color: var(--text); font-size: 14.5px; line-height: 1.5; }
+.form-error[hidden] { display: none; }
+.error-page .error-message { font-size: 15px; max-width: 60ch; margin: var(--space-3) auto; }
+.error-page .error-detail { max-width: 60ch; margin: var(--space-3) auto; text-align: left; }

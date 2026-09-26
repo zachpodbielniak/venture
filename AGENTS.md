@@ -714,6 +714,24 @@ than one that fails.
   made a dashboard test find an error notice that was not on the page.
   Build dynamic notices as DOM nodes, and assert on markup
   (`<div class="notice negative">`), not on two words.
+## Forms and refusals
+
+- **A person never sees error JSON.** `venture_web_error_response()` tags
+  the response with its `GError`, and the catch-all middleware turns it
+  into a page for a browser that asked for HTML without `HX-Request` or
+  `X-Venture-Inline`. The page's own script posts ordinary forms with
+  `X-Venture-Inline` and shows the refusal above the form. Do not add a
+  per-route HTML error path; `tests/test-record-view.c` pins all three
+  answers.
+- **"Attention of" is a flag, not a check in a handler.**
+  `VENTURE_COLUMN_FLAG_SAME_PARENT` on a reference makes the save refuse a
+  target under another parent and the form narrow its options; the parent
+  is derived by `venture_entity_class_get_shared_parent()`. Never let it
+  pick `organization-id`.
+- **An invoice line is taxed by a rate record** (`tax-code-id`), made at
+  `/tax-rates/new` from a percent and stored as an exact fraction. The
+  exemption lives on the customer; the invoice freezes it at issue.
+
 ## The agent harness
 
 - **Two different things are called a harness.** `/harness` is the agent

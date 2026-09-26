@@ -454,9 +454,15 @@ test_grouped_form(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(form, "<option value=\"supplier\">Supplier</option>"));
 }
 
-/* POSTs a form and returns the status; the Location lands in @location. */
+/*
+ * POSTs a form and returns the status; the Location lands in @location and
+ * the body in @reply_body. @accept, when set, is sent as the Accept header,
+ * the way a browser sends one; @inline adds the header the page's own
+ * form handling sends.
+ */
 static guint
-post_form(Fixture *f, const gchar *path, const gchar *body, gchar **location)
+post_form_full(Fixture *f, const gchar *path, const gchar *body, const gchar *accept,
+	gboolean inline_errors, gchar **location, gchar **reply_body)
 {
 	g_autoptr(SoupSession) session = NULL;
 	g_autoptr(SoupMessage) message = NULL;
@@ -469,6 +475,10 @@ post_form(Fixture *f, const gchar *path, const gchar *body, gchar **location)
 	url = g_strconcat(venture_web_server_get_base_url(f->server), path, NULL);
 	message = soup_message_new("POST", url);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (NULL != accept)
+		soup_message_headers_replace(soup_message_get_request_headers(message), "Accept", accept);
+	if (inline_errors)
+		soup_message_headers_replace(soup_message_get_request_headers(message), "X-Venture-Inline", "1");
 	bytes = g_bytes_new(body, strlen(body));
 	soup_message_set_request_body_from_bytes(message,
 		"application/x-www-form-urlencoded", bytes);
@@ -483,12 +493,20 @@ post_form(Fixture *f, const gchar *path, const gchar *body, gchar **location)
 	if (soup_message_get_status(message) >= 400 && NULL != reply.bytes)
 		g_test_message("%s: %.*s", path, (gint)g_bytes_get_size(reply.bytes),
 		               (const gchar *)g_bytes_get_data(reply.bytes, NULL));
+	if (NULL != reply_body && NULL != reply.bytes)
+		*reply_body = g_strndup(g_bytes_get_data(reply.bytes, NULL), g_bytes_get_size(reply.bytes));
 	g_clear_pointer(&reply.bytes, g_bytes_unref);
 	if (NULL != location)
 		*location = g_strdup(soup_message_headers_get_one(
 			soup_message_get_response_headers(message), "Location"));
 
 	return soup_message_get_status(message);
+}
+
+static guint
+post_form(Fixture *f, const gchar *path, const gchar *body, gchar **location)
+{
+	return post_form_full(f, path, body, NULL, FALSE, location, NULL);
 }
 
 /*
@@ -611,6 +629,245 @@ test_bill_sheet(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(status, ==, "approved");
 }
 
+/* A tax rate, as the rate page makes one. */
+static VentureEntity *
+tax_rate(Fixture *f, const gchar *code, const gchar *name, gint64 numerator, gint64 denominator)
+{
+	VentureEntity *rate = g_object_new(VENTURE_TYPE_TAX_CODE, "code", code, "name", name,
+		"rate-numerator", numerator, "rate-denominator", denominator, "active", TRUE, NULL);
+
+	save(f, rate);
+	return rate;
+}
+
+/*
+ * The invoice sheet taxes a line by picking a rate -- "No tax" first and
+ * chosen, then each rate with its percent -- and removes a line with a
+ * bin you can see. A customer's exemption rides on the customer's option
+ * so choosing them fills it in. If this regresses, tax is a number typed
+ * on every line and the return cannot say what it was charged under.
+ */
+static void
+test_invoice_sheet_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) rate = NULL;
+	g_autoptr(VentureEntity) charity = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *page = NULL;
+
+	(void)data;
+
+	rate = tax_rate(f, "NY", "New York sales tax", 8875, 100000);
+	charity = g_object_new(VENTURE_TYPE_COMPANY, "name", "Food Bank", "tax-exempt", TRUE,
+		"tax-exempt-reason", "Non-profit (501(c)(3))", "tax-exemption-number", "EX-77", NULL);
+	save(f, charity);
+
+	page = get(f, "/invoices/compose");
+	g_assert_nonnull(strstr(page, "<option value=\"\" data-rate=\"0\">No tax</option>"));
+	g_assert_nonnull(strstr(page, "New York sales tax \xc2\xb7 8.875%</option>"));
+	g_assert_nonnull(strstr(page, "data-rate=\"8.875\""));
+	g_assert_nonnull(strstr(page, "name=\"line-0-tax-code-id\""));
+	g_assert_null(strstr(page, "name=\"line-0-tax-percent\""));
+	g_assert_nonnull(strstr(page, "class=\"line-delete\""));
+	g_assert_nonnull(strstr(page, "data-exempt=\"1\" data-exempt-kind=\"Non-profit (501(c)(3))\" "
+		"data-exempt-number=\"EX-77\""));
+	g_assert_nonnull(strstr(page, "name=\"tax-exempt\""));
+	(void)error;
+}
+
+/*
+ * A line taxed at a rate keeps the rate; an exemption ticked on the sheet
+ * is frozen onto the invoice with its certificate and, by default,
+ * remembered on the customer so the next invoice fills it in. If this
+ * regresses, a non-profit is charged tax on the invoice after the one
+ * somebody remembered to fix by hand.
+ */
+static void
+test_invoice_sheet_exemption(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) rate = NULL;
+	g_autoptr(VentureEntity) customer = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL, *location = NULL, *reason = NULL;
+	g_autofree gchar *company_reason = NULL, *company_number = NULL;
+	gboolean exempt = FALSE, company_exempt = FALSE;
+	gint64 id, code = 0;
+
+	(void)data;
+
+	rate = tax_rate(f, "NY", "New York sales tax", 8875, 100000);
+	customer = g_object_new(VENTURE_TYPE_COMPANY, "name", "Harbour Library", NULL);
+	save(f, customer);
+
+	body = g_strdup_printf("compose-form=1&company-id=%" G_GINT64_FORMAT
+		"&line-0-description=Shelving&line-0-quantity=1&line-0-unit-price=400.00"
+		"&line-0-tax-code-id=%" G_GINT64_FORMAT
+		"&tax-exempt=true&exempt-kind=Non-profit+(501(c)(3))&exempt-number=EX-12&exempt-remember=1",
+		venture_entity_get_id(customer), venture_entity_get_id(rate));
+	g_assert_cmpuint(post_form(f, "/invoices/compose", body, &location), ==, 302);
+	g_assert_true(g_str_has_prefix(location, "/e/invoice/"));
+	id = g_ascii_strtoll(location + strlen("/e/invoice/"), NULL, 10);
+
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	g_object_get(invoice, "tax-exempt", &exempt, "tax-exempt-reason", &reason, NULL);
+	g_assert_true(exempt);
+	g_assert_cmpstr(reason, ==, "Non-profit (501(c)(3)), certificate EX-12");
+
+	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
+	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	lines = venture_database_find(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(lines->len, ==, 1);
+	g_object_get(g_ptr_array_index(lines, 0), "tax-code-id", &code, NULL);
+	g_assert_cmpint(code, ==, venture_entity_get_id(rate));
+
+	again = venture_database_get(f->database, VENTURE_TYPE_COMPANY,
+		venture_entity_get_id(customer), &error);
+	g_assert_no_error(error);
+	g_object_get(again, "tax-exempt", &company_exempt, "tax-exempt-reason", &company_reason,
+		"tax-exemption-number", &company_number, NULL);
+	g_assert_true(company_exempt);
+	g_assert_cmpstr(company_reason, ==, "Non-profit (501(c)(3))");
+	g_assert_cmpstr(company_number, ==, "EX-12");
+}
+
+/*
+ * "Attention of" is somebody at the customer: an invoice to one company
+ * for the attention of somebody at another is refused at the save, from
+ * any writer, and the form offers only the customer's people. A record
+ * whose contact has since moved company stays editable. If this
+ * regresses, Tesla's buyer can be put on Amazon's invoice.
+ */
+static void
+test_attention_of_same_customer(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) amazon = NULL, tesla = NULL, buyer = NULL, elon = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, quote = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *page = NULL, *parent = NULL;
+
+	(void)data;
+
+	amazon = g_object_new(VENTURE_TYPE_COMPANY, "name", "Amazon", NULL);
+	tesla = g_object_new(VENTURE_TYPE_COMPANY, "name", "Tesla", NULL);
+	save(f, amazon);
+	save(f, tesla);
+	buyer = g_object_new(VENTURE_TYPE_CONTACT, "name", "Andy Buyer",
+		"company-id", venture_entity_get_id(amazon), NULL);
+	elon = g_object_new(VENTURE_TYPE_CONTACT, "name", "Elon",
+		"company-id", venture_entity_get_id(tesla), NULL);
+	save(f, buyer);
+	save(f, elon);
+
+	g_assert_cmpstr(venture_entity_class_get_shared_parent(
+		g_type_class_peek(VENTURE_TYPE_INVOICE), "contact-id"), ==, "company-id");
+
+	invoice = g_object_new(VENTURE_TYPE_INVOICE, "number", "INV-9", "company-id",
+		venture_entity_get_id(amazon), "contact-id", venture_entity_get_id(elon), NULL);
+	venture_entity_set_organization_id(invoice, f->organization_id);
+	g_assert_false(venture_database_save(f->database, invoice, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "Attention of"));
+	g_clear_error(&error);
+
+	quote = g_object_new(VENTURE_TYPE_QUOTE, "number", "Q-9", "company-id",
+		venture_entity_get_id(amazon), "contact-id", venture_entity_get_id(elon), NULL);
+	venture_entity_set_organization_id(quote, f->organization_id);
+	g_assert_false(venture_database_save(f->database, quote, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	g_object_set(invoice, "contact-id", venture_entity_get_id(buyer), NULL);
+	save(f, invoice);
+
+	/* The buyer moves to Tesla; the invoice's notes can still be fixed. */
+	g_object_set(buyer, "company-id", venture_entity_get_id(tesla), NULL);
+	save(f, buyer);
+	g_object_set(invoice, "notes", "Called about it", NULL);
+	save(f, invoice);
+
+	page = get(f, "/e/invoice/new");
+	parent = g_strdup_printf("data-parent=\"%" G_GINT64_FORMAT "\">Elon</option>",
+		venture_entity_get_id(tesla));
+	g_assert_nonnull(strstr(page, "<select name=\"contact-id\" data-same-parent=\"company-id\">"));
+	g_assert_nonnull(strstr(page, parent));
+}
+
+/*
+ * A refusal reaches a person as words, never as JSON: a browser posting
+ * a form with scripting off gets a page in the app saying what to fix,
+ * the page's own form handling gets the JSON it shows above the form,
+ * and a client that did not ask for HTML is answered exactly as before.
+ * If this regresses, a typo in a form is a screen of braces.
+ */
+static void
+test_errors_for_people(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *page = NULL, *json = NULL, *plain = NULL;
+	const gchar *body = "compose-form=1&company-id=&line-0-description=";
+
+	(void)data;
+
+	g_assert_cmpuint(post_form_full(f, "/invoices/compose", body,
+		"text/html,application/xhtml+xml", FALSE, NULL, &page), ==, 422);
+	g_assert_nonnull(strstr(page, "<html"));
+	g_assert_nonnull(strstr(page, "something needs fixing"));
+	g_assert_nonnull(strstr(page, "Go back and fix it"));
+	/* In the reader's words: the service's name is for the log. */
+	g_assert_nonnull(strstr(page, "At least one line is required"));
+	g_assert_null(strstr(page, "VentureDocumentService"));
+	g_assert_null(strstr(page, "\"error\":"));
+
+	g_assert_cmpuint(post_form_full(f, "/invoices/compose", body,
+		"text/html", TRUE, NULL, &json), ==, 422);
+	g_assert_nonnull(strstr(json, "\"message\""));
+
+	g_assert_cmpuint(post_form_full(f, "/invoices/compose", body,
+		NULL, FALSE, NULL, &plain), ==, 422);
+	g_assert_nonnull(strstr(plain, "\"message\""));
+}
+
+/*
+ * A tax rate is made from a name and a percent, and stored exactly: 8.875
+ * is 8875 over 100000, not a float. If this regresses, a person is asked
+ * for a numerator and a denominator to charge sales tax.
+ */
+static void
+test_tax_rate_page(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) rate = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *page = NULL, *location = NULL, *code = NULL;
+	gint64 numerator = 0, denominator = 0;
+
+	(void)data;
+
+	page = get(f, "/tax-rates/new");
+	g_assert_nonnull(strstr(page, "name=\"rate\""));
+	g_assert_null(strstr(page, "numerator"));
+
+	g_assert_cmpuint(post_form(f, "/tax-rates/new",
+		"name=New+York+City&rate=8.875&jurisdiction=US-NY", &location), ==, 302);
+	query = venture_query_new(VENTURE_TYPE_TAX_CODE);
+	rate = venture_database_find_one(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(rate);
+	g_object_get(rate, "rate-numerator", &numerator, "rate-denominator", &denominator,
+		"code", &code, NULL);
+	g_assert_cmpint(numerator, ==, 8875);
+	g_assert_cmpint(denominator, ==, 100000);
+	g_assert_cmpstr(code, ==, "NEW-YORK-CITY");
+
+	/* A rate that is not a number is refused, and nothing is saved. */
+	g_assert_cmpuint(post_form(f, "/tax-rates/new", "name=Bad&rate=eight", NULL), ==, 422);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -627,6 +884,16 @@ main(int argc, char *argv[])
 	           test_grouped_form, tear_down);
 	g_test_add("/record-view/repeating-invoice", Fixture, NULL, set_up,
 	           test_repeating_invoice, tear_down);
+	g_test_add("/record-view/invoice-sheet-tax", Fixture, NULL, set_up,
+	           test_invoice_sheet_tax, tear_down);
+	g_test_add("/record-view/invoice-sheet-exemption", Fixture, NULL, set_up,
+	           test_invoice_sheet_exemption, tear_down);
+	g_test_add("/record-view/attention-of-same-customer", Fixture, NULL, set_up,
+	           test_attention_of_same_customer, tear_down);
+	g_test_add("/record-view/errors-for-people", Fixture, NULL, set_up,
+	           test_errors_for_people, tear_down);
+	g_test_add("/record-view/tax-rate-page", Fixture, NULL, set_up,
+	           test_tax_rate_page, tear_down);
 	g_test_add("/record-view/bill-sheet", Fixture, NULL, set_up,
 	           test_bill_sheet, tear_down);
 

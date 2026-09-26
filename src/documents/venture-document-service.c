@@ -320,7 +320,9 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 		"contact-id", venture_json_object_get_int(spec, "contact_id", 0),
 		"terms", venture_json_object_get_string(spec, "terms", ""),
 		"notes", venture_json_object_get_string(spec, "notes", ""),
-		"external-id", venture_json_object_get_string(spec, "external_id", ""), NULL);
+		"external-id", venture_json_object_get_string(spec, "external_id", ""),
+		"tax-exempt", venture_json_object_get_bool(spec, "tax_exempt", FALSE),
+		"tax-exempt-reason", venture_json_object_get_string(spec, "tax_exempt_reason", ""), NULL);
 	due_days = venture_json_object_get_int(spec, "due_days", 30);
 	now = venture_time_now();
 	if (due_days > 0)
@@ -344,7 +346,8 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), organization_id);
 		g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
-			"product-id", venture_json_object_get_int(row, "product_id", 0), NULL);
+			"product-id", venture_json_object_get_int(row, "product_id", 0),
+			"tax-code-id", venture_json_object_get_int(row, "tax_code_id", 0), NULL);
 		if (!money_from_row(VENTURE_ENTITY(line), row, error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			goto fail;

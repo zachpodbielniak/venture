@@ -80,8 +80,7 @@ venture_bill_append_line_row(GString *html, const gchar *index, const gchar *acc
 		"<td class=\"num\"><input type=\"text\" name=\"line-%s-tax-amount\" placeholder=\"0.00\" "
 		"inputmode=\"decimal\" aria-label=\"Tax\" data-tax-amount></td>"
 		"<td class=\"num line-amount\" data-amount>0.00</td>"
-		"<td class=\"line-remove\"><button type=\"button\" class=\"btn btn-ghost btn-sm\" data-remove-line "
-		"aria-label=\"Remove line\" title=\"Remove line\">\xc3\x97</button></td></tr>",
+		VENTURE_WEB_LINE_DELETE "</tr>",
 		index, index, accounts, index, index, index);
 }
 

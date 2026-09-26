@@ -574,6 +574,15 @@ seed_relations () {
     add company name="Marlow Print" kind=supplier industry=Printing \
         venture_id="${press}" active=true
 
+    # A tax rate to pick on an invoice line, and a customer who pays none:
+    # choosing the library on the invoice sheet fills in its exemption.
+    add tax_code code=NY-SALES name="New York sales tax" jurisdiction=US-NY \
+        rate_numerator=8875 rate_denominator=100000 active=true
+    add company name="Harbour Library Trust" kind=customer industry=Nonprofit \
+        email=accounts@harbourlibrary.example venture_id="${press}" active=true \
+        tax_exempt=true tax_exempt_reason="Non-profit (501(c)(3))" \
+        tax_exemption_number=EX-4471
+
     buyer="$(make_record contact name="Ruth Ellery" email=ruth@bellhaven.example \
         company_id="${shop}" role="Buyer" venture_id="${press}" source=referral)"
     add contact name="Sam Okonjo" email=sam@coldharbour.example \

@@ -954,7 +954,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const money_in[] = {
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-		"/e/refund", "/e/collection_case", "/e/customer_subscription",
+		"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
 		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item", NULL
 	};
 	static const gchar *const money_out[] = {
@@ -965,7 +965,7 @@ test_web_navigation_groups_by_question(
 	};
 	static const gchar *const books[] = {
 		"/accounting", "/e/account", "/e/journal", "/e/journal_line",
-		"/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
+		"/e/tax_code", "/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
 		"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
 		"/e/accounting_cutover", NULL
 	};

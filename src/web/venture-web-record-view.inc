@@ -27,6 +27,18 @@
 /* How many columns a list shows by default. */
 #define VENTURE_WEB_LIST_COLUMNS	6
 
+/*
+ * A document line's delete, shared by every composer: a bin in the one
+ * red, sized to be hit on purpose. A bare "x" was too small to find.
+ */
+#define VENTURE_WEB_LINE_DELETE \
+	"<td class=\"line-remove\"><button type=\"button\" class=\"line-delete\" data-remove-line " \
+	"aria-label=\"Remove this line\" title=\"Remove this line\">" \
+	"<svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" " \
+	"stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" \
+	"<path d=\"M3 6h18\"/><path d=\"M8 6V4h8v2\"/><path d=\"M19 6l-1 14H6L5 6\"/>" \
+	"<path d=\"M10 11v6\"/><path d=\"M14 11v6\"/></svg></button></td>"
+
 /* Past this many optional fields, a form tucks the rest under "More". */
 #define VENTURE_WEB_FORM_OPEN_FIELDS	6
 
