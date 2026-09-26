@@ -412,6 +412,335 @@ test_discount(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
+/* The customer mail queued in the outbox, oldest first. */
+static GPtrArray *
+mail(Fixture *f)
+{
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GError) error = NULL;
+	GPtrArray *rows;
+	venture_query_set_limit(q, 0);
+	venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(f->db, q, &error);
+	g_assert_no_error(error);
+	return rows;
+}
+
+static gchar *
+text(VentureEntity *e, const gchar *name)
+{
+	gchar *value = NULL;
+	g_object_get(e, name, &value, NULL);
+	return value;
+}
+
+static void
+customer_email(Fixture *f, const gchar *email)
+{
+	g_autoptr(VentureEntity) company = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, NULL);
+	g_object_set(company, "email", email, NULL);
+	save(f, company);
+}
+
+/*
+ * A trial about to end tells the customer when, and what the first
+ * invoice will be, once: from the renewal sweep, a few days ahead, keyed
+ * by the subscription. The billing contact hears rather than the company
+ * when there is one, and the amount is the discounted one the invoice will
+ * carry. If this regresses, a customer's first charge arrives unannounced,
+ * or every daily sweep mails them again.
+ */
+static void
+test_trial_reminder(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) contact = record(f, "contact");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureEntity) reminder = NULL;
+	g_autoptr(GPtrArray) sent = NULL;
+	g_autofree gchar *to = NULL, *subject = NULL, *body = NULL, *key = NULL, *expected_key = NULL;
+	gint64 id, half;
+	(void)data;
+	g_object_set(p, "trial-days", (gint64)14, NULL);
+	save(f, p);
+	customer_email(f, "accounts@customer.test");
+	g_object_set(contact, "name", "Pat Payer", "email", "pat@customer.test",
+		"company-id", f->company, NULL);
+	save(f, contact);
+	half = discount(f, integer(p, "plan-id"), "Half off", 50, NULL, 1);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "contact-id", venture_entity_get_id(contact),
+		"plan-price-id", f->price, "seats", (gint64)2, "discount-id", half, NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	g_clear_object(&a);
+
+	/* Five days out is too early for a three-day reminder. */
+	a = request(f, "renew-sweep", 0, "2026-01-10");
+	save(f, a);
+	g_clear_object(&a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 0);
+	g_clear_pointer(&sent, g_ptr_array_unref);
+
+	/* Three days out, the first sweep queues it; later sweeps do not. */
+	a = request(f, "renew-sweep", 0, "2026-01-12");
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "renew-sweep", 0, "2026-01-13");
+	save(f, a);
+	g_clear_object(&a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 1);
+	to = text(g_ptr_array_index(sent, 0), "to");
+	subject = text(g_ptr_array_index(sent, 0), "subject");
+	body = text(g_ptr_array_index(sent, 0), "text-body");
+	key = text(g_ptr_array_index(sent, 0), "idempotency-key");
+	g_assert_cmpstr(to, ==, "pat@customer.test");
+	g_assert_cmpstr(subject, ==, "Your trial ends on 2026-01-15");
+	g_assert_nonnull(strstr(body, "Your trial ends on 2026-01-15; your first invoice will be $30.00."));
+	sub = subscription(f, id);
+	expected_key = g_strdup_printf("trial-reminder:%s", venture_entity_get_uuid(sub));
+	g_assert_cmpstr(key, ==, expected_key);
+	reminder = venture_billing_service_trial_reminder(venture_billing_service_get(f->db), VENTURE_CUSTOMER_SUBSCRIPTION(sub));
+	g_assert_nonnull(reminder);
+
+	/* The trial ends and is invoiced as the reminder said; no second one. */
+	a = request(f, "renew-sweep", 0, "2026-01-15");
+	save(f, a);
+	g_clear_pointer(&sent, g_ptr_array_unref);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 1);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+}
+
+/* A reminder setting of zero sends none, and a trial ending at renewal
+ * is never invoiced, so it is not told about an invoice. */
+static void
+test_trial_reminder_off(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GPtrArray) sent = NULL;
+	gint64 first, second;
+	(void)data;
+	g_object_set(p, "trial-days", (gint64)14, NULL);
+	save(f, p);
+	customer_email(f, "accounts@customer.test");
+	first = start(f);
+	second = start(f);
+	a = request(f, "cancel", second, "2026-01-02");
+	g_object_set(a, "at-period-end", TRUE, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	g_object_set(venture_billing_service_get(f->db), "trial-reminder-days", (gint64)0, NULL);
+	a = request(f, "renew-sweep", 0, "2026-01-13");
+	save(f, a);
+	g_clear_object(&a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 0);
+	g_clear_pointer(&sent, g_ptr_array_unref);
+	g_object_set(venture_billing_service_get(f->db), "trial-reminder-days", (gint64)3, NULL);
+	a = request(f, "renew-sweep", 0, "2026-01-13");
+	save(f, a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 1);
+	{
+		g_autofree gchar *related = NULL;
+		gint64 related_id = 0;
+		g_object_get(g_ptr_array_index(sent, 0), "related-type", &related, "related-id", &related_id, NULL);
+		g_assert_cmpstr(related, ==, "customer_subscription");
+		g_assert_cmpint(related_id, ==, first);
+	}
+}
+
+/* The subscription's change events, oldest first. */
+static GPtrArray *
+changes(Fixture *f, gint64 id)
+{
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_SUBSCRIPTION_EVENT);
+	g_autoptr(GPtrArray) all = NULL;
+	GPtrArray *found = g_ptr_array_new_with_free_func(g_object_unref);
+	guint i;
+	venture_query_set_limit(q, 0);
+	venture_query_add_filter_int(q, "subscription-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, NULL);
+	all = venture_database_find(f->db, q, NULL);
+	for (i = 0; i < all->len; i++)
+	{
+		gint kind = 0;
+		g_object_get(g_ptr_array_index(all, i), "kind", &kind, NULL);
+		if (kind >= 2 && kind <= 4)
+			g_ptr_array_add(found, g_object_ref(g_ptr_array_index(all, i)));
+	}
+	return found;
+}
+
+/*
+ * Changing what a customer pays -- seats now, another plan at renewal --
+ * mails them what changed, when, and what the next invoice will be, once
+ * per change, keyed by the change's event. The renewal that carries a
+ * scheduled change out is not a second change. And the switch turns it
+ * off. If this regresses, a customer finds a different amount on an
+ * invoice with nothing to say why, or hears about one change twice.
+ */
+static void
+test_price_change_notice(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) price = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) pro = record(f, "plan");
+	g_autoptr(VentureEntity) pro_price = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GPtrArray) sent = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	gint64 id;
+	guint i;
+	(void)data;
+	(void)price;
+	customer_email(f, "accounts@customer.test");
+	g_object_set(pro, "name", "Lightsite Pro", "code", "pro", "active", TRUE, NULL);
+	save(f, pro);
+	g_object_set(pro_price, "plan-id", venture_entity_get_id(pro), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(pro_price, "amount", "60 USD");
+	save(f, pro_price);
+	id = start(f);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 0);
+	g_clear_pointer(&sent, g_ptr_array_unref);
+
+	/* A third seat on 17 January: $14.48 for the rest of January. */
+	a = request(f, "change-seats", id, "2026-01-17");
+	g_object_set(a, "seats", (gint64)3, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	/* Pro from renewal. */
+	a = request(f, "change", id, "2026-01-20");
+	g_object_set(a, "plan-price-id", venture_entity_get_id(pro_price), "at-period-end", TRUE, NULL);
+	save(f, a);
+	g_clear_object(&a);
+
+	sent = mail(f);
+	events = changes(f, id);
+	g_assert_cmpuint(events->len, ==, 2);
+	g_assert_cmpuint(sent->len, ==, 2);
+	for (i = 0; i < 2; i++)
+	{
+		g_autofree gchar *key = text(g_ptr_array_index(sent, i), "idempotency-key");
+		g_autofree gchar *expected = g_strdup_printf("price-change:%s", venture_entity_get_uuid(g_ptr_array_index(events, i)));
+		g_autofree gchar *to = text(g_ptr_array_index(sent, i), "to");
+		g_assert_cmpstr(key, ==, expected);
+		g_assert_cmpstr(to, ==, "accounts@customer.test");
+	}
+	{
+		g_autofree gchar *seats = text(g_ptr_array_index(sent, 0), "text-body");
+		g_autofree gchar *plan = text(g_ptr_array_index(sent, 1), "text-body");
+		g_autofree gchar *subject = text(g_ptr_array_index(sent, 1), "subject");
+		g_assert_nonnull(strstr(seats, "from Lightsite Starter at $30.00 a month per seat, 2 seats to "
+			"Lightsite Starter at $30.00 a month per seat, 3 seats"));
+		g_assert_nonnull(strstr(seats, "This took effect on 2026-01-17."));
+		g_assert_nonnull(strstr(seats, "Your next invoice, on 2026-02-01, will be $104.48, including $14.48"));
+		g_assert_nonnull(strstr(plan, "to Lightsite Pro at $60.00 a month per seat, 3 seats"));
+		g_assert_nonnull(strstr(plan, "This takes effect on 2026-02-01, when it renews"));
+		/* Pro for three seats, plus the seat carried from January. */
+		g_assert_nonnull(strstr(plan, "will be $194.48"));
+		g_assert_cmpstr(subject, ==, "Your subscription changes at renewal");
+	}
+	g_clear_pointer(&sent, g_ptr_array_unref);
+
+	/* Carrying the scheduled change out is not another change. */
+	a = request(f, "renew-sweep", 0, "2026-02-01");
+	save(f, a);
+	g_clear_object(&a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 2);
+	g_clear_pointer(&sent, g_ptr_array_unref);
+
+	/* Off is off. */
+	g_object_set(venture_billing_service_get(f->db), "price-change-notices", FALSE, NULL);
+	a = request(f, "change-seats", id, "2026-02-10");
+	g_object_set(a, "seats", (gint64)4, NULL);
+	save(f, a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 2);
+}
+
+/*
+ * A start may name a discount by the code the customer quoted, in any
+ * case, and only the chosen plan's live offers answer to it; an unknown,
+ * retired or expired code is refused saying which. If this regresses, a
+ * code field on the form does nothing, or a code from another plan -- or
+ * last season's -- is honoured.
+ */
+static void
+test_discount_code(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) price = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) other = record(f, "plan");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	gint64 plan = integer(price, "plan-id"), spring, retired, past, foreign;
+	static const struct { const gchar *code; const gchar *refusal; } refused[] = {
+		{ "NOPE", "the code NOPE is not one this plan offers" },
+		{ "elsewhere", "the code elsewhere is not one this plan offers" },
+		{ "old", "the code old is no longer offered" },
+		{ "Past", "the code Past expired on 2025-12-01" },
+	};
+	guint i;
+	(void)data;
+	spring = discount(f, plan, "Spring", 25, NULL, 0);
+	retired = discount(f, plan, "Old", 10, NULL, 0);
+	past = discount(f, plan, "Past", 10, NULL, 0);
+	g_object_set(other, "name", "Other", "code", "other", "active", TRUE, NULL);
+	save(f, other);
+	foreign = discount(f, venture_entity_get_id(other), "Elsewhere", 50, NULL, 0);
+	{
+		static const struct { const gchar *code; gboolean active; const gchar *ends; } codes[] = {
+			{ "Spring25", TRUE, NULL }, { "OLD", FALSE, NULL }, { "PAST", TRUE, "2025-12-01" }, { "ELSEWHERE", TRUE, NULL },
+		};
+		gint64 ids[4];
+		ids[0] = spring; ids[1] = retired; ids[2] = past; ids[3] = foreign;
+		for (i = 0; i < G_N_ELEMENTS(codes); i++)
+		{
+			g_autoptr(VentureEntity) d = venture_database_get(f->db, VENTURE_TYPE_PLAN_DISCOUNT, ids[i], NULL);
+			g_object_set(d, "code", codes[i].code, "active", codes[i].active, NULL);
+			if (codes[i].ends != NULL)
+				field(d, "ends-at", codes[i].ends);
+			save(f, d);
+		}
+	}
+
+	/* 25% off two $30 seats. */
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "seats", (gint64)2,
+		"discount-code", "  spring25 ", NULL);
+	save(f, a);
+	g_assert_cmpint(invoice_total(f, a), ==, 4500);
+	sub = subscription(f, integer(a, "subscription-id"));
+	g_assert_cmpint(integer(sub, "discount-id"), ==, spring);
+	g_clear_object(&a);
+
+	for (i = 0; i < G_N_ELEMENTS(refused); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		a = request(f, "start", 0, "2026-01-01");
+		g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "discount-code", refused[i].code, NULL);
+		g_assert_false(venture_database_save(f->db, a, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, refused[i].refusal));
+		g_clear_object(&a);
+	}
+	{
+		g_autoptr(GError) error = NULL;
+		a = request(f, "start", 0, "2026-01-01");
+		g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "discount-code", "spring25",
+			"discount-id", spring, NULL);
+		g_assert_false(venture_database_save(f->db, a, NULL, &error));
+		g_assert_nonnull(strstr(error->message, "not both"));
+	}
+	g_assert_cmpint(count(f, "customer_subscription"), ==, 1);
+}
+
 /*
  * Starting a subscription on a price with a free trial can skip the
  * trial and bill now: the first invoice is issued on the day. If this
@@ -1454,6 +1783,10 @@ main(int argc, char **argv)
 	g_test_add("/billing/venture-plans", Fixture, NULL, setup, test_venture_plans, teardown);
 	g_test_add("/billing/discount", Fixture, NULL, setup, test_discount, teardown);
 	g_test_add("/billing/skip-trial", Fixture, NULL, setup, test_skip_trial, teardown);
+	g_test_add("/billing/trial-reminder", Fixture, NULL, setup, test_trial_reminder, teardown);
+	g_test_add("/billing/trial-reminder-off", Fixture, NULL, setup, test_trial_reminder_off, teardown);
+	g_test_add("/billing/price-change-notice", Fixture, NULL, setup, test_price_change_notice, teardown);
+	g_test_add("/billing/discount-code", Fixture, NULL, setup, test_discount_code, teardown);
 	g_test_add("/billing/renewal", Fixture, NULL, setup, test_renewal, teardown);
 	g_test_add("/billing/trial", Fixture, NULL, setup, test_trial, teardown);
 	g_test_add("/billing/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);

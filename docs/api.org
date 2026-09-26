@@ -466,7 +466,7 @@ Subscription state and immutable billing evidence are written only by
 
 | POST endpoint | Body fields |
 |---------------+-------------|
-| =/api/v1/billing/start= | =organization_id=, =company_id=, optional =contact_id=, =plan_price_id=, =seats=, =external_id=, =at= |
+| =/api/v1/billing/start= | =organization_id=, =company_id=, optional =contact_id=, =plan_price_id=, =seats=, =external_id=, =at=, =discount_id= or =discount_code=, =skip_trial= |
 | =/api/v1/customer_subscriptions/:id/renew= | optional =at= |
 | =/api/v1/customer_subscriptions/:id/change= | =plan_price_id=, optional =at_period_end=, =at= |
 | =/api/v1/customer_subscriptions/:id/change-seats= | =seats=, optional =at= |

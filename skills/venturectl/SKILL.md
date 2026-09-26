@@ -494,12 +494,16 @@ output formats remain unchanged. `journal post ID` returns a confirmation for
 an organization editor. Treat that response as pending until finance approves.
 ## SaaS billing actions
 
-Use `billing start company_id=N plan_price_id=N seats=N [discount_id=N]
+Use `billing start company_id=N plan_price_id=N seats=N [discount_id=N | discount_code=CODE]
 [skip_trial=true]` to start a `customer_subscription`. Read
 `describe plan_price` and the price first: non-trial starts issue an invoice
 immediately, while trials bill at activation unless `skip_trial=true`. A
 `discount_id` must be a `plan_discount` of the same plan, active and not past
 its `ends_at`; it comes off the first `periods` invoices (0 is every one).
+`discount_code` names the discount by the `code` the customer quoted instead,
+matched without regard to case among the chosen price's plan's discounts;
+an unknown, retired or expired code is refused saying which, and giving
+both `discount_id` and `discount_code` is refused.
 A plan with a `venture_id` is refused for another venture's customer.
 Use `billing change ID plan_price=N [at_period_end=true]`,
 `billing change-seats ID seats=N`, `billing cancel ID [at_period_end=true]`,
@@ -524,7 +528,18 @@ conflict, not counted twice. Usage before the current period, on a flat price
 or on an ended subscription is refused. At renewal the ended period's usage
 over `included_units` is a line on the renewal invoice, at `unit_amount`.
 
-`billing renew --as-of DATE [--dry-run]` sweeps due periods;
+Customers holding a portal link can switch price (same venture, at renewal
+by default) or cancel at renewal themselves; those changes appear as
+ordinary `subscription_event` rows with the actor `customer portal`.
+
+`billing renew --as-of DATE [--dry-run]` sweeps due periods, and also
+queues the trial-ending reminder (`billing.trial_reminder_days`, default 3)
+to each customer whose trial ends within that many days -- once per
+subscription; a dry run queues none. `change` and `change-seats` queue the
+customer a price-change notice per change unless
+`billing.price_change_notices` is false. Both land in the mail outbox
+(`list mail_message`), keyed `trial-reminder:<subscription uuid>` and
+`price-change:<event uuid>`.
 `billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
 Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
 `billing collect` records confirmed manual payments only; an authorized card/ACH mandate does not execute a provider charge and is refused here.

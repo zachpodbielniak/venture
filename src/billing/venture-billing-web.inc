@@ -33,7 +33,7 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 	if (ui)
 	{
 		static const gchar *const fields[] = { "at", "plan-price-id", "seats", "at-period-end", "company-id", "contact-id",
-			"discount-id", "skip-trial" };
+			"discount-id", "discount-code", "skip-trial" };
 		guint i;
 		verb = form_action;
 		for (i = 0; i < G_N_ELEMENTS(fields); i++)
@@ -159,7 +159,12 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 		"<div class=\"doc-parties\"><label class=\"doc-field\"><span class=\"field-label\">Discount</span>"
 		"<select name=\"discount-id\" data-plan-discounts><option value=\"\">No discount</option>");
 	venture_plan_web_append_discount_options(self, html, organization);
-	g_string_append(html, "</select><span class=\"field-help\">The chosen plan's offers.</span></label></div>"
+	/* A code sits beside the offers because that is how a customer names
+	 * one: they quote it, and nobody should have to find which offer it is. */
+	g_string_append(html, "</select><span class=\"field-help\">The chosen plan's offers.</span></label>"
+		"<label class=\"doc-field\"><span class=\"field-label\">Have a code?</span>"
+		"<input type=\"text\" name=\"discount-code\" autocomplete=\"off\" spellcheck=\"false\">"
+		"<span class=\"field-help\">A code the customer quoted, in any case. Use it or the list, not both.</span></label></div>"
 		"<label class=\"checkbox\" data-skip-trial hidden><input type=\"checkbox\" name=\"skip-trial\" value=\"true\"> "
 		"<span data-skip-trial-label>Skip the free trial and send the first invoice now</span></label>"
 		"<p class=\"field-help\" data-first-bill>The first invoice is issued the moment the subscription starts, "
@@ -316,6 +321,48 @@ venture_billing_web_cancel(VentureWebServer *self, GString *html, VentureEntity 
 }
 
 /*
+ * Whether the customer has been told their trial is ending: the question
+ * somebody asks before chasing a first invoice nobody expected. Read from
+ * the outbox row the renewal sweep queued, which is the only record of it.
+ */
+static void
+venture_billing_web_trial_reminder(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) reminder = NULL;
+	gint64 days = 0;
+
+	if (!venture_context_module_enabled(self->context, "mail"))
+		return;
+	reminder = venture_billing_service_trial_reminder(venture_billing_service_get(database),
+		VENTURE_CUSTOMER_SUBSCRIPTION(record));
+	if (reminder != NULL)
+	{
+		g_autofree gchar *state = NULL, *to = NULL, *day = NULL;
+		g_autoptr(GDateTime) sent = NULL;
+
+		g_object_get(reminder, "state", &state, "to", &to, "sent-at", &sent, NULL);
+		day = venture_billing_web_day(self, sent != NULL ? sent : venture_entity_get_created_at(reminder));
+		g_string_append(html, "<p>Trial reminder: ");
+		g_string_append(html, g_strcmp0(state, "sent") == 0 ? "sent to " : "queued for ");
+		venture_html_escape_append(html, to != NULL ? to : "");
+		if (day != NULL)
+		{
+			g_string_append(html, " on ");
+			venture_html_escape_append(html, day);
+		}
+		g_string_append(html, ".</p>");
+		return;
+	}
+	g_object_get(venture_context_get_config(self->context), "billing-trial-reminder-days", &days, NULL);
+	if (days > 0)
+		g_string_append_printf(html, "<p>Trial reminder: not sent yet. The renewal sweep mails the customer "
+			"%" G_GINT64_FORMAT " day%s before the trial ends.</p>", days, days == 1 ? "" : "s");
+	else
+		g_string_append(html, "<p>Trial reminder: none will be sent; billing.trial_reminder_days is zero.</p>");
+}
+
+/*
  * A subscription page answers what the customer will be charged next and
  * when, in a sentence, before offering anything to change. Then the
  * changes, each saying what it does to the next invoice -- the question
@@ -329,7 +376,7 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 	g_autoptr(VentureEntity) price = NULL, pending = NULL;
 	g_autofree gchar *renews = NULL, *trial = NULL, *price_name = NULL, *pending_name = NULL;
 	gint64 id, price_id = 0, pending_id = 0, seats = 1;
-	gboolean cancel_at_end = FALSE, editor;
+	gboolean cancel_at_end = FALSE, editor, trialing = FALSE;
 	gint status = 0;
 	guint i;
 
@@ -359,6 +406,7 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 		g_string_append(html, "On a free trial until <strong>");
 		venture_html_escape_append(html, trial);
 		g_string_append(html, "</strong>. The first invoice is issued when the trial ends.");
+		trialing = TRUE;
 	}
 	else if (cancel_at_end && renews != NULL)
 	{
@@ -384,6 +432,8 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 		g_string_append(html, "Not started yet.");
 	g_string_append(html, "</p>");
 
+	if (trialing)
+		venture_billing_web_trial_reminder(self, html, record);
 	if (pending_name != NULL)
 	{
 		g_string_append(html, "<p>Switches to <strong>");

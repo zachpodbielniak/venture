@@ -86,7 +86,7 @@ venture_cli_command_billing(VentureCli *cli, gchar **args, const gchar *as_of, g
 	if (verb == NULL)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			"usage: billing start company_id=N plan_price_id=N [discount_id=N] [skip_trial=true] | billing change ID plan_price=N | billing renew [--as-of DATE] [--dry-run] | billing cancel ID | billing usage ID quantity=N [key=K]");
+			"usage: billing start company_id=N plan_price_id=N [discount_id=N | discount_code=CODE] [skip_trial=true] | billing change ID plan_price=N | billing renew [--as-of DATE] [--dry-run] | billing cancel ID | billing usage ID quantity=N [key=K]");
 		return -1;
 	}
 	if (g_strcmp0(verb, "usage") == 0)

@@ -16,3 +16,36 @@ an amount to the portal does not pay an invoice.
 * Invitations
 
 =POST /api/v1/customer_portal/invite= accepts =company_id= and =email= for the active organization and requires editor access. Configure =server.base_url= as the public HTTPS URL and enable/configure transactional mail. Invitation creation and outbox enqueue share one transaction; the private link is stored in a sensitive mail-body field and is delivered only by the mail transport. Neither the access token nor the private body appears in generic API, UI, audit or AI output. Unknown, revoked and module-disabled invitations return 404.
+
+* Subscriptions
+
+When billing is on, the portal page also lists the invited customer's own
+subscriptions: plan and price (and seats, for a per-seat price), its state,
+the next renewal date and what that invoice will be -- from
+=venture_billing_service_next_invoice()=, the same figure the operator's
+page and the price-change notice give -- any switch due at renewal, and
+the invoices it has issued with what is still owed on each.
+
+A live subscription (trialing, active or overdue, and not already ending)
+offers two things, each a form posted to
+=POST /portal/:token/subscriptions/:id=:
+
+- *Switch plan* (=action=change=, =plan_price_id=, =when=renewal|now=) to any
+  active price, in the same currency, of an active plan sold by the venture
+  that sells the customer's current plan -- or of the shared plans, when
+  that plan is shared. At renewal is the default; now prorates exactly as
+  an operator's change does.
+- *Cancel at renewal* (=action=cancel=): they keep it until the period ends
+  and nothing more is invoiced.
+
+A customer cannot pause, cancel immediately or change seats here. Both
+actions go through =venture_portal_service_manage_subscription()=, which
+re-checks the token (so a revoked link stops at once), then calls
+=venture_billing_service_execute()= pinned to the version the subscription
+was read at, so every service rule and the customer's price-change notice
+apply. A subscription that is not the token's customer's -- another
+company's, another organization's, deleted, or no such id -- is
+=NOT_FOUND= (404), never =FORBIDDEN=, so a guessed id says nothing. With
+billing off the section is absent and the route is 404. =test-portal=
+covers the page, the offer list and every cross-customer attempt, and
+=test-auth= the route without a valid token.

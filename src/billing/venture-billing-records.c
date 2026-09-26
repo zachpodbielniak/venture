@@ -313,6 +313,8 @@ static const VentureFieldDecl billing_request_fields[] = {
 	VENTURE_FIELD("dry-run", "Dry run", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("discount-id", "Discount", "Start: a discount the plan offers", "plan_discount", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("discount-code", "Discount code", "Start: a code the customer quoted, instead of a discount; matched without regard to case",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("skip-trial", "Skip the free trial", "Start: bill the first period now even when the price has a trial",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("quote-id", "Quote", "Start: the accepted quote the subscription comes from", "quote", VENTURE_COLUMN_FLAG_NONE),

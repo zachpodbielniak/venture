@@ -23,8 +23,8 @@ the CLI, REST, automation or an approved assistant proposal.
 | =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment; discount and how many invoices it has covered |
 | =subscription_event= | Immutable effective-dated change, old/new terms and seats, proration, invoice and frozen MRR |
 | =dunning_step= | Active notice, retry, pause or cancel action at an overdue-day offset |
-| =billing_notice= | Durable email-channel notice; no email is sent |
-| =billing_request= | Stageable instruction and, after execution, its immutable result |
+| =billing_notice= | Durable dunning-notice record; the dunning step itself sends no email |
+| =billing_request= | Stageable instruction (including a start's =discount_code=) and, after execution, its immutable result |
 
 Plan codes and nonempty subscription external IDs are unique within their
 organization, including retained history. Empty external IDs are optional.
@@ -186,8 +186,9 @@ the failure episode. =recover= moves
 reports failure and recovery; an unpaid invoice alone does not fabricate a
 failed provider attempt.
 
-The mail lane must wire the =billing_notice= adapter to =VentureMailer=.
-This module imports no mail header and sends no mail. The optional
+The mail lane must wire the =billing_notice= adapter to =VentureMailer=;
+a dunning step queues no mail. The two customer notices the service does
+queue -- a trial ending and a price change -- are in [[*Telling the customer][Telling the customer]]. The optional
 [[file:stripe.org][Stripe adapter]] consumes its immutable invoice events, obtains hosted reusable
 customer permission and reports verified payment failure/recovery through this
 lifecycle. Neither module stores raw card data. A manual payment-method row alone
@@ -430,3 +431,42 @@ New invoice asks "How often?" first, with three answers that each say what they 
 - *A customer on a plan* -- =/billing/subscriptions/new=, which starts a =customer_subscription= through =VentureBillingService=.
 
 A subscription's page leads with "What happens next": when it renews and at what price, a trial's end, a scheduled switch, and any part-period difference carried to the next invoice. Changing the plan offers the two choices with what each does -- at renewal (today's price stands until then) or right now (the difference for the days left is added to the next invoice or credited, as in [[*Proration][Proration]]).
+
+* Telling the customer
+
+=VentureBillingService= queues two plain-text messages through the mail
+outbox, in the instruction's own transaction -- a notice exists exactly
+when its change committed, and delivery is the outbox's after commit. They
+go to the subscription's contact, else the company's email; with neither,
+or with mail off, nothing is queued and nothing fails. See
+[[file:mail.org][Subscription notices]] for the wording.
+
+- A renewal sweep tells a trialing customer, =billing.trial_reminder_days=
+  (3) before the trial ends, the date and what the first invoice will be.
+  Keyed by the subscription, so once. The subscription's "What happens
+  next" says whether it was queued or sent, and to whom, or when it will be.
+- =change= and =change-seats= tell the customer what changed, when it takes
+  effect and the next invoice, keyed by the change's =subscription_event=
+  uuid, so each change once. =billing.price_change_notices: false= turns
+  them off.
+
+"What the next invoice will be" is =venture_billing_service_next_invoice()=:
+the price the subscription switches to at renewal, the discount while it
+still covers invoices, and the part-period difference carried to it; a
+credit larger than the charge makes it zero. Nothing is written to work it
+out. It is the same number the customer portal shows.
+
+* Discount codes
+
+A =plan_discount='s =code= is what a customer quotes. A start may give
+=discount_code= instead of =discount_id=: the service looks among the chosen
+price's plan's discounts, comparing without regard to case or surrounding
+spaces, and refuses in words a code nobody offers ("the code WINTER is not
+one this plan offers"), a retired one ("is no longer offered") or one past
+its offered-until date ("expired on 2026-03-31"). A matching live code
+becomes the start's =discount_id= and is then held to every rule a chosen
+discount is. Naming both is refused. The new-subscription page has a "Have
+a code?" box beside the discount list; the CLI takes
+=billing start ... discount_code=SPRING25=, REST =discount_code=. Migration
+=000660_billing_discount_codes.sql= checks the new request column and
+invents no codes for earlier starts.
