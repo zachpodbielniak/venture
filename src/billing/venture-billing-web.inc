@@ -32,7 +32,7 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 		return gate;
 	if (ui)
 	{
-		static const gchar *const fields[] = { "at", "plan-price-id", "seats", "at-period-end" };
+		static const gchar *const fields[] = { "at", "plan-price-id", "seats", "at-period-end", "company-id", "contact-id" };
 		guint i;
 		verb = form_action;
 		for (i = 0; i < G_N_ELEMENTS(fields); i++)
@@ -75,6 +75,10 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 	else
 	{
 		org = venture_entity_get_organization_id(instruction);
+		/* A subscription started from the page belongs to the business
+		 * the page is showing. */
+		if (org == 0 && ui)
+			org = venture_web_active_organization(self, request);
 		if (org == 0)
 			org = venture_context_get_default_organization_id(self->context);
 	}
@@ -97,7 +101,11 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 		return venture_web_error_response(error);
 	if (ui)
 	{
-		g_autofree gchar *path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, id);
+		g_autofree gchar *path = NULL;
+		/* A start has no id until the service made one. */
+		if (id == 0)
+			g_object_get(instruction, "subscription-id", &id, NULL);
+		path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, id);
 		HtmxResponse *response = htmx_response_new();
 		htmx_response_set_status(response, 303);
 		htmx_response_add_header(response, "Location", path);
@@ -107,53 +115,243 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 	return venture_web_json_response(result, 200);
 }
 
+/*
+ * GET /billing/subscriptions/new -- put a customer on a plan. The page says
+ * what a subscription is for, so nobody reaches for it when they meant to
+ * repeat an invoice.
+ */
+static HtmxResponse *
+venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	g_autoptr(GString) html = g_string_new(NULL);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) prices = NULL;
+	HtmxResponse *gate;
+	gint64 organization;
+	guint i;
+	(void)params;
+	gate = venture_web_ui_require_session(self, request);
+	if (gate != NULL)
+		return gate;
+	gate = venture_web_require_module_ui(self, request, "billing");
+	if (gate != NULL)
+		return gate;
+	organization = venture_web_active_organization(self, request);
+	g_string_append(html, "<form method=\"post\" action=\"/billing/subscriptions/start\">"
+		"<input type=\"hidden\" name=\"billing_action\" value=\"start\">"
+		"<div class=\"page-head\"><div class=\"page-title\">");
+	venture_web_append_crumbs(html, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, "customer_subscription", TRUE);
+	g_string_append(html, "<h1>New subscription</h1><span class=\"subtitle\">Put a customer on a plan. "
+		"VENTURE invoices each period, handles seats and trials, and works out the difference when the plan "
+		"changes part-way through a period.</span></div><div class=\"page-actions\">"
+		"<a class=\"btn btn-ghost\" href=\"/e/customer_subscription\">Cancel</a>"
+		"<button class=\"btn btn-primary\" type=\"submit\">Start subscription</button></div></div>"
+		"<div class=\"doc-layout\"><section class=\"card\"><div class=\"card-body\"><div class=\"doc-parties\">");
+	document_append_parties(self, html, organization);
+	g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Seats</span>"
+		"<input type=\"number\" name=\"seats\" value=\"1\" min=\"1\" step=\"1\"></label></div>"
+		"<label class=\"doc-field\"><span class=\"field-label\">Plan<span class=\"required\">*</span></span>"
+		"<select name=\"plan-price-id\" required><option value=\"\">Choose a plan\xe2\x80\xa6</option>");
+	query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+	venture_query_set_limit(query, 0);
+	if (organization > 0)
+		venture_query_set_organization(query, organization);
+	prices = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; prices != NULL && i < prices->len; i++)
+	{
+		VentureEntity *option = g_ptr_array_index(prices, i);
+		g_autoptr(VentureEntity) plan = NULL;
+		g_autofree gchar *name = NULL, *label = NULL;
+		gint64 plan_id = 0;
+		gboolean active = FALSE;
+		g_object_get(option, "plan-id", &plan_id, "active", &active, NULL);
+		if (!active)
+			continue;
+		plan = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN, plan_id, NULL);
+		if (plan == NULL)
+			continue;
+		g_object_get(plan, "name", &name, NULL);
+		label = venture_entity_get_display_name(option);
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(option));
+		venture_html_escape_append(html, name);
+		g_string_append(html, " \xe2\x80\x94 ");
+		venture_html_escape_append(html, label);
+		g_string_append(html, "</option>");
+	}
+	g_string_append(html, "</select><span class=\"field-help\">No plan yet? Plans and their prices are under "
+		"<a href=\"/e/plan\">Plans</a>.</span></label></div></section>"
+		"<aside class=\"doc-aside\"><section class=\"card\"><div class=\"card-body explainer\">"
+		"<h3>Subscription or repeating invoice?</h3>"
+		"<p><strong>A subscription</strong> is a customer on a plan: a price per month or year, maybe per seat, "
+		"maybe a free trial. Change the plan mid-month and the difference for the days left is added to the next "
+		"invoice, or credited.</p><p><strong>A repeating invoice</strong> sends the same lines on a schedule "
+		"\xe2\x80\x94 rent, a retainer, hosting. Editing it changes the invoices still to come; nothing is "
+		"prorated. <a href=\"/invoices/compose?repeat=1\">Repeat an invoice instead</a>.</p>"
+		"</div></section></aside></div></form>");
+	return venture_web_html_response(venture_web_page(self, request, "/e/customer_subscription",
+		"New subscription", html->str), 200);
+}
+
+/* A date as its day, in the configured zone. */
+static gchar *
+venture_billing_web_day(VentureWebServer *self, GDateTime *when)
+{
+	return when != NULL ? venture_time_to_date_string(when, venture_context_get_timezone(self->context)) : NULL;
+}
+
+/*
+ * A subscription page answers what the customer will be charged next and
+ * when, in a sentence, before offering anything to change. Then the
+ * changes, each saying what it does to the next invoice -- the question
+ * everybody has about a plan change in the middle of a month.
+ */
 static void
 venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity *record, VentureAuthPrincipal *principal)
 {
-	static const gchar *const actions[] = { "renew", "pause", "resume", "cancel" };
+	g_autoptr(GDateTime) period_end = NULL, trial_end = NULL, cancelled = NULL;
+	g_autoptr(VentureMoney) adjustment = NULL;
+	g_autoptr(VentureEntity) price = NULL, pending = NULL;
+	g_autofree gchar *renews = NULL, *trial = NULL, *price_name = NULL, *pending_name = NULL;
+	gint64 id, price_id = 0, pending_id = 0, seats = 1;
+	gboolean cancel_at_end = FALSE, editor;
+	gint status = 0;
 	guint i;
-	gint64 id;
-	if (!VENTURE_IS_CUSTOMER_SUBSCRIPTION(record) ||
-		!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL))
+
+	if (!VENTURE_IS_CUSTOMER_SUBSCRIPTION(record))
 		return;
 	id = venture_entity_get_id(record);
-	g_string_append(html, "<section class=\"card billing-action\"><h2>Subscription actions</h2>");
-	for (i = 0; i < G_N_ELEMENTS(actions); i++)
+	g_object_get(record, "status", &status, "current-period-end", &period_end, "trial-end", &trial_end,
+		"cancelled-at", &cancelled, "cancel-at-period-end", &cancel_at_end, "pending-adjustment", &adjustment,
+		"plan-price-id", &price_id, "pending-plan-price-id", &pending_id, "seats", &seats, NULL);
+	renews = venture_billing_web_day(self, period_end);
+	trial = venture_billing_web_day(self, trial_end);
+	if (price_id > 0)
+		price = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN_PRICE, price_id, NULL);
+	if (pending_id > 0)
+		pending = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN_PRICE, pending_id, NULL);
+	price_name = price != NULL ? venture_entity_get_display_name(price) : NULL;
+	pending_name = pending != NULL ? venture_entity_get_display_name(pending) : NULL;
+
+	g_string_append(html, "<section class=\"card next-up\"><div class=\"card-head\"><h2>What happens next</h2></div>"
+		"<div class=\"card-body\"><p class=\"next-up-lead\">");
+	if (status == 4 || status == 5)
+		g_string_append(html, "This subscription has ended. Nothing more will be invoiced.");
+	else if (status == 3)
+		g_string_append(html, "Paused. Nothing is invoiced until it is resumed.");
+	else if (status == 0 && trial != NULL)
 	{
-		g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\"><input type=\"hidden\" name=\"billing_action\" value=\"%s\"><button class=\"btn\" type=\"submit\">%s</button></form>", id, actions[i], actions[i]);
+		g_string_append(html, "On a free trial until <strong>");
+		venture_html_escape_append(html, trial);
+		g_string_append(html, "</strong>. The first invoice is issued when the trial ends.");
 	}
+	else if (cancel_at_end && renews != NULL)
+	{
+		g_string_append(html, "Ends on <strong>");
+		venture_html_escape_append(html, renews);
+		g_string_append(html, "</strong>. No further invoice will be issued.");
+	}
+	else if (renews != NULL)
+	{
+		g_string_append(html, "Renews on <strong>");
+		venture_html_escape_append(html, renews);
+		g_string_append(html, "</strong>");
+		if (price_name != NULL)
+		{
+			g_string_append(html, " at ");
+			venture_html_escape_append(html, price_name);
+			if (seats > 1)
+				g_string_append_printf(html, " \xc3\x97 %" G_GINT64_FORMAT " seats", seats);
+		}
+		g_string_append(html, ".");
+	}
+	else
+		g_string_append(html, "Not started yet.");
+	g_string_append(html, "</p>");
+
+	if (pending_name != NULL)
+	{
+		g_string_append(html, "<p>Switches to <strong>");
+		venture_html_escape_append(html, pending_name);
+		g_string_append(html, "</strong> at renewal; until then the current price stands.</p>");
+	}
+	if (adjustment != NULL && venture_money_get_amount(adjustment) != 0)
+	{
+		g_autofree gchar *text = venture_money_to_display_string(adjustment, TRUE);
+		g_string_append(html, "<p>");
+		venture_html_escape_append(html, text);
+		g_string_append(html, venture_money_get_amount(adjustment) > 0
+			? " is added to the next invoice for a change made part-way through this period.</p>"
+			: " is credited against the next invoice for a change made part-way through this period.</p>");
+	}
+	g_string_append(html, "</div></section>");
+
+	editor = venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!editor || status == 4 || status == 5)
+		return;
+
+	/* Changing the plan: the one decision that affects money, laid out as
+	 * the two choices it is, each saying what it does. */
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
 		g_autoptr(GPtrArray) prices = NULL;
 		venture_query_set_organization(query, venture_entity_get_organization_id(record));
 		venture_query_set_limit(query, 0);
 		prices = venture_database_find(venture_context_get_database(self->context), query, NULL);
-		g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\"><input type=\"hidden\" name=\"billing_action\" value=\"change\"><label>New plan <select name=\"plan-price-id\" required>", id);
+		g_string_append_printf(html, "<section class=\"card\"><div class=\"card-head\"><h2>Change the plan</h2></div>"
+			"<div class=\"card-body\"><form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\" class=\"plan-change\">"
+			"<input type=\"hidden\" name=\"billing_action\" value=\"change\">"
+			"<label class=\"doc-field\"><span class=\"field-label\">New plan</span><select name=\"plan-price-id\" required>", id);
 		for (i = 0; prices != NULL && i < prices->len; i++)
 		{
-			VentureEntity *price = g_ptr_array_index(prices, i);
+			VentureEntity *option = g_ptr_array_index(prices, i);
 			g_autoptr(VentureEntity) plan = NULL;
-			g_autoptr(VentureMoney) amount = NULL;
-			g_autofree gchar *name = NULL;
-			g_autofree gchar *formatted = NULL;
-			gint64 plan_id;
-			gint interval;
-			gboolean active;
-			gboolean per_seat;
-			g_object_get(price, "plan-id", &plan_id, "amount", &amount, "interval", &interval, "active", &active, "per-seat", &per_seat, NULL);
-			if (!active || amount == NULL)
+			g_autofree gchar *name = NULL, *label = NULL;
+			gint64 plan_id = 0;
+			gboolean active = FALSE;
+			g_object_get(option, "plan-id", &plan_id, "active", &active, NULL);
+			if (!active || venture_entity_get_id(option) == price_id)
 				continue;
 			plan = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN, plan_id, NULL);
 			if (plan == NULL)
 				continue;
 			g_object_get(plan, "name", &name, NULL);
-			formatted = venture_money_to_string(amount);
-			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(price));
+			label = venture_entity_get_display_name(option);
+			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(option));
 			venture_html_escape_append(html, name);
-			g_string_append(html, " — ");
-			venture_html_escape_append(html, formatted);
-			g_string_append_printf(html, " / %s%s</option>", interval == 1 ? "year" : "month", per_seat ? " / seat" : "");
+			g_string_append(html, " \xe2\x80\x94 ");
+			venture_html_escape_append(html, label);
+			g_string_append(html, "</option>");
 		}
-		g_string_append(html, "</select></label><label><input name=\"at-period-end\" type=\"checkbox\" value=\"true\">At period end</label><button class=\"btn\" type=\"submit\">Change plan</button></form></section>");
+		g_string_append(html, "</select></label><fieldset class=\"choice-cards\"><legend class=\"field-label\">When</legend>"
+			"<label class=\"choice-card\"><input type=\"radio\" name=\"at-period-end\" value=\"true\" checked>"
+			"<span><strong>At renewal");
+		if (renews != NULL)
+		{
+			g_string_append(html, " on ");
+			venture_html_escape_append(html, renews);
+		}
+		g_string_append(html, "</strong><span class=\"muted\">They keep today's price until then. Nothing extra to bill.</span></span></label>"
+			"<label class=\"choice-card\"><input type=\"radio\" name=\"at-period-end\" value=\"false\">"
+			"<span><strong>Right now</strong><span class=\"muted\">The difference for the days left in this period is "
+			"worked out to the cent and added to the next invoice \xe2\x80\x94 or credited, if the new plan costs less.</span></span></label>"
+			"</fieldset><button class=\"btn btn-primary\" type=\"submit\">Change plan</button></form></div></section>");
 	}
+
+	/* The rest, in words, and only the ones this state allows. */
+	g_string_append(html, "<section class=\"card record-actions\"><div class=\"card-head\"><h2>Subscription</h2></div><div class=\"card-body\">");
+	{
+		static const struct { const gchar *action; const gchar *label; gint when; } actions[] = {
+			{ "renew", "Renew now", 1 }, { "pause", "Pause", 1 }, { "resume", "Resume", 3 }, { "cancel", "Cancel subscription", -1 },
+		};
+		for (i = 0; i < G_N_ELEMENTS(actions); i++)
+		{
+			if (actions[i].when >= 0 && actions[i].when != status && !(actions[i].when == 1 && (status == 0 || status == 2)))
+				continue;
+			g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\">"
+				"<input type=\"hidden\" name=\"billing_action\" value=\"%s\"><button class=\"btn%s\" type=\"submit\">%s</button></form>",
+				id, actions[i].action, g_strcmp0(actions[i].action, "cancel") == 0 ? " btn-danger" : "", actions[i].label);
+		}
+	}
+	g_string_append(html, "</div></section>");
 }

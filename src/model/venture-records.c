@@ -2829,7 +2829,8 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInvoice, venture_invoice, venture_invoice_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");)
 
 /*
  * One line of an invoice. The amount is quantity times unit price, computed

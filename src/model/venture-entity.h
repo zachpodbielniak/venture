@@ -545,6 +545,32 @@ venture_entity_class_set_labels(
 );
 
 /**
+ * venture_entity_class_set_create_path:
+ * @klass: a #VentureEntityClass
+ * @path: the page that makes one, such as "/invoices/compose"
+ *
+ * Names the page a person uses to create a record of this type when the
+ * generated form is not it -- an invoice is composed with its lines, a
+ * subscription is started on a plan. Every "New" button for the type goes
+ * there.
+ */
+void
+venture_entity_class_set_create_path(
+	VentureEntityClass	*klass,
+	const gchar		*path
+);
+
+/**
+ * venture_entity_type_get_create_path:
+ * @type: a #VentureEntity subtype
+ *
+ * Returns: (transfer none) (nullable): the page that creates one, or %NULL
+ *   for the generated form
+ */
+const gchar *
+venture_entity_type_get_create_path(GType type);
+
+/**
  * venture_entity_type_dup_label:
  * @type: a #VentureEntity subtype
  * @plural: whether to name several records rather than one

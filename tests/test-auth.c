@@ -1494,15 +1494,17 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
 			"/api/v1/capture/1/convert", "/settings/backups",
 			"/api/v1/invoice/1/actions/payment_link", "/api/v1/stripe_payment_link/1/actions/revoke",
-			"/api/v1/stripe_event/1/actions/retry"
+			"/api/v1/stripe_event/1/actions/retry", "/billing/subscriptions/start"
 		};
+		static const gchar *const pages[] = { "/billing/subscriptions/new", "/invoices/compose?repeat=1" };
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
 			"/api/v1/contractor-tax/1/export", "/api/v1/sales-tax/export?period=2026-Q1"
 		};
 		static const gchar *const redirects[] = {
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
-			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups", NULL
+			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups",
+			"/billing/subscriptions/start", NULL
 		};
 		for (i = 0; i < G_N_ELEMENTS(posts); i++)
 		{
@@ -1512,6 +1514,10 @@ test_auth_api_refuses_anonymous_requests(
 		}
 		for (i = 0; i < G_N_ELEMENTS(gets); i++)
 			g_assert_cmpuint(server_fixture_get_anonymous(fixture, gets[i]), ==, SOUP_STATUS_UNAUTHORIZED);
+		/* The pages that start a subscription or a repeating invoice
+		 * send a stranger to sign in. */
+		for (i = 0; i < G_N_ELEMENTS(pages); i++)
+			g_assert_cmpuint(server_fixture_get_anonymous(fixture, pages[i]), ==, SOUP_STATUS_FOUND);
 	}
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
 	                                        NULL, "message=hi", NULL, NULL),

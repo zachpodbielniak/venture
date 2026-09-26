@@ -61,7 +61,8 @@ static const VentureFieldDecl quote_fields[] = {
 	VENTURE_FIELD_MONEY("tax", "Tax", NULL),
 	VENTURE_FIELD_MONEY("total", "Total", NULL)
 };
-VENTURE_DEFINE_ENTITY(VentureQuote, venture_quote, quote_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureQuote, venture_quote, quote_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/quotes/compose");)
 
 static const VentureFieldDecl quote_line_fields[] = {
 	VENTURE_FIELD_REF("quote-id", "Quote", NULL, "quote", VENTURE_COLUMN_FLAG_NOT_NULL),

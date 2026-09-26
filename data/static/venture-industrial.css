@@ -4446,3 +4446,115 @@ table.line-items th { white-space: nowrap; }
 table.report-index td.row-title { width: 28%; white-space: nowrap; }
 table.report-index td.row-end, table.data td.row-end { text-align: right; width: 1%; white-space: nowrap; }
 tr[hidden] { display: none; }
+
+/* ==========================================================================
+   Life -- the small things that make a page feel made
+   ========================================================================== */
+
+/* A record's initials, tinted by its name from the status hues. */
+.avatar {
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 44px;
+	height: 44px;
+	font-weight: 700;
+	font-size: 16px;
+	letter-spacing: 0.02em;
+	border-radius: var(--radius);
+	border: 1px solid currentColor;
+}
+.avatar.tone-accent   { color: var(--accent);   background: var(--accent-soft); }
+.avatar.tone-positive { color: var(--positive); background: var(--positive-soft); }
+.avatar.tone-warning  { color: var(--warning);  background: var(--warning-soft); }
+.avatar.tone-info     { color: var(--text);     background: var(--info-soft); }
+
+/* The one-click "+ New": a button at the top of the sidebar, its menu a
+ * floating panel of the things people make every day. */
+.quick-new { position: relative; padding: 0 var(--space-4) var(--space-3); }
+.quick-new > summary { list-style: none; width: 100%; justify-content: center; cursor: pointer; }
+.quick-new > summary::-webkit-details-marker { display: none; }
+.quick-new-menu {
+	position: absolute;
+	z-index: 50;
+	left: var(--space-4);
+	right: var(--space-4);
+	top: calc(100% - 4px);
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 2px;
+	padding: 6px;
+	background: var(--surface-raised);
+	box-shadow: var(--ring);
+	border-radius: var(--radius);
+}
+.quick-new-menu a {
+	padding: 9px 10px;
+	color: var(--text);
+	font-size: 13.5px;
+	border-radius: var(--radius-sm);
+	text-decoration: none;
+}
+.quick-new-menu a:hover { background: var(--accent-soft); color: var(--accent); }
+
+/* "How often?" -- the choice that decides what kind of billing this is,
+ * as three cards you can read, not three words to guess between. */
+.how-often {
+	display: grid;
+	grid-template-columns: auto repeat(3, minmax(0, 1fr));
+	gap: var(--space-3);
+	align-items: stretch;
+	margin-bottom: var(--space-5);
+}
+.how-often-label { align-self: center; font-weight: 600; color: var(--text-muted); padding-right: var(--space-2); }
+.how-often-choice {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: var(--space-3) var(--space-4);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+	color: var(--text);
+	text-decoration: none;
+	transition: border-color var(--transition), background var(--transition), transform var(--transition);
+}
+.how-often-choice span { font-size: 13px; color: var(--text-muted); line-height: 1.45; }
+.how-often-choice:hover { border-color: var(--accent); text-decoration: none; transform: translateY(-1px); }
+.how-often-choice.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+@media (max-width: 900px) { .how-often { grid-template-columns: 1fr; } }
+
+/* A choice between two outcomes, each with the sentence that says what it
+ * does -- the plan change "at renewal" or "right now". */
+.choice-cards { border: 0; padding: 0; margin: var(--space-4) 0; display: grid; gap: var(--space-2); }
+.choice-card {
+	display: flex;
+	gap: var(--space-3);
+	align-items: flex-start;
+	padding: var(--space-3) var(--space-4);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	cursor: pointer;
+	transition: border-color var(--transition), background var(--transition);
+}
+.choice-card > span { display: flex; flex-direction: column; gap: 2px; }
+.choice-card .muted { font-size: 13px; }
+.choice-card:hover { border-color: var(--text-muted); }
+.choice-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.plan-change .btn { margin-top: var(--space-2); }
+
+/* "What happens next" -- the sentence a person came for, large. */
+.next-up .next-up-lead { font-size: 18px; line-height: 1.5; margin: 0 0 var(--space-3); }
+.next-up p:last-child { margin-bottom: 0; }
+.explainer h3 { font-size: 15px; text-transform: none; letter-spacing: 0; font-family: var(--font);
+                font-weight: 700; margin-bottom: var(--space-3); }
+.explainer p { font-size: 14px; color: var(--text-muted); }
+.explainer strong { color: var(--text); }
+
+/* Rows and cards answer the pointer, briefly. */
+table.data tbody tr, .main table:not([class]) tbody tr { transition: background var(--transition); }
+.card { transition: border-color var(--transition), transform var(--transition); }
+.record-tabs .tab-list label { transition: color var(--transition), border-color var(--transition); }
+@media (prefers-reduced-motion: reduce) {
+	.how-often-choice:hover, .card { transform: none; transition: none; }
+}

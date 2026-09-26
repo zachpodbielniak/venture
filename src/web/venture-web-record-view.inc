@@ -783,6 +783,51 @@ venture_web_append_record_aside(
 }
 
 /*
+ * A record's initials in a tile, tinted by its name, so a page is
+ * recognisable at a glance and two records never look the same. The tint
+ * is one of the four status hues mixed into the ground -- tokens, not a
+ * colour of our own.
+ */
+static void
+venture_web_append_avatar(
+	GString		*html,
+	const gchar	*name
+){
+	static const gchar *const tones[] = { "accent", "positive", "warning", "info" };
+	gchar initials[8] = { 0 };
+	const gchar *p;
+	guint n = 0;
+	guint hash;
+
+	if (venture_string_is_empty(name))
+		return;
+
+	/* The first letter of the first two words, ASCII-safe: a name that
+	 * starts with anything else gets its first character whole. */
+	for (p = name; ('\0' != *p) && (n < 2); p = g_utf8_next_char(p))
+	{
+		if (((p == name) || (' ' == *(p - 1))) && g_unichar_isalnum(g_utf8_get_char(p)))
+		{
+			gchar buffer[7] = { 0 };
+			gint length = g_unichar_to_utf8(g_unichar_toupper(g_utf8_get_char(p)), buffer);
+
+			if ((strlen(initials) + length) < sizeof(initials))
+				strncat(initials, buffer, (gsize)length);
+			n++;
+		}
+	}
+
+	if (0 == n)
+		return;
+
+	hash = g_str_hash(name);
+	g_string_append_printf(html, "<span class=\"avatar tone-%s\" aria-hidden=\"true\">",
+	                       tones[hash % G_N_ELEMENTS(tones)]);
+	venture_html_escape_append(html, initials);
+	g_string_append(html, "</span>");
+}
+
+/*
  * The top of a record page: where it lives, its name, its status, and the
  * one or two things you do to it.
  */
@@ -803,7 +848,9 @@ venture_web_append_record_head(
 	g_string_append(html, "<div class=\"page-head record-head\">"
 	                      "<div class=\"page-title\">");
 	venture_web_append_crumbs(html, G_OBJECT_TYPE(record), type_name, TRUE);
-	g_string_append(html, "<div class=\"title-line\"><h1>");
+	g_string_append(html, "<div class=\"title-line\">");
+	venture_web_append_avatar(html, title);
+	g_string_append(html, "<h1>");
 	venture_html_escape_append(html, title);
 	g_string_append(html, "</h1>");
 	venture_web_append_status_badge(html, record,

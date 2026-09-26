@@ -1159,7 +1159,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "billing"
 	},
 	{
-		"/e/recurring_schedule", "Recurring",
+		"/e/recurring_schedule", "Repeating invoices",
 		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
 		NULL, "recurring"
 	},
@@ -1561,13 +1561,12 @@ static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 	"/e/refund", "/e/collection_case", "/e/customer_subscription",
-	"/sales-orders", "/e/product", "/e/inventory_item",
+	"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 	NULL
 };
 
 static const gchar *const venture_web_nav_money_out[] = {
 	"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
-	"/e/recurring_schedule",
 	NULL
 };
 
@@ -1890,6 +1889,39 @@ venture_web_page(
 		"<input type=\"search\" name=\"q\" placeholder=\"Search\xe2\x80\xa6\" "
 		"data-global-search title=\"Search everything (Ctrl+K)\">"
 		"</form>");
+
+	/*
+	 * Making something is one click from anywhere: the things people
+	 * create every day, behind one button at the top of the sidebar,
+	 * each going to the page that makes it best -- an invoice to its
+	 * composer, a subscription to its plan picker. Only what is on.
+	 */
+	{
+		static const struct { const gchar *label; const gchar *path; const gchar *module; } creates[] = {
+			{ "Invoice", "/invoices/compose", "invoicing" },
+			{ "Quote", "/quotes/compose", "quotes" },
+			{ "Subscription", "/billing/subscriptions/new", "billing" },
+			{ "Expense", "/e/expense/new", "finance" },
+			{ "Supplier bill", "/e/vendor_bill/new", "payables" },
+			{ "Contact", "/e/contact/new", "crm" },
+			{ "Company", "/e/company/new", "crm" },
+			{ "Deal", "/e/deal/new", "crm" },
+			{ "Ticket", "/e/ticket/new", "tickets" },
+		};
+		gsize k;
+
+		g_string_append(html, "<details class=\"quick-new\"><summary class=\"btn btn-primary\">"
+		                      "<span aria-hidden=\"true\">+</span> New</summary><div class=\"quick-new-menu\">");
+		for (k = 0; k < G_N_ELEMENTS(creates); k++)
+		{
+			if (!venture_web_module_enabled(self, creates[k].module))
+				continue;
+			g_string_append_printf(html, "<a href=\"%s\">", creates[k].path);
+			venture_html_escape_append(html, creates[k].label);
+			g_string_append(html, "</a>");
+		}
+		g_string_append(html, "</div></details>");
+	}
 
 	venture_accountant_web_append_inbox_nav(self, request, html, active);
 
@@ -2665,7 +2697,6 @@ venture_web_api_write(
 	return venture_web_json_response(node, created ? 201 : 200);
 }
 
-#include "billing/venture-billing-web.inc"
 
 static HtmxResponse *
 venture_web_api_create(
@@ -5865,8 +5896,13 @@ venture_web_ui_list(
 		/* "New contact", not "New": the button says what it makes. */
 		singular = venture_web_type_label(entity_type, FALSE);
 		lower = g_ascii_strdown(singular, -1);
-		g_string_append_printf(content,
-			"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New ", type_name);
+		if (NULL != venture_entity_type_get_create_path(entity_type))
+			g_string_append_printf(content,
+				"<a class=\"btn btn-primary\" href=\"%s\">New ",
+				venture_entity_type_get_create_path(entity_type));
+		else
+			g_string_append_printf(content,
+				"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New ", type_name);
 		venture_html_escape_append(content, lower);
 		g_string_append(content, "</a>");
 	}
@@ -7987,6 +8023,12 @@ venture_web_append_knowledge(
 #include "setup/venture-setup-panel.inc"
 #include "backup/venture-backup-web.inc"
 #include "venture-web-record-view.inc"
+
+/* The customer and contact pickers, defined with the document composer;
+ * the new-subscription page shares them. */
+static void document_append_parties(VentureWebServer *self, GString *html,
+	gint64 organization);
+#include "billing/venture-billing-web.inc"
 
 static void
 venture_web_append_related(
@@ -30041,6 +30083,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/billing/subscriptions/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/widget-kinds", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_widget_kinds, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboard-templates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_templates, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboards, self);

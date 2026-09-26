@@ -955,11 +955,10 @@ test_web_navigation_groups_by_question(
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 		"/e/refund", "/e/collection_case", "/e/customer_subscription",
-		"/sales-orders", "/e/product", "/e/inventory_item", NULL
+		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item", NULL
 	};
 	static const gchar *const money_out[] = {
-		"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
-		"/e/recurring_schedule", NULL
+		"/e/expense", "/payables", "/purchasing", "/claims", "/payroll", NULL
 	};
 	static const gchar *const bank[] = {
 		"/bankfeed", "/money/calendar", NULL

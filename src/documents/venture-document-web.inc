@@ -214,6 +214,8 @@ static gchar *
 document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quote)
 {
 	GString *html = g_string_new(NULL);
+	gboolean repeat = !quote && htmx_request_get_query_param(request, "repeat") != NULL &&
+		venture_web_module_enabled(self, "recurring");
 	gint64 organization = venture_web_active_organization(self, request);
 	g_autofree gchar *products = document_product_options(self, organization);
 	const gchar *noun = quote ? "quote" : "invoice";
@@ -222,18 +224,52 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 		"<input type=\"hidden\" name=\"compose-form\" value=\"1\">"
 		"<div class=\"page-head\"><div class=\"page-title\">");
 	venture_web_append_crumbs(html, quote ? VENTURE_TYPE_QUOTE : VENTURE_TYPE_INVOICE, noun, TRUE);
-	g_string_append_printf(html, "<h1>New %s</h1></div><div class=\"page-actions\">"
-		"<a class=\"btn btn-ghost\" href=\"/e/%s\">Cancel</a>"
-		"<button class=\"btn\" type=\"submit\">Save draft</button>"
-		"<button class=\"btn btn-primary\" type=\"submit\" name=\"send\" value=\"1\">Save and send</button>"
-		"</div></div>", noun, noun);
+	if (repeat)
+		g_string_append(html, "<h1>New repeating invoice</h1></div><div class=\"page-actions\">"
+			"<input type=\"hidden\" name=\"repeat\" value=\"1\">"
+			"<a class=\"btn btn-ghost\" href=\"/e/recurring_schedule\">Cancel</a>"
+			"<button class=\"btn btn-primary\" type=\"submit\">Save schedule</button></div></div>");
+	else
+		g_string_append_printf(html, "<h1>New %s</h1></div><div class=\"page-actions\">"
+			"<a class=\"btn btn-ghost\" href=\"/e/%s\">Cancel</a>"
+			"<button class=\"btn\" type=\"submit\">Save draft</button>"
+			"<button class=\"btn btn-primary\" type=\"submit\" name=\"send\" value=\"1\">Save and send</button>"
+			"</div></div>", noun, noun);
+
+	/*
+	 * The question people get wrong before they start: is this one
+	 * invoice, the same invoice every month, or a customer on a plan?
+	 * Three answers, each saying what it means, each one click away.
+	 */
+	if (!quote)
+	{
+		g_string_append_printf(html, "<nav class=\"how-often\" aria-label=\"How often\">"
+			"<span class=\"how-often-label\">How often?</span>"
+			"<a class=\"how-often-choice%s\" href=\"/invoices/compose\"%s>"
+			"<strong>Just once</strong><span>One invoice, sent now.</span></a>",
+			repeat ? "" : " active", repeat ? "" : " aria-current=\"page\"");
+		if (venture_web_module_enabled(self, "recurring"))
+			g_string_append_printf(html, "<a class=\"how-often-choice%s\" href=\"/invoices/compose?repeat=1\"%s>",
+				repeat ? " active" : "", repeat ? " aria-current=\"page\"" : "");
+		if (venture_web_module_enabled(self, "recurring"))
+			g_string_append(html, ""
+				"<strong>Same invoice, on a schedule</strong><span>Rent, a retainer, hosting. "
+				"Edits change the invoices still to come.</span></a>");
+		if (venture_web_module_enabled(self, "billing"))
+			g_string_append(html, "<a class=\"how-often-choice\" href=\"/billing/subscriptions/new\">"
+				"<strong>A customer on a plan</strong><span>A monthly or yearly price, seats and trials. "
+				"Mid-period changes are prorated.</span></a>");
+		g_string_append(html, "</nav>");
+	}
 
 	g_string_append(html, "<div class=\"doc-layout\"><section class=\"card doc-sheet\"><div class=\"card-body\">"
 		"<div class=\"doc-parties\">");
 	document_append_parties(self, html, organization);
-	g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
-		"<input type=\"text\" name=\"number\" placeholder=\"%s\"></label></div>",
-		quote ? "Q-2026-001" : "INV-2026-001");
+	if (!repeat)
+		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
+			"<input type=\"text\" name=\"number\" placeholder=\"%s\"></label>",
+			quote ? "Q-2026-001" : "INV-2026-001");
+	g_string_append(html, "</div>");
 
 	g_string_append(html, "<table class=\"line-items\"><thead><tr>"
 		"<th>Item</th><th class=\"num\">Qty</th><th class=\"num\">Unit price</th>"
@@ -253,6 +289,23 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 		"<div class=\"grand\"><dt>Total</dt><dd data-total>0.00</dd></div></dl>"
 		"<p class=\"muted small\">Worked out as you type; the saved %s is the final word.</p>"
 		"</div></section>", noun);
+	if (repeat)
+	{
+		g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+		g_autofree gchar *start = venture_time_to_date_string(today, NULL);
+		g_string_append_printf(html, "<section class=\"card\"><div class=\"card-head\"><h2>Schedule</h2></div><div class=\"card-body\">"
+			"<label class=\"doc-field\"><span class=\"field-label\">Every</span><select name=\"repeat-frequency\">"
+			"<option value=\"monthly\" selected>Month</option><option value=\"weekly\">Week</option>"
+			"<option value=\"yearly\">Year</option></select></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">First invoice on</span>"
+			"<input type=\"date\" name=\"repeat-start\" value=\"%s\" required></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">Last invoice on</span>"
+			"<input type=\"date\" name=\"repeat-end\"><span class=\"field-help\">Leave empty to keep going.</span></label>"
+			"<label class=\"checkbox\"><input type=\"checkbox\" name=\"repeat-auto\" value=\"true\"> "
+			"Send each one automatically</label><span class=\"field-help\">Otherwise each arrives as a draft for you to check. "
+			"Editing the schedule changes the invoices still to come, never the ones already sent.</span>"
+			"</div></section>", start);
+	}
 	g_string_append(html, "<details class=\"card form-section\"><summary>Terms and notes</summary><div class=\"card-body\">"
 		"<label class=\"doc-field\"><span class=\"field-label\">Payment terms</span>"
 		"<textarea name=\"terms\" rows=\"2\" placeholder=\"For example: 30 days\"></textarea>"
@@ -299,6 +352,116 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 	return g_string_free(html, FALSE);
 }
 
+/*
+ * The same invoice on a schedule: the sheet's customer and lines become
+ * the template a repeating schedule issues from, every week, month or
+ * year from the first date. Built from the form's own fields rather than
+ * from a serialised invoice, so no identity of a draft leaks into every
+ * invoice the schedule will ever make.
+ */
+static HtmxResponse *
+document_save_schedule(VentureWebServer *self, HtmxRequest *request, const VentureActor *actor)
+{
+	static const gchar *const header[] = { "company-id", "contact-id", "terms", "notes", NULL };
+	static const gchar *const line_fields[] = { "description", "quantity", "unit-price", "product-id",
+		"discount-percent", "tax-percent", NULL };
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) root = NULL;
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *template_text = NULL, *timezone = NULL, *name = NULL, *company_name = NULL;
+	const gchar *company_id = htmx_request_get_form_value(request, "company-id");
+	const gchar *end = htmx_request_get_form_value(request, "repeat-end");
+	guint i, lines = 0;
+	gint64 organization = venture_web_active_organization(self, request);
+
+	if (!venture_web_module_enabled(self, "recurring"))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Repeating invoices are switched off");
+		return venture_web_error_response(error);
+	}
+	if (organization == 0)
+		organization = venture_context_get_default_organization_id(self->context);
+	json_builder_begin_object(builder);
+	for (i = 0; header[i] != NULL; i++)
+	{
+		const gchar *value = htmx_request_get_form_value(request, header[i]);
+		g_autofree gchar *wire = g_strdup(header[i]);
+		if (value == NULL || *value == '\0')
+			continue;
+		g_strdelimit(wire, "-", '_');
+		json_builder_set_member_name(builder, wire);
+		if (g_str_has_suffix(header[i], "-id"))
+			json_builder_add_int_value(builder, g_ascii_strtoll(value, NULL, 10));
+		else
+			json_builder_add_string_value(builder, value);
+	}
+	json_builder_set_member_name(builder, "lines");
+	json_builder_begin_array(builder);
+	for (i = 0; i < VENTURE_DOCUMENT_MAX_LINES; i++)
+	{
+		g_autofree gchar *description_name = g_strdup_printf("line-%u-description", i);
+		const gchar *description = htmx_request_get_form_value(request, description_name);
+		guint f;
+		if (description == NULL || *description == '\0')
+			continue;
+		json_builder_begin_object(builder);
+		for (f = 0; line_fields[f] != NULL; f++)
+		{
+			g_autofree gchar *field = g_strdup_printf("line-%u-%s", i, line_fields[f]);
+			g_autofree gchar *wire = g_strdup(line_fields[f]);
+			const gchar *value = htmx_request_get_form_value(request, field);
+			if (value == NULL || *value == '\0')
+				continue;
+			g_strdelimit(wire, "-", '_');
+			json_builder_set_member_name(builder, wire);
+			if (g_strcmp0(line_fields[f], "product-id") == 0)
+				json_builder_add_int_value(builder, g_ascii_strtoll(value, NULL, 10));
+			else
+				json_builder_add_string_value(builder, value);
+		}
+		json_builder_end_object(builder);
+		lines++;
+	}
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	if (company_id == NULL || *company_id == '\0' || lines == 0)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A repeating invoice needs a customer and at least one line");
+		return venture_web_error_response(error);
+	}
+	root = json_builder_get_root(builder);
+	template_text = venture_json_to_string(root, FALSE);
+	company = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY,
+		g_ascii_strtoll(company_id, NULL, 10), NULL);
+	company_name = company != NULL ? venture_entity_get_display_name(company) : g_strdup("Customer");
+	name = g_strdup_printf("%s \xe2\x80\x94 repeating invoice", company_name);
+	g_object_get(venture_context_get_config(self->context), "locale-timezone", &timezone, NULL);
+
+	schedule = g_object_new(VENTURE_TYPE_RECURRING_SCHEDULE, NULL);
+	venture_entity_set_organization_id(schedule, organization);
+	if (!venture_entity_set_field_from_string(schedule, "name", name, &error) ||
+		!venture_entity_set_field_from_string(schedule, "kind", "invoice", &error) ||
+		!venture_entity_set_field_from_string(schedule, "frequency",
+			htmx_request_get_form_value(request, "repeat-frequency"), &error) ||
+		!venture_entity_set_field_from_string(schedule, "timezone", timezone, &error) ||
+		!venture_entity_set_field_from_string(schedule, "start-at",
+			htmx_request_get_form_value(request, "repeat-start"), &error) ||
+		(end != NULL && *end != '\0' && !venture_entity_set_field_from_string(schedule, "end-at", end, &error)) ||
+		!venture_entity_set_field_from_string(schedule, "auto-post",
+			htmx_request_get_form_value(request, "repeat-auto") != NULL ? "true" : "false", &error) ||
+		!venture_entity_set_field_from_string(schedule, "template", template_text, &error) ||
+		!venture_database_save(venture_context_get_database(self->context), schedule, actor, &error))
+		return venture_web_error_response(error);
+	{
+		g_autofree gchar *path = g_strdup_printf("/e/recurring_schedule/%" G_GINT64_FORMAT,
+			venture_entity_get_id(schedule));
+		return venture_web_redirect_to(path);
+	}
+}
+
 static HtmxResponse *
 venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -333,6 +496,8 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
+	if (!quote && !api && htmx_request_get_form_value(request, "repeat") != NULL)
+		return document_save_schedule(self, request, &actor);
 	spec = document_spec_from_request(request, &error);
 	if (spec == NULL)
 		return venture_web_error_response(error);

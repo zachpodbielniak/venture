@@ -237,3 +237,13 @@ annual normalization, scheduled terms, migrations and report definitions.
 =test-billing-surfaces= exercises real REST, web actions, CLI subprocesses,
 staged approval and stale assistant proposals. The shared module, report,
 migration and authentication suites cover their integration points.
+
+* In the web interface
+
+New invoice asks "How often?" first, with three answers that each say what they mean:
+
+- *Just once* -- one invoice, composed on the sheet and sent now.
+- *Same invoice, on a schedule* -- the same sheet in repeat mode. Its customer and lines become a =recurring_schedule= template (weekly, monthly or yearly from a first date, optionally to a last), issued as drafts or automatically. Editing the schedule changes invoices still to come; nothing is prorated.
+- *A customer on a plan* -- =/billing/subscriptions/new=, which starts a =customer_subscription= through =VentureBillingService=.
+
+A subscription's page leads with "What happens next": when it renews and at what price, a trial's end, a scheduled switch, and any part-period difference carried to the next invoice. Changing the plan offers the two choices with what each does -- at renewal (today's price stands until then) or right now (the difference for the days left is added to the next invoice or credited, as in [[*Proration][Proration]]).

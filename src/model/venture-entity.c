@@ -482,6 +482,33 @@ venture_entity_pluralise(const gchar *singular)
 	return g_strconcat(singular, "s", NULL);
 }
 
+void
+venture_entity_class_set_create_path(
+	VentureEntityClass	*klass,
+	const gchar		*path
+){
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != path && '/' == path[0]);
+
+	/* Lives as long as the type, like the labels beside it. */
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass),
+		g_quark_from_static_string("venture-entity-create-path"),
+		g_strdup(path));
+}
+
+const gchar *
+venture_entity_type_get_create_path(GType type)
+{
+	g_autoptr(GTypeClass) klass = NULL;
+
+	g_return_val_if_fail(g_type_is_a(type, VENTURE_TYPE_ENTITY), NULL);
+
+	klass = g_type_class_ref(type);
+
+	return g_type_get_qdata(type,
+		g_quark_from_static_string("venture-entity-create-path"));
+}
+
 gchar *
 venture_entity_type_dup_label(
 	GType		type,

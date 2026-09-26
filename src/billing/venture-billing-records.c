@@ -89,8 +89,22 @@ static const VentureFieldDecl plan_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VenturePlan, venture_plan, plan_fields)
 
+/* A price reads as what it charges: "30.00 USD a month per seat". */
+static gchar *
+plan_price_display_name(VentureEntity *self)
+{
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *text = NULL;
+	gint interval = 0;
+	gboolean per_seat = FALSE;
+	g_object_get(self, "amount", &amount, "interval", &interval, "per-seat", &per_seat, NULL);
+	if (amount == NULL)
+		return g_strdup_printf("Price #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+	text = venture_money_to_display_string(amount, TRUE);
+	return g_strdup_printf("%s a %s%s", text, interval == 1 ? "year" : "month", per_seat ? " per seat" : "");
+}
 static const VentureFieldDecl plan_price_fields[] = {
-	VENTURE_FIELD_REF("plan-id", "Plan id", NULL, "plan", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("plan-id", "Plan", NULL, "plan", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("currency", "Currency", NULL),
 	VENTURE_FIELD_ENUM("interval", "Interval", NULL, venture_billing_interval_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
@@ -99,42 +113,46 @@ static const VentureFieldDecl plan_price_fields[] = {
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("product-id", "Product", "Catalog mapping for hosted collection", "product", VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VenturePlanPrice, venture_plan_price, plan_price_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlanPrice, venture_plan_price, plan_price_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = plan_price_display_name;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Price", NULL);)
 
 static const VentureFieldDecl customer_subscription_fields[] = {
-	VENTURE_FIELD_REF("company-id", "Company id", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("contact-id", "Contact id", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("plan-price-id", "Plan price id", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("plan-price-id", "Plan and price", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("status", "Status", NULL, venture_billing_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("seats", "Seats", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("current-period-start", "Current period start", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("current-period-end", "Current period end", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("trial-end", "Trial end", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("cancel-at-period-end", "Cancel at period end", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("cancelled-at", "Cancelled at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("current-period-start", "This period started", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("current-period-end", "Renews on", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("trial-end", "Trial ends", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cancel-at-period-end", "Ends at renewal", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cancelled-at", "Cancelled on", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External id", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
-	VENTURE_FIELD_REF("pending-plan-price-id", "Pending plan price id", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("past-due-at", "Past due at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_MONEY("pending-adjustment", "Pending adjustment", "Proration settled on the next renewal"),
-	VENTURE_FIELD("billing-anchor", "Billing anchor", "Original calendar day for renewal boundaries", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("last-event-at", "Last event at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("pending-plan-price-id", "Switches to at renewal", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("past-due-at", "Overdue since", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("pending-adjustment", "Carried to next invoice", "The difference for part of a period after a mid-period change; added to (or credited on) the next renewal invoice"),
+	VENTURE_FIELD("billing-anchor", "Billing day", "Original calendar day for renewal boundaries", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("last-event-at", "Last changed", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureCustomerSubscription, venture_customer_subscription, customer_subscription_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCustomerSubscription, venture_customer_subscription, customer_subscription_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Subscription", NULL);
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/billing/subscriptions/new");)
 
 static const VentureFieldDecl subscription_event_fields[] = {
-	VENTURE_FIELD_REF("subscription-id", "Subscription id", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind", NULL, venture_billing_event_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("at", "At", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("from-plan-price-id", "From plan price id", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("to-plan-price-id", "To plan price id", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("from-plan-price-id", "From price", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("to-plan-price-id", "To price", NULL, "plan_price", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("from-seats", "From seats", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("to-seats", "To seats", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_MONEY("proration-amount", "Proration amount", NULL),
-	VENTURE_FIELD_REF("invoice-id", "Invoice id", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("proration-amount", "Part-period difference", NULL),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("from-status", "From status", NULL, venture_billing_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("to-status", "To status", NULL, venture_billing_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_MONEY("from-mrr", "From mrr", NULL),
-	VENTURE_FIELD_MONEY("to-mrr", "To mrr", NULL),
+	VENTURE_FIELD_MONEY("from-mrr", "Monthly revenue before", NULL),
+	VENTURE_FIELD_MONEY("to-mrr", "Monthly revenue after", NULL),
 	VENTURE_FIELD("period-start", "Period start", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("period-end", "Period end", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
@@ -148,11 +166,11 @@ static const VentureFieldDecl dunning_step_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureDunningStep, venture_dunning_step, dunning_step_fields)
 
 static const VentureFieldDecl billing_notice_fields[] = {
-	VENTURE_FIELD_REF("subscription-id", "Subscription id", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("dunning-step-id", "Dunning step id", NULL, "dunning_step", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("channel", "Channel", NULL),
 	VENTURE_FIELD("at", "At", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("past-due-at", "Past due at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("past-due-at", "Overdue since", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("delivery-key", "Delivery key", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 };
 VENTURE_DEFINE_ENTITY(VentureBillingNotice, venture_billing_notice, billing_notice_fields)

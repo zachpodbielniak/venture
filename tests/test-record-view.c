@@ -454,6 +454,98 @@ test_grouped_form(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(form, "<option value=\"supplier\">Supplier</option>"));
 }
 
+/* POSTs a form and returns the status; the Location lands in @location. */
+static guint
+post_form(Fixture *f, const gchar *path, const gchar *body, gchar **location)
+{
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *url = NULL;
+	Reply reply;
+
+	memset(&reply, 0, sizeof(reply));
+	session = soup_session_new_with_options("timeout", 15, NULL);
+	url = g_strconcat(venture_web_server_get_base_url(f->server), path, NULL);
+	message = soup_message_new("POST", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	bytes = g_bytes_new(body, strlen(body));
+	soup_message_set_request_body_from_bytes(message,
+		"application/x-www-form-urlencoded", bytes);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT,
+	                                 NULL, reply_done, &reply);
+
+	while (!reply.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(reply.error);
+	g_clear_pointer(&reply.bytes, g_bytes_unref);
+	if (NULL != location)
+		*location = g_strdup(soup_message_headers_get_one(
+			soup_message_get_response_headers(message), "Location"));
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * "Same invoice, on a schedule" is the invoice sheet in repeat mode: the
+ * customer and lines typed there become a repeating schedule whose
+ * template issues exactly those lines, with nothing of a draft invoice --
+ * no number, no identity -- carried into every invoice it will make. If
+ * this regresses, repeating an invoice means typing JSON again.
+ */
+static void
+test_repeating_invoice(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) template = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *kind = NULL;
+	g_autofree gchar *text = NULL;
+	JsonObject *object;
+	JsonArray *lines;
+	gint64 id;
+
+	(void)data;
+
+	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Bellhaven Books", NULL);
+	save(f, company);
+
+	body = g_strdup_printf("compose-form=1&repeat=1&company-id=%" G_GINT64_FORMAT
+		"&line-0-description=Hosting&line-0-quantity=1&line-0-unit-price=40.00"
+		"&line-3-description=Support&line-3-quantity=2&line-3-unit-price=15.00"
+		"&repeat-frequency=monthly&repeat-start=2026-10-01",
+		venture_entity_get_id(company));
+	g_assert_cmpuint(post_form(f, "/invoices/compose", body, &location), ==, 302);
+	g_assert_true(g_str_has_prefix(location, "/e/recurring_schedule/"));
+
+	id = g_ascii_strtoll(location + strlen("/e/recurring_schedule/"), NULL, 10);
+	schedule = venture_database_get(f->database, VENTURE_TYPE_RECURRING_SCHEDULE, id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(schedule);
+
+	/* A JSON field is stored as its text. */
+	g_object_get(schedule, "template", &text, NULL);
+	g_assert_nonnull(text);
+	template = venture_json_parse(text, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(template);
+	object = json_node_get_object(template);
+	g_assert_cmpint(json_object_get_int_member(object, "company_id"), ==,
+	                venture_entity_get_id(company));
+	g_assert_false(json_object_has_member(object, "id"));
+	g_assert_false(json_object_has_member(object, "number"));
+	lines = json_object_get_array_member(object, "lines");
+	g_assert_cmpuint(json_array_get_length(lines), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(lines, 1),
+		"description"), ==, "Support");
+	g_assert_null(strstr(text, "\"uuid\""));
+	(void)kind;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -468,6 +560,8 @@ main(int argc, char *argv[])
 	           test_status_and_list, tear_down);
 	g_test_add("/record-view/grouped-form", Fixture, NULL, set_up,
 	           test_grouped_form, tear_down);
+	g_test_add("/record-view/repeating-invoice", Fixture, NULL, set_up,
+	           test_repeating_invoice, tear_down);
 
 	return g_test_run();
 }
