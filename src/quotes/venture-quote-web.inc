@@ -198,12 +198,57 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 	return venture_web_json_response(result, 200);
 }
 
+/*
+ * What an accepted subscription quote led to, or the one step that starts
+ * it: the page answers "did we put them on the plan?" before anything else.
+ */
 static void
-quote_buttons(GString *html, VentureEntity *record)
+quote_subscription_block(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	gint64 id = venture_entity_get_id(record), subscription_id = 0;
+	gint state = 0;
+	guint i;
+	gboolean proposes = FALSE;
+	if (!venture_web_module_enabled(self, "billing")) return;
+	g_object_get(record, "subscription-id", &subscription_id, "status", &state, NULL);
+	if (subscription_id != 0)
+	{
+		g_autoptr(VentureEntity) sub = venture_database_get(database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, NULL);
+		g_autofree gchar *name = sub != NULL ? venture_entity_get_display_name(sub) : g_strdup_printf("#%" G_GINT64_FORMAT, subscription_id);
+		g_string_append_printf(html, "<p>Started subscription <a href=\"/e/customer_subscription/%" G_GINT64_FORMAT "\">", subscription_id);
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</a>.</p>");
+		return;
+	}
+	query = venture_query_new(VENTURE_TYPE_QUOTE_LINE);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	lines = venture_database_find(database, query, NULL);
+	for (i = 0; lines != NULL && i < lines->len; i++)
+	{
+		gint64 price = 0;
+		g_object_get(g_ptr_array_index(lines, i), "plan-price-id", &price, NULL);
+		if (price != 0) proposes = TRUE;
+	}
+	if (!proposes) return;
+	if (state == VENTURE_QUOTE_ACCEPTED)
+		g_string_append_printf(html, "<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/start-subscription\">"
+			"<button>Start subscription</button> <span class=\"field-help\">Puts the customer on the quoted plan and "
+			"seats; the subscription issues its own first invoice.</span></form>", id);
+	else
+		g_string_append(html, "<p class=\"field-help\">Once accepted, this quote starts a subscription on its plan line.</p>");
+}
+
+static void
+quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 {
 	gint64 id;
 	if (!VENTURE_IS_QUOTE(record)) return;
 	id = venture_entity_get_id(record);
+	quote_subscription_block(self, html, record);
 	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"

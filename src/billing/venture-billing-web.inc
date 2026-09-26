@@ -381,6 +381,7 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 		}
 	}
 	g_string_append(html, "</div></section>");
+	venture_subscription_web_facts(self, html, record);
 	venture_billing_web_invoices(self, html, record);
 
 	editor = venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL);

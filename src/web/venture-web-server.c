@@ -4363,7 +4363,7 @@ venture_web_ui_invoice_status(
  * chrome, no sidebar, just the document. The browser's print dialog is the
  * PDF generator; it is already installed everywhere.
  */
-static void quote_buttons(GString *html, VentureEntity *record);
+static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 
 static HtmxResponse *
@@ -8198,6 +8198,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 	gint64 organization);
 #include "payables/venture-bill-compose-web.inc"
 #include "billing/venture-plan-web.inc"
+#include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
 #include "documents/venture-financial-documents-web.inc"
 
@@ -9809,7 +9810,7 @@ venture_web_ui_detail(
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
 	venture_web_append_payment_receipt(self, content, record);
-	quote_buttons(content, record);
+	quote_buttons(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);

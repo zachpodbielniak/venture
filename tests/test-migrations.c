@@ -114,11 +114,14 @@ test_token_actor_names(void)
 		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner');"
 		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
 		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Changed', 'token:deploy-bot');"
-		"DELETE FROM schema_migrations WHERE version IN (640, 645)", NULL, &error));
+		/* Everything from 640 on, not just the two: the migrator applies
+		 * history in order and refuses to slot an old script in beneath a
+		 * newer one, so a later release's migration would fail this test. */
+		"DELETE FROM schema_migrations WHERE version >= 640", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&database);
 
-	/* A restart applies the two scripts again, as an upgrade would. */
+	/* A restart applies the scripts again, as an upgrade would. */
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
@@ -417,6 +420,69 @@ test_generator(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * The quote-subscription and metered-usage scripts on an upgraded
+ * database: a price and a subscription from before read back flat and
+ * unlinked, and a price carrying a rate with no unit -- which the save
+ * refuses, so only a hand edit makes one -- stops the upgrade until it is
+ * repaired, and the retry then succeeds. If this regresses, an upgrade
+ * invents usage or quote links for old rows, or quietly accepts a price
+ * no renewal can bill.
+ */
+static void
+test_quote_subscriptions_and_usage(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *pending = NULL, *linked = NULL;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO plans (uuid, organization_id, created_at, updated_at, version, name, code, active) "
+		"VALUES ('00000000-0000-4000-8000-000000000031', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'Old', 'old', 1);"
+		"INSERT INTO plan_prices (uuid, organization_id, created_at, updated_at, version, plan_id, currency, interval, "
+		"amount_amount, amount_currency, amount_exponent, active) "
+		"VALUES ('00000000-0000-4000-8000-000000000032', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, "
+		"(SELECT id FROM plans WHERE code = 'old'), 'USD', 0, 3000, 'USD', 2, 1);"
+		"UPDATE plan_prices SET unit_amount_amount = 1, unit_amount_currency = 'USD', unit_amount_exponent = 2;"
+		"DELETE FROM schema_migrations WHERE version >= 670", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_false(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	pending = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 675");
+	g_assert_cmpstr(pending, ==, "0");
+	g_assert_true(venture_database_execute(database, "UPDATE plan_prices SET unit_amount_amount = NULL, "
+		"unit_amount_currency = NULL, unit_amount_exponent = NULL", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	linked = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version IN (670, 675, 678)");
+	g_assert_cmpstr(linked, ==, "3");
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+		price = venture_database_find_one(database, query, &error);
+		g_assert_no_error(error);
+	}
+	g_assert_false(venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)));
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -427,6 +493,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/postgresql", test_postgresql);
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
 	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
+	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);
