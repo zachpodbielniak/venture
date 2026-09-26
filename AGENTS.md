@@ -468,6 +468,17 @@ than one that fails.
 - **Orders put NULL last, said outright** (`NULLS LAST` in
   `venture-query.c`). SQLite and PostgreSQL disagree by default, and under
   a limit that is different rows, not just a different order.
+- **A quote's plan line is billed by its subscription, never by the
+  acceptance invoice.** `handoff()` skips lines with a `plan-price-id`;
+  invoicing them there as well charges the first period twice. The one
+  subscription a quote may start is guarded in the billing service
+  (`quote_available()`), not only on the quote, so a start made around the
+  quote is refused too.
+- **Usage is counted in [start, end) and priced at the rate in force at
+  the period's end.** At renewal the subscription has already moved to a
+  scheduled price, so `venture-billing-usage.c` reads the rate from the
+  last subscription event. Usage before the current period is refused
+  rather than billed late: that period's invoice is already issued.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.
