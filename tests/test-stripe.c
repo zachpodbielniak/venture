@@ -345,7 +345,7 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	if (strstr(request->url, "/checkout/sessions/cs_setup?"))
 	{
-		g_autofree gchar *body = g_strdup_printf("{\"id\":\"cs_setup\",\"mode\":\"setup\",\"status\":\"complete\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\"},\"mandate\":%s}}", self->setup_customer ? self->setup_customer : "cus_offline", self->setup_reference, self->deadline, self->setup_consent, self->setup_live ? "true" : "false", self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"cs_setup\",\"mode\":\"setup\",\"status\":\"complete\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\",%s},\"mandate\":%s}}", self->setup_customer ? self->setup_customer : "cus_offline", self->setup_reference, self->deadline, self->setup_consent, self->setup_live ? "true" : "false", self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? "\"us_bank_account\":{\"bank_name\":\"STRIPE TEST BANK\",\"last4\":\"6789\"}" : "\"card\":{\"brand\":\"visa\",\"last4\":\"4242\"}", self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
 		g_assert_cmpstr(request->method, ==, "GET");
 		g_assert_nonnull(strstr(request->url, "setup_intent.payment_method"));
 		return stripe_response_new(200, body, NULL, NULL);
@@ -1078,6 +1078,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/automatic-action", Fixture, "action", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-reconcile", Fixture, "reconcile", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-sweep", Fixture, "sweep", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-renewal-collection", Fixture, "renewal-collection", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-expiry-collision", Fixture, "expiry-collision", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-retry", Fixture, "retry", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-cancel", Fixture, "cancel", set_up, test_automatic_authorization, tear_down);
