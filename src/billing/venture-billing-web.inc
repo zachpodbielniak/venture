@@ -273,6 +273,49 @@ venture_billing_web_invoices(VentureWebServer *self, GString *html, VentureEntit
 }
 
 /*
+ * Cancelling is two different promises about money, so it is two buttons
+ * that each say theirs: now, with what is credited for the days left
+ * (the service's own figure, so the button and the credit note agree),
+ * or at renewal, when nothing more is billed and nothing is given back.
+ */
+static void
+venture_billing_web_cancel(VentureWebServer *self, GString *html, VentureEntity *record, gint64 id,
+	gboolean cancel_at_end)
+{
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureMoney) credit = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 days = 0;
+
+	credit = venture_billing_service_cancel_credit(venture_billing_service_get(venture_context_get_database(self->context)),
+		VENTURE_CUSTOMER_SUBSCRIPTION(record), now, &days, &error);
+	g_string_append(html, "<section class=\"card record-actions\"><div class=\"card-head\"><h2>Cancel</h2></div><div class=\"card-body\">");
+	g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\">"
+		"<input type=\"hidden\" name=\"billing_action\" value=\"cancel\">"
+		"<input type=\"hidden\" name=\"at-period-end\" value=\"false\"><button class=\"btn btn-danger\" type=\"submit\">", id);
+	if (credit != NULL && !venture_money_is_zero(credit))
+	{
+		g_autofree gchar *text = venture_money_to_display_string(credit, TRUE);
+
+		g_string_append(html, "Cancel now: ");
+		venture_html_escape_append(html, text);
+		g_string_append_printf(html, " credited for the %" G_GINT64_FORMAT " %s left", days, days == 1 ? "day" : "days");
+	}
+	else if (credit != NULL)
+		g_string_append(html, "Cancel now: nothing is credited");
+	else
+		/* The figure could not be worked out; do not promise one. */
+		g_string_append(html, "Cancel now");
+	g_string_append(html, "</button></form>");
+	if (!cancel_at_end)
+		g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\">"
+			"<input type=\"hidden\" name=\"billing_action\" value=\"cancel\">"
+			"<input type=\"hidden\" name=\"at-period-end\" value=\"true\">"
+			"<button class=\"btn\" type=\"submit\">Cancel at renewal: nothing more is billed</button></form>", id);
+	g_string_append(html, "</div></section>");
+}
+
+/*
  * A subscription page answers what the customer will be charged next and
  * when, in a sentence, before offering anything to change. Then the
  * changes, each saying what it does to the next invoice -- the question
@@ -426,16 +469,17 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 	g_string_append(html, "<section class=\"card record-actions\"><div class=\"card-head\"><h2>Subscription</h2></div><div class=\"card-body\">");
 	{
 		static const struct { const gchar *action; const gchar *label; gint when; } actions[] = {
-			{ "renew", "Renew now", 1 }, { "pause", "Pause", 1 }, { "resume", "Resume", 3 }, { "cancel", "Cancel subscription", -1 },
+			{ "renew", "Renew now", 1 }, { "pause", "Pause", 1 }, { "resume", "Resume", 3 },
 		};
 		for (i = 0; i < G_N_ELEMENTS(actions); i++)
 		{
-			if (actions[i].when >= 0 && actions[i].when != status && !(actions[i].when == 1 && (status == 0 || status == 2)))
+			if (actions[i].when != status && !(actions[i].when == 1 && (status == 0 || status == 2)))
 				continue;
 			g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\">"
-				"<input type=\"hidden\" name=\"billing_action\" value=\"%s\"><button class=\"btn%s\" type=\"submit\">%s</button></form>",
-				id, actions[i].action, g_strcmp0(actions[i].action, "cancel") == 0 ? " btn-danger" : "", actions[i].label);
+				"<input type=\"hidden\" name=\"billing_action\" value=\"%s\"><button class=\"btn\" type=\"submit\">%s</button></form>",
+				id, actions[i].action, actions[i].label);
 		}
 	}
 	g_string_append(html, "</div></section>");
+	venture_billing_web_cancel(self, html, record, id, cancel_at_end);
 }

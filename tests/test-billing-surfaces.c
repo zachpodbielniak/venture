@@ -303,6 +303,177 @@ test_plan_discounts(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(page, "href=\"/e/invoice/"));
 }
 
+/*
+ * Cancelling says what it does to money on the button: now, with the
+ * service's own figure for the days left, or at renewal with nothing more
+ * billed. If this regresses, somebody cancels without knowing whether the
+ * customer is owed anything, or the page promises a different credit than
+ * the credit note.
+ */
+static void
+test_cancel_buttons(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBillingRequest) action = venture_billing_request_new();
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureMoney) credit = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) began = g_date_time_add_days(now, -3);
+	g_autofree gchar *page = NULL, *path = NULL, *money = NULL, *expected = NULL, *body = NULL, *post = NULL;
+	gint64 company = 0, price = 0, id = 0, days = 0;
+
+	(void)data;
+	path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, f->subscription);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	/* The fixture's January period is long over: nothing is left to credit. */
+	g_assert_nonnull(strstr(page, "Cancel now: nothing is credited"));
+	g_assert_nonnull(strstr(page, "Cancel at renewal: nothing more is billed"));
+
+	sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+	g_object_get(sub, "company-id", &company, "plan-price-id", &price, NULL);
+	g_object_set(action, "action", "start", "company-id", company, "plan-price-id", price, "at", began, NULL);
+	save(f, VENTURE_ENTITY(action));
+	g_object_get(action, "subscription-id", &id, NULL);
+	g_clear_object(&sub);
+	sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, id, NULL);
+	credit = venture_billing_service_cancel_credit(venture_billing_service_get(f->database),
+		VENTURE_CUSTOMER_SUBSCRIPTION(sub), now, &days, NULL);
+	g_assert_nonnull(credit);
+	g_assert_cmpint(venture_money_get_amount(credit), >, 0);
+	money = venture_money_to_display_string(credit, TRUE);
+	expected = g_strdup_printf("Cancel now: %s credited for the %" G_GINT64_FORMAT " days left", money, days);
+	g_clear_pointer(&path, g_free);
+	g_clear_pointer(&page, g_free);
+	path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, id);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, expected));
+
+	/* Pressing it issues exactly that credit. */
+	post = g_strdup_printf("/billing/subscriptions/%" G_GINT64_FORMAT "/action", id);
+	g_assert_cmpuint(request(f, "POST", post, "application/x-www-form-urlencoded",
+		"billing_action=cancel&at-period-end=false", &body), ==, 303);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_CUSTOMER_CREDIT);
+		g_autoptr(VentureEntity) note = venture_database_find_one(f->database, q, NULL);
+		g_autoptr(VentureMoney) amount = NULL;
+		g_assert_nonnull(note);
+		g_object_get(note, "amount", &amount, NULL);
+		g_assert_true(venture_money_equal(amount, credit));
+	}
+}
+
+/*
+ * The plan sheet and the plan page's "Add a price" offer a Tax select --
+ * "No tax" first, then each active rate with its percent -- and the price
+ * saved carries the rate. If this regresses, a price can only be taxed by
+ * hand through the generic form, and nobody finds it.
+ */
+static void
+test_plan_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureTaxCode) code = venture_tax_code_new();
+	g_autoptr(GPtrArray) prices = NULL;
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autofree gchar *page = NULL, *body = NULL, *form = NULL, *post = NULL;
+	gint64 code_id, tax = 0;
+
+	(void)data;
+	g_object_set(code, "code", "STD", "name", "Standard", "rate-numerator", (gint64)10,
+		"rate-denominator", (gint64)100, "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(code));
+	code_id = venture_entity_get_id(VENTURE_ENTITY(code));
+	g_assert_cmpuint(request(f, "GET", "/plans/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "name=\"price-0-tax-code-id\""));
+	g_assert_nonnull(strstr(page, "<option value=\"\" data-rate=\"0\">No tax</option>"));
+	g_assert_nonnull(strstr(page, "Standard \xc2\xb7 10%"));
+
+	post = g_strdup_printf("name=Taxed&venture-id=0&price-0-interval=month&price-0-amount=20&price-0-tax-code-id=%"
+		G_GINT64_FORMAT, code_id);
+	g_assert_cmpuint(request(f, "POST", "/plans/new", "application/x-www-form-urlencoded", post, &body), ==, 303);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_PLAN);
+		venture_query_add_filter_string(q, "name", VENTURE_FILTER_OP_EQ, "Taxed", NULL);
+		plan = venture_database_find_one(f->database, q, NULL);
+	}
+	g_assert_nonnull(plan);
+	prices = plan_prices(f, venture_entity_get_id(plan));
+	g_assert_cmpuint(prices->len, ==, 1);
+	g_object_get(g_ptr_array_index(prices, 0), "tax-code-id", &tax, NULL);
+	g_assert_cmpint(tax, ==, code_id);
+
+	g_clear_pointer(&page, g_free);
+	form = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, venture_entity_get_id(plan));
+	g_assert_cmpuint(request(f, "GET", form, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "<select name=\"tax-code-id\" data-no-picker><option value=\"\" data-rate=\"0\">No tax</option>"));
+	g_clear_pointer(&form, g_free);
+	g_clear_pointer(&body, g_free);
+	form = g_strdup_printf("/plans/%" G_GINT64_FORMAT "/prices", venture_entity_get_id(plan));
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded",
+		"action=add&interval=year&amount=200&tax-code-id=", &body), ==, 303);
+	g_ptr_array_unref(prices);
+	prices = plan_prices(f, venture_entity_get_id(plan));
+	g_assert_cmpuint(prices->len, ==, 2);
+	g_object_get(g_ptr_array_index(prices, 1), "tax-code-id", &tax, NULL);
+	g_assert_cmpint(tax, ==, 0);
+}
+
+/*
+ * A retired price with customers offers to move them to one of the plan's
+ * offered prices, at renewal or now; the move is the single-change path
+ * for each, and a refusal is shown in words. If this regresses, retiring a
+ * price strands its customers on it with no way off but one at a time.
+ */
+static void
+test_plan_move(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+	g_autoptr(VentureEntity) old = NULL;
+	g_autoptr(VenturePlanPrice) next = venture_plan_price_new();
+	g_autofree gchar *page = NULL, *body = NULL, *path = NULL, *form = NULL, *post = NULL;
+	gint64 old_id = 0, plan = 0, pending = 0;
+
+	(void)data;
+	g_object_get(sub, "plan-price-id", &old_id, NULL);
+	old = venture_database_get(f->database, VENTURE_TYPE_PLAN_PRICE, old_id, NULL);
+	g_object_get(old, "plan-id", &plan, NULL);
+	g_object_set(next, "plan-id", plan, "currency", "USD", "active", TRUE, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(next), "amount", "40 USD", NULL));
+	save(f, VENTURE_ENTITY(next));
+	g_object_set(old, "active", FALSE, NULL);
+	save(f, old);
+
+	path = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, plan);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Move its 1 customer to"));
+	form = g_strdup_printf("/plans/%" G_GINT64_FORMAT "/prices/%" G_GINT64_FORMAT "/move", plan, old_id);
+	g_assert_nonnull(strstr(page, form));
+
+	/* Moving onto the retired price itself is refused, in words. */
+	post = g_strdup_printf("to=%" G_GINT64_FORMAT "&at-period-end=true", old_id);
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded", post, &body), ==, 422);
+	g_assert_nonnull(strstr(body, "another price of the same plan"));
+
+	/* The fixture's subscription has not been renewed since January, so
+	 * it cannot change terms today: the refusal names the customer. */
+	g_clear_pointer(&post, g_free);
+	g_clear_pointer(&body, g_free);
+	post = g_strdup_printf("to=%" G_GINT64_FORMAT "&at-period-end=true", venture_entity_get_id(VENTURE_ENTITY(next)));
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded", post, &body), ==, 422);
+	g_assert_nonnull(strstr(body, "Nobody was moved: Lightsite customer could not be moved"));
+
+	{
+		g_autoptr(VentureBillingRequest) sweep = venture_billing_request_new();
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_object_set(sweep, "action", "renew-sweep", "at", now, NULL);
+		save(f, VENTURE_ENTITY(sweep));
+	}
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded", post, &body), ==, 303);
+	g_clear_object(&sub);
+	sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
+	g_object_get(sub, "pending-plan-price-id", &pending, NULL);
+	g_assert_cmpint(pending, ==, venture_entity_get_id(VENTURE_ENTITY(next)));
+}
+
 static void
 test_rest(Fixture *f, gconstpointer data)
 {
@@ -446,5 +617,8 @@ main(int argc, char **argv)
 	g_test_add("/billing-surfaces/cli", Fixture, NULL, setup, test_cli, teardown);
 	g_test_add("/billing-surfaces/assistant-stale", Fixture, NULL, setup, test_assistant_stale, teardown);
 	g_test_add("/billing-surfaces/report-days", Fixture, NULL, setup, test_report_days, teardown);
+	g_test_add("/billing-surfaces/cancel-buttons", Fixture, NULL, setup, test_cancel_buttons, teardown);
+	g_test_add("/billing-surfaces/plan-tax", Fixture, NULL, setup, test_plan_tax, teardown);
+	g_test_add("/billing-surfaces/plan-move", Fixture, NULL, setup, test_plan_move, teardown);
 	return g_test_run();
 }

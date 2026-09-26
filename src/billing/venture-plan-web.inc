@@ -15,6 +15,10 @@
  * priced plan by name and says which plans cannot be sold yet.
  */
 
+/* The Tax select's options; written once, for the invoice composer, which
+ * is included after these pages. */
+static gchar *document_tax_options(VentureWebServer *self, gint64 organization);
+
 /* How many price rows one plan sheet may carry. */
 #define VENTURE_PLAN_MAX_PRICES	24
 
@@ -81,7 +85,8 @@ venture_plan_append_venture_select(VentureWebServer *self, GString *html, gint64
 
 /* One price row of the plan sheet. */
 static void
-venture_plan_append_price_row(GString *html, const gchar *index, const gchar *period, const gchar *currency)
+venture_plan_append_price_row(GString *html, const gchar *index, const gchar *period, const gchar *currency,
+	const gchar *taxes)
 {
 	g_autofree gchar *name = g_strdup_printf("price-%s-interval", index);
 
@@ -93,7 +98,8 @@ venture_plan_append_price_row(GString *html, const gchar *index, const gchar *pe
 		"<td><label class=\"checkbox\"><input type=\"checkbox\" name=\"price-%s-per-seat\" value=\"true\"> Per seat</label></td>"
 		"<td class=\"num\"><input type=\"number\" name=\"price-%s-trial-days\" min=\"0\" step=\"1\" placeholder=\"0\" "
 		"aria-label=\"Free trial days\"></td>"
-		VENTURE_WEB_LINE_DELETE "</tr>", index, currency, index, index);
+		"<td><select name=\"price-%s-tax-code-id\" aria-label=\"Tax\" data-no-picker>%s</select></td>"
+		VENTURE_WEB_LINE_DELETE "</tr>", index, currency, index, index, index, taxes);
 }
 
 /* "team-plus" from "Team Plus", unique in the organization. */
@@ -142,7 +148,7 @@ venture_plan_unique_code(VentureDatabase *database, gint64 organization, const g
  */
 static VentureEntity *
 venture_plan_price_from_form(VentureEntity *plan, const gchar *currency, const gchar *interval,
-	const gchar *amount, gboolean per_seat, const gchar *trial_days, GError **error)
+	const gchar *amount, gboolean per_seat, const gchar *trial_days, const gchar *tax_code, GError **error)
 {
 	g_autoptr(VentureEntity) price = g_object_new(VENTURE_TYPE_PLAN_PRICE, NULL);
 	g_autofree gchar *money = NULL;
@@ -164,6 +170,11 @@ venture_plan_price_from_form(VentureEntity *plan, const gchar *currency, const g
 			interval != NULL && *interval != '\0' ? interval : "month", error) ||
 		!venture_entity_set_field_from_string(price, "amount", money, error))
 		return NULL;
+	/* Empty is "No tax" chosen: the customer's address decides, as on
+	 * any invoice line without a rate. */
+	if (tax_code != NULL && *tax_code != '\0' &&
+		!venture_entity_set_field_from_string(price, "tax-code-id", tax_code, error))
+		return NULL;
 	return g_steal_pointer(&price);
 }
 
@@ -183,6 +194,7 @@ venture_plan_new_page(VentureWebServer *self, gint64 organization)
 	GString *html = g_string_new("<form method=\"post\" action=\"/plans/new\" class=\"doc-compose\" data-doc-compose>"
 		"<div class=\"page-head\"><div class=\"page-title\">");
 	g_autofree gchar *currency = venture_bill_currency(self, organization);
+	g_autofree gchar *taxes = document_tax_options(self, organization);
 
 	venture_web_append_crumbs(html, VENTURE_TYPE_PLAN, "plan", TRUE);
 	g_string_append(html, "<h1>New plan</h1><span class=\"subtitle\">What a customer signs up to, and what it "
@@ -198,19 +210,20 @@ venture_plan_new_page(VentureWebServer *self, gint64 organization)
 		"<label class=\"doc-field\"><span class=\"field-label\">What it includes</span>"
 		"<textarea name=\"description\" rows=\"2\" placeholder=\"Shown to you when choosing a plan\"></textarea></label>"
 		"<table class=\"line-items\"><thead><tr><th>Billed</th><th class=\"num\">Price</th><th></th>"
-		"<th class=\"num\">Free trial (days)</th><th></th></tr></thead><tbody data-lines>");
-	venture_plan_append_price_row(html, "0", "month", currency);
+		"<th class=\"num\">Free trial (days)</th><th>Tax</th><th></th></tr></thead><tbody data-lines>");
+	venture_plan_append_price_row(html, "0", "month", currency, taxes);
 	g_string_append(html, "</tbody></table>"
 		"<button type=\"button\" class=\"btn btn-ghost add-line\" data-add-line>+ Add a price</button>"
 		"<template data-line-template>");
-	venture_plan_append_price_row(html, "__N__", "year", currency);
+	venture_plan_append_price_row(html, "__N__", "year", currency, taxes);
 	g_string_append(html, "</template></div></section>"
 		"<aside class=\"doc-aside\"><section class=\"card\"><div class=\"card-body explainer\">"
 		"<h3>One plan, several prices</h3>"
 		"<p>Sell the same plan by the month and by the year \xe2\x80\x94 say $49 a month or $490 a year. "
 		"Each is a price; the customer is put on one of them.</p>"
 		"<p><strong>Per seat</strong> multiplies the price by the seats on the subscription. "
-		"<strong>Free trial</strong> starts the subscription without an invoice until the trial ends.</p>"
+		"<strong>Free trial</strong> starts the subscription without an invoice until the trial ends. "
+		"<strong>Tax</strong> is added to every invoice the price issues; a tax-exempt customer is not charged it.</p>"
 		"<p>A price in use is never edited in place: retire it and add the new one, and the customers "
 		"on the old price keep it until you move them.</p>"
 		"</div></section></aside></div></form>"
@@ -287,6 +300,7 @@ venture_plan_web_new(HtmxRequest *request, GHashTable *params, gpointer user_dat
 		g_autofree gchar *interval_name = g_strdup_printf("price-%u-interval", i);
 		g_autofree gchar *seat_name = g_strdup_printf("price-%u-per-seat", i);
 		g_autofree gchar *trial_name = g_strdup_printf("price-%u-trial-days", i);
+		g_autofree gchar *tax_name = g_strdup_printf("price-%u-tax-code-id", i);
 		const gchar *amount = htmx_request_get_form_value(request, amount_name);
 		g_autoptr(VentureEntity) price = NULL;
 
@@ -294,7 +308,7 @@ venture_plan_web_new(HtmxRequest *request, GHashTable *params, gpointer user_dat
 			continue;
 		price = venture_plan_price_from_form(plan, currency, htmx_request_get_form_value(request, interval_name),
 			amount, htmx_request_get_form_value(request, seat_name) != NULL,
-			htmx_request_get_form_value(request, trial_name), &error);
+			htmx_request_get_form_value(request, trial_name), htmx_request_get_form_value(request, tax_name), &error);
 		if (price == NULL || !venture_database_save(database, price, &actor, &error))
 			goto fail;
 		priced++;
@@ -357,7 +371,7 @@ venture_plan_web_prices(HtmxRequest *request, GHashTable *params, gpointer user_
 		currency = venture_bill_currency(self, venture_entity_get_organization_id(plan));
 		price = venture_plan_price_from_form(plan, currency, htmx_request_get_form_value(request, "interval"),
 			amount, htmx_request_get_form_value(request, "per-seat") != NULL,
-			htmx_request_get_form_value(request, "trial-days"), &error);
+			htmx_request_get_form_value(request, "trial-days"), htmx_request_get_form_value(request, "tax-code-id"), &error);
 	}
 	else if (g_strcmp0(action, "retire") == 0 || g_strcmp0(action, "restore") == 0)
 	{
@@ -380,6 +394,69 @@ venture_plan_web_prices(HtmxRequest *request, GHashTable *params, gpointer user_
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Unknown price action");
 
 	if (price == NULL || !venture_database_save(database, price, &actor, &error))
+		return venture_web_error_response(error);
+	path = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, venture_entity_get_id(plan));
+	return venture_plan_see_other(path);
+}
+
+/*
+ * POST /plans/:id/prices/:price/move -- every customer on a retired price
+ * to another of the plan's prices, at renewal or now with the difference
+ * prorated. One change per subscription through the billing service, in
+ * one transaction: a refusal moves nobody, and the page says who and why.
+ */
+static HtmxResponse *
+venture_plan_web_move(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) plan = NULL, from = NULL, to = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *to_id = htmx_request_get_form_value(request, "to");
+	HtmxResponse *gate;
+	VentureActor actor;
+	gint64 owner = 0;
+	guint moved = 0;
+
+	gate = venture_web_ui_require_session(self, request);
+	if (gate != NULL)
+		return gate;
+	gate = venture_web_require_module_ui(self, request, "billing");
+	if (gate != NULL)
+		return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+	venture_auth_to_actor(principal, &actor);
+	plan = venture_database_get(database, VENTURE_TYPE_PLAN,
+		g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
+	if (plan == NULL)
+		return venture_web_error_response(error);
+	from = venture_database_get(database, VENTURE_TYPE_PLAN_PRICE,
+		g_ascii_strtoll(g_hash_table_lookup(params, "price"), NULL, 10), &error);
+	if (from == NULL)
+		return venture_web_error_response(error);
+	g_object_get(from, "plan-id", &owner, NULL);
+	if (owner != venture_entity_get_id(plan))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "That price is not this plan's");
+		return venture_web_error_response(error);
+	}
+	if (to_id == NULL || *to_id == '\0')
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Choose the price to move them to");
+		return venture_web_error_response(error);
+	}
+	to = venture_database_get(database, VENTURE_TYPE_PLAN_PRICE, g_ascii_strtoll(to_id, NULL, 10), &error);
+	if (to == NULL)
+		return venture_web_error_response(error);
+	now = venture_time_now();
+	if (!venture_billing_service_move_customers(venture_billing_service_get(database), VENTURE_PLAN_PRICE(from),
+			VENTURE_PLAN_PRICE(to), g_strcmp0(htmx_request_get_form_value(request, "at-period-end"), "false") != 0,
+			now, &actor, &moved, &error))
 		return venture_web_error_response(error);
 	path = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, venture_entity_get_id(plan));
 	return venture_plan_see_other(path);
@@ -622,6 +699,63 @@ venture_plan_price_customers(VentureWebServer *self, gint64 price_id)
 }
 
 /*
+ * Under a retired price that still has customers: where to move them and
+ * when, as the two choices a single plan change offers. @prices is the
+ * plan's; only its offered prices are destinations.
+ */
+static void
+venture_plan_web_append_move(GString *html, gint64 plan_id, VentureEntity *price, GPtrArray *prices,
+	guint customers)
+{
+	guint i, offered = 0;
+
+	if (customers == 0)
+		return;
+	g_string_append(html, "<tr class=\"price-move\"><td colspan=\"5\">");
+	for (i = 0; i < prices->len; i++)
+	{
+		gboolean active = FALSE;
+
+		g_object_get(g_ptr_array_index(prices, i), "active", &active, NULL);
+		if (active)
+			offered++;
+	}
+	if (offered == 0)
+	{
+		g_string_append_printf(html, "<p class=\"muted\">%u %s still on this price. Offer another price of this "
+			"plan to move them to it.</p></td></tr>", customers, customers == 1 ? "customer is" : "customers are");
+		return;
+	}
+	g_string_append_printf(html, "<form method=\"post\" action=\"/plans/%" G_GINT64_FORMAT "/prices/%" G_GINT64_FORMAT
+		"/move\" class=\"plan-change\"><label class=\"doc-field\"><span class=\"field-label\">Move its %u %s to</span>"
+		"<select name=\"to\" required>", plan_id, venture_entity_get_id(price), customers,
+		customers == 1 ? "customer" : "customers");
+	for (i = 0; i < prices->len; i++)
+	{
+		VentureEntity *other = g_ptr_array_index(prices, i);
+		g_autofree gchar *label = NULL;
+		gboolean active = FALSE;
+
+		g_object_get(other, "active", &active, NULL);
+		if (!active)
+			continue;
+		label = venture_entity_get_display_name(other);
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_id(other));
+		venture_html_escape_append(html, label);
+		g_string_append(html, "</option>");
+	}
+	g_string_append(html, "</select></label><fieldset class=\"choice-cards\"><legend class=\"field-label\">When</legend>"
+		"<label class=\"choice-card\"><input type=\"radio\" name=\"at-period-end\" value=\"true\" checked>"
+		"<span><strong>At renewal</strong><span class=\"muted\">Each keeps this price until their next renewal. "
+		"Nothing extra to bill.</span></span></label>"
+		"<label class=\"choice-card\"><input type=\"radio\" name=\"at-period-end\" value=\"false\">"
+		"<span><strong>Right now</strong><span class=\"muted\">The difference for the days left in each period is "
+		"added to their next invoice \xe2\x80\x94 or credited, if the new price costs less.</span></span></label>"
+		"</fieldset><p><button class=\"btn btn-primary\" type=\"submit\">Move customers</button> "
+		"<span class=\"muted\">If any one of them cannot move, nobody is moved.</span></p></form></td></tr>");
+}
+
+/*
  * On a plan's page: its prices, who is on each, and a line to add one for
  * another period. Retiring a price stops it being offered; the customers
  * on it keep it.
@@ -660,6 +794,7 @@ venture_plan_web_panel(VentureWebServer *self, GString *html, VentureEntity *rec
 			g_autofree gchar *label = venture_entity_get_display_name(price);
 			gboolean active = FALSE;
 			gint64 trial = 0;
+			guint customers = venture_plan_price_customers(self, venture_entity_get_id(price));
 
 			g_object_get(price, "active", &active, "trial-days", &trial, NULL);
 			g_string_append_printf(html, "<tr><td><a href=\"/e/plan_price/%" G_GINT64_FORMAT "\">",
@@ -671,8 +806,7 @@ venture_plan_web_panel(VentureWebServer *self, GString *html, VentureEntity *rec
 			else
 				g_string_append(html, "\xe2\x80\x94");
 			g_string_append_printf(html, "</td><td class=\"num\">%u</td><td><span class=\"badge %s\">%s</span></td><td>",
-				venture_plan_price_customers(self, venture_entity_get_id(price)),
-				active ? "positive" : "muted", active ? "Offered" : "Retired");
+				customers, active ? "positive" : "muted", active ? "Offered" : "Retired");
 			if (editor)
 				g_string_append_printf(html, "<form method=\"post\" action=\"/plans/%" G_GINT64_FORMAT "/prices\">"
 					"<input type=\"hidden\" name=\"action\" value=\"%s\">"
@@ -681,11 +815,15 @@ venture_plan_web_panel(VentureWebServer *self, GString *html, VentureEntity *rec
 					id, active ? "retire" : "restore", venture_entity_get_id(price),
 					active ? "Retire" : "Offer again");
 			g_string_append(html, "</td></tr>");
+			if (editor && !active)
+				venture_plan_web_append_move(html, id, price, prices, customers);
 		}
 		g_string_append(html, "</tbody></table>");
 	}
 	if (editor)
 	{
+		g_autofree gchar *taxes = document_tax_options(self, venture_entity_get_organization_id(record));
+
 		currency = venture_bill_currency(self, venture_entity_get_organization_id(record));
 		g_string_append_printf(html, "<form method=\"post\" action=\"/plans/%" G_GINT64_FORMAT "/prices\" "
 			"class=\"price-add\"><input type=\"hidden\" name=\"action\" value=\"add\">"
@@ -696,9 +834,11 @@ venture_plan_web_panel(VentureWebServer *self, GString *html, VentureEntity *rec
 			"<span class=\"money-input\"><input type=\"text\" name=\"amount\" required inputmode=\"decimal\" "
 			"placeholder=\"0.00\"><span class=\"unit\">%s</span></span></label>"
 			"<label class=\"doc-field\"><span class=\"field-label\">Free trial (days)</span>"
-			"<input type=\"number\" name=\"trial-days\" min=\"0\" step=\"1\" placeholder=\"0\"></label></div>"
+			"<input type=\"number\" name=\"trial-days\" min=\"0\" step=\"1\" placeholder=\"0\"></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">Tax</span>"
+			"<select name=\"tax-code-id\" data-no-picker>%s</select></label></div>"
 			"<label class=\"checkbox\"><input type=\"checkbox\" name=\"per-seat\" value=\"true\"> Per seat</label>"
-			"<p><button class=\"btn btn-primary\" type=\"submit\">Add price</button></p></form>", currency);
+			"<p><button class=\"btn btn-primary\" type=\"submit\">Add price</button></p></form>", currency, taxes);
 	}
 	g_string_append(html, "</div></section>");
 	venture_plan_web_discount_panel(self, html, record, editor);
