@@ -185,7 +185,7 @@ test_plan_sheet(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(page, "<optgroup label=\"Growth\">"));
 	g_assert_nonnull(strstr(page, "$49.00 a month per seat</option>"));
 	/* Each price says whose it is, so choosing a customer narrows them. */
-	option = g_strdup_printf("data-venture=\"%" G_GINT64_FORMAT "\">Growth", venture_entity_get_id(studio));
+	option = g_strdup_printf("data-venture=\"%" G_GINT64_FORMAT "\" data-plan=", venture_entity_get_id(studio));
 	g_assert_nonnull(strstr(page, option));
 }
 
@@ -235,6 +235,72 @@ test_plan_prices(Fixture *f, gconstpointer data)
 	prices = plan_prices(f, venture_entity_get_id(plan));
 	g_object_get(g_ptr_array_index(prices, 0), "active", &active, NULL);
 	g_assert_false(active);
+}
+
+/*
+ * A plan's page offers discounts: "20%" or "10" off, for the first N
+ * periods or every one. The subscription pages offer the plan's
+ * discounts and a way to skip a free trial, and a subscription's page
+ * lists the invoices it has issued. If this regresses, a discount is
+ * typed as two fields and a subscription's bills are nowhere on its page.
+ */
+static void
+test_plan_discounts(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) discounts = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *page = NULL, *body = NULL, *path = NULL, *form = NULL, *sub = NULL;
+	gint64 percent = 0, periods = 0;
+
+	(void)data;
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_PLAN);
+		plan = venture_database_find_one(f->database, q, NULL);
+	}
+	g_assert_nonnull(plan);
+	path = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, venture_entity_get_id(plan));
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Discounts"));
+	g_assert_nonnull(strstr(page, "Add a discount"));
+
+	form = g_strdup_printf("/plans/%" G_GINT64_FORMAT "/discounts", venture_entity_get_id(plan));
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded",
+		"action=add&name=Launch+offer&off=20%25&periods=3&code=LAUNCH", &body), ==, 303);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded",
+		"action=add&name=Loyalty&off=10", &body), ==, 303);
+	query = venture_query_new(VENTURE_TYPE_PLAN_DISCOUNT);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	discounts = venture_database_find(f->database, query, NULL);
+	g_assert_cmpuint(discounts->len, ==, 2);
+	g_object_get(g_ptr_array_index(discounts, 0), "percent-off", &percent, "periods", &periods, NULL);
+	g_assert_cmpint(percent, ==, 20);
+	g_assert_cmpint(periods, ==, 3);
+	g_object_get(g_ptr_array_index(discounts, 1), "amount-off", &amount, "periods", &periods, NULL);
+	g_assert_nonnull(amount);
+	g_assert_cmpint(venture_money_get_amount(amount), ==, 1000);
+	g_assert_cmpint(periods, ==, 0);
+
+	/* An amount that is neither is refused, in words. */
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(f, "POST", form, "application/x-www-form-urlencoded",
+		"action=add&name=Bad&off=lots", &body), ==, 422);
+
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", "/billing/subscriptions/new", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "name=\"discount-id\""));
+	g_assert_nonnull(strstr(page, "Launch offer \xe2\x80\x94 20% off the first 3 periods"));
+	g_assert_nonnull(strstr(page, "name=\"skip-trial\""));
+
+	/* The fixture's subscription was started without a trial, so its
+	 * first invoice is listed on its page. */
+	sub = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, f->subscription);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", sub, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "<h2>Invoices</h2>"));
+	g_assert_nonnull(strstr(page, "href=\"/e/invoice/"));
 }
 
 static void
@@ -375,6 +441,7 @@ main(int argc, char **argv)
 	g_test_add("/billing-surfaces/web", Fixture, NULL, setup, test_web, teardown);
 	g_test_add("/billing-surfaces/plan-sheet", Fixture, NULL, setup, test_plan_sheet, teardown);
 	g_test_add("/billing-surfaces/plan-prices", Fixture, NULL, setup, test_plan_prices, teardown);
+	g_test_add("/billing-surfaces/plan-discounts", Fixture, NULL, setup, test_plan_discounts, teardown);
 	g_test_add("/billing-surfaces/staged", Fixture, NULL, setup, test_staged, teardown);
 	g_test_add("/billing-surfaces/cli", Fixture, NULL, setup, test_cli, teardown);
 	g_test_add("/billing-surfaces/assistant-stale", Fixture, NULL, setup, test_assistant_stale, teardown);

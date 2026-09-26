@@ -294,6 +294,93 @@ proration(VentureEntity *old_price, VentureEntity *new_price, gint64 old_seats,
 	return total;
 }
 
+/*
+ * A discount chosen for a new subscription must be the plan's own, still
+ * offered on @at, and say either a percent or an amount -- not both, not
+ * neither. Refused here so every surface is held to it.
+ */
+static gboolean
+discount_available(VentureBillingService *self, gint64 discount_id, VentureEntity *price, gint64 org,
+	GDateTime *at, GError **error)
+{
+	g_autoptr(VentureEntity) discount = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(GDateTime) ends = NULL;
+	gint64 percent;
+	if (discount_id == 0)
+		return TRUE;
+	discount = load(self, VENTURE_TYPE_PLAN_DISCOUNT, discount_id, org, error);
+	if (discount == NULL)
+		return FALSE;
+	if (number(discount, "plan-id") != number(price, "plan-id"))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "that discount belongs to another plan");
+	if (!flag(discount, "active"))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "that discount is no longer offered");
+	g_object_get(discount, "ends-at", &ends, "amount-off", &amount, NULL);
+	if (ends != NULL && g_date_time_compare(at, ends) > 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "that discount's offer has ended");
+	percent = number(discount, "percent-off");
+	if ((percent > 0) == (amount != NULL && venture_money_get_amount(amount) > 0) || percent < 0 || percent > 100 ||
+		number(discount, "periods") < 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"a discount takes either a percent from 1 to 100 or an amount, for zero or more periods");
+	return TRUE;
+}
+
+/*
+ * @amount less the subscription's discount, when it still covers this
+ * invoice; counts the invoice against it. Never below zero: an amount off
+ * larger than the price makes the invoice free, not a credit.
+ */
+static VentureMoney *
+apply_discount(VentureBillingService *self, VentureEntity *sub, VentureMoney *amount, gint64 org,
+	gchar **label, GError **error)
+{
+	g_autoptr(VentureEntity) discount = NULL;
+	g_autoptr(VentureMoney) off = NULL;
+	gint64 used = number(sub, "discount-periods-used"), periods, percent;
+	VentureMoney *result;
+	if (number(sub, "discount-id") == 0)
+		return venture_money_copy(amount);
+	discount = load(self, VENTURE_TYPE_PLAN_DISCOUNT, number(sub, "discount-id"), org, error);
+	if (discount == NULL)
+		return NULL;
+	periods = number(discount, "periods");
+	if (periods > 0 && used >= periods)
+		return venture_money_copy(amount);
+	percent = number(discount, "percent-off");
+	g_object_get(discount, "amount-off", &off, NULL);
+	if (percent > 0)
+		result = venture_money_multiply_rational(amount, 100 - percent, 100, error);
+	else if (off != NULL)
+	{
+		result = venture_money_subtract(amount, off, error);
+		if (result != NULL && venture_money_get_amount(result) < 0)
+		{
+			venture_money_free(result);
+			result = venture_money_new_zero(venture_money_get_currency(amount));
+		}
+	}
+	else
+		result = venture_money_copy(amount);
+	if (result == NULL)
+		return NULL;
+	g_object_set(sub, "discount-periods-used", used + 1, NULL);
+	*label = venture_entity_get_display_name(discount);
+	return result;
+}
+
+/*
+ * A discount is the plan's offer: moving to another price of the same
+ * plan keeps it, moving to another plan ends it.
+ */
+static void
+keep_discount_for(VentureEntity *sub, VentureEntity *from, VentureEntity *to)
+{
+	if (number(from, "plan-id") != number(to, "plan-id"))
+		g_object_set(sub, "discount-id", (gint64)0, "discount-periods-used", (gint64)0, NULL);
+}
+
 static gboolean
 issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	GDateTime *at, GDateTime *period_start, const VentureActor *actor, gint64 *invoice_id, GError **error)
@@ -305,6 +392,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	g_autoptr(VentureMoney) adjustment = NULL;
 	g_autofree gchar *date = g_date_time_format(period_start, "%F");
 	g_autofree gchar *invoice_number = NULL;
+	g_autofree gchar *discount_label = NULL, *description = NULL, *plan_name = NULL, *price_name = NULL;
 	gint64 org = venture_entity_get_organization_id(sub);
 	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
 		self->database, org, at, error))
@@ -312,6 +400,17 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	amount = price_amount(price, number(sub, "seats"), error);
 	if (amount == NULL)
 		return FALSE;
+	{
+		VentureMoney *discounted = apply_discount(self, sub, amount, org, &discount_label, error);
+		if (discounted == NULL)
+			return FALSE;
+		g_clear_pointer(&amount, venture_money_free);
+		amount = discounted;
+		/* The count of discounted invoices is the subscription's; a start
+		 * saved the row before issuing, so it is saved again here. */
+		if (discount_label != NULL && !write_record(self, sub, actor, error))
+			return FALSE;
+	}
 	g_object_get(sub, "pending-adjustment", &adjustment, NULL);
 	if (adjustment != NULL && venture_money_get_amount(adjustment) > 0)
 	{
@@ -334,7 +433,23 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	line = new_record(VENTURE_TYPE_INVOICE_LINE, org);
 	/* Seats have already been multiplied with VentureMoney. Invoice quantity
 	 * is the existing exact unity value, never a monetary floating point path. */
-	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", "Subscription renewal",
+	/* The line says what was bought, for which period, and any discount,
+	 * so the customer's invoice reads as the plan and not "renewal". */
+	g_object_get(plan, "name", &plan_name, NULL);
+	price_name = venture_entity_get_display_name(price);
+	{
+		g_autoptr(GDateTime) until = next_period(price, period_start);
+		g_autofree gchar *to = g_date_time_format(until, "%F");
+		GString *text = g_string_new(NULL);
+		g_string_append_printf(text, "%s \xe2\x80\x94 %s", plan_name != NULL ? plan_name : "Subscription", price_name);
+		if (flag(price, "per-seat") && number(sub, "seats") > 1)
+			g_string_append_printf(text, " \xc3\x97 %" G_GINT64_FORMAT " seats", number(sub, "seats"));
+		g_string_append_printf(text, ", %s to %s", date, to);
+		if (discount_label != NULL)
+			g_string_append_printf(text, "; %s", discount_label);
+		description = g_string_free(text, FALSE);
+	}
+	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", description,
 		"quantity", 1.0, "unit-price", amount, "product-id", number(price, "product-id"), NULL);
 	if (!venture_database_save(self->database, line, actor, error) ||
 		!venture_settlement_service_transition(venture_settlement_service_get(self->database),
@@ -425,6 +540,11 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		trial = number(price, "trial-days");
 		if (trial < 0 || trial > 366)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "trial days must be between zero and 366");
+		/* Billing from the first day, when the customer wants to pay now. */
+		if (flag(request, "skip-trial"))
+			trial = 0;
+		if (!discount_available(self, number(request, "discount-id"), price, org, at, error))
+			return FALSE;
 		state = trial > 0 ? 0 : 1;
 		sub = new_record(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, org);
 		g_object_get(request, "external-id", &external, NULL);
@@ -432,7 +552,8 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		end = trial > 0 ? g_date_time_add_days(at, (gint)trial) : next_period(price, at);
 		g_object_set(sub, "company-id", number(request, "company-id"), "contact-id", number(request, "contact-id"),
 			"plan-price-id", venture_entity_get_id(price), "external-id", external,
-			"current-period-start", start, "current-period-end", end, "trial-end", trial > 0 ? end : NULL, "billing-anchor", trial > 0 ? end : start, NULL);
+			"current-period-start", start, "current-period-end", end, "trial-end", trial > 0 ? end : NULL, "billing-anchor", trial > 0 ? end : start,
+			"discount-id", number(request, "discount-id"), "discount-periods-used", (gint64)0, NULL);
 		old_seats = 0;
 		old_price = 0;
 		old_state = 0;
@@ -482,6 +603,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 					next_price = load(self, VENTURE_TYPE_PLAN_PRICE, number(sub, "pending-plan-price-id"), org, error);
 					if (next_price == NULL)
 						return FALSE;
+					keep_discount_for(sub, price, next_price);
 					g_set_object(&price, next_price);
 					g_object_set(sub, "plan-price-id", venture_entity_get_id(price), "pending-plan-price-id", (gint64)0, "billing-anchor", end, NULL);
 				}
@@ -521,6 +643,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 			}
 			else
 			{
+				keep_discount_for(sub, price, next_price);
 				g_set_object(&price, next_price);
 				g_object_set(sub, "plan-price-id", venture_entity_get_id(price), NULL);
 				if (state == 0)

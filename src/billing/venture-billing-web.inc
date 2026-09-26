@@ -32,7 +32,8 @@ venture_billing_web_action(HtmxRequest *request, GHashTable *params, gpointer us
 		return gate;
 	if (ui)
 	{
-		static const gchar *const fields[] = { "at", "plan-price-id", "seats", "at-period-end", "company-id", "contact-id" };
+		static const gchar *const fields[] = { "at", "plan-price-id", "seats", "at-period-end", "company-id", "contact-id",
+			"discount-id", "skip-trial" };
 		guint i;
 		verb = form_action;
 		for (i = 0; i < G_N_ELEMENTS(fields); i++)
@@ -154,7 +155,15 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 		"<select name=\"plan-price-id\" required><option value=\"\">Choose a plan\xe2\x80\xa6</option>");
 	venture_plan_web_append_price_options(self, html, organization, 0, 0, unpriced);
 	g_string_append(html, "</select><span class=\"field-help\">Every offered price, under its plan. "
-		"<a href=\"/plans/new\">Make a new plan</a>.</span></label>");
+		"<a href=\"/plans/new\">Make a new plan</a>.</span></label>"
+		"<div class=\"doc-parties\"><label class=\"doc-field\"><span class=\"field-label\">Discount</span>"
+		"<select name=\"discount-id\" data-plan-discounts><option value=\"\">No discount</option>");
+	venture_plan_web_append_discount_options(self, html, organization);
+	g_string_append(html, "</select><span class=\"field-help\">The chosen plan's offers.</span></label></div>"
+		"<label class=\"checkbox\" data-skip-trial hidden><input type=\"checkbox\" name=\"skip-trial\" value=\"true\"> "
+		"<span data-skip-trial-label>Skip the free trial and send the first invoice now</span></label>"
+		"<p class=\"field-help\" data-first-bill>The first invoice is issued the moment the subscription starts, "
+		"unless the price has a free trial.</p>");
 	/* A plan that is offered but has no price cannot be sold; say so
 	 * where somebody is looking for it. */
 	for (i = 0; i < unpriced->len; i++)
@@ -184,7 +193,21 @@ venture_billing_web_new(HtmxRequest *request, GHashTable *params, gpointer user_
 		"var mine=v==='0'||x.dataset.venture==='0'||x.dataset.venture===v;x.hidden=!mine;x.disabled=!mine;});"
 		"if(p.selectedOptions[0]&&p.selectedOptions[0].hidden){p.value='';}"
 		"p.dispatchEvent(new Event('change',{bubbles:true}));}"
-		"c.addEventListener('change',narrow);narrow();})();</script>");
+		"c.addEventListener('change',narrow);narrow();"
+		/* A plan's discounts, and the trial choice when its price has one. */
+		"var d=document.querySelector('[data-plan-discounts]'),t=document.querySelector('[data-skip-trial]'),"
+		"b=document.querySelector('[data-first-bill]');"
+		"function plan(){var o=p.selectedOptions[0],id=o&&o.value?o.dataset.plan:'',days=o&&o.value?+o.dataset.trial:0;"
+		"if(d){Array.prototype.forEach.call(d.options,function(x){if(!x.value)return;var mine=x.dataset.plan===id;"
+		"x.hidden=!mine;x.disabled=!mine;});if(d.selectedOptions[0]&&d.selectedOptions[0].hidden)d.value='';"
+		"d.dispatchEvent(new Event('change',{bubbles:true}));}"
+		"if(t){t.hidden=!(days>0);t.querySelector('[data-skip-trial-label]').textContent="
+		"'Skip the '+days+'-day free trial and send the first invoice now';}"
+		"if(b)b.textContent=days>0?'On the free trial, the first invoice is issued when the trial ends, after '+days+' days.'"
+		":'The first invoice is issued the moment the subscription starts.';}"
+		"p.addEventListener('change',plan);if(t)t.addEventListener('change',function(){var x=t.querySelector('input');"
+		"if(b&&x.checked)b.textContent='The first invoice is issued the moment the subscription starts.';else plan();});plan();"
+		"})();</script>");
 	return venture_web_html_response(venture_web_page(self, request, "/e/customer_subscription",
 		"New subscription", html->str), 200);
 }
@@ -194,6 +217,59 @@ static gchar *
 venture_billing_web_day(VentureWebServer *self, GDateTime *when)
 {
 	return when != NULL ? venture_time_to_date_string(when, venture_context_get_timezone(self->context)) : NULL;
+}
+
+/*
+ * The invoices a subscription has issued, newest first: what it has
+ * billed is the question after what it will bill. Read from its events,
+ * which record the invoice each start and renewal issued.
+ */
+static void
+venture_billing_web_invoices(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SUBSCRIPTION_EVENT);
+	g_autoptr(GPtrArray) events = NULL;
+	guint i, shown = 0;
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(record), NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	events = venture_database_find(database, query, NULL);
+	for (i = 0; events != NULL && i < events->len; i++)
+	{
+		g_autoptr(VentureEntity) invoice = NULL;
+		g_autoptr(VentureMoney) balance = NULL;
+		g_autofree gchar *name = NULL, *issued_text = NULL, *balance_text = NULL;
+		g_autoptr(GDateTime) issued = NULL;
+		gint64 invoice_id = 0;
+
+		g_object_get(g_ptr_array_index(events, i), "invoice-id", &invoice_id, NULL);
+		if (invoice_id == 0)
+			continue;
+		invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, NULL);
+		if (invoice == NULL)
+			continue;
+		if (shown == 0)
+			g_string_append(html, "<section class=\"card\"><div class=\"card-head\"><h2>Invoices</h2></div>"
+				"<div class=\"card-body\"><table class=\"line-items\"><thead><tr><th>Invoice</th><th>Issued</th>"
+				"<th class=\"num\">Still owed</th></tr></thead><tbody>");
+		name = venture_entity_get_display_name(invoice);
+		g_object_get(invoice, "issued-at", &issued, NULL);
+		issued_text = venture_billing_web_day(self, issued);
+		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(database), invoice_id, NULL, NULL);
+		balance_text = balance != NULL ? venture_money_to_display_string(balance, TRUE) : g_strdup("\xe2\x80\x94");
+		g_string_append_printf(html, "<tr><td><a href=\"/e/invoice/%" G_GINT64_FORMAT "\">", invoice_id);
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</a></td><td>");
+		venture_html_escape_append(html, issued_text != NULL ? issued_text : "");
+		g_string_append(html, "</td><td class=\"num\">");
+		venture_html_escape_append(html, balance_text);
+		g_string_append(html, "</td></tr>");
+		shown++;
+	}
+	if (shown > 0)
+		g_string_append(html, "</tbody></table></div></section>");
 }
 
 /*
@@ -280,7 +356,32 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 			? " is added to the next invoice for a change made part-way through this period.</p>"
 			: " is credited against the next invoice for a change made part-way through this period.</p>");
 	}
+	{
+		g_autoptr(VentureEntity) discount = NULL;
+		gint64 discount_id = 0, used = 0, periods = 0;
+
+		g_object_get(record, "discount-id", &discount_id, "discount-periods-used", &used, NULL);
+		if (discount_id > 0)
+			discount = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_PLAN_DISCOUNT,
+				discount_id, NULL);
+		if (discount != NULL)
+		{
+			g_autofree gchar *label = venture_entity_get_display_name(discount);
+
+			g_object_get(discount, "periods", &periods, NULL);
+			g_string_append(html, "<p>Discount: <strong>");
+			venture_html_escape_append(html, label);
+			g_string_append(html, "</strong>");
+			if (periods > 0 && used >= periods)
+				g_string_append(html, " \xe2\x80\x94 used up; invoices are at the full price now.");
+			else if (periods > 0)
+				g_string_append_printf(html, " \xe2\x80\x94 %" G_GINT64_FORMAT " of %" G_GINT64_FORMAT " invoices left.",
+					periods - used, periods);
+			g_string_append(html, "</p>");
+		}
+	}
 	g_string_append(html, "</div></section>");
+	venture_billing_web_invoices(self, html, record);
 
 	editor = venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!editor || status == 4 || status == 5)

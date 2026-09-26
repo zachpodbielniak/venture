@@ -54,6 +54,20 @@ VENTURE_DECLARE_ENTITY(VenturePlanPrice, venture_plan_price, PLAN_PRICE)
  * venture_plan_price_new:
  * Returns: (transfer full): a billing plan_price record
  */
+#define VENTURE_TYPE_PLAN_DISCOUNT (venture_plan_discount_get_type())
+VENTURE_DECLARE_ENTITY(VenturePlanDiscount, venture_plan_discount, PLAN_DISCOUNT)
+/**
+ * venture_plan_discount_new:
+ * Returns: (transfer full): a discount offered on a plan
+ */
+/**
+ * venture_plan_discount_describe:
+ * @self: a plan discount
+ *
+ * Returns: (transfer full): what the discount does, in words: "20% off
+ *   the first 3 periods", "$10.00 off every period"
+ */
+gchar *venture_plan_discount_describe(VenturePlanDiscount *self);
 #define VENTURE_TYPE_CUSTOMER_SUBSCRIPTION (venture_customer_subscription_get_type())
 VENTURE_DECLARE_ENTITY(VentureCustomerSubscription, venture_customer_subscription, CUSTOMER_SUBSCRIPTION)
 /**

@@ -19,7 +19,8 @@ the CLI, REST, automation or an approved assistant proposal.
 |--------+---------|
 | =plan= | Organization, optional venture, name, organization-unique code, description, active flag |
 | =plan_price= | Plan, currency, interval (=month=, =quarter=, =half_year=, =year=), exact amount, per-seat flag, trial days, active flag |
-| =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment |
+| =plan_discount= | Plan, name, whole percent off or amount off, number of periods (0 = every), optional code, offered-until date, active flag |
+| =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment; discount and how many invoices it has covered |
 | =subscription_event= | Immutable effective-dated change, old/new terms and seats, proration, invoice and frozen MRR |
 | =dunning_step= | Active notice, retry, pause or cancel action at an overdue-day offset |
 | =billing_notice= | Durable email-channel notice; no email is sent |
@@ -239,6 +240,26 @@ annual normalization, scheduled terms, migrations and report definitions.
 staged approval and stale assistant proposals. The shared module, report,
 migration and authentication suites cover their integration points.
 
+* Discounts
+
+A plan offers discounts -- "20% off the first 3 periods", "$10.00 off every
+period". One is chosen when a customer is started on the plan
+(=discount_id= on the start instruction); =VentureBillingService= refuses a
+discount of another plan, one retired or past its offered-until date, and
+one that names both a percent and an amount or neither. Each invoice the
+subscription issues -- the first and every renewal -- takes the discount off
+the plan's charge while it still covers invoices, counts it on the
+subscription, and says so on the invoice line; a part-period adjustment is
+added after the discount, not discounted. An amount off larger than the
+charge makes the invoice free, never a credit. Moving to another price of
+the same plan keeps the discount; moving to another plan ends it. MRR is
+still frozen at the list price.
+
+A start can also skip the price's free trial (=skip_trial=true=): the first
+period is billed on the day, as for a price with no trial. The invoice line
+names the plan, the price, the seats, the period and any discount, rather
+than "renewal".
+
 * Periods
 
 Every period is a whole number of calendar months --
@@ -268,6 +289,14 @@ A customer with no venture may take any plan, and changing seats keeps
 the terms already agreed. The new-subscription page narrows the plan list
 to the chosen customer's venture; the change-plan list is narrowed on the
 server.
+
+A plan's page has a Discounts card beside its prices: each discount with
+its code and how many customers have it, retire and re-offer, and a line to
+add one -- "20%" is a percent, "10" an amount in the business's currency,
+and an empty period count is every period. The new-subscription page offers
+the chosen plan's discounts, and, when the price has a free trial, a box to
+skip it; it says when the first invoice will be issued. A subscription's
+page lists the invoices it has issued and what is still owed on each.
 
 The subscription pages offer every active price of every active plan,
 grouped under the plan's name, and name any active plan that has no price

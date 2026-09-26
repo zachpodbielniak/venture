@@ -385,6 +385,220 @@ venture_plan_web_prices(HtmxRequest *request, GHashTable *params, gpointer user_
 	return venture_plan_see_other(path);
 }
 
+/*
+ * A discount for @plan from what a person types: "20%" is a percent,
+ * "10" or "10.00" an amount in the business's currency. Periods left
+ * empty is every period.
+ */
+static VentureEntity *
+venture_plan_discount_from_form(VentureWebServer *self, HtmxRequest *request, VentureEntity *plan, GError **error)
+{
+	const gchar *name = htmx_request_get_form_value(request, "name");
+	const gchar *off = htmx_request_get_form_value(request, "off");
+	const gchar *periods = htmx_request_get_form_value(request, "periods");
+	const gchar *code = htmx_request_get_form_value(request, "code");
+	const gchar *ends = htmx_request_get_form_value(request, "ends-at");
+	g_autoptr(VentureEntity) discount = g_object_new(VENTURE_TYPE_PLAN_DISCOUNT, NULL);
+	g_autofree gchar *clean = g_strstrip(g_strdup(off != NULL ? off : ""));
+	gsize length = strlen(clean);
+	gint64 count = 0;
+
+	if (name == NULL || *name == '\0')
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A discount needs a name");
+		return NULL;
+	}
+	venture_entity_set_organization_id(discount, venture_entity_get_organization_id(plan));
+	if (periods != NULL && *periods != '\0')
+		count = g_ascii_strtoll(periods, NULL, 10);
+	g_object_set(discount, "plan-id", venture_entity_get_id(plan), "name", name, "periods", count,
+		"code", code != NULL ? code : "", "active", TRUE, NULL);
+	if (length > 1 && clean[length - 1] == '%')
+	{
+		gchar *end = NULL;
+		gint64 percent;
+
+		clean[length - 1] = '\0';
+		percent = g_ascii_strtoll(clean, &end, 10);
+		if (end == clean || *end != '\0' || percent < 1 || percent > 100)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"A percent off is a whole number from 1% to 100%");
+			return NULL;
+		}
+		g_object_set(discount, "percent-off", percent, NULL);
+	}
+	else
+	{
+		g_autofree gchar *currency = venture_bill_currency(self, venture_entity_get_organization_id(plan));
+		g_autofree gchar *money = g_strdup_printf("%s %s", clean, currency);
+		const gchar *p;
+
+		for (p = clean; *p != '\0'; p++)
+			if (!g_ascii_isdigit(*p) && *p != '.')
+				break;
+		if (*clean == '\0' || *p != '\0' ||
+		    !venture_entity_set_field_from_string(discount, "amount-off", money, NULL))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Say what comes off as a percent such as 20%% or an amount such as 10.00, not \"%s\"", clean);
+			return NULL;
+		}
+	}
+	if (ends != NULL && *ends != '\0' && !venture_entity_set_field_from_string(discount, "ends-at", ends, error))
+		return NULL;
+	return g_steal_pointer(&discount);
+}
+
+/* POST /plans/:id/discounts -- add a discount, retire one, or offer it again. */
+static HtmxResponse *
+venture_plan_web_discounts(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autoptr(VentureEntity) discount = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *action = htmx_request_get_form_value(request, "action");
+	HtmxResponse *gate;
+	VentureActor actor;
+
+	gate = venture_web_ui_require_session(self, request);
+	if (gate != NULL)
+		return gate;
+	gate = venture_web_require_module_ui(self, request, "billing");
+	if (gate != NULL)
+		return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+	venture_auth_to_actor(principal, &actor);
+	plan = venture_database_get(database, VENTURE_TYPE_PLAN,
+		g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
+	if (plan == NULL)
+		return venture_web_error_response(error);
+
+	if (g_strcmp0(action, "add") == 0)
+		discount = venture_plan_discount_from_form(self, request, plan, &error);
+	else if (g_strcmp0(action, "retire") == 0 || g_strcmp0(action, "restore") == 0)
+	{
+		const gchar *id = htmx_request_get_form_value(request, "discount");
+		gint64 owner = 0;
+
+		discount = venture_database_get(database, VENTURE_TYPE_PLAN_DISCOUNT,
+			id != NULL ? g_ascii_strtoll(id, NULL, 10) : 0, &error);
+		if (discount != NULL)
+			g_object_get(discount, "plan-id", &owner, NULL);
+		if (discount != NULL && owner != venture_entity_get_id(plan))
+		{
+			g_clear_object(&discount);
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "That discount is not this plan's");
+		}
+		if (discount != NULL)
+			g_object_set(discount, "active", g_strcmp0(action, "restore") == 0, NULL);
+	}
+	else
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Unknown discount action");
+
+	if (discount == NULL || !venture_database_save(database, discount, &actor, &error))
+		return venture_web_error_response(error);
+	path = g_strdup_printf("/e/plan/%" G_GINT64_FORMAT, venture_entity_get_id(plan));
+	return venture_plan_see_other(path);
+}
+
+/* How many live subscriptions hold @discount. */
+static guint
+venture_plan_discount_customers(VentureWebServer *self, gint64 discount_id)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i, count = 0;
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "discount-id", VENTURE_FILTER_OP_EQ, discount_id, NULL);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		gint status = 0;
+
+		g_object_get(g_ptr_array_index(rows, i), "status", &status, NULL);
+		if (status <= 2)
+			count++;
+	}
+	return count;
+}
+
+/* The plan page's discounts: what each takes off, who has it, and a line to add one. */
+static void
+venture_plan_web_discount_panel(VentureWebServer *self, GString *html, VentureEntity *plan, gboolean editor)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_DISCOUNT);
+	g_autoptr(GPtrArray) rows = NULL;
+	gint64 id = venture_entity_get_id(plan);
+	guint i;
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "plan-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+
+	g_string_append(html, "<section class=\"card\"><div class=\"card-head\"><h2>Discounts</h2></div><div class=\"card-body\">");
+	if (rows == NULL || rows->len == 0)
+		g_string_append(html, "<p class=\"muted\">No discounts. Add an introductory offer or a standing one; "
+			"it is chosen when a customer is put on the plan.</p>");
+	else
+	{
+		g_string_append(html, "<table class=\"line-items\"><thead><tr><th>Discount</th><th>Code</th>"
+			"<th class=\"num\">Customers</th><th>Offered</th><th></th></tr></thead><tbody>");
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *discount = g_ptr_array_index(rows, i);
+			g_autofree gchar *label = venture_entity_get_display_name(discount);
+			g_autofree gchar *code = NULL;
+			gboolean active = FALSE;
+
+			g_object_get(discount, "active", &active, "code", &code, NULL);
+			g_string_append_printf(html, "<tr><td><a href=\"/e/plan_discount/%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(discount));
+			venture_html_escape_append(html, label);
+			g_string_append(html, "</a></td><td>");
+			venture_html_escape_append(html, code != NULL && *code != '\0' ? code : "\xe2\x80\x94");
+			g_string_append_printf(html, "</td><td class=\"num\">%u</td><td><span class=\"badge %s\">%s</span></td><td>",
+				venture_plan_discount_customers(self, venture_entity_get_id(discount)),
+				active ? "positive" : "muted", active ? "Offered" : "Retired");
+			if (editor)
+				g_string_append_printf(html, "<form method=\"post\" action=\"/plans/%" G_GINT64_FORMAT "/discounts\">"
+					"<input type=\"hidden\" name=\"action\" value=\"%s\">"
+					"<input type=\"hidden\" name=\"discount\" value=\"%" G_GINT64_FORMAT "\">"
+					"<button class=\"btn btn-ghost btn-sm\" type=\"submit\">%s</button></form>",
+					id, active ? "retire" : "restore", venture_entity_get_id(discount),
+					active ? "Retire" : "Offer again");
+			g_string_append(html, "</td></tr>");
+		}
+		g_string_append(html, "</tbody></table>");
+	}
+	if (editor)
+		g_string_append_printf(html, "<form method=\"post\" action=\"/plans/%" G_GINT64_FORMAT "/discounts\" "
+			"class=\"price-add\"><input type=\"hidden\" name=\"action\" value=\"add\">"
+			"<h3>Add a discount</h3><div class=\"doc-parties\">"
+			"<label class=\"doc-field\"><span class=\"field-label\">Name</span>"
+			"<input type=\"text\" name=\"name\" required placeholder=\"Launch offer\"></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">What comes off</span>"
+			"<input type=\"text\" name=\"off\" required placeholder=\"20%% or 10.00\">"
+			"<span class=\"field-help\">A percent, or an amount off each invoice.</span></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">For how many periods</span>"
+			"<input type=\"number\" name=\"periods\" min=\"0\" step=\"1\" placeholder=\"Every period\">"
+			"<span class=\"field-help\">Leave empty for every period.</span></label></div>"
+			"<div class=\"doc-parties\"><label class=\"doc-field\"><span class=\"field-label\">Code</span>"
+			"<input type=\"text\" name=\"code\" placeholder=\"Optional, such as LAUNCH\"></label>"
+			"<label class=\"doc-field\"><span class=\"field-label\">Offered until</span>"
+			"<input type=\"date\" name=\"ends-at\"><span class=\"field-help\">Customers who have it keep it.</span></label></div>"
+			"<p><button class=\"btn btn-primary\" type=\"submit\">Add discount</button></p></form>", id);
+	g_string_append(html, "</div></section>");
+}
+
 /* How many customers are on @price now: trialing, active or past due. */
 static guint
 venture_plan_price_customers(VentureWebServer *self, gint64 price_id)
@@ -487,6 +701,51 @@ venture_plan_web_panel(VentureWebServer *self, GString *html, VentureEntity *rec
 			"<p><button class=\"btn btn-primary\" type=\"submit\">Add price</button></p></form>", currency);
 	}
 	g_string_append(html, "</div></section>");
+	venture_plan_web_discount_panel(self, html, record, editor);
+}
+
+static gint64
+number_of(VentureEntity *record, const gchar *name)
+{
+	gint64 value = 0;
+
+	g_object_get(record, name, &value, NULL);
+	return value;
+}
+
+/*
+ * Every offered discount of every active plan, for the new-subscription
+ * page; each carries its plan so the page shows only the chosen plan's.
+ */
+static void
+venture_plan_web_append_discount_options(VentureWebServer *self, GString *html, gint64 organization)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_DISCOUNT);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	guint i;
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	if (organization > 0)
+		venture_query_set_organization(query, organization);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *discount = g_ptr_array_index(rows, i);
+		g_autoptr(GDateTime) ends = NULL;
+		g_autofree gchar *label = NULL;
+		gboolean active = FALSE;
+
+		g_object_get(discount, "active", &active, "ends-at", &ends, NULL);
+		if (!active || (ends != NULL && g_date_time_compare(now, ends) > 0))
+			continue;
+		label = venture_entity_get_display_name(discount);
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-plan=\"%" G_GINT64_FORMAT "\">",
+			venture_entity_get_id(discount), number_of(discount, "plan-id"));
+		venture_html_escape_append(html, label);
+		g_string_append(html, "</option>");
+	}
 }
 
 /*
@@ -547,8 +806,9 @@ venture_plan_web_append_price_options(VentureWebServer *self, GString *html, gin
 				opened = TRUE;
 			}
 			label = venture_entity_get_display_name(price);
-			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-venture=\"%" G_GINT64_FORMAT "\">",
-				venture_entity_get_id(price), plan_venture);
+			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-venture=\"%" G_GINT64_FORMAT "\" "
+				"data-plan=\"%" G_GINT64_FORMAT "\" data-trial=\"%" G_GINT64_FORMAT "\">",
+				venture_entity_get_id(price), plan_venture, venture_entity_get_id(plan), number_of(price, "trial-days"));
 			venture_html_escape_append(html, name);
 			g_string_append(html, " \xe2\x80\x94 ");
 			venture_html_escape_append(html, label);

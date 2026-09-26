@@ -746,6 +746,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_team_membership_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_plan_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_plan_price_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_plan_discount_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_customer_subscription_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_subscription_event_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_dunning_step_get_type, VENTURE_DATA_CLASS_TENANT },

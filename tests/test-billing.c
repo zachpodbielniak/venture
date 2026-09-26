@@ -337,6 +337,104 @@ test_venture_plans(Fixture *f, gconstpointer data)
 	save(f, a);
 }
 
+/* A discount on the fixture's plan. */
+static gint64
+discount(Fixture *f, gint64 plan, const gchar *name, gint64 percent, const gchar *amount, gint64 periods)
+{
+	g_autoptr(VentureEntity) d = record(f, "plan_discount");
+	g_object_set(d, "plan-id", plan, "name", name, "percent-off", percent, "periods", periods,
+		"active", TRUE, NULL);
+	if (amount != NULL)
+		field(d, "amount-off", amount);
+	save(f, d);
+	return venture_entity_get_id(d);
+}
+
+static gint64
+invoice_total(Fixture *f, VentureEntity *action)
+{
+	g_autoptr(VentureMoney) balance = venture_settlement_service_invoice_balance(
+		venture_settlement_service_get(f->db), integer(action, "invoice-id"), NULL, NULL);
+	g_assert_nonnull(balance);
+	return venture_money_get_amount(balance);
+}
+
+/*
+ * A plan's discount comes off the invoices it covers -- the first N
+ * periods, or every one -- and then stops; a discount from another plan
+ * is refused. If this regresses, an introductory offer is either never
+ * applied or applied for ever.
+ */
+static void
+test_discount(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) price = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) other = record(f, "plan");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 plan = integer(price, "plan-id"), launch, flat, foreign, id;
+
+	(void)data;
+	launch = discount(f, plan, "Launch offer", 20, NULL, 2);
+	flat = discount(f, plan, "Loyalty", 0, "10 USD", 0);
+	g_object_set(other, "name", "Other", "code", "other", "active", TRUE, NULL);
+	save(f, other);
+	foreign = discount(f, venture_entity_get_id(other), "Not ours", 50, NULL, 0);
+
+	/* 20% off $60 for two periods, then the full price. */
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "seats", (gint64)2,
+		"discount-id", launch, NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	g_assert_cmpint(invoice_total(f, a), ==, 4800);
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	g_assert_cmpint(invoice_total(f, a), ==, 4800);
+	g_clear_object(&a);
+	a = request(f, "renew", id, "2026-03-01");
+	save(f, a);
+	g_assert_cmpint(invoice_total(f, a), ==, 6000);
+	g_clear_object(&a);
+
+	/* $10 off every period. */
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "seats", (gint64)2,
+		"discount-id", flat, NULL);
+	save(f, a);
+	g_assert_cmpint(invoice_total(f, a), ==, 5000);
+	g_clear_object(&a);
+
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "discount-id", foreign, NULL);
+	g_assert_false(venture_database_save(f->db, a, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/*
+ * Starting a subscription on a price with a free trial can skip the
+ * trial and bill now: the first invoice is issued on the day. If this
+ * regresses, a customer who wanted to pay is given a trial anyway.
+ */
+static void
+test_skip_trial(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) a = NULL;
+
+	(void)data;
+	g_object_set(p, "trial-days", (gint64)14, NULL);
+	save(f, p);
+	a = request(f, "start", 0, "2026-01-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "seats", (gint64)1,
+		"skip-trial", TRUE, NULL);
+	save(f, a);
+	status_is(f, integer(a, "subscription-id"), "active");
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+	g_assert_cmpint(invoice_total(f, a), ==, 3000);
+}
+
 /* Remaining days get their original allocation, including remainder cents. */
 static void
 test_seats_proration(Fixture *f, gconstpointer data)
@@ -1062,6 +1160,8 @@ main(int argc, char **argv)
 	g_test_add("/billing/start-and-guard", Fixture, NULL, setup, test_start_and_guard, teardown);
 	g_test_add("/billing/quarterly", Fixture, NULL, setup, test_quarterly, teardown);
 	g_test_add("/billing/venture-plans", Fixture, NULL, setup, test_venture_plans, teardown);
+	g_test_add("/billing/discount", Fixture, NULL, setup, test_discount, teardown);
+	g_test_add("/billing/skip-trial", Fixture, NULL, setup, test_skip_trial, teardown);
 	g_test_add("/billing/renewal", Fixture, NULL, setup, test_renewal, teardown);
 	g_test_add("/billing/trial", Fixture, NULL, setup, test_trial, teardown);
 	g_test_add("/billing/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);

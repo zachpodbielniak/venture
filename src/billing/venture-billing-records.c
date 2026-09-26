@@ -159,6 +159,65 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlanPrice, venture_plan_price, plan_price
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = plan_price_display_name;
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Price", NULL);)
 
+/*
+ * A discount a plan offers: a percent or an amount off each invoice, for
+ * every period or for the first N. Chosen when a customer is put on the
+ * plan; the billing service applies it to the invoices it covers and
+ * counts them on the subscription.
+ */
+gchar *
+venture_plan_discount_describe(VenturePlanDiscount *self)
+{
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *off = NULL;
+	gint64 percent = 0, periods = 0;
+
+	g_return_val_if_fail(VENTURE_IS_PLAN_DISCOUNT(self), NULL);
+	g_object_get(self, "percent-off", &percent, "amount-off", &amount, "periods", &periods, NULL);
+	if (percent > 0)
+		off = g_strdup_printf("%" G_GINT64_FORMAT "%% off", percent);
+	else if (amount != NULL)
+	{
+		g_autofree gchar *text = venture_money_to_display_string(amount, TRUE);
+		off = g_strdup_printf("%s off", text);
+	}
+	else
+		off = g_strdup("Nothing off");
+	if (periods == 1)
+		return g_strdup_printf("%s the first period", off);
+	if (periods > 1)
+		return g_strdup_printf("%s the first %" G_GINT64_FORMAT " periods", off, periods);
+	return g_strdup_printf("%s every period", off);
+}
+
+static gchar *
+plan_discount_display_name(VentureEntity *self)
+{
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *what = venture_plan_discount_describe(VENTURE_PLAN_DISCOUNT(self));
+
+	g_object_get(self, "name", &name, NULL);
+	return g_strdup_printf("%s \xe2\x80\x94 %s", name != NULL && *name != '\0' ? name : "Discount", what);
+}
+
+static const VentureFieldDecl plan_discount_fields[] = {
+	VENTURE_FIELD_REF("plan-id", "Plan", NULL, "plan", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_NAME("name", "Name", "What you call the offer, such as Launch offer"),
+	VENTURE_FIELD("percent-off", "Percent off", "Whole percent taken off each invoice it covers; or use an amount",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("amount-off", "Amount off", "Taken off each invoice it covers; or use a percent"),
+	VENTURE_FIELD("periods", "For how many periods", "0 for every period",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("code", "Code", "Optional code a customer quotes to claim it",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("ends-at", "Offered until", "No new subscription may take it after this day",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePlanDiscount, venture_plan_discount, plan_discount_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = plan_discount_display_name;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Discount", NULL);)
+
 static const VentureFieldDecl customer_subscription_fields[] = {
 	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
@@ -176,6 +235,9 @@ static const VentureFieldDecl customer_subscription_fields[] = {
 	VENTURE_FIELD_MONEY("pending-adjustment", "Carried to next invoice", "The difference for part of a period after a mid-period change; added to (or credited on) the next renewal invoice"),
 	VENTURE_FIELD("billing-anchor", "Billing day", "Original calendar day for renewal boundaries", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD("last-event-at", "Last changed", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("discount-id", "Discount", "Taken off the invoices it covers", "plan_discount", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("discount-periods-used", "Discounted invoices", "How many invoices the discount has covered so far",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL),
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCustomerSubscription, venture_customer_subscription, customer_subscription_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Subscription", NULL);
@@ -231,6 +293,9 @@ static const VentureFieldDecl billing_request_fields[] = {
 	VENTURE_FIELD("at-period-end", "At period end", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dry-run", "Dry run", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("discount-id", "Discount", "Start: a discount the plan offers", "plan_discount", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("skip-trial", "Skip the free trial", "Start: bill the first period now even when the price has a trial",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("expected-version", "Expected version", "Required by staged actions on an existing subscription", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", "Service result", "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("proration-amount", "Proration", "Service result"),

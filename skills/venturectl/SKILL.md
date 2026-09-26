@@ -494,9 +494,13 @@ output formats remain unchanged. `journal post ID` returns a confirmation for
 an organization editor. Treat that response as pending until finance approves.
 ## SaaS billing actions
 
-Use `billing start company_id=N plan_price_id=N seats=N` to start a
-`customer_subscription`. Read `describe plan_price` and the price first:
-non-trial starts issue an invoice immediately, while trials bill at activation.
+Use `billing start company_id=N plan_price_id=N seats=N [discount_id=N]
+[skip_trial=true]` to start a `customer_subscription`. Read
+`describe plan_price` and the price first: non-trial starts issue an invoice
+immediately, while trials bill at activation unless `skip_trial=true`. A
+`discount_id` must be a `plan_discount` of the same plan, active and not past
+its `ends_at`; it comes off the first `periods` invoices (0 is every one).
+A plan with a `venture_id` is refused for another venture's customer.
 Use `billing change ID plan_price=N [at_period_end=true]`,
 `billing change-seats ID seats=N`, `billing cancel ID [at_period_end=true]`,
 `billing pause ID`, `billing resume ID`, `billing mark-payment-failed ID`

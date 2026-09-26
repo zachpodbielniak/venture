@@ -30371,6 +30371,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/plans/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/:id/discounts", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_discounts, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/:id/prices", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_prices, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/billing/subscriptions/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);

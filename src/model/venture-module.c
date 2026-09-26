@@ -577,6 +577,7 @@ static const gchar *const billing_reports[] = { "mrr", "churn", "subscriptions_d
 static GType (*const billing_types[]) (void) = {
 	venture_plan_get_type,
 	venture_plan_price_get_type,
+	venture_plan_discount_get_type,
 	venture_customer_subscription_get_type,
 	venture_subscription_event_get_type,
 	venture_dunning_step_get_type,
