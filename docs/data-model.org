@@ -243,11 +243,28 @@ YAML, web list view, AI tools, audit diffs and CLI subcommands all follow.
 | =SEARCHABLE=   | included in free-text search                           |
 | =TRANSIENT=    | computed; never persisted                              |
 | =RETAIN_REFERENCE= | CRM merge keeps the original subject for this reference |
+| =TECHNICAL=    | machinery: kept off summaries, list columns and the everyday form |
 
 =RETAIN_REFERENCE= is also =retain_reference: true= in declarative field
 metadata. It survives into =VentureFieldSpec.flags= and is consumed by the
 generic dedupe reference walk. It does not replace save validators for
 immutable evidence. Ordinary references continue to follow the survivor.
+
+=TECHNICAL= is presentation only (=technical: true= in declarative metadata):
+storage ignores it. It says what a field's name does not -- a replay key, a
+revision, a provider's configuration version -- and the web interface folds
+it under "All fields" and "Advanced". Most machinery needs no flag: a field
+named =*-key=, =*-hash=, =*-digest=, =*-version= or =*-token=, or a string
+field ending =-id=, is already treated as machinery. See [[file:record-view.org][How a record reads]].
+
+** Naming the type
+
+A type is shown by what a person calls it. Without help the name is derived
+from the type ("tax_category" reads "Tax category", plural "Tax
+categories"); a type whose internal name describes machinery names itself in
+=class_init= with =venture_entity_class_set_labels(klass, "Form submission",
+NULL)=. The same label titles a record that has no name ("Form submission
+#12"), the list, the "New ..." button and every type picker.
 
 * Schema evolution
 

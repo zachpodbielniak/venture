@@ -1000,7 +1000,9 @@ a.card:hover::before, a.card:hover::after { border-color: var(--accent); }
  * the micro register. The press feedback is a one-pixel translate down
  * and right, the way a physical key moves, and nothing scales.
  */
-.btn {
+/* A button nobody gave a class is still a button: styled by exclusion,
+ * not by listing which modules remembered to write class="btn". */
+.btn, .main button:not([class]) {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -1021,7 +1023,7 @@ a.card:hover::before, a.card:hover::after { border-color: var(--accent); }
 	            color var(--transition);
 }
 
-.btn:hover { background: var(--surface-hover); border-color: var(--text);
+.btn:hover, .main button:not([class]):hover { background: var(--surface-hover); border-color: var(--text);
              color: var(--text); text-decoration: none; }
 .btn:active { transform: translate(1px, 1px); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed;
@@ -4237,14 +4239,26 @@ details.nav-group > summary.nav-section {
 	cursor: pointer;
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
+	justify-content: flex-start;
+	gap: 6px;
 	padding: var(--space-3) var(--space-4) var(--space-2);
 	transition: color var(--transition);
 }
 
 details.nav-group > summary.nav-section::-webkit-details-marker { display: none; }
-details.nav-group > summary.nav-section::after { content: "+"; color: var(--text-faint); }
+details.nav-group > summary.nav-section::after { content: "+"; color: var(--text-faint);
+                                                  margin-left: auto; }
 details[open].nav-group > summary.nav-section::after { content: "\2212"; }
 details.nav-group > summary.nav-section:hover { color: var(--text); }
 details.nav-group:has(.nav-item.active) > summary.nav-section { color: var(--text); }
 details[open].nav-group { padding-bottom: var(--space-2); }
+
+/* A card's "add" form, folded behind its button until somebody asks. */
+details.add-form > summary { list-style: none; display: inline-flex; }
+details.add-form > summary::-webkit-details-marker { display: none; }
+details[open].add-form > summary { margin-bottom: var(--space-3); }
+
+/* A list leads with each record's name, as its link. Ink, not the accent:
+ * a column of red would be a column shouting; it lights on hover. */
+table.data td.row-title a { color: var(--text); font-weight: 600; text-decoration: none; }
+table.data td.row-title a:hover { color: var(--accent); text-decoration: underline; }

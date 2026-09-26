@@ -87,9 +87,16 @@ venture_web_value_is_empty(
 	if (G_VALUE_HOLDS_ENUM(&value))
 		return FALSE;
 
-	if (G_VALUE_HOLDS_INT64(&value) || G_VALUE_HOLDS_INT(&value) ||
-	    G_VALUE_HOLDS_DOUBLE(&value))
-		return FALSE;
+	/* Zero is what an unset number reads as: "Estimate 0.0" and
+	 * "Points 0" on a ticket nobody has estimated say nothing. */
+	if (G_VALUE_HOLDS_INT64(&value))
+		return 0 == g_value_get_int64(&value);
+
+	if (G_VALUE_HOLDS_INT(&value))
+		return 0 == g_value_get_int(&value);
+
+	if (G_VALUE_HOLDS_DOUBLE(&value))
+		return 0.0 == g_value_get_double(&value);
 
 	{
 		g_autoptr(JsonNode) node = NULL;
@@ -268,7 +275,13 @@ venture_web_append_value(
 		}
 		else
 		{
-			text = venture_time_to_display_string(when, zone);
+			g_autoptr(GDateTime) local = NULL;
+
+			/* The same shape as a date, with the time after it, so a
+			 * column or a card of both reads as one kind of thing. */
+			local = g_date_time_to_timezone(when, zone);
+			text = (NULL != local)
+				? g_date_time_format(local, "%Y-%m-%d %H:%M") : NULL;
 		}
 
 		g_string_append(html, "<time>");
@@ -556,6 +569,32 @@ venture_web_append_crumbs(
 }
 
 /*
+ * Whether long-text @spec holds something long enough to be read as
+ * prose. "30 days" in a Terms field is a fact, not an essay: it goes in
+ * Details with the other short values, and only a paragraph -- or
+ * anything with a line break -- gets a card of its own.
+ */
+static gboolean
+venture_web_is_prose(
+	VentureEntity		*record,
+	VentureFieldSpec	*spec
+){
+	g_auto(GValue) value = G_VALUE_INIT;
+	const gchar *text;
+
+	if ((VENTURE_FIELD_ROLE_CONTENT != venture_field_spec_get_role(spec)) ||
+	    !venture_entity_get_field(record, venture_field_spec_get_name(spec),
+	                              &value) ||
+	    !G_VALUE_HOLDS_STRING(&value))
+		return FALSE;
+
+	text = g_value_get_string(&value);
+
+	return !venture_string_is_empty(text) &&
+	       ((g_utf8_strlen(text, -1) > 80) || (NULL != strchr(text, '\n')));
+}
+
+/*
  * The content somebody wrote -- a message, notes, a description -- each
  * in a card of its own with room to be read. Only what is set; a record
  * with no notes has no Notes card.
@@ -576,7 +615,7 @@ venture_web_append_record_content(
 
 		spec = g_ptr_array_index(specs, i);
 
-		if (VENTURE_FIELD_ROLE_CONTENT != venture_field_spec_get_role(spec))
+		if (!venture_web_is_prose(record, spec))
 			continue;
 
 		if (venture_web_value_is_empty(record, spec) ||
@@ -671,7 +710,10 @@ venture_web_append_record_aside(
 		spec = g_ptr_array_index(specs, i);
 		role = venture_field_spec_get_role(spec);
 
-		if ((VENTURE_FIELD_ROLE_FACT != role) ||
+		/* Short text reads as a fact; prose has its own card. */
+		if (((VENTURE_FIELD_ROLE_FACT != role) &&
+		     ((VENTURE_FIELD_ROLE_CONTENT != role) ||
+		      venture_web_is_prose(record, spec))) ||
 		    venture_web_value_is_empty(record, spec) ||
 		    venture_web_spec_is_title(record, spec, title) ||
 		    (shown >= VENTURE_WEB_SUMMARY_FACTS))
@@ -894,6 +936,51 @@ venture_web_list_columns(
 }
 
 /*
+ * Drops the column that is the records' display name, which the list
+ * already leads with as the link to each record. A column is the name when
+ * it matches the display name on every row of the page.
+ *
+ * Returns: (transfer none) (nullable): the dropped spec, which the Name
+ *   heading sorts by, or %NULL
+ */
+static VentureFieldSpec *
+venture_web_list_drop_title(
+	GPtrArray	*columns,
+	GPtrArray	*records
+){
+	guint i;
+
+	if ((NULL == records) || (0 == records->len))
+		return NULL;
+
+	for (i = 0; i < columns->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(columns, i);
+		gboolean title = TRUE;
+		guint j;
+
+		if (VENTURE_FIELD_KIND_STRING != venture_field_spec_get_kind(spec))
+			continue;
+
+		for (j = 0; (j < records->len) && title; j++)
+		{
+			VentureEntity *record = g_ptr_array_index(records, j);
+			g_autofree gchar *name = venture_entity_get_display_name(record);
+
+			title = venture_web_spec_is_title(record, spec, name);
+		}
+
+		if (title)
+		{
+			g_ptr_array_remove_index(columns, i);
+			return spec;
+		}
+	}
+
+	return NULL;
+}
+
+/*
  * One list cell. The same reading as the record page, shortened: a
  * status is a badge, a reference is the other record's name, and prose
  * is cut to a line.
@@ -931,6 +1018,23 @@ venture_web_append_list_cell(
 		g_string_append(html, "<td class=\"num\">");
 		venture_web_append_value(self, html, record, spec);
 		g_string_append(html, "</td>");
+		return;
+	}
+
+	/* A list is scanned down a column: the day, never the minute. */
+	if ((VENTURE_FIELD_KIND_DATE == kind) ||
+	    (VENTURE_FIELD_KIND_DATETIME == kind))
+	{
+		g_auto(GValue) value = G_VALUE_INIT;
+		g_autofree gchar *text = NULL;
+
+		venture_entity_get_field(record, venture_field_spec_get_name(spec),
+		                         &value);
+		text = venture_time_to_date_string(g_value_get_boxed(&value),
+			venture_context_get_timezone(self->context));
+		g_string_append(html, "<td><time>");
+		venture_html_escape_append(html, (NULL != text) ? text : "");
+		g_string_append(html, "</time></td>");
 		return;
 	}
 

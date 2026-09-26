@@ -1221,11 +1221,13 @@ test_module_http_navigation_and_modules_page(
 	g_assert_nonnull(strstr(page, "href=\"/e/sale\""));
 	g_assert_nonnull(strstr(page, "href=\"/modules\""));
 
-	/* The "Relations" section had only CRM links; with them gone the
-	 * heading goes too. "Code" likewise. */
+	/* A heading whose every row is off is not drawn: "Code" has only
+	 * forge rows. The money questions are still asked -- sales are on
+	 * -- and the books behind them still have a heading. */
 	g_assert_null(strstr(page, ">Relations<"));
 	g_assert_null(strstr(page, ">Code<"));
-	g_assert_nonnull(strstr(page, ">Money<"));
+	g_assert_nonnull(strstr(page, ">Money in<"));
+	g_assert_nonnull(strstr(page, ">Books<"));
 
 	g_assert_cmpuint(server_request(fixture, "GET", "/modules", NULL,
 	                                &modules, NULL), ==, SOUP_STATUS_OK);

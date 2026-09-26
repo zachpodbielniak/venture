@@ -493,6 +493,14 @@ venture_field_spec_name_is_machinery(
 			return TRUE;
 	}
 
+	/* An ordering key -- a card's place on a board, a line's position
+	 * on an invoice -- is how the machine sorts, not something to read. */
+	if (((VENTURE_FIELD_KIND_INTEGER == kind) ||
+	     (VENTURE_FIELD_KIND_DOUBLE == kind)) &&
+	    ((0 == g_strcmp0(name, "position")) ||
+	     g_str_has_suffix(name, "-order") || g_str_has_prefix(name, "sort")))
+		return TRUE;
+
 	/* A string named like an id is somebody else's identifier -- a
 	 * provider's customer id, an external reference. A reference to one
 	 * of our own records is REFERENCE-kinded and followable, and stays. */

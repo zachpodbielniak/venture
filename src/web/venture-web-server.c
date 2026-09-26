@@ -951,6 +951,23 @@ venture_web_label_from_name(const gchar *name)
 	return label;
 }
 
+/*
+ * An enumeration value, as a person reads it: "in_progress" is "In
+ * progress". For text on a page only -- the nick itself is still what a
+ * form posts, a data attribute carries and a class name is built from.
+ */
+static void
+venture_web_append_nick(
+	GString	*html,
+	GType	 enum_type,
+	gint	 value
+){
+	g_autofree gchar *label = NULL;
+
+	label = venture_web_label_from_name(venture_enum_to_nick(enum_type, value));
+	venture_html_escape_append(html, label);
+}
+
 static const VentureWebNavLink venture_web_nav_links[] = {
 	{
 		"/", "Dashboard",
@@ -1914,9 +1931,7 @@ venture_web_page(
 			                      "<span class=\"name\">");
 			venture_html_escape_append(html, principal->name);
 			g_string_append(html, "</span><span class=\"role\">");
-			venture_html_escape_append(html,
-				venture_enum_to_nick(VENTURE_TYPE_USER_ROLE,
-				                     (gint)principal->role));
+			venture_web_append_nick(html, VENTURE_TYPE_USER_ROLE, (gint)principal->role);
 			g_string_append(html, "</span></div>");
 		}
 	}
@@ -3344,9 +3359,7 @@ venture_web_ui_overview(
 			venture_html_escape_append(content,
 				venture_string_is_empty(actor) ? "The system" : actor);
 			g_string_append(content, "</span> ");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_AUDIT_ACTION,
-				                     (gint)action));
+			venture_web_append_nick(content, VENTURE_TYPE_AUDIT_ACTION, (gint)action);
 			g_string_append(content, " ");
 
 			if (!venture_string_is_empty(target_type) &&
@@ -4194,8 +4207,7 @@ venture_web_ui_invoice_print(
 	g_string_append(html, "</h1><div class=\"meta\">");
 	venture_html_escape_append(html, ui_title);
 	g_string_append(html, "</div></div><span class=\"status\">");
-	venture_html_escape_append(html,
-		venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, (gint)status));
+	venture_web_append_nick(html, VENTURE_TYPE_INVOICE_STATUS, (gint)status);
 	g_string_append(html, "</span></div>");
 
 	g_string_append(html, "<div class=\"meta\">");
@@ -4700,7 +4712,14 @@ venture_web_ui_search(
 
 			g_string_append(content, "<div class=\"card search-group\">"
 			                         "<div class=\"card-head\"><h2>");
-			venture_html_escape_append(content, names[i]);
+			{
+				g_autofree gchar *plural = NULL;
+
+				/* "Companies", not "company": a group of results
+				 * is named the way the sidebar names the list. */
+				plural = venture_entity_type_dup_label(entity_type, TRUE);
+				venture_html_escape_append(content, plural);
+			}
 			{
 				g_autofree gchar *escaped = NULL;
 
@@ -4776,6 +4795,8 @@ static void venture_web_append_list_cell(VentureWebServer *self,
 	GString *html, VentureEntity *record, VentureFieldSpec *spec);
 static guint venture_web_form_group(VentureFieldSpec *spec,
 	guint *facts_seen);
+static VentureFieldSpec *venture_web_list_drop_title(GPtrArray *columns,
+	GPtrArray *records);
 static gboolean venture_web_value_is_empty(VentureEntity *record,
 	VentureFieldSpec *spec);
 static gchar *venture_web_choice_label(VentureFieldSpec *spec,
@@ -5821,8 +5842,38 @@ venture_web_ui_list(
 	shown = 0;
 	current_order = htmx_request_get_query_param(request, "order");
 
-	/* What somebody scans this list for; see venture_web_list_columns(). */
+	/* What somebody scans this list for; see venture_web_list_columns().
+	 * The record's own name leads, as the link; the field it came from
+	 * is not repeated beside it. */
 	columns = venture_web_list_columns(specs, records);
+	{
+		VentureFieldSpec *title;
+
+		title = venture_web_list_drop_title(columns, records);
+
+		if (NULL == title)
+		{
+			g_string_append(content, "<th>Name</th>");
+		}
+		else
+		{
+			const gchar *field_name = venture_field_spec_get_name(title);
+			g_autofree gchar *descending = g_strdup_printf("-%s", field_name);
+			g_autofree gchar *suffix = NULL;
+			gboolean asc = (0 == g_strcmp0(current_order, field_name));
+			gboolean desc = (0 == g_strcmp0(current_order, descending));
+
+			suffix = venture_web_list_query_string(request,
+				asc ? descending : field_name, 0);
+			g_string_append_printf(content,
+				"<th%s><a class=\"th-sort\" href=\"/e/%s%s\">",
+				(asc || desc) ? " class=\"sorted\"" : "", type_name, suffix);
+			venture_html_escape_append(content,
+				venture_field_spec_get_label(title));
+			g_string_append(content, asc ? " \xe2\x96\xb2</a></th>"
+				: desc ? " \xe2\x96\xbc</a></th>" : "</a></th>");
+		}
+	}
 
 	for (i = 0; i < columns->len; i++)
 	{
@@ -5864,7 +5915,6 @@ venture_web_ui_list(
 		shown++;
 	}
 
-	g_string_append(content, "<th class=\"row-actions\"></th>");
 	g_string_append(content, "</tr></thead><tbody>");
 
 	for (j = 0; j < records->len; j++)
@@ -5883,15 +5933,23 @@ venture_web_ui_list(
 				"<td class=\"tick\"><input type=\"checkbox\" data-bulk-id=\"%"
 				G_GINT64_FORMAT "\"></td>", venture_entity_get_id(record));
 
+		/* The first cell is the link to the record -- a real anchor, so
+		 * it works from the keyboard and with scripting off -- and the
+		 * rest of the row is clickable through data-href. An "Open"
+		 * button on every row was a column of the same word. */
+		{
+			g_autofree gchar *name = venture_entity_get_display_name(record);
+
+			g_string_append_printf(content,
+				"<td class=\"row-title\"><a href=\"/e/%s/%" G_GINT64_FORMAT "\">",
+				type_name, venture_entity_get_id(record));
+			venture_html_escape_append(content, name);
+			g_string_append(content, "</a></td>");
+		}
+
 		for (i = 0; i < columns->len; i++)
 			venture_web_append_list_cell(self, content, record,
 			                             g_ptr_array_index(columns, i));
-
-		g_string_append_printf(content,
-			"<td class=\"row-actions\">"
-			"<a class=\"btn btn-sm\" href=\"/e/%s/%" G_GINT64_FORMAT
-			"\">Open</a></td>",
-			type_name, venture_entity_get_id(record));
 
 		g_string_append(content, "</tr>");
 	}
@@ -7754,9 +7812,7 @@ venture_web_append_detail_value(
 	}
 	else if (G_VALUE_HOLDS_ENUM(&value))
 	{
-		venture_html_escape_append(content,
-			venture_enum_to_nick(G_VALUE_TYPE(&value),
-			                     g_value_get_enum(&value)));
+		venture_web_append_nick(content, G_VALUE_TYPE(&value), g_value_get_enum(&value));
 	}
 	else if (VENTURE_FIELD_KIND_REFERENCE == venture_field_spec_get_kind(spec))
 	{
@@ -7904,6 +7960,12 @@ venture_web_append_related(
 		 * "ticket_comment #2" links above it says the same thing worse.
 		 * Watches and notifications reference a user and are private.
 		 */
+		/* An invoice's lines are its Lines panel, with quantities,
+		 * prices and the total; a list of their names below it is the
+		 * same thing said worse. */
+		if (VENTURE_TYPE_INVOICE_LINE == types[i])
+			continue;
+
 		if ((VENTURE_TYPE_TICKET_COMMENT == types[i]) ||
 		    (VENTURE_TYPE_WORKLOG == types[i]) ||
 		    (VENTURE_TYPE_WATCH == types[i]) ||
@@ -8263,6 +8325,8 @@ venture_web_append_ticket_relations(
 		venture_context_get_entity_registry(self->context));
 
 	g_string_append_printf(content,
+		"<details class=\"add-form\"><summary class=\"btn btn-sm\">"
+		"Relate a record</summary>"
 		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
 		"/relate\" class=\"relate-form\">", ticket_id);
 
@@ -8288,7 +8352,7 @@ venture_web_append_ticket_relations(
 		"<input type=\"number\" name=\"subject_id\" placeholder=\"id\" "
 		"min=\"1\" required></span> "
 		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
-		"<button class=\"btn\" type=\"submit\">Relate</button></form>");
+		"<button class=\"btn\" type=\"submit\">Relate</button></form></details>");
 
 	g_string_append(content, "</div></div>");
 }
@@ -8441,7 +8505,11 @@ venture_web_append_links(
 	type_names = venture_entity_registry_list_names(
 		venture_context_get_entity_registry(self->context));
 
-	g_string_append(content, "<form method=\"post\" action=\"/links\" "
+	/* The form is folded behind its button: the card says what is
+	 * linked, and making a link is one click further. */
+	g_string_append(content, "<details class=\"add-form\"><summary class=\"btn btn-sm\">"
+	                         "Link a record</summary>"
+	                         "<form method=\"post\" action=\"/links\" "
 	                         "class=\"relate-form\">");
 	g_string_append_printf(content,
 		"<input type=\"hidden\" name=\"source_type\" value=\"%s\">"
@@ -8481,7 +8549,7 @@ venture_web_append_links(
 		"<input type=\"number\" name=\"target_id\" placeholder=\"id\" "
 		"min=\"1\" required></span> "
 		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
-		"<button class=\"btn\" type=\"submit\">Link</button></form>");
+		"<button class=\"btn\" type=\"submit\">Link</button></form></details>");
 
 	g_string_append(content, "</div></div>");
 }
@@ -9439,42 +9507,11 @@ venture_web_ui_detail(
 	g_string_append(content, "<div class=\"record-layout\"><div class=\"record-main\">");
 	venture_web_append_record_content(self, content, record, specs);
 
-	if (venture_web_module_enabled(self, "federation") &&
-		venture_entity_type_get_federation_access(entity_type) &&
-		venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL))
-	{
-		/* The identifier a grant names is under "All fields", with the
-		 * rest of the record's machinery, not printed on the page. */
-		g_string_append(content, "<section class=\"card\"><div class=\"card-head\"><h2>Federation sharing</h2></div><div class=\"card-body\"><p>This record stays private unless explicitly granted. A grant names it by the stable identifier under All fields.</p><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></div></section>");
-	}
-
-	venture_stripe_web_settings_link(self, content, record, principal);
-	venture_mail_web_settings_link(self, content, record, principal);
-	if (G_OBJECT_TYPE(record) == VENTURE_TYPE_ORGANIZATION && venture_context_module_enabled(self->context, "oidc")) {
-		static const gint oidc_roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
-		if (venture_access_policy_has_organization_role(venture_database_get_access_policy(venture_context_get_database(self->context)),
-			principal, venture_entity_get_id(record), oidc_roles, G_N_ELEMENTS(oidc_roles)))
-			g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a></p>", venture_entity_get_id(record));
-	}
-	venture_attribution_web_settings_link(self, content, record, principal);
-	venture_billing_web_buttons(self, content, record, principal);
-	venture_web_append_record_actions(self, content, record, principal);
-	venture_web_append_related(self, content, record);
-	venture_bank_append_actions(content, record);
-	venture_cutover_append_actions(content, record);
-	venture_setup_append_actions(content, record);
-	if (venture_context_module_enabled(self->context, "backup"))
-		venture_backup_append_actions(content, record);
-	venture_web_sequence_panel(self, content, principal, record);
-
-	/* A link is not offered on a link; the audit log is not linkable. */
-	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
-	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
-		venture_web_append_links(self, content, record);
-
-	if (venture_web_module_enabled(self, "kb"))
-		venture_web_append_knowledge(self, content, record);
-
+	/*
+	 * The record's own business first: an invoice's lines and total, a
+	 * ticket's desk and reply box, a release's changelog. These are what
+	 * a person opened the page for; the generic panels come after them.
+	 */
 	/* An invoice's lines and total, with the actions its status allows.
 	 * The other type-specific block, for the same reason as the ticket
 	 * composer below: an invoice without its total is a list of hints. */
@@ -9583,6 +9620,48 @@ venture_web_ui_detail(
 	 * the home page's Support card reads. */
 	venture_web_support_rollup_append_company_block(self, request, content,
 	                                                record);
+
+
+	/* What can be done to it, and where its settings live. */
+	if (venture_web_module_enabled(self, "federation") &&
+		venture_entity_type_get_federation_access(entity_type) &&
+		venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL))
+	{
+		/* The identifier a grant names is under "All fields", with the
+		 * rest of the record's machinery, not printed on the page. */
+		g_string_append(content, "<section class=\"card\"><div class=\"card-head\"><h2>Federation sharing</h2></div><div class=\"card-body\"><p>This record stays private unless explicitly granted. A grant names it by the stable identifier under All fields.</p><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></div></section>");
+	}
+
+	venture_stripe_web_settings_link(self, content, record, principal);
+	venture_mail_web_settings_link(self, content, record, principal);
+	if (G_OBJECT_TYPE(record) == VENTURE_TYPE_ORGANIZATION && venture_context_module_enabled(self->context, "oidc")) {
+		static const gint oidc_roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+		if (venture_access_policy_has_organization_role(venture_database_get_access_policy(venture_context_get_database(self->context)),
+			principal, venture_entity_get_id(record), oidc_roles, G_N_ELEMENTS(oidc_roles)))
+			g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a></p>", venture_entity_get_id(record));
+	}
+	venture_attribution_web_settings_link(self, content, record, principal);
+	venture_billing_web_buttons(self, content, record, principal);
+	venture_web_append_record_actions(self, content, record, principal);
+	venture_bank_append_actions(content, record);
+	venture_cutover_append_actions(content, record);
+	venture_setup_append_actions(content, record);
+	if (venture_context_module_enabled(self->context, "backup"))
+		venture_backup_append_actions(content, record);
+	venture_web_sequence_panel(self, content, principal, record);
+
+	/* Everything that points at this record, then what it is linked to
+	 * and what the knowledge base says about it: context, after the
+	 * record's own business. */
+	venture_web_append_related(self, content, record);
+
+	/* A link is not offered on a link; the audit log is not linkable. */
+	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
+	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
+		venture_web_append_links(self, content, record);
+
+	if (venture_web_module_enabled(self, "kb"))
+		venture_web_append_knowledge(self, content, record);
 
 	/* What happened, last. The audit log has its own page; this is the
 	 * record's own story, with its conversation woven in. */
@@ -10240,16 +10319,11 @@ venture_web_ui_tickets(
 				venture_entity_get_id(ticket));
 			venture_html_escape_append(content, title);
 			g_string_append(content, "</a></td><td>");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_TICKET_KIND,
-				                     (gint)ticket_kind));
+			venture_web_append_nick(content, VENTURE_TYPE_TICKET_KIND, (gint)ticket_kind);
 			g_string_append(content, "</td><td>");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
-				                     (gint)status));
+			venture_web_append_nick(content, VENTURE_TYPE_TICKET_STATUS, (gint)status);
 			g_string_append(content, "</td><td>");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority));
+			venture_web_append_nick(content, VENTURE_TYPE_PRIORITY, (gint)priority);
 			g_string_append(content, "</td><td>");
 			venture_html_escape_append(content, assignee);
 			g_string_append(content, "</td><td>");
@@ -10665,8 +10739,12 @@ venture_web_ui_entities(
 		g_string_append(content, "<tr><td>");
 		venture_html_escape_append(content, name);
 		g_string_append(content, "</td><td>");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_ORGANIZATION_KIND, (gint)kind));
+		{
+			g_autofree gchar *form = venture_web_label_from_name(
+				venture_enum_to_nick(VENTURE_TYPE_ORGANIZATION_KIND, (gint)kind));
+
+			venture_html_escape_append(content, form);
+		}
 		g_string_append(content, "</td><td class=\"muted\">");
 
 		if (0 != parent)
@@ -10780,8 +10858,10 @@ venture_web_ui_entities(
 
 		for (j = 0; (NULL != nicks) && (NULL != nicks[j]); j++)
 		{
+			g_autofree gchar *shown = venture_web_label_from_name(nicks[j]);
+
 			g_string_append_printf(content, "<option value=\"%s\">", nicks[j]);
-			venture_html_escape_append(content, nicks[j]);
+			venture_html_escape_append(content, shown);
 			g_string_append(content, "</option>");
 		}
 	}
@@ -11267,8 +11347,7 @@ venture_web_ui_account(
 		venture_html_escape_append(content,
 			venture_string_is_empty(display_name) ? "—" : display_name);
 		g_string_append(content, "</dd><dt>Role</dt><dd>");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
+		venture_web_append_nick(content, VENTURE_TYPE_USER_ROLE, (gint)role);
 		g_string_append(content, "</dd></dl>");
 
 		g_string_append_printf(content,
@@ -11543,8 +11622,7 @@ venture_web_ui_tokens(
 		venture_html_escape_append(content,
 			venture_string_is_empty(prefix) ? "\xe2\x80\x94" : prefix);
 		g_string_append(content, "\xe2\x80\xa6</code></td><td>");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
+		venture_web_append_nick(content, VENTURE_TYPE_USER_ROLE, (gint)role);
 		g_string_append(content, "</td><td class=\"muted small\">");
 
 		if (NULL != expires_at)
@@ -11785,8 +11863,8 @@ venture_web_append_knowledge(
 	links = venture_kb_crossref_links_for(kb, type_name, record_id, NULL);
 
 	g_string_append(content,
-		"<div class=\"card\"><div class=\"card-body\">"
-		"<div class=\"section-head\"><h2>Related knowledge</h2>");
+		"<div class=\"card\"><div class=\"card-head\">"
+		"<h2>Related knowledge</h2>");
 
 	/*
 	 * The button is offered even when links exist, because the record's
@@ -11797,7 +11875,7 @@ venture_web_append_knowledge(
 		"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/crossref/%s/%"
 		G_GINT64_FORMAT "\" hx-swap=\"none\" "
 		"hx-on::after-request=\"window.location.reload()\">"
-		"%s</button></div>",
+		"%s</button></div><div class=\"card-body\">",
 		type_name, record_id,
 		((NULL != links) && (links->len > 0)) ? "Recompute" : "Find related");
 
@@ -12821,6 +12899,7 @@ venture_web_ui_settings(
 		"<div class=\"card\"><div class=\"card-body\">"
 		"<div class=\"metric-label\">Database</div>"
 		"<div class=\"metric-value small\">");
+	/* A product name, not a phrase: "sqlite" stays as the program says it. */
 	venture_html_escape_append(content,
 		venture_enum_to_nick(VENTURE_TYPE_DATABASE_BACKEND,
 			(gint)venture_database_get_backend(
@@ -14804,9 +14883,7 @@ venture_web_ui_harness(
 				(VENTURE_AGENT_SESSION_STATE_FAILED == state) ? "negative"
 					: (VENTURE_AGENT_SESSION_STATE_WORKING == state)
 						? "warning" : "");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_AGENT_SESSION_STATE,
-				                     (gint)state));
+			venture_web_append_nick(content, VENTURE_TYPE_AGENT_SESSION_STATE, (gint)state);
 			g_string_append_printf(content, "</span></td>"
 				"<td class=\"num\">%" G_GINT64_FORMAT "</td></tr>", turns);
 		}
@@ -19371,8 +19448,7 @@ venture_web_ui_ticket_runs(
 			             NULL);
 
 			g_string_append(content, "<li><span class=\"badge\">");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_FORGE_RUN_STATE, state));
+			venture_web_append_nick(content, VENTURE_TYPE_FORGE_RUN_STATE, state);
 			g_string_append(content, "</span> ");
 
 			if (!venture_string_is_empty(branch))
@@ -21771,8 +21847,7 @@ venture_web_append_release_block(
 			             NULL);
 
 			g_string_append(content, "<li><span class=\"badge\">");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_ISSUE_TYPE, (gint)issue_type));
+			venture_web_append_nick(content, VENTURE_TYPE_ISSUE_TYPE, (gint)issue_type);
 			g_string_append_printf(content,
 				"</span> <a href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
 				venture_entity_get_id(ticket));
@@ -22480,8 +22555,7 @@ venture_web_factory_milestone_row(
 	                                       &total, &done);
 
 	g_string_append(content, "<li><span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_MILESTONE_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_MILESTONE_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/milestone/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22517,8 +22591,7 @@ venture_web_factory_release_row(
 	             "released-at", &released, NULL);
 
 	g_string_append(content, "<li><span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_RELEASE_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_RELEASE_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/release/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22558,8 +22631,7 @@ venture_web_factory_build_row(
 	     : (VENTURE_BUILD_STATUS_FAILED == status) ? " negative" : "";
 
 	g_string_append_printf(content, "<li><span class=\"badge%s\">", tone);
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_BUILD_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_BUILD_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/build/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22603,8 +22675,7 @@ venture_web_factory_environment_row(
 	g_object_get(record, "name", &name, "kind", &kind, NULL);
 
 	g_string_append(content, "<li><span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_ENVIRONMENT_KIND, (gint)kind));
+	venture_web_append_nick(content, VENTURE_TYPE_ENVIRONMENT_KIND, (gint)kind);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/environment/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22660,11 +22731,9 @@ venture_web_factory_incident_row(
 		((VENTURE_INCIDENT_SEVERITY_SEV1 == severity) ||
 		 (VENTURE_INCIDENT_SEVERITY_SEV2 == severity)) ? " negative"
 		                                              : " warning");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_INCIDENT_SEVERITY, (gint)severity));
+	venture_web_append_nick(content, VENTURE_TYPE_INCIDENT_SEVERITY, (gint)severity);
 	g_string_append(content, "</span> <span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_INCIDENT_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_INCIDENT_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/incident/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -23355,8 +23424,7 @@ venture_web_ui_dashboards(
 		venture_html_escape_append(content,
 			!venture_string_is_empty(description) ? description : "");
 		g_string_append(content, "</p><p><span class=\"badge\">");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_DASHBOARD_PURPOSE, (gint)purpose));
+		venture_web_append_nick(content, VENTURE_TYPE_DASHBOARD_PURPOSE, (gint)purpose);
 		g_string_append(content, "</span>");
 
 		if (home)

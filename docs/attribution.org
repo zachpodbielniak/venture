@@ -74,6 +74,14 @@ identity is a conflict. If permission expired before an initial acceptance,
 ask the person to submit a fresh envelope without analytics; do not silently
 rewrite the payload of an uncertain delivery.
 
+An accepted submission keeps who wrote in and what they wrote --
+=sender_name=, =sender_email= and =message= -- on the submission itself, and
+its page is titled by the sender. When the address matches a lead, contact or
+company that already exists the capture merges into it and changes nothing on
+that record, so the submission is where the message is kept; the matched
+record's history also records the message beside the source. Submissions
+accepted before this carry no stored message.
+
 Analytics permission does not grant email permission. Optional marketing
 permission is a separate explicit object passed to =createSubmission=:
 

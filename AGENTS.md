@@ -868,3 +868,34 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
 - Record types opt in through class metadata; grants enumerate exact UUIDs and fields. Never infer sharing from an organization, a parent record or a reference. Sensitive fields and credential-bearing URIs remain excluded.
 - Replicas are durable isolated working copies, not local accounting rows. Preserve unresolved three-way conflicts and local versions across every network call; never mutate a merge base via `json_node_copy()` because JSON-GLib shares nested objects.
 - Reconnect runs on the main context, never a database worker. Peer or grant revocation is checked again on each request. Test the actual HTTPS path with `test-federation`, including outages, restart, replay, response proofs and local authentication boundaries.
+
+## The record view
+
+- **A page is derived from what each field is for, not from the field
+  list.** `venture_field_spec_get_role()` classifies every field -- status,
+  content, fact, technical, structured -- and the record page, the list's
+  columns and the form's groups all read it
+  (`src/web/venture-web-record-view.inc`). Never render a type's fields by
+  hand, and never add a per-type presentation table: mark machinery with
+  `VENTURE_COLUMN_FLAG_TECHNICAL` (or name it like machinery) and name the
+  type with `venture_entity_class_set_labels()`.
+- **Technical is not sensitive.** A technical field is folded under "All
+  fields" and "Advanced"; a sensitive one is never rendered at all, folded
+  or not. The classifier returns technical for both, so every renderer
+  still checks `VENTURE_COLUMN_FLAG_SENSITIVE` itself.
+- **Nothing on a page by default shows an internal name, a raw UUID or an
+  empty row.** Type pickers use `venture_web_append_type_option()`; the
+  display-name fallback is the type's label ("Contact #4"), not its table.
+  `tests/test-record-view.c` pins the submission page for this.
+- **The type's own block comes before the generic panels.** On the detail
+  page an invoice's lines, a ticket's desk and a release's changelog are
+  appended before actions, related records, links and activity. A new
+  type-specific block goes in that first group.
+- **A new sidebar page is filed under a question.** Appending a row to the
+  link table draws it under the heading it carries; appending its path to
+  one of the `venture_web_nav_*[]` lists files it under Money in, Money
+  out, Customers, Support, Growth, Bank or Books. `test-plugin` and
+  `test-auth` hold the map.
+- **Captions are sentence case.** Field names beside a value or above an
+  input use the caption register in both looks; the uppercase micro
+  register is for chrome only. Both looks must be checked.

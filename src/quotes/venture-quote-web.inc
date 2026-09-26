@@ -47,7 +47,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	g_string_append(html, "</style></head><body><h1>Quote ");
 	venture_html_escape_append(html, number);
 	g_string_append_printf(html, "</h1><p>Revision %" G_GINT64_FORMAT " · ", revision);
-	venture_html_escape_append(html, venture_enum_to_nick(venture_quote_status_get_type(), state));
+	{ g_autofree gchar *label = venture_web_label_from_name(venture_enum_to_nick(venture_quote_status_get_type(), state)); venture_html_escape_append(html, label); }
 	g_string_append(html, "</p>");
 	if (until != NULL)
 	{
