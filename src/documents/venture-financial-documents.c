@@ -517,6 +517,7 @@ receipt_sender_free(gpointer data)
 	{
 		g_signal_handler_disconnect(sender->database, sender->saved_handler);
 		g_signal_handler_disconnect(sender->database, sender->finished_handler);
+		g_object_unref(sender->database);
 	}
 	g_array_unref(sender->pending);
 	g_free(sender);
@@ -670,7 +671,12 @@ venture_financial_documents_install_receipts(VentureContext *context)
 
 	sender = g_new0(VentureReceiptSender, 1);
 	sender->context = context;
-	sender->database = venture_context_get_database(context);
+	/*
+	 * A reference of our own: the context's data is freed after the
+	 * context has dropped its database, and disconnecting from a finalised
+	 * object is a crash in whichever test tears down last.
+	 */
+	sender->database = g_object_ref(venture_context_get_database(context));
 	sender->pending = g_array_new(FALSE, FALSE, sizeof(gint64));
 	sender->saved_handler = g_signal_connect(sender->database, "entity-saved",
 		G_CALLBACK(receipt_on_saved), sender);
