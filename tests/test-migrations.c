@@ -82,6 +82,21 @@ query_text(VentureDatabase *database, const gchar *sql)
 	return g_strdup(orm_row_get_string(orm_result_get_row(result), 0));
 }
 
+/* Whether @table exists, through the same introspection startup uses. */
+static gboolean
+table_exists(VentureDatabase *database, const gchar *table)
+{
+	g_autoptr(OrmInspector) inspector = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean exists;
+
+	inspector = orm_inspector_new(venture_database_get_connection(database), &error);
+	g_assert_no_error(error);
+	exists = orm_inspector_has_table(inspector, table, NULL, &error);
+	g_assert_no_error(error);
+	return exists;
+}
+
 /*
  * API token names written into the audit log and the inbox before actors
  * were named by number are rewritten on upgrade: a name one token holds
@@ -560,10 +575,92 @@ test_quote_subscriptions_and_usage(void)
 		context = venture_context_new(config, bare);
 		g_assert_true(venture_database_migrate(bare, venture_entity_registry_get_default(), &error));
 		g_assert_no_error(error);
-		g_clear_object(&context);
+		/* Otherwise this passes just as well with both modules on. */
+		g_assert_false(table_exists(bare, "plan_prices"));
+		g_assert_false(table_exists(bare, "quote_lines"));
+		/* While the context lives: it is what lifts the registry mask,
+		 * which would otherwise hide billing from every later test. */
 		venture_config_set_module_enabled(config, "billing", TRUE);
 		venture_config_set_module_enabled(config, "quotes", TRUE);
+		g_clear_object(&context);
 	}
+}
+
+/*
+ * An install that used billing and Stripe and then switched both off
+ * still holds their tables, and startup must still succeed. The field
+ * tables of a hidden type are what gain final_invoice_id and
+ * method_label; if those tables were left behind, 000678's and 000690's
+ * UPDATEs would name a column that does not exist and the server would
+ * refuse to start. Worse, recording the scripts as skipped would mean the
+ * final-invoice backfill never ran once billing came back on.
+ */
+static void
+test_disabled_module_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *final_invoice = NULL, *recurring_invoice = NULL, *labels = NULL;
+	gboolean ok;
+
+	/* Stripe is off by default, so its tables need asking for. */
+	g_object_set(config, "stripe-enabled", TRUE, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	/* The shape of a database from before 678: neither column, and
+	 * neither script recorded. */
+	ok = venture_database_execute(database,
+		"INSERT INTO subscription_events (uuid, organization_id, created_at, updated_at, version, "
+		"subscription_id, kind, to_status, invoice_id) VALUES "
+		"('00000000-0000-4000-8000-000000000041', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 77, 'renewed', 'active', 701),"
+		" ('00000000-0000-4000-8000-000000000042', 1, '2026-01-15T00:00:00Z', '2026-01-15T00:00:00Z', 1, 77, 'cancelled', 'cancelled', 0);"
+		"INSERT INTO billing_requests (uuid, organization_id, created_at, updated_at, version, "
+		"subscription_id, action, processed, invoice_id, at) VALUES "
+		"('00000000-0000-4000-8000-000000000043', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 77, 'renew', 1, 701, '2026-01-01T00:00:00Z'),"
+		" ('00000000-0000-4000-8000-000000000044', 1, '2026-01-15T00:00:00Z', '2026-01-15T00:00:00Z', 1, 77, 'cancel', 1, 702, '2026-01-15T00:00:00Z');"
+		"DROP INDEX IF EXISTS idx_subscription_events_final_invoice_id;"
+		"ALTER TABLE subscription_events DROP COLUMN final_invoice_id;"
+		"ALTER TABLE stripe_authorizations DROP COLUMN method_label;"
+		"DELETE FROM schema_migrations WHERE version >= 678", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	g_clear_object(&context);
+	g_clear_object(&database);
+
+	/* Upgrade with both modules off. */
+	venture_config_set_module_enabled(config, "billing", FALSE);
+	g_object_set(config, "stripe-enabled", FALSE, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"subscription_event"), ==, G_TYPE_INVALID);
+	ok = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	/* The backfill ran now, from the rows that were there: the one
+	 * processed cancellation whose invoice no event already owns. */
+	final_invoice = query_text(database,
+		"SELECT CAST(final_invoice_id AS TEXT) FROM subscription_events WHERE uuid = '00000000-0000-4000-8000-000000000042'");
+	recurring_invoice = query_text(database,
+		"SELECT CAST(COALESCE(final_invoice_id, 0) AS TEXT) FROM subscription_events WHERE uuid = '00000000-0000-4000-8000-000000000041'");
+	g_assert_cmpstr(final_invoice, ==, "702");
+	g_assert_cmpstr(recurring_invoice, ==, "0");
+	labels = query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM pragma_table_info('stripe_authorizations') WHERE name = 'method_label'");
+	g_assert_cmpstr(labels, ==, "1");
+	/* Put back what the defaults say, while the context can lift it. */
+	venture_config_set_module_enabled(config, "billing", TRUE);
+	g_clear_object(&context);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
 }
 
 int
@@ -577,6 +674,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
 	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
 	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
+	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);
