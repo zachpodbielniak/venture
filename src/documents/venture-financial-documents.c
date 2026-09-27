@@ -850,14 +850,6 @@ thermal_money(
 	g_string_append_printf(body, "%s: %s\n", label, shown);
 }
 
-/**
- * venture_financial_documents_thermal:
- * @context: application context
- * @record: readable payment or invoice
- * @printer: configured layout defaults
- * @error: return location for an error
- * Returns: (transfer full) (nullable): receipt or invoice summary ESC/POS bytes
- */
 GBytes *
 venture_financial_documents_thermal(
 	VentureContext			*context,

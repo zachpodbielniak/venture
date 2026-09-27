@@ -551,11 +551,6 @@ printer_free(
 	g_free(printer);
 }
 
-/**
- * venture_config_get_printers:
- * @self: configuration
- * Returns: (transfer none) (element-type VenturePrinter): configured printers
- */
 const GPtrArray *
 venture_config_get_printers(
 	VentureConfig	*self
@@ -563,11 +558,6 @@ venture_config_get_printers(
 	return self->printers;
 }
 
-/**
- * venture_config_get_default_printer:
- * @self: configuration
- * Returns: (transfer none): default name, or an empty string
- */
 const gchar *
 venture_config_get_default_printer(
 	VentureConfig	*self
@@ -575,13 +565,6 @@ venture_config_get_default_printer(
 	return self->default_printer;
 }
 
-/**
- * venture_config_find_printer:
- * @self: configuration
- * @name: (nullable): configured name; empty selects the default
- * @error: return location for an error
- * Returns: (transfer none) (nullable): printer, or NULL on refusal
- */
 const VenturePrinter *
 venture_config_find_printer(
 	VentureConfig	*self,
