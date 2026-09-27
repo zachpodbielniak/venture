@@ -159,6 +159,33 @@ venture_venture_type_validate_venture(
 );
 
 /**
+ * venture_venture_type_validate_changes:
+ * @self: a #VentureVentureType
+ * @venture: the venture about to be saved
+ * @previous: (nullable): the venture as stored, or %NULL to check every
+ *   declared field
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Like venture_venture_type_validate_venture(), but only the declared
+ * fields whose attribute differs from @previous are checked. This is what
+ * the save validator uses when the venture keeps its type: an attribute
+ * that was already invalid when it was stored does not block an unrelated
+ * edit, while one this save writes is held to its declaration.
+ *
+ * A numeric field's text must parse as a number (a whole one for an
+ * integer field) before its `min` and `max` are compared.
+ *
+ * Returns: %TRUE if every checked field satisfies its declaration
+ */
+gboolean
+venture_venture_type_validate_changes(
+	VentureVentureType	 *self,
+	VentureEntity		 *venture,
+	VentureEntity		 *previous,
+	GError			**error
+);
+
+/**
  * venture_venture_type_to_json:
  * @self: a #VentureVentureType
  *

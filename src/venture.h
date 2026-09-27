@@ -256,6 +256,7 @@
 #include "core/venture-routing.h"
 #include "core/venture-currency.h"
 #include "core/venture-category.h"
+#include "core/venture-venture-type-check.h"
 #include "billing/venture-billing-service.h"
 #include "billing/venture-billing-usage.h"
 #include "billing/venture-billing-reports.h"

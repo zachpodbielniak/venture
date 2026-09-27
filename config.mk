@@ -473,7 +473,8 @@ VENDOR_SHARED_LIBS := $(ORM_GLIB_SHARED) $(AI_GLIB_SHARED) $(HTMX_GLIB_SHARED)
 # test-one` may not.
 TEST_CFLAGS = $(CFLAGS) -I$(CURDIR)/tests \
                -DVENTURE_TEST_FIXTURES=\"$(CURDIR)/tests/fixtures\" \
-               -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\"
+               -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\" \
+               -DVENTURE_TEST_VENTURE_TYPES=\"$(CURDIR)/data/venture-types\"
 TEST_LDFLAGS = $(LDFLAGS)
 
 # ---------------------------------------------------------------------------

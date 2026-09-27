@@ -1,0 +1,60 @@
+# A venture that trades inside a virtual economy: a game world's auction
+# house, a platform's points or credits, a server's in-world market.
+#
+# Nothing here is specific to one game. The money is a currency record the
+# install defines (see docs/currencies.org), named by code below; the
+# characters or accounts that hold stock are locations; the groups of goods
+# are a category tree. This type only records where the venture operates.
+
+name: virtual_economy
+label: Virtual economy
+description: Trading, crafting or farming inside a game world or a platform's own economy
+
+fields:
+  world:
+    type: string
+    label: World or title
+    help: The game or platform this venture operates in
+    required: true
+    indexed: true
+    order: 10
+
+  region:
+    type: string
+    label: Server or region
+    help: The shard, realm, server or region, where the economy is split
+    order: 20
+
+  currency_code:
+    type: string
+    label: Primary currency
+    help: The code of the currency record the economy trades in, e.g. GOLD
+    max_length: 16
+    order: 30
+
+  faction:
+    type: string
+    label: Faction or team
+    help: Where the market is split by side, guild or team
+    order: 40
+
+  handle:
+    type: string
+    label: Account or handle
+    help: The account the venture trades under; not a password or a key
+    order: 50
+
+  marketplace:
+    type: enum
+    label: Main marketplace
+    choices: [auction_house, player_trade, vendor, platform_store, mixed]
+    order: 60
+
+metrics:
+  - revenue
+  - sale_rate
+  - profit_per_hour
+
+report_columns:
+  - world
+  - region

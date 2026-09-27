@@ -667,17 +667,23 @@ venture_cli_request_bytes(
  * Turns `key=value` arguments into a JSON object for create and update.
  * Values stay strings; the server's decoder is tolerant and knows each
  * field's real type, so the CLI does not have to guess.
+ *
+ * `attributes.NAME=value` goes into the nested `attributes` object instead.
+ * That bag is where a venture type's declared fields live, and a type that
+ * declares a required one refuses a venture created without it -- so it has
+ * to be writable in the same request that creates the record, not patched
+ * on afterwards. It is generic: any record's attribute bag, no per-type verb.
  */
 static JsonNode *
 venture_cli_values_from_args(
 	gchar	**args,
 	gint	  first
 ){
-	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonObject) object = NULL;
+	JsonNode *root;
 	gint i;
 
-	builder = json_builder_new();
-	json_builder_begin_object(builder);
+	object = json_object_new();
 
 	for (i = first; (NULL != args) && (NULL != args[i]); i++)
 	{
@@ -688,13 +694,33 @@ venture_cli_values_from_args(
 		if ((NULL == parts[0]) || (NULL == parts[1]))
 			continue;
 
-		json_builder_set_member_name(builder, parts[0]);
-		json_builder_add_string_value(builder, parts[1]);
+		if (g_str_has_prefix(parts[0], "attributes.") &&
+		    ('\0' != parts[0][strlen("attributes.")]))
+		{
+			JsonObject *attributes;
+
+			if (!json_object_has_member(object, "attributes") ||
+			    !JSON_NODE_HOLDS_OBJECT(json_object_get_member(object,
+			                                                   "attributes")))
+			{
+				json_object_set_object_member(object, "attributes",
+				                              json_object_new());
+			}
+
+			attributes = json_object_get_object_member(object,
+			                                           "attributes");
+			json_object_set_string_member(attributes,
+				parts[0] + strlen("attributes."), parts[1]);
+			continue;
+		}
+
+		json_object_set_string_member(object, parts[0], parts[1]);
 	}
 
-	json_builder_end_object(builder);
+	root = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(root, object);
 
-	return json_builder_get_root(builder);
+	return root;
 }
 
 #include "payables/venture-payables-cli.inc"

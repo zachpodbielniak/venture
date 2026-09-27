@@ -1,0 +1,31 @@
+# Anything that is not a business: a household, a hobby, a club, a project
+# with a budget and a goal. VENTURE's money, stock, sessions and goals work
+# the same for these; this type only says what kind of thing it is.
+
+name: general
+label: General
+description: A household, a hobby, a club or a project -- anything that is not a business
+
+fields:
+  kind:
+    type: enum
+    label: Kind
+    choices: [household, hobby, club, project, personal, other]
+    order: 10
+
+  purpose:
+    type: string
+    label: Purpose
+    help: One line on what this is for
+    order: 20
+
+  members:
+    type: integer
+    label: Members
+    help: How many people share it, if anyone does
+    min: 0
+    order: 30
+
+metrics:
+  - spend
+  - goals_achieved

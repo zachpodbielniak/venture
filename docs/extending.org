@@ -52,6 +52,56 @@ metrics:
   - revenue_per_listing
 #+end_src
 
+Five ship in =data/venture-types/=: =books=, =etsy=, =newsletter=,
+=virtual_economy= (trading, crafting or farming inside a game world or a
+platform's own economy: the world, the server or region, the currency code,
+the faction, the account handle, the main marketplace) and =general=
+(anything that is not a business: a household, a hobby, a club, a project).
+[[file:examples/game-economy.org][The game-economy walkthrough]] uses
+=virtual_economy= from end to end.
+
+** The declarations are enforced at the save
+
+A venture names its type in =venture_type=, and the fields the type
+declares live in the venture's attribute bag. A =venture= save validator
+(=src/core/venture-venture-type-check.c=) holds every writer -- the form,
+the REST API, =venturectl=, an approved staged change, the assistant -- to
+what the YAML says:
+
+- =required= fields must be present and non-empty;
+- an =enum= value must be one of its =choices=;
+- an =integer= or =double= field's text must parse as a number (a whole one
+  for an integer) and fall within =min= and =max=;
+- =max_length= and =pattern= apply as they do to a compiled field.
+
+When the rules apply follows the reference rule: *what a save writes is
+checked, what it keeps is left alone*.
+
+- A venture created with a type, or moved to another, is checked against
+  every field the type declares.
+- A venture keeping its type has only the declared attributes whose value
+  this save changes checked. A venture stored before a field became
+  required, or before a choice was withdrawn, stays editable; the rule
+  bites when somebody writes that field.
+- A =venture_type= that is written and not registered is refused, naming
+  the registered ones. With plugins switched off nothing is loaded and
+  nothing can be judged, so any name is accepted; and a venture keeping a
+  type whose file has since been removed stays editable.
+
+Attributes are written in the same request as the rest of the record, so a
+type with a required field can be created in one step:
+
+#+begin_src sh
+venturectl create venture name="Silverfen auction house" \
+    venture_type=virtual_economy attributes.world="Evermoor Online" \
+    attributes.marketplace=auction_house
+#+end_src
+
+Over the REST API they are the nested =attributes= object:
+={"name": "...", "venture_type": "virtual_economy", "attributes": {"world":
+"Evermoor Online"}}=. A =PATCH= merges into the bag; a =null= value
+removes an attribute.
+
 * 2. A crispy script
 
 Drop a =.c= file into a plugin directory. crispy compiles it on demand and

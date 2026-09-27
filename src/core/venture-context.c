@@ -153,6 +153,10 @@ venture_context_new(
 	 * organization, and a category used only by the records it groups. */
 	venture_category_install(self);
 
+	/* A venture held to its declared type: the YAML's required, choices,
+	 * min and max, on every writer. */
+	venture_venture_type_check_install(self);
+
 	/* Listings and price observations: quantities that agree with the
 	 * outcome, a closing time that follows it, one currency per listing. */
 	venture_market_install(self);

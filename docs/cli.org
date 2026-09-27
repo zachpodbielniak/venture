@@ -61,7 +61,7 @@ venturectl forge settings ID < body.json # encrypted credentials, JSON on stdin
 venturectl forge verify ID               # record which account the token is
 venturectl list TYPE [key=value ...]     # list records, filtered
 venturectl get TYPE ID                   # fetch one
-venturectl create TYPE field=value ...   # create
+venturectl create TYPE field=value ...   # create; attributes.NAME=value fills the attribute bag
 venturectl update TYPE ID field=value    # change named fields
 venturectl delete TYPE ID                # soft delete
 venturectl report [NAME] [PERIOD]        # list reports, or run one

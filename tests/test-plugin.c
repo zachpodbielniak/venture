@@ -322,6 +322,251 @@ test_venture_type_to_json_describes_fields(
 	g_assert_cmpuint(json_array_get_length(fields), ==, 2);
 }
 
+/*
+ * A venture filed under the default organisation, typed, unsaved.
+ */
+static VentureVenture *
+typed_venture(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*type
+){
+	VentureVenture *venture;
+
+	venture = venture_venture_new();
+	g_object_set(venture, "name", name, "venture-type", type, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(venture),
+		venture_context_get_default_organization_id(fixture->context));
+
+	return venture;
+}
+
+/*
+ * Re-reads a saved venture, which is what the next writer starts from: the
+ * save bumped the version, and the attribute bag comes back from the row.
+ */
+static VentureVenture *
+reread_venture(
+	Fixture		*fixture,
+	VentureVenture	*venture
+){
+	g_autoptr(GError) error = NULL;
+	VentureEntity *fresh;
+
+	fresh = venture_database_get(fixture->database, VENTURE_TYPE_VENTURE,
+		venture_entity_get_id(VENTURE_ENTITY(venture)), &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(fresh);
+
+	return VENTURE_VENTURE(fresh);
+}
+
+static void
+test_venture_type_enforced_at_save(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	VentureVentureTypeRegistry *registry;
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(VentureVenture) retired = NULL;
+	g_autoptr(VentureVenture) fresh = NULL;
+	g_autoptr(GError) error = NULL;
+
+	/*
+	 * Before anything is registered -- plugins off, say -- a type is not
+	 * something the save can judge, so an unregistered one is accepted.
+	 */
+	retired = typed_venture(fixture, "Old shop", "retired");
+	g_assert_true(venture_database_save(fixture->database,
+		VENTURE_ENTITY(retired), NULL, &error));
+	g_assert_no_error(error);
+
+	registry = venture_context_get_venture_types(fixture->context);
+	venture_venture_type_registry_add(registry,
+		venture_venture_type_new_from_yaml(
+			"name: shop\n"
+			"fields:\n"
+			"  shop_name:\n"
+			"    type: string\n"
+			"    required: true\n"
+			"  material:\n"
+			"    type: enum\n"
+			"    choices: [wood, acrylic]\n"
+			"  royalty:\n"
+			"    type: double\n"
+			"    min: 0\n"
+			"    max: 100\n", NULL));
+
+	/*
+	 * The YAML's "required" is a promise every writer is held to. If this
+	 * save succeeds, the validator is not installed and every shipped type
+	 * is decoration: the function that checks it had no caller.
+	 */
+	venture = typed_venture(fixture, "Shop", "shop");
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(venture), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	venture_entity_set_attribute(VENTURE_ENTITY(venture), "shop_name",
+	                             "Woodwork");
+	g_assert_true(venture_database_save(fixture->database,
+		VENTURE_ENTITY(venture), NULL, &error));
+	g_assert_no_error(error);
+
+	/* A choice outside the declared list. */
+	fresh = reread_venture(fixture, venture);
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "material",
+	                             "unobtainium");
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_clear_object(&fresh);
+
+	/*
+	 * A number past its bound, and text that is no number at all. The
+	 * attribute bag is a string table, and the field spec reads a string
+	 * as no number, so min and max were never applied before the text
+	 * was parsed first.
+	 */
+	fresh = reread_venture(fixture, venture);
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "royalty", "150");
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "royalty", "lots");
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* "nan" parses as a double and compares false against both bounds,
+	 * so it would slip past min and max if it were not refused first. */
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "royalty", "nan");
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "royalty", "70");
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "material", "wood");
+	g_assert_true(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&fresh);
+
+	/*
+	 * The type grows a required field after the venture was saved. An
+	 * edit that does not touch it still saves -- the reference rule:
+	 * what the save writes is checked, what it keeps is left alone --
+	 * or one new line in a YAML file would lock every existing venture.
+	 */
+	venture_venture_type_registry_add(registry,
+		venture_venture_type_new_from_yaml(
+			"name: shop\n"
+			"fields:\n"
+			"  shop_name:\n"
+			"    type: string\n"
+			"    required: true\n"
+			"  editor:\n"
+			"    type: string\n"
+			"    required: true\n", NULL));
+
+	fresh = reread_venture(fixture, venture);
+	g_object_set(fresh, "description", "Renamed the shelf", NULL);
+	venture_entity_set_attribute(VENTURE_ENTITY(fresh), "shop_name",
+	                             "Woodwork & Co");
+	g_assert_true(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&fresh);
+
+	/* A venture keeping an unregistered type it already had is editable;
+	 * writing one that is not registered is refused. */
+	fresh = reread_venture(fixture, retired);
+	g_object_set(fresh, "description", "Still here", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&fresh);
+
+	fresh = reread_venture(fixture, retired);
+	g_object_set(fresh, "venture-type", "nosuch", NULL);
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "shop"));
+	g_clear_error(&error);
+
+	/* Moving to a registered type applies all its rules at once. */
+	g_object_set(fresh, "venture-type", "shop", NULL);
+	g_assert_false(venture_database_save(fixture->database,
+		VENTURE_ENTITY(fresh), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_venture_type_shipped_definitions_load(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureVentureTypeRegistry) registry = NULL;
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureVentureType *type;
+	guint loaded;
+
+	/*
+	 * Every file in data/venture-types parses. The directory is loaded at
+	 * startup with a warning for a broken file, which the suite makes
+	 * fatal -- so a type added with a typo fails here rather than
+	 * silently vanishing from an install.
+	 */
+	registry = venture_venture_type_registry_new();
+	loaded = venture_venture_type_registry_load_directory(registry,
+		VENTURE_TEST_VENTURE_TYPES, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(loaded, >=, 5);
+
+	g_assert_nonnull(venture_venture_type_registry_lookup(registry, "books"));
+	g_assert_nonnull(venture_venture_type_registry_lookup(registry,
+	                                                      "newsletter"));
+	g_assert_nonnull(venture_venture_type_registry_lookup(registry, "general"));
+
+	type = venture_venture_type_registry_lookup(registry, "virtual_economy");
+	g_assert_nonnull(type);
+
+	/* The world is what a virtual-economy venture is about; the demo
+	 * seeds one with it, and without it the save is refused. */
+	venture = venture_venture_new();
+	g_object_set(venture, "name", "Auction house", NULL);
+	g_assert_false(venture_venture_type_validate_venture(type,
+		VENTURE_ENTITY(venture), &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	venture_entity_set_attribute(VENTURE_ENTITY(venture), "world",
+	                             "Evermoor Online");
+	venture_entity_set_attribute(VENTURE_ENTITY(venture), "currency_code",
+	                             "GOLD");
+	venture_entity_set_attribute(VENTURE_ENTITY(venture), "marketplace",
+	                             "auction_house");
+	g_assert_true(venture_venture_type_validate_venture(type,
+		VENTURE_ENTITY(venture), &error));
+	g_assert_no_error(error);
+
+	/* The shipped numeric bounds are real: books caps its royalty. */
+	type = venture_venture_type_registry_lookup(registry, "books");
+	venture_entity_set_attribute(VENTURE_ENTITY(venture), "royalty_rate",
+	                             "170");
+	g_assert_false(venture_venture_type_validate_venture(type,
+		VENTURE_ENTITY(venture), &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 /* ==========================================================================
  * The plugin manager
  * ========================================================================== */
@@ -1808,6 +2053,9 @@ main(
 	    test_venture_type_registry_missing_directory_is_not_an_error);
 	ADD("/venture-type/to-json-describes-fields",
 	    test_venture_type_to_json_describes_fields);
+	ADD("/venture-type/enforced-at-save", test_venture_type_enforced_at_save);
+	ADD("/venture-type/shipped-definitions-load",
+	    test_venture_type_shipped_definitions_load);
 
 	ADD("/plugin/manager-loads-venture-types",
 	    test_plugin_manager_loads_venture_types);

@@ -305,21 +305,102 @@ venture_venture_type_get_metrics(VentureVentureType *self)
 	return (const gchar * const *)self->metrics;
 }
 
+/*
+ * Checks one declared field against the text its attribute holds.
+ *
+ * An attribute is always text -- the bag is a string table -- so a numeric
+ * declaration is parsed here before its bounds are compared. Handing the
+ * field spec the raw string instead is what the first version did, and a
+ * string is not a number to venture_field_spec_value_as_double(): "min" and
+ * "max" were declared in every shipped type and enforced in none. A value
+ * that does not parse as a number is refused rather than skipped, for the
+ * same reason.
+ */
+static gboolean
+venture_venture_type_validate_field(
+	VentureFieldSpec	 *spec,
+	const gchar		 *stored,
+	GError			**error
+){
+	g_auto(GValue) value = G_VALUE_INIT;
+	VentureFieldKind kind;
+
+	kind = venture_field_spec_get_kind(spec);
+
+	if (((VENTURE_FIELD_KIND_DOUBLE == kind) ||
+	     (VENTURE_FIELD_KIND_INTEGER == kind)) &&
+	    !venture_string_is_empty(stored))
+	{
+		gchar *end;
+		gdouble number;
+
+		end = NULL;
+		number = g_ascii_strtod(stored, &end);
+
+		while ((NULL != end) && g_ascii_isspace(*end))
+			end++;
+
+		/* "nan" and "inf" parse; neither is a count or a measure. The
+		 * difference of a value with itself is 0 only when it is
+		 * finite, and the integer test casts only a value that fits,
+		 * since casting one that does not is undefined. */
+		if ((NULL == end) || (end == stored) || ('\0' != *end) ||
+		    ((number - number) != 0.0) ||
+		    ((VENTURE_FIELD_KIND_INTEGER == kind) &&
+		     ((number > 9.0e18) || (number < -9.0e18) ||
+		      (number != (gdouble)(gint64)number))))
+		{
+			venture_set_error_validation(error,
+				venture_field_spec_get_label(spec),
+				(VENTURE_FIELD_KIND_INTEGER == kind)
+					? "must be a whole number"
+					: "must be a number");
+			return FALSE;
+		}
+
+		/* The required check has already been answered by the text
+		 * being non-empty; what remains is the bounds. */
+		g_value_init(&value, G_TYPE_DOUBLE);
+		g_value_set_double(&value, number);
+
+		return venture_field_spec_validate(spec, &value, error);
+	}
+
+	g_value_init(&value, G_TYPE_STRING);
+	g_value_set_string(&value, stored);
+
+	return venture_field_spec_validate(spec, &value, error);
+}
+
 gboolean
 venture_venture_type_validate_venture(
 	VentureVentureType	 *self,
 	VentureEntity		 *venture,
 	GError			**error
 ){
+	g_return_val_if_fail(VENTURE_IS_VENTURE_TYPE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(venture), FALSE);
+
+	return venture_venture_type_validate_changes(self, venture, NULL, error);
+}
+
+gboolean
+venture_venture_type_validate_changes(
+	VentureVentureType	 *self,
+	VentureEntity		 *venture,
+	VentureEntity		 *previous,
+	GError			**error
+){
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_VENTURE_TYPE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(venture), FALSE);
+	g_return_val_if_fail((NULL == previous) || VENTURE_IS_ENTITY(previous),
+	                     FALSE);
 
 	for (i = 0; i < self->fields->len; i++)
 	{
 		VentureFieldSpec *spec;
-		g_auto(GValue) value = G_VALUE_INIT;
 		const gchar *stored;
 
 		spec = g_ptr_array_index(self->fields, i);
@@ -334,10 +415,20 @@ venture_venture_type_validate_venture(
 		stored = venture_entity_get_attribute(venture,
 			venture_field_spec_get_name(spec));
 
-		g_value_init(&value, G_TYPE_STRING);
-		g_value_set_string(&value, stored);
+		/*
+		 * Only what this save writes. A field keeping the value it
+		 * already had is left alone -- the reference rule -- so a
+		 * venture saved before its type declared a field required, or
+		 * before a choice was withdrawn, stays editable rather than
+		 * refusing every later save until somebody fixes a field they
+		 * never touched.
+		 */
+		if ((NULL != previous) &&
+		    (0 == g_strcmp0(stored, venture_entity_get_attribute(previous,
+		                         venture_field_spec_get_name(spec)))))
+			continue;
 
-		if (!venture_field_spec_validate(spec, &value, error))
+		if (!venture_venture_type_validate_field(spec, stored, error))
 			return FALSE;
 	}
 
