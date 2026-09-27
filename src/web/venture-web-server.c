@@ -5939,7 +5939,6 @@ venture_web_ui_list(
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
-	guint shown;
 	guint i;
 	guint j;
 
@@ -6117,7 +6116,6 @@ venture_web_ui_list(
 			       "data-bulk-all title=\"Select all\"></th>" : "");
 	}
 
-	shown = 0;
 	current_order = htmx_request_get_query_param(request, "order");
 
 	/* What somebody scans this list for; see venture_web_list_columns().
@@ -6190,7 +6188,6 @@ venture_web_ui_list(
 			g_string_append(content, " \xe2\x96\xbc");
 
 		g_string_append(content, "</a></th>");
-		shown++;
 	}
 
 	g_string_append(content, "</tr></thead><tbody>");
@@ -6200,7 +6197,6 @@ venture_web_ui_list(
 		VentureEntity *record;
 
 		record = g_ptr_array_index(records, j);
-		shown = 0;
 
 		g_string_append_printf(content, "<tr data-href=\"/e/%s/%"
 		                       G_GINT64_FORMAT "\">",
