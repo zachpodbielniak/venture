@@ -23,7 +23,9 @@ When billing is on, the portal page also lists the invited customer's own
 subscriptions: plan and price (and seats, for a per-seat price), its state,
 the next renewal date and what that invoice will be -- from
 =venture_billing_service_next_invoice()=, the same figure the operator's
-page and the price-change notice give -- any switch due at renewal, and
+page and the price-change notice give, read "plus usage" on a metered
+price because the period's usage is only known when it closes -- any
+switch due at renewal, and
 the invoices it has issued with what is still owed on each.
 
 A live subscription (trialing, active or overdue, and not already ending)

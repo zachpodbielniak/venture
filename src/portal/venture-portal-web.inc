@@ -87,10 +87,17 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 		if (next != NULL && day != NULL)
 		{
 			g_autofree gchar *amount = venture_money_to_display_string(next, TRUE);
+			g_autofree gchar *unit = NULL;
+			/* The forecast is the base charge; the period's metered usage is
+			 * not known until it closes, and is invoiced with it. */
+			if (price != NULL)
+				g_object_get(price, "usage-unit", &unit, NULL);
 			g_string_append(html, "<p>Next renewal: ");
 			venture_html_escape_append(html, day);
 			g_string_append(html, ", for ");
 			venture_html_escape_append(html, amount);
+			if (!venture_string_is_empty(unit))
+				g_string_append(html, " plus usage");
 			g_string_append(html, ".</p>");
 		}
 		else if (ending && day != NULL)
@@ -108,6 +115,9 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 
 		/* The invoices it has issued, read from its events. */
 		events_query = venture_query_new(VENTURE_TYPE_SUBSCRIPTION_EVENT);
+		/* Scoped like every other portal query: a subscription id alone is
+		 * not the customer's organization. */
+		venture_query_set_organization(events_query, venture_entity_get_organization_id(sub));
 		venture_query_set_limit(events_query, 0);
 		venture_query_add_filter_int(events_query, "subscription-id", VENTURE_FILTER_OP_EQ, id, NULL);
 		venture_query_add_order(events_query, "id", VENTURE_SORT_DESCENDING, NULL);
