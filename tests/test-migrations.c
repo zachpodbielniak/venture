@@ -126,9 +126,13 @@ test_token_actor_names(void)
 		"INSERT INTO audit_entries (uuid, organization_id, created_at, updated_at, version, action, actor, target_type, target_id, approved_by) "
 		"VALUES ('00000000-0000-4000-8000-000000000011', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'token:deploy-bot', 'company', 1, 'token:laptop'),"
 		" ('00000000-0000-4000-8000-000000000012', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'token:laptop', 'company', 1, NULL),"
-		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner');"
+		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner'),"
+		/* A person may be called anything; only the exact prefix is a
+		 * token, on SQLite as on PostgreSQL. */
+		" ('00000000-0000-4000-8000-000000000014', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'Token:laptop', 'company', 1, NULL);"
 		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
-		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Changed', 'token:deploy-bot');"
+		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'token:deploy-bot assigned you: Fix token:deploy-bot', 'token:deploy-bot'),"
+		" ('00000000-0000-4000-8000-000000000022', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'token:laptop updated Human company', 'token:laptop');"
 		"UPDATE audit_entries SET target_type = 'api_token', target_id = 999, "
 		"target_label = 'historical private name', "
 		"diff = '{\"name\":{\"from\":\"old private name\",\"to\":\"historical private name\"},\"active\":{\"from\":true,\"to\":false}}' "
@@ -158,6 +162,24 @@ test_token_actor_names(void)
 	g_assert_cmpstr(shared, ==, "API token");
 	g_assert_cmpstr(person, ==, "owner");
 	g_assert_cmpstr(inbox, ==, expected);
+	{
+		g_autofree gchar *title = query_text(database,
+			"SELECT title FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000021'");
+		g_autofree gchar *shared_title = query_text(database,
+			"SELECT title FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000022'");
+		g_autofree gchar *shared_inbox = query_text(database,
+			"SELECT actor FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000022'");
+		g_autofree gchar *capitalised = query_text(database,
+			"SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000014'");
+		g_autofree gchar *assigned = g_strdup_printf("%s assigned you: Fix token:deploy-bot", expected);
+
+		/* The inbox title led with the same name. Only that leading
+		 * actor is the token's; the ticket's own label is left as is. */
+		g_assert_cmpstr(title, ==, assigned);
+		g_assert_cmpstr(shared_title, ==, "API token updated Human company");
+		g_assert_cmpstr(shared_inbox, ==, "API token");
+		g_assert_cmpstr(capitalised, ==, "Token:laptop");
+	}
 	approver = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000011'");
 	approving_person = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000013'");
 	g_assert_cmpstr(approver, ==, "API token");
@@ -400,7 +422,14 @@ test_postgresql(void)
 		"('pg-token-audit', 31, 'update', 'owner', 'api_token', 999, 'Private token name', "
 		"'{\"name\":{\"from\":\"Old private name\",\"to\":\"Private token name\"},\"active\":{\"from\":true,\"to\":false}}'),"
 		"('pg-company-audit', 31, 'update', 'owner', 'company', 888, 'Public company name', "
-		"'{\"name\":{\"from\":\"Old public name\",\"to\":\"Public company name\"}}');"
+		"'{\"name\":{\"from\":\"Old public name\",\"to\":\"Public company name\"}}'),"
+		/* Not JSON, on another type: 000685 must not cast it. Nor is a
+		 * capitalised prefix a token's, here or on SQLite. */
+		"('pg-plain-audit', 31, 'update', 'Token:pg-bot', 'company', 887, 'Plain', 'not json');"
+		"INSERT INTO api_tokens (uuid, organization_id, name, prefix, token_hash) VALUES "
+		"('pg-token', 31, 'pg-bot', 'pgpgpgpg', 'pg-hash');"
+		"INSERT INTO notifications (uuid, organization_id, user_id, title, actor) VALUES "
+		"('pg-note', 31, 17, 'token:pg-bot updated Public company name', 'token:pg-bot');"
 		"INSERT INTO subscription_events (uuid, organization_id, subscription_id, kind, to_status, invoice_id, final_invoice_id) VALUES "
 		"('pg-recurring-event', 31, 77, 'renewed', 'active', 701, 0),"
 		"('pg-final-event', 31, 77, 'cancelled', 'cancelled', 0, 0);"
@@ -431,6 +460,18 @@ test_postgresql(void)
 		g_assert_true(json_object_get_boolean_member(change, "changed"));
 		g_assert_nonnull(json_object_get_member(json_node_get_object(diff), "active"));
 		g_assert_nonnull(strstr(company, "Public company name"));
+	}
+	{
+		g_autofree gchar *id = query_text(database, "SELECT CAST(id AS TEXT) FROM api_tokens WHERE uuid = 'pg-token'");
+		g_autofree gchar *title = query_text(database, "SELECT title FROM notifications WHERE uuid = 'pg-note'");
+		g_autofree gchar *actor = query_text(database, "SELECT actor FROM notifications WHERE uuid = 'pg-note'");
+		g_autofree gchar *plain = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = 'pg-plain-audit'");
+		g_autofree gchar *expected_actor = g_strdup_printf("API token #%s", id);
+		g_autofree gchar *expected_title = g_strdup_printf("API token #%s updated Public company name", id);
+
+		g_assert_cmpstr(actor, ==, expected_actor);
+		g_assert_cmpstr(title, ==, expected_title);
+		g_assert_cmpstr(plain, ==, "Token:pg-bot");
 	}
 	{
 		g_autofree gchar *final_invoice = query_text(database,
