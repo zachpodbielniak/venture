@@ -1,0 +1,96 @@
+#+title: UI overhaul review demonstration
+#+description: Built-server evidence for the human-first interface and billing review
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+
+* Scope
+
+This is the review evidence for [[https://git.podbielniak.com/zachpodbielniak/venture/pulls/133][PR 133]]
+and epic 132. The demonstration uses synthetic records in a disposable
+installation, authenticated through the ordinary sign-in page of the DEBUG
+server. It does not contact a payment provider or send customer mail.
+
+- [[https://git.podbielniak.com/attachments/cafa5297-a796-40a0-b6a3-3917f37fc9e3][Browser recording]] — summaries, lists, forms, submission, plan entry,
+  invoice error recovery and phone views.
+- [[https://git.podbielniak.com/attachments/ac79b98c-de70-46f3-8187-047b0dff03f5][Authenticated capture and page transcript]] — the accepted public
+  capture and the retained sender/message on the authenticated page.
+- [[https://git.podbielniak.com/attachments/a2be6294-d2f1-4186-9e63-01968f1c421e][Before/current screenshot gallery]] — unzip and open =index.html=;
+  nine before screenshots and 92 current views covering both looks at 390
+  and 1440 pixels. All requested pages returned 200 without page overflow.
+- [[https://git.podbielniak.com/attachments/8e033a6c-52c8-4eb4-b7a1-ee14e95668d0][Long invoice PDF]] — long number, 120 description paragraphs and
+  80 terms paragraphs, checked in an independent PDF reader across seven
+  pages; every word remains inside the page bounds.
+
+The recording and screenshot attachments on the PR cover these acceptance
+items:
+
+- Default record pages show readable names and filled-in details. A form
+  submission's source UUIDs are behind All fields, and its email-permission
+  status reads as words.
+- Companies demonstrate the summary, named list columns and grouped creation
+  form. Invoice and subscription composers demonstrate the designed everyday
+  workflows; plans are reached from Money in.
+- A real public capture matches an existing contact and retains the sender's
+  name, address and message on its own submission. The transcript records the
+  accepted response and subsequent authenticated page.
+- The before/after pairs remain attached to the PR. Current screenshots cover
+  both looks at desktop and phone widths, alongside a recording of invoice
+  validation, correction and PDF download.
+
+These are representative journeys, not a claim that every possible record,
+browser or assistive technology was manually exercised. The metadata and
+route tests cover the shared rules beyond the sampled pages.
+
+The opt-in browser regression separately checks eight combinations of ticket
+board look, width and motion preference. Before its fix, classic with reduced
+motion widened a 390-pixel page to 1761 pixels because hidden captions escaped
+their cards. All eight combinations pass with the captions contained.
+
+* Reproducing the journeys
+
+Build with =make DEBUG=1= and start a disposable demo using
+=BUILD_TYPE=debug tools/venture-demo.sh -d=. Use the credentials printed by
+that demo, not credentials from a real installation.
+
+1. Open Today, Companies, a company, and New company. Check readable labels,
+   selected references, folded extra fields and the primary controls.
+2. Send a capture through the attribution endpoint using an existing contact's
+   email. Open the resulting form submission and check its message, sender,
+   linked contact and readable email permission. Inspect All fields separately.
+3. Open Plans & prices and New subscription. Check the plan/price grouping,
+   discounts, venture filtering and first-invoice explanation.
+4. Open New invoice. Select a customer, submit without lines and check that the
+   error remains above the form. Add a description and amount, save a draft,
+   then download its PDF. The fiscal calendar is enabled in the demo; ordinary
+   draft creation must work with its date defaults.
+5. Open the ticket board and repeat the composer and record checks at a phone
+   width in both looks. Tables may scroll inside their region; the page should
+   not require horizontal scrolling.
+
+* Automated boundaries
+
+The regression tests cover privacy of token actors and targets, immutable used
+discounts, discounted proration, tax-inclusive invoice previews and credit
+allocation, final usage collection after cancellation, and retained billed
+usage. Payment tests use the existing offline provider transport; they do not
+establish live-provider delivery.
+
+PDF tests check text placement across pages, long references, large monetary
+amounts, shipping totals, draft status and safe download filenames. Browser
+submission tests run the shipped JavaScript and simulate a reply lost after
+the write committed, in addition to server-side rollback and validation cases.
+
+Both new migration pairs have populated SQLite regression coverage. The
+opt-in PostgreSQL migration test uses a disposable schema and checks historical
+token-name redaction and conservative final-invoice association backfill.
+It is not a full PostgreSQL run of every subsystem.
+
+#+begin_src sh
+make DEBUG=1
+make DEBUG=1 test
+make DEBUG=1 docs-site
+# Set VENTURE_TEST_MIGRATION_POSTGRES_URI privately to a disposable database:
+./build/debug/tests/test-migrations -p /migrations/postgresql
+#+end_src

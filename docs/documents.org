@@ -13,4 +13,81 @@ calls the same routes.
 
 Every line must be an object with a positive numeric quantity and an exact money price. Fractional quote quantities are refused rather than truncated; invoice quantities retain their existing fractional support. Validation or send failures roll back the document and all its lines.
 
-The browser editor uses the normal application shell and metadata-derived document and line fields, with five optional line groups and an optional Send checkbox. API and CLI callers continue to use the same JSON composer.
+The browser editor is laid out as the document: the customer and "Attention of" at the top, a line table rows are added to, and the totals beside it as you type. API and CLI callers continue to use the same JSON composer.
+
+* Invoice dates
+
+The invoice sheet shows editable invoice and due dates beside the customer.
+The defaults are today and thirty days later, stored as calendar dates at
+midnight UTC. The invoice date is set before saving a draft, so configured
+fiscal periods validate it normally. Sending uses that same date for issuance
+and its journal; it does not silently replace a date the operator chose.
+When issuance needs a second actor, the proposal includes the resolved dates.
+Retrying a relative date on another day cannot reuse consent for yesterday.
+
+The JSON composer accepts optional =issued_at= and =due_at= date strings.
+Without =due_at=, =due_days= remains supported (default 30), counted from the
+invoice date. Zero or negative =due_days= keeps the existing no-due-date behavior.
+An explicit due date takes precedence over =due_days=. Invalid date strings,
+wrong JSON types, overflowing offsets and a due date before the invoice date
+are refused before any rows are saved. Closed or uncovered fiscal periods
+remain refused by the ordinary accounting guard.
+
+* Tax on an invoice
+
+An invoice line is taxed by picking a *tax rate* -- a =tax_code= record --
+from the line's Tax menu. "No tax" is first and chosen. Each rate shows its
+percent; the preview adds it up, and the saved invoice freezes the rate's
+exact fraction at issue. The JSON composer takes the same thing as
+=tax_code_id= on a line. A quote sheet has the same Tax menu and a quote
+line the same =tax_code_id=, so a quote asks for exactly what the invoice
+it becomes will; a whole =tax_percent= is still accepted from the API for
+lines that name no rate.
+
+A tax rate is made at =/tax-rates/new= from a name and a percent ("8.875"
+is stored as 8875 over 100000, never as a float); the code the return
+files it under is made from the name. Tax rates are under Books in the
+sidebar.
+
+An exempt customer -- a non-profit, a reseller, a government body -- is
+marked on the customer: =tax_exempt=, =tax_exempt_reason= and
+=tax_exemption_number=. Choosing such a customer on the invoice sheet
+ticks "This customer doesn't pay tax" and fills in why and the
+certificate. Ticking it by hand asks for both and, unless "Remember for
+this customer" is cleared, saves them onto the customer so the next
+invoice fills itself in. The invoice freezes =tax_exempt= and a reason
+such as "Non-profit (501(c)(3)), certificate EX-12"; the JSON composer
+takes =tax_exempt= and =tax_exempt_reason=.
+
+The invoice PDF prints the exemption under the totals as =Tax exempt: <reason>= (just =Tax exempt= when no reason was frozen), so an invoice with no tax on it says why, with the certificate, to the customer's auditor and to the sales tax return.
+
+* Attention of
+
+"Attention of" must be somebody at the invoice's customer. The field is
+declared =VENTURE_COLUMN_FLAG_SAME_PARENT=: the save refuses a contact
+whose company is not the invoice's, from every writer, and the form
+offers only the chosen customer's people. The same holds for a quote.
+See the record view documentation for how the flag finds the parent.
+
+Remembering a customer's tax exemption and saving the invoice or repeating
+schedule is atomic. If the sheet is refused, the customer's previous tax
+treatment and audit history remain unchanged.
+
+Remembering a customer's exemption is part of the invoice transaction, after
+any required second-actor consent. A proposal or a failed save changes neither
+the customer nor the invoice. The JSON composer carries this intent as
+=remember_tax_exemption=true= with =tax_exemption_kind= and
+=tax_exemption_number=; these values are included in issuance consent. Repeating
+schedules keep their customer update and schedule creation in one transaction.
+
+A repeating sheet's customer, and the customer "Remember for this customer" writes onto, must be a live company in the organization the schedule is filed in -- the active one, else the default -- exactly as the JSON composer refuses a customer from another organization. The company id comes from the browser; without the check one tenant could file a schedule against, or change the tax treatment of, another's customer.
+
+The sheet numbers its rows from a counter that only climbs, and the server reads rows 0 to 199. A sheet that sends any =line-N-= field with N of 200 or more is refused whole, invoice or schedule alike, rather than saved without the rows past the limit.
+
+* Downloads
+
+=GET /invoices/:id/pdf= and =GET /payments/:id/receipt= answer inline with a =Content-Disposition= built by =venture_financial_documents_content_disposition()=: an ASCII =filename== with one =_= for each other character (and for a quote or backslash), and an RFC 5987 =filename*=UTF-8''...= carrying the real name percent-encoded, which current browsers prefer. The PDF's own =/Title= is a UTF-16BE text string with a byte-order mark, so a reader's title bar shows an accented or non-Latin invoice number correctly; the page text stays WinAnsi, where a character the standard fonts cannot draw is =?=. Text that is not valid UTF-8 is repaired to U+FFFD before it is drawn or measured.
+
+Browser composition strips identity fields from temporary form records before
+building the command. Retrying the same form for approval therefore compares
+its business inputs, not new construction timestamps.

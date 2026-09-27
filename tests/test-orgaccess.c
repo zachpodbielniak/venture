@@ -534,7 +534,7 @@ test_assignment_ownership(void)
 	g_autoptr(VentureEntity) member = NULL;
 	g_autoptr(VentureApiToken) token = venture_api_token_new();
 	g_autofree gchar *secret = NULL;
-	g_autofree gchar *label = g_strdup("token:assignment-token");
+	g_autofree gchar *label = NULL;
 	VentureAccessPolicy *policy = venture_database_get_access_policy(db);
 	VentureAuthPrincipal actor;
 	GType types[] = { VENTURE_TYPE_LEAD, VENTURE_TYPE_ACTIVITY, VENTURE_TYPE_DEAL, VENTURE_TYPE_TICKET };
@@ -549,6 +549,8 @@ test_assignment_ownership(void)
 	g_object_set(token, "name", "assignment-token", "user-id", venture_entity_get_id(user), "role", VENTURE_USER_ROLE_EDITOR, NULL);
 	secret = venture_api_token_generate(token);
 	g_assert_true(venture_database_save(db, VENTURE_ENTITY(token), NULL, NULL));
+	/* What venture_auth names a token principal, never its name. */
+	label = g_strdup_printf("API token #%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(token)));
 	actor.authenticated = TRUE;
 	actor.user_id = venture_entity_get_id(user);
 	actor.token_id = venture_entity_get_id(VENTURE_ENTITY(token));

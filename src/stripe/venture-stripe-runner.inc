@@ -13,7 +13,7 @@ stripe_collect_authorization(VentureStripeService *self, VentureEntity *authoriz
 	gint state;
 	guint i;
 	gint64 subscription_id = stripe_number(authorization, "subscription-id");
-	if (!stripe_authorized_terms(self, authorization, error)) return FALSE;
+	if (!stripe_authorized_terms_for_collection(self, authorization, TRUE, error)) return FALSE;
 	subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, error);
 	if (!subscription) return FALSE;
 	g_object_get(subscription, "status", &state, "current-period-end", &end, NULL);
@@ -24,11 +24,14 @@ stripe_collect_authorization(VentureStripeService *self, VentureEntity *authoriz
 		venture_entity_set_organization_id(VENTURE_ENTITY(renewal), self->organization_id);
 		g_object_set(renewal, "action", "renew", "subscription-id", subscription_id, "at", now, NULL);
 		if (!venture_billing_service_execute(venture_billing_service_get(self->database), renewal, actor, error) ||
-			!stripe_authorized_terms(self, authorization, error)) return FALSE;
+			!stripe_authorized_terms_for_collection(self, authorization, TRUE, error)) return FALSE;
 	}
+	g_clear_object(&subscription);
+	subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, error);
+	if (!subscription) return FALSE;
+	g_object_get(subscription, "status", &state, NULL);
 	venture_query_set_organization(query, self->organization_id); venture_query_set_limit(query, 0);
 	if (!venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, subscription_id, error) ||
-		!venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_GT, 0, error) ||
 		!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error)) return FALSE;
 	sources = venture_database_find(self->database, query, error);
 	if (!sources) return FALSE;
@@ -39,6 +42,10 @@ stripe_collect_authorization(VentureStripeService *self, VentureEntity *authoriz
 		g_autoptr(GPtrArray) attempts = NULL;
 		g_autoptr(VentureStripeCheckout) collected = NULL;
 		guint j;
+		/* A cancelled subscription can collect only its terminal usage bill;
+		 * it cannot reuse consent for ordinary invoices after termination. */
+		if (state == 4 || !invoice_id)
+			invoice_id = stripe_number(g_ptr_array_index(sources, i), "final-invoice-id");
 		if (!invoice_id) continue;
 		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database), invoice_id, NULL, error);
 		if (!balance) return FALSE;

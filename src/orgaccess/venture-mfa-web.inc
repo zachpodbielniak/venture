@@ -335,7 +335,7 @@ venture_mfa_web_ui_login_form(HtmxRequest *request, GHashTable *params, gpointer
 	notice = htmx_request_get_query_param(request, "notice");
 	if (NULL != notice)
 	{
-		g_string_append(body, "<div class=\"notice negative\"><span>");
+		g_string_append(body, "<div class=\"notice negative\" role=\"alert\"><span>");
 		venture_html_escape_append(body, 0 == g_strcmp0(notice, "limited")
 			? "Too many wrong codes; wait fifteen minutes and try again."
 			: "That code is not valid.");

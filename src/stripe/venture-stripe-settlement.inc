@@ -7,6 +7,7 @@ stripe_settle_checkout(VentureStripeService *self, VentureEntity *checkout,
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VenturePayment) payment = NULL;
+	g_autoptr(GDateTime) issued = NULL;
 	gint64 checkout_id = venture_entity_get_id(checkout);
 	gint64 invoice_id = stripe_number(checkout, "invoice-id");
 	gint64 company_id;
@@ -45,6 +46,20 @@ stripe_settle_checkout(VentureStripeService *self, VentureEntity *checkout,
 		}
 	}
 	g_object_get(invoice, "company-id", &company_id, NULL);
+	{
+		/*
+		 * Stripe dates an event to the whole second; VENTURE dates an
+		 * invoice to the microsecond. A payment in the same second the
+		 * invoice was issued then looks earlier than the invoice, and the
+		 * settlement refuses a payment that precedes what it pays. Inside
+		 * that second the payment is dated at the invoice instead; an
+		 * earlier date still is refused, as it should be.
+		 */
+		g_object_get(invoice, "issued-at", &issued, NULL);
+		if (issued != NULL && g_date_time_compare(settled_at, issued) < 0 &&
+			g_date_time_difference(issued, settled_at) < G_TIME_SPAN_SECOND)
+			settled_at = issued;
+	}
 	payment = venture_payment_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(payment), self->organization_id);
 	{

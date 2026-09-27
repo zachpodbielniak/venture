@@ -47,7 +47,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	g_string_append(html, "</style></head><body><h1>Quote ");
 	venture_html_escape_append(html, number);
 	g_string_append_printf(html, "</h1><p>Revision %" G_GINT64_FORMAT " · ", revision);
-	venture_html_escape_append(html, venture_enum_to_nick(venture_quote_status_get_type(), state));
+	{ g_autofree gchar *label = venture_web_label_from_name(venture_enum_to_nick(venture_quote_status_get_type(), state)); venture_html_escape_append(html, label); }
 	g_string_append(html, "</p>");
 	if (until != NULL)
 	{
@@ -56,19 +56,35 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 		venture_html_escape_append(html, date);
 		g_string_append(html, "</p>");
 	}
-	g_string_append(html, "<table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax %</th></tr></thead><tbody>");
+	g_string_append(html, "<table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax</th></tr></thead><tbody>");
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
 		g_autofree gchar *description = NULL;
-		gint64 quantity, discount, tax;
+		g_autofree gchar *rate_name = NULL;
+		gint64 quantity, discount, tax, code;
 		g_object_get(line, "description", &description, "quantity", &quantity,
-			"discount-percent", &discount, "tax-percent", &tax, NULL);
+			"discount-percent", &discount, "tax-percent", &tax, "tax-code-id", &code, NULL);
+		/* A line taxed by a rate record says which rate, as the invoice
+		 * will; the whole percent is only for lines written before. */
+		if (code != 0)
+		{
+			g_autoptr(VentureEntity) rate = venture_database_get(
+				venture_context_get_database(self->context), VENTURE_TYPE_TAX_CODE, code, NULL);
+			if (rate != NULL && venture_entity_get_organization_id(rate) ==
+				venture_entity_get_organization_id(quote))
+				rate_name = venture_entity_get_display_name(rate);
+		}
 		g_string_append(html, "<tr><td>");
 		venture_html_escape_append(html, description);
 		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "</td><td>", quantity);
 		quote_money_html(html, line, "unit-price");
-		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "</td><td>%" G_GINT64_FORMAT "</td></tr>", discount, tax);
+		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "</td><td>", discount);
+		if (rate_name != NULL)
+			venture_html_escape_append(html, rate_name);
+		else
+			g_string_append_printf(html, "%" G_GINT64_FORMAT "%%", tax);
+		g_string_append(html, "</td></tr>");
 	}
 	g_string_append(html, "</tbody></table><table>");
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)
@@ -198,12 +214,57 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 	return venture_web_json_response(result, 200);
 }
 
+/*
+ * What an accepted subscription quote led to, or the one step that starts
+ * it: the page answers "did we put them on the plan?" before anything else.
+ */
 static void
-quote_buttons(GString *html, VentureEntity *record)
+quote_subscription_block(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	gint64 id = venture_entity_get_id(record), subscription_id = 0;
+	gint state = 0;
+	guint i;
+	gboolean proposes = FALSE;
+	if (!venture_web_module_enabled(self, "billing")) return;
+	g_object_get(record, "subscription-id", &subscription_id, "status", &state, NULL);
+	if (subscription_id != 0)
+	{
+		g_autoptr(VentureEntity) sub = venture_database_get(database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, NULL);
+		g_autofree gchar *name = sub != NULL ? venture_entity_get_display_name(sub) : g_strdup_printf("#%" G_GINT64_FORMAT, subscription_id);
+		g_string_append_printf(html, "<p>Started subscription <a href=\"/e/customer_subscription/%" G_GINT64_FORMAT "\">", subscription_id);
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</a>.</p>");
+		return;
+	}
+	query = venture_query_new(VENTURE_TYPE_QUOTE_LINE);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	lines = venture_database_find(database, query, NULL);
+	for (i = 0; lines != NULL && i < lines->len; i++)
+	{
+		gint64 price = 0;
+		g_object_get(g_ptr_array_index(lines, i), "plan-price-id", &price, NULL);
+		if (price != 0) proposes = TRUE;
+	}
+	if (!proposes) return;
+	if (state == VENTURE_QUOTE_ACCEPTED)
+		g_string_append_printf(html, "<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/start-subscription\">"
+			"<button>Start subscription</button> <span class=\"field-help\">Puts the customer on the quoted plan and "
+			"seats; the subscription issues its own first invoice.</span></form>", id);
+	else
+		g_string_append(html, "<p class=\"field-help\">Once accepted, this quote starts a subscription on its plan line.</p>");
+}
+
+static void
+quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 {
 	gint64 id;
 	if (!VENTURE_IS_QUOTE(record)) return;
 	id = venture_entity_get_id(record);
+	quote_subscription_block(self, html, record);
 	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"

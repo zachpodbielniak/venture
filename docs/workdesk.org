@@ -134,6 +134,10 @@ Pull requests are counted once each, by repository and number: three follow-up r
 | every record's page        | Watch, and the timeline                                        |
 | every list                 | Save view, the tick column and the bulk bar                    |
 
+* The board
+
+=/tickets= is the board unless =?view=list=. Its head says how the queue stands -- how many are open, how many wait to triage, how many are past a promise. Each card shows the number, the priority in words when it is urgent or high, the service-level clock, the title, whose it is (the company, else the person who raised it, else "Internal"), who has it or "Unassigned", how long ago it was opened, its due date and points, and up to three tags. A card moves by dragging it or, from the keyboard and with scripting off, with its own *Move to* control, which posts the same =/tickets/:id/move=. The filters are one toolbar: whose tickets (all, internal, customers), a *Type* menu, board or list, and *Save view*; each is a link, so every combination is a URL.
+
 * The keyboard
 
 =Ctrl+K= opens the palette: pages, record types with their New, and records by name, with the last few picks offered first. =g= then a letter jumps — =g i= inbox, =g t= tickets, =g r= runs, =g s= sprints, =g d= home. On a list, =j= and =k= walk the rows, =Enter= opens one, =x= ticks it for a bulk edit, =c= makes a new one. =?= shows the whole list.

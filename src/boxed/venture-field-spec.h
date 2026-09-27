@@ -109,7 +109,7 @@ venture_field_spec_new(
  * Builds a field spec from its declarative description. Recognised members:
  * `type`, `label`, `help`, `required`, `default`, `choices`, `references`,
  * `min`, `max`, `max_length`, `pattern`, `unit`, `indexed`, `unique`,
- * `sensitive`, `searchable`, `immutable`, `retain_reference`, `order`, `list`.
+ * `sensitive`, `searchable`, `immutable`, `retain_reference`, `technical`, `order`, `list`.
  *
  * Returns: (transfer full) (nullable): the field spec, or %NULL on error
  */
@@ -183,6 +183,38 @@ gint
 venture_field_spec_get_display_order(const VentureFieldSpec *self);
 
 /* --- Derived representations --------------------------------------------- */
+
+/**
+ * venture_field_spec_get_role:
+ * @self: a #VentureFieldSpec
+ *
+ * What the field is for on a page. %VENTURE_COLUMN_FLAG_TECHNICAL and
+ * %VENTURE_COLUMN_FLAG_SENSITIVE make a field technical; a JSON field is
+ * structured; a field named like machinery (a `-key`, `-hash`, `-digest`,
+ * `-version` or `-token`, or a string ending `-id`) is technical; long text
+ * is content; an enumeration or a plain string named `status`, `stage` or
+ * `state` is the status (some services guard a string lifecycle with their
+ * own transitions); everything else is a fact.
+ *
+ * Returns: the field's #VentureFieldRole
+ */
+VentureFieldRole
+venture_field_spec_get_role(const VentureFieldSpec *self);
+
+/**
+ * venture_field_spec_get_choice_label:
+ * @self: a #VentureFieldSpec
+ * @value: (nullable): one of the field's permitted values
+ *
+ * The label a declarative type gave @value, if it gave one.
+ *
+ * Returns: (transfer none) (nullable): the declared label, or %NULL
+ */
+const gchar *
+venture_field_spec_get_choice_label(
+	const VentureFieldSpec	*self,
+	const gchar		*value
+);
 
 /**
  * venture_field_spec_get_value_type:

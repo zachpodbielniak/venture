@@ -868,12 +868,27 @@ static const GFlagsValue venture_column_flags_values[] = {
 	VE(VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER, "optional_personal_owner"),
 	VE(VENTURE_COLUMN_FLAG_HOST_RESOURCE, "host_resource"),
 	VE(VENTURE_COLUMN_FLAG_RETAIN_REFERENCE, "retain_reference"),
+	VE(VENTURE_COLUMN_FLAG_TECHNICAL, "technical"),
+	VE(VENTURE_COLUMN_FLAG_SAME_PARENT, "same_parent"),
 	VE_END
 };
 
 VENTURE_DEFINE_FLAGS_TYPE(venture_column_flags_get_type,
                           "VentureColumnFlags",
                           venture_column_flags_values)
+
+static const GEnumValue venture_field_role_values[] = {
+	VE(VENTURE_FIELD_ROLE_FACT,       "fact"),
+	VE(VENTURE_FIELD_ROLE_STATUS,     "status"),
+	VE(VENTURE_FIELD_ROLE_CONTENT,    "content"),
+	VE(VENTURE_FIELD_ROLE_TECHNICAL,  "technical"),
+	VE(VENTURE_FIELD_ROLE_STRUCTURED, "structured"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_field_role_get_type,
+                         "VentureFieldRole",
+                         venture_field_role_values)
 
 /* --- Nick conversion ----------------------------------------------------- */
 

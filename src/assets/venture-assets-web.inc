@@ -180,19 +180,119 @@ venture_web_assets_run(HtmxRequest *request, GHashTable *params, gpointer data)
 	return venture_web_json_response(result, 200);
 }
 
+/*
+ * An asset's page leads with where it is in its life, in money: what it
+ * cost, what it is worth on the books today, what the next month takes
+ * off and when it is used up. Then the one or two things you can do,
+ * each saying what it does.
+ */
 static void
-venture_web_append_asset_actions(GString *html, VentureEntity *asset)
+venture_web_append_asset_actions(VentureWebServer *self, GString *html, VentureEntity *asset)
 {
+	g_autoptr(VentureMoney) cost = NULL;
+	g_autoptr(VentureMoney) posted = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autofree gchar *next_period = NULL, *last_period = NULL, *next_amount = NULL;
 	gint status;
 	gint64 id = venture_entity_get_id(asset);
-	g_object_get(asset, "status", &status, NULL);
-	if (status == VENTURE_ASSET_STATUS_DRAFT)
-		g_string_append_printf(html, "<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/place-in-service\"><button class=\"btn\">Place in service</button></form>", id);
-	else if (status == VENTURE_ASSET_STATUS_IN_SERVICE)
+	guint i;
+
+	g_object_get(asset, "status", &status, "cost", &cost, NULL);
+	query = venture_query_new(VENTURE_TYPE_DEPRECIATION_ENTRY);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "asset-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	venture_query_add_order(query, "period", VENTURE_SORT_ASCENDING, NULL);
+	entries = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; entries != NULL && i < entries->len; i++)
 	{
-		g_string_append_printf(html, "<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/dispose\"><label>Disposal proceeds <input name=\"disposal_proceeds\" required></label><button class=\"btn\">Dispose</button></form>", id);
-		g_string_append_printf(html, "<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/write-off\"><button class=\"btn\">Write off</button></form>", id);
+		VentureEntity *entry = g_ptr_array_index(entries, i);
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autofree gchar *period = NULL;
+		gint state;
+		g_object_get(entry, "amount", &amount, "period", &period, "state", &state, NULL);
+		if (state == VENTURE_SCHEDULE_STATE_POSTED && amount != NULL)
+		{
+			if (posted == NULL)
+				posted = venture_money_copy(amount);
+			else
+			{
+				VentureMoney *sum = venture_money_add(posted, amount, NULL);
+				if (sum != NULL)
+				{
+					venture_money_free(posted);
+					posted = sum;
+				}
+			}
+		}
+		else if (state == VENTURE_SCHEDULE_STATE_SCHEDULED && next_period == NULL)
+		{
+			next_period = g_strdup(period);
+			next_amount = amount != NULL ? venture_money_to_display_string(amount, TRUE) : NULL;
+		}
+		if (state != VENTURE_SCHEDULE_STATE_SKIPPED)
+		{
+			g_free(last_period);
+			last_period = g_strdup(period);
+		}
 	}
+
+	g_string_append(html, "<section class=\"card next-up\"><div class=\"card-head\"><h2>Where it stands</h2></div><div class=\"card-body\">");
+	if (status == VENTURE_ASSET_STATUS_DRAFT)
+		g_string_append(html, "<p class=\"next-up-lead\">Not in use yet. Placing it in service writes its whole "
+			"depreciation schedule, month by month, into the books.</p>");
+	else if (status == VENTURE_ASSET_STATUS_DISPOSED || status == VENTURE_ASSET_STATUS_WRITTEN_OFF)
+		g_string_append(html, "<p class=\"next-up-lead\">No longer owned. Its remaining schedule was stopped.</p>");
+	else
+	{
+		g_autofree gchar *cost_text = cost != NULL ? venture_money_to_display_string(cost, TRUE) : NULL;
+		g_autoptr(VentureMoney) book = NULL;
+		g_autofree gchar *book_text = NULL;
+		if (cost != NULL)
+			book = posted != NULL ? venture_money_subtract(cost, posted, NULL) : venture_money_copy(cost);
+		book_text = book != NULL ? venture_money_to_display_string(book, TRUE) : NULL;
+		g_string_append(html, "<div class=\"stat-row asset-stats\">");
+		if (cost_text != NULL)
+		{
+			g_string_append(html, "<div class=\"stat\"><span class=\"stat-label\">Cost</span><span class=\"stat-value\">");
+			venture_html_escape_append(html, cost_text);
+			g_string_append(html, "</span></div>");
+		}
+		if (book_text != NULL)
+		{
+			g_string_append(html, "<div class=\"stat\"><span class=\"stat-label\">On the books today</span><span class=\"stat-value\">");
+			venture_html_escape_append(html, book_text);
+			g_string_append(html, "</span></div>");
+		}
+		g_string_append(html, "</div>");
+		if (next_period != NULL)
+		{
+			g_string_append(html, "<p>Next: ");
+			venture_html_escape_append(html, next_amount != NULL ? next_amount : "");
+			g_string_append(html, " of depreciation in <strong>");
+			venture_html_escape_append(html, next_period);
+			g_string_append(html, "</strong>. Used up by <strong>");
+			venture_html_escape_append(html, last_period != NULL ? last_period : "");
+			g_string_append(html, "</strong>.</p>");
+		}
+		else
+			g_string_append(html, "<p>Fully depreciated. It stays on the books at what it is worth at the end until it is sold or written off.</p>");
+	}
+	g_string_append(html, "</div></section>");
+
+	if (status == VENTURE_ASSET_STATUS_DRAFT)
+		g_string_append_printf(html, "<section class=\"card record-actions\"><div class=\"card-head\"><h2>Next step</h2></div><div class=\"card-body\">"
+			"<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/place-in-service\"><button class=\"btn btn-primary\">Place in service</button></form>"
+			"</div></section>", id);
+	else if (status == VENTURE_ASSET_STATUS_IN_SERVICE)
+		g_string_append_printf(html, "<section class=\"card record-actions\"><div class=\"card-head\"><h2>If it leaves the business</h2></div><div class=\"card-body\">"
+			"<details class=\"record-action\"><summary class=\"btn\">Sold it</summary>"
+			"<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/dispose\"><label class=\"doc-field\"><span class=\"field-label\">Sold for</span>"
+			"<input name=\"disposal_proceeds\" inputmode=\"decimal\" placeholder=\"0.00\" required></label>"
+			"<span class=\"field-help\">The rest of the schedule stops; the gain or loss against what it was worth is posted.</span>"
+			"<button class=\"btn btn-primary\">Record the sale</button></form></details>"
+			"<form method=\"post\" action=\"/assets/%" G_GINT64_FORMAT "/write-off\"><button class=\"btn\" title=\"Lost, broken or thrown away: what it was still worth becomes a loss\">Write it off</button></form>"
+			"</div></section>", id, id);
 }
 
 static HtmxResponse *

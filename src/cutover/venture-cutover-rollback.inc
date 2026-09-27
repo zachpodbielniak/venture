@@ -208,6 +208,10 @@ redeposit(Rollback *walk, gboolean vendor, VentureEntity *payment, gint64 party,
 	g_object_set(copy, vendor ? "vendor-id" : "customer-id", party, "amount", amount, "date", date,
 		"method", method, "reference", reference, NULL);
 	venture_entity_set_organization_id(copy, walk->org);
+	/* The customer paid once; re-filing that cash is not a second receipt.
+	 * It keeps the original's method, so only the mark says so. */
+	if (!vendor)
+		venture_payment_mark_bookkeeping(VENTURE_PAYMENT(copy));
 	ok = vendor
 		? venture_payables_service_apply_payment(venture_payables_service_get(walk->self->database),
 			VENTURE_BILL_PAYMENT(copy), NULL, walk->actor, error)

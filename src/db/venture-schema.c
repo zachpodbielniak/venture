@@ -624,6 +624,7 @@ venture_schema_create_all(
 	GError			**error
 ){
 	g_autofree GType *types = NULL;
+	g_auto(GStrv) all_names = NULL;
 	guint n_types;
 	guint i;
 
@@ -635,6 +636,46 @@ venture_schema_create_all(
 	for (i = 0; i < n_types; i++)
 	{
 		if (!venture_schema_create_table(connection, types[i], error))
+			return FALSE;
+	}
+
+	/*
+	 * A module switched off after it was used still holds its rows. Its
+	 * tables must keep up with the field tables all the same: a data
+	 * migration that reads a column added since would otherwise refuse
+	 * startup, and one skipped for that reason would never backfill once
+	 * the module came back. An absent table stays absent -- there is
+	 * nothing in it to migrate, and enabling the module creates it whole.
+	 */
+	all_names = venture_entity_registry_list_all_names(registry);
+
+	for (i = 0; NULL != all_names[i]; i++)
+	{
+		g_autoptr(GHashTable) existing = NULL;
+		g_autoptr(VentureEntity) prototype = NULL;
+		GType type;
+
+		if (venture_entity_registry_is_type_enabled(registry, all_names[i]))
+			continue;
+
+		/* The registry's shared prototypes skip hidden types too. */
+		type = venture_entity_registry_lookup_any(registry, all_names[i]);
+
+		if (G_TYPE_INVALID == type)
+			continue;
+
+		prototype = g_object_new(type, NULL);
+		existing = venture_schema_get_existing_columns(connection,
+		                                               venture_entity_get_table_name(prototype),
+		                                               error);
+
+		if (NULL == existing)
+			return FALSE;
+
+		if (0 == g_hash_table_size(existing))
+			continue;
+
+		if (!venture_schema_create_table(connection, type, error))
 			return FALSE;
 	}
 

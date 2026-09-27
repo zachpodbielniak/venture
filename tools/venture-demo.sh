@@ -574,6 +574,15 @@ seed_relations () {
     add company name="Marlow Print" kind=supplier industry=Printing \
         venture_id="${press}" active=true
 
+    # A tax rate to pick on an invoice line, and a customer who pays none:
+    # choosing the library on the invoice sheet fills in its exemption.
+    add tax_code code=NY-SALES name="New York sales tax" jurisdiction=US-NY \
+        rate_numerator=8875 rate_denominator=100000 active=true
+    add company name="Harbour Library Trust" kind=customer industry=Nonprofit \
+        email=accounts@harbourlibrary.example venture_id="${press}" active=true \
+        tax_exempt=true tax_exempt_reason="Non-profit (501(c)(3))" \
+        tax_exemption_number=EX-4471
+
     buyer="$(make_record contact name="Ruth Ellery" email=ruth@bellhaven.example \
         company_id="${shop}" role="Buyer" venture_id="${press}" source=referral)"
     add contact name="Sam Okonjo" email=sam@coldharbour.example \
@@ -1173,6 +1182,7 @@ seed_billing () {
     local studio="$1"
     local agency="$2"
     local shop="$3"
+    local press="$4"
 
     step "Plans, subscriptions and a dunning ladder"
 
@@ -1186,8 +1196,18 @@ seed_billing () {
 
     yearly="$(make_record plan_price plan_id="${plan}" currency=USD \
         interval=year amount=180.00 per_seat=true trial_days=0 active=true)"
-    monthly="$(make_record plan_price plan_id="${plan}" currency=USD \
-        interval=month amount=18.00 per_seat=true trial_days=14 active=true)"
+    make_record plan_price plan_id="${plan}" currency=USD \
+        interval=month amount=18.00 per_seat=true trial_days=14 active=true > /dev/null
+
+    # The press sells its own plan: a plan belongs to a venture and is
+    # offered only to that venture's customers, so Bellhaven -- a press
+    # customer -- is on this one, not the studio's.
+    local trade
+    trade="$(make_record plan venture_id="${press}" name="Trade account" \
+        code=trade active=true \
+        description="Standing order for bookshops, billed each quarter.")"
+    monthly="$(make_record plan_price plan_id="${trade}" currency=USD \
+        interval=quarter amount=75.00 per_seat=false trial_days=14 active=true)"
 
     # What happens when a card keeps failing. Without these the dunning
     # sweep has nothing to do.
@@ -1560,12 +1580,12 @@ seed_factory () {
 }
 
 seed_dashboards () {
-    step "Two dashboards"
+    step "Three dashboards"
 
     local file
     local body
 
-    for file in demo-dashboard demo-money
+    for file in demo-today demo-dashboard demo-money
     do
         body="$(cat "${root}/data/examples/${file}.json")"
 
@@ -1604,7 +1624,8 @@ except Exception:
     say "${counts} tickets on a desk with service levels, a sprint, a release"
     say "and an incident. Money, sales and the books are all seeded.${OFF}"
     say ""
-    say "  The desk          ${base_url}/            ${DIM}(the home dashboard)${OFF}"
+    say "  Today             ${base_url}/            ${DIM}(the home dashboard)${OFF}"
+    say "  The desk          ${base_url}/dashboards/desk"
     say "  Month end         ${base_url}/dashboards/month-end"
     say "  Inbox             ${base_url}/inbox"
     say "  Ticket board      ${base_url}/tickets"
@@ -1705,7 +1726,7 @@ do_start () {
     seed_activities "${shop}" "${agency}" "${buyer}"
     seed_quotes "${press}" "${shop}" "${buyer}" "${book}"
 
-    seed_billing "${studio}" "${agency}" "${shop}"
+    seed_billing "${studio}" "${agency}" "${shop}" "${press}"
     seed_sequences "${studio}" "${buyer}"
     seed_mail
     seed_assets "${studio}"

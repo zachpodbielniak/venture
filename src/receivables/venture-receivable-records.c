@@ -68,3 +68,32 @@ static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureInvoiceEvent, venture_invoice_event, event_fields)
+
+/*
+ * Object data rather than a stored field: whether a payment is news to the
+ * customer is a fact about the save that creates it, and a column would be
+ * one more thing an import could fill in wrongly.
+ */
+#define PAYMENT_BOOKKEEPING_KEY "venture-payment-bookkeeping"
+
+void
+venture_payment_mark_bookkeeping(VenturePayment *payment)
+{
+	g_return_if_fail(VENTURE_IS_PAYMENT(payment));
+
+	g_object_set_data(G_OBJECT(payment), PAYMENT_BOOKKEEPING_KEY, GINT_TO_POINTER(TRUE));
+}
+
+gboolean
+venture_payment_is_bookkeeping(VenturePayment *payment)
+{
+	g_autofree gchar *method = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_PAYMENT(payment), FALSE);
+
+	if (NULL != g_object_get_data(G_OBJECT(payment), PAYMENT_BOOKKEEPING_KEY))
+		return TRUE;
+	/* The cutover's own method: an opening is last system's money. */
+	g_object_get(payment, "method", &method, NULL);
+	return 0 == g_strcmp0(method, "opening");
+}

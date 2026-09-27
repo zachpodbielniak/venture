@@ -228,6 +228,182 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	(void)invoice;
 }
 
+static gint64
+portal_price(Fixture *f, const gchar *plan_name, const gchar *code, const gchar *amount, const gchar *currency, gboolean active)
+{
+	g_autoptr(VenturePlan) plan = venture_plan_new();
+	g_autoptr(VenturePlanPrice) price = venture_plan_price_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(plan), f->org);
+	g_object_set(plan, "name", plan_name, "code", code, "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(plan));
+	venture_entity_set_organization_id(VENTURE_ENTITY(price), f->org);
+	g_object_set(price, "plan-id", venture_entity_get_id(VENTURE_ENTITY(plan)), "currency", currency, "active", active, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(price), "amount", amount, NULL));
+	save(f, VENTURE_ENTITY(price));
+	return venture_entity_get_id(VENTURE_ENTITY(price));
+}
+
+/* A subscription started yesterday, so a change today is inside its first period. */
+static gint64
+portal_subscribe(Fixture *f, gint64 company, gint64 price)
+{
+	g_autoptr(VentureBillingRequest) start = venture_billing_request_new();
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) yesterday = g_date_time_add_days(now, -1);
+	gint64 id = 0;
+	venture_entity_set_organization_id(VENTURE_ENTITY(start), f->org);
+	g_object_set(start, "action", "start", "company-id", company, "plan-price-id", price, "at", yesterday, NULL);
+	save(f, VENTURE_ENTITY(start));
+	g_object_get(start, "subscription-id", &id, NULL);
+	g_assert_cmpint(id, >, 0);
+	return id;
+}
+
+static VentureEntity *
+portal_subscription(Fixture *f, gint64 id)
+{
+	return venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, id, NULL);
+}
+
+static guint
+portal_form(VentureWebServer *server, const gchar *path, const gchar *form, gchar **out)
+{
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) payload = g_bytes_new(form, strlen(form));
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	PortalResponse response;
+	memset(&response, 0, sizeof(response));
+	message = soup_message_new("POST", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", payload);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, portal_http_done, &response);
+	while (!response.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(response.error);
+	if (out != NULL && response.bytes != NULL)
+		*out = g_strndup(g_bytes_get_data(response.bytes, NULL), g_bytes_get_size(response.bytes));
+	g_clear_pointer(&response.bytes, g_bytes_unref);
+	return soup_message_get_status(message);
+}
+
+/*
+ * A signed-in customer sees their own subscriptions -- plan, price, next
+ * renewal and amount, invoices -- switches to another price the same
+ * venture sells or cancels at renewal, and can neither see nor touch
+ * another customer's: every attempt is NOT_FOUND and changes nothing. If
+ * this regresses, one customer's portal link manages another's plan, or a
+ * customer is offered a price the business does not sell them.
+ */
+static void
+test_subscriptions(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) access = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureEntity) theirs = NULL;
+	g_autoptr(GPtrArray) offered = NULL;
+	g_autoptr(GSocketListener) listener = g_socket_listener_new();
+	g_autofree gchar *dir = g_dir_make_tmp("venture-portal-XXXXXX", NULL);
+	g_autofree gchar *token = NULL, *page = NULL, *path = NULL, *mine = NULL, *other = NULL, *form = NULL, *body = NULL;
+	gint64 starter, pro, retired, euro, own_id, their_id, pending = 0, their_version;
+	gboolean ending = FALSE;
+	guint16 port;
+	VentureActor actor;
+	guint i;
+	(void)data;
+	actor_init(&actor);
+	starter = portal_price(f, "Starter", "starter", "30 USD", "USD", TRUE);
+	pro = portal_price(f, "Pro", "pro", "60 USD", "USD", TRUE);
+	retired = portal_price(f, "Legacy", "legacy", "20 USD", "USD", FALSE);
+	euro = portal_price(f, "Euro", "euro", "30 EUR", "EUR", TRUE);
+	own_id = portal_subscribe(f, f->company, starter);
+	their_id = portal_subscribe(f, f->other, starter);
+	theirs = portal_subscription(f, their_id);
+	their_version = venture_entity_get_version(theirs);
+	access = venture_portal_service_invite(venture_portal_service_get(f->db), f->org, f->company, "a@b.c", &actor, &error);
+	g_assert_no_error(error);
+	g_object_get(access, "token", &token, NULL);
+
+	/* Offered: the other active plan in the same currency, nothing else. */
+	offered = venture_portal_service_offered_prices(venture_portal_service_get(f->db),
+		VENTURE_CUSTOMER_PORTAL_ACCESS(access), own_id, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(offered->len, ==, 1);
+	g_assert_cmpint(venture_entity_get_id(g_ptr_array_index(offered, 0)), ==, pro);
+	g_assert_null(venture_portal_service_offered_prices(venture_portal_service_get(f->db),
+		VENTURE_CUSTOMER_PORTAL_ACCESS(access), their_id, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+
+	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	g_socket_listener_close(listener);
+	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_true(venture_web_server_start(server, &error));
+
+	path = g_strdup_printf("/portal/%s", token);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, &page), ==, 200);
+	sub = portal_subscription(f, own_id);
+	g_assert_nonnull(strstr(page, "Your subscriptions"));
+	g_assert_nonnull(strstr(page, "Starter, $30.00 a month"));
+	g_assert_nonnull(strstr(page, "Next renewal: "));
+	g_assert_nonnull(strstr(page, ", for $30.00."));
+	g_assert_nonnull(strstr(page, venture_entity_get_uuid(sub)));
+	g_assert_null(strstr(page, venture_entity_get_uuid(theirs)));
+	g_assert_null(strstr(page, "Legacy"));
+	g_assert_null(strstr(page, "Euro"));
+	g_clear_object(&sub);
+
+	/* Every door onto the other customer's subscription is NOT_FOUND. */
+	other = g_strdup_printf("/portal/%s/subscriptions/%" G_GINT64_FORMAT, token, their_id);
+	form = g_strdup_printf("action=change&plan_price_id=%" G_GINT64_FORMAT "&when=now", pro);
+	g_assert_cmpuint(portal_form(server, other, "action=cancel", NULL), ==, 404);
+	g_assert_cmpuint(portal_form(server, other, form, NULL), ==, 404);
+	g_assert_false(venture_portal_service_manage_subscription(venture_portal_service_get(f->db), token, their_id,
+		"cancel", 0, FALSE, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+	g_clear_object(&theirs);
+	theirs = portal_subscription(f, their_id);
+	g_assert_cmpint(venture_entity_get_version(theirs), ==, their_version);
+
+	/* Their own: a price not offered is refused, an offered one switches
+	 * at renewal by default, and cancelling keeps it until renewal. */
+	mine = g_strdup_printf("/portal/%s/subscriptions/%" G_GINT64_FORMAT, token, own_id);
+	for (i = 0; i < 2; i++)
+	{
+		g_autofree gchar *bad = g_strdup_printf("action=change&plan_price_id=%" G_GINT64_FORMAT, i == 0 ? retired : euro);
+		g_clear_pointer(&body, g_free);
+		g_assert_cmpuint(portal_form(server, mine, bad, &body), ==, 422);
+		g_assert_nonnull(strstr(body, "not one you can switch to"));
+	}
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("action=change&plan_price_id=%" G_GINT64_FORMAT "&when=renewal", pro);
+	g_assert_cmpuint(portal_form(server, mine, form, NULL), ==, 303);
+	sub = portal_subscription(f, own_id);
+	g_object_get(sub, "pending-plan-price-id", &pending, NULL);
+	g_assert_cmpint(pending, ==, pro);
+	g_clear_object(&sub);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Switches to Pro, $60.00 a month at renewal."));
+	g_assert_nonnull(strstr(page, ", for $60.00."));
+	g_assert_cmpuint(portal_form(server, mine, "action=cancel", NULL), ==, 303);
+	sub = portal_subscription(f, own_id);
+	g_object_get(sub, "cancel-at-period-end", &ending, NULL);
+	g_assert_true(ending);
+
+	/* Revoked is gone, including for the actions; so is billing switched off. */
+	g_assert_true(venture_portal_service_revoke(venture_portal_service_get(f->db),
+		VENTURE_CUSTOMER_PORTAL_ACCESS(access), &actor, &error));
+	g_assert_cmpuint(portal_form(server, mine, "action=cancel", NULL), ==, 404);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(dir);
+}
+
 /* Delivery retains its private link while every generic serialized view omits it. */
 static void
 test_private_invitation(Fixture *f, gconstpointer data)
@@ -273,5 +449,6 @@ main(int argc, char **argv)
 	g_test_add("/portal/invite-pay-revoke", Fixture, NULL, setup, test_invite_pay_revoke, teardown);
 	g_test_add("/portal/http-isolation", Fixture, NULL, setup, test_http_isolation, teardown);
 	g_test_add("/portal/private-invitation", Fixture, NULL, setup, test_private_invitation, teardown);
+	g_test_add("/portal/subscriptions", Fixture, NULL, setup, test_subscriptions, teardown);
 	return g_test_run();
 }

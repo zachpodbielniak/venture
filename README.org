@@ -29,7 +29,7 @@ Either can be built alone. =make venturectl= works on a machine that cannot buil
 git submodule update --init --recursive
 make DEBUG=1              # debug build into build/debug
 make                      # release build into build/release
-make test                 # GTest suite
+make DEBUG=1 test         # GTest suite
 make run                  # run the server against a scratch SQLite database
 #+end_src
 

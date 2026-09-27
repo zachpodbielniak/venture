@@ -4,7 +4,8 @@
 * Selling Lightsite
 
 =billing= requires =invoicing= and =receivables=. A =plan= describes Starter
-or Pro; a =plan_price= describes one version of its monthly or yearly terms.
+or Pro; a =plan_price= describes one version of what it costs for one
+period -- every month, every 3 months, every 6 months or every year.
 The customer's commitment is a =customer_subscription=. The example
 plugin's =subscription= remains a recurring cost paid by the business.
 
@@ -17,12 +18,13 @@ the CLI, REST, automation or an approved assistant proposal.
 | Record | Meaning |
 |--------+---------|
 | =plan= | Organization, optional venture, name, organization-unique code, description, active flag |
-| =plan_price= | Plan, currency, month/year interval, exact amount, per-seat flag, trial days, active flag |
-| =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment |
+| =plan_price= | Plan, currency, interval (=month=, =quarter=, =half_year=, =year=), exact amount, per-seat flag, trial days, optional tax rate (=tax_code_id=), active flag |
+| =plan_discount= | Plan, name, whole percent off or amount off, number of periods (0 = every), optional code, offered-until date, active flag |
+| =customer_subscription= | Customer/contact, price, state, seats, period, trial and cancellation dates, external identity; pending terms and adjustment; discount and how many invoices it has covered |
 | =subscription_event= | Immutable effective-dated change, old/new terms and seats, proration, invoice and frozen MRR |
 | =dunning_step= | Active notice, retry, pause or cancel action at an overdue-day offset |
-| =billing_notice= | Durable email-channel notice; no email is sent |
-| =billing_request= | Stageable instruction and, after execution, its immutable result |
+| =billing_notice= | Durable dunning-notice record; the dunning step itself sends no email |
+| =billing_request= | Stageable instruction (including a start's =discount_code=) and, after execution, its immutable result |
 
 Plan codes and nonempty subscription external IDs are unique within their
 organization, including retained history. Empty external IDs are optional.
@@ -106,18 +108,71 @@ $90 plus the $14.48 pending adjustment: *$104.48*.
 A decrease of one seat on the same day produces *-$14.48*. Renewal issues
 its ordinary $30 invoice, creates a $14.48 customer credit through
 settlement, and applies it, leaving *$15.52* outstanding. Credit beyond an
-invoice's amount remains customer credit. Adjustments accumulate exactly
+invoice's amount remains customer credit. The allocation covers the whole
+invoice balance, including tax and metered usage, rather than only the base
+price.
+
+A carried credit gives back tax the way cancelling now does: when the
+invoice of the period being credited charged tax, the credit note carries
+the same share of it (=tax-amount= and that line's jurisdiction) and its
+amount is the difference plus that tax. $100 a month at 10% moved to $50
+half way through a 30-day month credits $25.00 plus $2.50: *$27.50*, the
+tax the customer paid on the days they did not use. A carried charge is
+the mirror image: it is added to the new period's line and taxed with it.
+The share is the credited invoice line's frozen tax over its frozen
+income, so an exemption or an address rate carries over unchanged.
+Adjustments accumulate exactly
 until renewal. Trials and scheduled changes add no immediate adjustment.
+
+Changes compare the discounted prices while the discount covers the current
+period, including its last covered invoice. Keeping the same plan retains its
+discount on both sides; moving to another plan compares the old discounted
+price with the new plan's full price. A discount that expires at renewal does
+not retroactively increase the adjustment for days already served. For example,
+with 50% off, the third January seat above adds $7.20, not $14.48; the next
+invoice is $52.20 if the discount continues, or $97.20 if it has ended.
 
 Price versions may use different minor-unit exponents in the same currency; credit allocation compares their monetary values with checked rescaling.
 Changing currency is refused. A change between monthly and yearly terms
 normalizes both prices to the service period already in progress before
 allocation, including repeated interval changes within that period.
 
-Cancellation does not automatically refund an already invoiced period.
-Pending adjustments remain explicit on a subscription cancelled before
-renewal and require a deliberate final invoice or credit decision. There
-is no implicit refund or payment-provider request.
+* Cancelling now
+
+=billing cancel ID= without =at_period_end=true= credits the unused days of
+the period being served, prorated exactly as a downgrade to nothing would
+be: the period's charge -- the price, less its discount when the discount
+covered this period, scaled to the period's months -- is negated, spread
+over the period's days with =VentureMoney=, and only the days from the
+cancellation date to the period's end are summed. Worked on the example
+above: $60 billed for January, cancelled on January 17, spreads -6,000
+cents over 31 days (-194 on the first 17, -193 on the rest); the remaining
+fifteen days are =-194 - 14 * 193 = -2,896=: *$28.96* is credited.
+
+Only a period that was actually invoiced is credited: the service finds the
+start or renewal event that billed the current period, so a trial, a
+period nobody invoiced, and a cancellation dated on or after the period's
+end give nothing. A part-period difference still carried from a change
+this period is folded in, because no renewal will ever settle it, and the
+carried amount is cleared. When the period's invoice charged tax, the
+credit carries the same share of tax (=tax-amount= and the line's
+jurisdiction on the credit note), so the customer gets back the tax on the
+days they will not use and the sales tax return shows it credited.
+
+The credit is a =customer_credit= of kind =credit_note= issued through
+settlement, applied to whatever is still owed on the period's invoice; the
+rest stays on the customer's account. A past-due customer is therefore not
+paid out for days they never paid for. The amount credited, tax included,
+is recorded negative as =proration_amount= on the cancellation's
+=subscription_event= and on the =billing_request= result. Because it posts
+money, an immediate cancellation runs under an accounting operation like a
+renewal. There is no payment-provider refund; paying the credit out is a
+deliberate =refund=.
+
+=venture_billing_service_cancel_credit()= answers the same figure without
+writing anything, which is what the subscription page's button shows.
+Cancelling at renewal credits nothing and starts no further base period.
+Final metered usage is still billed when the subscription ends.
 
 * Renewal and dunning sweeps
 
@@ -153,8 +208,9 @@ the failure episode. =recover= moves
 reports failure and recovery; an unpaid invoice alone does not fabricate a
 failed provider attempt.
 
-The mail lane must wire the =billing_notice= adapter to =VentureMailer=.
-This module imports no mail header and sends no mail. The optional
+The mail lane must wire the =billing_notice= adapter to =VentureMailer=;
+a dunning step queues no mail. The two customer notices the service does
+queue -- a trial ending and a price change -- are in [[*Telling the customer][Telling the customer]]. The optional
 [[file:stripe.org][Stripe adapter]] consumes its immutable invoice events, obtains hosted reusable
 customer permission and reports verified payment failure/recovery through this
 lifecycle. Neither module stores raw card data. A manual payment-method row alone
@@ -163,7 +219,9 @@ does not authorize a Stripe charge; hosted Setup evidence is required.
 * Surfaces and approval
 
 The Money sidebar links to the subscriptions list. Subscription pages have
-renew, pause, resume, cancel and change actions. REST uses
+renew, pause, resume, cancel and change actions. Cancelling is two buttons,
+each saying what it does to money: "Cancel now: $X.XX credited for the N
+days left" (or "nothing is credited") and "Cancel at renewal: no further base charges". REST uses
 =POST /api/v1/customer_subscriptions/:id/renew|change|cancel|pause|resume=;
 additional service verbs use the same shape. Start and sweeps use
 =POST /api/v1/billing/start|renew-sweep|dunning-sweep=. Bodies use underscores.
@@ -219,8 +277,10 @@ supplied); they never add currencies. Their notes carry these definitions:
   It is a forward-looking queue, not reconstructed historical schedules.
 
 These are contracted revenue metrics, not cash receipts or accounting
-revenue recognition. Usage metering, entitlements, payment integration and
-revenue recognition schedules remain separate follow-ups.
+revenue recognition. Usage metering and automatic payment collection are
+documented below and in [[file:stripe.org][Stripe collection]]. Metered usage
+is not recurring contracted revenue. Entitlements and revenue recognition
+schedules remain separate follow-ups.
 
 * Upgrade and verification
 
@@ -237,3 +297,239 @@ annual normalization, scheduled terms, migrations and report definitions.
 =test-billing-surfaces= exercises real REST, web actions, CLI subprocesses,
 staged approval and stale assistant proposals. The shared module, report,
 migration and authentication suites cover their integration points.
+
+* Discounts
+
+A plan offers discounts -- "20% off the first 3 periods", "$10.00 off every
+period". One is chosen when a customer is started on the plan
+(=discount_id= on the start instruction); =VentureBillingService= refuses a
+discount of another plan, one retired or past its offered-until date, and
+one that names both a percent and an amount or neither. Each invoice the
+subscription issues -- the first and every renewal -- takes the discount off
+the plan's charge while it still covers invoices, counts it on the
+subscription, and says so on the invoice line; a part-period adjustment is
+added after the discount, not discounted. An amount off larger than the
+charge makes the invoice free, never a credit. Moving to another price of
+the same plan keeps the discount; moving to another plan ends it.
+
+MRR counts the discount. An event's MRR is what the period being served is
+billed at: the price less the discount while the discount covers that
+period, divided by the period's months (a percent off, or an amount off
+per period, so $120 off a $600 yearly price is $40.00 a month). Invoices
+are counted from the start, and a discount covers the first N, so the
+period's invoice was discounted when no more than N have been issued; the
+discounted-invoice counter on the subscription stops at N and cannot tell
+the Nth invoice from the next. MRR returns to the list price at the
+renewal the discount no longer covers, which the report reads as
+expansion.
+
+A start can also skip the price's free trial (=skip_trial=true=): the first
+period is billed on the day, as for a price with no trial. The invoice line
+names the plan, the price, the seats, the period and any discount, rather
+than "renewal".
+
+* Starting a subscription from a quote
+
+A quote line may name a plan price (=plan_price_id=); its =quantity= is the
+seats. The line is priced at the plan price and takes no discount or tax
+rate of its own (the subscription's invoices would not charge them); it
+carries the price's tax rate, and the quote taxes it as the first invoice
+will -- nothing for an exempt customer, the price's rate when it has one,
+otherwise the customer's address rate as of today, through
+=venture_billing_service_price_tax_rate()=, the same answer the
+next-invoice preview gives. A flat price takes one seat, and a quote
+proposes one subscription. Accepting the quote leaves
+that line out of the acceptance invoice -- the subscription's first invoice
+bills it -- and a quote that is only a subscription issues no acceptance
+invoice at all.
+
+On the accepted quote, *Start subscription* (quote action
+=start-subscription=; =POST /quotes/:id/start-subscription=,
+=POST /api/v1/quotes/:id/start-subscription=, =venturectl quote
+start-subscription ID=) runs this service's own =start= through
+=venture_billing_service_execute()= for the quote's customer and contact,
+with the line's price and seats, now. The start instruction carries
+=quote_id=; the service refuses a quote that is not accepted, is for another
+customer, or already started a subscription -- by its own =subscription_id=
+or because a subscription already names it -- so a second start fails
+whether it comes from the quote or around it. The subscription records
+=quote_id=, the quote records =subscription_id= and the action its
+=result_subscription_id=. The quote page says "Started subscription ..." and
+the subscription page "From quote ...". A plan discount is not carried from
+a quote; add it on the subscription's plan instead. Whole-operation approval
+is taken before the quote's transaction when the start will issue an invoice.
+
+* Usage-based pricing
+
+A plan price is metered when it names a =usage_unit= ("API calls"); it then
+needs a =unit_amount= per unit in its own currency, and may include
+=included_units= each period. The base =amount= is still charged each period
+(it may be zero). A =usage_record= reports use: =subscription_id=, a positive
+whole =quantity=, =occurred_at= (now when empty) and an optional
+=idempotency_key=, unique per organization including deleted rows. A repeated
+key is refused as a conflict naming the first record, so a sender retrying a
+lost response is not counted twice. Usage is refused for a flat price, an
+ended subscription, or a time before the current period -- that period is
+already invoiced -- and billed usage cannot be edited, deleted or restored.
+
+At renewal the invoice charges the new period's base price in advance and
+the ended period's usage in arrears, as its own line on the same invoice:
+"240 API calls x $0.01 (1,240 used, 1,000 included), 2026-01-01 to
+2026-02-01". Usage is counted in [start, end), so a report at exactly the
+renewal instant belongs to the new period and is billed once. The charge is
+the whole count times the rate, rounded once, half to even, to the currency
+(1,235 calls at $0.001 is $1.24). The rate is the one in force at the end of
+the period, even when a scheduled change moves the price at that renewal.
+Usage within the included units adds no line; usage during a free trial is
+not charged; the plan discount applies to the base charge only.
+When a subscription ends -- cancelled now, or at renewal -- the usage of
+its last stretch, from the period's start to the moment it ends, is billed
+beyond the included units on an invoice of its own, numbered
+=USAGE-<subscription uuid>-<date>=. The billing request reports it; the
+cancel event names it separately as =final_invoice_id=, so usage is not
+counted as another recurring period or discount installment. Both subscription
+pages show this invoice. Existing verified collection permission can collect
+this final bill within its unchanged terms and limit; ordinary invoices do
+not gain permission after cancellation. A trial is not charged.
+Usage records remain protected from deletion after either kind of cancellation.
+Migration 000690 recovers an existing final-invoice association only from a
+unique completed billing request, never from an invoice status.
+
+Record usage with =POST /api/v1/usage_records= (or =usage_record=) or
+=venturectl billing usage SUB quantity=N [key=K] [at=DATE]=, which sends the
+numbers as JSON integers. The subscription page shows the period's usage so
+far and what it adds up to.
+
+The next invoice a customer is told about -- in the trial reminder, the
+price-change notice and the customer portal -- is worked out as the
+renewal will issue it: the price, the discount while it covers invoices,
+a carried part-period charge, and the explicit price tax rate or the
+customer-address rate effective at renewal, unless the customer is exempt; a carried credit comes off after tax, together with the tax the credited period's invoice charged on it. This is the scheduled base
+charge, not a forecast of usage: metered units can still accrue before
+renewal and add their own line.
+
+* Periods
+
+Every period is a whole number of calendar months --
+=venture_billing_interval_months()= answers 1, 3, 6 or 12 -- so a renewal
+stays on the customer's billing day and MRR divides a price by its months
+exactly. A change part-way through a period prorates over that period's
+days, with each price scaled to the period first, so a monthly and a yearly
+price compare over the same days. =quarter= and =half_year= were appended
+to the enum; a stored price reads back by value, so their order is fixed.
+
+* In the web interface
+
+*Plans* are under Money in, next to Subscriptions. A plan is made at
+=/plans/new= with its prices on the same sheet: one row per period it is
+sold by, each with its amount (the business's currency is assumed), a
+per-seat box and a free trial. The plan and its prices are saved in one
+transaction, and a plan with no price is refused, because nobody could be
+put on it. A plan's page lists its prices with how many customers are on
+each, adds a price for another period, and retires or re-offers one --
+retiring stops a price being offered without moving anybody off it.
+Each price can carry a tax rate -- a Tax select on the sheet and on "Add a
+price", "No tax" first, then each active rate with its percent. The
+invoice line a price issues carries that =tax_code_id=, so settlement
+taxes it exactly; "No tax" leaves the line to the customer's address, as
+any invoice line without a rate. A customer marked tax exempt stays
+exempt: settlement freezes the exemption from the company at issue.
+Existing prices have no rate (migration =000650=), and a price in use is
+immutable, so taxing an existing plan is a new price and a move.
+
+A retired price that still has customers offers "Move its N customers
+to..." with the plan's offered prices and the two timings a single change
+has: at renewal, or right now with the difference prorated. =POST
+/plans/:id/prices/:price/move= calls
+=venture_billing_service_move_customers()=, which runs one ordinary
+=change= =billing_request= per trialing, active or past-due subscription
+through =venture_billing_service_execute()=, all inside one transaction.
+Any refusal rolls every move back, and the page says which customer
+stopped it and why. Paused subscriptions cannot change terms and stay. A
+subscription already scheduled to switch onto the retired price at
+renewal is redirected to the new price at renewal -- whichever timing was
+chosen, since it keeps its current price until then -- or it would land
+on the retired price anyway.
+
+A plan belongs to a venture -- the sheet asks whose, and picks it when
+there is only one -- or is shared by every venture. A customer is put
+only on their own venture's plans or shared ones: =VentureBillingService=
+refuses anything else at start and at a plan change, from every surface.
+A customer with no venture may take any plan, and changing seats keeps
+the terms already agreed. The new-subscription page narrows the plan list
+to the chosen customer's venture; the change-plan list is narrowed on the
+server.
+
+A plan's page has a Discounts card beside its prices: each discount with
+its code and how many customers have it, retire and re-offer, and a line to
+add one -- "20%" is a percent, "10" an amount in the business's currency,
+and an empty period count is every period. The new-subscription page offers
+the chosen plan's discounts, and, when the price has a free trial, a box to
+skip it; it says when the first invoice will be issued. A subscription's
+page lists the invoices it has issued and what is still owed on each.
+
+The subscription pages offer every active price of every active plan,
+grouped under the plan's name, and name any active plan that has no price
+yet with a link to price it. A new record's "Active" box starts ticked on
+every generated form: a plan or price saved inactive was never offered,
+and nothing said why.
+
+New invoice asks "How often?" first, with three answers that each say what they mean:
+
+- *Just once* -- one invoice, composed on the sheet and sent now.
+- *Same invoice, on a schedule* -- the same sheet in repeat mode. Its customer and lines become a =recurring_schedule= template (weekly, monthly or yearly from a first date, optionally to a last), issued as drafts or automatically. Editing the schedule changes invoices still to come; nothing is prorated.
+- *A customer on a plan* -- =/billing/subscriptions/new=, which starts a =customer_subscription= through =VentureBillingService=.
+
+A subscription's page leads with "What happens next": when it renews and at what price, a trial's end, a scheduled switch, and any part-period difference carried to the next invoice. Changing the plan offers the two choices with what each does -- at renewal (today's price stands until then) or right now (the difference for the days left is added to the next invoice or credited, as in [[*Proration][Proration]]).
+
+* Telling the customer
+
+=VentureBillingService= queues two plain-text messages through the mail
+outbox, in the instruction's own transaction -- a notice exists exactly
+when its change committed, and delivery is the outbox's after commit. They
+go to the subscription's contact, else the company's email; with neither,
+or with mail off, nothing is queued and nothing fails. See
+[[file:mail.org][Subscription notices]] for the wording.
+
+- A renewal sweep tells a trialing customer, =billing.trial_reminder_days=
+  (3) before the trial ends, the date and what the first invoice will be.
+  Keyed by the subscription, so once. The subscription's "What happens
+  next" says whether it was queued or sent, and to whom, or when it will be.
+  A subscription whose invoice cannot be worked out (its company deleted,
+  say) is skipped with a log line rather than rolling back the sweep's
+  renewals; the next sweep tries it again.
+- =change= and =change-seats= tell the customer what changed, when it takes
+  effect and the next invoice, keyed by the change's =subscription_event=
+  uuid, so each change once. =billing.price_change_notices: false= turns
+  them off.
+
+Both give dates on the business calendar, =locale.timezone=, as the
+portal does: a trial ending at 02:00 UTC ends the evening before in New
+York, and the reminder says so. A carried credit is quoted with its tax.
+
+"What the next invoice will be" is =venture_billing_service_next_invoice()=:
+the price the subscription switches to at renewal, the discount while it
+still covers invoices, and the part-period difference carried to it; a
+credit larger than the charge makes it zero. Nothing is written to work it
+out. It is the same scheduled base charge the customer portal shows;
+metered usage is additional and is calculated when the period closes.
+
+Once a discount is used, its terms are kept with the agreement: it cannot
+be edited or deleted, including after the customer moves to another plan.
+Retire it with =active=false= to stop new claims, or create a new offer.
+Existing subscriptions keep the original discount and can still renew.
+
+* Discount codes
+
+A =plan_discount='s =code= is what a customer quotes. A start may give
+=discount_code= instead of =discount_id=: the service looks among the chosen
+price's plan's discounts, comparing without regard to case or surrounding
+spaces, and refuses in words a code nobody offers ("the code WINTER is not
+one this plan offers"), a retired one ("is no longer offered") or one past
+its offered-until date ("expired on 2026-03-31"). A matching live code
+becomes the start's =discount_id= and is then held to every rule a chosen
+discount is. Naming both is refused. The new-subscription page has a "Have
+a code?" box beside the discount list; the CLI takes
+=billing start ... discount_code=SPRING25=, REST =discount_code=. Migration
+=000660_billing_discount_codes.sql= checks the new request column and
+invents no codes for earlier starts.

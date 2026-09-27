@@ -375,6 +375,173 @@ venture_entity_class_get_column_flags(
 	return *(VentureColumnFlags *)value;
 }
 
+/* --- What a person calls the type ---------------------------------------- */
+
+typedef struct
+{
+	gchar *singular;
+	gchar *plural;
+} VentureEntityLabels;
+
+static GQuark
+venture_entity_labels_quark(void)
+{
+	static GQuark quark = 0;
+
+	if (0 == quark)
+		quark = g_quark_from_static_string("venture-entity-labels");
+
+	return quark;
+}
+
+void
+venture_entity_class_set_labels(
+	VentureEntityClass	*klass,
+	const gchar		*singular,
+	const gchar		*plural
+){
+	VentureEntityLabels *labels;
+
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != singular);
+
+	/* Type data lives as long as the type, which is the process, so the
+	 * strings are deliberately never freed -- the same lifetime as the
+	 * field metadata beside them. */
+	labels = g_new0(VentureEntityLabels, 1);
+	labels->singular = g_strdup(singular);
+	labels->plural = g_strdup(plural);
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass),
+	                 venture_entity_labels_quark(), labels);
+}
+
+/*
+ * "attribution_submission" or "VentureAttributionSubmission" to
+ * "Attribution submission". ASCII only, as every type name is.
+ */
+static gchar *
+venture_entity_humanise_type(GType type)
+{
+	g_autoptr(GString) label = NULL;
+	const gchar *name;
+	gsize i;
+
+	name = g_type_get_qdata(type,
+		g_quark_from_static_string("venture-entity-name"));
+
+	if (NULL == name)
+	{
+		name = g_type_name(type);
+
+		if (g_str_has_prefix(name, "Venture") && ('\0' != name[7]))
+			name += strlen("Venture");
+	}
+
+	label = g_string_new(NULL);
+
+	for (i = 0; '\0' != name[i]; i++)
+	{
+		gchar c = name[i];
+
+		if (('_' == c) || ('-' == c))
+		{
+			g_string_append_c(label, ' ');
+			continue;
+		}
+
+		if (g_ascii_isupper(c) && (i > 0))
+			g_string_append_c(label, ' ');
+
+		g_string_append_c(label, (0 == label->len)
+			? g_ascii_toupper(c) : g_ascii_tolower(c));
+	}
+
+	return g_string_free(g_steal_pointer(&label), FALSE);
+}
+
+/*
+ * English plurals for the names the tree actually has: "company" to
+ * "companies", "tax" to "taxes", "batch" to "batches". A type whose plural
+ * is irregular says so with venture_entity_class_set_labels().
+ */
+static gchar *
+venture_entity_pluralise(const gchar *singular)
+{
+	gsize length;
+
+	length = strlen(singular);
+
+	if ((length > 1) && ('y' == singular[length - 1]) &&
+	    (NULL == strchr("aeiou", singular[length - 2])))
+		return g_strdup_printf("%.*sies", (gint)(length - 1), singular);
+
+	if (g_str_has_suffix(singular, "s") || g_str_has_suffix(singular, "x") ||
+	    g_str_has_suffix(singular, "ch") || g_str_has_suffix(singular, "sh"))
+		return g_strconcat(singular, "es", NULL);
+
+	return g_strconcat(singular, "s", NULL);
+}
+
+void
+venture_entity_class_set_create_path(
+	VentureEntityClass	*klass,
+	const gchar		*path
+){
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != path && '/' == path[0]);
+
+	/* Lives as long as the type, like the labels beside it. */
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass),
+		g_quark_from_static_string("venture-entity-create-path"),
+		g_strdup(path));
+}
+
+const gchar *
+venture_entity_type_get_create_path(GType type)
+{
+	g_autoptr(GTypeClass) klass = NULL;
+
+	g_return_val_if_fail(g_type_is_a(type, VENTURE_TYPE_ENTITY), NULL);
+
+	klass = g_type_class_ref(type);
+
+	return g_type_get_qdata(type,
+		g_quark_from_static_string("venture-entity-create-path"));
+}
+
+gchar *
+venture_entity_type_dup_label(
+	GType		type,
+	gboolean	plural
+){
+	const VentureEntityLabels *labels;
+	g_autofree gchar *singular = NULL;
+	g_autoptr(GTypeClass) klass = NULL;
+
+	g_return_val_if_fail(g_type_is_a(type, VENTURE_TYPE_ENTITY), NULL);
+
+	/* The labels are set in class_init, which has not run for a type
+	 * nobody has instantiated yet. */
+	klass = g_type_class_ref(type);
+	labels = g_type_get_qdata(type, venture_entity_labels_quark());
+
+	if (NULL != labels)
+	{
+		if (!plural)
+			return g_strdup(labels->singular);
+
+		if (NULL != labels->plural)
+			return g_strdup(labels->plural);
+
+		return venture_entity_pluralise(labels->singular);
+	}
+
+	singular = venture_entity_humanise_type(type);
+
+	return plural ? venture_entity_pluralise(singular)
+	              : g_steal_pointer(&singular);
+}
+
 void
 venture_entity_class_set_reference(
 	VentureEntityClass	*klass,
@@ -393,6 +560,58 @@ venture_entity_class_set_reference(
 
 	g_hash_table_insert(table, g_strdup(property_name),
 	                    g_strdup(target_entity_name));
+}
+
+const gchar *
+venture_entity_class_get_shared_parent(
+	VentureEntityClass	*klass,
+	const gchar		*property_name
+){
+	g_autofree GParamSpec **properties = NULL;
+	g_autoptr(GTypeClass) target_class = NULL;
+	const gchar *target_name;
+	GType target_type;
+	guint n_properties;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY_CLASS(klass), NULL);
+	g_return_val_if_fail(NULL != property_name, NULL);
+
+	target_name = venture_entity_class_get_reference(klass, property_name);
+	if (NULL == target_name)
+		return NULL;
+	target_type = venture_entity_registry_lookup_any(
+		venture_entity_registry_get_default(), target_name);
+	if (G_TYPE_INVALID == target_type)
+		return NULL;
+
+	target_class = g_type_class_ref(target_type);
+	properties = venture_entity_class_list_persistent_properties(
+		VENTURE_ENTITY_CLASS(target_class), &n_properties);
+
+	for (i = 0; i < n_properties; i++)
+	{
+		const gchar *name = properties[i]->name;
+		const gchar *theirs;
+		GParamSpec *ours;
+
+		theirs = venture_entity_class_get_reference(
+			VENTURE_ENTITY_CLASS(target_class), name);
+		/* Every record shares its organization; that is tenancy, not a
+		 * parent a person picks. */
+		if (NULL == theirs || 0 == g_strcmp0(name, property_name) ||
+		    0 == g_strcmp0(name, "organization-id"))
+			continue;
+
+		/* Ours, interned by the class, so the pointer outlives the
+		 * target class reference dropped on return. */
+		ours = g_object_class_find_property(G_OBJECT_CLASS(klass), name);
+		if (NULL != ours &&
+		    0 == g_strcmp0(venture_entity_class_get_reference(klass, name), theirs))
+			return ours->name;
+	}
+
+	return NULL;
 }
 
 const gchar *
@@ -590,9 +809,16 @@ venture_entity_real_get_display_name(VentureEntity *self)
 			return g_steal_pointer(&text);
 	}
 
-	return g_strdup_printf("%s #%" G_GINT64_FORMAT,
-	                       venture_entity_get_entity_name(self),
-	                       venture_entity_get_id(self));
+	/* What a person calls the type, not its table name: "Form
+	 * submission #12" rather than "attribution_submission #12". */
+	{
+		g_autofree gchar *label = NULL;
+
+		label = venture_entity_type_dup_label(G_OBJECT_TYPE(self), FALSE);
+
+		return g_strdup_printf("%s #%" G_GINT64_FORMAT, label,
+		                       venture_entity_get_id(self));
+	}
 }
 
 static gchar *

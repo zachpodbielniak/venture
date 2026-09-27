@@ -52,16 +52,14 @@ that attempts an in-process request while it blocks, active server destruction,
 malformed length, invalid/overflowing startup limits before workspace binding,
 and a private GLib main context.
 
-That in-process case pins a constraint rather than a capability. libsoup 3 runs
-a route synchronously on the server's main context, so a route that blocks
-waiting on this same server gets no answer while it blocks -- iterating the
-context from inside the handler does not get the nested connection served.
-Nothing in VENTURE issues an in-process request from a handler; the case exists
-to prove the attempt costs the limits nothing. Whether the abandoned connection
-is dispatched once the handler returns or dropped when its client gives up is a
-socket race, so the check bounds it instead of pinning it: either way the
-receive budget is released, the connection slot is reclaimed, and the next
-full-size request is served exactly once.
+The in-process case checks resource release, not nested-loop scheduling.
+A route runs synchronously, but iterating its main context can serve a nested
+connection before the bounded client gives up. When a response arrives, the
+case requires HTTP 200 and exactly one nested dispatch; a receive-budget 503
+fails the test. If the client times out first, the abandoned connection may be
+dispatched later or dropped. Both outcomes must release the receive budget and
+connection slot, and a subsequent full-size request must be served exactly
+once. No application feature depends on issuing a request to its own server.
 
 A complete rerun under a private TMPDIR passed the litter check and removed its
 directory.

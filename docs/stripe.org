@@ -253,6 +253,20 @@ only after the local deletion intent was durable. Customer-action-required and
 exhausted attempts require operator recovery. Manual cancellation stops automatic
 collection for that authorization until the customer gives fresh permission.
 
+Verification also keeps which method collects, as =method_label= -- "card
+ending 4242" or "bank account ending 6789", from the verified PaymentMethod's
+last four digits and nothing else. The subscription page says "Waiting for
+payment of $X -- it will be collected automatically from card ending 4242",
+"... collection ... is in progress" while a request is out, and "Collected
+automatically from card ending 4242" once a signed event settled it.
+Permissions verified before this field existed show "the saved payment
+method". Renewal invoices, including their usage lines, are collected by the
+same scheduled check as the first: the check renews a due period and then
+requests collection of the oldest unsettled billing invoice, so a renewal is
+submitted once the earlier invoice is paid (=/stripe/automatic-renewal-collection=).
+The per-invoice limit the customer agreed to still applies: a renewal whose
+usage takes it over the limit is refused rather than charged.
+
 =billing collect= remains an operator-confirmed receipt for an authorized manual
 method. Stored =customer_payment_method= rows do not authorize Stripe charges.
 Subscription state is observable billing state, not an independent entitlement
@@ -351,3 +365,14 @@ empty. No live merchant credentials or bank accounts are used by these tests.
 
 The repeatable built-artifact operator transcripts are in
 [[file:stripe-automatic-demonstration.org][the automatic-collection demonstration]].
+
+* Final metered usage
+
+Cancellation can issue one final usage invoice. Its terminating subscription
+event retains =final_invoice_id= separately from a recurring period's
+=invoice_id=. The automatic collection sweep includes that final invoice
+under an existing verified authorization, with the same customer, price,
+seats and per-invoice limit. It does not create fresh consent for a cancelled
+subscription or collect its ordinary invoices after cancellation. Disabling
+or revoking authorization still prevents provider contact. Payment settles
+the final invoice without reactivating the subscription.

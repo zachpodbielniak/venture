@@ -505,7 +505,6 @@ venture_auth_from_token(
 	{
 		VentureAuthPrincipal *principal;
 		VentureEntity *token;
-		g_autofree gchar *name = NULL;
 		VentureUserRole role;
 		gint64 user_id;
 
@@ -514,16 +513,22 @@ venture_auth_from_token(
 		if (!venture_api_token_matches(VENTURE_API_TOKEN(token), presented))
 			continue;
 
-		g_object_get(token, "name", &name, "role", &role,
-		             "user-id", &user_id, NULL);
+		g_object_get(token, "role", &role, "user-id", &user_id, NULL);
 
 		principal = g_new0(VentureAuthPrincipal, 1);
 		principal->authenticated = TRUE;
 		principal->token_id = venture_entity_get_id(token);
 		principal->user_id = user_id;
 		principal->role = role;
-		principal->name = g_strdup_printf("token:%s",
-			(NULL != name) ? name : prefix);
+		/*
+		 * Machine traffic is named by the token's number, never its
+		 * name: the name is whatever the owner typed ("stripe-live",
+		 * "zach-laptop") and this string lands in the audit log, the
+		 * activity on every record and the inbox, which the viewer role
+		 * reads. The owner can look the number up on the tokens page.
+		 */
+		principal->name = g_strdup_printf("API token #%" G_GINT64_FORMAT,
+			venture_entity_get_id(token));
 
 		if (!venture_orgaccess_limit_token(self, database, principal))
 		{

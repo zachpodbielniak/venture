@@ -1242,7 +1242,9 @@ test_cli_reset(Fixture *fixture, gconstpointer user_data)
 		venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
 		entry = venture_database_find_one(fixture->database, query, NULL);
 		g_object_get(entry, "actor", &who, NULL);
-		g_assert_nonnull(strstr(who, "token:cli"));
+		/* Attributed to the token by number, never by its name. */
+		g_assert_true(g_str_has_prefix(who, "API token #"));
+		g_assert_null(strstr(who, "cli"));
 	}
 	/* A bad usage line is refused before any request is made. */
 	g_clear_object(&process);

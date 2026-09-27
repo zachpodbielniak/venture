@@ -526,6 +526,64 @@ venture_entity_class_get_field_order(
 );
 
 /**
+ * venture_entity_class_set_labels:
+ * @klass: a #VentureEntityClass
+ * @singular: what one record is called, in sentence case: "Form submission"
+ * @plural: (nullable): what several are called, when English does not
+ *   follow from @singular
+ *
+ * Names the type the way a person would. Without it the name is derived
+ * from the type's own name ("attribution_submission" reads "Attribution
+ * submission"), which is right for most types and wrong for the ones whose
+ * internal name describes the machinery rather than the thing.
+ */
+void
+venture_entity_class_set_labels(
+	VentureEntityClass	*klass,
+	const gchar		*singular,
+	const gchar		*plural
+);
+
+/**
+ * venture_entity_class_set_create_path:
+ * @klass: a #VentureEntityClass
+ * @path: the page that makes one, such as "/invoices/compose"
+ *
+ * Names the page a person uses to create a record of this type when the
+ * generated form is not it -- an invoice is composed with its lines, a
+ * subscription is started on a plan. Every "New" button for the type goes
+ * there.
+ */
+void
+venture_entity_class_set_create_path(
+	VentureEntityClass	*klass,
+	const gchar		*path
+);
+
+/**
+ * venture_entity_type_get_create_path:
+ * @type: a #VentureEntity subtype
+ *
+ * Returns: (transfer none) (nullable): the page that creates one, or %NULL
+ *   for the generated form
+ */
+const gchar *
+venture_entity_type_get_create_path(GType type);
+
+/**
+ * venture_entity_type_dup_label:
+ * @type: a #VentureEntity subtype
+ * @plural: whether to name several records rather than one
+ *
+ * Returns: (transfer full): what a person calls @type
+ */
+gchar *
+venture_entity_type_dup_label(
+	GType		type,
+	gboolean	plural
+);
+
+/**
  * venture_entity_class_set_column_flags:
  * @klass: a #VentureEntityClass
  * @property_name: the GObject property name
@@ -572,6 +630,26 @@ venture_entity_class_set_reference(
 	VentureEntityClass	*klass,
 	const gchar		*property_name,
 	const gchar		*target_entity_name
+);
+
+/**
+ * venture_entity_class_get_shared_parent:
+ * @klass: a #VentureEntityClass
+ * @property_name: a reference property of @klass
+ *
+ * The parent a reference's target shares with the record: the first
+ * reference property the target type declares under the same name, and to
+ * the same type, as one @klass declares. For an invoice's `contact-id`
+ * that is `company-id` -- a contact works for a company and an invoice is
+ * to one.
+ *
+ * Returns: (transfer none) (nullable): the shared property name, or %NULL
+ *   when @property_name is not a reference or the target shares nothing
+ */
+const gchar *
+venture_entity_class_get_shared_parent(
+	VentureEntityClass	*klass,
+	const gchar		*property_name
 );
 
 /**

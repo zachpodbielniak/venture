@@ -69,6 +69,147 @@ test_upgrade_restart(void)
 	venture_test_remove_tree(directory);
 }
 
+/* The single text value of @sql. */
+static gchar *
+query_text(VentureDatabase *database, const gchar *sql)
+{
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+
+	result = venture_database_query_raw(database, sql, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	return g_strdup(orm_row_get_string(orm_result_get_row(result), 0));
+}
+
+/* Whether @table exists, through the same introspection startup uses. */
+static gboolean
+table_exists(VentureDatabase *database, const gchar *table)
+{
+	g_autoptr(OrmInspector) inspector = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean exists;
+
+	inspector = orm_inspector_new(venture_database_get_connection(database), &error);
+	g_assert_no_error(error);
+	exists = orm_inspector_has_table(inspector, table, NULL, &error);
+	g_assert_no_error(error);
+	return exists;
+}
+
+/*
+ * API token names written into the audit log and the inbox before actors
+ * were named by number are rewritten on upgrade: a name one token holds
+ * becomes "API token #<id>", a name two share becomes "API token", and a
+ * person's name is left alone. If this regresses, the names an owner gave
+ * their tokens stay readable by every viewer in every old entry.
+ */
+static void
+test_token_actor_names(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *unique = NULL, *shared = NULL, *person = NULL, *inbox = NULL, *expected = NULL, *id = NULL;
+	g_autofree gchar *approver = NULL, *approving_person = NULL;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO api_tokens (uuid, organization_id, created_at, updated_at, version, name, prefix, token_hash) "
+		"VALUES ('00000000-0000-4000-8000-000000000001', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'deploy-bot', 'aaaaaaaa', 'x'),"
+		" ('00000000-0000-4000-8000-000000000002', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'laptop', 'bbbbbbbb', 'y'),"
+		" ('00000000-0000-4000-8000-000000000003', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'laptop', 'cccccccc', 'z');"
+		"INSERT INTO audit_entries (uuid, organization_id, created_at, updated_at, version, action, actor, target_type, target_id, approved_by) "
+		"VALUES ('00000000-0000-4000-8000-000000000011', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'token:deploy-bot', 'company', 1, 'token:laptop'),"
+		" ('00000000-0000-4000-8000-000000000012', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'token:laptop', 'company', 1, NULL),"
+		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner'),"
+		/* A person may be called anything; only the exact prefix is a
+		 * token, on SQLite as on PostgreSQL. */
+		" ('00000000-0000-4000-8000-000000000014', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'Token:laptop', 'company', 1, NULL);"
+		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
+		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'token:deploy-bot assigned you: Fix token:deploy-bot', 'token:deploy-bot'),"
+		" ('00000000-0000-4000-8000-000000000022', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'token:laptop updated Human company', 'token:laptop');"
+		"UPDATE audit_entries SET target_type = 'api_token', target_id = 999, "
+		"target_label = 'historical private name', "
+		"diff = '{\"name\":{\"from\":\"old private name\",\"to\":\"historical private name\"},\"active\":{\"from\":true,\"to\":false}}' "
+		"WHERE uuid = '00000000-0000-4000-8000-000000000012';"
+		"UPDATE audit_entries SET target_label = 'Human company', "
+		"diff = '{\"name\":{\"from\":\"Old company\",\"to\":\"Human company\"}}' "
+		"WHERE uuid = '00000000-0000-4000-8000-000000000013';"
+		/* Everything from 640 on, not just the two: an install that had
+		 * not reached 640 had not applied any later script either, and the
+		 * migrator refuses an older script once a newer one is recorded. */
+		"DELETE FROM schema_migrations WHERE version >= 640", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+
+	/* A restart applies the scripts again, as an upgrade would. */
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	id = query_text(database, "SELECT CAST(id AS TEXT) FROM api_tokens WHERE name = 'deploy-bot'");
+	expected = g_strdup_printf("API token #%s", id);
+	unique = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000011'");
+	shared = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000012'");
+	person = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000013'");
+	inbox = query_text(database, "SELECT actor FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000021'");
+	g_assert_cmpstr(unique, ==, expected);
+	g_assert_cmpstr(shared, ==, "API token");
+	g_assert_cmpstr(person, ==, "owner");
+	g_assert_cmpstr(inbox, ==, expected);
+	{
+		g_autofree gchar *title = query_text(database,
+			"SELECT title FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000021'");
+		g_autofree gchar *shared_title = query_text(database,
+			"SELECT title FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000022'");
+		g_autofree gchar *shared_inbox = query_text(database,
+			"SELECT actor FROM notifications WHERE uuid = '00000000-0000-4000-8000-000000000022'");
+		g_autofree gchar *capitalised = query_text(database,
+			"SELECT actor FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000014'");
+		g_autofree gchar *assigned = g_strdup_printf("%s assigned you: Fix token:deploy-bot", expected);
+
+		/* The inbox title led with the same name. Only that leading
+		 * actor is the token's; the ticket's own label is left as is. */
+		g_assert_cmpstr(title, ==, assigned);
+		g_assert_cmpstr(shared_title, ==, "API token updated Human company");
+		g_assert_cmpstr(shared_inbox, ==, "API token");
+		g_assert_cmpstr(capitalised, ==, "Token:laptop");
+	}
+	approver = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000011'");
+	approving_person = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000013'");
+	g_assert_cmpstr(approver, ==, "API token");
+	g_assert_cmpstr(approving_person, ==, "owner");
+	{
+		g_autofree gchar *label = query_text(database,
+			"SELECT target_label FROM audit_entries WHERE target_type = 'api_token'");
+		g_autofree gchar *text = query_text(database,
+			"SELECT diff FROM audit_entries WHERE target_type = 'api_token'");
+		g_autofree gchar *unchanged = query_text(database,
+			"SELECT diff FROM audit_entries WHERE target_label = 'Human company'");
+		g_autoptr(JsonNode) diff = venture_json_parse(text, NULL);
+		JsonObject *change = json_object_get_object_member(json_node_get_object(diff), "name");
+
+		/* The token need not still exist. Preserve the change and other
+		 * fields, while removing both historical names from its diff. */
+		g_assert_cmpstr(label, ==, "API token #999");
+		g_assert_null(strstr(text, "private name"));
+		g_assert_true(json_object_get_boolean_member(change, "redacted"));
+		g_assert_true(json_object_get_boolean_member(change, "changed"));
+		g_assert_nonnull(json_object_get_member(json_node_get_object(diff), "active"));
+		g_assert_nonnull(strstr(unchanged, "Human company"));
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+	}
+
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 /* A downgrade or edited migration must fail before schema reconciliation
  * can recreate a missing application table. */
 static void
@@ -274,7 +415,27 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database,
 		"INSERT INTO users (id, uuid, username, role, active) VALUES (17, 'pg-owner', 'pg-owner', 'owner', TRUE);"
-		"INSERT INTO organizations (id, uuid, name, slug, active) VALUES (31, 'pg-org', 'Legacy organization', 'pg-org', TRUE)", NULL, &error));
+		"INSERT INTO organizations (id, uuid, name, slug, active) VALUES (31, 'pg-org', 'Legacy organization', 'pg-org', TRUE);"
+		/* Token targets can outlive the token itself. Shared history must
+		 * retain the event without retaining either of its private names. */
+		"INSERT INTO audit_entries (uuid, organization_id, action, actor, target_type, target_id, target_label, diff) VALUES "
+		"('pg-token-audit', 31, 'update', 'owner', 'api_token', 999, 'Private token name', "
+		"'{\"name\":{\"from\":\"Old private name\",\"to\":\"Private token name\"},\"active\":{\"from\":true,\"to\":false}}'),"
+		"('pg-company-audit', 31, 'update', 'owner', 'company', 888, 'Public company name', "
+		"'{\"name\":{\"from\":\"Old public name\",\"to\":\"Public company name\"}}'),"
+		/* Not JSON, on another type: 000685 must not cast it. Nor is a
+		 * capitalised prefix a token's, here or on SQLite. */
+		"('pg-plain-audit', 31, 'update', 'Token:pg-bot', 'company', 887, 'Plain', 'not json');"
+		"INSERT INTO api_tokens (uuid, organization_id, name, prefix, token_hash) VALUES "
+		"('pg-token', 31, 'pg-bot', 'pgpgpgpg', 'pg-hash');"
+		"INSERT INTO notifications (uuid, organization_id, user_id, title, actor) VALUES "
+		"('pg-note', 31, 17, 'token:pg-bot updated Public company name', 'token:pg-bot');"
+		"INSERT INTO subscription_events (uuid, organization_id, subscription_id, kind, to_status, invoice_id, final_invoice_id) VALUES "
+		"('pg-recurring-event', 31, 77, 'renewed', 'active', 701, 0),"
+		"('pg-final-event', 31, 77, 'cancelled', 'cancelled', 0, 0);"
+		"INSERT INTO billing_requests (uuid, organization_id, subscription_id, action, processed, invoice_id, at) VALUES "
+		"('pg-recurring-request', 31, 77, 'renew', 1, 701, '2026-01-01T00:00:00Z'),"
+		"('pg-final-request', 31, 77, 'cancel', 1, 702, '2026-01-15T00:00:00Z')", NULL, &error));
 	g_assert_no_error(error);
 	runner = venture_migrations_new(venture_database_get_connection(database), VENTURE_DATABASE_BACKEND_POSTGRES, &error);
 	g_assert_no_error(error);
@@ -282,6 +443,47 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(orm_migrator_up(runner, 0, &error));
 	g_assert_no_error(error);
+	{
+		g_autofree gchar *label = query_text(database,
+			"SELECT target_label FROM audit_entries WHERE uuid = 'pg-token-audit'");
+		g_autofree gchar *text = query_text(database,
+			"SELECT diff FROM audit_entries WHERE uuid = 'pg-token-audit'");
+		g_autofree gchar *company = query_text(database,
+			"SELECT diff FROM audit_entries WHERE uuid = 'pg-company-audit'");
+		g_autoptr(JsonNode) diff = venture_json_parse(text, NULL);
+		JsonObject *change = json_object_get_object_member(json_node_get_object(diff), "name");
+
+		g_assert_cmpstr(label, ==, "API token #999");
+		g_assert_null(strstr(text, "private"));
+		g_assert_null(strstr(text, "Private"));
+		g_assert_true(json_object_get_boolean_member(change, "redacted"));
+		g_assert_true(json_object_get_boolean_member(change, "changed"));
+		g_assert_nonnull(json_object_get_member(json_node_get_object(diff), "active"));
+		g_assert_nonnull(strstr(company, "Public company name"));
+	}
+	{
+		g_autofree gchar *id = query_text(database, "SELECT CAST(id AS TEXT) FROM api_tokens WHERE uuid = 'pg-token'");
+		g_autofree gchar *title = query_text(database, "SELECT title FROM notifications WHERE uuid = 'pg-note'");
+		g_autofree gchar *actor = query_text(database, "SELECT actor FROM notifications WHERE uuid = 'pg-note'");
+		g_autofree gchar *plain = query_text(database, "SELECT actor FROM audit_entries WHERE uuid = 'pg-plain-audit'");
+		g_autofree gchar *expected_actor = g_strdup_printf("API token #%s", id);
+		g_autofree gchar *expected_title = g_strdup_printf("API token #%s updated Public company name", id);
+
+		g_assert_cmpstr(actor, ==, expected_actor);
+		g_assert_cmpstr(title, ==, expected_title);
+		g_assert_cmpstr(plain, ==, "Token:pg-bot");
+	}
+	{
+		g_autofree gchar *final_invoice = query_text(database,
+			"SELECT CAST(final_invoice_id AS TEXT) FROM subscription_events WHERE uuid = 'pg-final-event'");
+		g_autofree gchar *recurring_invoice = query_text(database,
+			"SELECT CAST(final_invoice_id AS TEXT) FROM subscription_events WHERE uuid = 'pg-recurring-event'");
+
+		/* A completed cancellation names its final usage invoice, not
+		 * the recurring invoice already owned by a renewal event. */
+		g_assert_cmpstr(final_invoice, ==, "702");
+		g_assert_cmpstr(recurring_invoice, ==, "0");
+	}
 	result = venture_database_query_raw(database,
 		"SELECT CAST(COUNT(*) AS BIGINT) FROM organization_memberships WHERE user_id = 17 AND organization_id = 31 AND role = 'owner' AND active", NULL, &error);
 	g_assert_no_error(error);
@@ -345,6 +547,163 @@ test_generator(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * The quote-subscription and metered-usage scripts on an upgraded
+ * database: a price and a subscription from before read back flat and
+ * unlinked -- nothing is invented for them -- a restart is a no-op, and
+ * with billing and quotes switched off, when none of their tables exist,
+ * the scripts still apply. If this regresses, an upgrade fabricates usage
+ * or quote links for old rows, or an install without billing cannot start.
+ */
+static void
+test_quote_subscriptions_and_usage(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *applied = NULL, *linked = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO plans (uuid, organization_id, created_at, updated_at, version, name, code, active) "
+		"VALUES ('00000000-0000-4000-8000-000000000031', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'Old', 'old', 1);"
+		"INSERT INTO plan_prices (uuid, organization_id, created_at, updated_at, version, plan_id, currency, interval, "
+		"amount_amount, amount_currency, amount_exponent, active) "
+		"VALUES ('00000000-0000-4000-8000-000000000032', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, "
+		"(SELECT id FROM plans WHERE code = 'old'), 'USD', 0, 3000, 'USD', 2, 1);"
+		"DELETE FROM schema_migrations WHERE version >= 670", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_clear_pointer(&applied, g_free);
+		applied = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version IN (670, 675, 678)");
+		g_assert_cmpstr(applied, ==, "3");
+		g_clear_object(&database);
+	}
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+		price = venture_database_find_one(database, query, &error);
+		g_assert_no_error(error);
+	}
+	g_assert_false(venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)));
+	linked = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM usage_records");
+	g_assert_cmpstr(linked, ==, "0");
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+
+	/* No billing, no quotes: their tables are absent and the scripts pass. */
+	{
+		g_autoptr(VentureConfig) config = venture_config_new();
+		g_autoptr(VentureContext) context = NULL;
+		g_autoptr(VentureDatabase) bare = NULL;
+		venture_config_set_module_enabled(config, "billing", FALSE);
+		venture_config_set_module_enabled(config, "quotes", FALSE);
+		bare = venture_database_new("sqlite://:memory:", &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, bare);
+		g_assert_true(venture_database_migrate(bare, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		/* Otherwise this passes just as well with both modules on. */
+		g_assert_false(table_exists(bare, "plan_prices"));
+		g_assert_false(table_exists(bare, "quote_lines"));
+		/* While the context lives: it is what lifts the registry mask,
+		 * which would otherwise hide billing from every later test. */
+		venture_config_set_module_enabled(config, "billing", TRUE);
+		venture_config_set_module_enabled(config, "quotes", TRUE);
+		g_clear_object(&context);
+	}
+}
+
+/*
+ * An install that used billing and Stripe and then switched both off
+ * still holds their tables, and startup must still succeed. The field
+ * tables of a hidden type are what gain final_invoice_id and
+ * method_label; if those tables were left behind, 000678's and 000690's
+ * UPDATEs would name a column that does not exist and the server would
+ * refuse to start. Worse, recording the scripts as skipped would mean the
+ * final-invoice backfill never ran once billing came back on.
+ */
+static void
+test_disabled_module_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *final_invoice = NULL, *recurring_invoice = NULL, *labels = NULL;
+	gboolean ok;
+
+	/* Stripe is off by default, so its tables need asking for. */
+	g_object_set(config, "stripe-enabled", TRUE, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	/* The shape of a database from before 678: neither column, and
+	 * neither script recorded. */
+	ok = venture_database_execute(database,
+		"INSERT INTO subscription_events (uuid, organization_id, created_at, updated_at, version, "
+		"subscription_id, kind, to_status, invoice_id) VALUES "
+		"('00000000-0000-4000-8000-000000000041', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 77, 'renewed', 'active', 701),"
+		" ('00000000-0000-4000-8000-000000000042', 1, '2026-01-15T00:00:00Z', '2026-01-15T00:00:00Z', 1, 77, 'cancelled', 'cancelled', 0);"
+		"INSERT INTO billing_requests (uuid, organization_id, created_at, updated_at, version, "
+		"subscription_id, action, processed, invoice_id, at) VALUES "
+		"('00000000-0000-4000-8000-000000000043', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 77, 'renew', 1, 701, '2026-01-01T00:00:00Z'),"
+		" ('00000000-0000-4000-8000-000000000044', 1, '2026-01-15T00:00:00Z', '2026-01-15T00:00:00Z', 1, 77, 'cancel', 1, 702, '2026-01-15T00:00:00Z');"
+		"DROP INDEX IF EXISTS idx_subscription_events_final_invoice_id;"
+		"ALTER TABLE subscription_events DROP COLUMN final_invoice_id;"
+		"ALTER TABLE stripe_authorizations DROP COLUMN method_label;"
+		"DELETE FROM schema_migrations WHERE version >= 678", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	g_clear_object(&context);
+	g_clear_object(&database);
+
+	/* Upgrade with both modules off. */
+	venture_config_set_module_enabled(config, "billing", FALSE);
+	g_object_set(config, "stripe-enabled", FALSE, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"subscription_event"), ==, G_TYPE_INVALID);
+	ok = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	/* The backfill ran now, from the rows that were there: the one
+	 * processed cancellation whose invoice no event already owns. */
+	final_invoice = query_text(database,
+		"SELECT CAST(final_invoice_id AS TEXT) FROM subscription_events WHERE uuid = '00000000-0000-4000-8000-000000000042'");
+	recurring_invoice = query_text(database,
+		"SELECT CAST(COALESCE(final_invoice_id, 0) AS TEXT) FROM subscription_events WHERE uuid = '00000000-0000-4000-8000-000000000041'");
+	g_assert_cmpstr(final_invoice, ==, "702");
+	g_assert_cmpstr(recurring_invoice, ==, "0");
+	labels = query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM pragma_table_info('stripe_authorizations') WHERE name = 'method_label'");
+	g_assert_cmpstr(labels, ==, "1");
+	/* Put back what the defaults say, while the context can lift it. */
+	venture_config_set_module_enabled(config, "billing", TRUE);
+	g_clear_object(&context);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -354,6 +713,9 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/optional-module", test_optional_module);
 	g_test_add_func("/migrations/postgresql", test_postgresql);
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
+	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
+	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
+	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);

@@ -151,7 +151,10 @@ venture_schema_create_table(
  * @registry: the record types to create tables for
  * @error: (out) (optional): return location for a #GError
  *
- * Creates or updates the table for every registered record type.
+ * Creates or updates the table for every registered record type. A type a
+ * disabled module hides is never given a new table, but a table it already
+ * has is updated: startup migrations may read the columns its field table
+ * declares, whether or not the module is on today.
  *
  * Returns: %TRUE on success
  */

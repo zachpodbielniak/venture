@@ -176,7 +176,8 @@ stripe_json_integer(JsonObject *object, const gchar *field, gint64 expected)
 }
 
 static gboolean
-stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization, GError **error)
+stripe_authorized_terms_for_collection(VentureStripeService *self, VentureEntity *authorization,
+	gboolean final_usage, GError **error)
 {
 	g_autoptr(VentureEntity) subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
 		stripe_number(authorization, "subscription-id"), error);
@@ -189,12 +190,38 @@ stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization
 	/* Referenced prices are commercially immutable in the billing validator.
 	 * Their permitted catalog-active edit must not cancel existing consent;
 	 * the captured GObject version remains provenance, not permission state. */
-	if (!stripe_flag(authorization, "enabled") || state > 2 ||
+	if (!stripe_flag(authorization, "enabled") || (state > 2 && !(final_usage && state == 4)) ||
 		stripe_number(subscription, "company-id") != stripe_number(authorization, "company-id") ||
 		stripe_number(subscription, "plan-price-id") != stripe_number(authorization, "plan-price-id") ||
 		stripe_number(subscription, "seats") != stripe_number(authorization, "seats"))
 		return refuse(error, "Authorization is disabled or subscription terms changed; new hosted permission is required");
 	return TRUE;
+}
+
+/* Ending a subscription keeps permission only for its already incurred
+ * final usage. New hosted setup and ordinary invoices remain live-only. */
+static gboolean
+stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization, GError **error)
+{
+	return stripe_authorized_terms_for_collection(self, authorization, FALSE, error);
+}
+
+/*
+ * "card ending 4242" or "bank account ending 6789", from the verified
+ * method's own last four digits. Nothing else of the method is kept, and
+ * anything that is not four digits is dropped rather than shown: this
+ * text reaches every page that shows the subscription.
+ */
+static gchar *
+stripe_method_label(JsonObject *method, const gchar *type)
+{
+	gboolean bank = !g_strcmp0(type, "us_bank_account");
+	const gchar *last4 = string_member(object_member(method, bank ? "us_bank_account" : "card"), "last4");
+	guint i;
+	if (!last4 || strlen(last4) != 4) return NULL;
+	for (i = 0; i < 4; i++)
+		if (!g_ascii_isdigit(last4[i])) return NULL;
+	return g_strdup_printf("%s ending %s", bank ? "bank account" : "card", last4);
 }
 
 gboolean
@@ -207,7 +234,7 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 	g_autoptr(JsonObject) remote = NULL, evidence = json_object_new();
 	g_autoptr(JsonNode) evidence_node = json_node_new(JSON_NODE_OBJECT);
 	g_autoptr(GDateTime) deadline = NULL, now = venture_time_now();
-	g_autofree gchar *customer = NULL, *consent = NULL, *digest = NULL, *serialized = NULL;
+	g_autofree gchar *customer = NULL, *consent = NULL, *digest = NULL, *serialized = NULL, *label = NULL;
 	JsonObject *setup, *method, *mandate;
 	const gchar *method_id, *method_type, *setup_id;
 	gint64 config_version;
@@ -266,6 +293,7 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 	if (mandate && string_member(mandate, "id")) json_object_set_string_member(evidence, "mandate", string_member(mandate, "id"));
 	json_node_set_object(evidence_node, evidence);
 	serialized = venture_json_to_string(evidence_node, FALSE);
+	label = stripe_method_label(method, method_type);
 	if (!venture_database_begin_serializable(self->database, error)) return FALSE;
 	current = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, authorization_id, error);
 	if (!current || !stripe_authorized_terms(self, current, error)) goto fail;
@@ -291,7 +319,8 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 		}
 	}
 	g_object_set(current, "setup-intent-id", setup_id, "payment-method-id", method_id,
-		"mandate-id", string_member(mandate, "id"), "status", "active", "evidence", serialized, "authorized-at", now, NULL);
+		"mandate-id", string_member(mandate, "id"), "status", "active", "evidence", serialized, "authorized-at", now,
+		"method-label", label, NULL);
 	if (!venture_stripe_save_owned(self->database, current, actor, error) || !venture_database_commit(self->database, error)) goto fail;
 	return TRUE;
 fail:

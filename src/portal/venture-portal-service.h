@@ -127,5 +127,55 @@ void venture_portal_actions_register(VentureDatabase *database);
 VentureStripeCheckout *venture_portal_service_checkout(VenturePortalService *self,
 	VentureStripeService *stripe, const gchar *token, gint64 invoice_id,
 	const VentureActor *actor, GError **error);
+/**
+ * venture_portal_service_subscriptions:
+ * @self: portal service
+ * @access: the customer's portal access
+ * @error: (out) (optional): return location for an error
+ *
+ * The invited customer's own subscriptions, oldest first; empty when the
+ * billing module is off.
+ *
+ * Returns: (transfer full) (element-type VentureEntity) (nullable): the subscriptions
+ */
+GPtrArray *venture_portal_service_subscriptions(VenturePortalService *self, VentureCustomerPortalAccess *access,
+	GError **error);
+/**
+ * venture_portal_service_offered_prices:
+ * @self: portal service
+ * @access: the customer's portal access
+ * @subscription_id: one of the customer's subscriptions
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND when it is not theirs
+ *
+ * The prices the customer may switch that subscription to: every active
+ * price, in the same currency, of an active plan sold by the venture that
+ * sells their current plan (the shared plans, when it is shared), except
+ * the one they have.
+ *
+ * Returns: (transfer full) (element-type VentureEntity) (nullable): the prices
+ */
+GPtrArray *venture_portal_service_offered_prices(VenturePortalService *self, VentureCustomerPortalAccess *access,
+	gint64 subscription_id, GError **error);
+/**
+ * venture_portal_service_manage_subscription:
+ * @self: portal service
+ * @token: invitation token, checked again for revocation
+ * @subscription_id: the customer's own subscription
+ * @action: "change" or "cancel"
+ * @plan_price_id: for "change", one of venture_portal_service_offered_prices()
+ * @now: for "change", switch today rather than at renewal
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND for a subscription
+ *   that is not this customer's, or the billing service's refusal
+ *
+ * Switches the subscription's price (at renewal unless @now) or cancels it
+ * at renewal, through venture_billing_service_execute(), so every service
+ * rule holds. A customer cannot pause, cancel immediately or change seats.
+ *
+ * Returns: TRUE when the instruction committed
+ */
+gboolean venture_portal_service_manage_subscription(VenturePortalService *self, const gchar *token,
+	gint64 subscription_id, const gchar *action, gint64 plan_price_id, gboolean now,
+	const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

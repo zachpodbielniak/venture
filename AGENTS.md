@@ -67,6 +67,16 @@ first seven columns were empty.
 - **Sensitive fields** (`VENTURE_COLUMN_FLAG_SENSITIVE`) must never reach a
   response, a log line, a form or the AI. A URI carrying a password gets
   `venture_string_redact_uri()` before it is shown anywhere.
+- **An API token acts as "API token #<id>", never under its name.** The
+  name is whatever the owner typed and the actor string reaches the audit
+  log, every record's activity and the inbox, which viewers read. The
+  upgrade rewrote only what it could find exactly: the audit log's `actor`
+  and `approved_by` (000640), the inbox's `actor` and the title it led
+  (000645), and `api_token` audit labels and name diffs (000685). Older
+  fields that copied a token's name as free text -- a comment's author, an
+  assignee, a worklog author, `deployed_by`, the bank-match, enrolment and
+  approval stamps -- keep it, and so do their audit diffs: rewriting those
+  would mean guessing which strings were ever a token.
 - **`VentureActor` is filled field by field at every call site.** It is a
   plain struct declared as a bare local, `-Wmissing-field-initializers` is on
   so nobody writes `= {0}`, and `venture_database_record_audit()` reads every
@@ -184,6 +194,18 @@ first seven columns were empty.
   driving that from a second thread is a context-ownership failure, not
   merely a data race. Progress crosses back as plain data and is applied on
   the main thread.
+- **Customer subscription mail is queued inside the billing instruction.**
+  The trial reminder (renewal sweep) and the price-change notice
+  (`change`/`change-seats`) enqueue through the outbox in the service's own
+  transaction, keyed `trial-reminder:<subscription uuid>` and
+  `price-change:<event uuid>`. A missing address or mail switched off
+  skips the notice; it must never refuse the change. Do not move them to
+  a timer or a signal handler: the key is what makes them once-only.
+- **The portal manages a subscription only by token and only its own.**
+  `/portal/:token/subscriptions/:id` answers NOT_FOUND for anything not the
+  token's customer's, and goes through `venture_billing_service_execute()`
+  like every other writer; `tests/test-portal.c` pins the cross-customer
+  cases.
 - **The JSON wire format uses underscores.** Properties are `invoice-id` in
   C and `invoice_id` on the wire; a POST body with dashed keys is silently
   ignored field by field — the record saves and the values just aren't
@@ -286,6 +308,16 @@ first seven columns were empty.
   parameter (or a subject parameter), call both on any new checking path,
   and run in `venture_entity_get_organization_id(entity)`, not a re-read
   parameter or the default.
+- **Whether a subscription's period was discounted is counted, not read.**
+  `discount-periods-used` stops at the discount's N, so the Nth invoice and
+  the one after both leave it at N. MRR and the cancellation credit count
+  the start and renewal events that issued an invoice instead
+  (`period_discount()` in `venture-billing-service.c`). A cancellation's
+  event must never carry `invoice-id`: that would count its usage as another
+  base period. It carries `final-invoice-id` for any terminal usage charge,
+  which the pages and collection resolve separately. Collection can retain
+  existing consent for that final charge after cancellation, never for new
+  terms or ordinary invoices.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
@@ -468,6 +500,17 @@ than one that fails.
 - **Orders put NULL last, said outright** (`NULLS LAST` in
   `venture-query.c`). SQLite and PostgreSQL disagree by default, and under
   a limit that is different rows, not just a different order.
+- **A quote's plan line is billed by its subscription, never by the
+  acceptance invoice.** `handoff()` skips lines with a `plan-price-id`;
+  invoicing them there as well charges the first period twice. The one
+  subscription a quote may start is guarded in the billing service
+  (`quote_available()`), not only on the quote, so a start made around the
+  quote is refused too.
+- **Usage is counted in [start, end) and priced at the rate in force at
+  the period's end.** At renewal the subscription has already moved to a
+  scheduled price, so `venture-billing-usage.c` reads the rate from the
+  last subscription event. Usage before the current period is refused
+  rather than billed late: that period's invoice is already issued.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.
@@ -709,11 +752,46 @@ than one that fails.
   Floating panels (`.picker-panel`, `.record-results`) are
   `position: fixed` and placed by `placeFloating()`, because `.card` has
   `overflow: hidden` and clipped them.
+- **An error notice is announced.** `<div class="notice negative" role="alert">`
+  and the error page's `role="alert"` are what a test asserts on now;
+  toasts go into the server-rendered `<div class="toasts" role="status"
+  aria-live="polite">`. A button showing only a glyph needs an
+  `aria-label` -- `tests/test-record-view.c` walks every button on the
+  main pages and fails on one without a name.
+- **The phone menu is folded by script, drawn open.** `.sidebar` gets
+  `menu-closed` only on a narrow screen, from the inline script after the
+  sidebar, so with scripting off every link is still reachable.
 - **Never put a class name a test greps for inside venture.js.** The
   script is inlined into every page, so `"notice negative"` in a JS string
   made a dashboard test find an error notice that was not on the page.
   Build dynamic notices as DOM nodes, and assert on markup
   (`<div class="notice negative">`), not on two words.
+## Forms and refusals
+
+- **A PDF header is two columns and text keeps to its column.** Use
+  `venture_pdf_writer_fit_size()` and `venture_pdf_writer_wrap_aligned()`
+  for anything a person typed; a fixed-size `_text()` call is only for
+  labels and figures whose width is known.
+- **A person never sees error JSON.** `venture_web_error_response()` tags
+  the response with its `GError`, and the catch-all middleware turns it
+  into a page for a browser that asked for HTML without `HX-Request` or
+  `X-Venture-Inline`. The page's own script posts ordinary forms with
+  `X-Venture-Inline` and shows the refusal above the form. Do not add a
+  per-route HTML error path; `tests/test-record-view.c` pins all three
+  answers.
+- **"Attention of" is a flag, not a check in a handler.**
+  `VENTURE_COLUMN_FLAG_SAME_PARENT` on a reference makes the save refuse a
+  target under another parent and the form narrow its options; the parent
+  is derived by `venture_entity_class_get_shared_parent()`. Never let it
+  pick `organization-id`. Deals, tickets and sales orders carry it too; an
+  empty parent on either end is not a mismatch (imports match people with
+  no company yet).
+- **An invoice line is taxed by a rate record** (`tax-code-id`), and so is
+  a quote line -- the accepted quote copies it onto the invoice, so the
+  two totals agree. The rate is made at
+  `/tax-rates/new` from a percent and stored as an exact fraction. The
+  exemption lives on the customer; the invoice freezes it at issue.
+
 ## The agent harness
 
 - **Two different things are called a harness.** `/harness` is the agent
@@ -859,7 +937,7 @@ than one that fails.
 
 ## Versioned database migrations
 
-Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.
+Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Reconciliation also updates the existing tables of a disabled module (it never creates them): a module switched off after use still holds rows, and a script that read a column its hidden table never gained would refuse startup, or, skipped, never backfill once the module came back. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.
 
 ## Federation
 
@@ -868,3 +946,34 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
 - Record types opt in through class metadata; grants enumerate exact UUIDs and fields. Never infer sharing from an organization, a parent record or a reference. Sensitive fields and credential-bearing URIs remain excluded.
 - Replicas are durable isolated working copies, not local accounting rows. Preserve unresolved three-way conflicts and local versions across every network call; never mutate a merge base via `json_node_copy()` because JSON-GLib shares nested objects.
 - Reconnect runs on the main context, never a database worker. Peer or grant revocation is checked again on each request. Test the actual HTTPS path with `test-federation`, including outages, restart, replay, response proofs and local authentication boundaries.
+
+## The record view
+
+- **A page is derived from what each field is for, not from the field
+  list.** `venture_field_spec_get_role()` classifies every field -- status,
+  content, fact, technical, structured -- and the record page, the list's
+  columns and the form's groups all read it
+  (`src/web/venture-web-record-view.inc`). Never render a type's fields by
+  hand, and never add a per-type presentation table: mark machinery with
+  `VENTURE_COLUMN_FLAG_TECHNICAL` (or name it like machinery) and name the
+  type with `venture_entity_class_set_labels()`.
+- **Technical is not sensitive.** A technical field is folded under "All
+  fields" and "Advanced"; a sensitive one is never rendered at all, folded
+  or not. The classifier returns technical for both, so every renderer
+  still checks `VENTURE_COLUMN_FLAG_SENSITIVE` itself.
+- **Nothing on a page by default shows an internal name, a raw UUID or an
+  empty row.** Type pickers use `venture_web_append_type_option()`; the
+  display-name fallback is the type's label ("Contact #4"), not its table.
+  `tests/test-record-view.c` pins the submission page for this.
+- **The type's own block comes before the generic panels.** On the detail
+  page an invoice's lines, a ticket's desk and a release's changelog are
+  appended before actions, related records, links and activity. A new
+  type-specific block goes in that first group.
+- **A new sidebar page is filed under a question.** Appending a row to the
+  link table draws it under the heading it carries; appending its path to
+  one of the `venture_web_nav_*[]` lists files it under Money in, Money
+  out, Customers, Support, Growth, Bank or Books. `test-plugin` and
+  `test-auth` hold the map.
+- **Captions are sentence case.** Field names beside a value or above an
+  input use the caption register in both looks; the uppercase micro
+  register is for chrome only. Both looks must be checked.

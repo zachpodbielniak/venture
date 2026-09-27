@@ -115,6 +115,9 @@ venture_context_new(
 		g_object_set(self->mail_outbox, "attachment-root", root, NULL);
 	}
 
+	/* A payment answered with a receipt, once its transaction commits. */
+	venture_financial_documents_install_receipts(self);
+
 	/* The cross-row checks a polymorphic link needs, on every writer. */
 	venture_record_link_install_validator(database);
 	venture_federation_install_validators(database);
@@ -174,6 +177,14 @@ venture_context_new(
 	venture_oidc_service_set_config(venture_oidc_service_get(self->database), config);
 	venture_ai_provider_service_set_config(venture_ai_provider_service_get(self->database), config);
 	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
+		G_BINDING_SYNC_CREATE);
+	/* Bound, like the base URL: turning price-change mail off on a running
+	 * install must stop the next one, not the one after a restart. */
+	g_object_bind_property(config, "billing-trial-reminder-days", venture_billing_service_get(self->database),
+		"trial-reminder-days", G_BINDING_SYNC_CREATE);
+	g_object_bind_property(config, "billing-price-change-notices", venture_billing_service_get(self->database),
+		"price-change-notices", G_BINDING_SYNC_CREATE);
+	g_object_bind_property(config, "locale-timezone", venture_billing_service_get(self->database), "timezone",
 		G_BINDING_SYNC_CREATE);
 	/* Generated invoice dates and same-day receipts follow the business
 	 * calendar, not the zone the process runs in. */

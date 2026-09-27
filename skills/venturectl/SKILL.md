@@ -494,16 +494,52 @@ output formats remain unchanged. `journal post ID` returns a confirmation for
 an organization editor. Treat that response as pending until finance approves.
 ## SaaS billing actions
 
-Use `billing start company_id=N plan_price_id=N seats=N` to start a
-`customer_subscription`. Read `describe plan_price` and the price first:
-non-trial starts issue an invoice immediately, while trials bill at activation.
+Use `billing start company_id=N plan_price_id=N seats=N [discount_id=N | discount_code=CODE]
+[skip_trial=true]` to start a `customer_subscription`. Read
+`describe plan_price` and the price first: non-trial starts issue an invoice
+immediately, while trials bill at activation unless `skip_trial=true`. A
+`discount_id` must be a `plan_discount` of the same plan, active and not past
+its `ends_at`; it comes off the first `periods` invoices (0 is every one).
+`discount_code` names the discount by the `code` the customer quoted instead,
+matched without regard to case among the chosen price's plan's discounts;
+an unknown, retired or expired code is refused saying which, and giving
+both `discount_id` and `discount_code` is refused.
+A plan with a `venture_id` is refused for another venture's customer.
 Use `billing change ID plan_price=N [at_period_end=true]`,
 `billing change-seats ID seats=N`, `billing cancel ID [at_period_end=true]`,
 `billing pause ID`, `billing resume ID`, `billing mark-payment-failed ID`
 and `billing recover ID` for lifecycle actions. Never update subscription
 status directly; the service refuses it.
+`billing cancel ID` without `at_period_end=true` credits the unused days of
+an invoiced period (a trial or an unbilled period gives nothing): a
+`customer_credit` credit note, tax included when the period's invoice was
+taxed, applied to what that invoice still owes. The result's
+`proration_amount` is that credit, negative. A `plan_price` may carry
+`tax_code_id`; its invoices are taxed at that rate (exempt customers stay
+exempt), and a price in use is immutable, so taxing an existing plan means a
+new price and moving customers to it (the plan page's "Move its N
+customers to..." does all or none). MRR counts a plan discount while it
+covers the period being billed.
 
-`billing renew --as-of DATE [--dry-run]` sweeps due periods;
+`billing usage SUB quantity=N [key=K] [at=DATE]` reports metered use for a
+subscription whose price has a `usage_unit` (typed JSON; the same as
+`create usage_record`). Reuse a `key` when retrying: a repeat is refused as a
+conflict, not counted twice. Usage before the current period, on a flat price
+or on an ended subscription is refused. At renewal the ended period's usage
+over `included_units` is a line on the renewal invoice, at `unit_amount`.
+
+Customers holding a portal link can switch price (same venture, at renewal
+by default) or cancel at renewal themselves; those changes appear as
+ordinary `subscription_event` rows with the actor `customer portal`.
+
+`billing renew --as-of DATE [--dry-run]` sweeps due periods, and also
+queues the trial-ending reminder (`billing.trial_reminder_days`, default 3)
+to each customer whose trial ends within that many days -- once per
+subscription; a dry run queues none. `change` and `change-seats` queue the
+customer a price-change notice per change unless
+`billing.price_change_notices` is false. Both land in the mail outbox
+(`list mail_message`), keyed `trial-reminder:<subscription uuid>` and
+`price-change:<event uuid>`.
 `billing dunning --as-of DATE [--dry-run]` records dunning notices/actions.
 Pass `organization_id=N` to choose the legal entity. Dry runs write nothing.
 `billing collect` records confirmed manual payments only; an authorized card/ACH mandate does not execute a provider charge and is refused here.
@@ -585,9 +621,22 @@ the public `/book/<slug>` page, which books a contact and a meeting.
 ### Commercial quote actions
 
 `quote send ID`, `quote accept ID 'by=Full Name'`,
-`quote decline ID 'reason=Explanation'`, and `quote revise ID` call the quote
+`quote decline ID 'reason=Explanation'`, `quote revise ID` and
+`quote start-subscription ID` call the quote
 service. Acceptance creates and issues the invoice in the same transaction unless `billing_mode=progress`.
+A `quote_line` with `plan_price_id` (quantity = seats, no discount or tax)
+is left off that invoice; `quote start-subscription ID` on the accepted quote
+starts the subscription once and returns `result_subscription_id`. A second
+start is refused.
 `compose quote JSON` and `compose invoice JSON` create a draft (or send) in one call.
+For invoices, `issued_at` defaults to today at midnight UTC; `due_at` may name an
+explicit due date. Otherwise `due_days` defaults to 30, counted from the invoice
+date (zero or negative leaves no due date). Sending preserves the invoice date;
+configured fiscal-period checks still apply to drafts and issuance.
+To remember an invoice exemption on its customer atomically, include
+`remember_tax_exemption=true`, `tax_exemption_kind` and `tax_exemption_number`
+alongside `tax_exempt=true`. These fields are included in issuance approval;
+a refused or proposed operation does not change the customer.
 For a staged action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
 `version` first. `revision` is the separate commercial revision number.

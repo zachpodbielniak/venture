@@ -12,6 +12,22 @@ G_BEGIN_DECLS
  */
 GType venture_billing_interval_get_type(void) G_GNUC_CONST;
 /**
+ * venture_billing_interval_months:
+ * @interval: a #VentureBillingInterval value
+ *
+ * Returns: how many calendar months one period of @interval lasts: 1, 3,
+ *   6 or 12
+ */
+gint venture_billing_interval_months(gint interval);
+/**
+ * venture_billing_interval_phrase:
+ * @interval: a #VentureBillingInterval value
+ *
+ * Returns: (transfer none): how a price says its period: "a month",
+ *   "a quarter", "every 6 months", "a year"
+ */
+const gchar *venture_billing_interval_phrase(gint interval);
+/**
  * venture_billing_status_get_type:
  * Returns: the billing vocabulary GType
  */
@@ -38,6 +54,34 @@ VENTURE_DECLARE_ENTITY(VenturePlanPrice, venture_plan_price, PLAN_PRICE)
  * venture_plan_price_new:
  * Returns: (transfer full): a billing plan_price record
  */
+/**
+ * venture_plan_price_is_metered:
+ * @self: a plan price
+ *
+ * Returns: whether the price charges for counted use as well as its amount
+ */
+gboolean venture_plan_price_is_metered(VenturePlanPrice *self);
+/**
+ * venture_billing_format_count:
+ * @count: a whole number of units
+ *
+ * Returns: (transfer full): @count with its thousands grouped, "1,240"
+ */
+gchar *venture_billing_format_count(gint64 count);
+#define VENTURE_TYPE_PLAN_DISCOUNT (venture_plan_discount_get_type())
+VENTURE_DECLARE_ENTITY(VenturePlanDiscount, venture_plan_discount, PLAN_DISCOUNT)
+/**
+ * venture_plan_discount_new:
+ * Returns: (transfer full): a discount offered on a plan
+ */
+/**
+ * venture_plan_discount_describe:
+ * @self: a plan discount
+ *
+ * Returns: (transfer full): what the discount does, in words: "20% off
+ *   the first 3 periods", "$10.00 off every period"
+ */
+gchar *venture_plan_discount_describe(VenturePlanDiscount *self);
 #define VENTURE_TYPE_CUSTOMER_SUBSCRIPTION (venture_customer_subscription_get_type())
 VENTURE_DECLARE_ENTITY(VentureCustomerSubscription, venture_customer_subscription, CUSTOMER_SUBSCRIPTION)
 /**
@@ -69,6 +113,12 @@ VENTURE_DECLARE_ENTITY(VentureBillingRequest, venture_billing_request, BILLING_R
 /**
  * venture_billing_request_new:
  * Returns: (transfer full): a stageable billing instruction
+ */
+#define VENTURE_TYPE_USAGE_RECORD (venture_usage_record_get_type())
+VENTURE_DECLARE_ENTITY(VentureUsageRecord, venture_usage_record, USAGE_RECORD)
+/**
+ * venture_usage_record_new:
+ * Returns: (transfer full): one report of a metered subscription's use
  */
 G_END_DECLS
 #endif

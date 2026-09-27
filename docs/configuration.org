@@ -325,7 +325,22 @@ password. Empty username disables authentication. Disable the whole outbox
 with =modules.mail: false=. Organization-bound SMTP accounts additionally
 need their =host:port= listed in =allowed_endpoints= (empty denies all) and
 may trust an operator-owned CA bundle through =tls_ca_file= (empty uses
-system trust). See [[file:mail.org][transactional mail]].
+system trust). =receipts= (default true) mails the customer a receipt, with
+its PDF, when a payment is recorded; set it false to send none. See
+[[file:mail.org][transactional mail]].
+
+** Subscription mail
+
+The =billing= section says what =VentureBillingService= tells a
+subscription's customer, through the mail outbox. =trial_reminder_days=
+(=3=, =VENTURE_BILLING_TRIAL_REMINDER_DAYS=) is how many days before a free
+trial ends the renewal sweep mails the end date and the first invoice's
+amount; zero sends no reminder. =price_change_notices= (=true=,
+=VENTURE_BILLING_PRICE_CHANGE_NOTICES=) mails the customer what changed,
+when, and the next invoice whenever a subscription's price or seats change;
+set it false to send none. Both are bound to the service, so a change on a
+running install applies to the next sweep or change. See
+[[file:mail.org][Subscription notices]].
 
 ** Scheduled backups
 
