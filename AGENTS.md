@@ -977,3 +977,22 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
 - **Captions are sentence case.** Field names beside a value or above an
   input use the caption register in both looks; the uppercase micro
   register is for chrome only. Both looks must be checked.
+
+## Receipt printers
+
+- **Names cross the HTTP boundary, addresses do not.** Resolve every printer
+  through `venture_config_find_printer()`; never accept host/port overrides.
+- **One deadline covers the whole exchange.** The sender uses async GIO and a
+  nested main loop; copy needed configuration before entering it, and never
+  hold a database transaction across it. A successful TCP write is not proof
+  that paper emerged, and failed writes must not be retried automatically.
+- **ESC/POS lengths count bytes.** QR keeps UTF-8; body layout runs after
+  conversion. CP1252 bytes 0x80–0x9f are printable, not removable controls.
+  Font A/B are measured 48/64 columns on 576 dots; do not correct them back.
+- **The YAML library turns quoted empty scalars into null.** The disabled
+  printer default accepts that representation; test the compiled default YAML,
+  not just populated printer lists, or every normal startup fails.
+- **Payment print fixtures need `date` and `method`, not only an amount.**
+  Share the save fixture with a socket-free rendering test so a sandbox's
+  TCP refusal cannot hide missing required fields. Assert the `GError` before
+  asserting a save's boolean result, or GTest hides the validator's reason.

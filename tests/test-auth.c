@@ -1488,6 +1488,7 @@ test_auth_api_refuses_anonymous_requests(
 	 * resolving a record, even when their module is disabled. */
 	{
 		static const gchar *const posts[] = {
+			"/api/v1/print/payment/1", "/api/v1/print/invoice/1", "/api/v1/printers/test/test", "/print/payment/1", "/print/invoice/1",
 			"/backup/export", "/api/v1/accounting_backups/export",
 			"/invoices/compose", "/quotes/compose", "/api/v1/invoices/compose", "/api/v1/quotes/compose",
 			"/settings/fields", "/api/v1/supplier_portal/invite",
@@ -1508,10 +1509,12 @@ test_auth_api_refuses_anonymous_requests(
 			"/invoices/1/pdf", "/payments/1/receipt",
 			"/bills/compose", "/bills/compose?repeat=1", "/tax-rates/new", "/plans/new" };
 		static const gchar *const gets[] = {
+			"/api/v1/printers", "/api/v1/printers/test/status",
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
 			"/api/v1/contractor-tax/1/export", "/api/v1/sales-tax/export?period=2026-Q1"
 		};
 		static const gchar *const redirects[] = {
+			"/print/payment/1", "/print/invoice/1",
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
 			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups",
 			"/billing/subscriptions/start", "/bills/compose", "/tax-rates/new", "/plans/new", "/plans/1/prices", "/plans/1/discounts",
@@ -5088,12 +5091,29 @@ static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer u
 }
 
 
+/* Printer probes spend network authority, so a record reader may list
+ * names but cannot query hardware or print an administrative test page. */
+static void
+test_auth_printer_roles(
+	ServerFixture *fixture,
+	gconstpointer data
+){
+	g_autofree gchar *cookie = NULL;
+	(void)data;
+	server_fixture_create_member(fixture, "printer-viewer", "printer-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	cookie = server_fixture_login(fixture, "printer-viewer", "printer-password");
+	g_assert_cmpuint(server_fixture_json(fixture, "GET", "/api/v1/printers", cookie, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_json(fixture, "GET", "/api/v1/printers/test/status", cookie, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/printers/test/test", cookie, "{}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
 	char	**argv
 ){
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/auth/printer-roles", ServerFixture, NULL, server_fixture_set_up, test_auth_printer_roles, server_fixture_tear_down);
 	g_test_add("/auth/commerce-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_settings, server_fixture_tear_down);
 	g_test_add("/auth/commerce-import-cross-organization", ServerFixture, NULL, server_fixture_set_up, test_auth_commerce_import_cross_organization, server_fixture_tear_down);
 	g_test_add("/auth/ai-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_ai_settings, server_fixture_tear_down);

@@ -41,6 +41,53 @@ G_BEGIN_DECLS
 
 G_DECLARE_FINAL_TYPE(VentureConfig, venture_config, VENTURE, CONFIG, GObject)
 
+/* Immutable after configuration load; callers borrow these definitions. */
+typedef struct
+{
+	gchar		*name;
+	gchar		*host;
+	gchar		*font;
+	gchar		*codepage;
+	gchar		*alignment;
+	guint		port;
+	guint		timeout;
+	guint		width;
+	guint		feed;
+	gboolean	cut;
+} VenturePrinter;
+
+/**
+ * venture_config_get_printers:
+ * @self: configuration
+ * Returns: (transfer none) (element-type VenturePrinter): configured printers
+ */
+const GPtrArray *
+venture_config_get_printers(
+	VentureConfig	*self
+);
+/**
+ * venture_config_get_default_printer:
+ * @self: configuration
+ * Returns: (transfer none): default name, or an empty string
+ */
+const gchar *
+venture_config_get_default_printer(
+	VentureConfig	*self
+);
+/**
+ * venture_config_find_printer:
+ * @self: configuration
+ * @name: (nullable): configured name; empty selects the default
+ * @error: return location for an error
+ * Returns: (transfer none) (nullable): printer, or NULL on refusal
+ */
+const VenturePrinter *
+venture_config_find_printer(
+	VentureConfig	*self,
+	const gchar		*name,
+	GError			**error
+);
+
 /**
  * VentureConfigureFunc:
  * @config: the configuration to adjust

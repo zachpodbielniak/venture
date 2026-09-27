@@ -196,6 +196,7 @@ CORE_SRCS += src/oidc/venture-oidc-records.c
 CORE_SRCS += src/ai/venture-ai-organization-records.c
 SERVER_ONLY_SRCS := $(filter-out src/ai/venture-ai-organization-records.c,$(SERVER_ONLY_SRCS))
 SERVER_ONLY_SRCS += $(filter-out src/oidc/venture-oidc-records.c,$(wildcard src/oidc/*.c))
+SERVER_ONLY_SRCS += $(wildcard src/printing/*.c)
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -258,6 +259,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
 PUBLIC_HDRS += $(wildcard src/documents/*.h)
+PUBLIC_HDRS += $(wildcard src/printing/*.h)
 PUBLIC_HDRS += $(wildcard src/recurring/*.h)
 PUBLIC_HDRS += $(wildcard src/progress/*.h)
 PUBLIC_HDRS += $(wildcard src/portal/*.h)

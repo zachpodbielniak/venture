@@ -1,0 +1,135 @@
+#+title: Receipt printers
+
+* Print at the counter
+
+VENTURE prints payment receipts and invoice summaries to named ESC/POS
+printers over raw TCP. Configure a printer, open a payment or invoice, choose
+the printer and press =Print receipt=. The default is selected initially.
+With no printers configured, these controls are absent.
+
+The receipt reports the payment's recorded amount. The invoice summary reads
+the same frozen lines and shared totals helper as its PDF. Neither surface
+recalculates tax. When =server.base_url= is a public HTTP(S) URL without
+credentials, a native QR code links to the record's ordinary authenticated
+web page. Scanning it does not grant access.
+
+* Configuration
+
+#+begin_src yaml
+printing:
+  default: counter
+  printers:
+    - name: counter
+      host: 192.0.2.10
+      port: 9100
+      timeout: 10
+      font: b
+      codepage: cp1252
+      alignment: left
+      cut: true
+      feed: 4
+    - name: office
+      host: 192.0.2.11
+      font: a
+      width: 48
+      cut: false
+#+end_src
+
+=printing= is replaced as a complete section when supplied in a configuration
+layer, like a list replacement rather than an append. Both =default= and
+=printers= are required. Set =default: ""= and =printers: []= to disable it.
+Names must be unique ASCII letters, digits, hyphens or underscores. A nonempty
+list must declare the default name. Bad enum values and numeric bounds refuse
+loading; a refused replacement leaves the previous printer section intact.
+
+| Field | Default | Accepted values |
+|-------+---------+-----------------|
+| name | required | unique name |
+| host | required | hostname or IP address, without credentials or URI syntax |
+| port | 9100 | 1–65535 |
+| timeout | 10 | 1–3600 seconds, whole exchange |
+| font | b | a, b, auto |
+| codepage | cp1252 | cp1252, cp437, cp858 |
+| alignment | left | left, center, right |
+| width | font width | optional 8–255 columns |
+| cut | true | boolean |
+| feed | 4 | 0–255 lines |
+
+The measured TM-T20IV-SP print area is 576 dots: font A has 48 columns and
+font B has 64. Do not change these to the often quoted 42/56 without printing
+a ruler on the actual printer.
+
+* ESC/POS mapping
+
+The renderer is a C port of the same author's AGPLv3 =receipt-print= Bash
+tool. =VentureEscposDocument= borrows text and layout options; initialize it
+with =venture_escpos_document_init()=. =venture_escpos_render()= returns
+=GBytes= without any network operation, so callers can inspect or save a dry
+run. Raw =GBytes= bypass conversion and framing. Raw mode is a core API only.
+
+| Operation | Bytes |
+|-----------+-------|
+| Reset | ESC @ |
+| Code page | ESC t 0 / 16 / 19 for CP437 / CP1252 / CP858 |
+| Font | ESC M 0 / 1 |
+| Alignment | ESC a 0 / 1 / 2 |
+| Bold | ESC E 0 / 1 |
+| Double height | GS ! 1 |
+| QR | GS ( k; model 2, module size 1–16, correction M |
+| Barcode | GS k function B, systems 65–73 |
+| Feed | ESC d n |
+| Partial cut | GS V B 0 |
+| Status | DLE EOT 1, then DLE EOT 4 |
+
+Barcode systems are UPC-A, UPC-E, EAN13, EAN8, CODE39, ITF, CODABAR,
+CODE93 and CODE128. CODE128 prefixes code set B. Payload length is bounded to
+255 bytes including that prefix; QR payloads retain UTF-8 and are bounded to
+7089 bytes. Barcode content validity within its chosen symbology remains the
+printer's responsibility, as in the Bash tool.
+
+Body processing strips CR and ANSI sequences, expands tabs, transliterates
+UTF-8, and removes C0 controls other than LF and DEL. CP1252 high bytes are
+preserved. Font auto measures the encoded text. Prose reflow respects fences,
+headings, tables and list hanging indents; three or more nonempty lines with
+at least 25 percent ending in code punctuation disable automatic reflow.
+Explicit no-reflow and no-wrap modes are available. Title framing, an explicit
+timestamp, QR codes, barcodes, feed, no-cut and cut-only follow the script.
+
+* Surfaces
+
+- =GET /api/v1/printers=: readable names, default flags, =state: unknown=.
+  Listing does not probe destinations.
+- =GET /api/v1/printers/:name/status=: admin/owner; online/offline and paper
+  sensor state. Lack of a response is reported as a failed exchange.
+- =POST /api/v1/printers/:name/test=: admin/owner; prints a test page.
+- =POST /api/v1/print/payment/:id= and =/api/v1/print/invoice/:id=: readers
+  of that record. JSON ={}= uses the default; ={"printer":"office"}=
+  selects a configured name. Other JSON members are refused.
+- =POST /print/:type/:id=: session-authenticated web form with the same
+  permission and printer resolution rules.
+- =venturectl printers [list|test NAME|status NAME]= and
+  =venturectl print TYPE ID [PRINTER]= call these REST routes.
+
+A successful send means bytes reached the TCP connection, not proof that
+paper emerged. The printer can run out of paper afterward. A failed send can
+be partial; inspect paper before retrying. VENTURE does not automatically
+retry and does not automatically print when payments are recorded.
+
+* Safety and verification
+
+Only configuration chooses destinations; no request can supply a host or
+port. The sender disables proxies and uses asynchronous GIO with one
+cancellable deadline covering DNS, connection, writes and status replies.
+Its synchronous adapter iterates the calling main context and is reentrant;
+never call it while holding a database transaction. Database access stays on
+the main thread. Transport errors returned over HTTP omit network addresses.
+
+Printing follows PDF downloads: no record write, staged confirmation or
+audit mutation. Only the document's selected financial fields reach the
+renderer; it does not serialize arbitrary record properties. Printer state is
+absent from health. Use a trusted printer network: raw JetDirect has no TLS.
+
+=tests/test-printing.c= contains fixed byte goldens cross-checked with the Bash
+tool's =--dry-run=, deterministic timestamp and raw tests, configuration
+refusals/round trips, and bounded loopback fake-printer transport tests.
+No test contacts a real printer.

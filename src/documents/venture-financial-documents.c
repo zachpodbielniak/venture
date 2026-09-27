@@ -215,6 +215,59 @@ accumulate(VentureMoney **sum, const VentureMoney *amount)
 	}
 }
 
+/* PDF and thermal summaries read the same frozen lines and use the same
+ * money operations. No surface re-derives tax or rounds prices. */
+static GPtrArray *
+invoice_lines(
+	VentureDatabase	*db,
+	VentureEntity	*invoice,
+	GError			**error
+){
+	g_autoptr(VentureQuery)	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
+
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ,
+								 venture_entity_get_id(invoice), NULL);
+	venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	return venture_database_find(db, query, error);
+}
+
+/* Share the frozen money totals between PDF and thermal output so paper cannot disagree. */
+static void
+invoice_totals(
+	GPtrArray		*lines,
+	VentureMoney	*shipping,
+	VentureMoney	**subtotal,
+	VentureMoney	**tax_total,
+	VentureMoney	**total
+){
+	guint	i;
+
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity			*line = g_ptr_array_index(lines, i);
+		g_autoptr(VentureMoney)	net = NULL;
+		g_autoptr(VentureMoney)	tax = NULL;
+		g_autoptr(VentureMoney)	amount = NULL;
+
+		g_object_get(line, "income-amount", &net, "tax-amount", &tax, NULL);
+		amount = venture_invoice_line_get_amount(VENTURE_INVOICE_LINE(line), NULL);
+		/* A frozen line's net and tax, else the whole as net. */
+		if (net)
+		{
+			accumulate(subtotal, net);
+			accumulate(tax_total, tax);
+		}
+		else
+		{
+			accumulate(subtotal, amount);
+		}
+		accumulate(total, amount);
+	}
+	accumulate(total, shipping);
+}
+
 GBytes *
 venture_financial_documents_invoice_pdf(
 	VentureContext	 *context,
@@ -223,7 +276,6 @@ venture_financial_documents_invoice_pdf(
 ){
 	VentureDatabase *db;
 	g_autoptr(VenturePdfWriter) pdf = NULL;
-	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(GDateTime) issued = NULL, due = NULL;
@@ -244,13 +296,7 @@ venture_financial_documents_invoice_pdf(
 	             "due-at", &due, "company-id", &company_id, "shipping-amount", &shipping,
 	             "status", &status, "tax-exempt", &exempt, "tax-exempt-reason", &exempt_reason, NULL);
 
-	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
-	venture_query_set_limit(query, 0);
-	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ,
-	                             venture_entity_get_id(invoice), NULL);
-	venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
-	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
-	lines = venture_database_find(db, query, error);
+	lines = invoice_lines(db, invoice, error);
 	if (NULL == lines)
 		return NULL;
 
@@ -316,18 +362,9 @@ venture_financial_documents_invoice_pdf(
 		venture_pdf_writer_rule(pdf, DOC_MARGIN, y - 10, DOC_RIGHT, y - 10, 0.5);
 		venture_pdf_writer_set_grey(pdf, INK);
 
-		/* A frozen line's net and tax, else the whole as net. */
-		if (NULL != net)
-		{
-			accumulate(&subtotal, net);
-			accumulate(&tax_total, tax);
-		}
-		else
-			accumulate(&subtotal, amount);
-		accumulate(&total, amount);
 	}
 
-	accumulate(&total, shipping);
+	invoice_totals(lines, shipping, &subtotal, &tax_total, &total);
 	if (y > DOC_BOTTOM - 120)
 	{
 		venture_pdf_writer_new_page(pdf);
@@ -799,4 +836,142 @@ venture_financial_documents_install_receipts(VentureContext *context)
 
 	/* Owned by the context, so the handlers go when it does. */
 	g_object_set_data_full(G_OBJECT(context), "venture-receipt-sender", sender, receipt_sender_free);
+}
+
+/* Reuse financial document formatting so receipt amounts keep their currency and exponent. */
+static void
+thermal_money(
+	GString				*body,
+	const gchar			*label,
+	const VentureMoney	*amount
+){
+	g_autofree gchar	*shown = money_text(amount);
+
+	g_string_append_printf(body, "%s: %s\n", label, shown);
+}
+
+/**
+ * venture_financial_documents_thermal:
+ * @context: application context
+ * @record: readable payment or invoice
+ * @printer: configured layout defaults
+ * @error: return location for an error
+ * Returns: (transfer full) (nullable): receipt or invoice summary ESC/POS bytes
+ */
+GBytes *
+venture_financial_documents_thermal(
+	VentureContext			*context,
+	VentureEntity			*record,
+	const VenturePrinter	*printer,
+	GError					**error
+){
+	VentureDatabase			*db = venture_context_get_database(context);
+	VentureEscposDocument	document;
+	g_autoptr(GString)		body = g_string_new(NULL);
+	g_autofree gchar		*title = NULL;
+	g_autofree gchar		*base = NULL;
+	g_autofree gchar		*link = NULL;
+	g_autofree gchar		*number = NULL;
+	g_autoptr(VentureMoney)	amount = NULL;
+	g_autoptr(GDateTime)	date = NULL;
+	g_autofree gchar		*date_text = NULL;
+	const gchar				*qr[2];
+	gboolean				payment = VENTURE_IS_PAYMENT(record);
+
+	if (!payment && !VENTURE_IS_INVOICE(record))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+							"Only payments and invoices have thermal documents");
+		return NULL;
+	}
+	if (payment)
+	{
+		g_object_get(record, "amount", &amount, "date", &date, NULL);
+		title = g_strdup_printf("Receipt %" G_GINT64_FORMAT, venture_entity_get_id(record));
+		thermal_money(body, "Amount received", amount);
+		g_string_append(body, "Thank you for your payment.\n");
+	}
+	else
+	{
+		g_autoptr(GPtrArray)	lines = invoice_lines(db, record, error);
+		g_autoptr(VentureMoney)	subtotal = NULL;
+		g_autoptr(VentureMoney)	tax = NULL;
+		g_autoptr(VentureMoney)	shipping = NULL;
+		g_autoptr(VentureMoney)	balance = NULL;
+		guint					i;
+
+		if (!lines)
+		{
+			return NULL;
+		}
+		g_object_get(record, "number", &number, "issued-at", &date, "shipping-amount", &shipping,
+					 NULL);
+		title = g_strdup_printf("Invoice %s", number ? number : "");
+		for (i = 0; i < lines->len; i++)
+		{
+			VentureEntity		*line = g_ptr_array_index(lines, i);
+			g_autofree gchar	*description = NULL;
+
+			g_autoptr(VentureMoney) line_amount =
+				venture_invoice_line_get_amount(VENTURE_INVOICE_LINE(line), error);
+			if (!line_amount)
+			{
+				return NULL;
+			}
+			g_object_get(line, "description", &description, NULL);
+			thermal_money(body, description ? description : "Item", line_amount);
+		}
+		invoice_totals(lines, shipping, &subtotal, &tax, &amount);
+		thermal_money(body, "Subtotal", subtotal);
+		if (tax)
+		{
+			thermal_money(body, "Tax", tax);
+		}
+		if (shipping)
+		{
+			thermal_money(body, "Shipping", shipping);
+		}
+		thermal_money(body, "Total", amount);
+		balance = venture_settlement_service_invoice_balance(
+			venture_settlement_service_get(db), venture_entity_get_id(record), NULL, NULL);
+		if (balance)
+		{
+			thermal_money(body, "Balance", balance);
+		}
+	}
+	date_text = day_text(context, date);
+	if (date_text)
+	{
+		g_string_append_printf(body, "Date: %s\n", date_text);
+	}
+	venture_escpos_document_init(&document, printer);
+	document.title = title;
+	document.body = body->str;
+	document.reflow = 0;
+	g_object_get(venture_context_get_config(context), "server-base-url", &base, NULL);
+	if (!venture_string_is_empty(base))
+	{
+		/* Only public web origins become machine-readable links; never print
+		 * credentials carried by a misconfigured URL. */
+		g_autoptr(GUri)	uri = g_uri_parse(base, G_URI_FLAGS_NONE, NULL);
+
+		if (uri && !g_uri_get_userinfo(uri) && !g_uri_get_query(uri) && !g_uri_get_fragment(uri) &&
+		   g_uri_get_host(uri) &&
+		   (!g_strcmp0(g_uri_get_scheme(uri), "https") ||
+			!g_strcmp0(g_uri_get_scheme(uri), "http")))
+		{
+			gsize	n = strlen(base);
+
+			while (n && base[n - 1] == '/')
+			{
+				base[--n] = '\0';
+			}
+			link = g_strdup_printf("%s/e/%s/%" G_GINT64_FORMAT, base,
+								   payment ? "payment" : "invoice", venture_entity_get_id(record));
+			qr[0] = link;
+			qr[1] = NULL;
+			document.qr = qr;
+		}
+	}
+	return venture_escpos_render(&document, error);
 }

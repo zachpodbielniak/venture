@@ -133,6 +133,7 @@
 /* --- Configuration ------------------------------------------------------- */
 
 #include "config/venture-config.h"
+#include "printing/venture-escpos.h"
 
 /* --- MCP ----------------------------------------------------------------- */
 

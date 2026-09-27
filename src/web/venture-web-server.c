@@ -8289,6 +8289,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 #include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
 #include "documents/venture-financial-documents-web.inc"
+#include "printing/venture-printing-web.inc"
 
 static void
 venture_web_append_related(
@@ -9910,6 +9911,7 @@ venture_web_ui_detail(
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
 	venture_web_append_payment_receipt(self, content, record);
+	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
@@ -30467,6 +30469,21 @@ venture_web_server_new(
 	venture_equity_web_register(router, self);
 	venture_group_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_print, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET,
+		"/api/v1/printers", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, venture_web_printers, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET,
+		"/api/v1/printers/:name/status", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, venture_web_printers, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST,
+		"/api/v1/printers/:name/test", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, venture_web_printers, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST,
+		"/api/v1/print/:type/:id", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, venture_web_print_record, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST,
+		"/print/:type/:id", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, venture_web_print_record, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/pdf", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_financial_document, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payments/:id/receipt", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_financial_document, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/quotes/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);

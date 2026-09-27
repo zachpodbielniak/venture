@@ -92,6 +92,22 @@ venture_financial_documents_content_disposition(
 void
 venture_financial_documents_install_receipts(VentureContext *context);
 
+/**
+ * venture_financial_documents_thermal:
+ * @context: application context
+ * @record: readable payment or invoice
+ * @printer: configured layout defaults
+ * @error: return location for an error
+ * Returns: (transfer full) (nullable): receipt or invoice summary ESC/POS bytes
+ */
+GBytes *
+venture_financial_documents_thermal(
+	VentureContext			*context,
+	VentureEntity			*record,
+	const VenturePrinter	*printer,
+	GError					**error
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_FINANCIAL_DOCUMENTS_H */
