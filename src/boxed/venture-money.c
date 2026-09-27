@@ -1374,6 +1374,24 @@ venture_money_suffix_char_forbidden(gchar c)
 }
 
 /*
+ * Whether a denomination suffix starts with a letter. "12g" is a coin;
+ * "12\xe2\x82\xac" and "100$" are a number with a currency symbol stuck to
+ * it, which spreadsheets and marketplace exports write and which must
+ * keep parsing as the decimal it always was -- and a coin spelled "$"
+ * would turn every such import into that currency without a word.
+ */
+static gboolean
+venture_money_suffix_starts_with_letter(const gchar *suffix)
+{
+	gunichar first;
+
+	first = g_utf8_get_char_validated(suffix, -1);
+
+	return (first != (gunichar)-1) && (first != (gunichar)-2) &&
+	       g_unichar_isalpha(first);
+}
+
+/*
  * Whether text has the shape "12g 34s 56c": an optional sign, then one or
  * more words each of digits followed by a suffix. Only the shape -- which
  * currency, and whether the suffixes exist, is the parser's question.
@@ -1408,6 +1426,9 @@ venture_money_looks_denominated(const gchar *working)
 			return FALSE;
 
 		suffix = p;
+
+		if (!venture_money_suffix_starts_with_letter(suffix))
+			return FALSE;
 
 		while (('\0' != *p) && (' ' != *p))
 		{
@@ -2288,6 +2309,14 @@ venture_currency_parse_units(
 				            "spaces, signs, parentheses, points or commas", suffix);
 				return FALSE;
 			}
+		}
+
+		if (!venture_money_suffix_starts_with_letter(suffix))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Denomination suffix \"%s\" must start with a letter, "
+			            "or \"12$\" would read as that coin", suffix);
+			return FALSE;
 		}
 
 		if (units <= 0)

@@ -93,9 +93,11 @@ A currency may declare how it is written in coins:
   = 150s with 1s = 100c cannot be written back exactly);
 - ending in a unit worth exactly one minor unit, so every amount can be
   written;
-- made of suffixes that are 1 to 8 bytes, unique ignoring case, with no
-  digit, space, sign, parenthesis, point or comma -- otherwise "12g" could
-  not be told from a number.
+- made of suffixes that are 1 to 8 bytes, unique ignoring case, starting
+  with a letter and with no digit, space, sign, parenthesis, point or
+  comma -- otherwise "12g" could not be told from a number, and a coin
+  spelled "$" would claim every "100$" an import carries (text such as
+  "12€" and "100$" keeps parsing as a decimal with a symbol).
 
 ** How an amount is shown
 

@@ -414,7 +414,12 @@ test_money_parse_tolerant_forms(void)
 		{ "12.34 EUR",      1234,   "EUR" },
 		{ "1,234,567.89",   123456789, "USD" },
 		{ "US$12.34",       1234,   "USD" },
-		{ "1,000",          100000, "USD" }
+		{ "1,000",          100000, "USD" },
+		/* A symbol stuck to a whole number, as spreadsheet and
+		 * marketplace exports write it, is decoration -- not a coin
+		 * of some denominated currency. */
+		{ "12\xe2\x82\xac",       1200,   "USD" },
+		{ "100$",           10000,  "USD" }
 	};
 	gsize i;
 
@@ -957,6 +962,18 @@ test_currency_denominations_parse(void)
 		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
+	/* With coins registered, a symbol stuck to a number is still a
+	 * decimal in the default currency. */
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureMoney) parsed = NULL;
+
+		parsed = venture_money_from_string("100$", "USD", &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(venture_money_get_currency(parsed), ==, "USD");
+		g_assert_cmpint(venture_money_get_amount(parsed), ==, 10000);
+	}
+
 	venture_currency_clear_registered();
 }
 
@@ -1019,6 +1036,9 @@ test_currency_denominations_validation(void)
 		"[{\"suffix\":\"g1\",\"units\":1}]",
 		"[{\"suffix\":\"g s\",\"units\":1}]",
 		"[{\"suffix\":\"g.\",\"units\":1}]",
+		/* a coin spelled like a currency symbol would claim "100$" */
+		"[{\"suffix\":\"$\",\"units\":1}]",
+		"[{\"suffix\":\"\xe2\x82\xac\",\"units\":1}]",
 		"[{\"suffix\":\"g\",\"units\":0}]",
 		"[{\"suffix\":\"g\",\"units\":-1}]",
 		"[{\"suffix\":\"g\",\"units\":1.5}]",
