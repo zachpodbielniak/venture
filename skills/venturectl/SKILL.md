@@ -1263,3 +1263,39 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
   refuse a user-defined currency (even a registered three-letter code).
 - Value one in another with an ordinary `exchange_rate`
   (`from_currency=GOLD to_currency=USD rate_numerator=15 rate_denominator=1000`).
+
+## Categories, locations and tags
+
+- `category` (always on): `name`, `parent_id`, `applies_to` (a record type
+  name such as `product`, or blank for any), `position`, `color`,
+  `description`. `location` (sales): `name`, `parent_id`, `kind` (free
+  text: warehouse, bin, character, bank), `description`, `active` — set
+  `active=true` yourself; a new one is inactive otherwise.
+- Build a tree top-down: create the parent, read its id, then the child
+  with `parent_id=`. A child's `applies_to` must equal its parent's.
+- Refused (exit 8): a loop ("would close a loop"), a parent in another
+  organization, more than 32 levels, an `applies_to` that is not a record
+  type, a parent grouping a different type, and changing `applies_to` on a
+  category that has children.
+- `product.category_id` and `inventory_item.location_id` are the references;
+  the old `category`/`subcategory`/`location` text fields still exist and
+  are not kept in step. A product cannot take a category whose tree groups
+  another type ("groups expense records, not product").
+- Paths ("Materials / Herbs") are computed, not a field: there is nothing
+  to `get` or `update`. Rename the parent and every path follows.
+- `tags` on `product`, `inventory_item` and `sale` is one comma-separated
+  string, found by `search=`.
+
+```sh
+venturectl create category name=Materials applies_to=product
+venturectl create category name=Herbs parent_id=1 applies_to=product
+venturectl update product 12 category_id=2 tags=herb,farmable
+venturectl create location name="Alt 1" kind=character active=true
+venturectl list product search=farmable
+```
+
+- Custom fields gain `kind=double` and `kind=reference`; a reference names
+  its target in options: `venturectl fields define record_type=sale
+  name=shelf kind=reference options='{"target":"category"}'`. Its values are
+  record ids, checked like a built-in reference (missing or deleted target
+  refused when written, a kept value left alone).

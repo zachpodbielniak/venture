@@ -1,5 +1,5 @@
 #+title: Navigation
-#+description: The sidebar, folded into the questions an owner asks: money in, money out, customers, support, growth, then the bank and the books
+#+description: The sidebar, folded into the questions an owner asks: money in, money out, customers, support, growth, operations, then the bank and the books
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-18]
@@ -16,7 +16,7 @@ This is grouping and labels only. Every page keeps its URL; nothing is moved or 
 
 * The section map
 
-Seven areas after the overview. Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
+Eight areas after the overview. Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
 
 | Area      | Part              | Pages                                                                                                                                              |
 |-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -27,6 +27,7 @@ Seven areas after the overview. Money is one area -- the money that comes in, go
 | Customers |                   | Companies, Contacts, My day, Duplicates                                                                                                            |
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
 | Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
+| Operations |                  | Categories, Locations                                                                                                                              |
 | Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Milestones, Releases, Builds, Environments, Deployments, Incidents |
 | Settings  | Your business, People and access, System | Ventures, Entities, Modules; Your account, API tokens, Users, Assistant; Settings, Automations, Plugins, Webhooks, Federation, Mail outbox, Audit log |
 

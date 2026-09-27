@@ -7,8 +7,35 @@ The =custom_fields= module owns three records:
 - =accounting_layout= — =record-type= and a JSON array of field names
 - =custom_field_value= — derived index of values on the owning entity
 
-Kind is one of =string=, =text=, =integer=, =boolean=, =enum=, =money=,
-=date=, =datetime=. Enum choices live in =options= as a JSON string array.
+Kind is one of =string=, =text=, =integer=, =double=, =boolean=, =enum=,
+=money=, =date=, =datetime=, =reference=. Enum choices live in =options= as
+a JSON string array; a reference names its target type there as
+={"target":"category"}=.
+
+* Decimals and references
+
+=double= is a finite decimal that is not money ("12.5", "1e-3"); text and
+anything that overflows are refused. Money stays =money=: it has a currency
+and is never a double.
+
+=reference= links a record to a record of another type -- the way a record
+with no =category_id= of its own is put in a [[file:taxonomy.org][category tree]]. The target is
+checked when the field is defined: it must be a type the registry has ever
+known, so a field pointing into a module that is off today is still a sound
+definition. A value follows the built-in reference rule exactly:
+
+- a positive record id, or the save is refused;
+- when *written*, the target must exist and not be soft-deleted, and a
+  target whose module is off is refused with the switch named;
+- a value the record already held is left alone, so a record pointing at a
+  since-deleted row can still be edited;
+- a =category= target is also held to its tree's =applies_to=.
+
+The record form draws a reference as the ordinary picker (every live record
+of the target type in the organization) and a double as a decimal input.
+A reference cannot be seeded from the query string the way a built-in
+reference is (=?company_id=4=): it has no property, only the attribute the
+form posts.
 
 Saving an entity checks its custom attributes and updates the derived index
 in the same transaction. Update the parent's =attributes= object, or use
@@ -29,14 +56,16 @@ there.
 venturectl fields define record_type=vendor_bill name=po_number kind=string required=true
 venturectl fields layout record_type=vendor_bill field_order='["number","po_number"]'
 venturectl fields value record_type=vendor_bill record_id=1 name=po_number value=PO-42
+venturectl fields define record_type=sale name=shelf_category kind=reference options='{"target":"category"}'
+venturectl fields define record_type=product name=weight_kg kind=double
 #+end_src
 
 * Record forms
 
 Configured fields appear on =GET /e/:type/new= and edit pages using the same
 widgets as built-in field specs. A layout JSON array orders built-in and custom fields together on
-that form; unspecified fields keep their declaration order. Required, integer, enum, money, boolean and date values are
-checked on save; an integer field rejects =not an integer=.
+that form; unspecified fields keep their declaration order. Required, integer, double, enum, money, boolean, date and
+reference values are checked on save; an integer field rejects =not an integer=.
 
 The derived index value is sensitive and omitted from generic responses and
 audit values. For older colliding definitions, attributes named after a

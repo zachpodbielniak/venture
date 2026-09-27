@@ -4827,6 +4827,7 @@ test_auth_sidebar_asks_the_five_questions(
 		"<summary class=\"nav-section\">Customers</summary>",
 		"<summary class=\"nav-section\">Growth</summary>",
 		"<summary class=\"nav-section\">Support</summary>",
+		"<summary class=\"nav-section\">Operations</summary>",
 		"<summary class=\"nav-section\">Build</summary>",
 		"<summary class=\"nav-section\">Settings</summary>",
 	};

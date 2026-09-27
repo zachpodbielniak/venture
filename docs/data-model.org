@@ -34,8 +34,12 @@ Every record derives from =VentureEntity= and carries the same spine:
 ** Catalogue
 
 - *product* — with both =category= and =genre=, because a book's category on
-  a store is rarely the genre you actually think in.
-- *inventory_item* — reorder point, lead time, carrying cost.
+  a store is rarely the genre you actually think in. =category_id= places it
+  in a category tree; the older =category= and =subcategory= text is kept.
+- *inventory_item* — reorder point, lead time, carrying cost, and the
+  =location_id= it is kept at.
+- *category* — one node of a tree any type can be grouped by, and
+  *location* — one node of a tree of places. See [[file:taxonomy.org][Taxonomy]].
 - *inventory_txn* — a signed movement. Quantity on hand is their sum, never a
   stored field.
 - *inventory_cost_layer* — remaining FIFO quantity and unit cost, posted by

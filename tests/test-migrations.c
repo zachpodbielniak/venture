@@ -98,6 +98,80 @@ table_exists(VentureDatabase *database, const gchar *table)
 }
 
 /*
+ * Products and inventory items as an install from before categories and
+ * locations were records left them: free text, with the untidiness real
+ * text has -- stray spaces, a duplicate, a deleted row, a subcategory with
+ * no category, a blank and a NULL, and a second organization using the
+ * same names. Plain columns only, so the same rows seed SQLite and
+ * PostgreSQL.
+ */
+static const gchar taxonomy_rows[] =
+	"INSERT INTO products (uuid, organization_id, created_at, updated_at, version, venture_id, name, category, subcategory, deleted_at) VALUES "
+	"('tax-p1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Peacebloom', 'Materials', 'Herbs', NULL),"
+	"('tax-p2', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Copper ore', ' Materials ', 'Ore', NULL),"
+	"('tax-p3', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Linen', 'Materials', NULL, NULL),"
+	"('tax-p4', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Old potion', 'Crafted', 'Potions', '2026-02-01T00:00:00Z'),"
+	"('tax-p5', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Stray', '', 'Orphan', NULL),"
+	"('tax-p6', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Silverleaf', 'Materials', 'Herbs', NULL),"
+	"('tax-p7', 2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 2, 'Other shop herb', 'Materials', 'Herbs', NULL);"
+	"INSERT INTO inventory_items (uuid, organization_id, created_at, updated_at, version, product_id, location) VALUES "
+	"('tax-i1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Bank'),"
+	"('tax-i2', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 2, ' Bank'),"
+	"('tax-i3', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 3, 'Alt 1'),"
+	"('tax-i4', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 4, ''),"
+	"('tax-i5', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 5, NULL),"
+	"('tax-i6', 2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 7, 'Bank')";
+
+/*
+ * What 000695 and 000700 make of taxonomy_rows, on either backend. If this
+ * regresses, an upgraded install either loses the grouping its products
+ * had (no category_id) or merges two organizations' trees into one.
+ */
+static void
+check_taxonomy_backfill(VentureDatabase *database)
+{
+	static const struct {
+		const gchar *sql;
+		const gchar *expected;
+	} checks[] = {
+		/* Materials, Crafted, Herbs, Ore, Potions; Materials and Herbs again for org 2. */
+		{ "SELECT CAST(COUNT(*) AS TEXT) FROM categories", "7" },
+		{ "SELECT CAST(COUNT(DISTINCT uuid) AS TEXT) FROM categories", "7" },
+		{ "SELECT CAST(COUNT(*) AS TEXT) FROM categories WHERE applies_to = 'product' AND version = 1 AND created_at IS NOT NULL AND deleted_at IS NULL", "7" },
+		{ "SELECT CAST(COUNT(*) AS TEXT) FROM categories WHERE name = 'Orphan'", "0" },
+		{ "SELECT c.name || '<' || p.name FROM products x JOIN categories c ON c.id = x.category_id JOIN categories p ON p.id = c.parent_id WHERE x.uuid = 'tax-p1'", "Herbs<Materials" },
+		{ "SELECT c.name || '<' || p.name FROM products x JOIN categories c ON c.id = x.category_id JOIN categories p ON p.id = c.parent_id WHERE x.uuid = 'tax-p2'", "Ore<Materials" },
+		{ "SELECT c.name || '<' || p.name FROM products x JOIN categories c ON c.id = x.category_id JOIN categories p ON p.id = c.parent_id WHERE x.uuid = 'tax-p4'", "Potions<Crafted" },
+		{ "SELECT c.name || ':' || CAST(COALESCE(c.parent_id, 0) AS TEXT) FROM products x JOIN categories c ON c.id = x.category_id WHERE x.uuid = 'tax-p3'", "Materials:0" },
+		{ "SELECT CAST(COALESCE(category_id, 0) AS TEXT) FROM products WHERE uuid = 'tax-p5'", "0" },
+		{ "SELECT CAST(COUNT(DISTINCT category_id) AS TEXT) FROM products WHERE uuid IN ('tax-p1', 'tax-p6')", "1" },
+		/* The same names in another organization are its own tree. */
+		{ "SELECT CAST(c.organization_id AS TEXT) || CAST(p.organization_id AS TEXT) FROM products x JOIN categories c ON c.id = x.category_id JOIN categories p ON p.id = c.parent_id WHERE x.uuid = 'tax-p7'", "22" },
+		/* The text the operator typed is left exactly as it was. */
+		{ "SELECT category FROM products WHERE uuid = 'tax-p2'", " Materials " },
+		/* Bank and Alt 1 for org 1, Bank for org 2. */
+		{ "SELECT CAST(COUNT(*) AS TEXT) FROM locations", "3" },
+		{ "SELECT CAST(COUNT(*) AS TEXT) FROM locations WHERE version = 1 AND COALESCE(parent_id, 0) = 0 AND deleted_at IS NULL", "3" },
+		{ "SELECT CAST(COUNT(DISTINCT location_id) AS TEXT) FROM inventory_items WHERE uuid IN ('tax-i1', 'tax-i2')", "1" },
+		{ "SELECT l.name FROM inventory_items i JOIN locations l ON l.id = i.location_id WHERE i.uuid = 'tax-i3'", "Alt 1" },
+		{ "SELECT CAST(COALESCE(location_id, 0) AS TEXT) FROM inventory_items WHERE uuid = 'tax-i4'", "0" },
+		{ "SELECT CAST(COALESCE(location_id, 0) AS TEXT) FROM inventory_items WHERE uuid = 'tax-i5'", "0" },
+		{ "SELECT CAST(l.organization_id AS TEXT) FROM inventory_items i JOIN locations l ON l.id = i.location_id WHERE i.uuid = 'tax-i6'", "2" },
+		{ "SELECT location FROM inventory_items WHERE uuid = 'tax-i2'", " Bank" },
+	};
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(checks); i++)
+	{
+		g_autofree gchar *value = query_text(database, checks[i].sql);
+
+		if (0 != g_strcmp0(value, checks[i].expected))
+			g_error("%s: expected \"%s\", got \"%s\"", checks[i].sql,
+			        checks[i].expected, value);
+	}
+}
+
+/*
  * API token names written into the audit log and the inbox before actors
  * were named by number are rewritten on upgrade: a name one token holds
  * becomes "API token #<id>", a name two share becomes "API token", and a
@@ -437,6 +511,8 @@ test_postgresql(void)
 		"('pg-recurring-request', 31, 77, 'renew', 1, 701, '2026-01-01T00:00:00Z'),"
 		"('pg-final-request', 31, 77, 'cancel', 1, 702, '2026-01-15T00:00:00Z')", NULL, &error));
 	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database, taxonomy_rows, NULL, &error));
+	g_assert_no_error(error);
 	runner = venture_migrations_new(venture_database_get_connection(database), VENTURE_DATABASE_BACKEND_POSTGRES, &error);
 	g_assert_no_error(error);
 	g_assert_true(orm_migrator_up(runner, 0, &error));
@@ -484,6 +560,7 @@ test_postgresql(void)
 		g_assert_cmpstr(final_invoice, ==, "702");
 		g_assert_cmpstr(recurring_invoice, ==, "0");
 	}
+	check_taxonomy_backfill(database);
 	result = venture_database_query_raw(database,
 		"SELECT CAST(COUNT(*) AS BIGINT) FROM organization_memberships WHERE user_id = 17 AND organization_id = 31 AND role = 'owner' AND active", NULL, &error);
 	g_assert_no_error(error);
@@ -704,6 +781,141 @@ test_disabled_module_upgrade(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * An install upgrading into categories and locations: the rows are there
+ * before the scripts run, as they would be, and a restart runs nothing
+ * twice. The rows the scripts insert must be whole records -- read back
+ * through the ORM and walked into a path -- not just rows SQL can count.
+ */
+static void
+test_taxonomy_backfill(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database, taxonomy_rows, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DELETE FROM schema_migrations WHERE version >= 695", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		check_taxonomy_backfill(database);
+		g_clear_object(&database);
+	}
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	{
+		g_autofree gchar *id_text = query_text(database,
+			"SELECT CAST(category_id AS TEXT) FROM products WHERE uuid = 'tax-p1'");
+		g_autofree gchar *location_text = query_text(database,
+			"SELECT CAST(location_id AS TEXT) FROM inventory_items WHERE uuid = 'tax-i3'");
+		g_autofree gchar *path = NULL;
+		g_autoptr(VentureEntity) location = NULL;
+		gboolean active = FALSE;
+
+		path = venture_category_path(database, VENTURE_TYPE_CATEGORY,
+			g_ascii_strtoll(id_text, NULL, 10), &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(path, ==, "Materials / Herbs");
+		location = venture_database_get(database, VENTURE_TYPE_LOCATION,
+			g_ascii_strtoll(location_text, NULL, 10), &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(location);
+		g_object_get(location, "active", &active, NULL);
+		g_assert_true(active);
+		g_assert_nonnull(venture_entity_get_uuid(location));
+	}
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
+/*
+ * The same upgrade with sales switched off. products and inventory_items
+ * are still there -- sales was used, then turned off -- but locations has
+ * never been created, because reconciliation never creates a hidden
+ * type's table. If 000695 assumed that table, startup would fail; if the
+ * guard skipped it, the backfill would be recorded as done and never run
+ * once sales came back. Categories are core, so their table is there
+ * either way.
+ */
+static void
+test_taxonomy_sales_off(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	/* The shape of a database from before 695: no reference columns, no
+	 * locations table, neither script recorded. */
+	g_assert_true(venture_database_execute(database, taxonomy_rows, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP INDEX IF EXISTS idx_products_category_id;"
+		"ALTER TABLE products DROP COLUMN category_id;"
+		"DROP INDEX IF EXISTS idx_inventory_items_location_id;"
+		"ALTER TABLE inventory_items DROP COLUMN location_id;"
+		"DROP TABLE locations;"
+		"DELETE FROM schema_migrations WHERE version >= 695", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&context);
+	g_clear_object(&database);
+
+	venture_config_set_module_enabled(config, "sales", FALSE);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	/* Finance and everything above it need sales; resolving says so and
+	 * switches them off too, which is exactly the install being tested. */
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*requires \"sales\"*");
+	context = venture_context_new(config, database);
+	g_test_assert_expected_messages();
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"location"), ==, G_TYPE_INVALID);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(table_exists(database, "locations"));
+	check_taxonomy_backfill(database);
+
+	/* Back on: the table the script made is the table sales uses. */
+	venture_config_set_module_enabled(config, "sales", TRUE);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LOCATION);
+		g_autoptr(GPtrArray) rows = NULL;
+
+		venture_query_set_limit(query, 0);
+		rows = venture_database_find(database, query, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(rows->len, ==, 3);
+	}
+	g_clear_object(&context);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -716,6 +928,8 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
 	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
+	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
+	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);

@@ -5,11 +5,11 @@ static const VentureFieldDecl custom_field_fields[] = {
 	VENTURE_FIELD("record-type", "Record type", "Registered entity name this field attaches to",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_NAME("name", "Name", "Machine name stored on custom_field_value rows"),
-	VENTURE_FIELD("kind", "Kind", "string, text, integer, boolean, enum, money, date or datetime",
+	VENTURE_FIELD("kind", "Kind", "string, text, integer, double, boolean, enum, money, date, datetime or reference",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("required", "Required", "Saves of that record type need a value",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("options", "Options", "JSON; enum choices are a string array",
+	VENTURE_FIELD("options", "Options", "JSON; enum choices are a string array, a reference names {\"target\":\"<type>\"}",
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("field-key", "Field key", "record-type:name, unique inside the organization",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_NOT_NULL)

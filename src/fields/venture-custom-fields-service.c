@@ -2,6 +2,7 @@
 #include "venture.h"
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 
 struct _VentureCustomFieldsService
 {
@@ -98,7 +99,30 @@ known_kind(const gchar *kind)
 	return g_strcmp0(kind, "string") == 0 || g_strcmp0(kind, "text") == 0 ||
 		g_strcmp0(kind, "integer") == 0 || g_strcmp0(kind, "boolean") == 0 ||
 		g_strcmp0(kind, "enum") == 0 || g_strcmp0(kind, "money") == 0 ||
-		g_strcmp0(kind, "date") == 0 || g_strcmp0(kind, "datetime") == 0;
+		g_strcmp0(kind, "date") == 0 || g_strcmp0(kind, "datetime") == 0 ||
+		g_strcmp0(kind, "double") == 0 || g_strcmp0(kind, "reference") == 0;
+}
+
+/* The entity name a reference field's options name as its target, or NULL
+ * when the options are not an object carrying a non-empty "target". */
+static gchar *
+reference_target(const gchar *options)
+{
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *object;
+	const gchar *target;
+	node = json_from_string(options ? options : "{}", NULL);
+	if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+		return NULL;
+	object = json_node_get_object(node);
+	if (!json_object_has_member(object, "target") ||
+		!JSON_NODE_HOLDS_VALUE(json_object_get_member(object, "target")) ||
+		json_node_get_value_type(json_object_get_member(object, "target")) != G_TYPE_STRING)
+		return NULL;
+	target = json_object_get_string_member(object, "target");
+	if (target == NULL || target[0] == '\0')
+		return NULL;
+	return g_strdup(target);
 }
 
 static gboolean
@@ -227,8 +251,22 @@ prepare_definition(VentureEntity *record, GError **error)
 		if (!string_array_valid(node))
 			return refuse(error, "enum options must be an array of strings");
 	}
+	/* A reference names its target type in the options, checked against
+	 * every type ever registered: a field pointing into a module that is
+	 * switched off today is still a sound definition. */
+	if (g_strcmp0(kind, "reference") == 0)
+	{
+		g_autofree gchar *options = NULL;
+		g_autofree gchar *target = NULL;
+		g_object_get(record, "options", &options, NULL);
+		target = reference_target(options);
+		if (target == NULL)
+			return refuse(error, "reference fields need options like {\"target\":\"category\"}");
+		if (venture_entity_registry_lookup_any(venture_entity_registry_get_default(), target) == G_TYPE_INVALID)
+			return refuse(error, "a reference field's options.target must be a registered record type");
+	}
 	if (!known_kind(kind))
-		return refuse(error, "kind must be string, text, integer, boolean, enum, money, date or datetime");
+		return refuse(error, "kind must be string, text, integer, double, boolean, enum, money, date, datetime or reference");
 	key = field_key(record_type, name);
 	g_object_set(record, "field-key", key, NULL);
 	return TRUE;
@@ -282,6 +320,19 @@ check_kind(const gchar *kind, const gchar *options, const gchar *text, const gch
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 				"VentureCustomFieldsService: %s must be an integer", name);
+			return FALSE;
+		}
+	}
+	else if (g_strcmp0(kind, "double") == 0)
+	{
+		gchar *end = NULL;
+		gdouble number;
+		errno = 0;
+		number = g_ascii_strtod(text, &end);
+		if (errno == ERANGE || end == NULL || end == text || *end != '\0' || !isfinite(number))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureCustomFieldsService: %s must be a number", name);
 			return FALSE;
 		}
 	}
@@ -349,11 +400,66 @@ check_kind(const gchar *kind, const gchar *options, const gchar *text, const gch
 	return TRUE;
 }
 
+/*
+ * A reference value is checked the way a built-in reference field is
+ * (venture_database_check_references()): a positive id naming a row of the
+ * target type that exists and is not deleted, refused with the switch
+ * named when the target's module is off. The caller skips a value the
+ * record already held, so a record pointing at a since-deleted row stays
+ * editable. A category target is also held to its tree's applies-to.
+ */
+static gboolean
+check_reference(VentureDatabase *database, const gchar *entity_name, const gchar *options,
+	const gchar *text, const gchar *name, GError **error)
+{
+	g_autofree gchar *target = reference_target(options);
+	g_autoptr(VentureEntity) row = NULL;
+	gchar *end = NULL;
+	gint64 id;
+	GType type;
+	errno = 0;
+	id = g_ascii_strtoll(text, &end, 10);
+	if (errno == ERANGE || end == NULL || end == text || *end != '\0' || id <= 0)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCustomFieldsService: %s must be a record id", name);
+		return FALSE;
+	}
+	if (target == NULL)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCustomFieldsService: %s has no reference target", name);
+		return FALSE;
+	}
+	type = venture_entity_registry_lookup(venture_entity_registry_get_default(), target);
+	if (type == G_TYPE_INVALID)
+	{
+		g_autoptr(GError) why = NULL;
+		venture_entity_registry_set_unknown_type_error(venture_entity_registry_get_default(), target, &why);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCustomFieldsService: %s cannot be set: %s", name, why->message);
+		return FALSE;
+	}
+	row = venture_database_get(database, type, id, NULL);
+	if (row == NULL || venture_entity_is_deleted(row))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureCustomFieldsService: %s points at %s #%" G_GINT64_FORMAT ", which %s",
+			name, target, id, row == NULL ? "does not exist" : "has been deleted");
+		return FALSE;
+	}
+	if (type == VENTURE_TYPE_CATEGORY)
+		return venture_category_check_applies_to(database, id, entity_name, error);
+	return TRUE;
+}
+
 static VentureFieldKind
 kind_to_spec(const gchar *kind)
 {
 	if (g_strcmp0(kind, "text") == 0) return VENTURE_FIELD_KIND_TEXT;
 	if (g_strcmp0(kind, "integer") == 0) return VENTURE_FIELD_KIND_INTEGER;
+	if (g_strcmp0(kind, "double") == 0) return VENTURE_FIELD_KIND_DOUBLE;
+	if (g_strcmp0(kind, "reference") == 0) return VENTURE_FIELD_KIND_REFERENCE;
 	if (g_strcmp0(kind, "boolean") == 0) return VENTURE_FIELD_KIND_BOOLEAN;
 	if (g_strcmp0(kind, "enum") == 0) return VENTURE_FIELD_KIND_ENUM;
 	if (g_strcmp0(kind, "money") == 0) return VENTURE_FIELD_KIND_MONEY;
@@ -432,6 +538,9 @@ venture_custom_fields_form_specs(VentureDatabase *database, gint64 organization_
 			continue;
 		spec = venture_field_spec_new(name, NULL, kind_to_spec(kind));
 		spec->required = required;
+		/* The target is what lets the form draw the ordinary picker. */
+		if (g_strcmp0(kind, "reference") == 0)
+			spec->reference_type = reference_target(options);
 		if (g_strcmp0(kind, "enum") == 0 && options != NULL)
 		{
 			g_autoptr(JsonNode) node = json_from_string(options, NULL);
@@ -524,6 +633,18 @@ venture_custom_fields_validate(VentureDatabase *database, VentureEntity *record,
 		}
 		if (!value_present(text))
 			continue;
+		if (g_strcmp0(kind, "reference") == 0)
+		{
+			/* Kept, not written: the value the record already held, or
+			 * one read back from the index because the save did not
+			 * carry the attribute at all. */
+			const gchar *before = previous != NULL ? venture_entity_get_attribute(previous, name) : NULL;
+			if (attribute == NULL || g_strcmp0(before, text) == 0)
+				continue;
+			if (!check_reference(database, entity_name, options, text, name, error))
+				return FALSE;
+			continue;
+		}
 		if (!check_kind(kind, options, text, name, error))
 			return FALSE;
 	}

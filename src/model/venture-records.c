@@ -126,10 +126,21 @@ static const VentureFieldDecl venture_product_fields[] = {
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
-	VENTURE_FIELD("category", "Category", "Broad grouping",
+	/* A place in a category tree. The two text fields below came first
+	 * and are kept -- imports, the categories report and old API clients
+	 * still write them -- but a tree is what groups at any depth, and
+	 * upgrading made one from what they held (migration 000700). */
+	VENTURE_FIELD_REF("category-id", "Category",
+	                  "Where it sits in the category tree; preferred over "
+	                  "the text fields", "category", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("category", "Category (text)",
+	              "Older free-text grouping; the category reference is preferred",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD("subcategory", "Subcategory", NULL,
+	VENTURE_FIELD("subcategory", "Subcategory (text)",
+	              "Older free-text grouping; the category reference is preferred",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	/* Genre is separate from category because book performance is
 	 * analysed by genre specifically, and a book's category on a store
 	 * is rarely the genre you actually think in. */
@@ -173,8 +184,18 @@ static const VentureFieldDecl venture_inventory_item_fields[] = {
 	                  VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
 	                  VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("location", "Location", "Where the stock physically is",
+	/* Where the stock is, as a record: locations nest (a bin in a
+	 * warehouse, a bag on a character) and can be renamed once. The text
+	 * field came first and is kept for the writers that still fill it;
+	 * upgrading made a location from each distinct value (000695). */
+	VENTURE_FIELD_REF("location-id", "Location",
+	                  "Where the stock is; preferred over the text field",
+	                  "location", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("location", "Location (text)",
+	              "Older free-text location; the location reference is preferred",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("sku", "SKU", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_MONEY("unit-cost", "Unit cost",
@@ -195,6 +216,28 @@ static const VentureFieldDecl venture_inventory_item_fields[] = {
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInventoryItem, venture_inventory_item, venture_inventory_item_fields,
 	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+
+/*
+ * A place stock can be: a warehouse, a bin inside it, a shelf, a van, a
+ * character in a game and the bank it keeps. Locations nest through
+ * parent-id; the save validator in src/core/venture-category.c refuses a
+ * loop and a parent in another organization. The kind is free text on
+ * purpose -- the set of kinds is whatever the operator's world has.
+ */
+static const VentureFieldDecl venture_location_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What you call this place"),
+	VENTURE_FIELD_REF("parent-id", "Inside",
+	                  "The location this one is part of", "location",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("kind", "Kind",
+	              "Free text: warehouse, bin, shelf, van, character, bank",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("description", "Description", NULL),
+	VENTURE_FIELD("active", "Active", "Still in use; an inactive place keeps its history",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
+};
+
+VENTURE_DEFINE_ENTITY(VentureLocation, venture_location, venture_location_fields)
 
 /*
  * Quantity on hand is deliberately absent as a stored field. It is the sum
@@ -271,7 +314,9 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	VENTURE_FIELD("buyer-name", "Buyer name", NULL,
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
-	VENTURE_FIELD("refunded-at", "Refund date", "Falls back to the sale date", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("refunded-at", "Refund date", "Falls back to the sale date", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("tags", "Tags", "Comma separated",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSale, venture_sale, venture_sale_fields,
@@ -2411,6 +2456,38 @@ static const VentureFieldDecl venture_currency_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCurrency, venture_currency, venture_currency_fields,
 	g_type_set_qdata(G_TYPE_FROM_CLASS(klass),
 		g_quark_from_static_string("venture-access-admin-write"), GINT_TO_POINTER(1));)
+
+/* ==========================================================================
+ * Categories
+ *
+ * A tree of groupings any record type can hang from: product groups,
+ * expense heads, the herb and ore of a game economy. The path ("Materials /
+ * Herbs") is computed from the parents every time it is shown and never
+ * stored, so renaming a parent renames every path under it with no
+ * cascade. The validator in src/core/venture-category.c refuses a loop, a
+ * parent for a different record type and a parent in another
+ * organization; applies-to is checked against the registry there too,
+ * which is why it is a string and not an enum -- a plugin's type is a
+ * valid target the day it registers.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_category_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "This level's name, e.g. Herbs"),
+	VENTURE_FIELD_REF("parent-id", "Part of",
+	                  "The category this one sits under; blank for a top level",
+	                  "category", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("applies-to", "For",
+	              "Optional record type this tree groups, e.g. product; "
+	              "blank for any",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("position", "Position", "Order among its siblings, lowest first",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("color", "Colour", "Accent used in the UI",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("description", "Description", NULL)
+};
+
+VENTURE_DEFINE_ENTITY(VentureCategory, venture_category, venture_category_fields)
 
 static const VentureFieldDecl venture_forge_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "What you call this server"),

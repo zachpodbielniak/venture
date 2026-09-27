@@ -1084,6 +1084,25 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"sales"
 	},
 	{
+		"/e/category", "Categories",
+		VENTURE_ICON(
+			"<path d=\"M4 5h6v4H4z\"/><path d=\"M14 11h6v4h-6z\"/>"
+			"<path d=\"M14 17h6v4h-6z\"/><path d=\"M7 9v10h7\"/>"
+			"<path d=\"M7 13h7\"/>"
+		),
+		NULL,
+		"core"
+	},
+	{
+		"/e/location", "Locations",
+		VENTURE_ICON(
+			"<path d=\"M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z\"/>"
+			"<circle cx=\"12\" cy=\"10\" r=\"2.5\"/>"
+		),
+		NULL,
+		"sales"
+	},
+	{
 		"/e/expense", "Expenses",
 		VENTURE_ICON(
 			"<path d=\"M3 7l6 6 4-4 8 8\"/><path d=\"M15 17h6v-6\"/>"
@@ -1601,9 +1620,10 @@ venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *req
  * section, and only the overview keeps the heading it carries. A page is
  * named once; test-plugin holds it to that.
  *
- * Seven areas, in the order of a working day: the money (what came in,
+ * Eight areas, in the order of a working day: the money (what came in,
  * what went out, the bank and the books behind both -- one place, not
- * three), the customers, the growth work, the support desk, what is being
+ * three), the customers, the growth work, the support desk, the operations
+ * everything else is filed by (categories, locations), what is being
  * built, and the settings. Every page of the app is in exactly one.
  */
 static const gchar *const venture_web_nav_money_in[] = {
@@ -1647,6 +1667,13 @@ static const gchar *const venture_web_nav_support[] = {
 	NULL
 };
 
+/* Where things are and how they are grouped: the structure the rest of
+ * the pages hang their records from, rather than money or people. */
+static const gchar *const venture_web_nav_operations[] = {
+	"/e/category", "/e/location",
+	NULL
+};
+
 static const gchar *const venture_web_nav_ideas[] = {
 	"/e/idea", "/e/research_note",
 	NULL
@@ -1687,6 +1714,7 @@ static const VentureWebNavSection venture_web_nav_sections[] = {
 	{ "Customers", NULL, venture_web_nav_customers },
 	{ "Growth", NULL, venture_web_nav_growth },
 	{ "Support", NULL, venture_web_nav_support },
+	{ "Operations", NULL, venture_web_nav_operations },
 	{ "Ideas", "Build", venture_web_nav_ideas },
 	{ "Code", "Build", venture_web_nav_code },
 	{ "Factory", "Build", venture_web_nav_factory },
@@ -7330,8 +7358,12 @@ venture_web_ui_form(
 		g_autofree gchar *wire = NULL;
 		const gchar *value;
 
+		/* A custom reference field has no property to set; its value is
+		 * an attribute the form posts, so the query string cannot seed it. */
 		if (venture_field_spec_get_kind(spec) != VENTURE_FIELD_KIND_REFERENCE ||
-		    0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_SENSITIVE))
+		    0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_SENSITIVE) ||
+		    NULL == g_object_class_find_property(G_OBJECT_GET_CLASS(record),
+		                                         venture_field_spec_get_name(spec)))
 			continue;
 		wire = g_strdup(venture_field_spec_get_name(spec));
 		g_strdelimit(wire, "-", '_');

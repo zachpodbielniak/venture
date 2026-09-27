@@ -360,6 +360,9 @@ static GType (*const venture_module_core_types[]) (void) = {
 	/* A user-defined currency is a unit of account, and money is in
 	 * every module: a sale, an expense and an invoice may all be in it. */
 	venture_currency_get_type,
+	/* Any record type may be grouped by a category tree -- a plugin's
+	 * as much as a product -- so the tree belongs to every install. */
+	venture_category_get_type,
 	NULL
 };
 
@@ -368,6 +371,7 @@ static GType (*const venture_module_sales_types[]) (void) = {
 	venture_inventory_item_get_type,
 	venture_inventory_txn_get_type,
 	venture_sale_get_type,
+	venture_location_get_type,
 	NULL
 };
 

@@ -15,6 +15,15 @@ that would take stock below zero is refused. Transfers move layers
 between two items of the same product (two locations) without hitting
 COGS.
 
+* Where stock is
+
+=inventory_item.location_id= names a =location= record: a place that can
+nest inside another (a bin in a warehouse, a bag on a character) and be
+renamed once for every item in it. The older free-text =location= column is
+kept, labelled "Location (text)"; upgrading made one location per distinct
+value and linked each item to it (migration =000695=). Items also carry
+comma-separated, searchable =tags=. See [[file:taxonomy.org][Taxonomy]].
+
 * Autojournal
 
 When a product has an =inventory_item=, automatic sale journals skip

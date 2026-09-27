@@ -343,6 +343,14 @@ VENTURE_DECLARE_ENTITY(VentureRoutingRule, venture_routing_rule, ROUTING_RULE)
 #define VENTURE_TYPE_CURRENCY (venture_currency_get_type())
 VENTURE_DECLARE_ENTITY(VentureCurrency, venture_currency, CURRENCY)
 
+/* --- Taxonomy ------------------------------------------------------------ */
+
+#define VENTURE_TYPE_CATEGORY (venture_category_get_type())
+VENTURE_DECLARE_ENTITY(VentureCategory, venture_category, CATEGORY)
+
+#define VENTURE_TYPE_LOCATION (venture_location_get_type())
+VENTURE_DECLARE_ENTITY(VentureLocation, venture_location, LOCATION)
+
 #define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)
 

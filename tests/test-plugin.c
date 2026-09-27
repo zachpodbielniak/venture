@@ -980,6 +980,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const support[] = {
 		"/tickets", "/sprints", "/kb", NULL
 	};
+	static const gchar *const operations[] = { "/e/category", "/e/location", NULL };
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
 	static const gchar *const code[] = {
 		"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge", NULL
@@ -1008,6 +1009,7 @@ test_web_navigation_groups_by_question(
 		{ "Customers", NULL, customers },
 		{ "Growth", NULL, growth },
 		{ "Support", NULL, support },
+		{ "Operations", NULL, operations },
 		{ "Ideas", "Build", ideas },
 		{ "Code", "Build", code },
 		{ "Factory", "Build", factory },

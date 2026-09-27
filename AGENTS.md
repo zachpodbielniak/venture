@@ -536,6 +536,34 @@ than one that fails.
   carries the `venture-access-admin-write` qdata, checked in
   `venture_access_policy_can()`; the create route passes `VIEWER` to
   `venture_web_require_for_type()`, so a check there alone would not hold.
+- **A category's path is computed, never stored.** `venture_category_path()`
+  walks the parents on every call, so renaming one renames every path under
+  it with no cascade. Do not add a path column or cache one on a record.
+  Display names cannot show it -- `get_display_name` has no database -- so
+  pickers show the node's own name; that is documented, not a bug to fix
+  with a per-type table.
+- **Tree walks are bounded and remember what they saw.** `category` and
+  `location` nest through `parent-id`, and with no FOREIGN KEYs only the
+  save validator in `venture-category.c` stops a loop. Every walk (path,
+  ancestor, descendants, the validator) stops at
+  `VENTURE_CATEGORY_MAX_DEPTH` and at a node seen before, so a loop written
+  by hand-written SQL ends a request instead of hanging it. A new walk must
+  do the same.
+- **The category-reference check is derived from the field table.** Any
+  `VENTURE_FIELD_REF` to `category`, on any type, is held to the tree's
+  `applies-to` by a validator registered on `VENTURE_TYPE_ENTITY`. Do not
+  list the types that have a category. A custom `reference` field calls
+  `venture_category_check_applies_to()` itself.
+- **A custom reference follows the built-in reference rule.** Checked when
+  written, never when kept (compare against the previous attribute), and a
+  hidden target module is refused with the switch named. It has no GObject
+  property, so the form's query-string prefill skips it.
+- **A backfill whose target table is a hidden type's creates it.**
+  Reconciliation brings a disabled module's *existing* tables up to date but
+  never creates one, so sales switched off after use has `inventory_items`
+  and no `locations`. `000695` creates `locations` with its field-table
+  columns rather than guarding on it, or the backfill would be recorded as
+  done and never run once sales came back.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

@@ -149,6 +149,10 @@ venture_context_new(
 	 * formatter reads, and kept there as the table changes. */
 	venture_currency_install(self);
 
+	/* Category and location trees: no loops, no parent in another
+	 * organization, and a category used only by the records it groups. */
+	venture_category_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

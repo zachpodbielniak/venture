@@ -23,9 +23,9 @@ Written bottom-up, because a module may only require what precedes it:
 
 | Module       | Requires        | Owns                                                              | Also switched by      |
 |--------------+-----------------+-------------------------------------------------------------------+-----------------------|
-| =core=       | —               | tenant_workspace, tenant_membership, tenant_invitation, tenant_support_grant, tenant_event, organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification, currency | always on |
+| =core=       | —               | tenant_workspace, tenant_membership, tenant_invitation, tenant_support_grant, tenant_event, organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification, currency, category | always on |
 | =custom_fields= | core          | accounting_custom_field, accounting_layout, custom_field_value; =/settings/fields= | |
-| =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
+| =sales=      | core            | product, inventory_item, inventory_txn, sale, location; =categories=, =inventory= |               |
 | =finance=    | sales           | expense, account, ledger_entry, tax_category, tax_code; =pnl=, =ventures=, =monthly=, =tax=, =tax_liability= |     |
 | =periods=    | finance         | fiscal_year, fiscal_period, report_snapshot; =snapshot_vs_live= | |
 | =crm=        | core            | company, contact, interaction, deal; =pipeline=                   |                       |
