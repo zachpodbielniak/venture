@@ -16,6 +16,7 @@
 #include "statements/venture-statements-private.h"
 
 #include <string.h>
+#include <math.h>
 
 #include "venture-assets.h"
 
@@ -8698,6 +8699,32 @@ venture_web_append_entity_picker(
 /* --- Record detail ------------------------------------------------------- */
 
 /*
+ * A double as a person reads it: "140", not the JSON writer's "140.0",
+ * and "0.1", not its round-trip "0.10000000000000001". Fifteen
+ * significant digits is what a double holds exactly; the stored value is
+ * untouched, this is only what the page shows.
+ *
+ * Returns: (transfer full): the text
+ */
+static gchar *
+venture_web_format_double(gdouble number)
+{
+	gchar buffer[G_ASCII_DTOSTR_BUF_SIZE];
+
+	if (!isfinite(number))
+		return g_strdup("\xe2\x80\x94");
+
+	/* Negative zero reads as zero. */
+	if (0.0 == number)
+		return g_strdup("0");
+
+	if ((floor(number) == number) && (fabs(number) < 1e15))
+		return g_strdup_printf("%" G_GINT64_FORMAT, (gint64)number);
+
+	return g_strdup(g_ascii_formatd(buffer, sizeof(buffer), "%.15g", number));
+}
+
+/*
  * Renders one field's value for reading rather than editing.
  */
 static void
@@ -8757,6 +8784,13 @@ venture_web_append_detail_value(
 	else if (G_VALUE_HOLDS_ENUM(&value))
 	{
 		venture_web_append_nick(content, G_VALUE_TYPE(&value), g_value_get_enum(&value));
+	}
+	else if (G_VALUE_HOLDS_DOUBLE(&value))
+	{
+		g_autofree gchar *text = NULL;
+
+		text = venture_web_format_double(g_value_get_double(&value));
+		venture_html_escape_append(content, text);
 	}
 	else if (VENTURE_FIELD_KIND_REFERENCE == venture_field_spec_get_kind(spec))
 	{
@@ -8907,6 +8941,13 @@ venture_web_append_related(
 		 */
 		if ((VENTURE_TYPE_KB_LINK == types[i]) ||
 		    (VENTURE_TYPE_KB_CHUNK == types[i]))
+			continue;
+
+		/* A goal's steps are its Steps panel, in order with their
+		 * ranges and done state. A sub-goal still lists here: it is a
+		 * goal of its own, not a line of this one. */
+		if ((VENTURE_TYPE_GOAL_STEP == types[i]) &&
+		    (VENTURE_TYPE_GOAL == G_OBJECT_TYPE(record)))
 			continue;
 
 		/*
@@ -10318,6 +10359,211 @@ venture_web_append_invoice_block(
 	g_string_append(content, "</div></div>");
 }
 
+/*
+ * A goal's page: how far along it is and the steps that get it there, in
+ * their order. The progress is venture_goals_fraction(), the same figure
+ * goal_progress reports, so the page and the report cannot disagree; the
+ * bar stops at full and empty, the percentage beside it does not. The
+ * steps are listed here rather than in the Related tab, which skips them.
+ */
+static void
+venture_web_append_goal_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) steps = NULL;
+	g_autofree gchar *unit = NULL;
+	g_autofree gchar *start_text = NULL;
+	g_autofree gchar *current_text = NULL;
+	g_autofree gchar *target_text = NULL;
+	VentureDatabase *database;
+	gdouble start;
+	gdouble current;
+	gdouble target;
+	gdouble fraction;
+	gdouble width;
+	guint done;
+	guint i;
+
+	database = venture_context_get_database(self->context);
+	g_object_get(record, "unit", &unit, "start-value", &start,
+	             "current-value", &current, "target-value", &target, NULL);
+
+	fraction = venture_goals_fraction(start, current, target);
+	width = CLAMP(fraction, 0.0, 1.0) * 100.0;
+	start_text = venture_web_format_double(start);
+	current_text = venture_web_format_double(current);
+	target_text = venture_web_format_double(target);
+
+	query = venture_query_new(VENTURE_TYPE_GOAL_STEP);
+	venture_query_set_organization(query, venture_entity_get_organization_id(record));
+	/* A plan, not a ledger: past this the Related tab and the list page
+	 * are the way to page through them. */
+	venture_query_set_limit(query, 500);
+
+	if (venture_query_add_filter_int(query, "goal-id", VENTURE_FILTER_OP_EQ,
+	                                 venture_entity_get_id(record), NULL) &&
+	    venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL) &&
+	    venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL))
+		steps = venture_database_find(database, query, NULL);
+
+	done = 0;
+
+	for (i = 0; (NULL != steps) && (i < steps->len); i++)
+	{
+		gboolean finished;
+
+		g_object_get(g_ptr_array_index(steps, i), "done", &finished, NULL);
+		done += finished ? 1 : 0;
+	}
+
+	/* --- The figures and the bar --- */
+
+	g_string_append(content, "<div class=\"card goal-progress\"><div class=\"card-head\">"
+	                         "<h2>Progress</h2></div><div class=\"card-body\">"
+	                         "<div class=\"stat-row\">");
+	g_string_append(content, "<div class=\"stat\"><span class=\"stat-value\">");
+	venture_html_escape_append(content, start_text);
+	g_string_append(content, "</span><span class=\"stat-label\">Start</span></div>"
+	                         "<div class=\"stat\"><span class=\"stat-value\">");
+	venture_html_escape_append(content, current_text);
+	g_string_append(content, "</span><span class=\"stat-label\">Current</span></div>"
+	                         "<div class=\"stat\"><span class=\"stat-value\">");
+	venture_html_escape_append(content, target_text);
+	g_string_append_printf(content,
+		"</span><span class=\"stat-label\">Target</span></div>"
+		"<div class=\"stat\"><span class=\"stat-value\">%.0f%%</span>"
+		"<span class=\"stat-label\">Done</span></div></div>", fraction * 100.0);
+
+	g_string_append(content, "<div class=\"bar-row\"><span class=\"bar-label\">");
+	venture_html_escape_append(content, start_text);
+	g_string_append(content, " \xe2\x86\x92 ");
+	venture_html_escape_append(content, target_text);
+
+	if (!venture_string_is_empty(unit))
+	{
+		g_string_append_c(content, ' ');
+		venture_html_escape_append(content, unit);
+	}
+
+	g_string_append_printf(content,
+		"</span><span class=\"bar-track\"><span class=\"bar-fill\" "
+		"style=\"width:%.1f%%\"></span></span><span class=\"bar-value\">",
+		width);
+	venture_html_escape_append(content, current_text);
+	g_string_append(content, "</span></div></div></div>");
+
+	/* --- The steps, in order --- */
+
+	g_string_append(content, "<div class=\"card goal-steps\"><div class=\"card-head\"><h2>Steps");
+
+	if ((NULL != steps) && (steps->len > 0))
+		g_string_append_printf(content, " <span class=\"muted\">%u of %u done</span>",
+		                       done, steps->len);
+
+	g_string_append(content, "</h2><a class=\"btn btn-sm\" href=\"/e/goal_step/new\">"
+	                         "New step</a></div><div class=\"card-body\">");
+
+	if ((NULL == steps) || (0 == steps->len))
+	{
+		g_string_append(content, "<p class=\"muted\">No steps yet. A step is a stage "
+		                         "on the way -- a range of the metric, or a recipe "
+		                         "to craft some number of times.</p></div></div>");
+		return;
+	}
+
+	g_string_append(content, "<div class=\"table-wrap\"><table class=\"data\">"
+	                         "<thead><tr><th class=\"num\">Order</th><th>Step</th>"
+	                         "<th>Range</th><th>Recipe</th><th class=\"num\">Crafts</th>"
+	                         "<th>Status</th></tr></thead><tbody>");
+
+	for (i = 0; i < steps->len; i++)
+	{
+		VentureEntity *step;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *from_text = NULL;
+		g_autofree gchar *to_text = NULL;
+		gint64 position;
+		gint64 recipe_id;
+		gint64 repetitions;
+		gdouble from;
+		gdouble to;
+		gboolean finished;
+		gint64 id;
+
+		step = g_ptr_array_index(steps, i);
+		id = venture_entity_get_id(step);
+		g_object_get(step, "name", &name, "position", &position, "from-value", &from,
+		             "to-value", &to, "recipe-id", &recipe_id,
+		             "repetitions", &repetitions, "done", &finished, NULL);
+
+		g_string_append_printf(content,
+			"<tr data-href=\"/e/goal_step/%" G_GINT64_FORMAT "\">"
+			"<td class=\"num\">%" G_GINT64_FORMAT "</td>"
+			"<td><a href=\"/e/goal_step/%" G_GINT64_FORMAT "\">", id, position, id);
+		venture_html_escape_append(content,
+			venture_string_is_empty(name) ? "Step" : name);
+		g_string_append(content, "</a></td><td>");
+
+		/* Both ends unset is a step with no range, not "0 -> 0". */
+		if ((0.0 == from) && (0.0 == to))
+		{
+			g_string_append(content, "<span class=\"muted\">\xe2\x80\x94</span>");
+		}
+		else
+		{
+			from_text = venture_web_format_double(from);
+			to_text = venture_web_format_double(to);
+			venture_html_escape_append(content, from_text);
+			g_string_append(content, " \xe2\x86\x92 ");
+			venture_html_escape_append(content, to_text);
+		}
+
+		g_string_append(content, "</td><td>");
+
+		if (0 != recipe_id)
+		{
+			g_autoptr(VentureEntity) recipe = NULL;
+
+			/* Read as the viewer: a recipe they may not see is not named. */
+			recipe = venture_database_get(database, VENTURE_TYPE_RECIPE, recipe_id, NULL);
+
+			if (NULL != recipe)
+			{
+				g_autofree gchar *label = NULL;
+
+				label = venture_entity_get_display_name(recipe);
+				g_string_append_printf(content,
+					"<a href=\"/e/recipe/%" G_GINT64_FORMAT "\">", recipe_id);
+				venture_html_escape_append(content, label);
+				g_string_append(content, "</a>");
+			}
+			else
+			{
+				g_string_append(content,
+					"<span class=\"muted\">Deleted or unavailable</span>");
+			}
+		}
+		else
+		{
+			g_string_append(content, "<span class=\"muted\">\xe2\x80\x94</span>");
+		}
+
+		g_string_append(content, "</td><td class=\"num\">");
+
+		if (repetitions > 0)
+			g_string_append_printf(content, "%" G_GINT64_FORMAT, repetitions);
+
+		g_string_append_printf(content, "</td><td>%s</td></tr>",
+			finished ? "<span class=\"badge positive\">Done</span>"
+			         : "<span class=\"badge\">To do</span>");
+	}
+
+	g_string_append(content, "</tbody></table></div></div></div>");
+}
+
 static void
 venture_web_append_release_block(
 	VentureWebServer	*self,
@@ -10528,6 +10774,11 @@ venture_web_ui_detail(
 		if (VENTURE_TYPE_BUILD == entity_type)
 			venture_web_append_build_block(self, content, record);
 	}
+
+	/* A goal's progress and its steps, in order. */
+	if ((VENTURE_TYPE_GOAL == entity_type) &&
+	    venture_web_module_enabled(self, "goals"))
+		venture_web_append_goal_block(self, content, record);
 
 	/*
 	 * The other half of a polymorphic relation. On a ticket the panel

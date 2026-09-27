@@ -304,6 +304,20 @@ the assistant's and MCP's =venture_report= tool. Each report carries its
 parameter schema. Both refuse, naming the bound, more than
 =VENTURE_AGGREGATE_MAX_ROWS= goals or steps rather than answering for some.
 
+** On the goal's page
+
+A goal's page opens with its own block, ahead of the actions, related
+records and activity: a *Progress* card -- start, current and target, the
+percentage done (the same =venture_goals_fraction()= figure
+=goal_progress= reports, unclamped) and a bar from start to target that
+stops at empty and full -- and a *Steps* card listing the goal's steps in
+=position= order (then by id), each with its range, the recipe it crafts
+and how many times, and whether it is done. Because the block lists them,
+the Related tab leaves steps out rather than showing them twice; a
+sub-goal still appears there, being a goal of its own. Whole numbers read
+without a trailing =.0= on this page and every other: a double field
+shows "140", not "140.0".
+
 ** On a dashboard
 
 A =progress= widget on =goal= with =field= =current_value=,

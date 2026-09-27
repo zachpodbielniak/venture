@@ -1722,13 +1722,62 @@ test_http(
 	g_assert_nonnull(strstr(body, "name=\"include_on_hand\""));
 	g_assert_nonnull(strstr(body, "To acquire"));
 
-	/* The goal page lists its steps. */
-	g_clear_pointer(&body, g_free);
-	g_clear_pointer(&path, g_free);
-	path = g_strdup_printf("/e/goal/%" G_GINT64_FORMAT, ID(skill));
-	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, NULL, &body),
-		==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(body, "1 to 25"));
+	/*
+	 * The goal page carries its own block before the generic panels:
+	 * the progress (start, current, target, percent and a bar) and the
+	 * steps in their order, with range, recipe and done state. What
+	 * breaks: a goal page that shows none of its progress and its steps
+	 * only as a list of names under Related, in id order.
+	 */
+	{
+		g_autoptr(VentureEntity) warm_up = NULL;
+		g_autoptr(VentureEntity) finish = NULL;
+		const gchar *block;
+		const gchar *first;
+		const gchar *second;
+		const gchar *third;
+
+		finish = VENTURE_ENTITY(venture_goal_step_new());
+		g_object_set(finish, "goal-id", ID(skill), "name", "Final stretch",
+		             "position", (gint64)9, "from-value", 150.0, "to-value", 300.0,
+		             NULL);
+		server_save(fixture, finish);
+		warm_up = VENTURE_ENTITY(venture_goal_step_new());
+		g_object_set(warm_up, "goal-id", ID(skill), "name", "Warm up",
+		             "position", (gint64)-1, "done", TRUE, NULL);
+		server_save(fixture, warm_up);
+
+		g_clear_pointer(&body, g_free);
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/e/goal/%" G_GINT64_FORMAT, ID(skill));
+		g_assert_cmpuint(server_request(fixture, "GET", path, NULL, NULL, &body),
+			==, SOUP_STATUS_OK);
+
+		block = strstr(body, "<div class=\"card goal-progress\">");
+		g_assert_nonnull(block);
+		/* 1 -> 300 at 40 is 39 of 299: 13%, and integral values read
+		 * without a trailing ".0". */
+		g_assert_nonnull(strstr(block, "<span class=\"stat-value\">40</span>"));
+		g_assert_nonnull(strstr(block, "<span class=\"stat-value\">13%</span>"));
+		g_assert_nonnull(strstr(block, "1 \xe2\x86\x92 300"));
+		g_assert_nonnull(strstr(block, "class=\"bar-fill\" style=\"width:13.0%\""));
+		g_assert_null(strstr(block, "40.0"));
+
+		g_assert_nonnull(strstr(block, "1 of 3 done"));
+		first = strstr(block, ">Warm up</a>");
+		second = strstr(block, ">1 to 25</a>");
+		third = strstr(block, ">Final stretch</a>");
+		g_assert_nonnull(first);
+		g_assert_nonnull(second);
+		g_assert_nonnull(third);
+		g_assert_true((first < second) && (second < third));
+		g_assert_nonnull(strstr(block, "150 \xe2\x86\x92 300"));
+		g_assert_nonnull(strstr(second, ">Brew</a>"));
+		g_assert_nonnull(strstr(first, "<span class=\"badge positive\">Done</span>"));
+
+		/* Listed once: the Related tab skips what the block shows. */
+		g_assert_null(strstr(third + strlen(">Final stretch</a>"), "Final stretch"));
+	}
 
 	/* The record API is the same validator: a goal with no distance. */
 	g_clear_pointer(&body, g_free);
