@@ -17,6 +17,59 @@ venture_market_listing_outcome_is_closed(VentureListingOutcome outcome)
 	return VENTURE_LISTING_OUTCOME_OPEN != outcome;
 }
 
+/*
+ * Refuses a reference being written to a record in another organization.
+ * The generic reference check only asks whether the target exists for
+ * the writer, and a person in two organizations can see both: a listing
+ * of one organization's product under another's is a row in the wrong
+ * books and a sale rate for a product nobody here sells. Read as the
+ * writer, as production does; a target they cannot see is the generic
+ * check's to refuse.
+ */
+static gboolean
+venture_market_same_organization(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	const gchar	 *property,
+	GType		  target_type,
+	const gchar	 *label,
+	GError		**error
+){
+	g_autoptr(VentureEntity) target = NULL;
+	gint64 target_id;
+
+	target_id = 0;
+	g_object_get(entity, property, &target_id, NULL);
+
+	if (target_id <= 0)
+		return TRUE;
+
+	if (NULL != previous)
+	{
+		gint64 was;
+
+		was = 0;
+		g_object_get(previous, property, &was, NULL);
+
+		if (was == target_id)
+			return TRUE;
+	}
+
+	target = venture_database_get(database, target_type, target_id, NULL);
+
+	if ((NULL != target) &&
+	    (venture_entity_get_organization_id(target) !=
+	     venture_entity_get_organization_id(entity)))
+	{
+		venture_set_error_validation(error, label,
+			"#%" G_GINT64_FORMAT " belongs to another organization", target_id);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 /* ==========================================================================
  * Price observations
  * ========================================================================== */
@@ -39,8 +92,6 @@ venture_market_validate_observation(
 	gint64 product_id;
 	gint64 volume;
 
-	(void)database;
-	(void)previous;
 	(void)user_data;
 
 	g_object_get(entity, "product-id", &product_id, "price", &price,
@@ -51,6 +102,12 @@ venture_market_validate_observation(
 		venture_set_error_validation(error, "Product", "is required");
 		return FALSE;
 	}
+
+	/* The location is held to the organization with every other
+	 * location reference, in venture-category.c. */
+	if (!venture_market_same_organization(database, entity, previous, "product-id",
+	                                      VENTURE_TYPE_PRODUCT, "Product", error))
+		return FALSE;
 
 	if (NULL == price)
 	{
@@ -154,7 +211,6 @@ venture_market_validate_listing(
 	gint64 sold;
 	const gchar *currency;
 
-	(void)database;
 	(void)user_data;
 
 	g_object_get(entity, "product-id", &product_id, "quantity", &quantity,
@@ -168,6 +224,15 @@ venture_market_validate_listing(
 		venture_set_error_validation(error, "Product", "is required");
 		return FALSE;
 	}
+
+	if (!venture_market_same_organization(database, entity, previous, "product-id",
+	                                      VENTURE_TYPE_PRODUCT, "Product", error) ||
+	    !venture_market_same_organization(database, entity, previous,
+	                                      "inventory-item-id",
+	                                      VENTURE_TYPE_INVENTORY_ITEM, "Stock", error) ||
+	    !venture_market_same_organization(database, entity, previous, "sale-id",
+	                                      VENTURE_TYPE_SALE, "Sale", error))
+		return FALSE;
 
 	if (quantity < 1)
 	{

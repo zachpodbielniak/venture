@@ -770,13 +770,14 @@ test_latest_price(
 	g_assert_no_error(error);
 	LATEST("market value", march, "2.00 USD");
 
-	/* Another organization's observation is not this one's price. */
+	/* Another organization's observation is not this one's price: it
+	 * cannot even be recorded against this organization's product. */
 	other = venture_organization_new();
 	g_object_set(other, "name", "Elsewhere", "slug", "elsewhere", NULL);
 	save(fixture, other);
 	foreign = observation_new(fixture, ID(other), herb, "market value",
 	                          "700.00 USD", "2026-03-14T00:00:00Z", 0);
-	save(fixture, foreign);
+	save_refused(fixture, foreign, "belongs to another organization");
 	LATEST("market value", march, "2.00 USD");
 
 	/* A tie on the time goes to the one recorded last, every time. */
@@ -1077,6 +1078,70 @@ test_listing_performance_organization(
 	theirs = RUN(fixture, "listing_performance", "2026-03", "organization_id", other_id);
 	g_assert_cmpuint(venture_report_result_get_row_count(theirs), ==, 1);
 	g_assert_cmpfloat(number(theirs, 0, "units_listed"), ==, 9);
+}
+
+/*
+ * A reference written across organizations is refused: a listing or an
+ * observation of another organization's product, a product filed under
+ * another's category, stock kept at another's location. The generic
+ * reference check only asks whether the target exists for the writer,
+ * and a person in both organizations -- the test runs as the system,
+ * which sees everything -- can see both. What breaks: a row in the wrong
+ * books, and a category report that a member of only one organization
+ * cannot read at all because the tree walks into the other.
+ */
+static void
+test_cross_organization_references(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureOrganization) other = NULL;
+	g_autoptr(VentureVenture) their_venture = NULL;
+	g_autoptr(VentureEntity) their_category = NULL;
+	g_autoptr(VentureEntity) their_location = NULL;
+	g_autoptr(VentureEntity) offer = NULL;
+	g_autoptr(VentureEntity) seen = NULL;
+	g_autoptr(VentureEntity) filed = NULL;
+	g_autoptr(VentureEntity) kept = NULL;
+	gint64 theirs;
+	gint64 mine;
+
+	(void)user_data;
+
+	other = venture_organization_new();
+	g_object_set(other, "name", "Elsewhere", "slug", "elsewhere", NULL);
+	save(fixture, other);
+	their_venture = venture_venture_new();
+	g_object_set(their_venture, "name", "Their stall", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(their_venture), ID(other));
+	save(fixture, their_venture);
+	theirs = product_in(fixture, ID(other), ID(their_venture), "Their herb", 0);
+	mine = product(fixture, "Herb", 0);
+
+	offer = listing_new(fixture, theirs, "auction", 1, "1.00 USD", "2026-03-01T00:00:00Z");
+	save_refused(fixture, offer, "belongs to another organization");
+
+	seen = observation_new(fixture, fixture->organization_id, theirs, "vendor",
+	                       "1.00 USD", "2026-03-01T00:00:00Z", 0);
+	save_refused(fixture, seen, "belongs to another organization");
+
+	their_category = VENTURE_ENTITY(venture_category_new());
+	g_object_set(their_category, "name", "Their herbs", "applies-to", "product", NULL);
+	venture_entity_set_organization_id(their_category, ID(other));
+	save(fixture, their_category);
+	filed = VENTURE_ENTITY(venture_product_new());
+	g_object_set(filed, "name", "Filed", "category-id", ID(their_category), NULL);
+	venture_entity_set_organization_id(filed, fixture->organization_id);
+	save_refused(fixture, filed, "belongs to another organization");
+
+	their_location = VENTURE_ENTITY(venture_location_new());
+	g_object_set(their_location, "name", "Their bank", "active", TRUE, NULL);
+	venture_entity_set_organization_id(their_location, ID(other));
+	save(fixture, their_location);
+	kept = VENTURE_ENTITY(venture_inventory_item_new());
+	g_object_set(kept, "product-id", mine, "location-id", ID(their_location), NULL);
+	venture_entity_set_organization_id(kept, fixture->organization_id);
+	save_refused(fixture, kept, "belongs to another organization");
 }
 
 /* ==========================================================================
@@ -1581,6 +1646,7 @@ main(
 	ADD("/market/listing-performance/currencies", test_listing_performance_currencies);
 	ADD("/market/listing-performance/category", test_listing_performance_category);
 	ADD("/market/listing-performance/organization", test_listing_performance_organization);
+	ADD("/market/cross-organization-references", test_cross_organization_references);
 	ADD("/market/price-history/buckets", test_price_history_buckets);
 	ADD("/market/price-history/refusals", test_price_history_refusals);
 	ADD("/market/module-off", test_module_off);

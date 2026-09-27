@@ -102,6 +102,15 @@ way. A category with a blank =applies_to= fits anything. A record keeping
 the category it already had is not re-checked, so it stays editable after
 its tree changes.
 
+The category must also be in the record's own organization, and so must a
+location any record points at (=inventory_item.location_id=, an
+observation's, a session's -- again every reference declared against
+=location=). The generic reference check only asks whether the target
+exists for the writer, and somebody in two organizations sees both: a
+product of one filed under the other's category would put the other's
+names on this one's reports, and make a category report that a member of
+only one organization cannot read at all.
+
 The ordinary reference rules apply first: a category that does not exist
 or is soft-deleted cannot be written into =category_id=.
 

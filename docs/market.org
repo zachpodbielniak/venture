@@ -76,7 +76,9 @@ form, the API, an approved staged change, the assistant:
 - no product (=product_id= 0) or no price. Both are declared =NOT_NULL=,
   but the generic check covers strings and times only;
 - a negative price. Zero is allowed: a thing can be seen to fetch nothing;
-- a negative volume.
+- a negative volume;
+- a product in another organization (a location there is refused by the
+  location rule in [[file:taxonomy.org][Taxonomy]]).
 
 ** The latest price
 
@@ -141,7 +143,9 @@ revenue reports read.
 In the order a person would fix them:
 
 1. *What is offered.* A product, at least one unit, a unit price that is
-   not negative, and a deposit and fees that are not negative.
+   not negative, and a deposit and fees that are not negative. The
+   product, the stock and the sale, when written, must be this
+   organization's.
 2. *One currency.* The deposit and fees, when set, must be in the unit
    price's currency. A mix is refused rather than converted: a listing is
    one offer in one market, and a deposit in another currency would make

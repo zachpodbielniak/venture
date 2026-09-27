@@ -549,11 +549,48 @@ venture_category_check_applies_to(
 }
 
 /*
- * Every record's references to a category, found from the field table --
- * product.category-id today, a plugin type's field the day it registers --
- * held to the tree's applies-to. Only a reference being written is
- * checked, the rule every reference follows: a product under a category
- * whose tree later changed type can still be edited.
+ * Whether the category or location @target_id lives in @entity's
+ * organization. Read under the internal scope: the generic reference
+ * check has already refused a target the writer cannot see, so this only
+ * judges where a visible one lives. A missing one is left to that check.
+ */
+static gboolean
+venture_category_check_same_organization(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	GType		  target_type,
+	const gchar	 *target_name,
+	gint64		  target_id,
+	GError		**error
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureEntity) target = NULL;
+
+	internal = venture_access_policy_enter(
+		venture_database_get_access_policy(database), NULL);
+	target = venture_database_get(database, target_type, target_id, NULL);
+
+	if ((NULL == target) ||
+	    (venture_entity_get_organization_id(target) ==
+	     venture_entity_get_organization_id(entity)))
+		return TRUE;
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+	            "%s #%" G_GINT64_FORMAT " belongs to another organization",
+	            target_name, target_id);
+	return FALSE;
+}
+
+/*
+ * Every record's references to a category or a location, found from the
+ * field table -- product.category-id and inventory_item.location-id
+ * today, a plugin type's field the day it registers. Each is held to the
+ * record's organization: an organization's report walks its categories
+ * and locations as its own, and another's in the middle of a tree is a
+ * report its members cannot read at all. A category is also held to its
+ * tree's applies-to. Only a reference being written is checked, the rule
+ * every reference follows: a product under a category whose tree later
+ * changed type can still be edited.
  */
 static gboolean
 venture_category_validate_references(
@@ -570,8 +607,8 @@ venture_category_validate_references(
 
 	(void)user_data;
 
-	/* A category's own parent is held to equality above, not to this. */
-	if (VENTURE_IS_CATEGORY(entity))
+	/* A tree's own parent is held to equality above, not to this. */
+	if (VENTURE_IS_CATEGORY(entity) || VENTURE_IS_LOCATION(entity))
 		return TRUE;
 
 	klass = VENTURE_ENTITY_GET_CLASS(entity);
@@ -580,12 +617,15 @@ venture_category_validate_references(
 	for (i = 0; i < n_properties; i++)
 	{
 		GParamSpec *pspec;
+		const gchar *target_name;
+		gboolean is_category;
 		gint64 target_id;
 
 		pspec = properties[i];
+		target_name = venture_entity_class_get_reference(klass, pspec->name);
+		is_category = (0 == g_strcmp0(target_name, "category"));
 
-		if ((0 != g_strcmp0(venture_entity_class_get_reference(klass, pspec->name),
-		                    "category")) ||
+		if ((!is_category && (0 != g_strcmp0(target_name, "location"))) ||
 		    (G_TYPE_INT64 != G_PARAM_SPEC_VALUE_TYPE(pspec)))
 			continue;
 
@@ -606,7 +646,13 @@ venture_category_validate_references(
 				continue;
 		}
 
-		if (!venture_category_check_applies_to(database, target_id,
+		if (!venture_category_check_same_organization(database, entity,
+			is_category ? VENTURE_TYPE_CATEGORY : VENTURE_TYPE_LOCATION,
+			target_name, target_id, error))
+			return FALSE;
+
+		if (is_category &&
+		    !venture_category_check_applies_to(database, target_id,
 		                                       venture_entity_get_entity_name(entity),
 		                                       error))
 			return FALSE;
