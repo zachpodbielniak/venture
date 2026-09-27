@@ -766,8 +766,11 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInteraction, venture_interaction, venture
 
 static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
+	/* Somebody at the deal's company, never at another: the flag makes
+	 * the save refuse a stranger and the form offer only the account's
+	 * people. */
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SAME_PARENT),
 	/* The account as well as the person: people move, accounts persist,
 	 * and the pipeline is usually read by account. */
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
@@ -1331,9 +1334,10 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("assignee", "Assignee", "Who is doing it",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
-	/* Who asked. Set for an external ticket, empty for your own work. */
+	/* Who asked. Set for an external ticket, empty for your own work;
+	 * when the company is set too, somebody at that company. */
 	VENTURE_FIELD_REF("contact-id", "Raised by", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",

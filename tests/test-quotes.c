@@ -200,6 +200,63 @@ test_totals(Fixture *f, gconstpointer data)
 	g_assert_cmpint(amount(r, "total"), ==, 5);
 }
 
+/*
+ * A quote line taxed by a rate record is taxed exactly, like an invoice
+ * line: 8.875% of 53.97 is 4.79, which no whole percent can say. The
+ * invoice made on acceptance carries the same rate record, so it asks the
+ * customer for exactly what the quote promised. If this regresses, a New
+ * York quote is rounded to 9% and the invoice disagrees with it.
+ */
+static void
+test_tax_code(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) q = quote(f, "Q-TAX");
+	g_autoptr(VentureEntity) rate = record(f, "tax_code");
+	g_autoptr(VentureEntity) l = record(f, "quote_line");
+	g_autoptr(VentureEntity) r = NULL;
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 invoice_id;
+	guint i, found = 0;
+	g_object_set(rate, "code", "NY", "name", "New York sales tax",
+		"rate-numerator", (gint64)8875, "rate-denominator", (gint64)100000, "active", TRUE, NULL);
+	save(f, rate);
+	g_object_set(l, "quote-id", venture_entity_get_id(q), "description", "Consulting",
+		"tax-code-id", venture_entity_get_id(rate), NULL);
+	field(l, "quantity", "3");
+	field(l, "unit-price", "19.99 USD");
+	field(l, "discount-percent", "10");
+	save(f, l);
+	r = fresh(f, "quote", venture_entity_get_id(q));
+	g_assert_cmpint(amount(r, "subtotal"), ==, 5997);
+	g_assert_cmpint(amount(r, "discount"), ==, 600);
+	g_assert_cmpint(amount(r, "tax"), ==, 479);
+	g_assert_cmpint(amount(r, "total"), ==, 5876);
+
+	action(f, q, "send");
+	action(f, q, "accept");
+	invoices = rows(f, "invoice");
+	g_assert_cmpuint(invoices->len, ==, 1);
+	invoice_id = venture_entity_get_id(g_ptr_array_index(invoices, 0));
+	lines = rows(f, "invoice_line");
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(lines, i);
+		gint64 owner = 0, code = 0;
+		g_object_get(row, "invoice-id", &owner, "tax-code-id", &code, NULL);
+		if (owner != invoice_id) continue;
+		g_assert_cmpint(code, ==, venture_entity_get_id(rate));
+		found++;
+	}
+	g_assert_cmpuint(found, ==, 1);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
+		invoice_id, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 5876);
+}
+
 static void
 test_lifecycle(Fixture *f, gconstpointer data)
 {
@@ -329,6 +386,20 @@ test_start_subscription(Fixture *f, gconstpointer data)
 	g_assert_false(plan_line(f, q, solo, "2", NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
+	/* Nor a tax rate: the plan price carries its own. */
+	{
+		g_autoptr(VentureEntity) rate = record(f, "tax_code");
+		g_autoptr(VentureEntity) taxed = record(f, "quote_line");
+		g_object_set(rate, "code", "SUB", "name", "Sales tax", "rate-numerator", (gint64)8875,
+			"rate-denominator", (gint64)100000, "active", TRUE, NULL);
+		save(f, rate);
+		g_object_set(taxed, "quote-id", venture_entity_get_id(q), "description", "Team plan", "plan-price-id", team,
+			"tax-code-id", venture_entity_get_id(rate), NULL);
+		field(taxed, "quantity", "3");
+		g_assert_false(venture_database_save(f->db, taxed, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+	}
 	g_assert_true(plan_line(f, q, team, "3", NULL, &error));
 	g_assert_no_error(error);
 	g_assert_false(plan_line(f, q, solo, "1", NULL, &error));
@@ -935,6 +1006,7 @@ main(int argc, char **argv)
 	venture_entity_registry_get_default();
 	g_test_add("/quotes/percentage-parts", Fixture, NULL, setup, test_percentage_parts, teardown);
 	g_test_add("/quotes/records", Fixture, NULL, setup, test_records, teardown);
+	g_test_add("/quotes/tax-code", Fixture, NULL, setup, test_tax_code, teardown);
 	g_test_add("/quotes/totals", Fixture, NULL, setup, test_totals, teardown);
 	g_test_add("/quotes/pipeline-refusal", Fixture, NULL, setup, test_pipeline_refusal, teardown);
 	g_test_add("/quotes/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);

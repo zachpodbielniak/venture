@@ -76,7 +76,11 @@ static const VentureFieldDecl quote_line_fields[] = {
 	VENTURE_FIELD("tax-percent", "Tax percent", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("plan-price-id", "Subscription price", "A plan price started as a subscription once the quote is accepted; the quantity is its seats",
-		"plan_price", VENTURE_COLUMN_FLAG_NONE)
+		"plan_price", VENTURE_COLUMN_FLAG_NONE),
+	/* The same exact rate an invoice line takes, so the quote asks for what
+	 * its invoice will: a whole percent cannot say 8.875%. */
+	VENTURE_FIELD_REF("tax-code-id", "Tax code", "Exact rate and jurisdiction; used instead of tax-percent when set",
+		"tax_code", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureQuoteLine, venture_quote_line, quote_line_fields)
 

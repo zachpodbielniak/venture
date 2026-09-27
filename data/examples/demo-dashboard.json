@@ -3,7 +3,6 @@
   "slug": "desk",
   "purpose": "work",
   "layout": "four_columns",
-  "home": true,
   "description": "What needs you now, what has been promised to whom, and how the desk is holding up.",
   "widgets": [
     { "kind": "count", "title": "Mine, open", "entity_type": "ticket",

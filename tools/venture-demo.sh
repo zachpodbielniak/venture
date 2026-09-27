@@ -1580,12 +1580,12 @@ seed_factory () {
 }
 
 seed_dashboards () {
-    step "Two dashboards"
+    step "Three dashboards"
 
     local file
     local body
 
-    for file in demo-dashboard demo-money
+    for file in demo-today demo-dashboard demo-money
     do
         body="$(cat "${root}/data/examples/${file}.json")"
 
@@ -1624,7 +1624,8 @@ except Exception:
     say "${counts} tickets on a desk with service levels, a sprint, a release"
     say "and an incident. Money, sales and the books are all seeded.${OFF}"
     say ""
-    say "  The desk          ${base_url}/            ${DIM}(the home dashboard)${OFF}"
+    say "  Today             ${base_url}/            ${DIM}(the home dashboard)${OFF}"
+    say "  The desk          ${base_url}/dashboards/desk"
     say "  Month end         ${base_url}/dashboards/month-end"
     say "  Inbox             ${base_url}/inbox"
     say "  Ticket board      ${base_url}/tickets"

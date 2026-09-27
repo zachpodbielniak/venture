@@ -21,8 +21,10 @@ An invoice line is taxed by picking a *tax rate* -- a =tax_code= record --
 from the line's Tax menu. "No tax" is first and chosen. Each rate shows its
 percent; the preview adds it up, and the saved invoice freezes the rate's
 exact fraction at issue. The JSON composer takes the same thing as
-=tax_code_id= on a line. Quote lines still carry a whole =tax_percent=,
-which is all their table holds.
+=tax_code_id= on a line. A quote sheet has the same Tax menu and a quote
+line the same =tax_code_id=, so a quote asks for exactly what the invoice
+it becomes will; a whole =tax_percent= is still accepted from the API for
+lines that name no rate.
 
 A tax rate is made at =/tax-rates/new= from a name and a percent ("8.875"
 is stored as 8875 over 100000, never as a float); the code the return

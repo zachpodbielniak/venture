@@ -1896,10 +1896,17 @@ venture_web_page(
 		g_string_append(html, ";}</style>");
 	}
 
-	g_string_append(html, "</head><body><div class=\"app\">");
+	/*
+	 * The first thing a keyboard reaches is a way past the sidebar: forty
+	 * links stand between a Tab and the page otherwise. Visible only
+	 * while focused.
+	 */
+	g_string_append(html, "</head><body>"
+	                      "<a class=\"skip-link visually-hidden\" href=\"#main\">"
+	                      "Skip to content</a><div class=\"app\">");
 
 	/* Sidebar */
-	g_string_append(html, "<nav class=\"sidebar\">");
+	g_string_append(html, "<nav class=\"sidebar\" aria-label=\"Main\">");
 	g_string_append(html, "<a class=\"brand\" href=\"/\">"
 	                      "<span class=\"brand-mark\">V</span>");
 	venture_html_escape_append(html, ui_title);
@@ -1915,6 +1922,7 @@ venture_web_page(
 	g_string_append(html,
 		"<form class=\"sidebar-search\" action=\"/search\" method=\"get\">"
 		"<input type=\"search\" name=\"q\" placeholder=\"Search\xe2\x80\xa6\" "
+		"aria-label=\"Search everything\" "
 		"data-global-search title=\"Search everything (Ctrl+K)\">"
 		"</form>");
 
@@ -1966,7 +1974,16 @@ venture_web_page(
 		links = venture_accountant_web_navigation(self, request);
 		items = g_string_new(NULL);
 
-		g_string_append(html, "<div class=\"nav\">");
+		/*
+		 * On a phone the menu folds behind one button; on a desk the
+		 * button is hidden. The menu is drawn showing and folded by the
+		 * script below only on a narrow screen, so with scripting off
+		 * every link is still there.
+		 */
+		g_string_append(html, "<button type=\"button\" class=\"btn sidebar-menu-toggle\" "
+		                      "aria-expanded=\"true\" aria-controls=\"site-menu\" "
+		                      "data-menu-toggle>Menu</button>");
+		g_string_append(html, "<div class=\"nav\" id=\"site-menu\">");
 
 		/*
 		 * Rows are gathered under their heading and drawn when the next
@@ -2102,6 +2119,14 @@ venture_web_page(
 	g_string_append(html, "<a class=\"btn btn-ghost btn-sm\" "
 	                      "href=\"/logout\">Sign out</a>");
 	g_string_append(html, "</div></nav>");
+	g_string_append(html, "<script>(function(){try{"
+		"var s=document.querySelector('.sidebar'),b=s&&s.querySelector('[data-menu-toggle]');"
+		"if(!b)return;"
+		"function set(open){s.classList.toggle('menu-closed',!open);"
+		"b.setAttribute('aria-expanded',open?'true':'false');}"
+		"if(window.matchMedia('(max-width: 900px)').matches)set(false);"
+		"b.addEventListener('click',function(){set(s.classList.contains('menu-closed'));});"
+		"}catch(e){}})();</script>");
 
 	/*
 	 * Put the sidebar back where the reader left it, and make sure the
@@ -2171,10 +2196,17 @@ venture_web_page(
 		"},{passive:true});"
 		"}catch(e){}})();</script>");
 
-	/* Main */
-	g_string_append(html, "<main class=\"main\">");
+	/* Main. Focusable so the skip link lands a keyboard inside it. */
+	g_string_append(html, "<main class=\"main\" id=\"main\" tabindex=\"-1\">");
 	g_string_append(html, content);
 	g_string_append(html, "</main>");
+
+	/*
+	 * Where toasts appear, present from the start: a live region added
+	 * at the moment of the first message is often not announced at all,
+	 * because the reader was not yet watching it.
+	 */
+	g_string_append(html, "<div class=\"toasts\" role=\"status\" aria-live=\"polite\"></div>");
 
 	/*
 	 * The AI surface: a floating launcher, and a right-hand panel it
@@ -2191,7 +2223,7 @@ venture_web_page(
 	{
 		g_string_append(html,
 			"<button type=\"button\" class=\"ai-fab\" data-ai-toggle "
-			"title=\"Ask VENTURE (Ctrl+/)\">"
+			"aria-label=\"Ask VENTURE\" title=\"Ask VENTURE (Ctrl+/)\">"
 			"<span class=\"spark\">"
 			"<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\">"
 			"<path d=\"M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9-1.9 6.1-1.9-6.1L4 10.5l6.1-1.9L12 2.5z\"/></svg>"
@@ -2219,15 +2251,19 @@ venture_web_page(
 			"<div class=\"ai-panel-actions\">"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
 			"data-ai-threads title=\"Previous conversations\" "
+			"aria-label=\"Previous conversations\" "
 			"hx-get=\"/ui/chat/threads\" hx-target=\"#chat-log\" "
 			"hx-swap=\"innerHTML\">\xe2\x98\xb0</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
-			"data-ai-new title=\"New conversation\">+</button>"
+			"data-ai-new title=\"New conversation\" "
+			"aria-label=\"New conversation\">+</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
-			"data-ai-export title=\"Download this conversation as org\">"
+			"data-ai-export title=\"Download this conversation as org\" "
+			"aria-label=\"Download this conversation\">"
 			"\xe2\xa4\x93</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
-			"data-ai-close title=\"Hide (Esc)\">\xc3\x97</button>"
+			"data-ai-close title=\"Hide (Esc)\" "
+			"aria-label=\"Close the assistant\">\xc3\x97</button>"
 			"</div></div>");
 
 		g_string_append(html, "<div class=\"ai-panel-body chat-log\" "
@@ -2276,9 +2312,10 @@ venture_web_page(
 			"image/png,image/jpeg,image/webp,image/gif\">"
 			"<button type=\"button\" class=\"btn btn-ghost chat-attach\" "
 			"data-ai-attach "
-			"title=\"Attach a file or screenshot (or just paste one)\">"
+			"title=\"Attach a file or screenshot (or just paste one)\" "
+			"aria-label=\"Attach a file\">"
 			"\xf0\x9f\x93\x8e</button>"
-			"<textarea name=\"message\" rows=\"1\" "
+			"<textarea name=\"message\" rows=\"1\" aria-label=\"Message\" "
 			"placeholder=\"Ask about your ventures, or describe a change\">"
 			"</textarea>"
 			"<button class=\"btn btn-primary\" type=\"submit\">Send</button>"
@@ -3215,7 +3252,7 @@ venture_web_ui_overview(
 			/* One failing report must not take the dashboard down;
 			 * the others are still useful and the failure is shown
 			 * in place. */
-			g_string_append(content, "<div class=\"notice negative\">");
+			g_string_append(content, "<div class=\"notice negative\" role=\"alert\">");
 			venture_html_escape_append(content, local_error->message);
 			g_string_append(content, "</div>");
 			continue;
@@ -3624,7 +3661,7 @@ venture_web_error_for_browser(VentureWebServer *self, HtmxContext *context)
 
 	status = htmx_response_get_status(response);
 	fault = status >= 500;
-	body = g_string_new("<div class=\"empty error-page\"><h3>");
+	body = g_string_new("<div class=\"empty error-page\" role=\"alert\"><h3>");
 	venture_html_escape_append(body, venture_web_error_title(error));
 	g_string_append(body, "</h3>");
 	if (fault)
@@ -4078,7 +4115,7 @@ venture_web_ui_automations_save(
 	{
 		g_autoptr(GString) body = NULL;
 
-		body = g_string_new("<div class=\"notice negative\">"
+		body = g_string_new("<div class=\"notice negative\" role=\"alert\">"
 		                    "Not saved: ");
 		venture_html_escape_append(body, message);
 		g_string_append(body, "</div><p><a class=\"btn\" "
@@ -4808,7 +4845,7 @@ venture_web_ui_plugins_config(
 	{
 		g_autoptr(GString) body = NULL;
 
-		body = g_string_new("<div class=\"notice negative\">");
+		body = g_string_new("<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(body, error->message);
 		g_string_append(body, "</div><p><a class=\"btn\" "
 		                      "href=\"/plugins\">Back</a></p>");
@@ -5827,7 +5864,7 @@ venture_web_ui_import(
 	if (error_count > 0)
 	{
 		g_string_append_printf(content,
-			"<div class=\"notice negative\">Nothing was imported: "
+			"<div class=\"notice negative\" role=\"alert\">Nothing was imported: "
 			"%u row%s failed validation.</div><ul>",
 			error_count, (1 == error_count) ? "" : "s");
 		g_string_append(content, errors->str);
@@ -5924,7 +5961,7 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       error->message);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Not found", body), 404);
@@ -5945,7 +5982,7 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       error->message);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Bad request", body), 400);
@@ -5976,7 +6013,7 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       error->message);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Error", body), 500);
@@ -6365,7 +6402,7 @@ venture_web_ui_report(
 	{
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Not found",
-				"<div class=\"notice negative\">No such report.</div>"), 404);
+				"<div class=\"notice negative\" role=\"alert\">No such report.</div>"), 404);
 	}
 
 	requested_period = htmx_request_get_query_param(request, "period");
@@ -6376,7 +6413,7 @@ venture_web_ui_report(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       error->message);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Bad period", body), 400);
@@ -6412,7 +6449,7 @@ venture_web_ui_report(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       error->message);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Error", body), 500);
@@ -6635,7 +6672,7 @@ venture_web_ui_login_submit(
 		g_autofree gchar *html = NULL;
 
 		body = g_string_new("<div class=\"auth-form\">"
-		                    "<div class=\"notice negative\">"
+		                    "<div class=\"notice negative\" role=\"alert\">"
 		                    "<span class=\"notice-icon\">"
 		                    VENTURE_ICON(
 		                        "<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
@@ -10212,14 +10249,68 @@ venture_web_ticket_query(
 }
 
 /*
+ * Whose ticket this is, in words: the company, else the person who raised
+ * it, else "Internal" for your own work. Looked up once per board, since a
+ * customer with ten tickets would otherwise be read ten times.
+ */
+static const gchar *
+venture_web_ticket_customer(
+	VentureWebServer	*self,
+	GHashTable		*names,
+	VentureEntity		*ticket
+){
+	gint64 company = 0;
+	gint64 contact = 0;
+	GType type;
+	gint64 id;
+	g_autofree gchar *key = NULL;
+	const gchar *known;
+
+	g_object_get(ticket, "company-id", &company, "contact-id", &contact, NULL);
+
+	if (company > 0)
+	{
+		type = VENTURE_TYPE_COMPANY;
+		id = company;
+	}
+	else if (contact > 0)
+	{
+		type = VENTURE_TYPE_CONTACT;
+		id = contact;
+	}
+	else
+		return NULL;
+
+	key = g_strdup_printf("%s:%" G_GINT64_FORMAT, g_type_name(type), id);
+	known = g_hash_table_lookup(names, key);
+
+	if (NULL == known)
+	{
+		g_autoptr(VentureEntity) record = NULL;
+		gchar *name;
+
+		record = venture_database_get(venture_context_get_database(self->context),
+		                              type, id, NULL);
+		name = (NULL != record) ? venture_entity_get_display_name(record)
+		                        : g_strdup("");
+		g_hash_table_insert(names, g_steal_pointer(&key), name);
+		known = name;
+	}
+
+	return ('\0' != *known) ? known : NULL;
+}
+
+/*
  * Renders one card. Everything on it answers a question you would otherwise
- * open the ticket to ask: who has it, when it is due, who asked.
+ * open the ticket to ask: what it is, whose it is, who has it, how long it
+ * has waited and whether a promise is running out.
  */
 static void
 venture_web_append_ticket_card(
 	VentureWebServer	*self,
 	GString			*content,
-	VentureEntity		*ticket
+	VentureEntity		*ticket,
+	GHashTable		*names
 ){
 	g_autofree gchar *title = NULL;
 	g_autofree gchar *assignee = NULL;
@@ -10227,6 +10318,8 @@ venture_web_append_ticket_card(
 	g_autoptr(GDateTime) due = NULL;
 	VentureTicketKind kind;
 	VenturePriority priority;
+	const gchar *customer;
+	GDateTime *opened;
 	gint64 id;
 	gint64 points = 0;
 
@@ -10238,25 +10331,67 @@ venture_web_append_ticket_card(
 
 	g_string_append_printf(content,
 		"<article class=\"card ticket-card priority-%s\" draggable=\"true\" "
-		"data-ticket=\"%" G_GINT64_FORMAT "\">",
-		venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority), id);
+		"data-ticket=\"%" G_GINT64_FORMAT "\" aria-labelledby=\"ticket-%"
+		G_GINT64_FORMAT "-title\">",
+		venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority), id, id);
+
+	/* Priority reads off the card's edge; urgent and high also say it in
+	 * words, because a colour is not a word to everybody. */
+	g_string_append_printf(content,
+		"<div class=\"ticket-top\"><span class=\"ticket-ref\">#%" G_GINT64_FORMAT
+		"</span>", id);
+
+	if ((VENTURE_PRIORITY_URGENT == priority) || (VENTURE_PRIORITY_HIGH == priority))
+		g_string_append_printf(content, "<span class=\"ticket-priority\">%s</span>",
+			(VENTURE_PRIORITY_URGENT == priority) ? "Urgent" : "High");
+
+	/* The service-level clock: the one thing on the card that moves. */
+	venture_web_append_sla_badge(content, ticket);
+	g_string_append(content, "</div>");
 
 	g_string_append_printf(content,
-		"<a class=\"ticket-title\" href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
-		id);
+		"<a class=\"ticket-title\" id=\"ticket-%" G_GINT64_FORMAT "-title\" "
+		"href=\"/e/ticket/%" G_GINT64_FORMAT "\">", id, id);
 	venture_html_escape_append(content, title);
 	g_string_append(content, "</a>");
 
-	g_string_append(content, "<div class=\"ticket-meta\">");
+	/* Who it is for and who has it, as words with a label a screen reader
+	 * reads out and a sighted reader gets from the icon-free layout. */
+	customer = venture_web_ticket_customer(self, names, ticket);
+	g_string_append(content, "<p class=\"ticket-who\">"
+	                         "<span class=\"visually-hidden\">For </span>");
+	if (NULL != customer)
+	{
+		g_string_append(content, "<span class=\"ticket-customer\">");
+		venture_html_escape_append(content, customer);
+		g_string_append(content, "</span>");
+	}
+	else
+		g_string_append_printf(content, "<span class=\"ticket-customer muted\">%s</span>",
+			(VENTURE_TICKET_KIND_EXTERNAL == kind) ? "A customer" : "Internal");
 
-	g_string_append_printf(content, "<span class=\"badge kind-%s\">%s</span>",
-		venture_enum_to_nick(VENTURE_TYPE_TICKET_KIND, (gint)kind),
-		(VENTURE_TICKET_KIND_EXTERNAL == kind) ? "support" : "internal");
-
+	g_string_append(content, "<span class=\"visually-hidden\">, assigned to </span>");
 	if (!venture_string_is_empty(assignee))
 	{
 		g_string_append(content, "<span class=\"ticket-assignee\">");
 		venture_html_escape_append(content, assignee);
+		g_string_append(content, "</span>");
+	}
+	else
+		g_string_append(content, "<span class=\"ticket-assignee muted\">"
+			"Unassigned</span>");
+	g_string_append(content, "</p>");
+
+	g_string_append(content, "<p class=\"ticket-when\">");
+	opened = venture_entity_get_created_at(ticket);
+	if (NULL != opened)
+	{
+		g_autofree gchar *age = venture_time_to_relative_string(opened);
+		g_autofree gchar *exact = g_date_time_format(opened, "%Y-%m-%d %H:%M");
+
+		g_string_append_printf(content, "<span class=\"ticket-age\" title=\"Opened %s\">"
+			"Opened ", exact);
+		venture_html_escape_append(content, age);
 		g_string_append(content, "</span>");
 	}
 
@@ -10268,36 +10403,36 @@ venture_web_append_ticket_card(
 
 		now = venture_time_now();
 		overdue = (g_date_time_compare(due, now) < 0);
-		when = g_date_time_format(due, "%d %b");
+		when = g_date_time_format(due, "%-d %b");
 
 		/* Overdue is called out rather than left to be worked out from a
 		 * date, because the whole point of a due date is noticing. */
-		g_string_append_printf(content, "<span class=\"ticket-due%s\">",
-		                       overdue ? " overdue" : "");
+		g_string_append_printf(content, "<span class=\"ticket-due%s\">%s ",
+		                       overdue ? " overdue" : "",
+		                       overdue ? "Was due" : "Due");
 		venture_html_escape_append(content, when);
 		g_string_append(content, "</span>");
 	}
 
-	/* The service-level clock, and the weight in the sprint. */
-	venture_web_append_sla_badge(content, ticket);
-
 	if (points > 0)
 		g_string_append_printf(content,
-			"<span class=\"ticket-points\" title=\"Story points\">%"
-			G_GINT64_FORMAT "</span>", points);
+			"<span class=\"ticket-points\">%" G_GINT64_FORMAT " pt%s</span>",
+			points, (1 == points) ? "" : "s");
 
-	g_string_append(content, "</div>");
+	g_string_append(content, "</p>");
 
 	if (!venture_string_is_empty(tags))
 	{
 		g_auto(GStrv) parts = NULL;
 		gsize i;
+		guint shown = 0;
 
 		parts = g_strsplit(tags, ",", -1);
 
 		g_string_append(content, "<div class=\"ticket-tags\">");
 
-		for (i = 0; NULL != parts[i]; i++)
+		/* Three at most: a card is a glance, the ticket has the rest. */
+		for (i = 0; (NULL != parts[i]) && (shown < 3); i++)
 		{
 			g_autofree gchar *tag = NULL;
 
@@ -10309,19 +10444,21 @@ venture_web_append_ticket_card(
 			g_string_append(content, "<span class=\"tag\">");
 			venture_html_escape_append(content, tag);
 			g_string_append(content, "</span>");
+			shown++;
 		}
 
 		g_string_append(content, "</div>");
 	}
 
 	/*
-	 * A form per card, so the board works with scripting off. The drag
-	 * handler posts the same endpoint; this is the fallback, not a
-	 * duplicate implementation.
+	 * A form per card, so the board works with scripting off and from
+	 * the keyboard. The drag handler posts the same endpoint; this is
+	 * the fallback, not a duplicate implementation.
 	 */
 	g_string_append_printf(content,
 		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT "/move\" "
-		"class=\"ticket-move\"><select name=\"status\">", id);
+		"class=\"ticket-move\"><select name=\"status\" data-no-picker "
+		"aria-label=\"Move ticket #%" G_GINT64_FORMAT " to\">", id, id);
 
 	{
 		gsize i;
@@ -10331,14 +10468,16 @@ venture_web_append_ticket_card(
 
 		for (i = 0; i < G_N_ELEMENTS(venture_web_board_columns); i++)
 		{
+			g_autofree gchar *label = NULL;
 			const gchar *nick;
 
 			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
 			                            (gint)venture_web_board_columns[i]);
+			label = venture_web_label_from_name(nick);
 
 			g_string_append_printf(content, "<option value=\"%s\"%s>", nick,
 				(venture_web_board_columns[i] == current) ? " selected" : "");
-			venture_html_escape_append(content, nick);
+			venture_html_escape_append(content, label);
 			g_string_append(content, "</option>");
 		}
 	}
@@ -10448,14 +10587,52 @@ venture_web_ui_tickets(
 	issue_type = htmx_request_get_query_param(request, "issue_type");
 	board = (0 != g_strcmp0(view, "list"));
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>Tickets</h1><span class=\"subtitle\">");
-	g_string_append_printf(content, "%u open item%s", tickets->len,
-	                       (1 == tickets->len) ? "" : "s");
-	g_string_append(content, "</span></div><div class=\"page-actions\">");
+	/*
+	 * The head says how the queue stands in one line -- how many are
+	 * open, how many nobody has looked at, how many broke a promise --
+	 * so the board answers "how are we doing" before anybody scrolls.
+	 */
+	{
+		guint triage = 0;
+		guint breached = 0;
+		guint open = 0;
+		guint i;
+
+		for (i = 0; i < tickets->len; i++)
+		{
+			VentureEntity *ticket = g_ptr_array_index(tickets, i);
+			VentureTicketStatus status;
+			gboolean missed = FALSE;
+
+			g_object_get(ticket, "status", &status, "sla-breached", &missed, NULL);
+
+			if ((VENTURE_TICKET_STATUS_DONE == status) ||
+			    (VENTURE_TICKET_STATUS_CANCELLED == status))
+				continue;
+
+			open++;
+			if (VENTURE_TICKET_STATUS_TRIAGE == status)
+				triage++;
+			if (missed)
+				breached++;
+		}
+
+		content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+		                       "<h1>Tickets</h1><span class=\"subtitle\">");
+		g_string_append_printf(content, "%u open", open);
+		if (triage > 0)
+			g_string_append_printf(content, " &middot; %u waiting to triage", triage);
+		if (breached > 0)
+			g_string_append_printf(content,
+				" &middot; <span class=\"subtitle-alert\">%u past a promise</span>", breached);
+		g_string_append(content, "</span></div><div class=\"page-actions\">"
+			"<a class=\"btn btn-primary\" href=\"/e/ticket/new\">New ticket</a>"
+			"</div></div>");
+	}
 
 	/* The filters, as links rather than a form: each is a URL you can
 	 * bookmark, which is what people actually want from a saved view. */
+	g_string_append(content, "<nav class=\"board-toolbar\" aria-label=\"Ticket filters\">");
 	{
 		static const struct
 		{
@@ -10464,31 +10641,28 @@ venture_web_ui_tickets(
 		} kinds[] = {
 			{ "all",      "All" },
 			{ "internal", "Internal" },
-			{ "external", "Support" }
+			{ "external", "Customers" }
 		};
 		gsize i;
 
-		g_string_append(content, "<div class=\"segmented\">");
+		g_string_append(content, "<div class=\"segmented\" role=\"group\" "
+		                         "aria-label=\"Whose tickets\">");
 
 		for (i = 0; i < G_N_ELEMENTS(kinds); i++)
 		{
+			g_autofree gchar *url = NULL;
 			gboolean active;
 
 			active = (0 == g_strcmp0(kinds[i].value, "all"))
 				? (venture_string_is_empty(kind) ||
 				   (0 == g_strcmp0(kind, "all")))
 				: (0 == g_strcmp0(kind, kinds[i].value));
+			url = venture_web_ticket_url(kinds[i].value, issue_type, board);
 
-			{
-				g_autofree gchar *url = NULL;
-
-				url = venture_web_ticket_url(kinds[i].value, issue_type,
-				                             board);
-
-				g_string_append_printf(content,
-					"<a class=\"seg%s\" href=\"%s\">%s</a>",
-					active ? " active" : "", url, kinds[i].label);
-			}
+			g_string_append_printf(content,
+				"<a class=\"seg%s\" href=\"%s\"%s>%s</a>",
+				active ? " active" : "", url,
+				active ? " aria-current=\"true\"" : "", kinds[i].label);
 		}
 
 		g_string_append(content, "</div>");
@@ -10498,39 +10672,48 @@ venture_web_ui_tickets(
 	 * The issue type: what shape of work, as distinct from the kind
 	 * above, which is whose problem it is. Both filter at once, so
 	 * "external bugs" is expressible -- which is the pair most worth
-	 * looking at.
+	 * looking at. Folded into one control, because six segments beside
+	 * three more pushed the board off the first screen.
 	 */
 	{
 		g_autoptr(GEnumClass) types = NULL;
 		g_autofree gchar *all_url = NULL;
+		g_autofree gchar *current = NULL;
+		gboolean any;
 		guint i;
 
 		types = g_type_class_ref(VENTURE_TYPE_ISSUE_TYPE);
 		all_url = venture_web_ticket_url(kind, "all", board);
+		any = venture_string_is_empty(issue_type) ||
+		      (0 == g_strcmp0(issue_type, "all"));
+		current = any ? g_strdup("Any type")
+		              : venture_web_label_from_name(issue_type);
 
-		g_string_append(content, "<div class=\"segmented\">");
+		g_string_append(content, "<details class=\"filter-menu\">"
+		                         "<summary class=\"btn\">Type: ");
+		venture_html_escape_append(content, current);
 		g_string_append_printf(content,
-			"<a class=\"seg%s\" href=\"%s\">Any type</a>",
-			(venture_string_is_empty(issue_type) ||
-			 (0 == g_strcmp0(issue_type, "all"))) ? " active" : "",
-			all_url);
+			"</summary><div class=\"filter-menu-panel\">"
+			"<a href=\"%s\"%s>Any type</a>", all_url,
+			any ? " aria-current=\"true\"" : "");
 
 		for (i = 0; i < types->n_values; i++)
 		{
 			g_autofree gchar *url = NULL;
+			g_autofree gchar *label = NULL;
 			const gchar *nick;
 
 			nick = types->values[i].value_nick;
 			url = venture_web_ticket_url(kind, nick, board);
+			label = venture_web_label_from_name(nick);
 
-			g_string_append_printf(content,
-				"<a class=\"seg%s\" href=\"%s\">",
-				(0 == g_strcmp0(issue_type, nick)) ? " active" : "", url);
-			venture_html_escape_append(content, nick);
+			g_string_append_printf(content, "<a href=\"%s\"%s>", url,
+				(0 == g_strcmp0(issue_type, nick)) ? " aria-current=\"true\"" : "");
+			venture_html_escape_append(content, label);
 			g_string_append(content, "</a>");
 		}
 
-		g_string_append(content, "</div>");
+		g_string_append(content, "</div></details>");
 	}
 
 	{
@@ -10541,33 +10724,41 @@ venture_web_ui_tickets(
 		list_url = venture_web_ticket_url(kind, issue_type, FALSE);
 
 		g_string_append_printf(content,
-			"<div class=\"segmented\">"
-			"<a class=\"seg%s\" href=\"%s\">Board</a>"
-			"<a class=\"seg%s\" href=\"%s\">List</a>"
+			"<div class=\"segmented\" role=\"group\" aria-label=\"Show as\">"
+			"<a class=\"seg%s\" href=\"%s\"%s>Board</a>"
+			"<a class=\"seg%s\" href=\"%s\"%s>List</a>"
 			"</div>",
 			board ? " active" : "", board_url,
-			board ? "" : " active", list_url);
+			board ? " aria-current=\"true\"" : "",
+			board ? "" : " active", list_url,
+			board ? "" : " aria-current=\"true\"");
 	}
 
 	venture_web_append_save_view_form(content, request, "ticket", board);
-	g_string_append(content,
-		"<a class=\"btn btn-primary\" href=\"/e/ticket/new\">New ticket</a>");
-	g_string_append(content, "</div></div>");
+	g_string_append(content, "</nav>");
 
 	if (board)
 	{
+		g_autoptr(GHashTable) names = NULL;
 		gsize column;
 
-		g_string_append(content, "<div class=\"board\" data-board>");
+		names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+		/* A region a keyboard can scroll sideways, and a screen reader
+		 * can name: six columns do not fit a laptop, let alone a phone. */
+		g_string_append(content, "<div class=\"board\" data-board tabindex=\"0\" "
+		                         "role=\"region\" aria-label=\"Ticket board\">");
 
 		for (column = 0; column < G_N_ELEMENTS(venture_web_board_columns); column++)
 		{
+			g_autofree gchar *heading = NULL;
 			const gchar *nick;
 			guint count;
 			guint i;
 
 			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
 			                            (gint)venture_web_board_columns[column]);
+			heading = venture_web_label_from_name(nick);
 			count = 0;
 
 			for (i = 0; i < tickets->len; i++)
@@ -10582,18 +10773,18 @@ venture_web_ui_tickets(
 			}
 
 			g_string_append_printf(content,
-				"<section class=\"board-column\" data-status=\"%s\">"
-				"<header class=\"board-column-head\"><span>", nick);
-			{
-				g_autofree gchar *heading = NULL;
-
-				heading = venture_web_label_from_name(nick);
-				venture_html_escape_append(content, heading);
-			}
+				"<section class=\"board-column\" data-status=\"%s\" "
+				"aria-labelledby=\"column-%s\">"
+				"<header class=\"board-column-head\"><h2 id=\"column-%s\">",
+				nick, nick, nick);
+			venture_html_escape_append(content, heading);
 			g_string_append_printf(content,
-				"</span><span class=\"count\">%u</span></header>"
+				"</h2><span class=\"count\" aria-label=\"%u ticket%s\">%u</span></header>"
 				"<div class=\"board-column-body\" data-drop=\"%s\">",
-				count, nick);
+				count, (1 == count) ? "" : "s", count, nick);
+
+			if (0 == count)
+				g_string_append(content, "<p class=\"board-empty\">Nothing here</p>");
 
 			for (i = 0; i < tickets->len; i++)
 			{
@@ -10606,7 +10797,7 @@ venture_web_ui_tickets(
 				if (status != venture_web_board_columns[column])
 					continue;
 
-				venture_web_append_ticket_card(self, content, ticket);
+				venture_web_append_ticket_card(self, content, ticket, names);
 			}
 
 			g_string_append(content, "</div></section>");
@@ -10623,7 +10814,7 @@ venture_web_ui_tickets(
 		                         "<th>Title</th><th>Kind</th><th>Status</th>"
 		                         "<th>Priority</th><th>Assignee</th>"
 		                         "<th>Due</th>"
-		                         "<th class=\"row-actions\"></th>"
+		                         "<th class=\"row-actions\"><span class=\"visually-hidden\">Actions</span></th>"
 		                         "</tr></thead><tbody>");
 
 		for (i = 0; i < tickets->len; i++)
@@ -13816,7 +14007,7 @@ venture_web_chat_append_failure(
 	                      VENTURE_SPARK
 	                      "</span>"
 	                      "<div class=\"msg-content\">"
-	                      "<div class=\"notice negative\"><span>");
+	                      "<div class=\"notice negative\" role=\"alert\"><span>");
 	venture_html_escape_append(html, message);
 	g_string_append(html, "</span></div>"
 	                      "<div class=\"chat-retry\">"
@@ -15329,7 +15520,7 @@ venture_web_ui_harness_session(
 
 	if (!venture_string_is_empty(failure))
 	{
-		g_string_append(content, "<div class=\"notice negative\"><span>");
+		g_string_append(content, "<div class=\"notice negative\" role=\"alert\"><span>");
 		venture_html_escape_append(content, failure);
 		g_string_append(content, "</span></div>");
 	}
@@ -16611,7 +16802,7 @@ venture_web_ui_chat_decide(
 
 	if (!decided)
 	{
-		g_string_append(html, "<div class=\"notice negative\">");
+		g_string_append(html, "<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(html, error->message);
 		g_string_append(html, "</div>");
 	}
@@ -23287,7 +23478,7 @@ venture_web_dashboard_load(
 
 		return venture_web_html_response(
 			venture_web_page(self, request, "/dashboards", "Not found",
-				"<div class=\"notice negative\">No such dashboard.</div>"),
+				"<div class=\"notice negative\" role=\"alert\">No such dashboard.</div>"),
 			404);
 	}
 
@@ -23440,22 +23631,22 @@ venture_web_append_widget_card(
 			G_GINT64_FORMAT "/move\" class=\"inline nudge\">"
 			"<span class=\"muted small\">Move</span>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"left\" "
-			"title=\"Move left\">&larr;</button>"
+			"title=\"Move left\" aria-label=\"Move left\">&larr;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"up\" "
-			"title=\"Move up\">&uarr;</button>"
+			"title=\"Move up\" aria-label=\"Move up\">&uarr;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"down\" "
-			"title=\"Move down\">&darr;</button>"
+			"title=\"Move down\" aria-label=\"Move down\">&darr;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"right\" "
-			"title=\"Move right\">&rarr;</button>"
+			"title=\"Move right\" aria-label=\"Move right\">&rarr;</button>"
 			"<span class=\"muted small\">Size</span>"
 			"<button class=\"btn btn-sm\" name=\"direction\" "
-			"value=\"narrower\" title=\"Narrower\">W&minus;</button>"
+			"value=\"narrower\" title=\"Narrower\" aria-label=\"Narrower\">W&minus;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"wider\" "
-			"title=\"Wider\">W+</button>"
+			"title=\"Wider\" aria-label=\"Wider\">W+</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" "
-			"value=\"shorter\" title=\"Shorter\">H&minus;</button>"
+			"value=\"shorter\" title=\"Shorter\" aria-label=\"Shorter\">H&minus;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"taller\" "
-			"title=\"Taller\">H+</button></form>"
+			"title=\"Taller\" aria-label=\"Taller\">H+</button></form>"
 			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
 			G_GINT64_FORMAT "/delete\" class=\"inline\">"
 			"<button class=\"btn btn-sm btn-danger\" type=\"submit\">"
@@ -23468,7 +23659,7 @@ venture_web_append_widget_card(
 
 	if (NULL != result->error)
 	{
-		g_string_append(content, "<div class=\"notice negative\">");
+		g_string_append(content, "<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(content, result->error);
 		g_string_append(content, "</div>");
 	}
@@ -23600,19 +23791,32 @@ venture_web_render_home_dashboard(
 	g_object_get(dashboard, "name", &name, "slug", &slug,
 	             "description", &description, NULL);
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>");
-	venture_html_escape_append(content, name);
-	g_string_append(content, "</h1><span class=\"subtitle\">");
-	venture_html_escape_append(content,
-		!venture_string_is_empty(description) ? description
-		                                      : "Your home dashboard");
-	g_string_append(content, "</span></div><div class=\"page-actions\">"
-	                         "<a class=\"btn\" href=\"/overview\">Built-in "
-	                         "overview</a> ");
+	/*
+	 * The home page's head is one line: the page's name, today's date --
+	 * a home page is read as "where do things stand today" -- and the one
+	 * thing done to the page itself. The other dashboards are in the
+	 * sidebar; the built-in overview stays one quiet link away.
+	 */
+	{
+		g_autoptr(GDateTime) now = g_date_time_new_now_local();
+		g_autofree gchar *today = g_date_time_format(now, "%A %-d %B");
+
+		content = g_string_new("<div class=\"page-head home-head\"><div class=\"page-title\">"
+		                       "<h1>");
+		venture_html_escape_append(content, name);
+		g_string_append(content, "</h1><span class=\"subtitle\">");
+		venture_html_escape_append(content, today);
+		if (!venture_string_is_empty(description))
+		{
+			g_string_append(content, " &middot; ");
+			venture_html_escape_append(content, description);
+		}
+	}
 	g_string_append_printf(content,
-		"<a class=\"btn\" href=\"/dashboards\">All dashboards</a> "
-		"<a class=\"btn btn-primary\" href=\"/dashboards/%s/edit\">Edit</a>"
+		"</span></div><div class=\"page-actions\">"
+		"<a class=\"btn btn-ghost\" href=\"/overview\">Built-in overview</a>"
+		"<a class=\"btn btn-ghost\" href=\"/dashboards\">All dashboards</a>"
+		"<a class=\"btn\" href=\"/dashboards/%s/edit\">Edit this page</a>"
 		"</div></div>", slug);
 
 	venture_web_append_dashboard_grid(self, request, principal, dashboard,

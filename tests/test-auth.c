@@ -3891,7 +3891,7 @@ test_auth_sidebar_restores_its_scroll(
 	 * already drawn the sidebar at the top, turning a lost position into a
 	 * visible jump.
 	 */
-	main_start = strstr(page, "<main class=\"main\">");
+	main_start = strstr(page, "<main class=\"main\"");
 	g_assert_nonnull(main_start);
 	g_assert_true(script < main_start);
 }

@@ -23,6 +23,16 @@ amount. Three units at $19.99 with 10% discount and 5% tax give subtotal
 $59.97, discount $6.00, tax $2.70 and total $56.67. All arithmetic uses
 =VentureMoney=, including overflow and cross-currency refusal.
 
+A line may instead name a tax rate, =tax_code_id=, exactly as an invoice
+line does; the rate's exact fraction is then used in place of
+=tax_percent=, so 8.875% of $53.97 is $4.79 and no whole percent is
+involved. The rate must belong to the quote's organization. The quote
+sheet at =/quotes/compose= offers "No tax" and the tax rates, like the
+invoice sheet, and the printed quote names the rate. Acceptance copies
+the rate record onto each invoice line, so the invoice charges what the
+quote showed. Lines written before migration =000680= keep their
+percent and name no rate.
+
 A line with a product and no supplied price uses the company's
 =default_price_list_id=, or the organization's default list for the quote
 currency. The highest applicable =min_quantity=
