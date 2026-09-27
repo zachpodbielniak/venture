@@ -92,7 +92,10 @@ venturectl health
 #+end_src
 
 It prints the URL and the owner password when it is ready, and leaves an
-owner API token in =$VENTURE_DEMO_STATE/token= so the CLI works at once:
+owner API token in =$VENTURE_DEMO_STATE/token= so the CLI works at once.
+=--detach= is what leaves it running after the script exits. =make demo=
+does not pass that flag: it stays in the foreground, and the instance is
+alive only while that process is. =Ctrl+C= stops it and leaves the data.
 
 #+begin_src
   Created the owner account.

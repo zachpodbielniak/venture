@@ -695,6 +695,12 @@ than one that fails.
   prints where it landed, which inside a command substitution becomes
   part of the result -- and CDPATH is set in any shell configured to jump
   around by name. The repository root came back as two lines.
+- **The server is a child of the script.** `start_server` backgrounds a
+  subshell and `exec`s venture into it. `wait` only reaps children; a
+  server started *inside* the subshell is reparented when that subshell
+  returns, `wait` returns 127 at once, and the EXIT trap then kills the
+  instance. `make demo` would print a port and leave nothing listening.
+  `tests/demo-foreground.sh` is the check.
 - **The enum values are checked against `venturectl describe`, not
   guessed.** Four of them were wrong on the first run: a campaign is
   `running` not `active`, an idea is `researching` not `exploring`, a
