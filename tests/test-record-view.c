@@ -962,6 +962,8 @@ test_errors_for_people(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(page, "<html"));
 	g_assert_nonnull(strstr(page, "something needs fixing"));
 	g_assert_nonnull(strstr(page, "Go back and fix it"));
+	/* Announced, not just shown: the whole page is the refusal. */
+	g_assert_nonnull(strstr(page, "<div class=\"empty error-page\" role=\"alert\">"));
 	/* In the reader's words: the service's name is for the log. */
 	g_assert_nonnull(strstr(page, "At least one line is required"));
 	g_assert_null(strstr(page, "VentureDocumentService"));
@@ -974,6 +976,160 @@ test_errors_for_people(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(post_form_full(f, "/invoices/compose", body,
 		NULL, FALSE, NULL, &plain), ==, 422);
 	g_assert_nonnull(strstr(plain, "\"message\""));
+}
+
+/*
+ * Every button a person can reach says what it does: its own words, or an
+ * aria-label when all it shows is an arrow, a bin or a cross. Checked on
+ * the markup, button by button, because an icon button without a name is
+ * read out as "button" and nothing else.
+ */
+static void
+assert_buttons_named(const gchar *page, const gchar *path)
+{
+	const gchar *cursor = page;
+
+	while (NULL != (cursor = strstr(cursor, "<button")))
+	{
+		const gchar *open_end = strchr(cursor, '>');
+		const gchar *close = strstr(cursor, "</button>");
+		g_autofree gchar *tag = NULL;
+		gboolean words = FALSE;
+		gboolean in_tag = FALSE;
+		const gchar *p;
+
+		g_assert_nonnull(open_end);
+		g_assert_nonnull(close);
+		tag = g_strndup(cursor, open_end - cursor);
+
+		for (p = open_end + 1; p < close; p++)
+		{
+			if ('<' == *p)
+				in_tag = TRUE;
+			else if ('>' == *p)
+				in_tag = FALSE;
+			else if (!in_tag && g_ascii_isalnum(*p))
+				words = TRUE;
+		}
+
+		if (!words && NULL == strstr(tag, "aria-label=\""))
+			g_error("%s: a button with no name: %s>", path, tag);
+
+		cursor = close;
+	}
+}
+
+/*
+ * The frame of every page works for a keyboard and a screen reader: a
+ * skip link first, the sidebar a named landmark with a labelled search,
+ * <main> a target the skip link can land in, the phone menu a button that
+ * says what it controls, and a polite live region for toasts present from
+ * the start. And no page offers a button without a name. If this
+ * regresses, a keyboard user tabs through forty links on every page and a
+ * screen reader announces "button" for the bin on an invoice line.
+ */
+static void
+test_accessible_shell(Fixture *f, gconstpointer data)
+{
+	static const gchar *const paths[] = {
+		"/tickets", "/invoices/compose", "/quotes/compose", "/bills/compose",
+		"/e/ticket/new", "/e/contact", "/overview", NULL
+	};
+	g_autofree gchar *page = NULL;
+	guint i;
+
+	(void)data;
+
+	page = get(f, "/e/contact");
+	g_assert_true(g_str_has_prefix(strstr(page, "<body>"),
+		"<body><a class=\"skip-link visually-hidden\" href=\"#main\">Skip to content</a>"));
+	g_assert_nonnull(strstr(page, "<nav class=\"sidebar\" aria-label=\"Main\">"));
+	g_assert_nonnull(strstr(page, "aria-label=\"Search everything\""));
+	g_assert_nonnull(strstr(page, "<main class=\"main\" id=\"main\" tabindex=\"-1\">"));
+	g_assert_nonnull(strstr(page, "<div class=\"toasts\" role=\"status\" aria-live=\"polite\"></div>"));
+	g_assert_nonnull(strstr(page, "aria-expanded=\"true\" aria-controls=\"site-menu\""));
+	g_assert_nonnull(strstr(page, "<div class=\"nav\" id=\"site-menu\">"));
+
+	for (i = 0; NULL != paths[i]; i++)
+	{
+		g_autofree gchar *other = get(f, paths[i]);
+
+		assert_buttons_named(other, paths[i]);
+	}
+}
+
+/*
+ * The ticket board reads without opening a ticket: each card says whose
+ * it is, who has it (or that nobody does), how long it has waited and how
+ * urgent it is in words; the columns are headings with human names; the
+ * type filter speaks words, not enum nicks; and every card can be moved
+ * from the keyboard with a named control. If this regresses, the board
+ * is a wall of titles with "in_progress" over a column and no way to tell
+ * a customer's fire from an internal chore.
+ */
+static void
+test_ticket_board(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) shop = NULL, buyer = NULL, fire = NULL, chore = NULL;
+	g_autofree gchar *page = NULL, *move = NULL;
+	gint value = 0;
+
+	(void)data;
+
+	shop = g_object_new(VENTURE_TYPE_COMPANY, "name", "Bellhaven Books", NULL);
+	save(f, shop);
+	buyer = g_object_new(VENTURE_TYPE_CONTACT, "name", "Ruth Ellery",
+		"company-id", venture_entity_get_id(shop), NULL);
+	save(f, buyer);
+
+	fire = g_object_new(VENTURE_TYPE_TICKET, "title", "Checkout is down",
+		"company-id", venture_entity_get_id(shop),
+		"contact-id", venture_entity_get_id(buyer), NULL);
+	g_assert_true(venture_enum_from_nick(VENTURE_TYPE_TICKET_KIND, "external", &value));
+	g_object_set(fire, "kind", value, NULL);
+	g_assert_true(venture_enum_from_nick(VENTURE_TYPE_PRIORITY, "urgent", &value));
+	g_object_set(fire, "priority", value, NULL);
+	g_assert_true(venture_enum_from_nick(VENTURE_TYPE_TICKET_STATUS, "triage", &value));
+	g_object_set(fire, "status", value, NULL);
+	save(f, fire);
+
+	chore = g_object_new(VENTURE_TYPE_TICKET, "title", "Rotate the keys",
+		"assignee", "dave", NULL);
+	g_assert_true(venture_enum_from_nick(VENTURE_TYPE_TICKET_STATUS, "in_progress", &value));
+	g_object_set(chore, "status", value, NULL);
+	save(f, chore);
+
+	page = get(f, "/tickets");
+
+	/* The head says how the queue stands. */
+	g_assert_nonnull(strstr(page, "2 open &middot; 1 waiting to triage"));
+
+	/* Controls: one labelled toolbar, the type filter in words. */
+	g_assert_nonnull(strstr(page, "<nav class=\"board-toolbar\" aria-label=\"Ticket filters\">"));
+	g_assert_nonnull(strstr(page, "<summary class=\"btn\">Type: Any type</summary>"));
+	g_assert_nonnull(strstr(page, ">Subtask</a>"));
+	g_assert_null(strstr(page, ">subtask</a>"));
+
+	/* Columns are headings, named as a person names them. */
+	g_assert_nonnull(strstr(page, "role=\"region\" aria-label=\"Ticket board\""));
+	g_assert_nonnull(strstr(page, "<h2 id=\"column-in_progress\">In progress</h2>"));
+	g_assert_null(strstr(page, ">in_progress<"));
+
+	/* The customer's card: whose, unassigned, urgent in words, its age. */
+	g_assert_nonnull(strstr(page, "<span class=\"ticket-customer\">Bellhaven Books</span>"));
+	g_assert_nonnull(strstr(page, "<span class=\"ticket-assignee muted\">Unassigned</span>"));
+	g_assert_nonnull(strstr(page, "<span class=\"ticket-priority\">Urgent</span>"));
+	g_assert_nonnull(strstr(page, "Opened "));
+
+	/* The chore: internal, and who has it. */
+	g_assert_nonnull(strstr(page, "<span class=\"ticket-customer muted\">Internal</span>"));
+	g_assert_nonnull(strstr(page, "<span class=\"ticket-assignee\">dave</span>"));
+
+	/* Moving a card is a named control a keyboard reaches. */
+	move = g_strdup_printf("aria-label=\"Move ticket #%" G_GINT64_FORMAT " to\"",
+		venture_entity_get_id(fire));
+	g_assert_nonnull(strstr(page, move));
+	g_assert_nonnull(strstr(page, "<option value=\"in_progress\">In progress</option>"));
 }
 
 /*
@@ -1040,6 +1196,10 @@ main(int argc, char *argv[])
 	           test_attention_of_deals_and_tickets, tear_down);
 	g_test_add("/record-view/errors-for-people", Fixture, NULL, set_up,
 	           test_errors_for_people, tear_down);
+	g_test_add("/record-view/accessible-shell", Fixture, NULL, set_up,
+	           test_accessible_shell, tear_down);
+	g_test_add("/record-view/ticket-board", Fixture, NULL, set_up,
+	           test_ticket_board, tear_down);
 	g_test_add("/record-view/tax-rate-page", Fixture, NULL, set_up,
 	           test_tax_rate_page, tear_down);
 	g_test_add("/record-view/bill-sheet", Fixture, NULL, set_up,

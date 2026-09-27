@@ -4686,3 +4686,279 @@ table.line-items .checkbox { white-space: nowrap; }
 	white-space: nowrap;
 	border: 0;
 }
+
+/* ==========================================================================
+   The home page, the ticket board and the phone (appended as one block
+   so the two looks stay in step; every value is a token)
+   ========================================================================== */
+
+/* A skip link is the first stop for a keyboard: shown only while it has
+ * focus, over everything, where a sighted keyboard user will see it. */
+.skip-link:focus {
+	position: fixed;
+	top: var(--space-2);
+	left: var(--space-2);
+	z-index: 10000;
+	padding: var(--space-2) var(--space-3);
+	background: var(--surface-raised);
+	color: var(--text);
+	outline: 2px solid var(--accent);
+}
+
+.main:focus { outline: none; }
+
+/* Every control a keyboard can reach says where it is, in both looks and
+ * every theme -- including the ones a stylesheet had turned the ring off
+ * for, like a borderless ghost button or a summary. */
+a:focus-visible, button:focus-visible, summary:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible,
+input:not([type="hidden"]):focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* --- Home ---------------------------------------------------------------- */
+
+.home-head { margin-bottom: var(--space-4); }
+.home-head .page-actions { gap: var(--space-2); }
+
+/* A figure fills its row, so a row of four reads as one strip rather than
+ * four boxes hanging from a line. */
+.widget-grid:not(.editing) > .widget-count,
+.widget-grid:not(.editing) > .widget-metric { align-self: stretch; }
+
+/* --- The ticket board ---------------------------------------------------- */
+
+.board-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2);
+	margin-bottom: var(--space-4);
+}
+
+.board-toolbar .save-view { margin-left: auto; }
+
+.subtitle-alert { color: var(--negative); font-weight: 600; }
+
+.filter-menu { position: relative; }
+.filter-menu > summary { list-style: none; cursor: pointer; }
+.filter-menu > summary::-webkit-details-marker { display: none; }
+.filter-menu > summary::after {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-left: 8px;
+	border-right: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	transform: translateY(-2px) rotate(45deg);
+}
+
+.filter-menu-panel {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	min-width: 180px;
+	padding: var(--space-1) 0;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+}
+
+.filter-menu-panel a {
+	padding: 6px var(--space-3);
+	color: var(--text);
+	text-decoration: none;
+	font-size: 13px;
+}
+
+.filter-menu-panel a:hover { background: var(--surface-hover); }
+.filter-menu-panel a[aria-current] { color: var(--accent); font-weight: 600; }
+.filter-menu-panel a[aria-current] { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* Six columns do not fit a laptop: the board scrolls sideways and each
+ * column snaps to the edge, so a flick lands on a column, not between. */
+.board {
+	grid-auto-columns: minmax(248px, 1fr);
+	scroll-snap-type: x proximity;
+}
+
+.board-column { scroll-snap-align: start; }
+
+/* The column's name is a heading for a screen reader and a label for
+ * everybody else: the micro register, not a headline. */
+.board-column-head h2 {
+	margin: 0;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
+	color: inherit;
+}
+
+.board-empty {
+	margin: 0;
+	padding: var(--space-3);
+	color: var(--text-faint);
+	font-size: 12.5px;
+	text-align: center;
+}
+
+.ticket-card { gap: 6px; }
+
+.ticket-top {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+}
+
+.ticket-top .badge { margin-left: auto; }
+.priority-urgent .ticket-priority { color: var(--negative); font-weight: 700; }
+.priority-high .ticket-priority { color: var(--warning); font-weight: 700; }
+
+.ticket-who {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--space-2);
+	margin: 0;
+	font-size: 12.5px;
+	color: var(--text-muted);
+	min-width: 0;
+}
+
+.ticket-customer {
+	font-weight: 600;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.ticket-customer.muted, .ticket-assignee.muted { color: var(--text-faint); font-weight: 400; }
+.ticket-assignee { flex: none; }
+
+.ticket-when {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px var(--space-2);
+	margin: 0;
+	font-size: 12px;
+	color: var(--text-faint);
+}
+
+.ticket-points { font-variant-numeric: tabular-nums; }
+
+/* The move form: out of the way until the card is hovered or a keyboard
+ * is inside it, then a full-width row. */
+.ticket-move select { flex: 1; min-width: 0; }
+
+/* --- The phone ----------------------------------------------------------- */
+
+.sidebar-menu-toggle { display: none; }
+
+@media (max-width: 900px) {
+	/* The menu is one button on the first line; opened, it is the same
+	 * list a desk shows, folded groups and all -- a single scrolling
+	 * strip had hidden every group's heading and so every group. */
+	.sidebar-menu-toggle { display: inline-flex; margin-left: auto; }
+	.sidebar .nav { flex-direction: column; overflow: visible; padding-bottom: var(--space-2); }
+	.sidebar .nav .nav-section { display: block; }
+	.sidebar .nav .nav-item { border-bottom: 0; border-left: 2px solid transparent; }
+	.sidebar .nav .nav-item.active { border-left-color: var(--accent); }
+	.sidebar .nav .nav-item .count { display: inline; }
+	.sidebar .sidebar-footer { display: flex; flex: 1 0 100%; }
+	.sidebar.menu-closed .nav,
+	.sidebar.menu-closed .sidebar-footer { display: none; }
+
+	/* Figures two to a row, everything else the full width, each as tall
+	 * as it needs: a phone does not scroll past a screen of one number. */
+	.widget-grid:not(.editing) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; }
+	.widget-grid:not(.editing) > .widget { grid-column: 1 / -1 !important; }
+	.widget-grid:not(.editing) > .widget-count,
+	.widget-grid:not(.editing) > .widget-metric { grid-column: auto !important; }
+	.widget-grid:not(.editing) > .widget-count .card-head,
+	.widget-grid:not(.editing) > .widget-metric .card-head { flex-wrap: wrap; gap: 4px; }
+	.widget-grid .card-head h2 { line-height: 1.3; }
+	/* Two to a row leaves a figure half a phone: it shrinks to fit
+	 * rather than running out of its card. */
+	.widget-grid:not(.editing) .figure { font-size: clamp(20px, 6.4vw, 30px); overflow-wrap: anywhere; }
+
+	.page-actions .btn { flex: 0 1 auto; }
+	.board-toolbar .save-view { margin-left: 0; }
+	.board { grid-auto-columns: 84vw; }
+
+	/* Tables keep their columns and scroll inside their card rather than
+	 * pushing the page sideways. */
+	.table-wrap { overflow-x: auto; }
+}
+
+@media (max-width: 480px) {
+	.main { padding-left: var(--space-3); padding-right: var(--space-3); }
+	.page-title h1 { font-size: 26px; }
+}
+
+/* A document's lines on a phone: a row of five inputs cannot share 360
+ * pixels, so each line becomes a small block -- what it is across the
+ * top, the figures two by two under their own captions. The header row
+ * goes to the screen reader only; every input carries its own label. */
+@media (max-width: 640px) {
+	.line-items:has(tr.line-row) thead {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+	}
+
+	.line-items:has(tr.line-row),
+	.line-items:has(tr.line-row) tbody { display: block; width: 100%; }
+
+	.line-items tr.line-row {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--space-2);
+		padding: var(--space-3) 0;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.line-items tr.line-row > td {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 0;
+		border: 0;
+		text-align: left;
+		min-width: 0;
+	}
+
+	table.line-items tr.line-row > td.line-item { grid-column: 1 / -1; gap: var(--space-2); width: auto; }
+	table.line-items tr.line-row > td.line-item input { margin-bottom: 0; }
+
+	.line-items tr.line-row > td[data-label]::before {
+		content: attr(data-label);
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	.line-items tr.line-row input:not([type="checkbox"]):not([type="radio"]),
+	.line-items tr.line-row select { width: 100%; min-width: 0; }
+
+	.line-items tr.line-row > td.line-amount { justify-content: flex-end; font-weight: 600; }
+	.line-items tr.line-row > td.line-remove { align-items: flex-end; justify-content: flex-end; }
+}
+
+/* A table of records rather than of inputs keeps its columns on a phone
+ * and scrolls inside its card, instead of pushing the page sideways. */
+@media (max-width: 640px) {
+	table.line-items:not(:has(tr.line-row)) { display: block; overflow-x: auto; }
+}

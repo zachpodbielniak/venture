@@ -145,6 +145,11 @@
 
 		el.className = "toast " + (kind || "");
 		el.textContent = message;
+		/* A failure interrupts; anything else waits its turn in the
+		 * container's polite live region. */
+		if ((kind || "").indexOf("negative") >= 0) {
+			el.setAttribute("role", "alert");
+		}
 		toastContainer().appendChild(el);
 
 		window.setTimeout(function () {

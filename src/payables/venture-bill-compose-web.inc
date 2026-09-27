@@ -73,13 +73,13 @@ venture_bill_append_line_row(GString *html, const gchar *index, const gchar *acc
 		"<td class=\"line-item\"><input type=\"text\" name=\"line-%s-description\" "
 		"placeholder=\"What it was for\" aria-label=\"Description\">"
 		"<select name=\"line-%s-account-id\" class=\"line-product\" aria-label=\"Spent from\" data-no-picker>%s</select></td>"
-		"<td class=\"num\"><input type=\"number\" name=\"line-%s-quantity\" value=\"1\" min=\"0\" step=\"any\" "
+		"<td class=\"num\" data-label=\"Qty\"><input type=\"number\" name=\"line-%s-quantity\" value=\"1\" min=\"0\" step=\"any\" "
 		"inputmode=\"decimal\" aria-label=\"Quantity\" data-qty></td>"
-		"<td class=\"num\"><input type=\"text\" name=\"line-%s-unit-price\" placeholder=\"0.00\" "
+		"<td class=\"num\" data-label=\"Unit price\"><input type=\"text\" name=\"line-%s-unit-price\" placeholder=\"0.00\" "
 		"inputmode=\"decimal\" aria-label=\"Unit price\" data-unit></td>"
-		"<td class=\"num\"><input type=\"text\" name=\"line-%s-tax-amount\" placeholder=\"0.00\" "
+		"<td class=\"num\" data-label=\"Tax\"><input type=\"text\" name=\"line-%s-tax-amount\" placeholder=\"0.00\" "
 		"inputmode=\"decimal\" aria-label=\"Tax\" data-tax-amount></td>"
-		"<td class=\"num line-amount\" data-amount>0.00</td>"
+		"<td class=\"num line-amount\" data-label=\"Amount\" data-amount>0.00</td>"
 		VENTURE_WEB_LINE_DELETE "</tr>",
 		index, index, accounts, index, index, index);
 }
@@ -167,7 +167,8 @@ venture_bill_compose_page(VentureWebServer *self, HtmxRequest *request)
 
 	g_string_append_printf(html, "<table class=\"line-items\"><thead><tr>"
 		"<th>What it was for, and spent from</th><th class=\"num\">Qty</th><th class=\"num\">Unit price</th>"
-		"<th class=\"num\">Tax</th><th class=\"num\">Amount</th><th></th></tr></thead><tbody data-lines>");
+		"<th class=\"num\">Tax</th><th class=\"num\">Amount</th>"
+		"<th><span class=\"visually-hidden\">Remove</span></th></tr></thead><tbody data-lines>");
 	venture_bill_append_line_row(html, "0", accounts);
 	g_string_append(html, "</tbody></table>"
 		"<button type=\"button\" class=\"btn btn-ghost add-line\" data-add-line>+ Add a line</button>"

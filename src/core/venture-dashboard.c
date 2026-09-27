@@ -1803,10 +1803,19 @@ venture_widget_kind_metric(
 	{
 		g_autofree gchar *period_text = NULL;
 
+		g_autoptr(VentureDateRange) range = NULL;
+
+		/* The period as a person says it ("This month"), never the
+		 * parameter it was asked with ("this_month"). */
 		period_text = venture_widget_get_string(widget, "period");
+		range = venture_context_parse_period(context,
+			(NULL != period_text) ? period_text : "this_month", NULL);
 		g_string_append(html, "<span class=\"figure-note\">");
-		venture_html_escape_append(html,
-			(NULL != period_text) ? period_text : "this_month");
+		if (NULL != range)
+			venture_html_escape_append(html, venture_date_range_get_label(range));
+		else
+			venture_html_escape_append(html,
+				(NULL != period_text) ? period_text : "this_month");
 		g_string_append(html, "</span>");
 	}
 
@@ -4980,6 +4989,68 @@ venture_dashboard_import(
  * after.
  */
 static const VentureDashboardTemplate venture_dashboard_templates[] = {
+	/*
+	 * The daily questions, first because it is the page most people want
+	 * as home: what came in and went out, what is owed and late, what
+	 * needs you, and how support is holding up -- four rows, no scroll on
+	 * a desk, every figure one click from the records behind it.
+	 */
+	{
+		"today", "Today",
+		"The questions you ask every morning: money in and out, what is "
+		"overdue, what needs you, and how support is holding up.",
+		NULL,
+		"{"
+		"\"name\": \"Today\","
+		"\"slug\": \"today\","
+		"\"description\": \"Money in and out, what is late, what needs you.\","
+		"\"purpose\": \"overview\","
+		"\"layout\": \"four_columns\","
+		"\"widgets\": ["
+		" {\"kind\": \"metric\", \"title\": \"Money in\","
+		"  \"report_name\": \"pnl\", \"period\": \"this_month\","
+		"  \"field\": \"revenue\"},"
+		" {\"kind\": \"metric\", \"title\": \"Money out\","
+		"  \"report_name\": \"pnl\", \"period\": \"this_month\","
+		"  \"field\": \"expenses\"},"
+		" {\"kind\": \"metric\", \"title\": \"Overdue invoices\","
+		"  \"report_name\": \"receivables\", \"period\": \"all\","
+		"  \"field\": \"overdue\"},"
+		" {\"kind\": \"metric\", \"title\": \"Overdue bills\","
+		"  \"report_name\": \"payables\", \"period\": \"all\","
+		"  \"field\": \"overdue\"},"
+		" {\"kind\": \"count\", \"title\": \"Your tickets\","
+		"  \"entity_type\": \"ticket\","
+		"  \"filter\": \"assignee={me}&status__not_in=done,cancelled\"},"
+		" {\"kind\": \"count\", \"title\": \"To triage\","
+		"  \"entity_type\": \"ticket\", \"filter\": \"status=triage\"},"
+		" {\"kind\": \"count\", \"title\": \"Missed a promise\","
+		"  \"entity_type\": \"ticket\","
+		"  \"filter\": \"sla_breached=true&status__not_in=done,cancelled\"},"
+		" {\"kind\": \"count\", \"title\": \"Bills to approve\","
+		"  \"entity_type\": \"vendor_bill\", \"filter\": \"status=draft\"},"
+		" {\"kind\": \"list\", \"title\": \"Invoices past due\","
+		"  \"entity_type\": \"invoice\","
+		"  \"filter\": \"status__in=sent,partially_paid&due_at__lt=today\","
+		"  \"order\": \"due_at\", \"limit\": 5,"
+		"  \"columns\": \"company_id,due_at\", \"span\": \"wide\"},"
+		" {\"kind\": \"upcoming\", \"title\": \"Bills falling due\","
+		"  \"entity_type\": \"vendor_bill\", \"field\": \"due_date\","
+		"  \"filter\": \"status__in=draft,approved,partially_paid\","
+		"  \"options\": \"{\\\"days\\\": 14}\", \"limit\": 5,"
+		"  \"span\": \"wide\"},"
+		" {\"kind\": \"list\", \"title\": \"Urgent and high, still open\","
+		"  \"entity_type\": \"ticket\","
+		"  \"filter\": \"priority__in=urgent,high&status__not_in=done,cancelled\","
+		"  \"order\": \"resolution_due_at\", \"limit\": 5,"
+		"  \"columns\": \"status,assignee\", \"span\": \"wide\"},"
+		" {\"kind\": \"confirmations\"},"
+		" {\"kind\": \"actions\", \"title\": \"Do\","
+		"  \"body\": \"New invoice | /invoices/compose\\nNew bill | "
+		"/e/vendor_bill/new\\nNew ticket | /e/ticket/new\\nTicket board | "
+		"/tickets\\nInbox | /inbox\"}"
+		"]}"
+	},
 	{
 		"factory", "Software factory",
 		"The loop at a glance: what is planned, building, shipping and "

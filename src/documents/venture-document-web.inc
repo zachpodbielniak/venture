@@ -284,17 +284,17 @@ document_append_line_row(GString *html, const gchar *index, const gchar *product
 		"<td class=\"line-item\"><input type=\"text\" name=\"line-%s-description\" "
 		"placeholder=\"What you are charging for\" aria-label=\"Description\">"
 		"<select name=\"line-%s-product-id\" class=\"line-product\" aria-label=\"Product\" data-no-picker>%s</select></td>"
-		"<td class=\"num\"><input type=\"number\" name=\"line-%s-quantity\" value=\"1\" min=\"0\" step=\"any\" "
+		"<td class=\"num\" data-label=\"Qty\"><input type=\"number\" name=\"line-%s-quantity\" value=\"1\" min=\"0\" step=\"any\" "
 		"inputmode=\"decimal\" aria-label=\"Quantity\" data-qty></td>"
-		"<td class=\"num\"><input type=\"text\" name=\"line-%s-unit-price\" placeholder=\"0.00\" "
+		"<td class=\"num\" data-label=\"Unit price\"><input type=\"text\" name=\"line-%s-unit-price\" placeholder=\"0.00\" "
 		"inputmode=\"decimal\" aria-label=\"Unit price\" data-unit></td>"
-		"<td class=\"num\"><input type=\"number\" name=\"line-%s-discount-percent\" placeholder=\"0\" min=\"0\" max=\"100\" "
+		"<td class=\"num\" data-label=\"Discount %%\"><input type=\"number\" name=\"line-%s-discount-percent\" placeholder=\"0\" min=\"0\" max=\"100\" "
 		"step=\"any\" aria-label=\"Discount percent\" data-discount></td>",
 		index, index, products, index, index, index);
 	/* A line is taxed by a rate record, on a quote as on an invoice. */
-	g_string_append_printf(html, "<td class=\"line-tax\"><select name=\"line-%s-tax-code-id\" "
+	g_string_append_printf(html, "<td class=\"line-tax\" data-label=\"Tax\"><select name=\"line-%s-tax-code-id\" "
 		"aria-label=\"Tax\" data-no-picker data-tax>%s</select></td>", index, taxes);
-	g_string_append(html, "<td class=\"num line-amount\" data-amount>0.00</td>"
+	g_string_append(html, "<td class=\"num line-amount\" data-label=\"Amount\" data-amount>0.00</td>"
 		VENTURE_WEB_LINE_DELETE "</tr>");
 }
 

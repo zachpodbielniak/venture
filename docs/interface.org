@@ -112,6 +112,22 @@ The panel is positioned against the viewport rather than its container. A card c
 
 Where a form wants a record's id, the same idea applies twice over: a search box in front of the number input finds the record by name through =/ui/records/search=, and the id it fills in came from a record that exists. Asking for a number meant opening the list in another tab to read one off it, and a mistyped digit links to a different record silently.
 
+** Home and the ticket board
+
+*Home answers the morning's questions on one screen.* The =today= dashboard template -- the demo's home -- is four rows: money in and out this month, invoices and bills past due, what needs you (your tickets, the triage queue, promises missed, bills to approve), then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next. Every figure links to the records behind it. The home page's head is one line: the page's name, today's date and *Edit this page*; the other dashboards are in the sidebar. A metric's period reads as words ("September 2026", "All time"), never as the parameter it was asked with. The widgets are the dashboard kinds, rendered in the core like any other page's -- the web layer draws only the frame.
+
+*A ticket card answers the questions you would open it for.* The number, the priority in words when it is urgent or high, and the service-level clock across the top; the title; whose it is (the company, else the person who raised it, else "Internal") and who has it ("Unassigned" when nobody does); how long ago it was opened, its due date, its points; at most three tags. The head of the board says how the queue stands -- open, waiting to triage, past a promise -- and the controls are one labelled toolbar: whose tickets, a *Type* menu in words, board or list, and *Save view*. Columns are headings with human names and scroll sideways, snapping to a column; on a phone each column is most of the screen wide.
+
+** A keyboard, a screen reader, a phone
+
+- *A way past the sidebar.* The first thing Tab reaches is *Skip to content*, visible only while focused; =<main id="main">= takes the focus. The sidebar is a =<nav aria-label="Main">= and its search box is labelled.
+- *Every control is named.* A button that shows only an arrow, a bin or a cross carries an =aria-label=; a table column of such buttons has a heading only a screen reader sees (=.visually-hidden=, clipped rather than hidden, so it is still read). =tests/test-record-view.c= checks every button on the main pages for a name.
+- *Focus is always visible*, in both looks and every theme, with the accent ring -- including on ghost buttons and summaries that once turned it off.
+- *Refusals are announced.* An error notice (=notice negative=) and the error page carry =role="alert"=; toasts appear in a polite live region that is on the page from the start, because a region added with its first message is often not read out, and a failure toast is an alert of its own.
+- *On a phone* the sidebar is one line -- the name, the entity, search, New, Inbox -- and a *Menu* button (=aria-expanded=, =aria-controls=) that opens the same list a desk shows, folded groups and all. It is drawn open and folded by script only on a narrow screen, so with scripting off every link is still there. Dashboard figures sit two to a row and everything else takes the full width; a document's lines become small blocks with their own captions; a table of records scrolls inside its card instead of pushing the page sideways.
+
+Rules for these are appended to both stylesheets as one block, written against the tokens, so the two looks stay in step.
+
 ** Why this and not the usual
 
 A business tool is looked at for hours. The generic interface — rounded white cards, blue buttons, a drop shadow under everything — is designed to be glanced at, and it goes soft under sustained attention: nothing is aligned to anything, every element is lifted the same amount, and colour is spent on decoration so there is none left for meaning. A panel drawn with one pixel rules, two registers of type and one red is the opposite: everything sits on a line, the hierarchy is scale, and when something is red it is because you should look at it.

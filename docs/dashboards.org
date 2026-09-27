@@ -35,7 +35,7 @@ A dashboard's slug is its address, made from the name when you leave it blank an
 
 Three ways, all on =/dashboards=.
 
-*From a template.* Four ship: =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =work= (your tickets, what is due, what is waiting for a decision), and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
+*From a template.* Five ship: =today= (the daily questions -- money in and out this month, invoices and bills past due, your tickets, the triage queue, promises missed and bills to approve, then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next; the demo's home page), =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =work= (your tickets, what is due, what is waiting for a decision), and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
 
 *Empty*, with a name and a purpose, then add widgets.
 

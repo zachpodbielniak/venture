@@ -709,6 +709,15 @@ than one that fails.
   Floating panels (`.picker-panel`, `.record-results`) are
   `position: fixed` and placed by `placeFloating()`, because `.card` has
   `overflow: hidden` and clipped them.
+- **An error notice is announced.** `<div class="notice negative" role="alert">`
+  and the error page's `role="alert"` are what a test asserts on now;
+  toasts go into the server-rendered `<div class="toasts" role="status"
+  aria-live="polite">`. A button showing only a glyph needs an
+  `aria-label` -- `tests/test-record-view.c` walks every button on the
+  main pages and fails on one without a name.
+- **The phone menu is folded by script, drawn open.** `.sidebar` gets
+  `menu-closed` only on a narrow screen, from the inline script after the
+  sidebar, so with scripting off every link is still reachable.
 - **Never put a class name a test greps for inside venture.js.** The
   script is inlined into every page, so `"notice negative"` in a JS string
   made a dashboard test find an error notice that was not on the page.
