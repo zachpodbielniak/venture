@@ -2807,9 +2807,11 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_TEXT("terms", "Terms", "Payment terms shown on the "
 	                   "printed invoice"),
 	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed"),
+	/* Machinery: it mirrors the status badge for plugins that extend the
+	 * lifecycle, so the page shows it under "All fields", not beside it. */
 	VENTURE_FIELD("workflow-state", "Workflow state",
 		"Set through VentureSettlementService; plugins may extend the lifecycle",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD_MONEY("shipping-amount", "Shipping", "Optional shipping frozen at issuance"),
 	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issue from the customer or this invoice",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),

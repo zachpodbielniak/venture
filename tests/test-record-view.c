@@ -135,6 +135,30 @@ test_type_labels(void)
 	}
 }
 
+/*
+ * An invoice's workflow state repeats its status for plugins; it is
+ * machinery, not a fact a person reads twice. If this regresses, every
+ * invoice page shows "Workflow state: paid" under a "Paid" badge.
+ */
+static void
+test_workflow_state_is_machinery(void)
+{
+	g_autoptr(VentureEntity) invoice = g_object_new(VENTURE_TYPE_INVOICE, NULL);
+	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(invoice);
+	guint i, found = 0;
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+
+		if (g_strcmp0(venture_field_spec_get_name(spec), "workflow-state") != 0)
+			continue;
+		found++;
+		g_assert_cmpint(venture_field_spec_get_role(spec), ==, VENTURE_FIELD_ROLE_TECHNICAL);
+	}
+	g_assert_cmpuint(found, ==, 1);
+}
+
 /* --- What a person sees ---------------------------------------------------- */
 
 typedef struct
@@ -1176,6 +1200,7 @@ main(int argc, char *argv[])
 	g_test_add_func("/record-view/roles", test_roles);
 	g_test_add_func("/record-view/declared-technical", test_declared_technical);
 	g_test_add_func("/record-view/type-labels", test_type_labels);
+	g_test_add_func("/record-view/workflow-state-is-machinery", test_workflow_state_is_machinery);
 	g_test_add("/record-view/submission-page", Fixture, NULL, set_up,
 	           test_submission_page, tear_down);
 	g_test_add("/record-view/status-and-list", Fixture, NULL, set_up,
