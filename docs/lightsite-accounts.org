@@ -74,9 +74,14 @@ account does not delete its sites or public files.
 bearer token. Before implementation the first valid request failed with
 404 instead of 200. The test covers the returned identity, anonymous and bad
 credentials, incorrect Host, another organization, later membership grants,
-malformed IDs, token expiry, read-only/suspended/unknown lifecycle, membership
-revocation, token revocation, and continued token refusal on workspace
-administration. =tests/test-auth.c= includes the new route in anonymous checks.
+malformed and overflowing IDs, token expiry, read-only/suspended/unknown
+lifecycle, changed workspace identity, inactive users, deleted organizations,
+membership revocation, token revocation, and continued token refusal on
+workspace administration. Role demotion revokes an existing admin token;
+promotion does not enlarge a token minted with a viewer membership. Successful
+responses are checked for exactly the four documented fields; successful and
+refused responses both prohibit caching. =tests/test-auth.c= includes the new
+route in anonymous checks.
 
 #+begin_src sh
 make DEBUG=1 test-one T=test-account-identity

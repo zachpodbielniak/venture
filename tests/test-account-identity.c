@@ -30,7 +30,7 @@ static JsonNode *request(SoupSession *session, const gchar *origin, const gchar 
 	while (!reply.done) g_main_context_iteration(NULL, TRUE);
 	g_assert_no_error(reply.error);
 	g_assert_cmpuint(soup_message_get_status(message), ==, expected);
-	if (expected == 200) g_assert_cmpstr(soup_message_headers_get_one(soup_message_get_response_headers(message), "Cache-Control"), ==, "no-store");
+	g_assert_cmpstr(soup_message_headers_get_one(soup_message_get_response_headers(message), "Cache-Control"), ==, "no-store");
 	bytes = g_bytes_get_data(reply.body, &length);
 	g_assert_true(json_parser_load_from_data(parser, bytes, (gssize)length, &reply.error));
 	g_assert_no_error(reply.error);
@@ -91,6 +91,7 @@ static void identity_http(void)
 	other_path = g_strdup_printf("/api/v1/account-identity/%" G_GINT64_FORMAT, venture_entity_get_id(other));
 #define CHECK(p, t, h, s) G_STMT_START { g_clear_pointer(&result, json_node_unref); result = request(session, origin, p, t, h, s); } G_STMT_END
 	CHECK(path, secret, NULL, 200);
+	g_assert_cmpuint(json_object_get_size(json_node_get_object(result)), ==, 4);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(result), "origin"), ==, origin);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(result), "workspace_id"), ==, "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a");
 	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result), "organization_id"), ==, venture_entity_get_id(org));
@@ -107,12 +108,47 @@ static void identity_http(void)
 		/* A later grant cannot broaden a previously minted service token. */
 		CHECK(other_path, secret, NULL, 403);
 	}
+	/* Both sides of the authority intersection matter: demotion must revoke an
+	 * old admin token, and promotion must not enlarge a viewer-minted token. */
+	{
+		g_autoptr(VentureQuery) members = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+		g_autoptr(VentureEntity) member = NULL;
+		g_autoptr(VentureApiToken) limited = venture_api_token_new();
+		g_autofree gchar *limited_secret = NULL;
+		venture_query_set_organization(members, venture_entity_get_id(org));
+		member = venture_database_find_one(db, members, &error);
+		g_assert_no_error(error); g_assert_nonnull(member);
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, &error)); g_assert_no_error(error);
+		CHECK(path, secret, NULL, 403);
+		g_object_set(limited, "name", "Limited provisioning", "user-id",
+			venture_entity_get_id(g_ptr_array_index(users, 0)), "role", VENTURE_USER_ROLE_EDITOR, NULL);
+		limited_secret = venture_api_token_generate(limited);
+		g_assert_true(venture_database_save(db, VENTURE_ENTITY(limited), NULL, &error)); g_assert_no_error(error);
+		CHECK(path, limited_secret, NULL, 403);
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_ADMIN, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, &error)); g_assert_no_error(error);
+		CHECK(path, limited_secret, NULL, 403);
+		CHECK(path, secret, NULL, 200);
+	}
+	CHECK("/api/v1/account-identity/-1", secret, NULL, 422);
+	CHECK("/api/v1/account-identity/9223372036854775808", secret, NULL, 422);
 	CHECK("/api/v1/account-identity/not-an-id", secret, NULL, 422);
 	CHECK("/api/v1/account-identity/0", secret, NULL, 422);
 	CHECK("/api/v1/tenant_workspace", secret, NULL, 403);
 	sql(db, "UPDATE api_tokens SET expires_at='2000-01-01T00:00:00Z'");
 	CHECK(path, secret, NULL, 401);
 	sql(db, "UPDATE api_tokens SET expires_at=NULL");
+	/* Retained rows and durable identity drift must never validate a new
+	 * external account, even while the credential itself remains valid. */
+	sql(db, "UPDATE organizations SET deleted_at='2026-01-01T00:00:00Z'");
+	CHECK(path, secret, NULL, 403);
+	sql(db, "UPDATE organizations SET deleted_at=NULL; UPDATE users SET active=FALSE");
+	CHECK(path, secret, NULL, 401);
+	sql(db, "UPDATE users SET active=TRUE; UPDATE tenant_workspaces SET workspace_id='changed'");
+	CHECK(path, secret, NULL, 403);
+	sql(db, "UPDATE tenant_workspaces SET workspace_id='8f062b79-1d2b-4d7f-99e5-bd3bf588e05a'");
+	CHECK(path, secret, NULL, 200);
 	sql(db, "UPDATE organizations SET active=FALSE");
 	CHECK(path, secret, NULL, 403);
 	sql(db, "UPDATE organizations SET active=TRUE");
