@@ -243,6 +243,12 @@ deleted.
 `amount=12.34`; you get `{"amount": 1234, "currency": "USD", "exponent": 2,
 "formatted": "12.34 USD"}`. It is integer minor units, never a float. Use
 `.formatted` for display and `.amount` for arithmetic.
+A currency code is 2–15 characters (`[A-Z][A-Z0-9_]{1,14}`), not only ISO:
+an install may define `GOLD` or `POINTS` as a `currency` record, and then
+`gross="150 POINTS"` or, for a currency with denominations,
+`gross="12g 34s 56c"` (or `"12g 34s 56c GOLD"`) is accepted. `.formatted`
+stays the canonical decimal (`"12.3456 GOLD"`). See "User-defined
+currencies" below.
 
 ## What it cannot do, by design
 
@@ -1228,3 +1234,32 @@ business execution. See `docs/configuration.org` for gateway responsibilities.
   name. Unknown names and an unconfigured default are refused.
 - Printing is not a record write and cannot use `--stage`. A send failure
   may have delivered part of the receipt: inspect paper before retrying.
+
+## User-defined currencies
+
+- `currency` is a record type: `code`, `name`, `kind`
+  (`virtual|points|commodity|other`), `exponent` (0–6), `symbol`,
+  `symbol_position` (`prefix|suffix`), `denominations` (a JSON **string**),
+  `description`. Check with `venturectl describe currency`.
+- Creating, editing or deleting one needs the `admin` or `owner` role;
+  reading is open. An editor's write is refused with 403.
+- `code` and `exponent` cannot change once saved, and a built-in ISO code
+  (USD, EUR, JPY, …) cannot be defined. The code is unique install-wide.
+
+```sh
+venturectl create currency code=GOLD name=Gold exponent=4 \
+  denominations='[{"suffix":"g","units":10000},{"suffix":"s","units":100},{"suffix":"c","units":1}]'
+venturectl create sale venture_id=1 gross="12g 34s 56c"
+```
+
+- Denominations: largest first, each dividing the one before, the last
+  worth exactly 1 minor unit, suffixes without digits/spaces/points.
+- A coin amount without a code is read in the field's default currency if
+  its coins fit, else in the one currency that has those coins; two
+  candidates is refused as ambiguous — add the code.
+- A deleted currency still displays its amounts the same way; restore it to
+  edit it. Its code stays taken.
+- Stripe checkout, tax filing and Shopify import take ISO money only and
+  refuse a user-defined currency (even a registered three-letter code).
+- Value one in another with an ordinary `exchange_rate`
+  (`from_currency=GOLD to_currency=USD rate_numerator=15 rate_denominator=1000`).

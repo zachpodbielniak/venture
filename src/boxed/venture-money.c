@@ -31,9 +31,10 @@ static gchar venture_default_currency[VENTURE_MONEY_CURRENCY_LEN] = "USD";
 static GMutex venture_default_currency_lock;
 
 /*
- * Currencies whose minor unit is not two decimal digits. Anything absent
- * from this table is assumed to use two, which is correct for the
- * overwhelming majority and is a safe default for a code we do not know.
+ * Currencies whose minor unit is not two decimal digits, and the common ones
+ * whose symbol is worth knowing. Anything absent from this table and from
+ * the registry is assumed to use two, which is correct for the overwhelming
+ * majority and is a safe default for a code we do not know.
  */
 typedef struct
 {
@@ -85,6 +86,43 @@ static const VentureCurrencyInfo venture_currency_table[] = {
 	{ NULL, 0, NULL }
 };
 
+/*
+ * One denomination of a currency: "g" is 10000 minor units. The suffix is
+ * interned, so a copy of an entry taken under the lock stays valid after the
+ * registry has moved on.
+ */
+typedef struct
+{
+	const gchar	*suffix;
+	gint64		 units;
+} VentureCurrencyUnit;
+
+/*
+ * Everything the formatting and parsing code needs to know about one
+ * currency, whichever table it came from. Fixed size and pointer-free except
+ * for interned strings, so lookups hand out copies rather than pointers into
+ * a registry another thread may be rewriting.
+ */
+typedef struct
+{
+	gchar			code[VENTURE_MONEY_CURRENCY_LEN];
+	guint8			exponent;
+	const gchar		*symbol;
+	gboolean		symbol_suffix;
+	gboolean		registered;
+	guint			n_units;
+	VentureCurrencyUnit	units[VENTURE_CURRENCY_MAX_DENOMINATIONS];
+} VentureCurrencyEntry;
+
+/*
+ * The user-defined currencies, keyed by uppercase code. Written by the main
+ * thread when the `currency` records change and read by anything that
+ * formats an amount -- including a coding run's worker thread -- hence the
+ * reader-writer lock rather than the default currency's plain mutex.
+ */
+static GRWLock venture_currency_registry_lock;
+static GHashTable *venture_currency_registry = NULL;
+
 /* --- Internal helpers ---------------------------------------------------- */
 
 /*
@@ -95,7 +133,9 @@ static const VentureCurrencyInfo venture_currency_table[] = {
 static gint64
 venture_money_pow10(guint8 exponent)
 {
-	static const gint64 powers[] = { 1, 10, 100, 1000, 10000 };
+	static const gint64 powers[] = { 1, 10, 100, 1000, 10000, 100000, 1000000 };
+
+	G_STATIC_ASSERT(G_N_ELEMENTS(powers) == VENTURE_MONEY_MAX_EXPONENT + 1);
 
 	if (exponent > VENTURE_MONEY_MAX_EXPONENT)
 		exponent = VENTURE_MONEY_MAX_EXPONENT;
@@ -254,13 +294,19 @@ venture_money_align(
 /*
  * Copies a currency code into a fixed buffer, uppercasing it and falling
  * back to the process default when the caller passed nothing usable.
+ *
+ * A code too long for the buffer is refused, never truncated: cutting
+ * "GOLD_CLASSIC_EU1" down to fit would store an amount in a different
+ * currency than the one it was given in, and nothing downstream could tell.
+ * On refusal @dest is left as an empty string.
  */
-static void
+static gboolean
 venture_money_store_currency(
 	gchar		*dest,
 	const gchar	*currency
 ){
 	const gchar *source;
+	gsize length;
 	gsize i;
 
 	source = currency;
@@ -268,14 +314,39 @@ venture_money_store_currency(
 	if ((NULL == source) || ('\0' == source[0]))
 		source = venture_money_get_default_currency();
 
-	for (i = 0; (i < VENTURE_MONEY_CURRENCY_LEN - 1) && ('\0' != source[i]); i++)
+	length = strlen(source);
+
+	if (length >= VENTURE_MONEY_CURRENCY_LEN)
+	{
+		dest[0] = '\0';
+		return FALSE;
+	}
+
+	for (i = 0; i < length; i++)
 		dest[i] = g_ascii_toupper(source[i]);
 
 	dest[i] = '\0';
+
+	return TRUE;
+}
+
+/*
+ * The fixed part of the table, as an entry. Built-in currencies have no
+ * denominations: a dollar is written in decimals.
+ */
+static void
+venture_currency_entry_from_builtin(
+	VentureCurrencyEntry		*out,
+	const VentureCurrencyInfo	*info
+){
+	memset(out, 0, sizeof(*out));
+	g_strlcpy(out->code, info->code, sizeof(out->code));
+	out->exponent = info->exponent;
+	out->symbol = info->symbol;
 }
 
 static const VentureCurrencyInfo *
-venture_currency_lookup(const gchar *currency)
+venture_currency_builtin_lookup(const gchar *currency)
 {
 	gsize i;
 
@@ -289,6 +360,59 @@ venture_currency_lookup(const gchar *currency)
 	}
 
 	return NULL;
+}
+
+/*
+ * Looks a currency up, the registry first and then the built-in table, and
+ * copies what it found into @out. The registry cannot hold a built-in code
+ * (venture_currency_register() refuses one), so the order only matters for
+ * speed; it is written this way so that a mistake there could not change
+ * how a dollar displays.
+ */
+static gboolean
+venture_currency_lookup(
+	const gchar		*currency,
+	VentureCurrencyEntry	*out
+){
+	const VentureCurrencyInfo *info;
+	gchar key[VENTURE_MONEY_CURRENCY_LEN];
+	gboolean found;
+
+	/* An empty code is not "the default currency" here: the caller asked
+	 * about a code, and there was none. */
+	if ((NULL == currency) || ('\0' == currency[0]) ||
+	    !venture_money_store_currency(key, currency))
+		return FALSE;
+
+	found = FALSE;
+	g_rw_lock_reader_lock(&venture_currency_registry_lock);
+
+	if (NULL != venture_currency_registry)
+	{
+		const VentureCurrencyEntry *entry;
+
+		entry = g_hash_table_lookup(venture_currency_registry, key);
+
+		if (NULL != entry)
+		{
+			*out = *entry;
+			found = TRUE;
+		}
+	}
+
+	g_rw_lock_reader_unlock(&venture_currency_registry_lock);
+
+	if (found)
+		return TRUE;
+
+	info = venture_currency_builtin_lookup(key);
+
+	if (NULL == info)
+		return FALSE;
+
+	venture_currency_entry_from_builtin(out, info);
+
+	return TRUE;
 }
 
 /* --- Boxed type ---------------------------------------------------------- */
@@ -305,10 +429,13 @@ venture_money_new(
 	guint8		 exponent
 ){
 	VentureMoney *self;
+	gchar normalised[VENTURE_MONEY_CURRENCY_LEN];
+
+	g_return_val_if_fail(venture_money_store_currency(normalised, currency), NULL);
 
 	self = g_new0(VentureMoney, 1);
 	self->amount = amount;
-	venture_money_store_currency(self->currency, currency);
+	memcpy(self->currency, normalised, sizeof(self->currency));
 
 	/* An out-of-range exponent means the caller did not have one to give;
 	 * fall back to whatever the currency naturally uses rather than
@@ -328,7 +455,7 @@ venture_money_new_for_currency(
 ){
 	gchar normalised[VENTURE_MONEY_CURRENCY_LEN];
 
-	venture_money_store_currency(normalised, currency);
+	g_return_val_if_fail(venture_money_store_currency(normalised, currency), NULL);
 
 	return venture_money_new(amount, normalised,
 	                         venture_currency_get_exponent(normalised));
@@ -1041,19 +1168,133 @@ venture_money_to_string(const VentureMoney *self)
 	                       self->currency);
 }
 
+/*
+ * Writes an amount as its denominations, "12g 34s 56c", or returns %NULL
+ * when it cannot be written that way exactly -- an amount carried at more
+ * digits than the currency's own exponent whose extra digits are not zero.
+ * Such an amount then falls back to decimals rather than being rounded for
+ * display, because a figure shown to a person should be the figure stored.
+ */
+static gchar *
+venture_money_format_denominated(
+	const VentureMoney		*self,
+	const VentureCurrencyEntry	*entry
+){
+	g_autoptr(GString) text = NULL;
+	guint64 magnitude;
+	gint64 amount;
+	guint i;
+
+	amount = self->amount;
+
+	if (self->exponent != entry->exponent)
+	{
+		gint64 factor;
+
+		if (self->exponent < entry->exponent)
+		{
+			factor = venture_money_pow10((guint8)(entry->exponent - self->exponent));
+
+			if (__builtin_mul_overflow(amount, factor, &amount))
+				return NULL;
+		}
+		else
+		{
+			factor = venture_money_pow10((guint8)(self->exponent - entry->exponent));
+
+			if (0 != (amount % factor))
+				return NULL;
+
+			amount /= factor;
+		}
+	}
+
+	/* The same guint64 detour as format_magnitude, for G_MININT64. */
+	if (amount < 0)
+		magnitude = (guint64)(-(amount + 1)) + 1;
+	else
+		magnitude = (guint64)amount;
+
+	text = g_string_new((amount < 0) ? "-" : "");
+
+	/* Largest first, and a zero part is left out: "12g 56c", not
+	 * "12g 0s 56c". The last unit is always 1 (the validator insists),
+	 * so nothing is left over at the end. */
+	for (i = 0; i < entry->n_units; i++)
+	{
+		guint64 units;
+		guint64 count;
+
+		units = (guint64)entry->units[i].units;
+		count = magnitude / units;
+		magnitude %= units;
+
+		if (0 == count)
+			continue;
+
+		if (text->len > ((amount < 0) ? 1u : 0u))
+			g_string_append_c(text, ' ');
+
+		g_string_append_printf(text, "%" G_GUINT64_FORMAT "%s", count,
+		                       entry->units[i].suffix);
+	}
+
+	/* Nothing at all reads as none of the smallest coin. */
+	if (text->len == ((amount < 0) ? 1u : 0u))
+		g_string_append_printf(text, "0%s",
+		                       entry->units[entry->n_units - 1].suffix);
+
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
 gchar *
 venture_money_to_display_string(
 	const VentureMoney	*self,
 	gboolean		 with_grouping
 ){
 	g_autofree gchar *magnitude = NULL;
+	VentureCurrencyEntry entry;
 	const gchar *symbol;
+	gboolean suffix;
 
 	g_return_val_if_fail(NULL != self, NULL);
 
+	symbol = self->currency;
+	suffix = FALSE;
+
+	if (venture_currency_lookup(self->currency, &entry))
+	{
+		if (entry.n_units > 0)
+		{
+			gchar *denominated;
+
+			denominated = venture_money_format_denominated(self, &entry);
+
+			if (NULL != denominated)
+				return denominated;
+		}
+
+		/* A registered currency with no symbol is labelled by its code
+		 * after the figure, "12.50 PTS"; "PTS12.50" reads as a typo. */
+		if ((NULL != entry.symbol) && ('\0' != entry.symbol[0]))
+		{
+			symbol = entry.symbol;
+			suffix = entry.symbol_suffix;
+		}
+		else if (entry.registered)
+		{
+			suffix = TRUE;
+		}
+	}
+
 	magnitude = venture_money_format_magnitude(self->amount, self->exponent,
 	                                           with_grouping);
-	symbol = venture_currency_get_symbol(self->currency);
+
+	if (suffix)
+		return g_strdup_printf("%s%s %s",
+		                       (self->amount < 0) ? "-" : "",
+		                       magnitude,
+		                       symbol);
 
 	/* A negative amount reads better with the sign outside the symbol
 	 * ("-$5.00") than inside it ("$-5.00"). */
@@ -1076,6 +1317,331 @@ venture_money_refuse_ambiguous(
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 	            "\"%s\" is not an unambiguous amount: %s", text, why);
 	return NULL;
+}
+
+/*
+ * Refuses a currency code that cannot be stored. Returns %NULL so a parser
+ * can return it directly.
+ */
+static VentureMoney *
+venture_money_refuse_code(
+	GError		**error,
+	const gchar	 *code
+){
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "\"%s\" is not a currency code: a code is a letter followed "
+	            "by 1 to 14 letters, digits or underscores", code);
+	return NULL;
+}
+
+/*
+ * Whether a word beside a number is its currency code. Three letters is
+ * the ISO shape and has always been read as a code; anything else must
+ * name a registered currency. Without that second condition every short
+ * word would become a currency, and "100.00 CR" -- a credit, which
+ * inverts the sign -- would quietly be a hundred units of "CR".
+ */
+static gboolean
+venture_money_word_is_code(
+	const gchar	*word,
+	gsize		 length
+){
+	gchar candidate[VENTURE_MONEY_CURRENCY_LEN];
+
+	if ((3 == length) && g_ascii_isalpha(word[0]) &&
+	    g_ascii_isalpha(word[1]) && g_ascii_isalpha(word[2]))
+		return TRUE;
+
+	if ((length < 2) || (length >= VENTURE_MONEY_CURRENCY_LEN))
+		return FALSE;
+
+	memcpy(candidate, word, length);
+	candidate[length] = '\0';
+
+	return venture_currency_is_valid(candidate) &&
+	       venture_currency_is_registered(candidate);
+}
+
+/*
+ * A character that may not appear in a denomination suffix, because it
+ * would make "12g" hard to tell from a number or split it in two.
+ */
+static gboolean
+venture_money_suffix_char_forbidden(gchar c)
+{
+	return g_ascii_isdigit(c) || g_ascii_isspace(c) ||
+	       (NULL != strchr(".,+-()", c));
+}
+
+/*
+ * Whether text has the shape "12g 34s 56c": an optional sign, then one or
+ * more words each of digits followed by a suffix. Only the shape -- which
+ * currency, and whether the suffixes exist, is the parser's question.
+ */
+static gboolean
+venture_money_looks_denominated(const gchar *working)
+{
+	const gchar *p;
+	guint words;
+
+	p = working;
+
+	if (('-' == *p) || ('+' == *p))
+		p++;
+
+	while (' ' == *p)
+		p++;
+
+	words = 0;
+
+	while ('\0' != *p)
+	{
+		const gchar *digits;
+		const gchar *suffix;
+
+		digits = p;
+
+		while (g_ascii_isdigit(*p))
+			p++;
+
+		if (p == digits)
+			return FALSE;
+
+		suffix = p;
+
+		while (('\0' != *p) && (' ' != *p))
+		{
+			if (venture_money_suffix_char_forbidden(*p))
+				return FALSE;
+			p++;
+		}
+
+		if (p == suffix)
+			return FALSE;
+
+		words++;
+
+		while (' ' == *p)
+			p++;
+	}
+
+	return words > 0;
+}
+
+/*
+ * The denomination of @entry spelled @suffix, compared without regard to
+ * case, or -1.
+ */
+static gint
+venture_currency_entry_find_unit(
+	const VentureCurrencyEntry	*entry,
+	const gchar			*suffix
+){
+	g_autofree gchar *wanted = NULL;
+	guint i;
+
+	wanted = g_utf8_casefold(suffix, -1);
+
+	for (i = 0; i < entry->n_units; i++)
+	{
+		g_autofree gchar *have = NULL;
+
+		have = g_utf8_casefold(entry->units[i].suffix, -1);
+
+		if (0 == g_strcmp0(have, wanted))
+			return (gint)i;
+	}
+
+	return -1;
+}
+
+/* Whether every suffix in @suffixes is one of @entry's denominations. */
+static gboolean
+venture_currency_entry_covers(
+	const VentureCurrencyEntry	*entry,
+	GPtrArray			*suffixes
+){
+	guint i;
+
+	if (0 == entry->n_units)
+		return FALSE;
+
+	for (i = 0; i < suffixes->len; i++)
+	{
+		if (venture_currency_entry_find_unit(entry,
+			g_ptr_array_index(suffixes, i)) < 0)
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * Parses "12g 34s 56c" once venture_money_looks_denominated() has said it
+ * is that shape. @code is the currency the text named, if it named one.
+ */
+static VentureMoney *
+venture_money_parse_denominated(
+	const gchar	 *text,
+	const gchar	 *working,
+	const gchar	 *code,
+	const gchar	 *default_currency,
+	gboolean	  negative,
+	GError		**error
+){
+	g_autoptr(GPtrArray) suffixes = NULL;
+	g_autoptr(GArray) counts = NULL;
+	VentureCurrencyEntry entry;
+	gboolean seen[VENTURE_CURRENCY_MAX_DENOMINATIONS];
+	const gchar *p;
+	gint64 total;
+	guint i;
+
+	suffixes = g_ptr_array_new_with_free_func(g_free);
+	counts = g_array_new(FALSE, FALSE, sizeof(guint64));
+
+	p = working;
+
+	if ('-' == *p)
+	{
+		negative = !negative;
+		p++;
+	}
+	else if ('+' == *p)
+	{
+		p++;
+	}
+
+	/* Split into count and suffix; the shape was checked already, so
+	 * this only has to read it. */
+	while ('\0' != *p)
+	{
+		const gchar *start;
+		guint64 count;
+		gchar *end;
+
+		while (' ' == *p)
+			p++;
+
+		if ('\0' == *p)
+			break;
+
+		errno = 0;
+		count = g_ascii_strtoull(p, &end, 10);
+
+		if (0 != errno)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\" is out of range for a monetary amount", text);
+			return NULL;
+		}
+
+		start = end;
+		p = end;
+
+		while (('\0' != *p) && (' ' != *p))
+			p++;
+
+		g_array_append_val(counts, count);
+		g_ptr_array_add(suffixes, g_strndup(start, (gsize)(p - start)));
+	}
+
+	/* Which currency: the one the text named, else the default if its
+	 * coins fit, else the one registered currency whose coins do. */
+	if (NULL != code)
+	{
+		if (!venture_currency_lookup(code, &entry) || (0 == entry.n_units))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\": %s has no denominations", text, code);
+			return NULL;
+		}
+
+		if (!venture_currency_entry_covers(&entry, suffixes))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\" names a denomination %s does not have",
+			            text, code);
+			return NULL;
+		}
+	}
+	else if ((NULL != default_currency) && ('\0' != default_currency[0]) &&
+	         venture_currency_lookup(default_currency, &entry) &&
+	         venture_currency_entry_covers(&entry, suffixes))
+	{
+		/* The default's own coins: nothing to decide. */
+	}
+	else
+	{
+		GHashTableIter iter;
+		gpointer value;
+		guint matches;
+
+		matches = 0;
+		g_rw_lock_reader_lock(&venture_currency_registry_lock);
+
+		if (NULL != venture_currency_registry)
+		{
+			g_hash_table_iter_init(&iter, venture_currency_registry);
+
+			while (g_hash_table_iter_next(&iter, NULL, &value))
+			{
+				if (venture_currency_entry_covers(value, suffixes))
+				{
+					if (0 == matches)
+						entry = *(const VentureCurrencyEntry *)value;
+					matches++;
+				}
+			}
+		}
+
+		g_rw_lock_reader_unlock(&venture_currency_registry_lock);
+
+		if (matches > 1)
+			return venture_money_refuse_ambiguous(error, text,
+				"more than one currency has those denominations; "
+				"name the currency");
+
+		if (0 == matches)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\": no currency has those denominations", text);
+			return NULL;
+		}
+	}
+
+	/* Each coin at most once, and the sum must fit. */
+	memset(seen, 0, sizeof(seen));
+	total = 0;
+
+	for (i = 0; i < suffixes->len; i++)
+	{
+		gint unit;
+		gint64 part;
+		guint64 count;
+
+		unit = venture_currency_entry_find_unit(&entry,
+			g_ptr_array_index(suffixes, i));
+		count = g_array_index(counts, guint64, i);
+
+		if (seen[unit])
+			return venture_money_refuse_ambiguous(error, text,
+				"it names the same denomination twice");
+
+		seen[unit] = TRUE;
+
+		if ((count > (guint64)G_MAXINT64) ||
+		    __builtin_mul_overflow((gint64)count, entry.units[unit].units, &part) ||
+		    __builtin_add_overflow(total, part, &total))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\" is out of range for a monetary amount", text);
+			return NULL;
+		}
+	}
+
+	return venture_money_new(negative ? -total : total, entry.code,
+	                         entry.exponent);
 }
 
 VentureMoney *
@@ -1124,46 +1690,59 @@ venture_money_from_string(
 		length = strlen(working);
 	}
 
-	/* A trailing ISO code: "12.34 USD". Recognised before scanning digits
+	/* A trailing code: "12.34 USD". Recognised before scanning digits
 	 * so its letters are not mistaken for anything else. */
-	if (length > 4)
 	{
-		const gchar *tail;
+		const gchar *space;
 
-		tail = working + length - 3;
+		space = strrchr(working, ' ');
 
-		if ((' ' == working[length - 4]) &&
-		    g_ascii_isalpha(tail[0]) &&
-		    g_ascii_isalpha(tail[1]) &&
-		    g_ascii_isalpha(tail[2]))
+		if ((NULL != space) && (space > working) &&
+		    venture_money_word_is_code(space + 1, strlen(space + 1)))
 		{
-			venture_money_store_currency(currency, tail);
+			if (!venture_money_store_currency(currency, space + 1))
+				return venture_money_refuse_code(error, text);
+
 			have_currency = TRUE;
-			working[length - 4] = '\0';
+			working[space - working] = '\0';
 			g_strstrip(working);
 			length = strlen(working);
 		}
 	}
 
-	/* A leading ISO code: "USD 12.34". */
-	if (!have_currency && (length > 4) && (' ' == working[3]) &&
-	    g_ascii_isalpha(working[0]) &&
-	    g_ascii_isalpha(working[1]) &&
-	    g_ascii_isalpha(working[2]))
+	/* A leading code: "USD 12.34". */
+	if (!have_currency)
 	{
-		gchar candidate[VENTURE_MONEY_CURRENCY_LEN];
+		const gchar *space;
 
-		candidate[0] = working[0];
-		candidate[1] = working[1];
-		candidate[2] = working[2];
-		candidate[3] = '\0';
+		space = strchr(working, ' ');
 
-		venture_money_store_currency(currency, candidate);
-		have_currency = TRUE;
-		memmove(working, working + 4, length - 3);
-		g_strstrip(working);
-		length = strlen(working);
+		if ((NULL != space) && ('\0' != space[1]) &&
+		    venture_money_word_is_code(working, (gsize)(space - working)))
+		{
+			gchar candidate[VENTURE_MONEY_CURRENCY_LEN];
+			gsize word;
+
+			word = (gsize)(space - working);
+			memcpy(candidate, working, word);
+			candidate[word] = '\0';
+
+			if (!venture_money_store_currency(currency, candidate))
+				return venture_money_refuse_code(error, text);
+
+			have_currency = TRUE;
+			memmove(working, space + 1, length - word);
+			g_strstrip(working);
+			length = strlen(working);
+		}
 	}
+
+	/* "12g 34s 56c": a currency written in its own coins. Decided on
+	 * shape before the decimal scan, which would refuse the letters. */
+	if (venture_money_looks_denominated(working))
+		return venture_money_parse_denominated(text, working,
+			have_currency ? currency : NULL, default_currency,
+			negative, error);
 
 	/* Whatever is left should be a signed decimal, possibly decorated
 	 * with a currency symbol and thousands separators. Collect the digits
@@ -1277,17 +1856,16 @@ venture_money_from_string(
 
 	if (!have_currency)
 	{
-		if ((NULL == default_currency) || ('\0' == default_currency[0]))
-		{
-			/* Falling back to the process default is right for
-			 * interactive use, where the operator has one currency
-			 * and never says so. */
-			venture_money_store_currency(currency, NULL);
-		}
-		else
-		{
-			venture_money_store_currency(currency, default_currency);
-		}
+		/* Falling back to the process default when no default was
+		 * given is right for interactive use, where the operator has
+		 * one currency and never says so. A default that is not a
+		 * currency code is the caller's data, and refused as such. */
+		if ((NULL != default_currency) && ('\0' != default_currency[0]) &&
+		    !venture_currency_is_valid(default_currency))
+			return venture_money_refuse_code(error, default_currency);
+
+		if (!venture_money_store_currency(currency, default_currency))
+			return venture_money_refuse_code(error, default_currency);
 	}
 
 	{
@@ -1459,6 +2037,16 @@ venture_money_from_json(
 		? json_object_get_string_member(object, "currency")
 		: default_currency;
 
+	/* Refused here, as input, rather than handed to venture_money_new(),
+	 * for which an unstorable code is a programming error. */
+	if ((NULL != currency) && ('\0' != currency[0]) &&
+	    !venture_currency_is_valid(currency))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		            "\"%s\" is not a currency code", currency);
+		return NULL;
+	}
+
 	if (json_object_has_member(object, "exponent"))
 	{
 		exponent = json_object_get_int_member(object, "exponent");
@@ -1482,12 +2070,10 @@ venture_money_from_json(
 guint8
 venture_currency_get_exponent(const gchar *currency)
 {
-	const VentureCurrencyInfo *info;
+	VentureCurrencyEntry entry;
 
-	info = venture_currency_lookup(currency);
-
-	if (NULL != info)
-		return info->exponent;
+	if (venture_currency_lookup(currency, &entry))
+		return entry.exponent;
 
 	/* Two decimal places is right for the vast majority of currencies and
 	 * is the least surprising assumption for one we have never seen. */
@@ -1497,12 +2083,13 @@ venture_currency_get_exponent(const gchar *currency)
 const gchar *
 venture_currency_get_symbol(const gchar *currency)
 {
-	const VentureCurrencyInfo *info;
+	VentureCurrencyEntry entry;
 
-	info = venture_currency_lookup(currency);
-
-	if (NULL != info)
-		return info->symbol;
+	/* The symbol is interned or static, so handing it out after the
+	 * lock is released is safe even if the registry is reloaded. */
+	if (venture_currency_lookup(currency, &entry) &&
+	    (NULL != entry.symbol) && ('\0' != entry.symbol[0]))
+		return entry.symbol;
 
 	/* With no known symbol, the code itself is the clearest label. */
 	return (NULL != currency) ? currency : "";
@@ -1513,23 +2100,382 @@ venture_currency_is_valid(const gchar *currency)
 {
 	gsize i;
 
-	if (NULL == currency)
+	if ((NULL == currency) || !g_ascii_isalpha(currency[0]))
 		return FALSE;
 
-	for (i = 0; i < 3; i++)
+	for (i = 1; '\0' != currency[i]; i++)
 	{
-		if (!g_ascii_isalpha(currency[i]))
+		if (i >= VENTURE_MONEY_CURRENCY_LEN - 1)
+			return FALSE;
+
+		if (!g_ascii_isalnum(currency[i]) && ('_' != currency[i]))
 			return FALSE;
 	}
 
-	return ('\0' == currency[3]);
+	return i >= 2;
+}
+
+gboolean
+venture_currency_is_normalised(const gchar *currency)
+{
+	gsize i;
+
+	if (!venture_currency_is_valid(currency))
+		return FALSE;
+
+	for (i = 0; '\0' != currency[i]; i++)
+	{
+		if (g_ascii_islower(currency[i]))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_currency_is_builtin(const gchar *currency)
+{
+	return NULL != venture_currency_builtin_lookup(currency);
+}
+
+gboolean
+venture_currency_is_registered(const gchar *currency)
+{
+	gchar key[VENTURE_MONEY_CURRENCY_LEN];
+	gboolean found;
+
+	if ((NULL == currency) || ('\0' == currency[0]) ||
+	    !venture_money_store_currency(key, currency))
+		return FALSE;
+
+	g_rw_lock_reader_lock(&venture_currency_registry_lock);
+	found = (NULL != venture_currency_registry) &&
+	        g_hash_table_contains(venture_currency_registry, key);
+	g_rw_lock_reader_unlock(&venture_currency_registry_lock);
+
+	return found;
+}
+
+gboolean
+venture_currency_is_iso(const gchar *currency)
+{
+	if ((NULL == currency) || (3 != strlen(currency)) ||
+	    !g_ascii_isalpha(currency[0]) || !g_ascii_isalpha(currency[1]) ||
+	    !g_ascii_isalpha(currency[2]))
+		return FALSE;
+
+	return !venture_currency_is_registered(currency);
+}
+
+/*
+ * Reads a denomination list into @out, or says what is wrong with it. The
+ * one parser behind both the record's save validator and the registry, so
+ * a list the form accepted is a list the registry can hold.
+ */
+static gboolean
+venture_currency_parse_units(
+	const gchar		 *denominations,
+	VentureCurrencyUnit	 *out,
+	guint			 *out_count,
+	GError			**error
+){
+	g_autoptr(JsonParser) parser = NULL;
+	g_autoptr(GError) parse_error = NULL;
+	JsonNode *root;
+	JsonArray *array;
+	guint length;
+	guint i;
+
+	*out_count = 0;
+
+	if ((NULL == denominations) || ('\0' == denominations[0]))
+		return TRUE;
+
+	parser = json_parser_new();
+
+	if (!json_parser_load_from_data(parser, denominations, -1, &parse_error))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "Denominations are not valid JSON: %s", parse_error->message);
+		return FALSE;
+	}
+
+	root = json_parser_get_root(parser);
+
+	/* "null" and "[]" both mean none, as an empty field does. */
+	if ((NULL == root) || JSON_NODE_HOLDS_NULL(root))
+		return TRUE;
+
+	if (!JSON_NODE_HOLDS_ARRAY(root))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "Denominations must be a JSON array of "
+		                    "{\"suffix\": ..., \"units\": ...} objects");
+		return FALSE;
+	}
+
+	array = json_node_get_array(root);
+	length = json_array_get_length(array);
+
+	if (length > VENTURE_CURRENCY_MAX_DENOMINATIONS)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "A currency may have at most %d denominations",
+		            VENTURE_CURRENCY_MAX_DENOMINATIONS);
+		return FALSE;
+	}
+
+	for (i = 0; i < length; i++)
+	{
+		JsonNode *element;
+		JsonObject *object;
+		JsonNode *suffix_node;
+		JsonNode *units_node;
+		const gchar *suffix;
+		gint64 units;
+		gsize j;
+		guint k;
+
+		element = json_array_get_element(array, i);
+
+		if (!JSON_NODE_HOLDS_OBJECT(element))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Denomination %u is not an object", i + 1);
+			return FALSE;
+		}
+
+		object = json_node_get_object(element);
+		suffix_node = json_object_get_member(object, "suffix");
+		units_node = json_object_get_member(object, "units");
+
+		if ((NULL == suffix_node) || !JSON_NODE_HOLDS_VALUE(suffix_node) ||
+		    (G_TYPE_STRING != json_node_get_value_type(suffix_node)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Denomination %u needs a \"suffix\" string", i + 1);
+			return FALSE;
+		}
+
+		if ((NULL == units_node) || !JSON_NODE_HOLDS_VALUE(units_node) ||
+		    (G_TYPE_INT64 != json_node_get_value_type(units_node)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Denomination %u needs whole-number \"units\"", i + 1);
+			return FALSE;
+		}
+
+		suffix = json_node_get_string(suffix_node);
+		units = json_node_get_int(units_node);
+
+		if ((NULL == suffix) || ('\0' == suffix[0]) || (strlen(suffix) > 8) ||
+		    !g_utf8_validate(suffix, -1, NULL))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Denomination %u's suffix must be 1 to 8 bytes of text",
+			            i + 1);
+			return FALSE;
+		}
+
+		/* A digit or a point inside a suffix would make "12g" read as
+		 * part of the number, and a space would split it in two. */
+		for (j = 0; '\0' != suffix[j]; j++)
+		{
+			if (venture_money_suffix_char_forbidden(suffix[j]))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "Denomination suffix \"%s\" may not contain digits, "
+				            "spaces, signs, parentheses, points or commas", suffix);
+				return FALSE;
+			}
+		}
+
+		if (units <= 0)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "Denomination \"%s\" must be worth at least one minor unit",
+			            suffix);
+			return FALSE;
+		}
+
+		/* Largest first, each a whole number of the next: "1g = 100s"
+		 * works, "1g = 150s, 1s = 7c" cannot be written back exactly. */
+		if (i > 0)
+		{
+			gint64 previous;
+
+			previous = out[i - 1].units;
+
+			if ((units >= previous) || (0 != (previous % units)))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "Denomination \"%s\" must be smaller than, and divide, "
+				            "the one before it", suffix);
+				return FALSE;
+			}
+		}
+
+		out[i].suffix = g_intern_string(suffix);
+		out[i].units = units;
+
+		for (k = 0; k < i; k++)
+		{
+			g_autofree gchar *a = g_utf8_casefold(out[k].suffix, -1);
+			g_autofree gchar *b = g_utf8_casefold(suffix, -1);
+
+			if (0 == g_strcmp0(a, b))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "Denomination suffix \"%s\" is used twice", suffix);
+				return FALSE;
+			}
+		}
+	}
+
+	/* The smallest coin must be one minor unit, or an amount between
+	 * two coins could not be written at all. */
+	if ((length > 0) && (1 != out[length - 1].units))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "The smallest denomination (\"%s\") must be worth exactly one "
+		            "minor unit", out[length - 1].suffix);
+		return FALSE;
+	}
+
+	*out_count = length;
+
+	return TRUE;
+}
+
+gboolean
+venture_currency_check_denominations(
+	const gchar	 *denominations,
+	GError		**error
+){
+	VentureCurrencyUnit units[VENTURE_CURRENCY_MAX_DENOMINATIONS];
+	guint count;
+
+	return venture_currency_parse_units(denominations, units, &count, error);
+}
+
+gboolean
+venture_currency_register(
+	const gchar	 *currency,
+	guint8		  exponent,
+	const gchar	 *symbol,
+	gboolean	  symbol_suffix,
+	const gchar	 *denominations,
+	GError		**error
+){
+	VentureCurrencyEntry *entry;
+
+	if (!venture_currency_is_valid(currency))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "\"%s\" is not a currency code: a code is a letter followed "
+		            "by 1 to 14 letters, digits or underscores",
+		            (NULL != currency) ? currency : "");
+		return FALSE;
+	}
+
+	if (venture_currency_is_builtin(currency))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s is a built-in ISO 4217 currency and cannot be redefined",
+		            currency);
+		return FALSE;
+	}
+
+	if (exponent > VENTURE_MONEY_MAX_EXPONENT)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "A currency's exponent must be 0 to %d, not %u",
+		            VENTURE_MONEY_MAX_EXPONENT, (guint)exponent);
+		return FALSE;
+	}
+
+	if ((NULL != symbol) && !g_utf8_validate(symbol, -1, NULL))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "A currency symbol must be text");
+		return FALSE;
+	}
+
+	entry = g_new0(VentureCurrencyEntry, 1);
+	venture_money_store_currency(entry->code, currency);
+	entry->exponent = exponent;
+	entry->symbol = ((NULL != symbol) && ('\0' != symbol[0]))
+		? g_intern_string(symbol) : NULL;
+	entry->symbol_suffix = symbol_suffix;
+	entry->registered = TRUE;
+
+	if (!venture_currency_parse_units(denominations, entry->units,
+	                                  &entry->n_units, error))
+	{
+		g_free(entry);
+		return FALSE;
+	}
+
+	g_rw_lock_writer_lock(&venture_currency_registry_lock);
+
+	if (NULL == venture_currency_registry)
+		venture_currency_registry = g_hash_table_new_full(g_str_hash,
+			g_str_equal, NULL, g_free);
+
+	/* The key lives inside the value, so the two go together. */
+	g_hash_table_replace(venture_currency_registry, entry->code, entry);
+	g_rw_lock_writer_unlock(&venture_currency_registry_lock);
+
+	return TRUE;
+}
+
+void
+venture_currency_retain_registered(const gchar *const *keep)
+{
+	GHashTableIter iter;
+	gpointer key;
+
+	g_rw_lock_writer_lock(&venture_currency_registry_lock);
+
+	if (NULL != venture_currency_registry)
+	{
+		g_hash_table_iter_init(&iter, venture_currency_registry);
+
+		while (g_hash_table_iter_next(&iter, &key, NULL))
+		{
+			gboolean kept;
+			gsize i;
+
+			kept = FALSE;
+
+			for (i = 0; (NULL != keep) && (NULL != keep[i]); i++)
+			{
+				if (0 == g_ascii_strcasecmp(keep[i], key))
+				{
+					kept = TRUE;
+					break;
+				}
+			}
+
+			if (!kept)
+				g_hash_table_iter_remove(&iter);
+		}
+	}
+
+	g_rw_lock_writer_unlock(&venture_currency_registry_lock);
+}
+
+void
+venture_currency_clear_registered(void)
+{
+	venture_currency_retain_registered(NULL);
 }
 
 const gchar *
 venture_money_get_default_currency(void)
 {
 	/* The buffer is only ever written by the setter below, under the
-	 * lock, and only with a NUL-terminated three-letter code. Readers can
+	 * lock, and only with a NUL-terminated code that fits it. Readers can
 	 * therefore take the pointer without locking: the worst a concurrent
 	 * write can do is hand back the previous or the next code, both of
 	 * which are valid. */

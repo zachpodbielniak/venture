@@ -1,0 +1,243 @@
+#+title: Currencies
+#+description: User-defined units of account: points, commodities, a game's gold
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+#+version: 0.1.0
+
+* Units of account beyond ISO 4217
+
+VENTURE keeps money exactly: an integer count of minor units, a currency
+code and the number of decimal places that code uses (see [[file:money.org][Money and
+accounting]]). The ISO 4217 currencies it knows are built in. Anything else
+an operation is measured in -- loyalty points, grams of silver, a platform's
+credits, the gold of a game economy -- is a =currency= record.
+
+A currency record is configuration, not business data: it says how every
+amount in that code is written and read, in every organization of the
+install. Once it exists, every money field accepts it, every page shows it
+in its own form, and exchange rates, reports and the ledger treat it like
+any other currency. Nothing else changes: arithmetic across two currencies
+is still refused, and a report that sees two currencies still gives two
+rows.
+
+#+begin_src sh
+venturectl create currency code=GOLD name=Gold kind=virtual exponent=4 \
+  denominations='[{"suffix":"g","units":10000},{"suffix":"s","units":100},{"suffix":"c","units":1}]'
+venturectl create sale venture_id=1 gross="12g 34s 56c"
+venturectl get sale 1        # gross.formatted is "12.3456 GOLD"; the page shows 12g 34s 56c
+#+end_src
+
+* Codes
+
+A code is 2 to 15 characters: a letter, then letters, digits or
+underscores (=[A-Z][A-Z0-9_]{1,14}=). It is uppercased when stored, so
+=gold= and =GOLD= are one currency, and it is unique across the whole
+install, not per organization. The same grammar is what
+=locale.default_currency=, a record's currency field and the money parser
+accept, so the default currency of an install may itself be a user-defined
+one.
+
+A built-in ISO code (USD, EUR, JPY and the rest of the table in
+=venture-money.c=) cannot be defined as a record: redefining how a dollar
+displays would change every figure in the books without touching a row.
+Other three-letter codes are allowed -- =GLD= is a fine name for gold -- but
+a registered three-letter code stops counting as ISO money (see below).
+
+* Fields
+
+| Field             | Kind    | For                                                                     |
+|-------------------+---------+-------------------------------------------------------------------------|
+| =code=            | string  | the code amounts carry; required, unique install-wide, fixed once saved |
+| =name=            | string  | what a person calls it: Gold, Loyalty points                            |
+| =kind=            | enum    | =virtual= (the default), =points=, =commodity=, =other=; descriptive only |
+| =exponent=        | integer | decimal places, 0 to 6; fixed once saved                                |
+| =symbol=          | string  | shown with an amount, at most 16 bytes; blank shows the code             |
+| =symbol_position= | enum    | =prefix= (the default, "$12.50") or =suffix= ("12.50 pts")               |
+| =denominations=   | JSON    | optional coins, largest first; see below                                |
+| =description=     | text    | what it is and where it is used                                         |
+
+** Why the code and exponent are fixed
+
+Every stored amount names its currency by its code, so a new code orphans
+them all. And an amount typed without decimals is scaled to the currency's
+exponent -- "5" in a two-decimal currency is 500 minor units -- so changing
+the exponent would make the same text mean a different number from one day
+to the next. Both edits are refused; create a new currency instead.
+
+** The exponent
+
+The exponent is how many decimal digits of minor unit the currency has. Six
+is the most (=VENTURE_MONEY_MAX_EXPONENT=, raised from four for exactly
+this). A game whose gold splits into 100 silver and each silver into 100
+copper has an exponent of 4: one gold is 10000 minor units, and "12.3456
+GOLD" is 12 gold, 34 silver, 56 copper.
+
+* Denominations
+
+A currency may declare how it is written in coins:
+
+#+begin_src json
+[
+  {"suffix": "g", "units": 10000},
+  {"suffix": "s", "units": 100},
+  {"suffix": "c", "units": 1}
+]
+#+end_src
+
+=units= counts minor units. The list must be:
+
+- at most eight entries;
+- strictly descending, each dividing the one before it (1g = 100s works; 1g
+  = 150s with 1s = 100c cannot be written back exactly);
+- ending in a unit worth exactly one minor unit, so every amount can be
+  written;
+- made of suffixes that are 1 to 8 bytes, unique ignoring case, with no
+  digit, space, sign, parenthesis, point or comma -- otherwise "12g" could
+  not be told from a number.
+
+** How an amount is shown
+
+| Amount (minor units) | Shown           |
+|----------------------+-----------------|
+| 123456               | =12g 34s 56c=   |
+| 120056               | =12g 56c=       |
+| 0                    | =0c=            |
+| -3456                | =-34s 56c=      |
+
+Zero parts are left out; nothing at all is none of the smallest coin; the
+sign goes in front. An amount carried at more decimals than the currency's
+own exponent is converted when that is exact, and otherwise shown in
+decimals ("1.234501 GOLD") rather than rounded for display. Denominations
+are never grouped with thousands separators.
+
+The canonical text form -- what =venturectl= prints in =.formatted=, what
+CSV and org exports write, what round-trips -- is unchanged: =12.3456 GOLD=.
+
+** How an amount is read
+
+Every door that parses money (forms, the REST API, =venturectl=, imports, the
+assistant's tools) accepts the coin form, with or without the code before
+or after it, in any order:
+
+#+begin_src text
+12g 34s 56c        12g 34s 56c GOLD        GOLD 12g 56c        56c 12g
+-5s                (1g)                    12G 34S
+#+end_src
+
+Which currency a bare "12g 34s" is in:
+
+1. the code the text names, if it names one;
+2. otherwise the default currency of that field (the organization's, or
+   the install's), if its denominations cover every suffix used;
+3. otherwise the one registered currency whose denominations do.
+
+Two candidates at step 3 is refused as ambiguous -- "name the currency" --
+rather than posted to whichever came first. Each coin may appear once, a
+coin count is a whole number, and a bare number among coins ("12g 5") is
+refused.
+
+A word beside a number is read as a currency code when it is three
+letters (the ISO shape, as always) or names a registered currency. Any
+other word is still refused, which is what keeps "100.00 CR" -- a credit --
+from becoming a hundred units of "CR".
+
+* Symbols
+
+A registered currency with a symbol shows it where =symbol_position= says:
+=P1,500= or =1,500 pts=. One without a symbol shows its code after the
+figure: =12.50 TOKENS=. Built-in currencies are unchanged ("$1,234.56").
+
+* The registry, and why it includes deleted rows
+
+What every formatter and parser consults is a process-wide registry in
+=src/boxed/venture-money.c=, filled from the =currency= table by
+=venture_currency_load_registry()= in =src/core/venture-currency.c=:
+
+- when the context is built, and again when =venture_database_migrate()=
+  finishes (a server builds its context before it migrates, so on a fresh
+  install the first load finds no table);
+- on the database's =audit= signal for any write to a currency, so the page
+  that saved one already shows amounts in it;
+- again when the surrounding transaction finishes, so a rollback takes a
+  currency back out.
+
+It loads *soft-deleted rows too*. A deleted currency still has amounts
+stored in it, and deleting the record must never change how they display,
+now or after a restart. Restore it to edit it again; its code stays taken.
+
+The registry is guarded by a reader-writer lock, because a coding run's
+worker thread formats amounts while the main thread may be reloading it. A
+reload registers every row first and only then removes the codes that are
+gone, so a currency that exists is never missing, even for a moment. A
+row the registry refuses at load (a code a later release made built-in,
+say) is skipped with a log message rather than stopping the server.
+
+A scratch database migrated to check a backup has no context and leaves the
+registry alone.
+
+* Who may change a currency
+
+Anybody who may sign in may read the currency list. Creating, editing,
+deleting or restoring one needs an administrator (the =owner= or =admin=
+role; in a hosted workspace, a workspace administrator), because it changes
+how every amount in that code reads, everywhere. The rule lives in the
+access policy (=venture-access-admin-write= on the type), so it holds for
+the form, the REST API, =venturectl=, an approved staged change and the
+assistant alike. =/e/currency= is in the sidebar under /Books/.
+
+The assistant may propose a currency like any other record; under the
+default confirmation policy the change is staged and an administrator
+approves it.
+
+* Doors that take ISO money only
+
+Some destinations can only settle real money. They ask
+=venture_currency_is_iso()=: three letters, and *not* a registered currency.
+That is deliberately wider than the built-in table -- THB is not in it and
+Stripe still takes baht -- and deliberately narrower than "three letters":
+a registered =GLD= is not ISO money.
+
+| Door                      | What happens to a user-defined currency                       |
+|---------------------------+----------------------------------------------------------------|
+| Stripe checkout and charges | refused before a pay button is offered and before any call   |
+| Tax filing adapter (US)   | refused while the return is prepared                            |
+| 1099-NEC pack             | already USD only                                                |
+| Shopify order import      | refused like a missing currency                                 |
+
+Everything else -- invoices, the ledger, statements, quotes, projects,
+cutover payloads, CRM import -- accepts any valid code.
+
+* Valuing a currency in another
+
+Exchange rates already work between any valid codes. Record an
+=exchange_rate= from =GOLD= to =USD= and the rate-table policy values gold
+in dollars exactly as it values euros:
+
+#+begin_src sh
+venturectl create exchange_rate from_currency=GOLD to_currency=USD \
+  rate_numerator=15 rate_denominator=1000 effective_at=2026-09-01
+#+end_src
+
+Conversion rounds once, half to even, at the destination's exponent; a
+result that no longer fits a 64-bit minor-unit count is refused, not
+wrapped. Check the exact field names with =venturectl describe
+exchange_rate=.
+
+* Traps
+
+- *A deleted currency is still loaded.* That is the point; do not "fix" the
+  registry to skip deleted rows.
+- *Codes and exponents are immutable.* The column flag documents it; the
+  save validator enforces it, because nothing generic does.
+- *=venture_money_new()= refuses an over-long code with a critical and
+  returns =NULL=.* Input goes through =venture_money_from_string()= or
+  =venture_money_from_json()=, which report it as an error. Nothing
+  truncates a code any more: with the old four-byte buffer "GOLD" became
+  "GOL".
+- *An ISO door must ask =venture_currency_is_iso()=,* not "is it three
+  letters" -- a registered three-letter code is not money Stripe can take.
+- *Tests share the process-wide registry.* A test that registers a
+  currency clears it (=venture_currency_clear_registered()=) before it
+  returns.

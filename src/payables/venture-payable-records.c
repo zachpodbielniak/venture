@@ -76,7 +76,7 @@ static const VentureFieldDecl bill_fields[] = {
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("bill-date", "Bill date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("due-date", "Due", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
+	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase currency code"),
 	VENTURE_FIELD_NAME("status", "Status", "draft, approved, partially_paid, paid, void; VenturePayablesService owns transitions"),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("purchase-order-id", "Purchase order", "Optional three-way match",

@@ -1146,3 +1146,27 @@ static const GEnumValue venture_satisfaction_values[] = {
 VENTURE_DEFINE_ENUM_TYPE(venture_satisfaction_get_type,
                          "VentureSatisfaction",
                          venture_satisfaction_values)
+
+/* --- User-defined currencies ------------------------------------------------ */
+
+static const GEnumValue venture_currency_kind_values[] = {
+	VE(VENTURE_CURRENCY_KIND_VIRTUAL,   "virtual"),
+	VE(VENTURE_CURRENCY_KIND_POINTS,    "points"),
+	VE(VENTURE_CURRENCY_KIND_COMMODITY, "commodity"),
+	VE(VENTURE_CURRENCY_KIND_OTHER,     "other"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_currency_kind_get_type,
+                         "VentureCurrencyKind",
+                         venture_currency_kind_values)
+
+static const GEnumValue venture_symbol_position_values[] = {
+	VE(VENTURE_SYMBOL_POSITION_PREFIX, "prefix"),
+	VE(VENTURE_SYMBOL_POSITION_SUFFIX, "suffix"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_symbol_position_get_type,
+                         "VentureSymbolPosition",
+                         venture_symbol_position_values)

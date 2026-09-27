@@ -2623,7 +2623,10 @@ venture_database_migrate(
 		!venture_setup_seed_defaults(self, organization_id, NULL, error) ||
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
-	return TRUE;
+	/* The currency table exists now, whatever state it was in when the
+	 * context was built; every stored amount in a user-defined currency
+	 * must display correctly from the first request. */
+	return venture_currency_database_migrated(self, error);
 }
 
 /* A one-use permit is consumed before callbacks can re-enter a generic save. */

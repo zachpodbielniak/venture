@@ -43,7 +43,7 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("tax-id", "Tax ID", "EIN, VAT number or equivalent",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("default-currency", "Currency",
-	              "ISO 4217 code used when an amount does not name one",
+	              "Currency code used when an amount does not name one",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("fiscal-year-start-month", "Fiscal year starts",
 	              "Month the fiscal year begins, 1-12",
@@ -2361,6 +2361,56 @@ static const VentureFieldDecl venture_routing_rule_fields[] = {
 
 VENTURE_DEFINE_ENTITY(VentureRoutingRule, venture_routing_rule,
                       venture_routing_rule_fields)
+
+/* ==========================================================================
+ * Currencies
+ *
+ * A unit of account this install defines for itself: points, a commodity,
+ * the gold of a game economy. The ISO 4217 codes are built in and never
+ * rows. Every row, deleted or not, is loaded into the process-wide registry
+ * in venture-money.c (see src/core/venture-currency.c), which is what makes
+ * "12g 34s 56c" display and parse; the validator there holds the rules.
+ * One currency is one unit for the whole install, so the code is unique
+ * across every organization, not within one.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_currency_fields[] = {
+	/* Immutable, like the exponent: stored amounts name their currency by
+	 * this code, so renaming it would orphan every one of them. */
+	VENTURE_FIELD("code", "Code",
+	              "2 to 15 characters: a letter, then letters, digits or "
+	              "underscores, e.g. GOLD or LOYALTY_PTS",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE |
+	              VENTURE_COLUMN_FLAG_IMMUTABLE | VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_NAME("name", "Name", "e.g. Gold, Loyalty points"),
+	VENTURE_FIELD_ENUM("kind", "Kind", "What it is; every kind adds up the same way",
+	                   venture_currency_kind_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("exponent", "Decimal places",
+	              "How many digits of minor unit, 0 to 6; fixed once saved. "
+	              "Gold with 100 copper to the silver and 100 silver to the "
+	              "gold is 4",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_IMMUTABLE),
+	VENTURE_FIELD("symbol", "Symbol", "Shown with an amount, e.g. pts; blank shows the code",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("symbol-position", "Symbol goes", NULL,
+	                   venture_symbol_position_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("denominations", "Denominations",
+	              "Optional, largest first, units in minor units: "
+	              "[{\"suffix\":\"g\",\"units\":10000},"
+	              "{\"suffix\":\"s\",\"units\":100},"
+	              "{\"suffix\":\"c\",\"units\":1}] shows 12g 34s 56c",
+	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("description", "Description", "What it is and where it is used")
+};
+
+/* Writes need an administrator (read by venture_access_policy_can()): a
+ * currency's denominations and symbol change how every amount in it reads,
+ * in every organization, so defining one is configuration. */
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCurrency, venture_currency, venture_currency_fields,
+	g_type_set_qdata(G_TYPE_FROM_CLASS(klass),
+		g_quark_from_static_string("venture-access-admin-write"), GINT_TO_POINTER(1));)
 
 static const VentureFieldDecl venture_forge_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "What you call this server"),

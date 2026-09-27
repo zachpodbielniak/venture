@@ -229,11 +229,10 @@ compute(VentureQuoteService *self, VentureEntity *q, GError **error)
 	g_autoptr(VentureMoney) total = NULL;
 	guint i;
 	g_object_get(q, "currency", &currency, NULL);
-	if (currency == NULL || strlen(currency) != 3)
-		return refuse(error, VENTURE_ERROR_VALIDATION, "an ISO currency is required");
-	for (i = 0; i < 3; i++)
-		if (!g_ascii_isupper(currency[i]))
-			return refuse(error, VENTURE_ERROR_VALIDATION, "currency must be uppercase");
+	if (!venture_currency_is_valid(currency))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "a currency code is required");
+	if (!venture_currency_is_normalised(currency))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "currency must be uppercase");
 	subtotal = venture_money_new_zero(currency);
 	discount = venture_money_new_zero(currency);
 	tax = venture_money_new_zero(currency);

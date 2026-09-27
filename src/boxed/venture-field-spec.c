@@ -848,7 +848,10 @@ venture_field_spec_to_json_schema(const VentureFieldSpec *self)
 	if (VENTURE_FIELD_KIND_MONEY == self->kind)
 	{
 		g_string_append(description,
-			". A monetary amount such as \"12.34\" or \"12.34 EUR\"");
+			". A monetary amount such as \"12.34\" or \"12.34 EUR\". "
+			"The code may also be a currency this install defined, "
+			"such as \"150 POINTS\", and a currency with denominations "
+			"may be written in them, such as \"12g 34s 56c GOLD\"");
 	}
 	else if (VENTURE_FIELD_KIND_DATE == self->kind)
 	{

@@ -726,6 +726,18 @@ venture_web_require_for_type(
 	if (VENTURE_TYPE_FORGE_RULE == entity_type)
 		needed = VENTURE_USER_ROLE_ADMIN;
 
+	/*
+	 * A currency defines a unit for the whole install: its denominations
+	 * and symbol change how every amount in it displays, in every
+	 * organization. Defining one is configuration, not data entry, so a
+	 * write needs an administrator; anybody who may read may still see
+	 * what the units are.
+	 */
+	if ((VENTURE_TYPE_CURRENCY == entity_type) &&
+	    (VENTURE_USER_ROLE_VIEWER != ordinary) &&
+	    (needed > VENTURE_USER_ROLE_ADMIN))
+		needed = VENTURE_USER_ROLE_ADMIN;
+
 	return venture_auth_require(self->auth, principal, needed, error);
 }
 
@@ -1098,6 +1110,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		),
 		NULL,
 		"finance"
+	},
+	{
+		"/e/currency", "Currencies",
+		VENTURE_ICON(
+			"<circle cx=\"9\" cy=\"9\" r=\"6\"/>"
+			"<path d=\"M15.5 9.5a6 6 0 1 1-6 6\"/>"
+		),
+		NULL,
+		"core"
 	},
 	{
 		"/e/tax_category", "Tax categories",
@@ -1607,7 +1628,7 @@ static const gchar *const venture_web_nav_books[] = {
 	"/accounting", "/e/account", "/e/journal", "/e/journal_line",
 	"/e/tax_code", "/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
 	"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
-	"/e/accounting_cutover",
+	"/e/accounting_cutover", "/e/currency",
 	NULL
 };
 

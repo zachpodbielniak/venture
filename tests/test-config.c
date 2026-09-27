@@ -397,11 +397,24 @@ test_config_validate_rejects_bad_currency(void)
 	g_autoptr(VentureConfig) config = NULL;
 	g_autoptr(GError) error = NULL;
 
+	/* The grammar is a letter then 1 to 14 letters, digits or
+	 * underscores: a user-defined code such as GOLD is a valid default,
+	 * a symbol or a phrase is not. */
 	config = venture_config_new();
-	g_object_set(config, "locale-default-currency", "DOLLARS", NULL);
+	g_object_set(config, "locale-default-currency", "US$", NULL);
 
 	g_assert_false(venture_config_validate(config, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+
+	g_object_set(config, "locale-default-currency", "5USD", NULL);
+	g_assert_false(venture_config_validate(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+
+	g_object_set(config, "locale-default-currency", "GOLD", NULL);
+	g_assert_true(venture_config_validate(config, &error));
+	g_assert_no_error(error);
 }
 
 static void

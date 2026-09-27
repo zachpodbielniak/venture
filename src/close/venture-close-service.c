@@ -552,7 +552,7 @@ venture_close_service_open(VentureCloseService *self, gint64 period_id,
 		use_currency = book;
 	}
 	if (use_currency != NULL && *use_currency && !venture_currency_is_valid(use_currency)) {
-		refuse(error, VENTURE_ERROR_VALIDATION, "Close currency must be an ISO 4217 code");
+		refuse(error, VENTURE_ERROR_VALIDATION, "Close currency must be a currency code");
 		goto fail;
 	}
 	g_object_set(workspace, "name", name, "fiscal-period-id", period_id, "status", "preparing",

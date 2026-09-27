@@ -182,6 +182,11 @@ Also refused: half-configured TLS (which would silently serve plain HTTP), a
 port out of range, an unrecognised database scheme, a =postgres://= URI in a
 build without libpq, a malformed currency, a fiscal month outside 1–12.
 
+=locale.default_currency= is any well-formed currency code: a letter
+followed by 1 to 14 letters, digits or underscores (=USD=, =EUR=, =GOLD=).
+A user-defined code works as the default once its =currency= record exists;
+until then it formats as a plain two-decimal code. See [[file:currencies.org][Currencies]].
+
 * Compiled C configuration
 
 Some configuration is a decision, not a value. Put a =config.c= beside your

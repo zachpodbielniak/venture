@@ -360,6 +360,34 @@ test_shopify_refuses_bare_usd(Fixture *f, gconstpointer data)
 	g_object_unref(transport);
 }
 
+/*
+ * A storefront settles in ISO money. A code this install registered is
+ * refused even when it happens to be three letters, because an order in
+ * "ABC" cannot be a Shopify order and importing one would book real sales
+ * in a made-up unit.
+ */
+static void
+test_shopify_refuses_registered_currency(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureCommerceConnector) connector = NULL;
+	g_autoptr(GPtrArray) orders = NULL;
+	FakeTransport *transport;
+
+	g_assert_true(venture_currency_register("ABC", 2, NULL, FALSE, NULL, NULL));
+	transport = g_object_new(fake_transport_get_type(), NULL);
+	transport->body = g_strdup("{\"orders\":[{\"id\":9,\"currency\":\"ABC\",\"financial_status\":\"paid\","
+		"\"line_items\":[{\"title\":\"Hat\",\"quantity\":1,\"price\":\"25.00\"}]}]}");
+	connector = venture_shopify_connector_new("shop.myshopify.com", "tok",
+		VENTURE_BANK_FEED_TRANSPORT(transport));
+	orders = venture_commerce_connector_fetch_orders(connector, NULL, NULL, &error);
+	g_assert_null(orders);
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "currency"));
+	g_object_unref(transport);
+	venture_currency_clear_registered();
+}
+
 /* A full first page must not silently truncate a window's orders. */
 static void
 test_shopify_pages(void)
@@ -831,6 +859,7 @@ main(int argc, char **argv)
 	g_test_add("/commerce/failure-rollback", Fixture, NULL, setup, test_failure_rolls_back, teardown);
 	g_test_add("/commerce/shopify-currency-cancelled", Fixture, NULL, setup, test_shopify_currency_and_cancelled, teardown);
 	g_test_add("/commerce/shopify-refuses-usd-default", Fixture, NULL, setup, test_shopify_refuses_bare_usd, teardown);
+	g_test_add_func("/commerce/shopify-refuses-registered-currency", test_shopify_refuses_registered_currency);
 	g_test_add_func("/commerce/pagination-window", test_shopify_pages);
 	g_test_add_func("/commerce/unsupported-amounts", test_shopify_unsupported_amounts);
 	g_test_add("/commerce/total-mismatch", Fixture, NULL, setup, test_shopify_total_mismatch, teardown);

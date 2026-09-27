@@ -499,10 +499,10 @@ validate_header(VenturePostingService *self, VentureDatabase *db,
 	source_gtype = (NULL != source_type) ? venture_entity_registry_lookup_any(
 		venture_entity_registry_get_default(), source_type) : 0;
 	if (venture_entity_is_deleted(organization) || !source_gtype || source_id <= 0 ||
-		NULL == currency || strlen(currency) != 3)
+		!venture_currency_is_valid(currency))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			"A journal requires an existing source document, legal entity and three-letter currency");
+			"A journal requires an existing source document, legal entity and currency code");
 		return FALSE;
 	}
 	source = required_record(db, source_gtype, source_id, error);
@@ -955,7 +955,7 @@ venture_posting_service_account_balance(VenturePostingService *self, gint64 acco
 
 	if (!ledger_enabled(error) || NULL == db)
 		return NULL;
-	if (account_id <= 0 || org <= 0 || NULL == currency || strlen(currency) != 3 || NULL == as_of)
+	if (account_id <= 0 || org <= 0 || !venture_currency_is_valid(currency) || NULL == as_of)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Balance requires account, legal entity, currency and as-of date");
 		return NULL;

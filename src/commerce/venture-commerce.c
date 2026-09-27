@@ -153,11 +153,13 @@ static gboolean commerce_shopify_settings(const gchar *shop, const gchar *token,
 G_DEFINE_TYPE_WITH_CODE(VentureShopifyConnector, venture_shopify_connector, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_COMMERCE_CONNECTOR, shopify_iface))
 
+/* A storefront settles in real money: a code the operator registered as
+ * points or a game's gold is not one Shopify could have sent, whatever its
+ * spelling, so it is refused here like a missing currency. */
 static gboolean
 iso_currency(const gchar *code)
 {
-	return code != NULL && strlen(code) == 3 && g_ascii_isalpha(code[0]) &&
-		g_ascii_isalpha(code[1]) && g_ascii_isalpha(code[2]);
+	return venture_currency_is_iso(code);
 }
 
 static gboolean

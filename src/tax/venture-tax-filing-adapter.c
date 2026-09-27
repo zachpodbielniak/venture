@@ -185,6 +185,16 @@ add_amounts(VentureMoney **slot, const VentureMoney *add, const gchar *currency,
 	g_autoptr(VentureMoney) next = NULL;
 	if (add == NULL)
 		return TRUE;
+	/* A tax authority is paid in ISO money. An amount in a currency this
+	 * install defined -- points, a game's gold -- has no place on a return,
+	 * and the first one would otherwise be copied in under the USD label. */
+	if (!venture_currency_is_iso(venture_money_get_currency(add)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A tax filing takes ISO 4217 money only; %s is a currency defined here",
+			venture_money_get_currency(add));
+		return FALSE;
+	}
 	if (*slot == NULL)
 	{
 		*slot = venture_money_copy(add);

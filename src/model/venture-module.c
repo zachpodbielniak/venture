@@ -357,6 +357,9 @@ static GType (*const venture_module_core_types[]) (void) = {
 	venture_saved_view_get_type,
 	venture_watch_get_type,
 	venture_notification_get_type,
+	/* A user-defined currency is a unit of account, and money is in
+	 * every module: a sale, an expense and an invoice may all be in it. */
+	venture_currency_get_type,
 	NULL
 };
 

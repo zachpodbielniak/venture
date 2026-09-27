@@ -40,6 +40,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:mcp.org][venturectl mcp]] — serving the API to an outside AI agent over stdio
 - [[file:periods.org][Fiscal periods]] — calendars, closing controls and historical reports
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
+- [[file:currencies.org][Currencies]] — user-defined units of account: points, commodities, a game's gold, with denominations such as 12g 34s 56c
 - [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
 - [[file:stripe.org][Stripe payments]] — hosted Checkout and verified settlement
 - [[file:assets.org][Fixed assets and deferrals]] — book depreciation, monthly releases and period sweeps

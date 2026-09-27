@@ -504,7 +504,7 @@ venture_setup_service_checklist(VentureSetupService *self, gint64 organization_i
 		(legal != NULL && legal[0] != '\0') || (name != NULL && name[0] != '\0'),
 		legal != NULL && legal[0] != '\0' ? legal : name);
 	add_step(steps, "book_currency", "Book currency",
-		currency != NULL && strlen(currency) == 3, currency);
+		venture_currency_is_valid(currency), currency);
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "fiscal_year") != 0)
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FISCAL_YEAR);
@@ -746,7 +746,7 @@ venture_setup_service_complete_impl(VentureSetupService *self, VentureAccounting
 		if (!venture_currency_is_valid(currency))
 		{
 			venture_database_rollback(self->database);
-			return refuse(error, "Choose a three-letter book currency before opening the books");
+			return refuse(error, "Choose a book currency before opening the books");
 		}
 		if (g_strcmp0(basis, "accrual") != 0 && g_strcmp0(basis, "cash") != 0)
 		{

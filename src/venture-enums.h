@@ -1682,6 +1682,50 @@ GType
 venture_satisfaction_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureCurrencyKind:
+ * @VENTURE_CURRENCY_KIND_VIRTUAL: a currency that exists inside a system,
+ *   such as the gold of a game economy or a platform's credits
+ * @VENTURE_CURRENCY_KIND_POINTS: loyalty or reward points
+ * @VENTURE_CURRENCY_KIND_COMMODITY: a quantity of a good used as money,
+ *   such as grams of silver
+ * @VENTURE_CURRENCY_KIND_OTHER: anything else
+ *
+ * What a user-defined currency is. Descriptive only: every kind is
+ * arithmetic the same way. A real ISO 4217 currency is never a row, so
+ * there is no kind for it.
+ */
+typedef enum
+{
+	VENTURE_CURRENCY_KIND_VIRTUAL = 0,
+	VENTURE_CURRENCY_KIND_POINTS,
+	VENTURE_CURRENCY_KIND_COMMODITY,
+	VENTURE_CURRENCY_KIND_OTHER
+} VentureCurrencyKind;
+
+#define VENTURE_TYPE_CURRENCY_KIND (venture_currency_kind_get_type())
+
+GType
+venture_currency_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureSymbolPosition:
+ * @VENTURE_SYMBOL_POSITION_PREFIX: before the figure, "$12.50"
+ * @VENTURE_SYMBOL_POSITION_SUFFIX: after it, "12.50 pts"
+ *
+ * Where a currency's symbol is written.
+ */
+typedef enum
+{
+	VENTURE_SYMBOL_POSITION_PREFIX = 0,
+	VENTURE_SYMBOL_POSITION_SUFFIX
+} VentureSymbolPosition;
+
+#define VENTURE_TYPE_SYMBOL_POSITION (venture_symbol_position_get_type())
+
+GType
+venture_symbol_position_get_type(void) G_GNUC_CONST;
+
+/**
  * venture_link_kind_inverse:
  * @kind: a link kind
  *

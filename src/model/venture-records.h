@@ -338,6 +338,11 @@ VENTURE_DECLARE_ENTITY(VentureWebhookDelivery, venture_webhook_delivery,
 #define VENTURE_TYPE_ROUTING_RULE (venture_routing_rule_get_type())
 VENTURE_DECLARE_ENTITY(VentureRoutingRule, venture_routing_rule, ROUTING_RULE)
 
+/* --- User-defined currencies ---------------------------------------------- */
+
+#define VENTURE_TYPE_CURRENCY (venture_currency_get_type())
+VENTURE_DECLARE_ENTITY(VentureCurrency, venture_currency, CURRENCY)
+
 #define VENTURE_TYPE_INVOICE (venture_invoice_get_type())
 VENTURE_DECLARE_ENTITY(VentureInvoice, venture_invoice, INVOICE)
 

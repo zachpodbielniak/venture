@@ -145,6 +145,10 @@ venture_context_new(
 	venture_routing_install(self);
 	venture_webhook_install(self);
 
+	/* The currencies this install defined, into the registry every
+	 * formatter reads, and kept there as the table changes. */
+	venture_currency_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-08-14]
+#+updated: [2026-09-27]
 #+version: 0.1.0
 
 * Money
@@ -12,14 +12,18 @@
 
 Binary floating point cannot represent 0.10. A bookkeeping system that cannot represent a dime is not a bookkeeping system.
 
-=VentureMoney= stores an exact integer count of minor units, the ISO 4217 code, and the number of minor-unit digits that currency uses:
+=VentureMoney= stores an exact integer count of minor units, the currency code, and the number of minor-unit digits that currency uses:
 
 #+begin_src C
 { .amount = 123, .currency = "USD", .exponent = 2 }   /* $1.23 */
 { .amount = 100, .currency = "JPY", .exponent = 0 }   /* ¥100  */
 #+end_src
 
-Carrying the exponent per value means JPY (no minor unit) and the four-digit exponents used for unit pricing work without global configuration. Treating JPY as two-decimal would inflate every yen figure by a factor of a hundred.
+Carrying the exponent per value means JPY (no minor unit) and the extra digits used for unit pricing work without global configuration. Treating JPY as two-decimal would inflate every yen figure by a factor of a hundred. An exponent may be 0 to 6 (=VENTURE_MONEY_MAX_EXPONENT=).
+
+** Currencies beyond ISO 4217
+
+A code is 2 to 15 characters, a letter then letters, digits or underscores; the ISO 4217 codes are built in and anything else -- points, a commodity, a game's gold -- is a =currency= record with its own exponent, symbol and optional denominations ("12g 34s 56c"). See [[file:currencies.org][Currencies]] for the record, the registry that makes it display, and the doors (Stripe, tax filing, storefront import) that take ISO money only.
 
 ** Rounding is half to even
 
@@ -47,7 +51,7 @@ There is no exchange rate in the type. =venture_money_add()= on USD and EUR retu
 
 ** Parsing reads one number or refuses
 
-=venture_money_from_string()= is tolerant of decoration and strict about meaning. It accepts =12.34=, =$12.34=, =US$12.34=, =12.34 USD=, =USD 12.34=, =1,234,567.89=, =(12.34)= and =-12.34=, and scales a whole amount such as =5= to the currency's precision. It refuses anything that could be read as more than one number, with an error that says why:
+=venture_money_from_string()= is tolerant of decoration and strict about meaning. It accepts =12.34=, =$12.34=, =US$12.34=, =12.34 USD=, =USD 12.34=, =1,234,567.89=, =(12.34)= and =-12.34=, and scales a whole amount such as =5= to the currency's precision. A word beside the number is a code when it is three letters or names a registered currency (=150 POINTS=), and a currency with denominations is also read in its coins (=12g 34s 56c=, see [[file:currencies.org][Currencies]]). It refuses anything that could be read as more than one number, with an error that says why:
 
 | Input          | Why it is refused                                   |
 |----------------+-----------------------------------------------------|
@@ -55,8 +59,8 @@ There is no exchange rate in the type. =venture_money_add()= on USD and EUR retu
 | =1.234,56 EUR= | the same, after a point used as a thousands separator |
 | =1.2.3=        | more than one decimal point                         |
 | =1.2,3=        | a comma after the decimal point                     |
-| =100.00 CR=    | letters after the digits change the meaning         |
-| =1.234567=     | more decimals than the currency holds               |
+| =100.00 CR=    | letters after the digits change the meaning (CR is not a registered currency) |
+| =1.2345678=    | more decimals than the type holds (six)             |
 
 Each of the first four was once read without a word: =1,50 EUR= as 150.00, =1.2.3= as 1.23, =100.00 CR= as a positive hundred. An import that posts a hundred times an amount is worse than one that stops at the row, so a locale-formatted file must be converted first (cutover takes an explicit =decimal_separator=).
 

@@ -475,6 +475,27 @@ test_flow(Fixture *f, gconstpointer data)
 	g_assert_nonnull(service);
 	if (!g_strcmp0(mode, "precision-mismatch") || !g_strcmp0(mode, "overflow-mismatch"))
 		((FakeTransport *)transport)->price_amount = 100;
+	/*
+	 * An invoice in a currency this install defined is refused before a
+	 * pay button is offered and before anything reaches Stripe. What
+	 * breaks if this regresses: a GEMS balance is sent as "gems" and
+	 * Stripe either refuses it mid-checkout or, for a registered code
+	 * that happens to spell a real one, charges real money.
+	 */
+	if (!g_strcmp0(mode, "virtual-currency"))
+	{
+		g_assert_true(venture_currency_register("GEMS", 2, NULL, FALSE, NULL, &error));
+		invoice = invoice_new(f, "stripe-gems", "2026-01-01", "100 GEMS");
+		g_assert_false(venture_stripe_service_can_checkout(service, venture_entity_get_id(invoice), &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "ISO 4217"));
+		g_clear_error(&error);
+		g_assert_null(venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error));
+		g_assert_nonnull(error);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, 0);
+		venture_currency_clear_registered();
+		return;
+	}
 	invoice = invoice_new(f, "stripe-test", "2026-01-01", (!g_strcmp0(mode, "precision-mismatch") || !g_strcmp0(mode, "overflow-mismatch")) ? "1.0000 USD" : "100 USD");
 	price = record_new(f, "stripe_price_link");
 	g_object_set(price, "product-id", f->product_id, "stripe-price-id", "price_offline", NULL);
@@ -1105,7 +1126,7 @@ main(int argc, char **argv)
 
 	g_test_add_func("/stripe/missing-key", test_missing_key);
 	{
-		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback" };
+		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback", "virtual-currency" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(cases); i++)
 		{

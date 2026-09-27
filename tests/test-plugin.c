@@ -967,7 +967,7 @@ test_web_navigation_groups_by_question(
 		"/accounting", "/e/account", "/e/journal", "/e/journal_line",
 		"/e/tax_code", "/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
 		"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
-		"/e/accounting_cutover", NULL
+		"/e/accounting_cutover", "/e/currency", NULL
 	};
 	static const gchar *const customers[] = {
 		"/e/company", "/e/contact", "/worklist", "/customers/duplicates",

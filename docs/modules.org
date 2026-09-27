@@ -23,7 +23,7 @@ Written bottom-up, because a module may only require what precedes it:
 
 | Module       | Requires        | Owns                                                              | Also switched by      |
 |--------------+-----------------+-------------------------------------------------------------------+-----------------------|
-| =core=       | —               | tenant_workspace, tenant_membership, tenant_invitation, tenant_support_grant, tenant_event, organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification | always on |
+| =core=       | —               | tenant_workspace, tenant_membership, tenant_invitation, tenant_support_grant, tenant_event, organization, venture, document, record_link, plugin_config, user, api_token, audit_entry, saved_view, watch, notification, currency | always on |
 | =custom_fields= | core          | accounting_custom_field, accounting_layout, custom_field_value; =/settings/fields= | |
 | =sales=      | core            | product, inventory_item, inventory_txn, sale; =categories=, =inventory= |               |
 | =finance=    | sales           | expense, account, ledger_entry, tax_category, tax_code; =pnl=, =ventures=, =monthly=, =tax=, =tax_liability= |     |

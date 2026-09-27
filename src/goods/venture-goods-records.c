@@ -8,7 +8,7 @@ static const VentureFieldDecl purchase_order_fields[] = {
 	VENTURE_FIELD_REF("vendor-id", "Vendor", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("status", "Status", "draft, approved, sent, partial, received, cancelled; VenturePurchasingService owns transitions"),
-	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
+	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase currency code"),
 	VENTURE_FIELD("ordered-at", "Ordered", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("expected-at", "Expected", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("match-tolerance-percent", "Match tolerance %", "Price difference allowed in three-way match",
@@ -72,7 +72,7 @@ static const VentureFieldDecl sales_order_fields[] = {
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("status", "Status", "draft, allocated, partial, fulfilled, invoiced, cancelled"),
-	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
+	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase currency code"),
 	VENTURE_FIELD("ordered-at", "Ordered", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("memo", "Memo", NULL)

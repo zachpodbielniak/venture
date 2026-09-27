@@ -75,8 +75,8 @@ static const VentureFieldDecl journal_line_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureJournalLine, venture_journal_line, journal_line_fields)
 
 static const VentureFieldDecl exchange_rate_fields[] = {
-	VENTURE_FIELD_NAME("from-currency", "From", "ISO 4217 code of the original amount"),
-	VENTURE_FIELD_NAME("to-currency", "To", "ISO 4217 book currency"),
+	VENTURE_FIELD_NAME("from-currency", "From", "Currency code of the original amount"),
+	VENTURE_FIELD_NAME("to-currency", "To", "Book currency code"),
 	VENTURE_FIELD("rate-numerator", "Rate numerator", "Exact multiplier of the original amount",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("rate-denominator", "Rate denominator", "Exact divisor; never invented",

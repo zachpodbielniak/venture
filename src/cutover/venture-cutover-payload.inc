@@ -471,7 +471,9 @@ field_date(Plan *plan, Row *row, JsonObject *object, const gchar *name, gboolean
  *
  * where the payload may rename the decimal separator and allow a thousands
  * separator, and CUR is three uppercase letters, taken from the row or the
- * payload when the text omits it. The fraction may not be longer than the
+ * payload when the text omits it. A row or payload may name any uppercase
+ * code, including a registered one; written into the text, only the ISO
+ * shape is recognised, which keeps "100.00 CR" an error. The fraction may not be longer than the
  * currency's minor unit.
  *
  * venture_money_from_string() is deliberately forgiving because it reads
@@ -487,7 +489,7 @@ parse_strict_money(const gchar *text, const gchar *currency, gchar decimal, gcha
 	g_autoptr(GString) digits = g_string_new(NULL);
 	g_autoptr(GString) fraction = g_string_new(NULL);
 	g_autofree gchar *normalized = NULL;
-	gchar code[4] = { 0 };
+	gchar code[VENTURE_MONEY_CURRENCY_LEN] = { 0 };
 	gsize length = strlen(working), i = 0, group = 0;
 	gboolean negative = FALSE, in_fraction = FALSE, grouped = FALSE, first_group = TRUE;
 	guint exponent;
@@ -506,15 +508,24 @@ parse_strict_money(const gchar *text, const gchar *currency, gchar decimal, gcha
 		length -= 4;
 	}
 	else if (currency != NULL && *currency != '\0')
-		g_strlcpy(code, currency, sizeof(code));
+	{
+		/* A row or payload currency is never cut down to fit: "GOLD_EU"
+		 * truncated would be a different currency, not an error. */
+		if (g_strlcpy(code, currency, sizeof(code)) >= sizeof(code))
+		{
+			*why = g_strdup_printf("\"%s\" names a currency code longer than %d characters", text,
+				VENTURE_MONEY_CURRENCY_LEN - 1);
+			return NULL;
+		}
+	}
 	else
 	{
 		*why = g_strdup_printf("\"%s\" must include an ISO currency, as in \"105.00 USD\", or the row or payload must name one", text);
 		return NULL;
 	}
-	if (!venture_currency_is_valid(code) || !g_ascii_isupper(code[0]) || !g_ascii_isupper(code[1]) || !g_ascii_isupper(code[2]))
+	if (!venture_currency_is_normalised(code))
 	{
-		*why = g_strdup_printf("\"%s\" has no valid ISO currency code", text);
+		*why = g_strdup_printf("\"%s\" has no valid uppercase currency code", text);
 		return NULL;
 	}
 	if (length > 0 && working[0] == '-')
@@ -1521,10 +1532,9 @@ plan_build(VentureCutoverService *self, gint64 org, JsonObject *payload, GError 
 	{
 		const gchar *code = JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING
 			? json_node_get_string(node) : NULL;
-		if (code == NULL || !venture_currency_is_valid(code) || !g_ascii_isupper(code[0]) ||
-			!g_ascii_isupper(code[1]) || !g_ascii_isupper(code[2]))
+		if (!venture_currency_is_normalised(code))
 		{
-			refuse(error, "currency must be an uppercase ISO 4217 code");
+			refuse(error, "currency must be an uppercase currency code");
 			return NULL;
 		}
 		plan->currency = g_strdup(code);

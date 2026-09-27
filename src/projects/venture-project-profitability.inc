@@ -126,9 +126,8 @@ project_validate(VentureDatabase *database, VentureEntity *record, VentureEntity
 		}
 	}
 	g_object_get(project, "currency", &currency, NULL);
-	if (currency == NULL || strlen(currency) != 3 ||
-		!g_ascii_isupper(currency[0]) || !g_ascii_isupper(currency[1]) || !g_ascii_isupper(currency[2]))
-		return refuse(error, "project currency must be an uppercase three-letter currency code");
+	if (!venture_currency_is_normalised(currency))
+		return refuse(error, "project currency must be an uppercase currency code");
 	if (is_rate)
 		return project_money(record, "billing-rate", currency, error) && project_money(record, "cost-rate", currency, error);
 	if (is_cost)

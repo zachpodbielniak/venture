@@ -19,7 +19,7 @@ static const VentureFieldDecl setup_fields[] = {
 		VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD_NAME("state", "State", "preview or complete"),
 	VENTURE_FIELD("legal-name", "Legal name", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD("book-currency", "Book currency", "ISO 4217 book currency", VENTURE_FIELD_KIND_STRING,
+	VENTURE_FIELD("book-currency", "Book currency", "Book currency code", VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("basis", "Basis", "accrual or cash", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-profile", "Tax profile", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),

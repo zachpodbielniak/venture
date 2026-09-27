@@ -1692,8 +1692,9 @@ venture_config_validate(
 	if (!venture_currency_is_valid(currency))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-		            "locale.default_currency must be a three-letter ISO 4217 "
-		            "code, not \"%s\"", currency);
+		            "locale.default_currency must be a currency code (a letter "
+		            "followed by 1 to 14 letters, digits or underscores, such as "
+		            "USD or GOLD), not \"%s\"", currency);
 		return FALSE;
 	}
 

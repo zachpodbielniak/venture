@@ -516,6 +516,12 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 	}
 	if (g_type_get_qdata(G_OBJECT_TYPE(entity), g_quark_from_static_string("venture-access-platform")) && !administrator(actor))
 		return refuse(error, TRUE);
+	/* Install-wide configuration kept as records (a user-defined currency):
+	 * anybody may read it, only an administrator may change it, whichever
+	 * door the write came through. */
+	if (!read && g_type_get_qdata(G_OBJECT_TYPE(entity), g_quark_from_static_string("venture-access-admin-write")) &&
+	    !administrator(actor) && !tenant_administrator(self, actor))
+		return refuse(error, FALSE);
 	if (VENTURE_IS_INTEGRATION_CONNECTION(entity) && !administrator(actor)) {
 		g_autofree gchar *provider = NULL;
 		g_object_get(entity, "provider", &provider, NULL);

@@ -192,8 +192,7 @@ read_books(VentureDatabase *db, gint64 org, const gchar *currency,
 	g_autoptr(GPtrArray) journals = NULL;
 	guint i;
 	if (org <= 0 || period == NULL || (currency != NULL &&
-		(strlen(currency) != 3 || !g_ascii_isupper(currency[0]) ||
-		 !g_ascii_isupper(currency[1]) || !g_ascii_isupper(currency[2]))))
+		!venture_currency_is_normalised(currency)))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 			"Statements require a legal entity, period and uppercase book currency");

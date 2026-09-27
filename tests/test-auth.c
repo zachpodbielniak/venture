@@ -1376,6 +1376,7 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/webhook",
 		"/api/v1/webhook_delivery",
 		"/api/v1/routing_rule",
+		"/api/v1/currency",
 		"/api/v1/tickets/1/summary",
 		"/api/v1/dunning_policy",
 		"/api/v1/dunning_event",
@@ -2793,6 +2794,67 @@ test_auth_forge_records_are_owner_only(
 	                                        "/api/v1/forge_run", owner,
 	                                        "{\"ticket_id\":1}", NULL, NULL),
 	                 ==, SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * A currency is readable by anybody who can sign in and writable only by an
+ * administrator. What breaks if this regresses: an editor redefines GOLD's
+ * denominations or symbol, and every amount in it -- in every organization
+ * -- reads differently without a single business record changing.
+ */
+static void
+test_auth_currency_writes_are_admin_only(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *admin = NULL;
+	g_autofree gchar *viewer = NULL;
+	static const gchar *const body =
+		"{\"code\":\"GOLD\",\"name\":\"Gold\",\"exponent\":4,"
+		"\"denominations\":\"[{\\\"suffix\\\":\\\"g\\\",\\\"units\\\":10000},"
+		"{\\\"suffix\\\":\\\"c\\\",\\\"units\\\":1}]\"}";
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "eddie", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "adele", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	server_fixture_create_member(fixture, "vera", "v-long-password",
+	                           VENTURE_USER_ROLE_VIEWER, NULL);
+	editor = server_fixture_login(fixture, "eddie", "e-long-password");
+	admin = server_fixture_login(fixture, "adele", "a-long-password");
+	viewer = server_fixture_login(fixture, "vera", "v-long-password");
+	g_assert_nonnull(editor);
+	g_assert_nonnull(admin);
+	g_assert_nonnull(viewer);
+
+	/* Reading the units is open to every role... */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/currency",
+	                                        viewer, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/currency",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_OK);
+
+	/* ...defining one is not, for an editor any more than a viewer. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/currency",
+	                                        editor, body, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_false(venture_currency_is_registered("GOLD"));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/currency",
+	                                        admin, body, NULL, NULL),
+	                 ==, SOUP_STATUS_CREATED);
+	g_assert_true(venture_currency_is_registered("GOLD"));
+
+	/* An edit is a write too. */
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/currency/1",
+	                                        editor, "{\"symbol\":\"$\"}", NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	venture_currency_clear_registered();
 }
 
 /*
@@ -5218,6 +5280,9 @@ main(
 	           test_auth_browser_token_stores_only_a_hash,
 	           server_fixture_tear_down);
 
+	g_test_add("/auth/currency-writes-are-admin-only", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_currency_writes_are_admin_only,
+	           server_fixture_tear_down);
 	g_test_add("/auth/forge-records-are-owner-only", ServerFixture, NULL,
 
 	           server_fixture_set_up, test_auth_forge_records_are_owner_only,

@@ -493,9 +493,9 @@ deal_amount(JsonObject *manifest, Table *table, gchar **row, const gchar *id, GE
 		refuse(error, "deal %s has an amount but no currency; add a currency column or a manifest currency", id);
 		return NULL;
 	}
-	if (strlen(currency) != 3 || !g_ascii_isalpha(currency[0]) || !g_ascii_isalpha(currency[1]) || !g_ascii_isalpha(currency[2]))
+	if (!venture_currency_is_valid(currency))
 	{
-		refuse(error, "deal %s: currency \"%s\" is not a three-letter ISO code", id, currency);
+		refuse(error, "deal %s: currency \"%s\" is not a currency code", id, currency);
 		return NULL;
 	}
 	money = venture_money_from_string(amount, currency, &parse_error);

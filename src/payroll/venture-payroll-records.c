@@ -13,7 +13,7 @@ static const VentureFieldDecl run_fields[] = {
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("period-start", "Period start", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("period-end", "Period end", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
+	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase currency code"),
 	VENTURE_FIELD_NAME("status", "Status", "imported, disbursed or reversed; VenturePayrollService owns transitions"),
 	VENTURE_FIELD("net-disbursed", "Net disbursed", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-disbursed", "Tax disbursed", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),

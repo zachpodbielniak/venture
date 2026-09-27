@@ -7,8 +7,14 @@
  * Money in VENTURE is never a double. Binary floating point cannot represent
  * 0.10, and a bookkeeping system that cannot represent a dime is not a
  * bookkeeping system. #VentureMoney stores an exact integer count of minor
- * units (cents, pence, yen) alongside the ISO 4217 currency code and the
- * number of minor-unit digits that currency uses.
+ * units (cents, pence, yen) alongside the currency code and the number of
+ * minor-unit digits that currency uses.
+ *
+ * A currency is either one of the ISO 4217 codes this file knows, or one an
+ * operator defined: points, a commodity, the gold of a game economy. Those
+ * are registered at startup from the `currency` records (see
+ * venture_currency_register()) and carry their own exponent, symbol and,
+ * optionally, denominations -- "12g 34s 56c" rather than "12.3456".
  *
  * Because the exponent travels with the value, the same type handles USD
  * (two digits), JPY (zero digits) and the four-digit exponents used for unit
@@ -36,23 +42,35 @@ G_BEGIN_DECLS
 /**
  * VENTURE_MONEY_MAX_EXPONENT:
  *
- * The largest number of minor-unit digits a #VentureMoney may carry. Four is
- * enough for every ISO 4217 currency (the maximum in use is three) plus the
- * extra digit that per-unit pricing sometimes needs.
+ * The largest number of minor-unit digits a #VentureMoney may carry. Six
+ * covers every ISO 4217 currency (the maximum in use is three), the extra
+ * digits per-unit pricing sometimes needs, and a user-defined currency whose
+ * smallest coin is a millionth of its largest. An exponent passed to
+ * venture_money_new() above this value is not clamped: it means "use the
+ * currency's natural exponent".
  */
-#define VENTURE_MONEY_MAX_EXPONENT (4)
+#define VENTURE_MONEY_MAX_EXPONENT (6)
 
 /**
  * VENTURE_MONEY_CURRENCY_LEN:
  *
- * The size of the currency-code buffer, three letters plus a terminator.
+ * The size of the currency-code buffer: the longest code the grammar allows
+ * (fifteen characters, see venture_currency_is_valid()) plus a terminator.
  */
-#define VENTURE_MONEY_CURRENCY_LEN (4)
+#define VENTURE_MONEY_CURRENCY_LEN (16)
+
+/**
+ * VENTURE_CURRENCY_MAX_DENOMINATIONS:
+ *
+ * The most denominations one currency may declare. Eight is far beyond any
+ * coinage in use and keeps a registry entry a fixed size.
+ */
+#define VENTURE_CURRENCY_MAX_DENOMINATIONS (8)
 
 /**
  * VentureMoney:
  * @amount: the value as a signed count of minor units
- * @currency: the ISO 4217 alphabetic code, uppercased and NUL terminated
+ * @currency: the currency code, uppercased and NUL terminated
  * @exponent: how many decimal digits of minor unit @amount is expressed in
  *
  * An exact monetary amount. A US dollar and twenty-three cents is
@@ -74,11 +92,15 @@ venture_money_get_type(void) G_GNUC_CONST;
 /**
  * venture_money_new:
  * @amount: the value in minor units
- * @currency: (nullable): an ISO 4217 code; %NULL means the default currency
+ * @currency: (nullable): a currency code; %NULL means the default currency
  * @exponent: minor-unit digits, or the currency's natural exponent if the
  *   value is greater than %VENTURE_MONEY_MAX_EXPONENT
  *
- * Creates a new monetary amount from an exact minor-unit count.
+ * Creates a new monetary amount from an exact minor-unit count. A code
+ * longer than the buffer holds is a programming error and returns %NULL
+ * with a critical warning rather than being truncated into a different
+ * currency; input from outside goes through venture_money_from_string() or
+ * venture_money_from_json(), which report it as an error.
  *
  * Returns: (transfer full): a new #VentureMoney. Free with
  *   venture_money_free().
@@ -93,7 +115,7 @@ venture_money_new(
 /**
  * venture_money_new_for_currency:
  * @amount: the value in minor units
- * @currency: (nullable): an ISO 4217 code; %NULL means the default currency
+ * @currency: (nullable): a currency code; %NULL means the default currency
  *
  * Creates a new monetary amount using the natural exponent of @currency, so
  * a caller does not need to remember that JPY has no minor unit.
@@ -108,7 +130,7 @@ venture_money_new_for_currency(
 
 /**
  * venture_money_new_zero:
- * @currency: (nullable): an ISO 4217 code; %NULL means the default currency
+ * @currency: (nullable): a currency code; %NULL means the default currency
  *
  * Creates a zero amount in @currency. Useful as the identity element when
  * summing a column that might be empty.
@@ -154,7 +176,7 @@ venture_money_get_amount(const VentureMoney *self);
  * venture_money_get_currency:
  * @self: a #VentureMoney
  *
- * Returns: (transfer none): the ISO 4217 currency code
+ * Returns: (transfer none): the currency code
  */
 const gchar *
 venture_money_get_currency(const VentureMoney *self);
@@ -306,7 +328,7 @@ venture_money_multiply_percent(
  * @self: source amount
  * @numerator: rate numerator
  * @denominator: rate denominator
- * @currency: destination ISO code
+ * @currency: destination currency code
  * @error: (out) (optional): overflow or a zero denominator
  *
  * Converts @self at @numerator/@denominator, rounding once at the
@@ -471,8 +493,11 @@ venture_money_to_string(const VentureMoney *self);
  * @with_grouping: whether to insert thousands separators
  *
  * Formats the amount for a human, with a currency symbol where one is known
- * and optional grouping, for example "$1,234.56". Not round-trippable; use
- * venture_money_to_string() for anything that will be parsed again.
+ * and optional grouping, for example "$1,234.56". A registered currency
+ * with a suffix symbol reads "1,234.56 pts"; one with denominations reads
+ * "12g 34s 56c" (zero parts left out, "0c" for nothing, never grouped). Not
+ * round-trippable; use venture_money_to_string() for anything that will be
+ * parsed again.
  *
  * Returns: (transfer full): the formatted string
  */
@@ -491,10 +516,20 @@ venture_money_to_display_string(
  *
  * Parses a monetary amount. The parser is deliberately forgiving because
  * this text arrives from CSV imports, web forms, the CLI and AI tool calls:
- * a leading or trailing ISO code, a currency symbol, thousands separators,
- * parentheses for negation and a leading sign are all accepted. What it will
- * not do is guess a currency when none is available and no default was
- * supplied.
+ * a leading or trailing code, a currency symbol, thousands separators,
+ * parentheses for negation and a leading sign are all accepted. A leading or
+ * trailing word is read as a code when it is three letters (the ISO shape)
+ * or names a registered currency, so "100.00 CR" is still refused rather
+ * than read as a hundred of something.
+ *
+ * A currency with denominations is also accepted in its display form,
+ * "12g 34s 56c", optionally with its code before or after. Without a code
+ * the suffixes pick the currency: @default_currency if its denominations
+ * cover them, otherwise the one registered currency whose denominations do.
+ * Two candidates is ambiguous and refused.
+ *
+ * What it will not do is guess a currency when none is available and no
+ * default was supplied.
  *
  * Returns: (transfer full) (nullable): the parsed amount, or %NULL on error
  */
@@ -576,10 +611,11 @@ venture_money_from_json(
 
 /**
  * venture_currency_get_exponent:
- * @currency: an ISO 4217 alphabetic code
+ * @currency: a currency code
  *
  * Retrieves the number of minor-unit digits a currency uses: 2 for most, 0
- * for JPY and similar, 3 for a handful. Unknown codes are assumed to use 2.
+ * for JPY and similar, 3 for a handful, and whatever a registered currency
+ * declared. Unknown codes are assumed to use 2.
  *
  * Returns: the natural exponent
  */
@@ -588,12 +624,14 @@ venture_currency_get_exponent(const gchar *currency);
 
 /**
  * venture_currency_get_symbol:
- * @currency: an ISO 4217 alphabetic code
+ * @currency: a currency code
  *
  * Retrieves the display symbol for a currency, for example "$" for USD.
- * Currencies with no known symbol return their own code.
+ * Currencies with no known symbol return their own code. Whether the symbol
+ * goes before or after the figure is venture_money_to_display_string()'s
+ * business.
  *
- * Returns: (transfer none): the symbol
+ * Returns: (transfer none): the symbol; never freed, so safe to keep
  */
 const gchar *
 venture_currency_get_symbol(const gchar *currency);
@@ -602,14 +640,137 @@ venture_currency_get_symbol(const gchar *currency);
  * venture_currency_is_valid:
  * @currency: (nullable): a candidate currency code
  *
- * Checks that @currency is three ASCII letters. VENTURE does not maintain a
- * closed list of valid codes, so that a user can track something the list
- * would not have -- but the shape is enforced.
+ * Checks that @currency is well formed: a letter followed by one to
+ * fourteen letters, digits or underscores (`[A-Z][A-Z0-9_]{1,14}`, compared
+ * without regard to case, since codes are uppercased when stored). VENTURE
+ * does not maintain a closed list of valid codes, so that a user can track
+ * something the list would not have -- but the shape is enforced.
  *
  * Returns: %TRUE if @currency is well formed
  */
 gboolean
 venture_currency_is_valid(const gchar *currency);
+
+/**
+ * venture_currency_is_normalised:
+ * @currency: (nullable): a candidate currency code
+ *
+ * Like venture_currency_is_valid(), but also requires the code to be in
+ * its stored spelling already (uppercase). For callers that compare codes
+ * byte for byte and must not accept "usd" as a different currency.
+ *
+ * Returns: %TRUE if @currency is valid and uppercase
+ */
+gboolean
+venture_currency_is_normalised(const gchar *currency);
+
+/**
+ * venture_currency_is_builtin:
+ * @currency: (nullable): a currency code
+ *
+ * Returns: %TRUE if @currency is one of the ISO 4217 codes this build
+ *   carries metadata for (the table that knows JPY has no minor unit)
+ */
+gboolean
+venture_currency_is_builtin(const gchar *currency);
+
+/**
+ * venture_currency_is_iso:
+ * @currency: (nullable): a currency code
+ *
+ * Whether @currency can be an ISO 4217 code: three letters, and not a
+ * currency somebody registered. This is what the doors to the outside world
+ * ask -- a card processor, a tax form, a storefront import -- because none
+ * of them can settle in a game's gold. It is deliberately wider than
+ * venture_currency_is_builtin(): the built-in table only lists codes whose
+ * metadata differs from the default, and a Thai baht is still a currency
+ * Stripe will take.
+ *
+ * Returns: %TRUE if @currency is ISO-shaped and not user-defined
+ */
+gboolean
+venture_currency_is_iso(const gchar *currency);
+
+/**
+ * venture_currency_is_registered:
+ * @currency: (nullable): a currency code
+ *
+ * Returns: %TRUE if @currency is a user-defined currency in the registry
+ */
+gboolean
+venture_currency_is_registered(const gchar *currency);
+
+/**
+ * venture_currency_check_denominations:
+ * @denominations: (nullable): a JSON array, or %NULL or empty for none
+ * @error: (out) (optional): what is wrong with it
+ *
+ * Validates a denomination list: a JSON array of up to
+ * %VENTURE_CURRENCY_MAX_DENOMINATIONS objects
+ * `{"suffix": "g", "units": 10000}`, where @units counts minor units. The
+ * units must be positive and strictly descending, each must divide the one
+ * before it, and the last must be 1 so that every amount can be written
+ * exactly. A suffix must be non-empty, at most eight bytes, unique within
+ * the list (ignoring case), and contain no digit, space, sign, parenthesis,
+ * point or comma -- otherwise "12g" could not be told from a number.
+ *
+ * Returns: %TRUE if @denominations is empty or well formed
+ */
+gboolean
+venture_currency_check_denominations(
+	const gchar	 *denominations,
+	GError		**error
+);
+
+/**
+ * venture_currency_register:
+ * @currency: the code, which must satisfy venture_currency_is_valid()
+ * @exponent: minor-unit digits, 0 to %VENTURE_MONEY_MAX_EXPONENT
+ * @symbol: (nullable): the display symbol; %NULL or empty to show the code
+ * @symbol_suffix: whether the symbol follows the figure ("12 pts")
+ * @denominations: (nullable): see venture_currency_check_denominations()
+ * @error: (out) (optional): why the currency was refused
+ *
+ * Adds or replaces a user-defined currency in the process-wide registry,
+ * which venture_currency_get_exponent(), venture_currency_get_symbol() and
+ * the display and parsing functions consult before the built-in table. A
+ * built-in ISO code is refused: redefining how USD displays would change
+ * every figure in the books without touching a row.
+ *
+ * The registry is guarded by a reader-writer lock because a coding run's
+ * thread formats amounts while the main thread may be reloading it.
+ *
+ * Returns: %TRUE if the currency was registered
+ */
+gboolean
+venture_currency_register(
+	const gchar	 *currency,
+	guint8		  exponent,
+	const gchar	 *symbol,
+	gboolean	  symbol_suffix,
+	const gchar	 *denominations,
+	GError		**error
+);
+
+/**
+ * venture_currency_retain_registered:
+ * @keep: (nullable) (array zero-terminated=1): the codes to keep
+ *
+ * Removes every registered currency whose code is not in @keep. A reload
+ * registers the rows it read and then calls this, so a currency that still
+ * exists is never missing from the registry, even for a moment.
+ */
+void
+venture_currency_retain_registered(const gchar *const *keep);
+
+/**
+ * venture_currency_clear_registered:
+ *
+ * Removes every user-defined currency, leaving the built-in table. For
+ * tests, and for a context that is loading a different database.
+ */
+void
+venture_currency_clear_registered(void);
 
 /**
  * venture_money_get_default_currency:
@@ -625,7 +786,7 @@ venture_money_get_default_currency(void);
 
 /**
  * venture_money_set_default_currency:
- * @currency: an ISO 4217 alphabetic code
+ * @currency: a currency code satisfying venture_currency_is_valid()
  *
  * Sets the process-wide default currency. Called once during startup from
  * the loaded configuration.

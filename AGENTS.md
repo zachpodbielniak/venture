@@ -511,6 +511,31 @@ than one that fails.
   scheduled price, so `venture-billing-usage.c` reads the rate from the
   last subscription event. Usage before the current period is refused
   rather than billed late: that period's invoice is already issued.
+- **A currency code is not three letters.** `VENTURE_MONEY_CURRENCY_LEN` is
+  16 and the grammar is `[A-Z][A-Z0-9_]{1,14}`; test a code with
+  `venture_currency_is_valid()` (or `_is_normalised()` where the stored
+  uppercase spelling matters), never `strlen() == 3`, and never copy one into
+  a small buffer -- a four-byte copy turned `GOLD` into `GOL`. Nothing
+  truncates a code: `venture_money_new()` refuses an over-long one.
+- **Doors to the outside ask `venture_currency_is_iso()`.** Stripe, tax
+  filing and the Shopify import settle real money; a registered currency is
+  refused there even when it is three letters. "Three letters" alone is not
+  the test, and neither is the built-in table (THB is not in it).
+- **The currency registry loads deleted rows.** `venture_currency_load_registry()`
+  reads every `currency` row including soft-deleted ones, because deleting
+  the record must not change how stored amounts display. It reloads on the
+  `audit` signal and again on `transaction-finished` (so a rollback takes a
+  currency back out), and after `venture_database_migrate()` -- the context
+  is built before the schema exists. A scratch database with no context
+  leaves the registry alone. Tests that register a currency clear it.
+- **A word beside a number is a code only if it is three letters or
+  registered.** Widening the parser to every short word would read
+  `100.00 CR` as a hundred of "CR"; `venture_money_word_is_code()` is the
+  one place that decides.
+- **Currency writes need an administrator, in the access policy.** The type
+  carries the `venture-access-admin-write` qdata, checked in
+  `venture_access_policy_can()`; the create route passes `VIEWER` to
+  `venture_web_require_for_type()`, so a check there alone would not hold.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

@@ -7,7 +7,7 @@ static const VentureFieldDecl claim_fields[] = {
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_REF("employee-id", "Employee", "The user being reimbursed", "user", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("claim-date", "Claim date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
+	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase currency code"),
 	VENTURE_FIELD_NAME("status", "Status", "draft, submitted, approved, paid, rejected; VentureClaimsService owns transitions"),
 	VENTURE_FIELD("settlement", "Settlement", "cash or payable; payment posts expense plus cash or AP",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),

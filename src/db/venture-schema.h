@@ -17,7 +17,7 @@
  * underscores, except for money, which expands to three:
  *
  *   gross  ->  gross_amount    BIGINT   exact minor units
- *              gross_currency  TEXT     ISO 4217 code
+ *              gross_currency  TEXT     currency code
  *              gross_exponent  SMALLINT minor-unit digits
  *
  * Storing money as an integer plus its currency is what lets the database do
@@ -54,7 +54,7 @@ G_BEGIN_DECLS
 /**
  * VENTURE_SCHEMA_MONEY_CURRENCY_SUFFIX:
  *
- * Suffix of the column holding a money field's ISO 4217 code.
+ * Suffix of the column holding a money field's currency code.
  */
 #define VENTURE_SCHEMA_MONEY_CURRENCY_SUFFIX "_currency"
 

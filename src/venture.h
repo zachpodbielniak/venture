@@ -250,6 +250,7 @@
 #include "core/venture-desk.h"
 #include "core/venture-webhook.h"
 #include "core/venture-routing.h"
+#include "core/venture-currency.h"
 #include "billing/venture-billing-service.h"
 #include "billing/venture-billing-usage.h"
 #include "billing/venture-billing-reports.h"

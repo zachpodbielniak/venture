@@ -68,6 +68,10 @@ refuse(GError **error, const gchar *rule)
 	return FALSE;
 }
 
+/* Every amount bound for Stripe passes through here, which makes it the
+ * one place a user-defined currency is turned away: Stripe settles in ISO
+ * 4217 money, and a figure in points or a game's gold sent as "GOLD" would
+ * be refused by Stripe at best and charged in something else at worst. */
 static gboolean
 to_stripe_amount(const VentureMoney *money, gint64 *out, GError **error)
 {
@@ -76,6 +80,9 @@ to_stripe_amount(const VentureMoney *money, gint64 *out, GError **error)
 	gint64 amount = venture_money_get_amount(money);
 	gint64 factor = 1;
 	gint64 scaled;
+
+	if (!venture_currency_is_iso(venture_money_get_currency(money)))
+		return refuse(error, "Stripe settles only ISO 4217 currencies; this amount is in a currency defined here");
 
 	if (from == to)
 	{
@@ -335,6 +342,9 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 	if (!balance) return FALSE;
 	if (venture_money_get_amount(balance) <= 0)
 		return refuse(error, "Checkout requires a positive open balance");
+	/* Said before any page offers a pay button, not only at the charge. */
+	if (!venture_currency_is_iso(venture_money_get_currency(balance)))
+		return refuse(error, "Stripe settles only ISO 4217 currencies; this invoice is in a currency defined here");
 	if (invoice_out) *invoice_out = g_steal_pointer(&invoice);
 	if (link_out) *link_out = NULL;
 	if (quantity_out) *quantity_out = 1;
