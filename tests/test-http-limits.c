@@ -20,8 +20,8 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	{
 		const gchar *request_text = f->nested_request;
 		f->nested_request = NULL;
-		/* Recorded, never asserted: see test_nested_dispatch for why a route
-		 * that talks to its own server gets no answer while it blocks here. */
+		/* Nested iteration may dispatch the second socket before the bounded
+		 * probe times out. The caller verifies either transport outcome. */
 		f->nested_response = probe(f, request_text, 1);
 	}
 	return htmx_response_new_with_content(body && g_bytes_get_size(body) == 3 && !memcmp(g_bytes_get_data(body, NULL), "abc", 3) ? "yes" : "bad");
@@ -294,16 +294,11 @@ static void test_timeout_budget(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	response = exchange(f, request); g_assert_nonnull(strstr(response, " 200 ")); g_assert_cmpuint(f->writes, ==, 1);
 }
-/* libsoup 3 runs a route synchronously on the server's main context, so a route
- * that blocks waiting on this same server gets no answer while it blocks:
- * iterating the context from inside the handler does not get the nested
- * connection served. Nothing in VENTURE issues an in-process request from a
- * handler for exactly that reason. What the limits must guarantee is that the
- * attempt costs them nothing -- whether the abandoned connection is dispatched
- * once the handler returns or dropped when its client gives up, the receive
- * budget is released and the connection slot is reclaimed, so ordinary traffic
- * of the same full size is served immediately afterwards. Which of those two
- * the socket wins is a race, so it is bounded rather than pinned. */
+/* The aggregate limit covers bodies awaiting dispatch, not active handlers.
+ * A nested main-context iteration can serve a second socket while the first
+ * handler is active. A bounded probe can also time out before that happens.
+ * In either case, credit and connection slots must be reclaimed and the next
+ * full-size request must be dispatched exactly once. */
 static void test_nested_dispatch(Fixture *f, gconstpointer data)
 {
 	g_autofree gchar *body = g_strnfill(600000, 'x'), *request = NULL, *response = NULL;
@@ -312,11 +307,14 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	f->nested_request = request;
 	response = exchange(f, request);
-	/* The outer request is unharmed by what its route attempted, and the
-	 * blocked route got nothing back inside its own bounded second. */
+	/* Both completed responses must be successful. An empty nested response
+	 * is also possible when the probe's bounded wait wins the socket race. */
 	g_assert_nonnull(strstr(response, " 200 "));
 	g_assert_nonnull(f->nested_response);
-	g_assert_cmpstr(f->nested_response, ==, "");
+	if (*f->nested_response) {
+		g_assert_nonnull(strstr(f->nested_response, " 200 "));
+		g_assert_cmpuint(f->writes, ==, 2);
+	}
 	pump();
 	settled = f->writes;
 	g_assert_cmpuint(settled, >=, 1);
@@ -327,6 +325,25 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	response = exchange(f, request);
 	g_assert_nonnull(strstr(response, " 200 "));
 	g_assert_cmpuint(f->writes, ==, settled + 1);
+}
+static void test_nested_rejection(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *response = NULL;
+	const gchar *ordinary = "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+	(void)data;
+	f->nested_request = "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n";
+	response = exchange(f, ordinary);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_nonnull(f->nested_response);
+	if (*f->nested_response) g_assert_nonnull(strstr(f->nested_response, " 413 "));
+	pump();
+	/* An oversized nested body never reaches application dispatch, even if
+	 * the nested context serves its socket before the outer handler exits. */
+	g_assert_cmpuint(f->writes, ==, 1);
+	g_clear_pointer(&response, g_free);
+	response = exchange(f, ordinary);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(f->writes, ==, 2);
 }
 static void test_active_teardown(Fixture *f, gconstpointer data)
 {
@@ -419,6 +436,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/aggregate-release", Fixture, GINT_TO_POINTER(2), setup, test_aggregate, teardown);
 	g_test_add("/http-limits/timeout-budget-release", Fixture, NULL, setup, test_timeout_budget, teardown);
 	g_test_add("/http-limits/nested-dispatch", Fixture, NULL, setup, test_nested_dispatch, teardown);
+	g_test_add("/http-limits/nested-rejection", Fixture, NULL, setup, test_nested_rejection, teardown);
 	g_test_add("/http-limits/active-teardown", Fixture, NULL, setup, test_active_teardown, teardown);
 	g_test_add("/http-limits/negative-length", Fixture, NULL, setup, test_negative_length, teardown);
 	g_test_add_func("/http-limits/private-context", test_private_context);
