@@ -80,6 +80,10 @@ the customer nor the invoice. The JSON composer carries this intent as
 =tax_exemption_number=; these values are included in issuance consent. Repeating
 schedules keep their customer update and schedule creation in one transaction.
 
+A repeating sheet's customer, and the customer "Remember for this customer" writes onto, must be a live company in the organization the schedule is filed in -- the active one, else the default -- exactly as the JSON composer refuses a customer from another organization. The company id comes from the browser; without the check one tenant could file a schedule against, or change the tax treatment of, another's customer.
+
+The sheet numbers its rows from a counter that only climbs, and the server reads rows 0 to 199. A sheet that sends any =line-N-= field with N of 200 or more is refused whole, invoice or schedule alike, rather than saved without the rows past the limit.
+
 * Downloads
 
 =GET /invoices/:id/pdf= and =GET /payments/:id/receipt= answer inline with a =Content-Disposition= built by =venture_financial_documents_content_disposition()=: an ASCII =filename== with one =_= for each other character (and for a quote or backslash), and an RFC 5987 =filename*=UTF-8''...= carrying the real name percent-encoded, which current browsers prefer. The PDF's own =/Title= is a UTF-16BE text string with a byte-order mark, so a reader's title bar shows an accented or non-Latin invoice number correctly; the page text stays WinAnsi, where a character the standard fonts cannot draw is =?=. Text that is not valid UTF-8 is repaired to U+FFFD before it is drawn or measured.

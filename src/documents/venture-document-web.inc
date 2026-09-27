@@ -27,6 +27,42 @@ document_read_fields(HtmxRequest *request, VentureEntity *record, const gchar *c
 }
 
 /*
+ * Refuses a sheet carrying a row numbered past what the readers below
+ * walk. The page numbers rows from a counter that only climbs, so adding
+ * and removing rows can put a real line at 200 on a sheet of ten; reading
+ * only 0..199 used to drop it silently from the invoice the customer got.
+ */
+static gboolean
+document_check_line_numbers(HtmxRequest *request, GError **error)
+{
+	GHashTable *form = htmx_request_get_form_data(request);
+	GHashTableIter iter;
+	gpointer key;
+
+	if (form == NULL)
+		return TRUE;
+	g_hash_table_iter_init(&iter, form);
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+	{
+		const gchar *name = key;
+		gchar *end = NULL;
+		guint64 index;
+
+		if (!g_str_has_prefix(name, "line-") || !g_ascii_isdigit(name[5]))
+			continue;
+		index = g_ascii_strtoull(name + 5, &end, 10);
+		if (end == NULL || *end != '-' || index < VENTURE_DOCUMENT_MAX_LINES)
+			continue;
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A document takes rows numbered 0 to %u, and this one sent %s; "
+			"nothing was saved -- reload the sheet and enter the lines again",
+			VENTURE_DOCUMENT_MAX_LINES - 1, name);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/*
  * Why a customer pays no tax, as the return wants it: the kind of
  * exemption and the certificate that proves it, in one line that is
  * frozen onto the invoice at issue.
@@ -72,7 +108,8 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 		JsonObject *spec;
 		JsonArray *lines = json_array_new();
 		guint i;
-		if (!document_read_fields(request, header, document_header_fields, "", error) ||
+		if (!document_check_line_numbers(request, error) ||
+			!document_read_fields(request, header, document_header_fields, "", error) ||
 			(!quote && !document_read_fields(request, header, document_invoice_fields, "", error)))
 		{
 			json_array_unref(lines);
@@ -535,6 +572,41 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
  * from a serialised invoice, so no identity of a draft leaks into every
  * invoice the schedule will ever make.
  */
+/* The organization a schedule sheet writes into: the active one, else the
+ * default, exactly as the schedule itself is filed. */
+static gint64
+document_schedule_organization(VentureWebServer *self, HtmxRequest *request)
+{
+	gint64 organization = venture_web_active_organization(self, request);
+
+	return organization != 0 ? organization : venture_context_get_default_organization_id(self->context);
+}
+
+/*
+ * The customer a schedule sheet names, refused unless it is a live company
+ * in @organization. The id comes from the browser: without the check, a
+ * schedule could be filed against, and an exemption written onto, another
+ * organization's customer -- which the service's own composer refuses.
+ */
+static VentureEntity *
+document_schedule_company(VentureWebServer *self, const gchar *company_id, gint64 organization,
+	GError **error)
+{
+	g_autoptr(VentureEntity) company = NULL;
+
+	if (company_id != NULL && *company_id != '\0')
+		company = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY,
+			g_ascii_strtoll(company_id, NULL, 10), NULL);
+	if (company == NULL || venture_entity_is_deleted(company) ||
+	    venture_entity_get_organization_id(company) != organization)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Choose a current customer in this organization");
+		return NULL;
+	}
+	return g_steal_pointer(&company);
+}
+
 static HtmxResponse *
 document_save_schedule(VentureWebServer *self, HtmxRequest *request, const VentureActor *actor)
 {
@@ -550,15 +622,15 @@ document_save_schedule(VentureWebServer *self, HtmxRequest *request, const Ventu
 	const gchar *company_id = htmx_request_get_form_value(request, "company-id");
 	const gchar *end = htmx_request_get_form_value(request, "repeat-end");
 	guint i, lines = 0;
-	gint64 organization = venture_web_active_organization(self, request);
+	gint64 organization = document_schedule_organization(self, request);
 
 	if (!venture_web_module_enabled(self, "recurring"))
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Repeating invoices are switched off");
 		return venture_web_error_response(error);
 	}
-	if (organization == 0)
-		organization = venture_context_get_default_organization_id(self->context);
+	if (!document_check_line_numbers(request, &error))
+		return venture_web_error_response(error);
 	json_builder_begin_object(builder);
 	for (i = 0; header[i] != NULL; i++)
 	{
@@ -616,11 +688,12 @@ document_save_schedule(VentureWebServer *self, HtmxRequest *request, const Ventu
 			"A repeating invoice needs a customer and at least one line");
 		return venture_web_error_response(error);
 	}
+	company = document_schedule_company(self, company_id, organization, &error);
+	if (company == NULL)
+		return venture_web_error_response(error);
 	root = json_builder_get_root(builder);
 	template_text = venture_json_to_string(root, FALSE);
-	company = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY,
-		g_ascii_strtoll(company_id, NULL, 10), NULL);
-	company_name = company != NULL ? venture_entity_get_display_name(company) : g_strdup("Customer");
+	company_name = venture_entity_get_display_name(company);
 	name = g_strdup_printf("%s \xe2\x80\x94 repeating invoice", company_name);
 	g_object_get(venture_context_get_config(self->context), "locale-timezone", &timezone, NULL);
 
@@ -665,8 +738,7 @@ document_remember_exemption(VentureWebServer *self, HtmxRequest *request, const 
 		htmx_request_get_form_value(request, "exempt-remember") == NULL ||
 		company_id == NULL || *company_id == '\0')
 		return TRUE;
-	company = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY,
-		g_ascii_strtoll(company_id, NULL, 10), error);
+	company = document_schedule_company(self, company_id, document_schedule_organization(self, request), error);
 	if (company == NULL)
 		return FALSE;
 	g_object_set(company, "tax-exempt", TRUE, "tax-exempt-reason", kind != NULL ? kind : "",

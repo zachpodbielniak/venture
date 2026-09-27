@@ -498,6 +498,105 @@ test_http_compose(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(dir);
 }
 
+static guint
+count_type(Fixture *f, GType type)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(type);
+	g_autoptr(GPtrArray) rows = NULL;
+
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(f->db, query, NULL);
+	g_assert_nonnull(rows);
+	return rows->len;
+}
+
+/*
+ * The browser's sheet is refused, not quietly trimmed. A row numbered at
+ * or past the reader's limit -- which the page's ever-climbing counter
+ * produces after rows are added and removed -- used to vanish from the
+ * invoice; and a repeating sheet could name another organization's
+ * customer, onto whom "Remember for this customer" wrote an exemption.
+ * What breaks if this regresses: a customer is billed for fewer lines
+ * than were typed, or one tenant edits another's tax treatment.
+ */
+static void
+test_http_compose_guards(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *dir = g_dir_make_tmp("venture-documents-XXXXXX", NULL);
+	g_autoptr(GSocketListener) listener = g_socket_listener_new();
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureCompany) stranger = venture_company_new();
+	g_autoptr(VentureEntity) reread = NULL;
+	gboolean exempt = TRUE;
+	guint16 port;
+	(void)data;
+	g_object_set(other, "name", "Another tenant", "slug", "another-tenant", NULL);
+	save(f, VENTURE_ENTITY(other));
+	g_object_set(stranger, "name", "Their customer", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(stranger), venture_entity_get_id(VENTURE_ENTITY(other)));
+	save(f, VENTURE_ENTITY(stranger));
+
+	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	g_assert_no_error(error);
+	g_socket_listener_close(listener);
+	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_true(venture_web_server_start(server, &error));
+
+	{
+		g_autofree gchar *form = g_strdup_printf("compose-form=1&company-id=%" G_GINT64_FORMAT
+			"&line-0-description=Work&line-0-quantity=1&line-0-unit-price=50+USD"
+			"&line-200-description=Late&line-200-quantity=1&line-200-unit-price=9+USD", f->company);
+		g_autofree gchar *reply = NULL;
+		guint status = http_request(server, "POST", "/invoices/compose", form, &reply);
+		g_assert_cmpuint(status, >=, 400);
+		g_assert_cmpuint(status, <, 500);
+		g_assert_nonnull(strstr(reply, "line-200-"));
+		g_assert_cmpuint(count_type(f, VENTURE_TYPE_INVOICE), ==, 0);
+	}
+	{
+		g_autofree gchar *form = g_strdup_printf("compose-form=1&repeat=1&company-id=%" G_GINT64_FORMAT
+			"&repeat-frequency=monthly&repeat-start=2026-04-01"
+			"&line-0-description=Work&line-0-quantity=1&line-0-unit-price=50+USD"
+			"&line-205-description=Late&line-205-quantity=1", f->company);
+		guint status = http_request(server, "POST", "/invoices/compose", form, NULL);
+		g_assert_cmpuint(status, >=, 400);
+		g_assert_cmpuint(status, <, 500);
+		g_assert_cmpuint(count_type(f, VENTURE_TYPE_RECURRING_SCHEDULE), ==, 0);
+	}
+	{
+		g_autofree gchar *form = g_strdup_printf("compose-form=1&repeat=1&company-id=%" G_GINT64_FORMAT
+			"&repeat-frequency=monthly&repeat-start=2026-04-01"
+			"&tax-exempt=1&exempt-kind=Government&exempt-number=CERT-9&exempt-remember=1"
+			"&line-0-description=Work&line-0-quantity=1&line-0-unit-price=50+USD",
+			venture_entity_get_id(VENTURE_ENTITY(stranger)));
+		guint status = http_request(server, "POST", "/invoices/compose", form, NULL);
+		g_assert_cmpuint(status, >=, 400);
+		g_assert_cmpuint(status, <, 500);
+		g_assert_cmpuint(count_type(f, VENTURE_TYPE_RECURRING_SCHEDULE), ==, 0);
+		reread = venture_database_get(f->db, VENTURE_TYPE_COMPANY,
+			venture_entity_get_id(VENTURE_ENTITY(stranger)), &error);
+		g_assert_no_error(error);
+		g_object_get(reread, "tax-exempt", &exempt, NULL);
+		g_assert_false(exempt);
+	}
+	{
+		/* The same sheet for this organization's own customer is filed. */
+		g_autofree gchar *form = g_strdup_printf("compose-form=1&repeat=1&company-id=%" G_GINT64_FORMAT
+			"&repeat-frequency=monthly&repeat-start=2026-04-01"
+			"&line-0-description=Work&line-0-quantity=1&line-0-unit-price=50+USD", f->company);
+		guint status = http_request(server, "POST", "/invoices/compose", form, NULL);
+		g_assert_cmpuint(status, >=, 300);
+		g_assert_cmpuint(status, <, 400);
+		g_assert_cmpuint(count_type(f, VENTURE_TYPE_RECURRING_SCHEDULE), ==, 1);
+	}
+	venture_web_server_stop(server);
+	venture_test_remove_tree(dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -510,5 +609,6 @@ main(int argc, char **argv)
 	g_test_add("/documents/http-compose-approval-plain", Fixture, "plain", setup, test_http_compose_approval, teardown);
 	g_test_add("/documents/http-compose-approval", Fixture, NULL, setup, test_http_compose_approval, teardown);
 	g_test_add("/documents/http-compose", Fixture, NULL, setup, test_http_compose, teardown);
+	g_test_add("/documents/http-compose-guards", Fixture, NULL, setup, test_http_compose_guards, teardown);
 	return g_test_run();
 }
