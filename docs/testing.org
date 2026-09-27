@@ -62,10 +62,13 @@ need a separate walkthrough of the built server.
 The opt-in =tools/venture-test-ui-browser.py= checks the populated ticket board
 at 390 and 1440 pixels in both looks, with and without reduced motion. It
 asserts that columns scroll inside the board rather than widening the page.
-Install Python Playwright and its Chromium browser in a temporary environment;
-set =VENTURE_TEST_UI_URL=, =VENTURE_TEST_UI_USERNAME= and
+Install the Playwright version pinned in =tools/requirements-ui-browser.txt=
+and its Chromium browser in a temporary virtual environment; set
+=VENTURE_TEST_UI_URL=, =VENTURE_TEST_UI_USERNAME= and
 =VENTURE_TEST_UI_PASSWORD= privately for a disposable DEBUG demo, then run the
-script with that environment's Python. It only signs in and reads pages.
+script with that environment's Python. =--help= prints the exact commands,
+including reading =make demo='s owner password out of =build/demo/server.log=.
+It only signs in and reads pages.
 This browser dependency is not required by the normal GTest suite.
 
 * What the suite pins down
