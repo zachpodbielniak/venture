@@ -951,9 +951,11 @@ aggregate_describe(
 	g_auto(GValue) value = G_VALUE_INIT;
 	VentureFieldKind kind;
 	gchar *text;
+	gchar *shown;
 
 	kind = venture_field_spec_get_kind(spec);
 	text = NULL;
+	shown = NULL;
 
 	if (VENTURE_FIELD_KIND_REFERENCE == kind)
 	{
@@ -975,7 +977,15 @@ aggregate_describe(
 			const VentureMoney *money;
 
 			money = g_value_get_boxed(&value);
-			text = (NULL != money) ? venture_money_to_string(money) : NULL;
+
+			/* The key stays the plain decimal so it groups and parses;
+			 * the label is what a person reads, "7g 7s 20c" rather
+			 * than "7.0720 GOLD". */
+			if (NULL != money)
+			{
+				text = venture_money_to_string(money);
+				shown = venture_money_to_display_string(money, TRUE);
+			}
 		}
 		else if (G_VALUE_HOLDS(&value, G_TYPE_DATE_TIME))
 		{
@@ -1013,6 +1023,7 @@ aggregate_describe(
 	if (venture_string_is_empty(text))
 	{
 		g_free(text);
+		g_free(shown);
 		*out_key = g_strdup("");
 		*out_label = g_strdup(AGGREGATE_NONE_LABEL);
 		return;
@@ -1029,7 +1040,7 @@ aggregate_describe(
 		return;
 	}
 
-	*out_label = g_strdup(text);
+	*out_label = (NULL != shown) ? shown : g_strdup(text);
 }
 
 /*

@@ -504,6 +504,45 @@ test_listing_quantities(
 }
 
 /*
+ * A listing's and an observation's display name show a denominated price
+ * the way a person reads it. What breaks if it regresses: every picker,
+ * related list and activity line reads "1 x 7.0720 GEMS" for what the
+ * price field itself shows as "7g 7s 20c".
+ */
+static void
+test_display_names_denominated(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) offer = NULL;
+	g_autoptr(VentureEntity) seen = NULL;
+	g_autofree gchar *offer_name = NULL;
+	g_autofree gchar *seen_name = NULL;
+	gint64 herb;
+
+	(void)user_data;
+
+	g_assert_true(venture_currency_register("GEMS", 4, NULL, FALSE,
+		"[{\"suffix\":\"g\",\"units\":10000},"
+		"{\"suffix\":\"s\",\"units\":100},"
+		"{\"suffix\":\"c\",\"units\":1}]", &error));
+	g_assert_no_error(error);
+
+	herb = product(fixture, "Herb", 0);
+
+	offer = listing_new(fixture, herb, "auction house", 1, "7.0720 GEMS",
+	                    "2026-03-01T00:00:00Z");
+	offer_name = venture_entity_get_display_name(offer);
+	g_assert_cmpstr(offer_name, ==, "auction house: 1 x 7g 7s 20c");
+
+	seen = observation_new(fixture, fixture->organization_id, herb, "vendor",
+	                       "7.0720 GEMS", "2026-03-01T00:00:00Z", 0);
+	seen_name = venture_entity_get_display_name(seen);
+	g_assert_cmpstr(seen_name, ==, "vendor: 7g 7s 20c");
+}
+
+/*
  * The outcome agrees with the count. Sold with nothing counted is filled
  * to the quantity; sold with some counted is a contradiction; partial is
  * some and not all; expired and cancelled are none. What breaks: a sale
@@ -1531,6 +1570,7 @@ main(
 
 	ADD("/market/observation/validators", test_observation_validators);
 	ADD("/market/listing/quantities", test_listing_quantities);
+	ADD("/market/display-names/denominated", test_display_names_denominated);
 	ADD("/market/listing/outcome-and-count", test_listing_outcome_and_count);
 	ADD("/market/listing/closed-at", test_listing_closed_at);
 	ADD("/market/listing/one-currency", test_listing_one_currency);

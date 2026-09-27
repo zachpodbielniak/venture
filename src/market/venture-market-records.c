@@ -54,7 +54,7 @@ venture_price_observation_display_name(VentureEntity *self)
 	g_object_get(self, "source", &source, "price", &price, NULL);
 
 	if (NULL != price)
-		amount = venture_money_to_string(price);
+		amount = venture_money_to_display_string(price, TRUE);
 
 	return g_strdup_printf("%s: %s",
 	                       venture_string_is_empty(source) ? "Observation" : source,
@@ -130,7 +130,7 @@ venture_listing_display_name(VentureEntity *self)
 	             "quantity", &quantity, NULL);
 
 	if (NULL != price)
-		amount = venture_money_to_string(price);
+		amount = venture_money_to_display_string(price, TRUE);
 
 	return g_strdup_printf("%s: %" G_GINT64_FORMAT " x %s",
 	                       venture_string_is_empty(channel) ? "Listing" : channel,

@@ -604,6 +604,36 @@ test_group_by_kinds(
 }
 
 /*
+ * Grouped by a money field, a denominated currency's group is labelled as
+ * a person reads it while its key stays the parseable decimal. What
+ * breaks: a table of "7.0720 GEMS" beside a price field that shows
+ * "7g 7s 20c".
+ */
+static void
+test_group_by_denominated_money(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+
+	(void)user_data;
+
+	g_assert_true(venture_currency_register("GEMS", 4, NULL, FALSE,
+		"[{\"suffix\":\"g\",\"units\":10000},"
+		"{\"suffix\":\"s\",\"units\":100},"
+		"{\"suffix\":\"c\",\"units\":1}]", &error));
+	g_assert_no_error(error);
+
+	sale(fixture, 0, "auction", "7.0720 GEMS", "2026-03-02");
+
+	result = RUN(fixture, "2026-03", "type", "sale", "group_by", "gross",
+	             "date_field", "occurred_at");
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+	g_assert_cmpstr(text(result, 0, "gross"), ==, "7g 7s 20c");
+}
+
+/*
  * Buckets are UTC calendar months, whatever the configured zone. A sale
  * stored on 1 March (midnight UTC) is in March, and in the "2026-03"
  * period, in Los Angeles too. What breaks: every first of the month
@@ -1293,6 +1323,7 @@ main(
 	ADD("/aggregate/avg-money-half-even", test_avg_money_half_even);
 	ADD("/aggregate/count-and-distinct", test_count_and_distinct);
 	ADD("/aggregate/group-by-kinds", test_group_by_kinds);
+	ADD("/aggregate/group-by-denominated-money", test_group_by_denominated_money);
 	ADD("/aggregate/date-buckets-west-of-utc", test_date_buckets_west_of_utc);
 	ADD("/aggregate/filter", test_filter);
 	ADD("/aggregate/per-day-rate", test_per_day_rate);
