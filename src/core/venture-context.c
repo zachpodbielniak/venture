@@ -166,6 +166,10 @@ venture_context_new(
 	 * stock once. */
 	venture_sessions_install(self);
 
+	/* Goals whose target differs from their start, sub-goals that do not
+	 * loop, and achieved and done times that follow the status. */
+	venture_goals_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

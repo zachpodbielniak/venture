@@ -658,6 +658,37 @@ than one that fails.
 - **`session` was on the accounting approval's snapshot exclusion list**
   as a guess at a login table that never existed. It is business data now
   and was removed from that list; do not add it back.
+- **A goal's progress is `(current - start) / (target - start)`.** Never
+  `current / target`: targets below the start (a weight, a backlog) are
+  ordinary. `venture_goals_fraction()` is the one formula; the dashboard's
+  `progress` kind gets the same answer only with `options.start_field`.
+  A target equal to the start is refused -- 0 to 0 included, because a
+  double cannot say "left empty".
+- **Nothing writes a goal but its owner.** A step ticked done does not
+  move `current-value`, and reaching the target does not set `achieved`.
+  Either would be a derived write (a version bump under the caller, a
+  number moving by itself) and neither is knowable from the records. Do
+  not add one as a validator or a handler; `goal_progress` notes "mark it
+  achieved" instead.
+- **`achieved-at` and `done-at` follow their state** (`goals_derive_stamp()`):
+  stamped when empty, kept when given, cleared on leaving the state,
+  refused when typed on a record never in it.
+- **Self-nesting trees share one loop check.**
+  `venture_category_check_tree_node()` (public in `venture-category.h`)
+  serves category, location and goal; a new type whose `parent-id` names
+  itself calls it from its validator rather than copying the walk.
+- **`goal_step.repetitions` counts crafts, not units,** and
+  `goal_materials` counts a reusable component once at the largest single
+  step's quantity -- never multiplied, never summed across steps. On hand
+  is every location. The list is gross (intermediate outputs are not
+  netted), a missing price blanks that line's cost and relabels the totals
+  "Total of priced lines", and the report refuses with production off.
+- **The generic reference check fires before a module's own.** Writing a
+  reference to a type whose module is off is refused by the reference
+  check ("belongs to the production module, which is disabled") before any
+  save validator runs, so a validator's own "module is off" refusal for a
+  newly written reference is a backstop. Tests should match on the module
+  name, not on either sentence.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

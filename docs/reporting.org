@@ -50,6 +50,8 @@ about it.
 | =price_history= | one product's observed prices per day, week or month and source: lowest, average, highest, volume (=product_id= required) |
 | =recipe_margin= | each active recipe's batch cost, value, profit, margin, cost per unit and batches the stock allows, at a =price_source= or the recorded costs; a missing price named, never zero (see [[file:production.org][Production]]) |
 | =session_performance= | per activity, category, location or venture and currency: sessions, finished hours, units, goods value, money yielded, cost, net, and yield and net per hour; goods at their unit value, else a =price_source= or list price; a missing value named, never zero (see [[file:sessions.org][Sessions]]) |
+| =goal_progress= | one row per goal: its path, the three values, percent covered measured from the start (so a target below the start reads right), what remains, steps done of total, days left and a straight-line forecast; =status=, =category_id=, =venture_id= (see [[file:goals.org][Goals]]) |
+| =goal_materials= | the shopping list for goal steps not done: recipe components × crafts (tools once, at their largest need), less stock on hand in every location, priced at a =price_source= or recorded cost, a total per currency; a missing price named, never zero; =goal_id= (with sub-goals), =include_on_hand= |
 | =aggregate= | sum, average, minimum, maximum, count or distinct count of any field of any business type, grouped by up to three fields and bucketed by a date; money per currency |
 
 #+begin_src sh

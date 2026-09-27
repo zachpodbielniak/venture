@@ -2756,15 +2756,21 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "per", "string",
 		"aggregate: hour or day, adding a rate over the elapsed window", FALSE);
 	ai_tool_add_parameter(report, "venture_id", "integer",
-		"Narrow to one venture, where the report takes one (aggregate, listing_performance, recipe_margin, session_performance)", FALSE);
+		"Narrow to one venture, where the report takes one (aggregate, listing_performance, recipe_margin, session_performance, goal_progress, goal_materials)", FALSE);
 	ai_tool_add_parameter(report, "product_id", "integer",
 		"price_history: the product whose observed prices to show", FALSE);
 	ai_tool_add_parameter(report, "source", "string",
 		"price_history: only this price source, e.g. market value", FALSE);
 	ai_tool_add_parameter(report, "price_source", "string",
-		"recipe_margin and session_performance: price at the latest observation from this source", FALSE);
+		"recipe_margin, session_performance and goal_materials: price at the latest observation from this source", FALSE);
 	ai_tool_add_parameter(report, "category_id", "integer",
-		"recipe_margin: only recipes filed in this category or beneath it", FALSE);
+		"recipe_margin and goal_progress: only records filed in this category or beneath it", FALSE);
+	ai_tool_add_parameter(report, "status", "string",
+		"goal_progress: only goals with this status (active, paused, achieved, abandoned; several comma separated)", FALSE);
+	ai_tool_add_parameter(report, "goal_id", "integer",
+		"goal_materials: only this goal and its sub-goals", FALSE);
+	ai_tool_add_parameter(report, "include_on_hand", "boolean",
+		"goal_materials: take stock on hand off what is needed; true by default", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);

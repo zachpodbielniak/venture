@@ -1424,6 +1424,32 @@ GType
 venture_listing_outcome_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureGoalStatus:
+ * @VENTURE_GOAL_STATUS_ACTIVE: being worked toward; the safe default, since
+ *   a goal nobody has closed is still open
+ * @VENTURE_GOAL_STATUS_PAUSED: set aside for now, expected to resume
+ * @VENTURE_GOAL_STATUS_ACHIEVED: reached; the only status that carries an
+ *   achieved-at time
+ * @VENTURE_GOAL_STATUS_ABANDONED: given up on and kept for the record
+ *
+ * Where a goal stands. Reaching the target number does not change it:
+ * marking a goal achieved is a person's decision, never a side effect of
+ * editing its current value.
+ */
+typedef enum
+{
+	VENTURE_GOAL_STATUS_ACTIVE = 0,
+	VENTURE_GOAL_STATUS_PAUSED,
+	VENTURE_GOAL_STATUS_ACHIEVED,
+	VENTURE_GOAL_STATUS_ABANDONED
+} VentureGoalStatus;
+
+#define VENTURE_TYPE_GOAL_STATUS (venture_goal_status_get_type())
+
+GType
+venture_goal_status_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureDashboardPurpose:
  * @VENTURE_DASHBOARD_PURPOSE_OVERVIEW: a general view, the kind a home page is
  * @VENTURE_DASHBOARD_PURPOSE_REPORTING: figures and tables, for reading

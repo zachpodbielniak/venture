@@ -981,7 +981,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const support[] = {
 		"/tickets", "/sprints", "/kb", NULL
 	};
-	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", NULL };
+	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
 	static const gchar *const code[] = {
 		"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge", NULL

@@ -1224,10 +1224,13 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "product_id")) &&
 				 (0 != g_strcmp0(parts[0], "source")) &&
 				 (0 != g_strcmp0(parts[0], "price_source")) &&
-				 (0 != g_strcmp0(parts[0], "category_id"))))
+				 (0 != g_strcmp0(parts[0], "category_id")) &&
+				 (0 != g_strcmp0(parts[0], "goal_id")) &&
+				 (0 != g_strcmp0(parts[0], "status")) &&
+				 (0 != g_strcmp0(parts[0], "include_on_hand"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, status, include_on_hand");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3800,7 +3803,9 @@ main(
 		"                               price_history takes product_id, source, bucket;\n"
 		"                               listing_performance takes group_by, category_depth;\n"
 		"                               recipe_margin takes price_source, category_id, venture_id;\n"
-		"                               session_performance takes group_by, category_depth, price_source, venture_id\n"
+		"                               session_performance takes group_by, category_depth, price_source, venture_id;\n"
+		"                               goal_progress takes status, category_id, venture_id;\n"
+		"                               goal_materials takes goal_id, price_source, include_on_hand, venture_id\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3945,6 +3950,8 @@ main(
 		"  venturectl act recipe 3 craft times=5 location_id=2\n"
 		"  venturectl report session_performance last_30_days group_by=activity price_source=\"market value\"\n"
 		"  venturectl act session 8 post\n"
+		"  venturectl report goal_progress all status=active category_id=4\n"
+		"  venturectl report goal_materials all goal_id=2 price_source=\"market value\"\n"
 		"  venturectl -f csv report receivables > aging.csv\n"
 		"  venturectl forge settings 1 < protected-settings.json\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"

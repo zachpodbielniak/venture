@@ -3056,4 +3056,5 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_market_register_reports(self);
 	venture_production_register_reports(self);
 	venture_sessions_register_reports(self);
+	venture_goals_register_reports(self);
 }

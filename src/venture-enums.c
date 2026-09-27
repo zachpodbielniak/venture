@@ -730,6 +730,18 @@ VENTURE_DEFINE_ENUM_TYPE(venture_listing_outcome_get_type,
                          "VentureListingOutcome",
                          venture_listing_outcome_values)
 
+static const GEnumValue venture_goal_status_values[] = {
+	VE(VENTURE_GOAL_STATUS_ACTIVE,    "active"),
+	VE(VENTURE_GOAL_STATUS_PAUSED,    "paused"),
+	VE(VENTURE_GOAL_STATUS_ACHIEVED,  "achieved"),
+	VE(VENTURE_GOAL_STATUS_ABANDONED, "abandoned"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_goal_status_get_type,
+                         "VentureGoalStatus",
+                         venture_goal_status_values)
+
 static const GEnumValue venture_dashboard_purpose_values[] = {
 	VE(VENTURE_DASHBOARD_PURPOSE_OVERVIEW,  "overview"),
 	VE(VENTURE_DASHBOARD_PURPOSE_REPORTING, "reporting"),

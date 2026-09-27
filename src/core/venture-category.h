@@ -152,6 +152,31 @@ venture_category_check_applies_to(
 	GError		**error
 );
 
+/**
+ * venture_category_check_tree_node:
+ * @database: the database to read
+ * @entity: the node about to be saved; its type must have a `parent-id`
+ *   reference naming its own type, and a `name`
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The rules every node of a self-referencing tree meets, whatever the
+ * type: its parent is not itself or anything beneath it, is in the same
+ * organization, and the tree is no deeper than
+ * %VENTURE_CATEGORY_MAX_DEPTH. Categories and locations are checked with
+ * it by the validators this file installs; any other type that nests
+ * through its own `parent-id` -- a goal's sub-goals -- calls it from its
+ * own save validator, so there is one definition of a loop. The walk
+ * reads under a trusted scope: a loop is a loop whoever is saving.
+ *
+ * Returns: %TRUE when the node may be saved where it says it sits
+ */
+gboolean
+venture_category_check_tree_node(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	GError		**error
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_CATEGORY_H */

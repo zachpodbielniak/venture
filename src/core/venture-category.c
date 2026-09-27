@@ -261,13 +261,14 @@ venture_category_or_empty(const gchar *text)
  * exists, is in the same organization, is not itself or any node beneath
  * it, and the node is no deeper than the bound. Read under a trusted
  * scope: a loop is a loop whoever is saving, and a check that a caller's
- * access could blind would let one through.
+ * access could blind would let one through. Public because a tree is not
+ * only a category: a goal's sub-goals nest the same way and must not
+ * loop the same way.
  */
-static gboolean
-venture_category_check_node(
+gboolean
+venture_category_check_tree_node(
 	VentureDatabase	 *database,
 	VentureEntity	 *entity,
-	VentureEntity	 *previous,
 	GError		**error
 ){
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -280,9 +281,10 @@ venture_category_check_node(
 	gint64 cursor;
 	guint levels;
 
-	/* Every rule here is about the row as it will be, not as it was. */
-	(void)previous;
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
 
+	/* Every rule here is about the row as it will be, not as it was. */
 	parent_id = venture_category_parent_of(entity);
 
 	if (0 == parent_id)
@@ -383,9 +385,10 @@ venture_category_validate_location(
 	gpointer	  user_data,
 	GError		**error
 ){
+	(void)previous;
 	(void)user_data;
 
-	return venture_category_check_node(database, entity, previous, error);
+	return venture_category_check_tree_node(database, entity, error);
 }
 
 /*
@@ -432,7 +435,7 @@ venture_category_validate_category(
 		return FALSE;
 	}
 
-	if (!venture_category_check_node(database, entity, previous, error))
+	if (!venture_category_check_tree_node(database, entity, error))
 		return FALSE;
 
 	internal = venture_access_policy_enter(

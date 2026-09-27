@@ -1541,3 +1541,70 @@ in `note` and value, net and the rates are blank, **not zero**.
 venturectl report session_performance this_month group_by=activity price_source="market value"
 venturectl report session_performance 2026 group_by=category category_depth=0
 ```
+
+## Goals: targets, steps and the shopping list
+
+Module `goals` (requires only `core`; suggests `production` and `market`).
+Check `venturectl describe goal` and `describe goal_step`.
+
+- `goal`: `name`, `venture_id`, `parent_id` (a larger goal; no loops, same
+  organization), `category_id`, `metric`, `unit`, `start_value`,
+  `current_value`, `target_value` (doubles), `due_on` (date), `status`
+  (`active` default, `paused`, `achieved`, `abandoned`), `achieved_at`,
+  `tags`, `notes`.
+- **`target_value` must differ from `start_value`** (0 to 0 is refused as
+  no target). It may be **below** the start (a weight to lose): progress
+  is `(current - start) / (target - start)`, never `current / target`.
+- `achieved_at` follows `status`: stamped when it becomes `achieved` and
+  the date is empty, kept when given, cleared when the status leaves
+  `achieved`, refused when typed on a goal that is not achieved.
+- **Nothing updates a goal for you.** Reaching the target does not mark it
+  achieved; ticking a step does not move `current_value`. Update both
+  yourself.
+- `goal_step`: `goal_id` (required, same organization), `position`
+  (lowest first), `name`, `from_value`/`to_value` (optional; must not run
+  opposite to the goal), `recipe_id` (production module only; same
+  organization), `repetitions` (**crafts/batches, not units**; ≥ 0, 0 =
+  unsaid), `done`, `done_at` (follows `done` like `achieved_at`), `notes`.
+
+```sh
+venturectl create goal name="Alchemy 300" metric=level start_value=1 current_value=1 \
+    target_value=300 due_on=2026-12-31
+venturectl create goal_step goal_id=3 position=1 name="Minor Healing Potion" \
+    from_value=1 to_value=25 recipe_id=7 repetitions=20
+venturectl update goal_step 11 done=true
+venturectl update goal 3 current_value=25
+```
+
+Report `goal_progress` — `status` (a nick or several comma separated;
+every status by default; unknown refused), `category_id` (and beneath),
+`venture_id`, `as_of` (the moment the pace is measured to — it does not
+read an old `current_value`), `organization_id`. One row per goal, by path
+("Alchemy 300 / Alchemy 150"): `start`, `current`, `target`, `percent`
+(a fraction, unclamped), `remaining` (in the goal's direction; negative =
+past it), `steps_done`/`steps_total`, `due_on`, `days_left` (negative =
+overdue), `forecast` (straight line from `start_value` at creation to
+`current_value` at `as_of`; active goals with progress only), `status`,
+`note`.
+
+Report `goal_materials` — `goal_id` (with its sub-goals; every active or
+paused goal by default), `venture_id`, `price_source` (market module
+only), `include_on_hand` (`true` default / `false`), `as_of`,
+`organization_id`. Reads steps **not done** with a recipe and
+`repetitions` > 0: consumed components × repetitions summed per product;
+**reusable components once, at the largest single step's need** (never
+summed); less stock on hand in **every** location; `to_acquire` priced at
+the latest observation (market on) or recorded cost (off). One `Total` row
+per currency; a product with no price is named and its cost blank —
+**not zero** — and the totals become "Total of priced lines". Gross: what
+an earlier step makes is not netted. **Refused while production is off.**
+
+```sh
+venturectl report goal_progress all status=active,paused
+venturectl report goal_materials all goal_id=3 price_source="market value"
+venturectl report goal_materials all include_on_hand=false
+```
+
+A dashboard `progress` widget on `goal` should set
+`options.start_field=start_value` beside `target_field=target_value`, or a
+downward goal reads as done before it starts.

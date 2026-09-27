@@ -1,0 +1,407 @@
+#+title: Goals
+#+description: Measurable targets with ordered steps, progress and a straight-line forecast, and the shopping list for recipe steps still ahead
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+#+version: 0.1.0
+
+* A number, where it started, and where it should end
+
+A goal is a measurable target: a number that starts somewhere and should
+reach somewhere else, perhaps by a date. The =goals= module keeps them,
+generically, in two record types and two reports:
+
+- =goal= :: what is measured (=metric=, =unit=), where it started
+  (=start_value=), where it stands (=current_value=), where it should end
+  (=target_value=) and by when (=due_on=). Goals nest: a goal can be a
+  stage of a larger one.
+- =goal_step= :: one ordered piece of the way there. A step may name a
+  recipe and a number of crafts.
+- =goal_progress= :: how far along each goal is, what remains, the steps
+  done, the days left, and when it will get there at the pace so far.
+- =goal_materials= :: the shopping list for the recipe steps not yet done:
+  components multiplied out, less what is on hand, priced.
+
+The same records describe:
+
+- *Levelling a skill in a game*: Alchemy from 1 to 300. The steps are the
+  recipes a levelling guide lists -- "craft 20 Minor Healing Potions, 1 to
+  25", "craft 30 Lesser Mana Potions, 25 to 60" -- and =goal_materials=
+  turns the ones still ahead into the herbs and vials to buy, priced at the
+  auction house's last seen prices, less what is already in the bank.
+- *A savings target*: 5,000 saved by December, from 1,200 today. Steps are
+  the months; the forecast says whether the pace so far gets there.
+- *A weight to lose*: 90 kg to 80 kg. The target is below the start, and
+  progress is measured toward it -- 85 kg is half way, not 106% of 80.
+- *A production quota*: 12 titles shipped this year, or 500 units of a
+  product made. Steps can name the recipe (bill of materials) each batch
+  needs, and the shopping list is what to order before the run.
+- *A backlog to burn down*: 140 open tickets to 20. Another target below
+  its start.
+
+The module is =goals=. It requires only =core=: a savings target or a
+weight names no product. It suggests =production=, whose recipes a step may
+name and =goal_materials= multiplies out (with production off a recipe
+cannot be named and that report refuses), and =market=, whose observed
+prices the shopping list is priced at (with market off, recorded costs).
+See [[file:modules.org][Modules]].
+
+* Goals
+
+** Fields
+
+| Field           | Kind      | For                                                                   |
+|-----------------+-----------+-----------------------------------------------------------------------|
+| =name=          | string    | what you are aiming for; required                                     |
+| =venture_id=    | reference | optional: the venture it is for                                       |
+| =parent_id=     | reference | optional: the larger goal this is a stage of                          |
+| =category_id=   | reference | optional: where it is filed ([[file:taxonomy.org][Taxonomy]]); the category's =applies_to= must be empty or =goal= |
+| =metric=        | string    | what is measured -- skill level, savings, weight, titles shipped; indexed |
+| =unit=          | string    | optional: what one of it is -- level, gold, kg                        |
+| =start_value=   | double    | where it stood when the goal was set                                  |
+| =current_value= | double    | where it stands now; you update it                                    |
+| =target_value=  | double    | where it should end; may be below the start, never equal to it        |
+| =due_on=        | date      | optional: the date it should be reached by                            |
+| =status=        | enum      | =active= (default), =paused=, =achieved=, =abandoned=                 |
+| =achieved_at=   | datetime  | when it was reached; stamped when the status becomes =achieved=       |
+| =tags=          | string    | comma separated                                                       |
+| =notes=         | text      |                                                                       |
+
+The three values are doubles, not money: a goal of 5,000 gold is a
+/number/ of gold, and nothing is posted to any book because a goal moved.
+When the thing measured is money, the currency goes in =unit=.
+
+=due_on= is a calendar date, stored as that day's midnight UTC like every
+date in VENTURE (see [[file:money-calendar.org][Money calendar]]); "days
+left" counts calendar days to it and never shifts by a zone.
+
+** Which way is forward
+
+Progress is always
+
+#+begin_example
+done = (current - start) / (target - start)
+#+end_example
+
+and never =current / target=. The one formula serves a target above the
+start (a skill to raise, a sum to save) and below it (a weight to lose, a
+backlog to burn down). It is not clamped: past the target reads above
+100%, behind the start below 0%. Only a dashboard bar stops at full.
+
+** What the save refuses
+
+The save validators (=src/goals/venture-goals.c=) hold for every writer --
+the form, the API, an approved staged change, the assistant, a plugin:
+
+- *a target equal to the start.* That goal has no distance to cover, and
+  every percentage of it is a division by zero. A double field cannot tell
+  "left empty" from 0, so a goal of 0 to 0 is refused as having no target
+  -- the same answer either way;
+- *a parent that closes a loop*: the goal itself, or anything beneath it;
+- *a parent in another organization*, and a tree deeper than
+  =VENTURE_CATEGORY_MAX_DEPTH=. These are the category tree's rules, by the
+  category tree's code: =venture_category_check_tree_node()= is the one
+  definition of a loop for every self-nesting type;
+- *a venture or category in another organization* (only when the reference
+  is being written, the rule every reference follows);
+- *an =achieved_at= on a goal that is not achieved* (below).
+
+** When it was achieved
+
+=achieved_at= follows =status=, the factory's rule for a derived date:
+
+| Save                                   | =achieved_at=                                  |
+|----------------------------------------+------------------------------------------------|
+| status becomes =achieved=, date empty  | stamped now                                    |
+| status =achieved=, a date given        | kept -- "I hit 300 last Tuesday" survives      |
+| status leaves =achieved= (any other)   | cleared: a goal set back to active has not been achieved |
+| never achieved, a date typed in        | refused: "is for an achieved goal; set the status to achieved, or clear the date" |
+
+** Nothing moves a goal but you
+
+Reaching the target does *not* mark a goal achieved, and a step ticked
+done does *not* move the goal's current value. Both would be derived
+writes -- a second save nobody made, a version bump that makes the object
+the person is holding conflict with itself, a number that changes under
+them -- and neither is knowable from the records: the last 25 levels of a
+skill take longer than the first 25, and a savings month may overshoot.
+The person who knows says so on the goal. =goal_progress= notes "target
+reached; mark it achieved" when the numbers say so.
+
+* Steps
+
+** Fields
+
+| Field         | Kind      | For                                                                     |
+|---------------+-----------+-------------------------------------------------------------------------|
+| =goal_id=     | reference | the goal it belongs to; required                                        |
+| =position=    | integer   | where it comes among the goal's steps; lowest first                     |
+| =name=        | string    | what the step is; required                                              |
+| =from_value=  | double    | optional: where on the goal's metric the step starts                    |
+| =to_value=    | double    | optional: where it ends                                                 |
+| =recipe_id=   | reference | optional: a recipe this step crafts (production module)                 |
+| =repetitions= | integer   | how many times to make the recipe -- *crafts*, not units made; 0 if unsaid |
+| =done=        | boolean   | finished; a done step leaves the shopping list                          |
+| =done_at=     | datetime  | when it was finished; stamped when marked done                          |
+| =notes=       | text      |                                                                         |
+
+=repetitions= counts batches. A step of 20 crafts of a recipe whose batch
+takes 2 herbs and makes 1 potion needs 40 herbs and makes 20 potions; a
+recipe whose batch makes 5 would make 100. The step says how many times
+you press the button, which is what a levelling guide says too.
+
+=done= is named for completion so that the zero value, not done, is the
+safe one: a step whose box nobody ticked is still ahead, and still on the
+shopping list.
+
+** What the save refuses
+
+- no goal, or a goal in another organization (held always: a step is part
+  of its goal);
+- negative =repetitions=;
+- a stretch that runs the opposite way to the goal: =from_value= 25,
+  =to_value= 1 on a goal from 1 to 300. A stretch that does not move (both
+  0, or both equal) is fine -- it is simply not said;
+- a recipe while the production module is off (the reference check refuses
+  it, naming the switch), and a recipe of another organization. Both only
+  when the recipe is being written: a step recorded before production was
+  switched off stays editable;
+- a =done_at= on a step that is not done. It follows =done= exactly as
+  =achieved_at= follows the status: stamped, kept, cleared.
+
+* Reports
+
+** =goal_progress=
+
+One row per goal, in the order of their paths.
+
+| Option            | Meaning                                                                   |
+|-------------------+---------------------------------------------------------------------------|
+| =status=          | only goals with this status; several comma separated (=active,paused=). Every status by default |
+| =category_id=     | only goals filed in this category or anywhere beneath it                  |
+| =venture_id=      | only this venture's goals                                                 |
+| =as_of=           | measure the pace and the days left to this date (or timestamp) instead of now |
+| =organization_id= | the legal entity; the default organization otherwise                      |
+
+An unknown status is refused, not answered with every goal.
+
+| Column        | What                                                                        |
+|---------------+-----------------------------------------------------------------------------|
+| =goal=        | the goal's path: "Alchemy 300 / Alchemy 150" -- computed, never stored      |
+| =metric=, =unit= | as recorded                                                              |
+| =start=, =current=, =target= | as recorded                                                  |
+| =percent=     | (current − start) ÷ (target − start), unclamped                             |
+| =remaining=   | (target − current) in the goal's own direction: positive is still to go, negative is past it |
+| =steps_done=, =steps_total= | the goal's own steps (not its sub-goals')                     |
+| =due_on=      | the due date                                                                |
+| =days_left=   | calendar days from as_of's date (today) to the due date; negative is overdue |
+| =forecast=    | the date the target is reached at the pace so far                           |
+| =status=      | the status nick                                                             |
+| =note=        | "overdue", "forecast is after the due date", "target reached; mark it achieved", "paused; no forecast", "no progress yet to forecast from" |
+
+*The forecast* is a straight line from the start value at the goal's
+creation to the current value at =as_of= (now by default), extended to the
+target. Half way after ten days is done twenty days after creation. It is
+drawn only for an active goal short of its target with some progress; it
+is blank -- with the reason in the note -- for an achieved, abandoned or
+paused goal, a goal with no progress or going backwards, one past its
+target, and one more than a century away at this pace. When it lands after
+=due_on= the note says so.
+
+=as_of= moves the moment the pace is measured /to/. It does not read an
+old current value: the value is the one on the goal today, and nothing
+keeps its history (the audit log does, if you need it).
+
+A worked example, read ten days after the goals were set:
+
+| Goal          | start | current | target | percent | remaining | forecast                  |
+|---------------+-------+---------+--------+---------+-----------+---------------------------|
+| Alchemy       | 1     | 150.5   | 300    | 50%     | 149.5     | 20 days after it was set  |
+| Weight        | 90    | 85      | 80     | 50%     | 5         | 20 days after it was set  |
+| Overshot      | 0     | 12      | 10     | 120%    | −2        | (target reached; mark it achieved) |
+| Idle          | 0     | 0       | 10     | 0%      | 10        | (no progress yet)         |
+
+** =goal_materials=
+
+The shopping list for the steps still ahead. It reads every step that is
+*not done*, names a recipe and has =repetitions= above zero, in goals that
+are *active or paused* (an achieved or abandoned goal's steps are not ahead
+of anybody), and multiplies them out.
+
+| Option             | Meaning                                                                 |
+|--------------------+-------------------------------------------------------------------------|
+| =goal_id=          | only this goal and its sub-goals, however deep; every open goal by default |
+| =venture_id=       | only this venture's goals                                               |
+| =price_source=     | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
+| =include_on_hand=  | =true= (default) takes stock on hand off what is needed; =false= does not. Accepts true/false, yes/no, on/off, 1/0; anything else is refused |
+| =as_of=            | count stock and read prices at this date instead of now                 |
+| =organization_id=  | the legal entity; the default organization otherwise                    |
+
+The arithmetic, per product, summed across the steps:
+
+- *a consumed component*: quantity × repetitions for each step, added up;
+- *a reusable component* (a tool: a pestle, a mould, a catalyst): its
+  quantity *once*, at the largest quantity any single step asks for --
+  never multiplied by the crafts, and never summed across steps. A tool
+  that serves twenty crafts in one step serves forty in two. A product
+  that is a tool in one recipe and consumed in another needs both;
+- *needed* = consumed + tools;
+- *on hand* = every stock item of the product in every location at
+  =as_of=. What is in the bank counts though it is not in the bag -- the
+  question is what to buy, not where to craft. Negative stock (an item that
+  allows it) counts as none;
+- *to acquire* = needed − on hand, never below zero.
+
+| Column       | What                                                              |
+|--------------+-------------------------------------------------------------------|
+| =product=    | the component, or "Total" / "Total of priced lines" on a total row |
+| =consumed=   | used up across the steps                                          |
+| =reusable=   | tools: the largest single need                                    |
+| =needed=     | consumed + reusable                                               |
+| =on_hand=    | stock in every location; blank with =include_on_hand=false=       |
+| =to_acquire= | what is left to buy                                               |
+| =currency=   | the price's currency                                              |
+| =unit_price= | one unit, as below                                                |
+| =cost=       | unit price × to acquire                                           |
+| =priced_by=  | the source, "prices seen, any source", or "recorded cost"         |
+| =note=       | a product with no price                                           |
+
+*Prices.* With the market module on, the latest observation from
+=price_source= at or before =as_of= through =venture_market_latest_price()=,
+and nothing else -- falling back to a recorded cost would mix two kinds of
+number in one bill without saying which, the rule =recipe_margin= keeps.
+With market off, the recorded cost: the first stock item's =unit_cost=,
+else the product's =cost=. =price_source= with market off is refused.
+
+*Totals, per currency.* One total row per currency, never a sum across
+them: herbs in gold and vials in dollars are two totals. A product with
+something to buy and no price is named in its note and its cost is left
+blank -- never zero -- and the total rows are then labelled "Total of
+priced lines" and name what they leave out. A product with nothing to buy
+needs no price.
+
+*The list is gross.* What an earlier step makes is not taken off what a
+later step needs: a guide that crafts potions at 25 and uses them at 150
+lists both the potions' herbs and the potions. Craft the earlier step, and
+its output is on hand for the next run of the report. A step whose recipe
+has since been deleted is left out and named in a note.
+
+With the production module off the report is refused, naming the switch
+-- an empty list would read as "nothing to buy" when the truth is "cannot
+tell".
+
+** Where they are asked from
+
+=/reports/goal_progress= and =/reports/goal_materials= (with forms: a status
+picker and the category; a goal picker, the price source -- only while the
+market module is on --, whether stock is taken off; the venture and =as_of=
+on both), =GET /api/v1/reports/goal_progress?…=, =venturectl report=, and
+the assistant's and MCP's =venture_report= tool. Each report carries its
+parameter schema. Both refuse, naming the bound, more than
+=VENTURE_AGGREGATE_MAX_ROWS= goals or steps rather than answering for some.
+
+** On a dashboard
+
+A =progress= widget on =goal= with =field= =current_value=,
+=options.target_field= =target_value= and =options.start_field=
+=start_value= draws the same fraction as =goal_progress= -- a weight goal
+of 90 toward 80 at 85 is a half-full bar. Without =start_field= the widget
+is value ÷ target, which is right only for goals that count up from zero.
+See [[file:dashboards.org][Dashboards]].
+
+#+begin_src json
+{"kind": "progress", "title": "Alchemy", "entity_type": "goal",
+ "record_id": 3, "field": "current_value",
+ "options": {"target_field": "target_value", "start_field": "start_value"}}
+#+end_src
+
+* API and CLI
+
+#+begin_src sh
+venturectl describe goal
+venturectl describe goal_step
+
+# A skill to level, and a stage of it
+venturectl create goal name="Alchemy 300" metric=level unit=skill \
+    start_value=1 current_value=1 target_value=300 due_on=2026-12-31
+venturectl create goal name="Alchemy 150" parent_id=3 metric=level \
+    start_value=1 current_value=1 target_value=150
+
+# A weight to lose: the target is below the start
+venturectl create goal name="Cut" metric=weight unit=kg \
+    start_value=90 current_value=90 target_value=80
+
+# Steps: 20 crafts of recipe 7 take the skill from 1 to 25
+venturectl create goal_step goal_id=3 position=1 name="Minor Healing Potion" \
+    from_value=1 to_value=25 recipe_id=7 repetitions=20
+
+# Progress: update the goal, tick the step
+venturectl update goal 3 current_value=25
+venturectl update goal_step 11 done=true
+venturectl update goal 3 status=achieved         # achieved_at is stamped
+
+# How far along, and what is left to buy
+venturectl report goal_progress all status=active,paused
+venturectl report goal_materials all goal_id=3 price_source="market value"
+venturectl report goal_materials all include_on_hand=false
+#+end_src
+
+On the wire the fields use underscores (=start_value=, =recipe_id=,
+=include_on_hand=); a POST with dashed keys is silently ignored field by
+field.
+
+The sidebar files *Goals* under Operations. A goal's page lists its steps
+and its sub-goals among the related records.
+
+* A game: a profession levelling plan, end to end
+
+A player levelling Alchemy from 1 to 300, with a =GOLD= currency (see
+[[file:currencies.org][Currencies]]), the bank and the bags as locations,
+recipes in the production module and the auction house's prices in the
+market module:
+
+1. The goal: =Alchemy 300=, =metric=level=, start 1, target 300, due at the
+   end of the month; sub-goals for each trainer tier if you want them
+   ("Alchemy 75", "Alchemy 150").
+2. The steps, from a levelling guide, one per recipe: =position=,
+   =from_value=/=to_value= for the skill range it covers, =recipe_id=, and
+   =repetitions= -- how many crafts the guide says.
+3. The shopping list: =report goal_materials goal_id=… price_source="market
+   value"=. Herbs and vials to buy after what the bank already holds, each
+   priced at the last scan, with a gold total; the pestle (a reusable
+   component) once. A reagent never scanned is named, and the total says it
+   covers priced lines only.
+4. Buy, then craft with =act recipe N craft times=…= (see
+   [[file:production.org][Production]]); tick each step done and update the
+   goal's current value as the skill rises. Done steps leave the list; the
+   next run of the report asks only for what is still ahead.
+5. =report goal_progress= says how far along the plan is and, from the pace
+   since the goal was set, the day it will reach 300 -- and whether that is
+   after the due date.
+
+Nothing in the module knows it is a game: the same steps are a production
+quota (steps naming the bill of materials per batch, the list the purchase
+order) or a savings plan (steps with no recipe, the forecast the question).
+
+* Traps
+
+- *Progress is (current − start) ÷ (target − start).* Never current ÷
+  target: a target below the start is a goal like any other.
+- *A target equal to the start is refused*, including 0 to 0.
+- *Nothing writes a goal but its owner.* No step moves a goal and no value
+  marks one achieved; do not add either as a validator or a handler.
+- *=achieved_at= and =done_at= follow their state.* Stamped when empty,
+  kept when given, cleared on leaving, refused when typed on a record that
+  never was.
+- *Goal trees use the category tree's check*
+  (=venture_category_check_tree_node()=), not a copy of it.
+- *=repetitions= counts crafts, not units.*
+- *A tool is needed once, at its largest single need* -- never multiplied,
+  never summed across steps.
+- *The shopping list is gross*: intermediate outputs are not netted.
+- *On hand is every location*, and =include_on_hand=false= turns it off.
+- *A missing price is blank, not zero,* and the totals say they cover
+  priced lines only.
+- *=goal_materials= refuses with production off*; =goal_progress= needs
+  nothing but core.

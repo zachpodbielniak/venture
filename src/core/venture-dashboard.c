@@ -3378,44 +3378,75 @@ venture_widget_total_for(
 }
 
 /*
- * How far @value is toward @target, in percent; FALSE when there is no
- * target to be a fraction of. A ratio for display -- the amounts
- * themselves are never carried as doubles.
+ * One side of a progress comparison as a double: a number as it is, money
+ * as minor units at @exponent (so every side is compared at one scale), a
+ * missing side as 0. A ratio for display only -- the amounts themselves
+ * are never carried as doubles.
+ */
+static gboolean
+venture_widget_progress_side(
+	const VentureAggregateTotal	*total,
+	gint				 exponent,
+	gdouble				*out_value
+){
+	g_autoptr(VentureMoney) scaled = NULL;
+
+	*out_value = 0.0;
+
+	if (NULL == total)
+		return TRUE;
+
+	if (NULL == total->money)
+	{
+		*out_value = total->number;
+		return TRUE;
+	}
+
+	scaled = venture_money_rescale(total->money, exponent, NULL);
+
+	if (NULL == scaled)
+		return FALSE;
+
+	*out_value = (gdouble)venture_money_get_amount(scaled);
+
+	return TRUE;
+}
+
+/*
+ * How far @value is from @start toward @target, in percent; FALSE when
+ * there is no target, or no distance between start and target, to be a
+ * fraction of. With no @start (no options.start_field) the start is 0 and
+ * this is value / target. With one it is (value - start) / (target -
+ * start), which is what makes a target below the start -- a weight to
+ * lose, a backlog to burn down -- read as progress rather than as 106%
+ * of the way to 80 kg.
  */
 static gboolean
 venture_widget_percent(
 	const VentureAggregateTotal	*value,
 	const VentureAggregateTotal	*target,
+	const VentureAggregateTotal	*start,
 	gdouble				*out_percent
 ){
-	if ((NULL == target) ||
-	    ((NULL != target->money) && venture_money_is_zero(target->money)) ||
-	    ((NULL == target->money) && (0.0 == target->number)))
+	gdouble value_number;
+	gdouble target_number;
+	gdouble start_number;
+	gint exponent;
+
+	if (NULL == target)
 		return FALSE;
 
-	if (NULL == value)
-	{
-		*out_percent = 0.0;
-		return TRUE;
-	}
+	exponent = (NULL != target->money) ? venture_money_get_exponent(target->money) : 0;
 
-	if ((NULL != value->money) && (NULL != target->money))
-	{
-		g_autoptr(VentureMoney) scaled = NULL;
+	if (!venture_widget_progress_side(target, exponent, &target_number) ||
+	    !venture_widget_progress_side(value, exponent, &value_number) ||
+	    !venture_widget_progress_side(start, exponent, &start_number))
+		return FALSE;
 
-		/* Same currency, but compare minor units only at one scale. */
-		scaled = venture_money_rescale(value->money,
-			venture_money_get_exponent(target->money), NULL);
+	if (target_number == start_number)
+		return FALSE;
 
-		if (NULL == scaled)
-			return FALSE;
-
-		*out_percent = 100.0 * (gdouble)venture_money_get_amount(scaled) /
-			(gdouble)venture_money_get_amount(target->money);
-		return TRUE;
-	}
-
-	*out_percent = 100.0 * value->number / target->number;
+	*out_percent = 100.0 * (value_number - start_number) / (target_number - start_number);
 
 	return TRUE;
 }
@@ -3431,9 +3462,11 @@ venture_widget_kind_progress(
 	g_autoptr(VentureWidgetResult) result = NULL;
 	g_autoptr(VentureFieldSpec) value_spec = NULL;
 	g_autoptr(VentureFieldSpec) target_spec = NULL;
+	g_autoptr(VentureFieldSpec) start_spec = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GPtrArray) values = NULL;
 	g_autoptr(GPtrArray) targets = NULL;
+	g_autoptr(GPtrArray) starts = NULL;
 	g_autoptr(GPtrArray) currencies = NULL;
 	g_autoptr(JsonNode) options = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
@@ -3441,9 +3474,11 @@ venture_widget_kind_progress(
 	g_autofree gchar *entity_type = NULL;
 	g_autofree gchar *field = NULL;
 	g_autofree gchar *target_field = NULL;
+	g_autofree gchar *start_field = NULL;
 	VentureEntity *prototype;
 	gboolean value_custom;
 	gboolean target_custom;
+	gboolean start_custom;
 	gint64 record_id;
 	GType gtype;
 	guint i;
@@ -3462,8 +3497,15 @@ venture_widget_kind_progress(
 		return NULL;
 
 	if ((NULL != options) && JSON_NODE_HOLDS_OBJECT(options))
+	{
 		target_field = g_strdup(venture_json_object_get_string(
 			json_node_get_object(options), "target_field", NULL));
+		start_field = g_strdup(venture_json_object_get_string(
+			json_node_get_object(options), "start_field", NULL));
+
+		if (venture_string_is_empty(start_field))
+			g_clear_pointer(&start_field, g_free);
+	}
 
 	field = venture_widget_get_string(widget, "field");
 	value_spec = venture_widget_numeric_field(context, widget, entity_type,
@@ -3485,6 +3527,26 @@ venture_widget_kind_progress(
 		            "%s and %s must both be money or both be numbers to "
 		            "compare", field, target_field);
 		return NULL;
+	}
+
+	/* Optional: where the measure started, for a target that is not
+	 * reached by counting up from zero. */
+	if (NULL != start_field)
+	{
+		start_spec = venture_widget_numeric_field(context, widget, entity_type,
+			start_field, "options.start_field", &start_custom, error);
+
+		if (NULL == start_spec)
+			return NULL;
+
+		if ((VENTURE_FIELD_KIND_MONEY == venture_field_spec_get_kind(start_spec)) !=
+		    (VENTURE_FIELD_KIND_MONEY == venture_field_spec_get_kind(target_spec)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "%s and %s must both be money or both be numbers to "
+			            "compare", start_field, target_field);
+			return NULL;
+		}
 	}
 
 	/* One record by id, or the sum over the filtered set. */
@@ -3522,6 +3584,14 @@ venture_widget_kind_progress(
 
 	if (NULL == targets)
 		return NULL;
+
+	if (NULL != start_spec)
+	{
+		starts = venture_aggregate_sum(rows, start_spec, start_custom, error);
+
+		if (NULL == starts)
+			return NULL;
+	}
 
 	/* Every currency either side has, in order: a target in gold with no
 	 * gold yet is 0%, not missing. */
@@ -3565,6 +3635,13 @@ venture_widget_kind_progress(
 	json_builder_add_string_value(builder, field);
 	json_builder_set_member_name(builder, "target_field");
 	json_builder_add_string_value(builder, target_field);
+	json_builder_set_member_name(builder, "start_field");
+
+	if (NULL != start_field)
+		json_builder_add_string_value(builder, start_field);
+	else
+		json_builder_add_null_value(builder);
+
 	json_builder_set_member_name(builder, "record_id");
 
 	if (0 != record_id)
@@ -3583,6 +3660,7 @@ venture_widget_kind_progress(
 	{
 		const VentureAggregateTotal *value;
 		const VentureAggregateTotal *target;
+		const VentureAggregateTotal *start;
 		g_autofree gchar *value_text = NULL;
 		g_autofree gchar *target_text = NULL;
 		gdouble percent;
@@ -3591,10 +3669,12 @@ venture_widget_kind_progress(
 
 		value = venture_widget_total_for(values, g_ptr_array_index(currencies, i));
 		target = venture_widget_total_for(targets, g_ptr_array_index(currencies, i));
+		start = (NULL != starts)
+			? venture_widget_total_for(starts, g_ptr_array_index(currencies, i)) : NULL;
 		value_text = (NULL != value) ? venture_widget_total_text(value) : g_strdup("0");
 		target_text = (NULL != target) ? venture_widget_total_text(target) : g_strdup("0");
 		percent = 0.0;
-		has_percent = venture_widget_percent(value, target, &percent);
+		has_percent = venture_widget_percent(value, target, start, &percent);
 
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "value");
@@ -3610,6 +3690,18 @@ venture_widget_kind_progress(
 			venture_widget_add_total(builder, target);
 		else
 			json_builder_add_null_value(builder);
+
+		/* Present only when the widget names a start, so a card without
+		 * one reads exactly as it did. */
+		if (NULL != starts)
+		{
+			json_builder_set_member_name(builder, "start");
+
+			if (NULL != start)
+				venture_widget_add_total(builder, start);
+			else
+				json_builder_add_null_value(builder);
+		}
 
 		json_builder_set_member_name(builder, "percent");
 
@@ -3629,6 +3721,15 @@ venture_widget_kind_progress(
 		g_string_append(html, "</strong> of <strong>");
 		venture_html_escape_append(html, target_text);
 		g_string_append(html, "</strong>");
+
+		if (NULL != starts)
+		{
+			g_autofree gchar *start_text = NULL;
+
+			start_text = (NULL != start) ? venture_widget_total_text(start) : g_strdup("0");
+			g_string_append(html, " from ");
+			venture_html_escape_append(html, start_text);
+		}
 
 		if (has_percent)
 			g_string_append_printf(html, " (%.0f%%)", percent);
@@ -6025,6 +6126,20 @@ venture_dashboard_validate_numeric_fields(
 
 		if (NULL == target)
 			return FALSE;
+
+		if ((NULL != object) &&
+		    !venture_string_is_empty(venture_json_object_get_string(object,
+		                                                            "start_field", NULL)))
+		{
+			g_autoptr(VentureFieldSpec) start = NULL;
+
+			start = venture_widget_numeric_field(context, widget, entity_type,
+				venture_json_object_get_string(object, "start_field", NULL),
+				"options.start_field", &custom, error);
+
+			if (NULL == start)
+				return FALSE;
+		}
 	}
 
 	date_field = (NULL != object)

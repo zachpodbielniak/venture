@@ -131,6 +131,7 @@
 #include "market/venture-market-records.h"
 #include "production/venture-production-records.h"
 #include "sessions/venture-sessions-records.h"
+#include "goals/venture-goals-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -327,6 +328,7 @@
 #include "market/venture-market.h"
 #include "production/venture-production.h"
 #include "sessions/venture-sessions.h"
+#include "goals/venture-goals.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

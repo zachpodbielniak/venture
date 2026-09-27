@@ -869,6 +869,17 @@ static GType (*const sessions_types[]) (void) = {
 };
 static const gchar *const sessions_reports[] = { "session_performance", NULL };
 
+/* Targets and the steps toward them. It requires only core: a savings
+ * target or a weight to lose names no product. It suggests production,
+ * whose recipes a step may name and goal_materials multiplies out (the
+ * reference is refused and the report refuses while it is off), and
+ * market, whose observed prices that shopping list is priced at. */
+static const gchar *const goals_suggests[] = { "production", "market", NULL };
+static GType (*const goals_types[]) (void) = {
+	venture_goal_get_type, venture_goal_step_get_type, NULL
+};
+static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1274,6 +1285,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"stock once, and what an hour of each kind is worth.",
 		venture_module_requires_core, sessions_suggests, sessions_types,
 		sessions_reports, NULL, FALSE
+	},
+	{
+		"goals", "Goals",
+		"Measurable targets -- a skill to level, a sum to save, a weight to "
+		"lose, titles to ship -- with ordered steps, progress and a "
+		"forecast, and the shopping list for recipe steps still ahead.",
+		venture_module_requires_core, goals_suggests, goals_types,
+		goals_reports, NULL, FALSE
 	}
 };
 

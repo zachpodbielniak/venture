@@ -890,7 +890,8 @@ test_dashboard_numeric_validation(
 		{ "sum", "channel", NULL, "not money or a number" },
 		{ "sum", "gross", "{\"date_field\": \"channel\"}", "not a declared date" },
 		{ "progress", "gross", NULL, "options.target_field" },
-		{ "progress", "gross", "{\"target_field\": \"channel\"}", "not money or a number" }
+		{ "progress", "gross", "{\"target_field\": \"channel\"}", "not money or a number" },
+		{ "progress", "gross", "{\"target_field\": \"gross\", \"start_field\": \"channel\"}", "options.start_field" }
 	};
 	gsize i;
 
