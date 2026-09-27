@@ -1168,6 +1168,44 @@ test_materials_quantities(
 }
 
 /*
+ * A product one recipe uses up and another only borrows: each half of
+ * its need is bounded, and their sum is checked too. What breaks: a sum
+ * that wraps negative and a shopping list that asks for nothing -- or
+ * minus nine quintillion -- of it.
+ */
+static void
+test_materials_sum_overflow(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	gint64 ore;
+	gint64 bar;
+	gint64 smelt;
+	gint64 anvil;
+	gint64 forge;
+	gint64 target;
+	g_autoptr(JsonObject) options = NULL;
+
+	(void)user_data;
+
+	ore = product_costing(fixture, "Ore", NULL);
+	bar = product_costing(fixture, "Bar", NULL);
+	smelt = recipe(fixture, "Smelt", bar);
+	component(fixture, smelt, ore, G_MAXINT64, FALSE);
+	anvil = product_costing(fixture, "Ingot", NULL);
+	forge = recipe(fixture, "Forge", anvil);
+	component(fixture, forge, ore, 1, TRUE);
+
+	target = goal(fixture, "Smith", 0, 0, 10, 0);
+	craft_step(fixture, target, "Smelt", smelt, 1, FALSE);
+	craft_step(fixture, target, "Forge", forge, 1, FALSE);
+
+	options = json_object_new();
+	json_object_set_string_member(options, "include_on_hand", "false");
+	run_refused(fixture, "goal_materials", options, "than can be counted");
+}
+
+/*
  * Pricing. With the market on, the latest price seen: herbs in gold,
  * vials in dollars -- two totals, never one -- and the pestle, never seen
  * priced, named with its cost blank and the totals labelled as priced
@@ -1812,6 +1850,7 @@ main(
 	ADD("/goals/progress/filters", test_progress_filters);
 	ADD("/goals/materials/quantities", test_materials_quantities);
 	ADD("/goals/materials/pricing", test_materials_pricing);
+	ADD("/goals/materials/sum-overflow", test_materials_sum_overflow);
 	ADD("/goals/materials/production-off", test_materials_production_off);
 	ADD("/goals/module-off", test_module_off);
 	ADD("/goals/dashboard/start-field", test_dashboard_start_field);

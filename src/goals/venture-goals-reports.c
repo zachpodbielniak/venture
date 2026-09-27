@@ -919,7 +919,12 @@ goals_materials_on_hand(
 			return FALSE;
 		}
 
-		*out_units += units;
+		if (__builtin_add_overflow(*out_units, units, out_units))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "More stock is on hand than can be counted");
+			return FALSE;
+		}
 	}
 
 	return TRUE;
@@ -1098,7 +1103,15 @@ goals_materials_line(
 	if (NULL == items)
 		return FALSE;
 
-	needed = need->consumed + need->reusable;
+	/* Each half is bounded on its own; together they may not be. */
+	if (__builtin_add_overflow(need->consumed, need->reusable, &needed))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The steps need more %s than can be counted; check "
+		            "their repetitions", need->name);
+		return FALSE;
+	}
+
 	on_hand = 0;
 
 	if (include_on_hand && !goals_materials_on_hand(database, items, as_of, &on_hand, error))
