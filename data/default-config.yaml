@@ -434,6 +434,8 @@ mail:
   from_address: ""
   from_name: Venture
   reply_to: ""
+  # Mail the customer a receipt, with its PDF, when a payment is recorded.
+  receipts: true
 
 # Customer mail about subscriptions. See docs/billing.org.
 billing:
