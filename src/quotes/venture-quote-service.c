@@ -189,7 +189,22 @@ line_amounts(VentureQuoteService *self, VentureEntity *q, VentureEntity *line,
 	if (quantity <= 0 || quantity > 1000000000 || dp < 0 || dp > 100 || tp < 0 || tp > 100 ||
 		unit == NULL || venture_money_get_amount(unit) < 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "positive quantity and price, and percentages 0..100 required");
-	if (code != 0)
+	if (integer(line, "plan-price-id") != 0)
+	{
+		/* A subscription line quotes what its first invoice will charge,
+		 * which billing decides: exemption, the price's code, else the
+		 * customer's address rate as it stands today. */
+		g_autoptr(VentureEntity) plan_price = get(self, VENTURE_TYPE_PLAN_PRICE,
+			venture_entity_get_organization_id(q), integer(line, "plan-price-id"), error);
+		g_autoptr(GDateTime) today = NULL;
+		if (plan_price == NULL)
+			return FALSE;
+		today = venture_settlement_service_today(venture_settlement_service_get(self->database));
+		if (!venture_billing_service_price_tax_rate(venture_billing_service_get(self->database),
+			VENTURE_PLAN_PRICE(plan_price), integer(q, "company-id"), today, &numerator, &denominator, error))
+			return FALSE;
+	}
+	else if (code != 0)
 	{
 		g_autoptr(VentureEntity) rate = get(self, VENTURE_TYPE_TAX_CODE,
 			venture_entity_get_organization_id(q), code, error);
@@ -331,10 +346,11 @@ price(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GError *
 /*
  * A line naming a plan price is a subscription the quote proposes: its
  * quantity is the seats and its price is the plan's, so the proposal says
- * what the subscription will charge. It carries no discount or tax of its
- * own because the subscription's invoices would not charge them, and a
- * quote proposes one subscription, which is what Start subscription
- * starts.
+ * what the subscription will charge. It takes no discount or tax of its
+ * own because the subscription's invoices would not charge them; it
+ * carries the price's tax code, and line_amounts() taxes it as the first
+ * invoice will. A quote proposes one subscription, which is what Start
+ * subscription starts.
  */
 static gboolean
 plan_line(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GError **error)
@@ -347,22 +363,24 @@ plan_line(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GErr
 	g_autofree gchar *price_currency = NULL;
 	gint64 org = venture_entity_get_organization_id(q);
 	gboolean active = FALSE, per_seat = FALSE;
+	gint64 price_code = 0;
 	guint i;
 	if (integer(line, "plan-price-id") == 0) return TRUE;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "plan_price") == G_TYPE_INVALID)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "a subscription line needs the billing module");
 	plan_price = get(self, VENTURE_TYPE_PLAN_PRICE, org, integer(line, "plan-price-id"), error);
 	if (plan_price == NULL) return FALSE;
-	g_object_get(plan_price, "active", &active, "per-seat", &per_seat, "amount", &amount, "currency", &price_currency, NULL);
+	g_object_get(plan_price, "active", &active, "per-seat", &per_seat, "amount", &amount, "currency", &price_currency,
+		"tax-code-id", &price_code, NULL);
 	g_object_get(q, "currency", &currency, NULL);
 	g_object_get(line, "unit-price", &unit, NULL);
 	if (!active || amount == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "that plan price is not offered");
 	if (g_strcmp0(currency, price_currency) != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "the plan price is in another currency than the quote");
-	/* Its tax is the plan price's own rate, charged on each invoice. */
+	/* Its tax is the plan price's own, charged on each invoice. */
 	if (integer(line, "discount-percent") != 0 || integer(line, "tax-percent") != 0 ||
-		integer(line, "tax-code-id") != 0)
+		(integer(line, "tax-code-id") != 0 && integer(line, "tax-code-id") != price_code))
 		return refuse(error, VENTURE_ERROR_VALIDATION,
 			"a subscription line takes no discount or tax of its own; its invoices charge the plan price");
 	if (integer(line, "quantity") < 1 || (!per_seat && integer(line, "quantity") != 1))
@@ -378,7 +396,7 @@ plan_line(VentureQuoteService *self, VentureEntity *line, VentureEntity *q, GErr
 		if (venture_entity_get_id(other) != venture_entity_get_id(line) && integer(other, "plan-price-id") != 0)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "a quote proposes one subscription; it already has a plan line");
 	}
-	g_object_set(line, "unit-price", amount, NULL);
+	g_object_set(line, "unit-price", amount, "tax-code-id", price_code, NULL);
 	return TRUE;
 }
 

@@ -67,7 +67,10 @@ they are being saved.
 
 A line naming a plan price (=plan_price_id=) proposes a subscription: it is
 priced at the plan price, its quantity is the seats, it takes no discount or
-tax, and a quote has at most one. Acceptance leaves it out of the acceptance
+tax rate of its own, and a quote has at most one. It is taxed as the
+subscription's first invoice will tax it -- the price's rate, else the
+customer's address rate, nothing when the customer is exempt -- so the
+quote's total is what the customer will be charged. Acceptance leaves it out of the acceptance
 invoice, and =start-subscription= on the accepted quote starts it through the
 billing service -- once. See [[file:billing.org][SaaS billing]].
 

@@ -386,7 +386,7 @@ test_start_subscription(Fixture *f, gconstpointer data)
 	g_assert_false(plan_line(f, q, solo, "2", NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
-	/* Nor a tax rate: the plan price carries its own. */
+	/* Nor a tax rate other than the plan price's own. */
 	{
 		g_autoptr(VentureEntity) rate = record(f, "tax_code");
 		g_autoptr(VentureEntity) taxed = record(f, "quote_line");
@@ -465,6 +465,83 @@ test_start_subscription(Fixture *f, gconstpointer data)
 	invoices = rows(f, "customer_subscription");
 	g_assert_cmpuint(invoices->len, ==, 1);
 	(void)consulting;
+}
+
+/*
+ * A subscription line quotes what the subscription's first invoice will
+ * charge, tax included: the price's own rate when it has one, else the
+ * customer's address rate, and nothing for an exempt customer. The
+ * started subscription's invoice then asks for exactly the quote's total.
+ * If this regresses, the customer signs for $90.00 and is invoiced $99.00.
+ */
+static void
+test_plan_line_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) rate = record(f, "tax_code");
+	g_autoptr(VentureEntity) jurisdiction = record(f, "tax_jurisdiction");
+	g_autoptr(VentureEntity) rule = record(f, "tax_rule");
+	g_autoptr(VentureEntity) price = NULL, q = NULL, current = NULL, start = NULL, company = NULL;
+	g_autoptr(GPtrArray) lines = NULL, invoices = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 team = plan_price(f, TRUE), solo = plan_price(f, FALSE), code = 0;
+	(void)data;
+	g_object_set(rate, "code", "TEN", "name", "Ten percent", "rate-numerator", (gint64)10,
+		"rate-denominator", (gint64)100, "active", TRUE, NULL);
+	save(f, rate);
+	price = fresh(f, "plan_price", team);
+	g_object_set(price, "tax-code-id", venture_entity_get_id(rate), NULL);
+	save(f, price);
+
+	/* The price's code: three seats at $30 plus 10%. */
+	q = quote(f, "Q-TAXED");
+	g_assert_true(plan_line(f, q, team, "3", NULL, &error));
+	g_assert_no_error(error);
+	lines = rows(f, "quote_line");
+	g_object_get(g_ptr_array_index(lines, lines->len - 1), "tax-code-id", &code, NULL);
+	g_assert_cmpint(code, ==, venture_entity_get_id(rate));
+	current = fresh(f, "quote", venture_entity_get_id(q));
+	g_assert_cmpint(amount(current, "tax"), ==, 900);
+	g_assert_cmpint(amount(current, "total"), ==, 9900);
+	action(f, q, "send");
+	action(f, q, "accept");
+	start = request(f, q, "start-subscription");
+	save(f, start);
+	invoices = rows(f, "invoice");
+	g_assert_cmpuint(invoices->len, ==, 1);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
+		venture_entity_get_id(g_ptr_array_index(invoices, 0)), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 9900);
+	g_clear_object(&q);
+	g_clear_object(&current);
+
+	/* No code: the customer's address rate, 8.875% on $30, half to even. */
+	g_object_set(jurisdiction, "code", "QUOTE", "name", "Quote rate", "kind", "sales",
+		"rate-scaled", (gint64)88750, NULL);
+	field(jurisdiction, "effective-from", "2020-01-01");
+	save(f, jurisdiction);
+	g_object_set(rule, "jurisdiction-id", venture_entity_get_id(jurisdiction), "state", "NY", "active", TRUE, NULL);
+	save(f, rule);
+	company = fresh(f, "company", f->company);
+	g_object_set(company, "address-state", "NY", NULL);
+	save(f, company);
+	q = quote(f, "Q-ADDRESS");
+	g_assert_true(plan_line(f, q, solo, "1", NULL, &error));
+	g_assert_no_error(error);
+	current = fresh(f, "quote", venture_entity_get_id(q));
+	g_assert_cmpint(amount(current, "total"), ==, 3266);
+	g_clear_object(&q);
+	g_clear_object(&current);
+
+	/* An exempt customer is quoted no tax, with a code or without. */
+	g_object_set(company, "tax-exempt", TRUE, "tax-exempt-reason", "Resale", NULL);
+	save(f, company);
+	q = quote(f, "Q-EXEMPT");
+	g_assert_true(plan_line(f, q, solo, "1", NULL, &error));
+	g_assert_no_error(error);
+	current = fresh(f, "quote", venture_entity_get_id(q));
+	g_assert_cmpint(amount(current, "total"), ==, 3000);
 }
 
 /* A process refusing its won stage must roll back the issued invoice too. */
@@ -1011,6 +1088,7 @@ main(int argc, char **argv)
 	g_test_add("/quotes/pipeline-refusal", Fixture, NULL, setup, test_pipeline_refusal, teardown);
 	g_test_add("/quotes/lifecycle", Fixture, NULL, setup, test_lifecycle, teardown);
 	g_test_add("/quotes/start-subscription", Fixture, NULL, setup, test_start_subscription, teardown);
+	g_test_add("/quotes/plan-line-tax", Fixture, NULL, setup, test_plan_line_tax, teardown);
 	g_test_add("/quotes/rollback", Fixture, NULL, setup, test_rollback, teardown);
 	g_test_add("/quotes/freeze-revision", Fixture, NULL, setup, test_freeze, teardown);
 	g_test_add("/quotes/prices", Fixture, NULL, setup, test_prices, teardown);
