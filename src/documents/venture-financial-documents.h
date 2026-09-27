@@ -65,6 +65,24 @@ gchar *
 venture_financial_documents_filename(VentureEntity *record);
 
 /**
+ * venture_financial_documents_content_disposition:
+ * @disposition: "inline" or "attachment"
+ * @filename: a UTF-8 file name, such as venture_financial_documents_filename() returns
+ *
+ * Builds a Content-Disposition value naming @filename twice: an ASCII
+ * `filename=` every client reads, and an RFC 5987 `filename*=UTF-8''...`
+ * that clients which understand it prefer, so "Invoice Müller.pdf" is
+ * saved under its own name rather than as mojibake.
+ *
+ * Returns: (transfer full): the header value
+ */
+gchar *
+venture_financial_documents_content_disposition(
+	const gchar	*disposition,
+	const gchar	*filename
+);
+
+/**
  * venture_financial_documents_install_receipts:
  * @context: the application context
  *

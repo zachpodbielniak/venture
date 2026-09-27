@@ -117,12 +117,16 @@ static gchar *
 venture_pdf_winansi(const gchar *text)
 {
 	g_autoptr(GString) out = g_string_new(NULL);
+	g_autofree gchar *valid = NULL;
 	const gchar *p;
 
 	if (NULL == text)
 		return g_strdup("");
 
-	for (p = text; '\0' != *p; p = g_utf8_next_char(p))
+	/* Caller text is a stored field, not a promise of UTF-8: an invalid
+	 * byte becomes U+FFFD, drawn as "?", rather than ending the line. */
+	valid = g_utf8_make_valid(text, -1);
+	for (p = valid; '\0' != *p; p = g_utf8_next_char(p))
 	{
 		gunichar c = g_utf8_get_char_validated(p, -1);
 
@@ -295,6 +299,7 @@ venture_pdf_writer_wrap_aligned(
 	const gchar		*text
 ){
 	g_auto(GStrv) paragraphs = NULL;
+	g_autofree gchar *valid = NULL;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_PDF_WRITER(self), y);
@@ -302,7 +307,14 @@ venture_pdf_writer_wrap_aligned(
 	if (NULL == text)
 		return y;
 
-	paragraphs = g_strsplit(text, "\n", -1);
+	/*
+	 * Made valid once, here, because venture_pdf_emit_line() steps through
+	 * the text with g_utf8_next_char(): a truncated sequence before the
+	 * terminator -- a lone 0xE0 -- would step it past the NUL and on
+	 * through whatever memory follows.
+	 */
+	valid = g_utf8_make_valid(text, -1);
+	paragraphs = g_strsplit(valid, "\n", -1);
 
 	for (i = 0; NULL != paragraphs[i]; i++)
 	{
@@ -458,7 +470,28 @@ venture_pdf_writer_set_title(
 	g_return_if_fail(VENTURE_IS_PDF_WRITER(self));
 
 	g_free(self->title);
-	self->title = g_strdup(title);
+	self->title = (NULL != title) ? g_utf8_make_valid(title, -1) : NULL;
+}
+
+/*
+ * A PDF text string outside a content stream is PDFDocEncoding or
+ * UTF-16BE, not the fonts' WinAnsi: WinAnsi bytes in /Title show a reader's
+ * title bar the wrong letters for anything past ASCII. UTF-16BE with its
+ * byte-order mark, as hex, holds every character and needs no escaping.
+ */
+static void
+venture_pdf_text_string(GString *out, const gchar *text)
+{
+	g_autofree gunichar2 *units = NULL;
+	glong n_units = 0;
+	glong i;
+
+	g_string_append(out, "<FEFF");
+	if (NULL != text)
+		units = g_utf8_to_utf16(text, -1, NULL, &n_units, NULL);
+	for (i = 0; NULL != units && i < n_units; i++)
+		g_string_append_printf(out, "%04X", (guint)units[i]);
+	g_string_append_c(out, '>');
 }
 
 /* Starts object @number and records where it begins, for the xref table. */
@@ -477,7 +510,6 @@ venture_pdf_writer_finish(VenturePdfWriter *self)
 {
 	g_autoptr(GString) out = NULL;
 	g_autoptr(GArray) offsets = NULL;
-	g_autofree gchar *title = NULL;
 	guint n_pages;
 	guint objects;
 	guint i;
@@ -517,10 +549,9 @@ venture_pdf_writer_finish(VenturePdfWriter *self)
 	                     "/Encoding /WinAnsiEncoding >>\nendobj\n");
 
 	venture_pdf_object(out, offsets, 5);
-	g_string_append(out, "<< /Producer (VENTURE) /Title (");
-	title = venture_pdf_winansi(self->title);
-	venture_pdf_literal(out, title);
-	g_string_append(out, ") >>\nendobj\n");
+	g_string_append(out, "<< /Producer (VENTURE) /Title ");
+	venture_pdf_text_string(out, self->title);
+	g_string_append(out, " >>\nendobj\n");
 
 	for (i = 0; i < n_pages; i++)
 	{

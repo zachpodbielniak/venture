@@ -539,6 +539,43 @@ venture_financial_documents_filename(VentureEntity *record)
 	return g_strdup_printf("Receipt %" G_GINT64_FORMAT ".pdf", venture_entity_get_id(record));
 }
 
+gchar *
+venture_financial_documents_content_disposition(
+	const gchar	*disposition,
+	const gchar	*filename
+){
+	g_autoptr(GString) fallback = g_string_new(NULL);
+	g_autofree gchar *valid = NULL;
+	g_autofree gchar *encoded = NULL;
+	const gchar *p;
+
+	g_return_val_if_fail(NULL != disposition, NULL);
+	g_return_val_if_fail(NULL != filename, NULL);
+
+	/*
+	 * A header is bytes a client decodes however it likes, so the quoted
+	 * name is plain ASCII with one '_' per other character. The quote and
+	 * backslash would end or escape the quoted string, and a control byte
+	 * could end the header.
+	 */
+	valid = g_utf8_make_valid(filename, -1);
+	for (p = valid; '\0' != *p; p = g_utf8_next_char(p))
+	{
+		gunichar c = g_utf8_get_char(p);
+
+		if (c >= 32 && c < 127 && '"' != c && '\\' != c)
+			g_string_append_c(fallback, (gchar)c);
+		else
+			g_string_append_c(fallback, '_');
+	}
+
+	/* RFC 5987 attr-char: g_uri_escape_string() keeps the unreserved set,
+	 * and these are the rest of it. */
+	encoded = g_uri_escape_string(valid, "!#$&+^`|", FALSE);
+
+	return g_strdup_printf("%s; filename=\"%s\"; filename*=UTF-8''%s", disposition, fallback->str, encoded);
+}
+
 /* --- Receipts, sent ----------------------------------------------------- */
 
 typedef struct

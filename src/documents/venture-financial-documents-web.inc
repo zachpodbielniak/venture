@@ -19,7 +19,7 @@ venture_web_pdf_response(GBytes *pdf, const gchar *filename)
 	htmx_response_set_bytes(response, pdf);
 	htmx_response_set_content_type(response, "application/pdf");
 	htmx_response_set_status(response, 200);
-	disposition = g_strdup_printf("inline; filename=\"%s\"", filename);
+	disposition = venture_financial_documents_content_disposition("inline", filename);
 	htmx_response_add_header(response, "Content-Disposition", disposition);
 
 	return response;

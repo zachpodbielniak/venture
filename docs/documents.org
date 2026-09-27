@@ -78,6 +78,10 @@ the customer nor the invoice. The JSON composer carries this intent as
 =tax_exemption_number=; these values are included in issuance consent. Repeating
 schedules keep their customer update and schedule creation in one transaction.
 
+* Downloads
+
+=GET /invoices/:id/pdf= and =GET /payments/:id/receipt= answer inline with a =Content-Disposition= built by =venture_financial_documents_content_disposition()=: an ASCII =filename== with one =_= for each other character (and for a quote or backslash), and an RFC 5987 =filename*=UTF-8''...= carrying the real name percent-encoded, which current browsers prefer. The PDF's own =/Title= is a UTF-16BE text string with a byte-order mark, so a reader's title bar shows an accented or non-Latin invoice number correctly; the page text stays WinAnsi, where a character the standard fonts cannot draw is =?=. Text that is not valid UTF-8 is repaired to U+FFFD before it is drawn or measured.
+
 Browser composition strips identity fields from temporary form records before
 building the command. Retrying the same form for approval therefore compares
 its business inputs, not new construction timestamps.

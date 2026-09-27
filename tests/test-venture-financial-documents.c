@@ -481,6 +481,28 @@ test_receipts_can_be_switched_off(Fixture *f, gconstpointer data)
 	g_assert_null(found);
 }
 
+/*
+ * A download keeps an accented invoice number: plain ASCII in filename=,
+ * the real name percent-encoded in filename*=. If this regresses, raw
+ * UTF-8 sits in a header a client decodes as Latin-1 and the file is saved
+ * as mojibake -- or a quote in the name ends the parameter early.
+ */
+static void
+test_content_disposition(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *value = NULL;
+
+	(void)f;
+	(void)data;
+
+	value = venture_financial_documents_content_disposition("inline", "Invoice M\xc3\xbcller \"1\".pdf");
+	g_assert_cmpstr(value, ==,
+		"inline; filename=\"Invoice M_ller _1_.pdf\"; filename*=UTF-8''Invoice%20M%C3%BCller%20%221%22.pdf");
+	g_clear_pointer(&value, g_free);
+	value = venture_financial_documents_content_disposition("inline", "Receipt 12.pdf");
+	g_assert_cmpstr(value, ==, "inline; filename=\"Receipt 12.pdf\"; filename*=UTF-8''Receipt%2012.pdf");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -498,6 +520,8 @@ main(int argc, char *argv[])
 	           test_receipt_sent_on_payment, tear_down);
 	g_test_add("/financial-documents/receipts-can-be-switched-off", Fixture, "off", set_up,
 	           test_receipts_can_be_switched_off, tear_down);
+	g_test_add("/financial-documents/content-disposition", Fixture, NULL, set_up,
+	           test_content_disposition, tear_down);
 
 	return g_test_run();
 }
