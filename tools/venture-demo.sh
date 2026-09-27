@@ -319,26 +319,37 @@ start_server () {
     # VENTURE_FORGE_WORKSPACE_ROOTS to keep the demo away from it.
     mkdir -p "${state}/workspace"
 
+    # The server has to be a child of this script.
+    #
+    # `wait` only reaps children. Backgrounding venture *inside* a
+    # subshell records a pid this shell did not spawn: the subshell
+    # returns, the server is reparented, and `wait` comes back at once
+    # with status 127. This script then exits, the EXIT trap treats that
+    # as the demo ending, and it kills the server it just announced. The
+    # port in the banner is dead before anyone can open it.
+    #
+    # Background the subshell itself and exec the server into it, so the
+    # pid we wait on stays the server. The working directory is the
+    # checkout because the server resolves a few paths from there. Every
+    # path passed in is absolute; the cd is for what it opens itself.
     (
         CDPATH='' cd -- "${root}"
-        VENTURE_PLUGIN_PATH="${outdir}/plugins" \
-        VENTURE_VENTURE_TYPE_PATH="${root}/data/venture-types" \
-        VENTURE_POD_MODULE_PATH="${outdir}/pod-modules:${root}/deps/podomation/build/${build_type}/modules" \
-        VENTURE_UI_THEME="${VENTURE_UI_THEME:-mocha}" \
-        VENTURE_SESSION_SECRET="venture-demo-secret" \
-        VENTURE_FORGE_RUNS_ENABLED="true" \
-        VENTURE_FORGE_WORKSPACE_ROOTS="${VENTURE_FORGE_WORKSPACE_ROOTS:-${state}/workspace,${root}}" \
-        VENTURE_DOCS_SITE_DIR="${VENTURE_DOCS_SITE_DIR:-${root}/build/docs-site}" \
-        "${outdir}/venture" \
+        export VENTURE_PLUGIN_PATH="${outdir}/plugins"
+        export VENTURE_VENTURE_TYPE_PATH="${root}/data/venture-types"
+        export VENTURE_POD_MODULE_PATH="${outdir}/pod-modules:${root}/deps/podomation/build/${build_type}/modules"
+        export VENTURE_UI_THEME="${VENTURE_UI_THEME:-mocha}"
+        export VENTURE_SESSION_SECRET="venture-demo-secret"
+        export VENTURE_FORGE_RUNS_ENABLED="true"
+        export VENTURE_FORGE_WORKSPACE_ROOTS="${VENTURE_FORGE_WORKSPACE_ROOTS:-${state}/workspace,${root}}"
+        export VENTURE_DOCS_SITE_DIR="${VENTURE_DOCS_SITE_DIR:-${root}/build/docs-site}"
+        exec "${outdir}/venture" \
             --database "sqlite://${state}/venture.db" \
             --state-dir "${state}" \
-            --port "${port}" \
-            > "${state}/server.log" 2>&1 &
+            --port "${port}"
+    ) > "${state}/server.log" 2>&1 &
 
-        printf '%s' "$!" > "${state}/venture.pid"
-    )
-
-    server_pid="$(cat "${state}/venture.pid")"
+    server_pid=$!
+    printf '%s\n' "${server_pid}" > "${state}/venture.pid"
 }
 
 wait_for_health () {
@@ -1761,8 +1772,16 @@ do_start () {
     say ""
 
     # The trap does the stopping; this just keeps the script alive while
-    # the server is.
-    wait "${server_pid}" 2>/dev/null || true
+    # the server is. Status 127 means the pid is not our child, so this
+    # did not hold the port -- say so instead of exiting quietly and
+    # letting the trap shoot the instance.
+    local status=0
+    wait "${server_pid}" 2>/dev/null || status=$?
+
+    if [[ ${status} -eq 127 ]]
+    then
+        die "the server is not a child of this script, so the demo cannot stay up"
+    fi
 }
 
 main () {
@@ -1775,4 +1794,9 @@ main () {
     esac
 }
 
-main "$@"
+# The foreground regression test sources this file and drives start_server
+# with a stub binary. Executing the file is what actually starts a demo.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]
+then
+    main "$@"
+fi

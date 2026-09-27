@@ -642,3 +642,17 @@ builtin otherwise), =emacs= or =builtin=. A broken internal link or a
 document not linked from =docs/index.org= is refused with exit code 8
 and a message naming it; nothing is written. See
 [[file:docs-site.org][The documentation site]].
+
+* Receipt printing
+
+#+begin_src sh
+venturectl printers
+venturectl printers status counter
+venturectl printers test counter
+venturectl print payment 12
+venturectl print invoice 41 office
+#+end_src
+
+The optional last argument selects a configured name; omission uses the
+default. Status and test require admin/owner. Printing requires access to the
+record and is immediate, not staged. See [[file:printing.org][receipt printers]].

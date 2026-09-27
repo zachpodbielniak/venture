@@ -571,3 +571,19 @@ backup:
 # somewhere else.
 # docs:
 #   site_dir: "/usr/local/share/venture/docs-site"
+
+# Raw TCP ESC/POS printers. An empty list disables printing. A nonempty list
+# requires a declared default; requests may select names, never addresses.
+printing:
+  default: ""
+  printers: []
+  # - name: counter
+  #   host: 192.0.2.10
+  #   port: 9100
+  #   timeout: 10
+  #   font: b                 # a (48 columns), b (64), auto
+  #   codepage: cp1252        # cp1252, cp437, cp858
+  #   alignment: left        # left, center, right
+  #   width: 48              # optional; otherwise use the font's width
+  #   cut: true
+  #   feed: 4

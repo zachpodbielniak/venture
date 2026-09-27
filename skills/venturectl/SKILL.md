@@ -1214,3 +1214,17 @@ retained identity first. Configure `server.max_buffered_request_mb`,
 `server.max_connections` and `server.request_timeout` with the platform budget,
 then restart. The timeout bounds reception/idle connections, not synchronous
 business execution. See `docs/configuration.org` for gateway responsibilities.
+
+## Receipt printers
+
+- `venturectl printers [list]` lists configured names and the default. State
+  is `unknown` until explicitly queried; listing does not probe sockets.
+- `venturectl printers status NAME` reads printer and paper status;
+  `venturectl printers test NAME` prints a test page. Both require admin/owner.
+- `venturectl print payment ID [PRINTER]` or `print invoice ID [PRINTER]`
+  prints immediately using the configured default when PRINTER is omitted.
+  IDs must be positive integers. Read access to the record is required.
+- Printers are configured on the server. Never pass a host/port as a printer
+  name. Unknown names and an unconfigured default are refused.
+- Printing is not a record write and cannot use `--stage`. A send failure
+  may have delivered part of the receipt: inspect paper before retrying.

@@ -644,3 +644,15 @@ organization owner/admin authority. Returns canonical origin, workspace UUID,
 organization ID and active lifecycle state; never grants token access to
 workspace administration. See [[file:lightsite-accounts.org][Lightsite account validation]] for refusals and
 consumer requirements.
+* Receipt printing
+
+=GET /api/v1/printers= returns configured names, default flags and unknown
+connection states to authenticated readers, without contacting printers.
+Admins/owners may =GET /api/v1/printers/:name/status= and
+=POST /api/v1/printers/:name/test=.
+
+Readers of a payment or invoice may =POST /api/v1/print/:type/:id= with JSON
+={} (default printer) or ={"printer":"counter"}=. An unknown printer is
+refused; the response never exposes a host or port. A successful exchange
+returns ={"state":"sent"}=. Printing is immediate and cannot be staged.
+See [[file:printing.org][receipt printers]] for deadlines and partial-delivery semantics.

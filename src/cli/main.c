@@ -2937,9 +2937,81 @@ venture_cli_command_sprints(
 	return 0;
 }
 
-/*
- * venturectl watch TYPE ID | unwatch TYPE ID | activity TYPE ID
- */
+/* Resolve generic printing operations to API routes, validating the record ID
+ * before constructing the request instead of sending untyped values. */
+static gint
+venture_cli_command_printing(
+	VentureCli	*cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autofree gchar	*path = NULL;
+	g_autoptr(JsonNode)	body = NULL;
+	g_autoptr(JsonNode)	reply = NULL;
+	const gchar			*method = "GET";
+	guint				count = g_strv_length(args);
+
+	if (!g_strcmp0(args[0], "printers"))
+	{
+		if (count == 1 || (count == 2 && !g_strcmp0(args[1], "list")))
+		{
+			path = g_strdup("/api/v1/printers");
+		}
+		else if (count == 3 && (!g_strcmp0(args[1], "test") || !g_strcmp0(args[1], "status")))
+		{
+			g_autofree gchar	*name = g_uri_escape_string(args[2], NULL, FALSE);
+
+			path = g_strdup_printf("/api/v1/printers/%s/%s", name, args[1]);
+			if (!g_strcmp0(args[1], "test"))
+			{
+				method = "POST";
+			}
+		}
+		else
+		{
+			goto invalid;
+		}
+	}
+	else
+	{
+		gint64	id;
+		gchar	*end;
+
+		if (count < 3 || count > 4 ||
+		   (g_strcmp0(args[1], "payment") && g_strcmp0(args[1], "invoice")))
+		{
+			goto invalid;
+		}
+		errno = 0;
+		id = g_ascii_strtoll(args[2], &end, 10);
+		if (errno || *end || id <= 0)
+		{
+			goto invalid;
+		}
+		path = g_strdup_printf("/api/v1/print/%s/%" G_GINT64_FORMAT, args[1], id);
+		method = "POST";
+		body = json_node_new(JSON_NODE_OBJECT);
+		json_node_take_object(body, json_object_new());
+		if (count == 4)
+		{
+			json_object_set_string_member(json_node_get_object(body), "printer", args[3]);
+		}
+	}
+	reply = venture_cli_request(cli, method, path, body, error);
+	if (!reply)
+	{
+		return -1;
+	}
+	venture_cli_output(cli, reply);
+	return 0;
+invalid:
+	g_set_error_literal(
+		error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"usage: venturectl printers [list|test NAME|status NAME] | print TYPE ID [PRINTER]");
+	return -1;
+}
+
+/* Follow record activity using the same type/ID arguments as other commands. */
 static gint
 venture_cli_command_watch(
 	VentureCli	 *cli,
@@ -3748,6 +3820,8 @@ main(
 		"  claim submit|approve|pay ID               employee expense claims\n"
 		"  payroll import|disburse|reverse           imported pay runs\n"
 		"  accounting                               daily books next actions\n"
+		"  printers [list|test NAME|status NAME]  configured receipt printers\n"
+		"  print TYPE ID [PRINTER]       print a payment or invoice receipt\n"
 		"  factory                      the software factory at a glance\n"
 		"  factory actions              what in it needs somebody, most pressing first\n"
 		"  factory briefing             the same and where things stand, as prose (AI)\n"
@@ -4047,6 +4121,10 @@ main(
 		result = venture_cli_command_federation(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "reconcile"))
 		result = venture_cli_command_reconcile(&cli, args, reconciliation_matcher, reconciliation_threshold, &error);
+	else if (!g_strcmp0(args[0], "printers") || !g_strcmp0(args[0], "print"))
+	{
+		result = venture_cli_command_printing(&cli, args, &error);
+	}
 	else if (0 == g_strcmp0(args[0], "factory"))
 		result = venture_cli_command_factory(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "invoice"))

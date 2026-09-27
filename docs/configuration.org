@@ -420,3 +420,12 @@ Implementation uses the public libsoup [[https://libsoup.gnome.org/libsoup-3.0/s
 [[https://libsoup.gnome.org/libsoup-3.0/signal.ServerMessage.got-chunk.html][got-chunk]] signals, preserving the one application router.
 See [[file:http-limits-demonstration.org][the built-server demonstration]] for observable rejection,
 ordinary writes, TLS, timeout and neighboring-listener behavior.
+
+* Receipt printers
+
+=printing= contains =default= and a =printers= list of named destinations.
+An empty list with an empty default disables the feature. Each destination
+requires =name= and =host=; port defaults to 9100 and the whole-exchange
+deadline to 10 seconds. Font, codepage and alignment are closed sets;
+duplicates and missing defaults refuse loading. See [[file:printing.org][receipt printers]]
+for the complete YAML example, bounds and list replacement semantics.

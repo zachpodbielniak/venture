@@ -356,6 +356,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 struct _VentureConfig
 {
 	GObject parent_instance;
+	GPtrArray	*printers;
+	gchar		*default_printer;
 
 	/* property name -> GValue, in the same generic style the record
 	 * types use. */
@@ -448,6 +450,8 @@ venture_config_finalize(GObject *object)
 
 	self = VENTURE_CONFIG(object);
 
+	g_clear_pointer(&self->printers, g_ptr_array_unref);
+	g_free(self->default_printer);
 	g_clear_pointer(&self->values, g_hash_table_unref);
 	g_clear_pointer(&self->module_switches, g_hash_table_unref);
 	g_clear_pointer(&self->resolved_state_dir, g_free);
@@ -532,10 +536,310 @@ venture_config_class_init(VentureConfigClass *klass)
 	}
 }
 
+/* Release a whole configured destination when an atomic config replacement retires it. */
+static void
+printer_free(
+	gpointer	data
+){
+	VenturePrinter	*printer = data;
+
+	g_free(printer->name);
+	g_free(printer->host);
+	g_free(printer->font);
+	g_free(printer->codepage);
+	g_free(printer->alignment);
+	g_free(printer);
+}
+
+/**
+ * venture_config_get_printers:
+ * @self: configuration
+ * Returns: (transfer none) (element-type VenturePrinter): configured printers
+ */
+const GPtrArray *
+venture_config_get_printers(
+	VentureConfig	*self
+){
+	return self->printers;
+}
+
+/**
+ * venture_config_get_default_printer:
+ * @self: configuration
+ * Returns: (transfer none): default name, or an empty string
+ */
+const gchar *
+venture_config_get_default_printer(
+	VentureConfig	*self
+){
+	return self->default_printer;
+}
+
+/**
+ * venture_config_find_printer:
+ * @self: configuration
+ * @name: (nullable): configured name; empty selects the default
+ * @error: return location for an error
+ * Returns: (transfer none) (nullable): printer, or NULL on refusal
+ */
+const VenturePrinter *
+venture_config_find_printer(
+	VentureConfig	*self,
+	const gchar		*name,
+	GError			**error
+){
+	guint	i;
+
+	if (venture_string_is_empty(name))
+	{
+		name = self->default_printer;
+	}
+	for (i = 0; i < self->printers->len; i++)
+	{
+		const VenturePrinter	*printer = g_ptr_array_index(self->printers, i);
+
+		if (g_strcmp0(name, printer->name) == 0)
+		{
+			return printer;
+		}
+	}
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+						self->printers->len ? "Unknown configured printer"
+											: "No printers configured");
+	return NULL;
+}
+
+/* Validate the entire replacement before publishing it: a bad reload must
+ * never leave half of the printer destinations changed. */
+static gboolean
+venture_config_apply_printing(
+	VentureConfig	*self,
+	JsonNode		*node,
+	GError			**error
+){
+	g_autoptr(GPtrArray)	printers = g_ptr_array_new_with_free_func(printer_free);
+	g_autoptr(GHashTable)	names = g_hash_table_new(g_str_hash, g_str_equal);
+
+	JsonObject	*section;
+	JsonNode	*list;
+	JsonNode	*default_node;
+	const gchar	*default_name;
+	guint		i;
+
+	if (!JSON_NODE_HOLDS_OBJECT(node))
+	{
+		goto invalid;
+	}
+	section = json_node_get_object(node);
+	{
+		g_autoptr(GList)	keys = json_object_get_members(section);
+		GList				*key;
+
+		for (key = keys; key; key = key->next)
+		{
+			if (g_strcmp0(key->data, "default") && g_strcmp0(key->data, "printers"))
+			{
+				goto invalid;
+			}
+		}
+	}
+	list = json_object_get_member(section, "printers");
+	default_node = json_object_get_member(section, "default");
+	if (!list || !JSON_NODE_HOLDS_ARRAY(list) || !default_node ||
+	   (!JSON_NODE_HOLDS_NULL(default_node) &&
+		json_node_get_value_type(default_node) != G_TYPE_STRING))
+	{
+		goto invalid;
+	}
+	/* yaml-glib represents even a quoted empty scalar as null. */
+	default_name = JSON_NODE_HOLDS_NULL(default_node) ? "" : json_node_get_string(default_node);
+	for (i = 0; i < json_array_get_length(json_node_get_array(list)); i++)
+	{
+		JsonNode	   *entry = json_array_get_element(json_node_get_array(list), i);
+		JsonObject	   *object;
+		VenturePrinter		*printer;
+		g_autoptr(GList)	keys = NULL;
+		GList				*key;
+		const gchar			*cursor;
+
+		if (!JSON_NODE_HOLDS_OBJECT(entry))
+		{
+			goto invalid;
+		}
+		object = json_node_get_object(entry);
+		printer = g_new0(VenturePrinter, 1);
+		g_ptr_array_add(printers, printer);
+		printer->font = g_strdup("b");
+		printer->codepage = g_strdup("cp1252");
+		printer->alignment = g_strdup("left");
+		printer->port = 9100;
+		printer->timeout = 10;
+		printer->feed = VENTURE_ESCPOS_DEFAULT_FEED;
+		printer->cut = TRUE;
+		keys = json_object_get_members(object);
+		for (key = keys; key; key = key->next)
+		{
+			const gchar	*field = key->data;
+
+			JsonNode *value = json_object_get_member(object, field);
+			gchar	**string = NULL;
+			guint	*integer = NULL;
+			guint	min = 0;
+			guint	max = 255;
+
+			if (!strcmp(field, "name"))
+			{
+				string = &printer->name;
+			}
+			else if (!strcmp(field, "host"))
+			{
+				string = &printer->host;
+			}
+			else if (!strcmp(field, "font"))
+			{
+				string = &printer->font;
+			}
+			else if (!strcmp(field, "codepage"))
+			{
+				string = &printer->codepage;
+			}
+			else if (!strcmp(field, "alignment"))
+			{
+				string = &printer->alignment;
+			}
+			else if (!strcmp(field, "port"))
+			{
+				integer = &printer->port;
+				min = 1;
+				max = 65535;
+			}
+			else if (!strcmp(field, "timeout"))
+			{
+				integer = &printer->timeout;
+				min = 1;
+				max = 3600;
+			}
+			else if (!strcmp(field, "width"))
+			{
+				integer = &printer->width;
+				min = 8;
+			}
+			else if (!strcmp(field, "feed"))
+			{
+				integer = &printer->feed;
+			}
+			else if (!strcmp(field, "cut"))
+			{
+				if (json_node_get_value_type(value) != G_TYPE_BOOLEAN)
+				{
+					goto invalid;
+				}
+				printer->cut = json_node_get_boolean(value);
+				continue;
+			}
+			else
+			{
+				goto invalid;
+			}
+			if (string)
+			{
+				if (json_node_get_value_type(value) != G_TYPE_STRING)
+				{
+					goto invalid;
+				}
+				g_free(*string);
+				*string = g_strdup(json_node_get_string(value));
+			}
+			else
+			{
+				gint64	number;
+
+				if (json_node_get_value_type(value) != G_TYPE_INT64)
+				{
+					goto invalid;
+				}
+				number = json_node_get_int(value);
+				if (number < min || number > max)
+				{
+					goto invalid;
+				}
+				*integer = (guint)number;
+			}
+		}
+		if (venture_string_is_empty(printer->name) || venture_string_is_empty(printer->host))
+		{
+			goto invalid;
+		}
+		for (cursor = printer->name; *cursor; cursor++)
+		{
+			if (!g_ascii_isalnum(*cursor) && *cursor != '-' && *cursor != '_')
+			{
+				goto invalid;
+			}
+		}
+		/* A host is never a URI: credentials and embedded ports have no place here. */
+		if (strpbrk(printer->host, "/@ \t\r\n?#"))
+		{
+			goto invalid;
+		}
+		if (strchr(printer->host, ':'))
+		{
+			g_autoptr(GInetAddress)	address = g_inet_address_new_from_string(printer->host);
+
+			if (!address)
+			{
+				goto invalid;
+			}
+		}
+		if (strcmp(printer->font, "a") && strcmp(printer->font, "b") &&
+		   strcmp(printer->font, "auto"))
+		{
+			goto invalid;
+		}
+		if (strcmp(printer->codepage, "cp1252") && strcmp(printer->codepage, "cp437") &&
+		   strcmp(printer->codepage, "cp858"))
+		{
+			goto invalid;
+		}
+		if (strcmp(printer->alignment, "left") && strcmp(printer->alignment, "center") &&
+		   strcmp(printer->alignment, "right"))
+		{
+			goto invalid;
+		}
+		if (g_hash_table_contains(names, printer->name))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+						"Duplicate printing.printers name: %s", printer->name);
+			return FALSE;
+		}
+		g_hash_table_add(names, printer->name);
+	}
+	if ((*default_name || printers->len) && !g_hash_table_contains(names, default_name))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+							"printing.default must name a declared printer");
+		return FALSE;
+	}
+	g_ptr_array_unref(self->printers);
+	self->printers = g_steal_pointer(&printers);
+	g_free(self->default_printer);
+	self->default_printer = g_strdup(default_name);
+	return TRUE;
+invalid:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+						"Invalid printing configuration: require default and printers list; each "
+						"printer needs name/host, font a|b|auto, codepage cp1252|cp437|cp858, "
+						"alignment left|center|right, bounded integers and boolean cut");
+	return FALSE;
+}
+
 static void
 venture_config_init(VentureConfig *self)
 {
 	gsize i;
+
+	self->printers = g_ptr_array_new_with_free_func(printer_free);
+	self->default_printer = g_strdup("");
 
 	self->module_switches = g_hash_table_new_full(g_str_hash, g_str_equal,
 	                                              g_free, NULL);
@@ -935,6 +1239,15 @@ venture_config_apply_yaml_string(
 		JsonNode *section_node;
 
 		section_node = json_object_get_member(object, iter->data);
+
+		if (0 == g_strcmp0(iter->data, "printing"))
+		{
+			if (!venture_config_apply_printing(self, section_node, error))
+			{
+				return FALSE;
+			}
+			continue;
+		}
 
 		if (!JSON_NODE_HOLDS_OBJECT(section_node))
 		{
@@ -1517,6 +1830,40 @@ venture_config_to_yaml(
 		g_string_append_printf(yaml, "  %s: \"%s\"\n", setting->key,
 		                       (NULL != g_value_get_string(&value))
 		                               ? g_value_get_string(&value) : "");
+	}
+
+	if (include_defaults || self->printers->len)
+	{
+		g_string_append_printf(yaml,
+							   "\nprinting:\n  default: \"%s\"\n  printers:", self->default_printer);
+		if (!self->printers->len)
+		{
+			g_string_append(yaml, " []\n");
+		}
+		else
+		{
+			g_string_append_c(yaml, '\n');
+		}
+		for (i = 0; i < self->printers->len; i++)
+		{
+			const VenturePrinter	*printer = g_ptr_array_index(self->printers, i);
+			g_autoptr(JsonNode)		host_node = json_node_new(JSON_NODE_VALUE);
+			g_autofree gchar		*host_json = NULL;
+
+			json_node_set_string(host_node, printer->host);
+			host_json = json_to_string(host_node, FALSE);
+			g_string_append_printf(
+				yaml,
+				"    - name: \"%s\"\n      host: %s\n      port: %u\n      timeout: %u\n"
+				"      font: %s\n      codepage: %s\n      alignment: %s\n      cut: %s\n      feed: "
+				"%u\n",
+				printer->name, host_json, printer->port, printer->timeout, printer->font,
+				printer->codepage, printer->alignment, printer->cut ? "true" : "false", printer->feed);
+			if (printer->width)
+			{
+				g_string_append_printf(yaml, "      width: %u\n", printer->width);
+			}
+		}
 	}
 
 	/* The module switches, only those actually set: an absent module is

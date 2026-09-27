@@ -186,3 +186,5 @@ screen's ordinary sync-and-import test.
 - [[file:evidence/calls-demonstration.org][Call logging and follow-up demonstration]] — logging, replay, lead-only history, report counts and recording-URL redaction
 - [[file:evidence/ocr-demonstration.org][Local OCR and capture review demonstration]] — bounds, provenance, batch isolation and retry/cancel/resume
 - [[file:evidence/backup-retention-demonstration.org][Local backup retention demonstration]] — archive catalog, explicit expiry plans, holds and crash reconciliation
+
+- [[file:printing.org][Receipt printers]] — named ESC/POS printers, thermal receipts and invoice summaries.
