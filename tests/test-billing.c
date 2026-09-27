@@ -764,6 +764,48 @@ test_skip_trial(Fixture *f, gconstpointer data)
 	g_assert_cmpint(invoice_total(f, a), ==, 3000);
 }
 
+/*
+ * The next invoice quoted to a customer -- in the trial reminder, the
+ * price-change notice and the portal -- includes the price's tax, as the
+ * invoice will, and leaves it off for an exempt customer. If this
+ * regresses, the email promises $30 and the invoice asks for $33.
+ */
+static void
+test_next_invoice_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) code = record(f, "tax_code");
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) customer = NULL;
+	g_autoptr(VentureEntity) s = NULL;
+	g_autoptr(VentureMoney) next = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id;
+
+	(void)data;
+	g_object_set(code, "code", "STD", "name", "Standard", "rate-numerator", (gint64)10,
+		"rate-denominator", (gint64)100, "active", TRUE, NULL);
+	save(f, code);
+	g_object_set(p, "tax-code-id", venture_entity_get_id(code), NULL);
+	save(f, p);
+
+	id = start(f);
+	s = subscription(f, id);
+	next = venture_billing_service_next_invoice(venture_billing_service_get(f->db),
+		VENTURE_CUSTOMER_SUBSCRIPTION(s), &error);
+	g_assert_no_error(error);
+	/* Two seats at $30 plus 10%. */
+	g_assert_cmpint(venture_money_get_amount(next), ==, 6600);
+
+	customer = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, NULL);
+	g_object_set(customer, "tax-exempt", TRUE, NULL);
+	save(f, customer);
+	g_clear_pointer(&next, venture_money_free);
+	next = venture_billing_service_next_invoice(venture_billing_service_get(f->db),
+		VENTURE_CUSTOMER_SUBSCRIPTION(s), &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(next), ==, 6000);
+}
+
 /* Remaining days get their original allocation, including remainder cents. */
 static void
 test_seats_proration(Fixture *f, gconstpointer data)
@@ -1782,6 +1824,7 @@ main(int argc, char **argv)
 	g_test_add("/billing/quarterly", Fixture, NULL, setup, test_quarterly, teardown);
 	g_test_add("/billing/venture-plans", Fixture, NULL, setup, test_venture_plans, teardown);
 	g_test_add("/billing/discount", Fixture, NULL, setup, test_discount, teardown);
+	g_test_add("/billing/next-invoice-tax", Fixture, NULL, setup, test_next_invoice_tax, teardown);
 	g_test_add("/billing/skip-trial", Fixture, NULL, setup, test_skip_trial, teardown);
 	g_test_add("/billing/trial-reminder", Fixture, NULL, setup, test_trial_reminder, teardown);
 	g_test_add("/billing/trial-reminder-off", Fixture, NULL, setup, test_trial_reminder_off, teardown);

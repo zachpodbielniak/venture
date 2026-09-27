@@ -923,8 +923,8 @@ customer_address(VentureBillingService *self, VentureEntity *sub, gint64 org, gc
 /*
  * What the next invoice will charge, worked out the way issue() will work
  * it out -- the price it switches to at renewal, the discount while it
- * still covers invoices, and the part-period difference carried to it --
- * without writing anything: the discount is counted on a copy. A credit
+ * still covers invoices, the part-period difference carried to it, and
+ * the price's tax unless the customer is exempt -- without writing anything: the discount is counted on a copy. A credit
  * larger than the charge leaves nothing to pay, never a negative invoice.
  * NULL with no error when nothing more will be invoiced.
  */
@@ -958,6 +958,41 @@ preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org
 	if (discounted == NULL)
 		return NULL;
 	g_object_get(sub, "pending-adjustment", &adjustment, NULL);
+	/* A charge carried from a change is on the invoice line and taxed with
+	 * it; a credit is applied after, untaxed -- as issue() does. */
+	if (adjustment != NULL && venture_money_get_amount(adjustment) > 0)
+	{
+		VentureMoney *charged = venture_money_add(discounted, adjustment, error);
+		if (charged == NULL)
+			return NULL;
+		g_clear_pointer(&discounted, venture_money_free);
+		discounted = charged;
+		g_clear_pointer(&adjustment, venture_money_free);
+	}
+	if (number(price, "tax-code-id") != 0)
+	{
+		g_autoptr(VentureEntity) customer = load(self, VENTURE_TYPE_COMPANY, number(sub, "company-id"), org, error);
+		g_autoptr(VentureEntity) code = NULL;
+		if (customer == NULL)
+			return NULL;
+		/* An exempt customer's invoice freezes no tax, whatever the price says. */
+		if (!flag(customer, "tax-exempt"))
+		{
+			g_autoptr(VentureMoney) tax = NULL;
+			VentureMoney *taxed;
+			code = load(self, VENTURE_TYPE_TAX_CODE, number(price, "tax-code-id"), org, error);
+			if (code == NULL)
+				return NULL;
+			tax = venture_tax_code_levy(VENTURE_TAX_CODE(code), discounted, error);
+			if (tax == NULL)
+				return NULL;
+			taxed = venture_money_add(discounted, tax, error);
+			if (taxed == NULL)
+				return NULL;
+			g_clear_pointer(&discounted, venture_money_free);
+			discounted = taxed;
+		}
+	}
 	if (adjustment != NULL && !venture_money_is_zero(adjustment))
 	{
 		VentureMoney *total = venture_money_add(discounted, adjustment, error);

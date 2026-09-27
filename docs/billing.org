@@ -362,6 +362,12 @@ Record usage with =POST /api/v1/usage_records= (or =usage_record=) or
 numbers as JSON integers. The subscription page shows the period's usage so
 far and what it adds up to.
 
+The next invoice a customer is told about -- in the trial reminder, the
+price-change notice and the customer portal -- is worked out as the
+renewal will issue it: the price, the discount while it covers invoices,
+a carried part-period charge, and the price's tax unless the customer is
+exempt; a carried credit comes off after tax.
+
 * Periods
 
 Every period is a whole number of calendar months --
