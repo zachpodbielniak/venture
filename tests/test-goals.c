@@ -939,6 +939,18 @@ test_progress_math(
 		g_assert_false(has_cell(result, row, "forecast"));
 		ASSERT_CONTAINS(cell_text(result, row, "note"), "no progress");
 	}
+
+	/* A goal entered moments ago with progress already recorded has no
+	 * pace yet: "half done in a second" would forecast today. */
+	{
+		g_autoptr(VentureReportResult) fresh = NULL;
+
+		goal(fixture, "Fresh", 0, 50, 100, 0);
+		fresh = run_ok(fixture, "goal_progress", NULL);
+		row = row_of(fresh, "goal", "Fresh", NULL);
+		g_assert_false(has_cell(fresh, row, "forecast"));
+		ASSERT_CONTAINS(cell_text(fresh, row, "note"), "too soon to forecast");
+	}
 }
 
 /*

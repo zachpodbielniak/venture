@@ -23,6 +23,12 @@
  * more anyway. */
 #define GOALS_FORECAST_MAX_DAYS (36525.0)
 
+/* A pace measured over less than this is no pace: a goal created a minute
+ * ago with progress already recorded (the usual way one is entered) would
+ * extend "half done in a minute" to "done in another minute" and forecast
+ * today. A day is the smallest span a calendar-date forecast can mean. */
+#define GOALS_FORECAST_MIN_SECONDS (86400.0)
+
 /* Step ids are read in batches of this many, so an IN list stays well
  * under every backend's bound on bound parameters. */
 #define GOALS_IN_BATCH (500)
@@ -358,8 +364,9 @@ goals_progress_row_compare(
  * The straight-line forecast: the goal covered @fraction of its distance
  * between its creation and @as_of, so at that pace the rest takes
  * elapsed x (1 - fraction) / fraction longer. NULL -- no forecast -- when
- * there is no pace to extend (nothing covered, or going backwards) or it
- * lands past GOALS_FORECAST_MAX_DAYS; @out_reason says which.
+ * there is no pace to extend (nothing covered, going backwards, or less
+ * than GOALS_FORECAST_MIN_SECONDS to measure it over) or it lands past
+ * GOALS_FORECAST_MAX_DAYS; @out_reason says which.
  */
 static GDateTime *
 goals_progress_forecast(
@@ -384,6 +391,12 @@ goals_progress_forecast(
 	if (elapsed <= 0.0)
 	{
 		*out_reason = "as_of is before the goal was set";
+		return NULL;
+	}
+
+	if (elapsed < GOALS_FORECAST_MIN_SECONDS)
+	{
+		*out_reason = "too soon to forecast";
 		return NULL;
 	}
 
@@ -708,7 +721,8 @@ venture_goals_progress(
 	venture_report_result_append_note(result,
 		"The forecast is a straight line from the start value when the goal was "
 		"created to the current value at as_of (now by default), extended to the "
-		"target. It is only drawn for active goals with some progress. The current "
+		"target. It is only drawn for active goals with some progress, at least a "
+		"day after the goal was created. The current "
 		"value is the one on the goal today: as_of moves the moment the pace is "
 		"measured to, not the value read.");
 	venture_report_result_append_note(result,

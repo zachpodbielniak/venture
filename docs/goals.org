@@ -198,7 +198,7 @@ An unknown status is refused, not answered with every goal.
 | =days_left=   | calendar days from as_of's date (today) to the due date; negative is overdue |
 | =forecast=    | the date the target is reached at the pace so far                           |
 | =status=      | the status nick                                                             |
-| =note=        | "overdue", "forecast is after the due date", "target reached; mark it achieved", "paused; no forecast", "no progress yet to forecast from" |
+| =note=        | "overdue", "forecast is after the due date", "target reached; mark it achieved", "paused; no forecast", "no progress yet to forecast from", "too soon to forecast" |
 
 *The forecast* is a straight line from the start value at the goal's
 creation to the current value at =as_of= (now by default), extended to the
@@ -206,7 +206,10 @@ target. Half way after ten days is done twenty days after creation. It is
 drawn only for an active goal short of its target with some progress; it
 is blank -- with the reason in the note -- for an achieved, abandoned or
 paused goal, a goal with no progress or going backwards, one past its
-target, and one more than a century away at this pace. When it lands after
+target, one created less than a day before =as_of= ("too soon to
+forecast": a goal entered with progress already recorded would otherwise
+extend "half done in a minute" to "done today"), and one more than a
+century away at this pace. When it lands after
 =due_on= the note says so.
 
 =as_of= moves the moment the pace is measured /to/. It does not read an
