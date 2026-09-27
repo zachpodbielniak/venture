@@ -839,6 +839,14 @@ static GType (*const ai_provider_types[]) (void) = { venture_ai_configuration_ge
 static const gchar *const mfa_requires[] = { "orgaccess", NULL };
 static GType (*const mfa_types[]) (void) = { venture_user_mfa_get_type, venture_mfa_recovery_code_get_type, venture_mfa_policy_get_type, NULL };
 
+/* What things fetch and how offers end. It requires sales because every
+ * observation and listing names a product; it could have suggested it,
+ * and did not, because a listing with no product has nothing to report. */
+static GType (*const market_types[]) (void) = {
+	venture_price_observation_get_type, venture_listing_get_type, NULL
+};
+static const gchar *const market_reports[] = { "listing_performance", "price_history", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1222,6 +1230,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"sales_performance", "Territories and quotas", "Deterministic ownership, immutable booked credit and period attainment.",
 		sales_requires, NULL, sales_types, sales_reports, NULL, FALSE
+	},
+	{
+		"market", "Market",
+		"Prices seen from named sources over time, and listings that end sold, "
+		"partly sold, expired or cancelled: sale rate, time to sell and price history.",
+		venture_module_requires_sales, NULL, market_types, market_reports, NULL, FALSE
 	}
 };
 

@@ -3053,4 +3053,5 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 
 	venture_cash_vs_booked_register_report(self);
 	venture_aggregate_register_report(self);
+	venture_market_register_reports(self);
 }

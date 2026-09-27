@@ -1361,3 +1361,53 @@ Dashboards have the same arithmetic as widgets: `sum` (a money/number
 `options={"date_field":"occurred_at"}`) and `progress` (`field` against
 `options={"target_field":"budget"}`, of one `record_id` or summed over a
 filter). Their fields are checked when the widget is saved.
+
+## Market: price observations and listings
+
+Module `market` (requires `sales`). Check `venturectl describe listing`
+and `describe price_observation` for the wire names and the enum.
+
+- `price_observation`: `product_id`, `source` (free text, matched
+  **exactly** everywhere: `market value` ≠ `Market value`), `price`
+  (money, not negative), `volume` (optional integer), `observed_at`,
+  `location_id`, `notes`. Nothing here moves money.
+- `listing`: `product_id`, `inventory_item_id`, `channel`, `quantity`
+  (≥ 1), `quantity_sold`, `unit_price`, `deposit`, `fees`, `listed_at`
+  (required), `closed_at`, `outcome` (`open` default, `sold`, `partial`,
+  `expired`, `cancelled`), `sale_id`, `tags`, `notes`. A listing creates
+  no sale and moves no stock.
+- The save refuses a contradiction instead of guessing: `sold` with some
+  but not all units counted (use `partial`), `partial` with none or all,
+  `expired`/`cancelled` with units sold, a deposit or fee in another
+  currency than `unit_price`, `closed_at` on a listing that was always
+  open, and `closed_at` before `listed_at` (all exit 2, validation).
+- It fills in: `outcome=sold` with `quantity_sold` 0 becomes all units;
+  an ended listing with no `closed_at` gets now; moving back to `open`
+  clears `closed_at`. A given `closed_at` is never overwritten.
+
+```sh
+venturectl create listing product_id=12 channel="auction house" quantity=20 \
+    unit_price="0.1500 GOLD" deposit="0.0120 GOLD" listed_at=2026-03-02T10:00:00Z
+venturectl update listing 7 outcome=partial quantity_sold=12
+venturectl update listing 8 outcome=sold          # quantity_sold filled for you
+```
+
+Reports:
+
+- `listing_performance` — `group_by=product|category|channel`,
+  `category_depth` (category only), `venture_id`, `organization_id`; the
+  period bounds `listed_at`. One row per group **and currency**.
+  `sale_rate` = units sold on *closed* listings ÷ units on closed listings:
+  open listings are left out, partial counts its sold units, cancelled
+  counts as unsold, and a group with nothing closed has an empty rate (not
+  0%). `units_closed` is the denominator.
+- `price_history` — `product_id` (required; another organization's
+  product is exit 3, not found), `source`, `bucket=day|week|month` (UTC,
+  ISO weeks). Columns `min`, `avg` (half to even, not volume-weighted),
+  `max`, `volume`, `observations`, per bucket, source and currency.
+
+```sh
+venturectl report listing_performance this_month group_by=channel
+venturectl report listing_performance 2026 group_by=category category_depth=0
+venturectl report price_history last_30_days product_id=12 source="market value" bucket=week
+```

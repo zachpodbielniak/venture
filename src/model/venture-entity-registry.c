@@ -733,6 +733,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_currency_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_category_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_location_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_price_observation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_listing_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_plugin_config_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_user_get_type, VENTURE_DATA_CLASS_PERSONAL },
 		{ venture_api_token_get_type, VENTURE_DATA_CLASS_PERSONAL },

@@ -1,0 +1,331 @@
+#+title: Market
+#+description: Price observations, listings that end, sale rate, time to sell and price history
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+#+version: 0.1.0
+
+* What a sale record cannot tell you
+
+A =sale= says what something sold for. It cannot say what the thing was
+worth on a day nobody sold one, and it cannot say how many offers went
+unsold -- an offer that did not sell leaves no sale behind. The =market=
+module keeps both kinds of evidence, in two record types:
+
+- =price_observation= :: a price somebody saw. The market value an auction
+  house's tooling quoted, a regional average, what a supplier asked on
+  Tuesday. It moves no money; it is evidence of what one unit is worth,
+  from a named source, at a moment.
+- =listing= :: an offer to sell that ends. An auction, a marketplace
+  posting, a lot on a consignment shelf, a table at a fair. It opens with a
+  quantity at a unit price and ends sold, partly sold, expired or
+  cancelled.
+
+From those, two reports and one lookup:
+
+- =listing_performance= :: how offers ended, per product, category or
+  channel: the *sale rate*, days to sell, the average price units actually
+  sold at, deposits lost and fees.
+- =price_history= :: one product's observed prices per day, week or month
+  and source: lowest, average, highest, volume.
+- =venture_market_latest_price()= :: what was this worth, from that source,
+  on that day. The one lookup every report that values stock or yields
+  shares.
+
+The language is generic on purpose. The same records describe:
+
+- *An auction house*, in a game or not: every posting is a listing with a
+  deposit and a cut, most expire, and the sale rate is the number worth
+  knowing before posting a hundred more. Observations are the market value
+  a pricing tool scanned.
+- *A marketplace seller*: listings with fees, relisted when they expire;
+  observations are competitors' asking prices, by source.
+- *A consignment shop*: a listing is a consignor's lot on the shelf; a
+  partial sale is common, and =cancelled= is the consignor taking the rest
+  back.
+
+The module is =market=. It requires =sales=, because every observation and
+every listing names a =product=; switching =sales= off switches =market=
+off with it (see [[file:modules.org][Modules]]).
+
+* Price observations
+
+** Fields
+
+| Field         | Kind      | For                                                                        |
+|---------------+-----------+----------------------------------------------------------------------------|
+| =product_id=  | reference | what was priced; required                                                  |
+| =source=      | string    | who or what quoted it: =market value=, =region average=, a supplier; required, indexed |
+| =price=       | money     | one unit's price, in the currency it was quoted in; required               |
+| =volume=      | integer   | optional: how many were on offer or sold when it was seen; 0 when nobody counted |
+| =observed_at= | datetime  | when it was seen; required, indexed                                        |
+| =location_id= | reference | optional: the market or region it was seen in                              |
+| =notes=       | text      |                                                                            |
+
+The source is free text rather than an enum because the set of sources is
+whatever the operator's market has. It is matched *exactly* wherever it is
+filtered: =market value= and =market value (region)= are two sources, and
+a valuation must never blend them quietly.
+
+** What the save refuses
+
+The validator (=src/market/venture-market.c=) runs for every writer -- the
+form, the API, an approved staged change, the assistant:
+
+- no product (=product_id= 0) or no price. Both are declared =NOT_NULL=,
+  but the generic check covers strings and times only;
+- a negative price. Zero is allowed: a thing can be seen to fetch nothing;
+- a negative volume.
+
+** The latest price
+
+#+begin_src C
+gboolean
+venture_market_latest_price(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	gint64		  product_id,
+	const gchar	 *source,	/* NULL or "" for any source */
+	GDateTime	 *at,		/* NULL for now, unbounded */
+	VentureMoney	**out_price,	/* NULL when nothing was seen */
+	VentureEntity	**out_observation,
+	GError		**error
+);
+#+end_src
+
+The newest observation of the product *at or before* =at=, from =source=
+when one is named. Rules:
+
+- Only this organization's observations, and never a soft-deleted one: a
+  deleted mistake must stop valuing stock the moment it is deleted.
+- A tie on =observed_at= goes to the higher id -- the one recorded last --
+  so the answer is the same on every call.
+- Nothing observed is not an error. The call succeeds with =*out_price=
+  =NULL=; the caller decides what an unpriced product is worth. A valuing
+  report should say so in a note rather than count it as zero.
+- The cutoff compares correctly whatever the fraction digits: the query
+  emitter pads every date-time operand (see the time-comparison trap in
+  =AGENTS.md=).
+
+* Listings
+
+** Fields
+
+| Field               | Kind      | For                                                                  |
+|---------------------+-----------+----------------------------------------------------------------------|
+| =product_id=        | reference | what is on offer; required                                           |
+| =inventory_item_id= | reference | optional: the stock the units come from                              |
+| =channel=           | string    | where it is listed: an auction house, a marketplace, a shop; indexed |
+| =quantity=          | integer   | units offered; at least 1                                            |
+| =quantity_sold=     | integer   | units sold so far, 0 to =quantity=                                   |
+| =unit_price=        | money     | asking price for one unit; required                                  |
+| =deposit=           | money     | optional: paid to list, lost if nothing sells                        |
+| =fees=              | money     | optional: what the channel took                                      |
+| =listed_at=         | datetime  | when the offer opened; required                                      |
+| =closed_at=         | datetime  | when it ended; derived from the outcome when blank                   |
+| =outcome=           | enum      | =open= (the default), =sold=, =partial=, =expired=, =cancelled=      |
+| =sale_id=           | reference | optional: the sale it became                                         |
+| =tags=              | string    | comma separated, searchable                                          |
+| =notes=             | text      |                                                                      |
+
+=open= is the enum's zero value, so a listing nobody has closed has not
+ended -- the safe reading. Every other outcome is terminal.
+
+A listing does not create a sale, move stock or post to the books. Link the
+sale it became with =sale_id= when there is one; the sale is still what
+revenue reports read.
+
+** What the save refuses, and what it fills in
+
+In the order a person would fix them:
+
+1. *What is offered.* A product, at least one unit, a unit price that is
+   not negative, and a deposit and fees that are not negative.
+2. *One currency.* The deposit and fees, when set, must be in the unit
+   price's currency. A mix is refused rather than converted: a listing is
+   one offer in one market, and a deposit in another currency would make
+   "deposits lost" a sum of two units.
+3. *Sold units between none and all.* =quantity_sold= from 0 to
+   =quantity=.
+4. *The outcome agrees with the count.*
+   - =sold= means every unit sold. A listing marked sold with nothing
+     counted is *filled* to the quantity -- the common case is one item,
+     sold, and asking for the count again would only invite a typo. A count
+     in between (sold, 2 of 5) is a contradiction and *refused*: either it
+     is partial or the count is wrong, and guessing which is how a sale rate
+     stops meaning anything.
+   - =partial= means some and not all: 1 to =quantity - 1=.
+   - =expired= and =cancelled= mean none sold. An offer that sold three of
+     ten and then lapsed is =partial=.
+   - =open= may have units sold already: the rest is still on offer.
+5. *The closing time follows the outcome* -- the software factory's rule
+   for derived dates:
+   - an ended listing with no =closed_at= is given now;
+   - a given =closed_at= is kept, never overwritten;
+   - moving a listing from an ended outcome back to =open= clears it (an
+     offer on sale again has not ended, and its time to sell runs until it
+     does);
+   - an =open= listing that was never closed may not carry one -- set the
+     outcome it ended with, or clear the time.
+6. *It cannot close before it opened.* =closed_at= before =listed_at= is
+   refused.
+
+* Sale rate
+
+#+begin_example
+                units sold on closed listings
+  sale rate  =  -----------------------------
+                   units on closed listings
+#+end_example
+
+- *Closed* is every outcome but =open=. An open listing is left out of both
+  halves until it ends: it has not had its chance, and counting its unsold
+  units as unsold would make every busy week look like a bad one.
+- A =partial= listing's sold units count as sold and its remainder as
+  unsold.
+- A =cancelled= listing counts as unsold. Withdrawing an offer is a
+  decision about it, usually because it was not selling.
+- It is a rate of *units*, not listings: one listing of twenty that sold
+  nothing weighs twenty times one listing of one.
+- A group with no closed units has *no* rate -- the cell is empty, not
+  0%, because 0% would claim nothing sold.
+
+Worked through, one product in March:
+
+| Listing                     | Qty | Sold | Closed? | In the rate |
+|-----------------------------+-----+------+---------+-------------|
+| sold, 1 at 10.00            |   1 |    1 | yes     | 1 of 1      |
+| partial, 3 of 10 at 4.00    |  10 |    3 | yes     | 3 of 10     |
+| expired, 5 at 4.00          |   5 |    0 | yes     | 0 of 5      |
+| cancelled, 2 at 4.00        |   2 |    0 | yes     | 0 of 2      |
+| open, 1 of 4 sold at 5.00   |   4 |    1 | no      | --          |
+
+Sale rate = 4 ÷ 18 = 22.2%. Units sold = 5 (the open listing's sale is a
+sale); sold value = 10.00 + 3 × 4.00 + 1 × 5.00 = 27.00; average sold unit
+price = 27.00 ÷ 5 = 5.40.
+
+* Reports
+
+** =listing_performance=
+
+One row per group *and currency*: a product offered in gold on one channel
+and in dollars on another reads two rows, never one number in neither. The
+listing's currency is its unit price's (the validator keeps the other
+amounts to it).
+
+| Option            | Meaning                                                                          |
+|-------------------+----------------------------------------------------------------------------------|
+| =group_by=        | =product= (default), =category= or =channel=                                     |
+| =category_depth=  | with =group_by=category=, roll up to this level of the tree; 0 is the top        |
+| =period=          | listings *opened* (=listed_at=) in the period                                    |
+| =venture_id=      | only listings of this venture's products                                         |
+| =organization_id= | the legal entity; the default organization otherwise                             |
+
+=group_by=category= reads the *product's* =category_id= and shows its
+computed path ("Materials / Herbs"); a product with none is
+"Uncategorised". With =category_depth=0= "Materials / Herbs" and
+"Materials / Ore" are one "Materials" row; a product filed shallower than
+the depth is its own answer. =category_depth= with another =group_by= is
+refused, as is an unknown =group_by=.
+
+| Column                 | What                                                                  |
+|------------------------+-----------------------------------------------------------------------|
+| =group=, =currency=    | the row                                                               |
+| =listings=             | listings opened in the period                                         |
+| =units_listed=         | their quantity                                                        |
+| =units_sold=           | their =quantity_sold=, open listings included                         |
+| =units_closed=         | units on closed listings: the sale rate's denominator                 |
+| =sold= … =open=        | listings per outcome                                                  |
+| =sale_rate=            | see [[*Sale rate][Sale rate]]; empty with no closed units                         |
+| =avg_days_to_sell=     | =closed_at= − =listed_at= in days, over listings that sold out        |
+| =avg_unit_price=       | sold value ÷ units sold, one division rounded half to even            |
+| =sold_value=           | Σ unit price × units sold                                             |
+| =deposits_lost=        | deposits of expired and cancelled listings                            |
+| =fees=                 | fees of every listing                                                 |
+
+Days to sell reads =sold= listings only: a partial listing's =closed_at= is
+when it ended, not when its units sold. A partial listing's deposit is not
+"lost" -- something sold, and a deposit comes back with a sale on the
+channels this models.
+
+** =price_history=
+
+One product's observations, one row per UTC bucket, source and currency.
+
+| Option            | Meaning                                                          |
+|-------------------+------------------------------------------------------------------|
+| =product_id=      | required: the product                                            |
+| =source=          | only this source, matched exactly; every source by default       |
+| =bucket=          | =day= (default), =week= (ISO, from Monday) or =month=            |
+| =period=          | observations whose =observed_at= falls in it                     |
+| =organization_id= | the legal entity                                                 |
+
+Columns: =bucket= (=2026-03-02=, =2026-W10=, =2026-03=), =starts_on= (the
+bucket's first day), =source=, =currency=, =min=, =avg=, =max=, =volume=
+(Σ volume) and =observations=. The average is of the observations, not
+weighted by volume, and is one exact division rounded half to even: 1.00,
+2.00, 1.02 and 3.00 average to 7.02 ÷ 4 = 1.755, which is 1.76.
+
+A missing =product_id= is refused (400), and another organization's product
+is *not found* (404) rather than forbidden, so the refusal does not confirm
+it exists.
+
+** Where they are asked from
+
+Both are ordinary reports: =/reports/listing_performance= (with a form for
+=group_by= and =category_depth=), =/reports/price_history= (with a product
+picker, source and bucket), =GET /api/v1/reports/<name>?…=, =venturectl
+report=, the assistant's and MCP's =venture_report= tool. The options
+=product_id= and =source= were added to all five of those doors in the same
+change; an option missing from one is silently absent there.
+
+Both fetch through the ordinary query (organization, access scope, module
+mask) and total in C, and both refuse -- naming the bound -- a question
+matching more than =VENTURE_AGGREGATE_MAX_ROWS= (20 000) records rather
+than totalling a truncated set.
+
+* API and CLI
+
+#+begin_src sh
+# What things fetch
+venturectl describe price_observation
+venturectl create price_observation product_id=12 source="market value" \
+    price="1.2345 GOLD" volume=340 observed_at=2026-03-02T10:00:00Z
+
+# An offer, then how it ended
+venturectl create listing product_id=12 channel="auction house" quantity=20 \
+    unit_price="0.1500 GOLD" deposit="0.0120 GOLD" listed_at=2026-03-02T10:00:00Z
+venturectl update listing 7 outcome=partial quantity_sold=12 fees="0.0900 GOLD"
+venturectl update listing 8 outcome=sold          # quantity_sold filled to quantity
+
+# The reports
+venturectl report listing_performance this_month group_by=channel
+venturectl report listing_performance 2026 group_by=category category_depth=0
+venturectl report price_history last_30_days product_id=12 source="market value" bucket=week
+curl '.../api/v1/reports/price_history?period=2026-03&product_id=12&bucket=day&format=csv'
+#+end_src
+
+On the wire the fields use underscores (=quantity_sold=, =unit_price=); a
+POST with dashed keys is silently ignored field by field. =describe= prints
+the outcome enum's accepted values.
+
+The sidebar files *Listings* and *Prices seen* under Money in.
+
+* Traps
+
+- *Sale rate's denominator is closed listings.* Never divide by all
+  listings, and never show 0% for a group with nothing closed.
+- *An outcome and a count must agree, and only =sold= fills.* Do not "help"
+  by filling =partial= or zeroing =expired=: a contradiction is refused so
+  the person who knows says which it was.
+- *=closed_at= is derived like the factory's dates.* Stamped only when
+  empty, kept when given, cleared only on the transition back to =open=.
+  Never stamp it in a handler.
+- *A listing is one currency.* The validator refuses a deposit or fee in
+  another; the report keys rows by the unit price's currency before adding
+  anything.
+- *Sources match exactly.* =venture_market_latest_price()= and
+  =price_history= filter with equality, not a search.
+- *Observations are per organization.* A product id is not a scope: always
+  pass the organization the valuation is for.

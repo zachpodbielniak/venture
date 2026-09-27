@@ -1220,10 +1220,12 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "date_field")) &&
 				 (0 != g_strcmp0(parts[0], "filter")) &&
 				 (0 != g_strcmp0(parts[0], "per")) &&
-				 (0 != g_strcmp0(parts[0], "category_depth"))))
+				 (0 != g_strcmp0(parts[0], "category_depth")) &&
+				 (0 != g_strcmp0(parts[0], "product_id")) &&
+				 (0 != g_strcmp0(parts[0], "source"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3793,6 +3795,8 @@ main(
 		"  forge verify ID              record which account the token is\n"
 		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks, band, sort, bucket;\n"
 		"                               aggregate takes type, measure, aggregate, date_field, filter, per, category_depth\n"
+		"                               price_history takes product_id, source, bucket;\n"
+		"                               listing_performance takes group_by, category_depth\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -3931,7 +3935,8 @@ main(
 		"                     venture_id=3 occurred_at=2026-03-14\n"
 		"  venturectl update venture 3 status=paused\n"
 		"  venturectl report pnl this_quarter\n"
-		"  venturectl report aggregate 2026 type=sale measure=gross group_by=product_id.category_id date_field=occurred_at bucket=month\n"
+		"  venturectl report aggregate 2026 type=sale measure=gross group_by=product_id.category_id date_field=occurred_at bucket=month\n"		"  venturectl report listing_performance this_quarter group_by=category category_depth=0\n"
+		"  venturectl report price_history last_30_days product_id=12 source=\"market value\" bucket=week\n"
 		"  venturectl -f csv report receivables > aging.csv\n"
 		"  venturectl forge settings 1 < protected-settings.json\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"

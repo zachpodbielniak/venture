@@ -48,6 +48,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
 - [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
 - [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS
+- [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record
 - [[file:sales-orders.org][Sales orders]] — allocate, ship and invoice fulfilled quantity
 - [[file:reporting.org][Reporting]] — the built-in reports, the generic =aggregate= report (sum, average, count of any field of any type, grouped and bucketed, money per currency), and how to write one

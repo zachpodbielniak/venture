@@ -579,6 +579,26 @@ than one that fails.
   and the assistant's `venture_report` parameters are five separate
   lists. An option missing from one is silently absent there -- the
   report runs and answers a different question.
+- **Sale rate's denominator is closed listings.** `listing_performance`
+  divides units sold on listings whose outcome is not `open` by the units on
+  those listings. An open listing is in neither half; a partial one counts
+  its sold units as sold and the rest as unsold; a cancelled one counts as
+  unsold; nothing closed is an empty cell, never 0%. Rows are group *and*
+  currency, keyed by the unit price's currency before anything is added.
+- **A listing's outcome and count must agree, and only `sold` fills.**
+  `venture_market_validate_listing()` fills `quantity-sold` to `quantity`
+  on `sold` when it is 0 and refuses every other disagreement (sold with
+  some, partial with none or all, expired/cancelled with any). Do not make
+  it guess further. `closed-at` follows the factory's derived-date rule:
+  stamped only when empty, kept when given, cleared only on the transition
+  back to `open`, refused on a listing that was always open.
+- **Price sources match exactly.** `venture_market_latest_price()` and
+  `price_history` filter `source` with equality; never widen it to a
+  search, or two sources blend into one valuation. The lookup is per
+  organization and skips soft-deleted observations; a tie on
+  `observed-at` goes to the higher id so repeated calls agree. Nothing
+  observed returns TRUE with a NULL price -- the caller says so, it does
+  not read zero.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

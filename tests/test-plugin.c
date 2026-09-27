@@ -955,7 +955,8 @@ test_web_navigation_groups_by_question(
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
 		"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
-		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item", NULL
+		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
+		"/e/listing", "/e/price_observation", NULL
 	};
 	static const gchar *const money_out[] = {
 		"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll", NULL

@@ -101,8 +101,9 @@ Written bottom-up, because a module may only require what precedes it:
 | =marketing= | mail, sequences, leads | marketing_list, marketing_member, marketing_consent, marketing_send, marketing_recipient, marketing_event; =marketing_performance=; =/marketing/*= | |
 | =attribution= | leads, integrations | attribution_site, attribution_visitor, attribution_touch, attribution_submission, attribution_binding; =attribution=; =/attribution.js=, =/attribution/:site/:operation=, =/hooks/lightsite/:site/:connection=, =/organizations/:id/settings/attribution= | |
 | =sales_performance= | orgaccess, leads, pipelines | sales_territory, sales_quota, sales_credit, sales_assignment; =sales_attainment= | |
+| =market= | sales | price_observation, listing; =listing_performance=, =price_history= (see [[file:market.org][Market]]) | |
 
-Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. A module that is on but whose reports all fail is worse than one the configuration refuses.
+Two of the requirements are stricter than the data model forces, and deliberately. =finance= requires =sales= because a profit-and-loss without revenue is not a report anybody wants. =outreach= requires =sales= because a campaign's return is measured in the sales attributed to it. =market= requires =sales= because every observation and listing names a product. A module that is on but whose reports all fail is worse than one the configuration refuses.
 
 The rest are /suggestions/: a module works without them and is better with them. A ticket's =company-id= picker is simply empty when the CRM is off; the column stays, a value it already had is kept, and a new value cannot be written because there is nothing to check it against.
 

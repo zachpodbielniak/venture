@@ -20,7 +20,7 @@ Eight areas after the overview. Money is one area -- the money that comes in, go
 
 | Area      | Part              | Pages                                                                                                                                              |
 |-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
-| Money     | Money in          | Sales, Invoices, New invoice, New quote, Payments, Allocations, Customer credits, Refunds, Collections, Subscriptions, Sales orders, Products, Inventory |
+| Money     | Money in          | Sales, Invoices, New invoice, New quote, Payments, Allocations, Customer credits, Refunds, Collections, Subscriptions, Sales orders, Products, Inventory, Listings, Prices seen |
 |           | Money out         | Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
 |           | Bank              | Bank feeds, Money calendar                                                                                                                         |
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |

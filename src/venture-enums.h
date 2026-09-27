@@ -1395,6 +1395,35 @@ GType
 venture_incident_status_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureListingOutcome:
+ * @VENTURE_LISTING_OUTCOME_OPEN: still on offer; the safe default, since a
+ *   listing nobody has closed has not ended
+ * @VENTURE_LISTING_OUTCOME_SOLD: every unit sold
+ * @VENTURE_LISTING_OUTCOME_PARTIAL: ended with some units sold and the rest
+ *   not
+ * @VENTURE_LISTING_OUTCOME_EXPIRED: ended with nothing sold
+ * @VENTURE_LISTING_OUTCOME_CANCELLED: withdrawn by the seller before it
+ *   ended
+ *
+ * How a listing -- an offer to sell on a channel -- ended, or that it has
+ * not. Every value but open is terminal and gives the listing a closing
+ * time.
+ */
+typedef enum
+{
+	VENTURE_LISTING_OUTCOME_OPEN = 0,
+	VENTURE_LISTING_OUTCOME_SOLD,
+	VENTURE_LISTING_OUTCOME_PARTIAL,
+	VENTURE_LISTING_OUTCOME_EXPIRED,
+	VENTURE_LISTING_OUTCOME_CANCELLED
+} VentureListingOutcome;
+
+#define VENTURE_TYPE_LISTING_OUTCOME (venture_listing_outcome_get_type())
+
+GType
+venture_listing_outcome_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureDashboardPurpose:
  * @VENTURE_DASHBOARD_PURPOSE_OVERVIEW: a general view, the kind a home page is
  * @VENTURE_DASHBOARD_PURPOSE_REPORTING: figures and tables, for reading

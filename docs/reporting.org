@@ -46,6 +46,8 @@ about it.
 | =money_calendar= | every dated money event with daily and ISO-week nets per currency |
 | =support_rollup= | support cost and ticket volume per customer, or per product; =sort=, =min_tickets=, =company=, =product= |
 | =cash_vs_booked= | revenue booked beside cash received per month or week and per currency, with the gap and its running total |
+| =listing_performance= | listings by product, category or channel and currency: sale rate over closed listings, days to sell, average sold price, deposits lost, fees (see [[file:market.org][Market]]) |
+| =price_history= | one product's observed prices per day, week or month and source: lowest, average, highest, volume (=product_id= required) |
 | =aggregate= | sum, average, minimum, maximum, count or distinct count of any field of any business type, grouped by up to three fields and bucketed by a date; money per currency |
 
 #+begin_src sh

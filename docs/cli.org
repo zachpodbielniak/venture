@@ -144,6 +144,8 @@ Ledger reports accept =basis=cash= or =basis=accrual= and =dimension=VALUE= alon
 The leads =lead_scoring= report accepts =band_size=N= for the width of its score bands (default 25).
 The =aggregate= report takes =type=, =measure=, =aggregate=, =group_by=, =category_depth=, =date_field=, =bucket=, =filter= and =per= after the period --- =venturectl report aggregate 2026 type=sale measure=gross group_by=channel date_field=occurred_at bucket=month=; quote a =filter= holding =&=. See [[file:reporting.org][Reporting]].
 
+The market reports take =product_id= and =source= (=price_history=) and =group_by=, =category_depth= and =venture_id= (=listing_performance=) the same way --- =venturectl report price_history last_30_days product_id=12 source="market value" bucket=week=. See [[file:market.org][Market]].
+
 Anywhere a period is accepted — a =report= argument, a =period== filter on a
 list — the full grammar is:
 

@@ -717,6 +717,19 @@ VENTURE_DEFINE_ENUM_TYPE(venture_incident_status_get_type,
                          "VentureIncidentStatus",
                          venture_incident_status_values)
 
+static const GEnumValue venture_listing_outcome_values[] = {
+	VE(VENTURE_LISTING_OUTCOME_OPEN,      "open"),
+	VE(VENTURE_LISTING_OUTCOME_SOLD,      "sold"),
+	VE(VENTURE_LISTING_OUTCOME_PARTIAL,   "partial"),
+	VE(VENTURE_LISTING_OUTCOME_EXPIRED,   "expired"),
+	VE(VENTURE_LISTING_OUTCOME_CANCELLED, "cancelled"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_listing_outcome_get_type,
+                         "VentureListingOutcome",
+                         venture_listing_outcome_values)
+
 static const GEnumValue venture_dashboard_purpose_values[] = {
 	VE(VENTURE_DASHBOARD_PURPOSE_OVERVIEW,  "overview"),
 	VE(VENTURE_DASHBOARD_PURPOSE_REPORTING, "reporting"),

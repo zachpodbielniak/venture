@@ -128,6 +128,7 @@
 #include "crm-import/venture-crm-import-records.h"
 #include "dedupe/venture-dedupe-records.h"
 #include "orgaccess/venture-mfa-records.h"
+#include "market/venture-market-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -321,6 +322,7 @@
 #include "orgaccess/venture-mfa-service.h"
 #include "report/venture-cash-vs-booked.h"
 #include "report/venture-aggregate-report.h"
+#include "market/venture-market.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

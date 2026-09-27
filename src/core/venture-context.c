@@ -153,6 +153,10 @@ venture_context_new(
 	 * organization, and a category used only by the records it groups. */
 	venture_category_install(self);
 
+	/* Listings and price observations: quantities that agree with the
+	 * outcome, a closing time that follows it, one currency per listing. */
+	venture_market_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding
