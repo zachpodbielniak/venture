@@ -46,5 +46,25 @@ VENTURE_DECLARE_ENTITY(VentureInvoiceEvent, venture_invoice_event, INVOICE_EVENT
  * Returns: (transfer full): an immutable invoice lifecycle event
  */
 
+/**
+ * venture_payment_mark_bookkeeping:
+ * @payment: a payment not yet saved
+ *
+ * Marks @payment as bookkeeping: money received before, recorded again
+ * here, which the customer must not be told about as if they had just
+ * paid. The mark is held on this object only and is never stored, so it
+ * must be set before the save that creates the row.
+ */
+void venture_payment_mark_bookkeeping(VenturePayment *payment);
+
+/**
+ * venture_payment_is_bookkeeping:
+ * @payment: a payment
+ *
+ * Returns: %TRUE for a cutover opening (method `opening`) or a payment
+ *   marked with venture_payment_mark_bookkeeping()
+ */
+gboolean venture_payment_is_bookkeeping(VenturePayment *payment);
+
 G_END_DECLS
 #endif

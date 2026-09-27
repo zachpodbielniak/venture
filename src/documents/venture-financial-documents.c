@@ -699,12 +699,22 @@ receipt_on_saved(
 
 	if (!created || !VENTURE_IS_PAYMENT(record))
 		return;
+	/* An opening or a cutover rollback's re-deposit is money the customer
+	 * paid some other time; a receipt for it would email every customer
+	 * the day the books are imported. */
+	if (venture_payment_is_bookkeeping(VENTURE_PAYMENT(record)))
+		return;
 
 	g_object_get(venture_context_get_config(sender->context), "mail-receipts", &enabled, NULL);
 	if (!enabled || !venture_context_module_enabled(sender->context, "mail") ||
 	    !venture_context_module_enabled(sender->context, "receivables"))
 		return;
 
+	/*
+	 * Always inside a transaction: venture_receivables_save_hook() sends
+	 * every payment save, even a bare one, through the settlement
+	 * service's own operation, so its commit is still to come.
+	 */
 	id = venture_entity_get_id(record);
 	g_array_append_val(sender->pending, id);
 }

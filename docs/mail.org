@@ -182,7 +182,7 @@ invoices it was applied to and any amount kept as credit. It is keyed
 =receipt:<payment uuid>=, so a payment is receipted once however often it
 is saved; a rolled-back payment sends nothing. A customer with no email
 address, the =mail= or =receivables= module off, or =mail.receipts: false=
-sends nothing and is not an error. The receipt is at
+sends nothing and is not an error. Bookkeeping payments send nothing either: a cutover opening (method =opening=) and a cutover rollback's re-deposit of a real payment record money the customer paid some other time, and a receipt for them would email every customer the day the books are imported. =venture_payment_is_bookkeeping()= is the test; a writer re-filing money already receipted marks its unsaved payment with =venture_payment_mark_bookkeeping()=, a mark held on the object and never stored. A payment matched from a bank feed or recorded by Stripe is money paid now and is receipted. The receipt is at
 =GET /payments/:id/receipt=, and the payment's page says whether it was
 sent and to whom.
 

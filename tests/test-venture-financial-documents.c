@@ -481,6 +481,97 @@ test_receipts_can_be_switched_off(Fixture *f, gconstpointer data)
 	g_assert_null(found);
 }
 
+/* How many receipt mails are queued, by the key the sender files them under. */
+static guint
+count_receipts(Fixture *f)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GPtrArray) messages = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i, receipts = 0;
+
+	venture_query_set_limit(query, 0);
+	messages = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < messages->len; i++)
+	{
+		g_autofree gchar *key = NULL;
+
+		g_object_get(g_ptr_array_index(messages, i), "idempotency-key", &key, NULL);
+		if (g_str_has_prefix(key, "receipt:"))
+			receipts++;
+	}
+	return receipts;
+}
+
+/* A payment through the settlement service, as every writer records one. */
+static void
+apply_payment(Fixture *f, VenturePayment *payment)
+{
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_settlement_service_apply_payment(venture_settlement_service_get(f->db),
+		payment, NULL, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static VenturePayment *
+payment_new(Fixture *f, const gchar *method)
+{
+	VenturePayment *payment = venture_payment_new();
+	g_autoptr(VentureMoney) amount = venture_money_new(5000, "USD", 2);
+	g_autoptr(GDateTime) now = venture_time_now();
+
+	venture_entity_set_organization_id(VENTURE_ENTITY(payment), f->org);
+	g_object_set(payment, "customer-id", f->company, "amount", amount, "date", now,
+		"method", method, NULL);
+	return payment;
+}
+
+/*
+ * A cutover opening and a cutover rollback's re-deposit are money paid
+ * before; only money paid now gets a receipt. If this regresses, importing
+ * the books from another system emails every customer a receipt for every
+ * payment they ever made.
+ */
+static void
+test_receipt_skips_bookkeeping(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VenturePayment) opening = payment_new(f, "opening");
+	g_autoptr(VenturePayment) redeposit = payment_new(f, "transfer");
+	g_autoptr(VenturePayment) paid = payment_new(f, "transfer");
+
+	(void)data;
+
+	apply_payment(f, opening);
+	g_assert_cmpuint(count_receipts(f), ==, 0);
+	venture_payment_mark_bookkeeping(redeposit);
+	apply_payment(f, redeposit);
+	g_assert_cmpuint(count_receipts(f), ==, 0);
+	apply_payment(f, paid);
+	g_assert_cmpuint(count_receipts(f), ==, 1);
+}
+
+/*
+ * A payment saved with no transaction open still gets its receipt at once.
+ * The sender queues on entity-saved and sends on the commit, which works
+ * only because the receivables save hook wraps every payment save in the
+ * settlement service's transaction. If a payment ever saves outside it,
+ * the database commits before announcing the save, the receipt waits for
+ * some unrelated transaction, and this fails.
+ */
+static void
+test_receipt_for_bare_save(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VenturePayment) payment = payment_new(f, "cash");
+
+	(void)data;
+
+	g_assert_false(venture_database_has_transaction(f->db));
+	save(f, VENTURE_ENTITY(payment));
+	g_assert_cmpuint(count_receipts(f), ==, 1);
+}
+
 /*
  * A download keeps an accented invoice number: plain ASCII in filename=,
  * the real name percent-encoded in filename*=. If this regresses, raw
@@ -520,6 +611,10 @@ main(int argc, char *argv[])
 	           test_receipt_sent_on_payment, tear_down);
 	g_test_add("/financial-documents/receipts-can-be-switched-off", Fixture, "off", set_up,
 	           test_receipts_can_be_switched_off, tear_down);
+	g_test_add("/financial-documents/receipt-skips-bookkeeping", Fixture, NULL, set_up,
+	           test_receipt_skips_bookkeeping, tear_down);
+	g_test_add("/financial-documents/receipt-for-bare-save", Fixture, NULL, set_up,
+	           test_receipt_for_bare_save, tear_down);
 	g_test_add("/financial-documents/content-disposition", Fixture, NULL, set_up,
 	           test_content_disposition, tear_down);
 

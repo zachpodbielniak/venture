@@ -2100,6 +2100,80 @@ test_party_open_ap(Fixture *f, gconstpointer data)
 		"open-ap-vendor", "bill-7", "vendor_source_id");
 }
 
+/* Receipt mails queued so far, by the key the receipt sender uses. */
+static guint
+count_receipts(Fixture *f)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GPtrArray) messages = NULL;
+	guint i, receipts = 0;
+
+	venture_query_set_limit(query, 0);
+	messages = venture_database_find(f->db, query, NULL);
+	g_assert_nonnull(messages);
+	for (i = 0; i < messages->len; i++)
+	{
+		g_autofree gchar *key = NULL;
+		g_object_get(g_ptr_array_index(messages, i), "idempotency-key", &key, NULL);
+		if (g_str_has_prefix(key, "receipt:"))
+			receipts++;
+	}
+	return receipts;
+}
+
+/*
+ * Importing the books emails nobody. Opening payments and prepayments are
+ * money customers paid the old system, and a rollback's re-deposit is a
+ * real payment filed again; only the payment made in VENTURE gets a
+ * receipt. What breaks if this regresses: a cutover emails every customer
+ * a receipt for every paid invoice in the import, and a rollback emails
+ * them all again.
+ */
+static void
+test_openings_send_no_receipts(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) cutover = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VenturePayment) payment = venture_payment_new();
+	g_autoptr(VentureMoney) ten = venture_money_new_for_currency(1000, "USD");
+	g_autoptr(GDateTime) jan2 = g_date_time_new_utc(2026, 1, 2, 0, 0, 0);
+	gint64 customer = 0;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	cutover = import_payload(f,
+		"{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"customers\":[{\"source_id\":\"cust-1\",\"name\":\"Acme\",\"email\":\"ap@acme.example\"}],"
+		"\"open_ar\":[{\"source_id\":\"inv-1\",\"customer_source_id\":\"cust-1\",\"number\":\"OB-1\","
+		"\"date\":\"2025-11-15\",\"amount\":\"100\",\"paid\":\"30\",\"balance\":\"70\"}],"
+		"\"credits\":[{\"source_id\":\"ret-1\",\"kind\":\"customer\",\"type\":\"prepayment\","
+		"\"customer_source_id\":\"cust-1\",\"date\":\"2025-11-02\",\"amount\":\"20\"}],"
+		"\"bank_balances\":[{\"source_id\":\"b\",\"name\":\"Checking\",\"account_code\":\"1000\",\"amount\":\"500\"}]}",
+		TRUE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_PAYMENT), ==, 2);
+	g_assert_cmpuint(count_receipts(f), ==, 0);
+
+	/* The customer pays ten on the imported invoice: that one is news. */
+	invoice = find_one(f, VENTURE_TYPE_INVOICE, "number", "OB-1");
+	g_object_get(invoice, "company-id", &customer, NULL);
+	g_object_set(payment, "customer-id", customer, "invoice-id", venture_entity_get_id(invoice),
+		"amount", ten, "date", jan2, "method", "transfer", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(payment), f->org);
+	g_assert_true(venture_settlement_service_apply_payment(venture_settlement_service_get(f->db),
+		payment, NULL, &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(count_receipts(f), ==, 1);
+
+	/* Rolling back re-deposits that payment as unapplied cash. */
+	g_assert_true(venture_cutover_service_rollback(venture_cutover_service_get(f->db),
+		VENTURE_ACCOUNTING_CUTOVER(cutover), &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_PAYMENT), ==, 4);
+	g_assert_cmpuint(count_receipts(f), ==, 1);
+}
+
 /* Issue #84, rule credit-party: a credit names its customer or vendor from
  * the payload; a missing, empty or unknown id is refused for either kind. */
 static void
@@ -2197,6 +2271,7 @@ main(int argc, char **argv)
 	g_test_add("/cutover/party-open-ar", Fixture, NULL, setup, test_party_open_ar, teardown);
 	g_test_add("/cutover/party-open-ap", Fixture, NULL, setup, test_party_open_ap, teardown);
 	g_test_add("/cutover/party-credit", Fixture, NULL, setup, test_party_credit, teardown);
+	g_test_add("/cutover/openings-send-no-receipts", Fixture, NULL, setup, test_openings_send_no_receipts, teardown);
 	g_test_add("/cutover/party-name-required", Fixture, NULL, setup, test_party_name_required, teardown);
 	return g_test_run();
 }
