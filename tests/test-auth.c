@@ -1405,6 +1405,11 @@ test_auth_api_refuses_anonymous_requests(
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/customer_portal/invite",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* A customer's own plan change is guarded by the portal token, not a
+	 * session: without a valid one the subscription does not exist. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/portal/0000000000000000000000000000000000000000000000000000000000000000/subscriptions/1",
+		NULL, "action=cancel", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/vendor_bill/1/pay",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/bills/1/approve",
@@ -1496,15 +1501,23 @@ test_auth_api_refuses_anonymous_requests(
 			"/api/v1/close/1/complete", "/api/v1/tax-filings/1/export", "/api/v1/contractor-tax/1/export",
 			"/api/v1/capture/1/convert", "/settings/backups",
 			"/api/v1/invoice/1/actions/payment_link", "/api/v1/stripe_payment_link/1/actions/revoke",
-			"/api/v1/stripe_event/1/actions/retry"
+			"/api/v1/stripe_event/1/actions/retry", "/billing/subscriptions/start", "/bills/compose",
+			"/tax-rates/new", "/plans/new", "/plans/1/prices", "/plans/1/discounts", "/plans/1/prices/1/move",
+			"/quotes/1/start-subscription", "/api/v1/quotes/1/start-subscription",
+			"/api/v1/usage_records", "/api/v1/usage_record"
 		};
+		static const gchar *const pages[] = { "/billing/subscriptions/new", "/invoices/compose?repeat=1",
+			"/invoices/1/pdf", "/payments/1/receipt",
+			"/bills/compose", "/bills/compose?repeat=1", "/tax-rates/new", "/plans/new" };
 		static const gchar *const gets[] = {
 			"/api/v1/budget_reports", "/api/v1/group/reports", "/api/v1/close/1/pack",
 			"/api/v1/contractor-tax/1/export", "/api/v1/sales-tax/export?period=2026-Q1"
 		};
 		static const gchar *const redirects[] = {
 			"/settings/fields", "/equity/post", "/payables/pay", "/claims/1/submit",
-			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups", NULL
+			"/payroll/1/post", "/purchase_order/1/approve", "/sales_order/1/confirm", "/settings/backups",
+			"/billing/subscriptions/start", "/bills/compose", "/tax-rates/new", "/plans/new", "/plans/1/prices", "/plans/1/discounts",
+			"/plans/1/prices/1/move", "/quotes/1/start-subscription", NULL
 		};
 		for (i = 0; i < G_N_ELEMENTS(posts); i++)
 		{
@@ -1514,6 +1527,10 @@ test_auth_api_refuses_anonymous_requests(
 		}
 		for (i = 0; i < G_N_ELEMENTS(gets); i++)
 			g_assert_cmpuint(server_fixture_get_anonymous(fixture, gets[i]), ==, SOUP_STATUS_UNAUTHORIZED);
+		/* The pages that start a subscription or a repeating invoice
+		 * send a stranger to sign in. */
+		for (i = 0; i < G_N_ELEMENTS(pages); i++)
+			g_assert_cmpuint(server_fixture_get_anonymous(fixture, pages[i]), ==, SOUP_STATUS_FOUND);
 	}
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ui/chat",
 	                                        NULL, "message=hi", NULL, NULL),
@@ -3700,6 +3717,85 @@ test_auth_redirect_notices_render(
 }
 
 /*
+ * Posts a form the way a browser with scripting off does -- asking for
+ * HTML -- so a refusal comes back as the page a person would read.
+ */
+static guint
+server_fixture_browser_post(
+	ServerFixture	 *fixture,
+	const gchar	 *path,
+	const gchar	 *cookie,
+	const gchar	 *form_body,
+	gchar		**out_body
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", fixture->port, path);
+	message = soup_message_new("POST", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_headers_append(soup_message_get_request_headers(message),
+		"Accept", "text/html,application/xhtml+xml");
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie", cookie);
+	bytes = g_bytes_new(form_body, strlen(form_body));
+	soup_message_set_request_body_from_bytes(message,
+		"application/x-www-form-urlencoded", bytes);
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+	if (NULL != outcome.error)
+		g_error("POST %s: %s", path, outcome.error->message);
+
+	*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+	                      g_bytes_get_size(outcome.body));
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * A refusal on a public route is read by a stranger -- a prospect on a
+ * lead form, a customer holding a portal link -- so it must not arrive in
+ * the operator's chrome. If this regresses, a mistyped lead form shows an
+ * anonymous visitor the sidebar: the install's modules, its saved views
+ * and a search box, one click from the login page.
+ */
+static void
+test_auth_public_errors_have_no_chrome(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *stranger = NULL;
+	g_autofree gchar *operator_page = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_fixture_browser_post(fixture, "/f/no-such-form",
+		NULL, "name=Someone", &stranger), >=, 400);
+	g_assert_nonnull(strstr(stranger, "<html"));
+	g_assert_nonnull(strstr(stranger, "role=\"alert\""));
+	g_assert_null(strstr(stranger, "class=\"sidebar\""));
+	g_assert_null(strstr(stranger, "nav-item"));
+
+	/* The operator, signed in, still gets the page in the app. */
+	server_fixture_create_member(fixture, "opal", "o-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "opal", "o-long-password");
+	g_assert_cmpuint(server_fixture_browser_post(fixture, "/f/no-such-form",
+		cookie, "name=Someone", &operator_page), >=, 400);
+	g_assert_nonnull(strstr(operator_page, "class=\"sidebar\""));
+}
+
+/*
  * A url-encoded import is a 400 that says so, not a 500.
  *
  * This is what a browser sends when the form has no working encoding
@@ -3874,7 +3970,7 @@ test_auth_sidebar_restores_its_scroll(
 	 * already drawn the sidebar at the top, turning a lost position into a
 	 * visible jump.
 	 */
-	main_start = strstr(page, "<main class=\"main\">");
+	main_start = strstr(page, "<main class=\"main\"");
 	g_assert_nonnull(main_start);
 	g_assert_true(script < main_start);
 }
@@ -4644,12 +4740,14 @@ test_auth_calendar_account_delegation(
 }
 
 /*
- * The sidebar, as drawn, asks the five questions in order right after the
+ * The sidebar, as drawn, asks its questions in order right after the
  * overview, and every page it gathers appears once, under its question. A
  * heading the regrouping emptied (Sales pipelines, whose one row is now
- * under Growth) is not drawn over nothing. With a module off, its row goes
- * -- exactly as before -- and the question keeps its heading as long as
- * another row answers it.
+ * under Growth; Money and Accounting, folded into Bank and Books) is not
+ * drawn over nothing. Every heading after the overview folds, and the one
+ * holding the current page is the one drawn open. With a module off, its
+ * row goes -- exactly as before -- and the question keeps its heading as
+ * long as another row answers it.
  */
 static void
 test_auth_sidebar_asks_the_five_questions(
@@ -4658,12 +4756,16 @@ test_auth_sidebar_asks_the_five_questions(
 ){
 	static const gchar *const headings[] = {
 		"<div class=\"nav-section\">Overview</div>",
-		"<div class=\"nav-section\">Money in</div>",
-		"<div class=\"nav-section\">Money out</div>",
-		"<div class=\"nav-section\">Growth</div>",
-		"<div class=\"nav-section\">Customers</div>",
-		"<div class=\"nav-section\">Support</div>",
-		"<div class=\"nav-section\">Business</div>",
+		"<summary class=\"nav-section\">Money</summary>",
+		"<div class=\"nav-sub\">Money in</div>",
+		"<div class=\"nav-sub\">Money out</div>",
+		"<div class=\"nav-sub\">Bank</div>",
+		"<div class=\"nav-sub\">Books</div>",
+		"<summary class=\"nav-section\">Customers</summary>",
+		"<summary class=\"nav-section\">Growth</summary>",
+		"<summary class=\"nav-section\">Support</summary>",
+		"<summary class=\"nav-section\">Build</summary>",
+		"<summary class=\"nav-section\">Settings</summary>",
 	};
 	g_autofree gchar *cookie = NULL;
 	g_autofree gchar *page = NULL;
@@ -4697,22 +4799,33 @@ test_auth_sidebar_asks_the_five_questions(
 	}
 
 	/* A gathered row sits under its question, and only there. */
-	money_in = strstr(page, headings[1]);
-	money_out = strstr(page, headings[2]);
+	money_in = strstr(page, headings[2]);
+	money_out = strstr(page, headings[3]);
 	invoice = strstr(page, "href=\"/e/invoice\"");
 	g_assert_nonnull(invoice);
 	g_assert_true(invoice > money_in);
 	g_assert_true(invoice < money_out);
 	g_assert_null(strstr(invoice + 1, "href=\"/e/invoice\""));
 
-	/* The heading it left behind is gone; the ones it shares stay. */
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Sales pipelines</div>"));
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Invoicing</div>"));
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Quotes</div>"));
-	g_assert_null(strstr(page, "<div class=\"nav-section\">Activities</div>"));
-	g_assert_nonnull(strstr(page, "<div class=\"nav-section\">Money</div>"));
-	g_assert_nonnull(strstr(page, "<div class=\"nav-section\">Accounting</div>"));
+	/* The headings it left behind are gone. */
+	g_assert_null(strstr(page, "class=\"nav-section\">Sales pipelines<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Invoicing<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Quotes<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Activities<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Relations<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Accounting<"));
+	g_assert_null(strstr(page, "class=\"nav-section\">Business<"));
 	g_assert_nonnull(strstr(page, "href=\"/deals\""));
+
+	/* Reports is an overview page: no question is open over it. */
+	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
+	g_clear_pointer(&page, g_free);
+
+	/* On an invoice list, Money is the area drawn open. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/invoice",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
+	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"customers\" open>"));
 	g_clear_pointer(&page, g_free);
 
 	/* Module off: the row goes, the question stays. */
@@ -5075,6 +5188,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-marks-the-active-entry", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_sidebar_marks_the_active_entry,
+	           server_fixture_tear_down);
+	g_test_add("/auth/public-errors-have-no-chrome", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_public_errors_have_no_chrome,
 	           server_fixture_tear_down);
 	g_test_add("/auth/redirect-notices-render", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_redirect_notices_render,

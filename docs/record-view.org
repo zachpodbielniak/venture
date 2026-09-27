@@ -1,0 +1,185 @@
+#+title: How a record reads
+#+description: The summary view, the list and the grouped form, all derived from one classification of the field table
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-25]
+#+updated: [2026-09-25]
+#+version: 0.6.0
+
+* What this is
+
+Every record type gets a page, a list and a form without anybody writing
+them. Until this change they were the table: every field in declared order,
+internal names in capitals, raw ids, rows of dashes for everything empty,
+and the machinery that makes capture idempotent printed beside the
+customer's email address. A person opening a form submission could not see
+what the person had written.
+
+The pages are still derived -- a type added tomorrow, or a plugin's, reads
+the same way the day it registers -- but they are derived from what each
+field is /for/, not from the fact that it exists.
+
+* One classification
+
+=venture_field_spec_get_role()= puts every field in one of five roles. It
+reads only the field table, so a field's declaration is still the one place
+its behaviour comes from.
+
+| Role       | What decides it                                                  | Where it goes                           |
+|------------+------------------------------------------------------------------+-----------------------------------------|
+| status     | an enumeration or string named =status=, =stage= or =state=      | a badge beside the title; a list column |
+| content    | long text                                                        | a card of its own, when it is prose     |
+| fact       | everything else a person reads                                   | Details; list columns; the form         |
+| technical  | =TECHNICAL= or =SENSITIVE=, or a name that says machinery (below) | folded under All fields and Advanced    |
+| structured | a JSON field                                                     | folded; edited under Advanced           |
+
+A name says machinery when it ends =-key=, =-hash=, =-digest=, =-uuid=,
+=-etag=, =-nonce=, =-signature=, =-checksum=, =-fingerprint=, =-identity=,
+=-version=, =-cursor=, =-token= or =-lease-until=; when it is a string ending
+=-id= (somebody else's identifier -- a reference to one of ours is
+=REFERENCE=-kinded and stays a fact); or when it is a number named
+=position=, =*-order= or =sort*=. =VENTURE_COLUMN_FLAG_TECHNICAL= (or
+=technical: true=) says it where the name does not.
+
+Sensitive fields are never shown anywhere -- not in Details, not folded,
+not in a form. The role only decides where the fields that /may/ be shown
+go.
+
+* The record page
+
+- *The trail* above the title names the sidebar group and the list:
+  "Customers / Contacts". It is read from the same table the sidebar is
+  drawn from, so the page and the navigation name a place one way.
+- *The title* is the record's display name; its status is a badge beside
+  it, in words ("In progress", not =in_progress=), toned by what the word
+  means: ended well is positive, needs somebody is amber, ended badly is
+  the accent.
+- *One primary action*, Edit. Watching sits beside it. The way back to the
+  list is the trail, not a second button.
+- *The left column* is what the record is about: prose somebody wrote (a
+  message, notes, a description -- only when it is set, and only when it is
+  long enough to be prose; "30 days" in a Terms field is a fact), then the
+  type's own block (an invoice's lines and total, a ticket's desk and reply
+  box, a release's changelog), then its actions in one card (an action that
+  asks for something opens its form in place, under its own name), then
+  everything that points at it in one Related card, links, knowledge and
+  the activity.
+- *The right column* is Details: the facts that are set, in the order the
+  type declared them, with the name that is already the title left out.
+  Emails, phone numbers and web addresses are links; a reference is the
+  other record's name; a date is =2026-09-25=, an instant
+  =2026-09-25 14:05= in the configured zone. Zero, false and unset read as
+  empty and are not listed.
+- *All fields*, folded under Details, is every field -- set or not -- with
+  the machinery, the record number, its stable identifier, when it was
+  created and last changed. It is one click, with no script.
+
+Nothing a person reaches by default shows an internal field name, a raw
+UUID or a row for an empty field.
+
+** Form submissions
+
+A form somebody filled in on a site is titled by who wrote in, and keeps
+their name, email address and message on the submission itself. A capture
+that merges into a contact who already exists changes nothing on the
+contact, so before this the message went nowhere; now the submission shows
+it, links the contact it merged into, and the contact's history records the
+message with the source. Submissions from before the change have no stored
+message -- it went to the lead's notes, which may have been edited since,
+and nothing trustworthy can be copied back.
+
+Email permission reads as words ("Not requested", for example), including
+when its stored status is a string. String fields named =*-status= or
+=*-state= use the same readable captions as enumeration fields without
+becoming the record's headline badge. Attribution's first/last source
+snapshots can contain =form:<site UUID>=; they are technical fields, folded
+under All fields on both submissions and attribution bindings. The named
+site, campaign and observed-touch links remain available in Details.
+
+* The list
+
+The columns are what somebody scans a list for: the name, then the status,
+then the facts in declared order, six at most. Never prose, never
+machinery, and never a column that is empty on every row of the page -- a
+column of dashes is a question nobody asked. A reference reads as the other
+record's name; a date column shows the day. The list is titled in the
+plural and its button says what it makes: "New company".
+
+* The form
+
+- *In view*: every required field, the status, and the first six facts --
+  enough to create a useful record without scrolling. A required field is
+  never folded, because a browser cannot focus a folded input to say it is
+  missing.
+- *Prose*, full width, in its own section.
+- *More details*: the rest, folded on a new record; open on an edit when
+  anything in it is already filled in, because a folded value is one nobody
+  checks before saving.
+- *Advanced*: machinery, always folded, with a line saying it is set by
+  VENTURE or an integration.
+
+Folded sections are =<details>=: every input is still in the form and still
+posts. Choices read as words and post as the value.
+
+** A reference inside a parent
+
+A reference declared =VENTURE_COLUMN_FLAG_SAME_PARENT= must point at a
+record under the same parent as the one being saved. The parent is found,
+not listed: =venture_entity_class_get_shared_parent()= returns the first
+reference the target type declares under the same name, and to the same
+type, as the record does -- an invoice's =contact-id= shares =company-id=,
+because a contact works for a company and an invoice is to one. The
+organization is never a parent. The save refuses a mismatch when either
+end is written, so a record whose contact has since moved company stays
+editable. The form marks the select =data-same-parent= and each option
+=data-parent=, and the page hides the options under another parent;
+the themed picker leaves out hidden options.
+
+Two cases are not a mismatch. A record that names no parent -- an
+internal ticket raised by somebody, with no company -- has nothing to
+share, and a target filed under no parent is not under another one: an
+import matches a person before anybody has said where they work.
+
+The flag is on every "person at this customer" reference: an invoice's
+and a quote's "Attention of", a deal's contact, a ticket's "Raised by" and
+a sales order's contact. It is deliberately not on an interaction or an
+activity, where a meeting with the customer may well include somebody
+from a partner, nor on machinery an integration writes (Stripe customers,
+dunning events, sequence enrolments).
+
+** When something is refused
+
+Every route reports a failure as JSON, and a person never sees it:
+
+- The page posts an ordinary form itself (=X-Venture-Inline=), so a
+  refusal is shown above the form with everything typed still in it, and
+  a success goes where the server sends it. A file answer is saved.
+  Opt a form out with =data-no-inline=; htmx and multipart forms are left
+  alone.
+- The scripted post is =mode: "same-origin"=, so a redirect to another
+  origin is refused rather than followed and the operator is told to check
+  the record -- the write has happened, and nothing is posted twice. A form
+  whose answer is a redirect elsewhere must carry =data-no-inline= so the
+  browser posts it and follows: "Pay with Stripe" (a 303 to Checkout; each
+  scripted retry would open another session) and linking a sign-in
+  provider (a redirect to the identity provider). =redirect: "manual"= is
+  not an alternative: it hides the =Location= of every same-origin
+  post-redirect-get.
+- An htmx request's refusal is a toast.
+- With scripting off, a browser (=Accept: text/html=) is answered with a
+  page saying what to fix and a button back to the form. A signed-in
+  person gets it in the app; anybody else -- a customer on a portal or
+  payment link, a visitor on a lead form or booking page -- gets a bare
+  page with no sidebar, because the operator chrome is not theirs to see.
+  A server fault folds its detail away.
+- The API, webhooks, federation and anything that did not ask for HTML
+  get the JSON exactly as before.
+
+* Where it lives
+
+=src/boxed/venture-field-spec.c= classifies. =src/web/venture-web-record-view.inc=
+renders: the page head, the content cards, Details and All fields, list
+columns and cells, form groups and type pickers. Nothing in it names a
+record type. =tests/test-record-view.c= pins the classification, the type
+labels, the submission page (message shown, machinery folded, sensitive
+digest absent), the list's columns and the grouped form.

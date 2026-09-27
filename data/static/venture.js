@@ -145,6 +145,11 @@
 
 		el.className = "toast " + (kind || "");
 		el.textContent = message;
+		/* A failure interrupts; anything else waits its turn in the
+		 * container's polite live region. */
+		if ((kind || "").indexOf("negative") >= 0) {
+			el.setAttribute("role", "alert");
+		}
 		toastContainer().appendChild(el);
 
 		window.setTimeout(function () {
@@ -157,6 +162,169 @@
 		}, timeout || 4000);
 
 		return el;
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Failures shown where they happened                                  */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Every route reports a failure as JSON. A person should never be
+	 * sent to it: an ordinary form is posted from here instead, so a
+	 * refusal is shown above the form with everything typed still in it,
+	 * and a success goes where the server sends it. htmx requests get the
+	 * same message as a toast. With scripting off the server answers a
+	 * browser with a page instead, so nobody sees JSON either way.
+	 */
+	function failureMessage(text) {
+		try {
+			var parsed = JSON.parse(text);
+
+			if (parsed && parsed.message) {
+				/* The service's name is for the log, not the reader. */
+				var words = parsed.message.replace(/^Venture[A-Za-z]*: /, "");
+
+				return words.charAt(0).toUpperCase() + words.slice(1);
+			}
+		} catch (ignored) {
+			/* not JSON: a proxy's page, or nothing at all */
+		}
+
+		return "The result could not be confirmed. Check the record before trying again.";
+	}
+
+	function showFormError(form, message) {
+		var box = form.querySelector("[data-form-error]");
+
+		if (!box) {
+			box = document.createElement("div");
+			box.setAttribute("data-form-error", "");
+			box.setAttribute("role", "alert");
+			box.className = "form-error";
+			form.insertBefore(box, form.firstChild);
+		}
+
+		box.textContent = "";
+		var title = document.createElement("strong");
+		title.textContent = "Please check this request. ";
+		box.appendChild(title);
+		box.appendChild(document.createTextNode(message));
+		box.hidden = false;
+		box.scrollIntoView({ block: "center", behavior: "smooth" });
+	}
+
+	function postsInline(form) {
+		if ((form.getAttribute("method") || "").toLowerCase() !== "post"
+		    || form.hasAttribute("data-no-inline")
+		    || form.getAttribute("target")
+		    || (form.enctype || "").indexOf("multipart") === 0) {
+			return false;
+		}
+
+		for (var i = 0; i < form.attributes.length; i++) {
+			if (form.attributes[i].name.indexOf("hx-") === 0) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	function wireInlineForms() {
+		document.addEventListener("submit", function (event) {
+			var form = event.target;
+
+			/* Anything that already handled its own submit keeps it. */
+			if (event.defaultPrevented || !(form instanceof HTMLFormElement)
+			    || !postsInline(form) || !window.fetch) {
+				return;
+			}
+
+			event.preventDefault();
+			if (form.ventureSubmitting) {
+				return;
+			}
+			form.ventureSubmitting = true;
+
+			var data = new FormData(form);
+			var buttons = form.querySelectorAll("button[type=submit], button:not([type]), input[type=submit]");
+			var disabled = Array.prototype.map.call(buttons, function (b) { return b.disabled; });
+
+			function finish() {
+				form.ventureSubmitting = false;
+				buttons.forEach(function (b, i) { b.disabled = disabled[i]; });
+			}
+
+			if (event.submitter && event.submitter.name) {
+				data.append(event.submitter.name, event.submitter.value);
+			}
+
+			buttons.forEach(function (b) { b.disabled = true; });
+
+			/*
+			 * same-origin: a redirect to another origin (a payment page, an
+			 * identity provider) is refused before anything is sent there,
+			 * rather than succeeding or failing on that site's CORS policy.
+			 * The write already happened, so the operator is told to check
+			 * the record -- never re-posted. A form whose answer goes to
+			 * another origin carries data-no-inline and is posted by the
+			 * browser. ("manual" would hide the Location of every
+			 * same-origin post-redirect-get, which is most forms.)
+			 */
+			fetch(form.getAttribute("action") || window.location.href, {
+				method: "POST",
+				mode: "same-origin",
+				body: new URLSearchParams(data),
+				credentials: "same-origin",
+				headers: { "Accept": "text/html", "X-Venture-Inline": "1" }
+			}).then(function (response) {
+				var type = response.headers.get("Content-Type") || "";
+
+				if (!response.ok) {
+					return response.text().then(function (text) {
+						showFormError(form, failureMessage(text));
+					});
+				}
+
+				/* A file -- an export, a PDF -- is saved, not shown. */
+				if (type.indexOf("text/html") !== 0) {
+					return response.blob().then(function (blob) {
+						var link = document.createElement("a");
+						var named = /filename="?([^";]+)"?/.exec(
+							response.headers.get("Content-Disposition") || "");
+
+						link.href = URL.createObjectURL(blob);
+						link.download = named ? named[1] : "download";
+						document.body.appendChild(link);
+						link.click();
+						link.remove();
+					});
+				}
+
+				if (response.redirected) {
+					window.location.assign(response.url);
+					return null;
+				}
+
+				/* A page answered in place, as a plain post would. */
+				return response.text().then(function (text) {
+					document.open();
+					document.write(text);
+					document.close();
+				});
+			}).then(finish, function () {
+				finish();
+				/* The write may have committed before its reply was lost. */
+				showFormError(form, "The result could not be confirmed. "
+					+ "Check the record before trying again.");
+			});
+		});
+
+		document.body.addEventListener("htmx:responseError", function (event) {
+			var xhr = event.detail && event.detail.xhr;
+
+			toast(failureMessage(xhr ? xhr.responseText : ""), "negative", 7000);
+		});
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -1833,6 +2001,46 @@
 		return option ? option.textContent : "";
 	}
 
+	/*
+	 * A reference that must share the record's parent -- "Attention of"
+	 * on an invoice -- offers only the options under the parent chosen in
+	 * the same form. Runs before the pickers are built, and again on every
+	 * change of the parent; the save refuses a mismatch regardless.
+	 */
+	function wireSameParent(root) {
+		(root || document).querySelectorAll("select[data-same-parent]")
+			.forEach(function (select) {
+				var form = select.closest("form");
+				var parent = form && form.querySelector("[name=\""
+					+ select.getAttribute("data-same-parent") + "\"]");
+
+				if (!parent || select.ventureSameParent) {
+					return;
+				}
+
+				select.ventureSameParent = true;
+
+				function narrow() {
+					var chosen = parent.value;
+
+					Array.prototype.forEach.call(select.options, function (o) {
+						if (o.value) {
+							o.hidden = !!chosen && o.dataset.parent !== chosen;
+							o.disabled = o.hidden;
+						}
+					});
+
+					if (select.selectedOptions[0] && select.selectedOptions[0].hidden) {
+						select.value = "";
+						select.dispatchEvent(new Event("change", { bubbles: true }));
+					}
+				}
+
+				parent.addEventListener("change", narrow);
+				narrow();
+			});
+	}
+
 	function wirePickers(root) {
 		(root || document).querySelectorAll("select").forEach(function (select) {
 			if (select.venturePicker || select.multiple
@@ -1883,7 +2091,12 @@
 
 		function syncButton() {
 			button.textContent = pickerLabel(select);
+			button.disabled = select.disabled;
 		}
+
+		/* A script that sets the value -- a customer choosing its only
+		 * contact -- says so with a change event; the label follows. */
+		select.addEventListener("change", syncButton);
 
 		function rows() {
 			return Array.prototype.slice.call(
@@ -1921,10 +2134,32 @@
 		}
 
 		function build() {
+			var group = null;
+
 			list.innerHTML = "";
 
 			Array.prototype.forEach.call(select.options, function (option, i) {
 				var row = document.createElement("div");
+				var parent = option.parentNode;
+
+				/* Options under an <optgroup> -- a plan's prices --
+				 * are listed under its label, as the native menu does. */
+				if (parent && parent.tagName === "OPTGROUP" && parent !== group
+				    && !option.hidden && !option.disabled) {
+					var heading = document.createElement("div");
+
+					group = parent;
+					heading.className = "picker-group";
+					heading.textContent = parent.label;
+					list.appendChild(heading);
+				}
+
+				/* A hidden option is one the page has ruled out -- a
+				 * contact at another customer -- and must not be
+				 * offered here either. */
+				if (option.hidden || option.disabled) {
+					return;
+				}
 
 				row.className = "picker-option"
 					+ (i === select.selectedIndex ? " selected" : "");
@@ -2610,6 +2845,7 @@
 
 		document.body.addEventListener("htmx:afterSwap", function (event) {
 			wireRowLinks(event.detail && event.detail.target);
+			wireSameParent(event.detail && event.detail.target);
 			wirePickers(event.detail && event.detail.target);
 			wireRecordPickers(event.detail && event.detail.target);
 			wireComposer();
@@ -3858,6 +4094,8 @@
 		wirePodEditor();
 		wireReplyTools(document);
 		wireChatStream(document);
+		wireSameParent(document);
+		wireInlineForms();
 		wirePickers(document);
 		wireRecordPickers(document);
 		wireHarness(document);

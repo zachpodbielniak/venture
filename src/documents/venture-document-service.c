@@ -291,19 +291,105 @@ row_quantity(JsonObject *row)
 	return 0;
 }
 
+/* A calendar date must exist before the first save: fiscal-period checks
+ * also apply to drafts. Explicit dates use the same parser as record forms. */
+static gboolean
+invoice_dates(JsonObject *spec, GDateTime **issued, GDateTime **due, GError **error)
+{
+	JsonNode *node;
+	gint64 days;
+
+	*issued = NULL;
+	*due = NULL;
+	node = json_object_get_member(spec, "issued_at");
+	if (node != NULL && !JSON_NODE_HOLDS_NULL(node))
+	{
+		if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING)
+			return refuse(error, "Invoice date must be a date string");
+		*issued = venture_time_from_string(json_node_get_string(node), error);
+	}
+	else
+		*issued = venture_time_from_string("today", error);
+	if (*issued == NULL)
+	{
+		if (error == NULL || *error == NULL)
+			refuse(error, "Invoice date is outside the supported calendar");
+		return FALSE;
+	}
+	node = json_object_get_member(spec, "due_at");
+	if (node != NULL && !JSON_NODE_HOLDS_NULL(node))
+	{
+		if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING)
+			return refuse(error, "Due date must be a date string");
+		*due = venture_time_from_string(json_node_get_string(node), error);
+		if (*due == NULL)
+		{
+			if (error == NULL || *error == NULL)
+				refuse(error, "Due date is outside the supported calendar");
+			return FALSE;
+		}
+	}
+	else
+	{
+		node = json_object_get_member(spec, "due_days");
+		if (node != NULL && (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_INT64))
+			return refuse(error, "Due days must be a whole number");
+		days = venture_json_object_get_int(spec, "due_days", 30);
+		if (days > G_MAXINT || days < G_MININT)
+			return refuse(error, "Due days is outside the supported range");
+		/* Existing API callers use zero or a negative offset for no due date. */
+		if (days > 0)
+		{
+			*due = g_date_time_add_days(*issued, (gint)days);
+			if (*due == NULL)
+				return refuse(error, "Due date is outside the supported calendar");
+		}
+	}
+	if (*due != NULL && g_date_time_compare(*due, *issued) < 0)
+		return refuse(error, "Due date cannot be before the invoice date");
+	return TRUE;
+}
+
+/* A remembered exemption is part of the document write: it must be
+ * authorized with issuance and roll back if any line or posting fails. */
+static gboolean
+invoice_remember_exemption(VentureDocumentService *self, gint64 organization_id,
+	JsonObject *spec, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) company = NULL;
+
+	if (!venture_json_object_get_bool(spec, "remember_tax_exemption", FALSE) ||
+	    !venture_json_object_get_bool(spec, "tax_exempt", FALSE))
+		return TRUE;
+	company = venture_database_get(self->database, VENTURE_TYPE_COMPANY,
+		venture_json_object_get_int(spec, "company_id", 0), error);
+	if (company == NULL)
+	{
+		if (error == NULL || *error == NULL)
+			refuse(error, "Choose a customer before remembering a tax exemption");
+		return FALSE;
+	}
+	if (venture_entity_get_organization_id(company) != organization_id || venture_entity_is_deleted(company))
+		return refuse(error, "Choose a current customer in this organization");
+	g_object_set(company, "tax-exempt", TRUE,
+		"tax-exempt-reason", venture_json_object_get_string(spec, "tax_exemption_kind",
+			venture_json_object_get_string(spec, "tax_exempt_reason", "")),
+		"tax-exemption-number", venture_json_object_get_string(spec, "tax_exemption_number", ""), NULL);
+	return venture_database_save(self->database, company, actor, error);
+}
+
 static VentureEntity *
 venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint64 organization_id,
 	JsonObject *spec, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureInvoice) invoice = NULL;
 	g_autofree gchar *number = NULL;
-	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) issued = NULL, due = NULL;
 	JsonArray *lines;
 	guint i;
-	gint64 due_days;
 	g_return_val_if_fail(VENTURE_IS_DOCUMENT_SERVICE(self), NULL);
 	lines = lines_of(spec, error);
-	if (lines == NULL)
+	if (lines == NULL || !invoice_dates(spec, &issued, &due, error))
 		return NULL;
 	if (!venture_database_begin(self->database, error))
 		return NULL;
@@ -320,14 +406,12 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 		"contact-id", venture_json_object_get_int(spec, "contact_id", 0),
 		"terms", venture_json_object_get_string(spec, "terms", ""),
 		"notes", venture_json_object_get_string(spec, "notes", ""),
-		"external-id", venture_json_object_get_string(spec, "external_id", ""), NULL);
-	due_days = venture_json_object_get_int(spec, "due_days", 30);
-	now = venture_time_now();
-	if (due_days > 0)
-	{
-		g_autoptr(GDateTime) due = g_date_time_add_days(now, (gint)due_days);
-		g_object_set(invoice, "due-at", due, NULL);
-	}
+		"external-id", venture_json_object_get_string(spec, "external_id", ""),
+		"tax-exempt", venture_json_object_get_bool(spec, "tax_exempt", FALSE),
+		"tax-exempt-reason", venture_json_object_get_string(spec, "tax_exempt_reason", ""), NULL);
+	g_object_set(invoice, "issued-at", issued, "due-at", due, NULL);
+	if (!invoice_remember_exemption(self, organization_id, spec, actor, error))
+		goto fail;
 	if (!venture_database_save(self->database, VENTURE_ENTITY(invoice), actor, error))
 		goto fail;
 	for (i = 0; i < json_array_get_length(lines); i++)
@@ -344,14 +428,15 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), organization_id);
 		g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
-			"product-id", venture_json_object_get_int(row, "product_id", 0), NULL);
+			"product-id", venture_json_object_get_int(row, "product_id", 0),
+			"tax-code-id", venture_json_object_get_int(row, "tax_code_id", 0), NULL);
 		if (!money_from_row(VENTURE_ENTITY(line), row, error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			goto fail;
 	}
 	if (venture_json_object_get_bool(spec, "send", FALSE) &&
 		!venture_settlement_service_transition(venture_settlement_service_get(self->database),
-			invoice, "sent", now, actor, error))
+			invoice, "sent", issued, actor, error))
 		goto fail;
 	if (!venture_database_commit(self->database, error))
 		goto fail;
@@ -410,7 +495,8 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 		venture_entity_set_organization_id(VENTURE_ENTITY(line), organization_id);
 		g_object_set(line, "quote-id", venture_entity_get_id(VENTURE_ENTITY(quote)),
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
-			"product-id", venture_json_object_get_int(row, "product_id", 0), NULL);
+			"product-id", venture_json_object_get_int(row, "product_id", 0),
+			"tax-code-id", venture_json_object_get_int(row, "tax_code_id", 0), NULL);
 		if (!money_from_row(VENTURE_ENTITY(line), row, error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			goto fail;
@@ -452,7 +538,10 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 	VentureDatabase * db = self->database;
 	GVariantBuilder arguments;
 	g_autoptr(VentureEntity) result = NULL;
-	g_autoptr(JsonNode) spec_node = NULL;
+	g_autoptr(JsonNode) spec_node = NULL, effective = NULL;
+	g_autoptr(GDateTime) issued = NULL, due = NULL;
+	g_autofree gchar *issued_text = NULL, *due_text = NULL;
+	JsonObject *effective_spec;
 	g_autofree gchar *spec_text = NULL;
 	/* A draft has no ledger effect. Sending it is the posting boundary. */
 	if (spec == NULL || !venture_json_object_get_bool(spec, "send", FALSE))
@@ -462,12 +551,31 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Database is unavailable");
 		return NULL;
 	}
-	if (spec != NULL)
+	/* Consent names concrete dates, not a relative "today" which could
+	 * resolve differently when the second actor retries tomorrow. */
+	if (!invoice_dates(spec, &issued, &due, error))
+		return NULL;
+	spec_node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(spec_node, spec);
+	spec_text = venture_json_to_string(spec_node, FALSE);
+	effective = venture_json_parse(spec_text, error);
+	if (effective == NULL)
+		return NULL;
+	effective_spec = json_node_get_object(effective);
+	issued_text = venture_time_to_string(issued);
+	json_object_set_string_member(effective_spec, "issued_at", issued_text);
+	if (due != NULL)
 	{
-		spec_node = json_node_new(JSON_NODE_OBJECT);
-		json_node_set_object(spec_node, spec);
-		spec_text = venture_json_to_string(spec_node, FALSE);
+		due_text = venture_time_to_string(due);
+		json_object_set_string_member(effective_spec, "due_at", due_text);
 	}
+	else
+	{
+		json_object_remove_member(effective_spec, "due_at");
+		json_object_set_int_member(effective_spec, "due_days", 0);
+	}
+	g_clear_pointer(&spec_text, g_free);
+	spec_text = venture_json_to_string(effective, FALSE);
 	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
 	g_variant_builder_add(&arguments, "{sv}", "organization_id", g_variant_new_int64((gint64)organization_id));
 	g_variant_builder_add(&arguments, "{sv}", "spec", g_variant_new_maybe(G_VARIANT_TYPE_STRING, spec_text != NULL ? g_variant_new_string(spec_text) : NULL));
@@ -475,7 +583,7 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 		g_variant_builder_end(&arguments), organization_id, actor, error);
 	if (operation == NULL)
 		return NULL;
-	result = venture_document_service_compose_invoice_impl(self, organization_id, spec, actor, error);
+	result = venture_document_service_compose_invoice_impl(self, organization_id, effective_spec, actor, error);
 	if (result == NULL)
 		return NULL;
 	if (!venture_accounting_operation_finish(operation, error))

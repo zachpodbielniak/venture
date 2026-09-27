@@ -157,7 +157,7 @@ venture_web_render_headline_home(
 	                                 &period_text, &notice, &organization_id,
 	                                 &error))
 	{
-		g_autoptr(GString) body = g_string_new("<div class=\"notice negative\">");
+		g_autoptr(GString) body = g_string_new("<div class=\"notice negative\" role=\"alert\">");
 
 		venture_html_escape_append(body, error->message);
 		g_string_append(body, "</div>");
@@ -194,7 +194,7 @@ venture_web_render_headline_home(
 
 	if (NULL != notice)
 	{
-		g_string_append(content, "<div class=\"notice negative\">");
+		g_string_append(content, "<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(content, notice);
 		g_string_append(content, "</div>");
 	}

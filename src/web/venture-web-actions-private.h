@@ -10,7 +10,7 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 	VentureActionRegistry *registry = venture_database_get_action_registry(venture_context_get_database(self->context));
 	g_autoptr(GPtrArray) actions = venture_action_registry_list_for_type(registry, venture_entity_get_entity_name(entity));
 	VentureActor actor;
-	guint i, j;
+	guint i, j, shown = 0;
 	venture_auth_to_actor(principal, &actor);
 	for (i = 0; i < actions->len; i++)
 	{
@@ -25,6 +25,18 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		g_object_get(action, "name", &name, "label", &label, "parameters", &parameters, "roles", &role, NULL);
 		if (!venture_web_require_for_type(self, principal, G_OBJECT_TYPE(entity), role, NULL) ||
 			!venture_action_registry_allowed(registry, action, entity, &actor, principal->role, NULL)) continue;
+		/* One card holds every action. An action that asks for
+		 * nothing is a button; one with parameters is folded behind
+		 * its name, so a page is never a stack of open forms nobody
+		 * asked to fill in. */
+		if (0 == shown++)
+			g_string_append(html, "<section class=\"card record-actions\"><div class=\"card-head\"><h2>Actions</h2></div><div class=\"card-body\">");
+		if (parameters->len > 0)
+		{
+			g_string_append(html, "<details class=\"record-action\"><summary class=\"btn\">");
+			venture_html_escape_append(html, label);
+			g_string_append(html, "</summary>");
+		}
 		g_string_append_printf(html, "<form method=\"post\" action=\"/api/v1/%s/%" G_GINT64_FORMAT "/actions/%s\" data-record-action=\"%s\">",
 			venture_entity_get_entity_name(entity), venture_entity_get_id(entity), name, name);
 		for (j = 0; j < parameters->len; j++)
@@ -54,7 +66,11 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 		g_string_append(html, "<button class=\"btn\" type=\"submit\">");
 		venture_html_escape_append(html, label);
 		g_string_append(html, "</button></form>");
+		if (parameters->len > 0)
+			g_string_append(html, "</details>");
 	}
+	if (shown > 0)
+		g_string_append(html, "</div></section>");
 }
 
 /* Transient action outputs are intentionally absent from ordinary record

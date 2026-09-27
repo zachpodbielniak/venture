@@ -20,8 +20,8 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	{
 		const gchar *request_text = f->nested_request;
 		f->nested_request = NULL;
-		/* Nested iteration may dispatch the second socket before the bounded
-		 * probe times out. The caller verifies either transport outcome. */
+		/* Keep both possible scheduling outcomes for the resource assertions
+		 * in test_nested_dispatch; nested main-context iteration can dispatch. */
 		f->nested_response = probe(f, request_text, 1);
 	}
 	return htmx_response_new_with_content(body && g_bytes_get_size(body) == 3 && !memcmp(g_bytes_get_data(body, NULL), "abc", 3) ? "yes" : "bad");
@@ -294,11 +294,11 @@ static void test_timeout_budget(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	response = exchange(f, request); g_assert_nonnull(strstr(response, " 200 ")); g_assert_cmpuint(f->writes, ==, 1);
 }
-/* The aggregate limit covers bodies awaiting dispatch, not active handlers.
- * A nested main-context iteration can serve a second socket while the first
- * handler is active. A bounded probe can also time out before that happens.
- * In either case, credit and connection slots must be reclaimed and the next
- * full-size request must be dispatched exactly once. */
+/* Main-context iteration inside a handler can dispatch the nested connection.
+ * Whether it does so before the bounded client times out is not the receive
+ * limiter's contract. A delivered response must succeed (in particular, not
+ * exhaust the outer body's released credit), and both scheduling outcomes must
+ * leave enough credit and connection slots for the next full-size request. */
 static void test_nested_dispatch(Fixture *f, gconstpointer data)
 {
 	g_autofree gchar *body = g_strnfill(600000, 'x'), *request = NULL, *response = NULL;
@@ -307,12 +307,13 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	f->nested_request = request;
 	response = exchange(f, request);
-	/* Both completed responses must be successful. An empty nested response
-	 * is also possible when the probe's bounded wait wins the socket race. */
+	/* Pin resource admission, not libsoup's nested-loop scheduling. */
 	g_assert_nonnull(strstr(response, " 200 "));
 	g_assert_nonnull(f->nested_response);
-	if (*f->nested_response) {
+	if (*f->nested_response)
+	{
 		g_assert_nonnull(strstr(f->nested_response, " 200 "));
+		g_assert_nonnull(strstr(f->nested_response, "\r\n\r\nbad"));
 		g_assert_cmpuint(f->writes, ==, 2);
 	}
 	pump();

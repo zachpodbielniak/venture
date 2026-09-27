@@ -116,26 +116,30 @@ venture_web_server_get_base_url(VentureWebServer *self);
 
 /**
  * VentureWebNavSection:
- * @heading: the question, as the sidebar heads it
+ * @heading: the section's name, as the sidebar heads it
+ * @group: (nullable): the area it is part of. Consecutive sections naming
+ *   the same group are drawn as one folding area -- "Money" holding Money
+ *   in, Money out, Bank and Books -- with each section's heading as a
+ *   label inside it. %NULL is an area of its own, headed by @heading.
  * @paths: (array zero-terminated=1): the sidebar paths drawn under it, in order
  *
- * One of the five questions the sidebar is grouped by: money in, money out,
- * growth, customers, support. A second table over the link table: a link
- * named here is drawn under its question instead of in its place, so the
- * link table keeps its order and every page keeps its URL, module gate and
+ * The sidebar's map: a second table over the link table. A link named
+ * here is drawn under its section instead of in its place, so the link
+ * table keeps its order and every page keeps its URL, module gate and
  * role. Exposed so the test suite can hold the grouping to its membership.
  */
 typedef struct
 {
 	const gchar *heading;
+	const gchar *group;
 	const gchar *const *paths;
 } VentureWebNavSection;
 
 /**
  * venture_web_navigation_sections:
  *
- * Retrieves the five questions in the order they are drawn, terminated by
- * one with a %NULL heading.
+ * Retrieves the sidebar's sections in the order they are drawn, terminated
+ * by one with a %NULL heading.
  *
  * Returns: (transfer none) (array zero-terminated=1): the section table
  */

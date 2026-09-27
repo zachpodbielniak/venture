@@ -283,6 +283,47 @@ static void test_form_capture(Fixture *f, gconstpointer data)
 	g_assert_null(repeated); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 	g_test_message("Consented form retained newsletter source; exact retry returned one submission/lead and created no email consent");
 }
+/*
+ * Who wrote in and what they wrote live on the submission, and survive a
+ * capture that merges into a contact who already exists. A merge changes
+ * nothing on the contact, so before this the message went nowhere at all:
+ * the submission page could name the contact but not say what they asked,
+ * and the contact's history recorded the capture with the source alone.
+ */
+static void test_capture_keeps_message_on_merge(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) payload = submission("lightsite-merge-1", NULL);
+	g_autoptr(VentureEntity) contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", (gint64)1,
+		"name", "Existing Customer", "email", "form@example.test", NULL);
+	g_autoptr(VentureAttributionSubmission) captured = NULL;
+	g_autoptr(GPtrArray) leads = NULL, history = NULL;
+	g_autofree gchar *name = NULL, *email = NULL, *message = NULL, *title = NULL;
+	gint64 contact_id = 0;
+	gboolean told = FALSE;
+	guint i;
+	persist(f, contact);
+	captured = venture_attribution_service_capture(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", payload, f->now, &error);
+	g_assert_no_error(error); g_assert_nonnull(captured);
+	g_object_get(captured, "sender-name", &name, "sender-email", &email, "message", &message, "contact-id", &contact_id, NULL);
+	g_assert_cmpstr(name, ==, "Form Visitor");
+	g_assert_cmpstr(email, ==, "form@example.test");
+	g_assert_cmpstr(message, ==, "Please contact me about the service.");
+	g_assert_cmpint(contact_id, ==, venture_entity_get_id(contact));
+	/* Titled by whoever wrote in, not "attribution_submission #1". */
+	title = venture_entity_get_display_name(VENTURE_ENTITY(captured));
+	g_assert_cmpstr(title, ==, "Form Visitor");
+	leads = all_rows(f, VENTURE_TYPE_LEAD);
+	g_assert_cmpuint(leads->len, ==, 0);
+	history = all_rows(f, VENTURE_TYPE_INTERACTION);
+	for (i = 0; i < history->len; i++) {
+		g_autofree gchar *body = NULL;
+		gint64 about = 0;
+		g_object_get(g_ptr_array_index(history, i), "body", &body, "contact-id", &about, NULL);
+		told = told || (about == contact_id && body != NULL && strstr(body, "Please contact me about the service.") != NULL);
+	}
+	g_assert_true(told);
+}
 static void email_permission(Fixture *f, JsonObject *payload)
 {
 	JsonObject *permission = json_object_new();
@@ -1080,6 +1121,7 @@ int main(int argc, char **argv)
 	g_test_add("/attribution/capture-result", Fixture, NULL, setup, test_capture_result, teardown);
 	g_test_add("/attribution/form-capture", Fixture, NULL, setup, test_form_capture, teardown);
 	g_test_add("/attribution/capture-address-permission", Fixture, NULL, setup, test_capture_address_permission, teardown);
+	g_test_add("/attribution/capture-keeps-message-on-merge", Fixture, NULL, setup, test_capture_keeps_message_on_merge, teardown);
 	g_test_add("/attribution/conversion-binding", Fixture, NULL, setup, test_conversion_binding, teardown);
 	g_test_add("/attribution/capture-address-recheck", Fixture, NULL, setup, test_capture_address_recheck, teardown);
 	g_test_add("/attribution/signed-capture", Fixture, NULL, setup, test_signed_capture, teardown);

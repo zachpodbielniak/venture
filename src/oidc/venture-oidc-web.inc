@@ -193,7 +193,9 @@ static HtmxResponse *venture_oidc_web_account(HtmxRequest *request, GHashTable *
 		if (!enabled || !venture_access_policy_has_organization_role(venture_database_get_access_policy(db), principal, org_id, roles, G_N_ELEMENTS(roles))) continue;
 		org = venture_database_get(db, VENTURE_TYPE_ORGANIZATION, org_id, NULL); if (!org) continue;
 		g_object_get(org, "name", &name, NULL); g_object_get(row, "uuid", &uuid, NULL);
-		g_string_append(body, "<h2>Link "); venture_html_escape_append(body, name); g_string_append(body, "</h2><form method=\"post\" action=\"/account/oidc/link\"><input type=\"hidden\" name=\"provider\" value=\"");
+		/* data-no-inline: linking answers with a redirect to the identity
+		 * provider, which only the browser's own post can follow. */
+		g_string_append(body, "<h2>Link "); venture_html_escape_append(body, name); g_string_append(body, "</h2><form method=\"post\" action=\"/account/oidc/link\" data-no-inline><input type=\"hidden\" name=\"provider\" value=\"");
 		venture_html_escape_append(body, uuid); g_string_append(body, "\"><label>Current local password<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Verify and link this provider</button></form>");
 	}
 	return venture_web_html_response(venture_web_page(self, request, "/account", "Organization sign-in", body->str), error ? 400 : 200);

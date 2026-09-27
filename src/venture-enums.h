@@ -968,6 +968,17 @@ typedef enum
  *   grants ownership within that account's organization role
  * @VENTURE_COLUMN_FLAG_RETAIN_REFERENCE: keep this reference on its original
  *   subject during CRM dedupe; use for evidence and approval-bound identity
+ * @VENTURE_COLUMN_FLAG_TECHNICAL: machinery a person does not read -- a
+ *   replay key, a digest, a configuration revision. Presentation only: the
+ *   field is kept out of summaries, list columns and the everyday form, and
+ *   shown under a collapsed "Technical" heading. Storage ignores it.
+ * @VENTURE_COLUMN_FLAG_SAME_PARENT: a reference whose target must share
+ *   this record's parent -- an invoice's "Attention of" is somebody at the
+ *   invoice's customer. The parent is the reference both records carry
+ *   under the same name to the same type; see
+ *   venture_entity_class_get_shared_parent(). Checked at the save when
+ *   either end is written, and used by the form to offer only matching
+ *   records.
  *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
@@ -989,11 +1000,40 @@ typedef enum
 	VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME = 1 << 10,
 	VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER = 1 << 11,
 	VENTURE_COLUMN_FLAG_HOST_RESOURCE = 1 << 13,
-	VENTURE_COLUMN_FLAG_RETAIN_REFERENCE = 1 << 12
+	VENTURE_COLUMN_FLAG_RETAIN_REFERENCE = 1 << 12,
+	VENTURE_COLUMN_FLAG_TECHNICAL = 1 << 14,
+	VENTURE_COLUMN_FLAG_SAME_PARENT = 1 << 15
 } VentureColumnFlags;
+
+/**
+ * VentureFieldRole:
+ * @VENTURE_FIELD_ROLE_FACT: a short value worth a glance -- an amount, a
+ *   date, who it belongs to -- shown under the record's title
+ * @VENTURE_FIELD_ROLE_STATUS: where the record is in its life; drawn as a
+ *   badge beside the title
+ * @VENTURE_FIELD_ROLE_CONTENT: prose somebody wrote -- a message, notes, a
+ *   description -- given room to be read
+ * @VENTURE_FIELD_ROLE_TECHNICAL: machinery; collapsed out of the way
+ * @VENTURE_FIELD_ROLE_STRUCTURED: a JSON blob; technical to read, but still
+ *   edited through the form's advanced section
+ *
+ * What a field is *for* on a page, derived from the field table by
+ * venture_field_spec_get_role(). One classification drives the record
+ * summary, the default list columns and the grouped form, so the three can
+ * never disagree about what matters on a record.
+ */
+typedef enum
+{
+	VENTURE_FIELD_ROLE_FACT = 0,
+	VENTURE_FIELD_ROLE_STATUS,
+	VENTURE_FIELD_ROLE_CONTENT,
+	VENTURE_FIELD_ROLE_TECHNICAL,
+	VENTURE_FIELD_ROLE_STRUCTURED
+} VentureFieldRole;
 
 /* --- GType registration -------------------------------------------------- */
 
+#define VENTURE_TYPE_FIELD_ROLE			(venture_field_role_get_type())
 #define VENTURE_TYPE_ORGANIZATION_KIND		(venture_organization_kind_get_type())
 #define VENTURE_TYPE_VENTURE_STATUS		(venture_venture_status_get_type())
 #define VENTURE_TYPE_ACCOUNT_KIND		(venture_account_kind_get_type())
@@ -1036,6 +1076,7 @@ typedef enum
 #define VENTURE_TYPE_PLUGIN_KIND		(venture_plugin_kind_get_type())
 #define VENTURE_TYPE_COLUMN_FLAGS		(venture_column_flags_get_type())
 
+GType venture_field_role_get_type		(void) G_GNUC_CONST;
 GType venture_organization_kind_get_type	(void) G_GNUC_CONST;
 GType venture_venture_status_get_type		(void) G_GNUC_CONST;
 GType venture_account_kind_get_type		(void) G_GNUC_CONST;

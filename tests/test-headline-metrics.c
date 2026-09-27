@@ -2113,7 +2113,7 @@ test_home_page(ServerFixture *f, gconstpointer unused)
 		status = server_request(f, "GET", "/?period=fortnight", NULL, &bad);
 		g_assert_cmpuint(status, ==, 200);
 		g_assert_nonnull(strstr(bad, "headline-cards"));
-		g_assert_nonnull(strstr(bad, "<div class=\"notice negative\">"));
+		g_assert_nonnull(strstr(bad, "<div class=\"notice negative\" role=\"alert\">"));
 		g_assert_nonnull(strstr(bad, "fortnight"));
 		status = server_request(f, "GET", "/?period=last_month", NULL, &picked);
 		g_assert_cmpuint(status, ==, 200);

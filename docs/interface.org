@@ -3,12 +3,23 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-09-12]
+#+updated: [2026-09-25]
 #+version: 0.6.0
 
 * The interface
 
 VENTURE's web UI is drawn from one stylesheet at a time, embedded into the server binary at build time; there is no build step, no framework and no web font. This page is what the stylesheet is made of, so that a page added to the server, a widget added to a dashboard, or a plugin's own markup lands in the same design instead of beside it.
+
+** Principles
+
+The interface is built for somebody running a business between other things, not for the person who designed the schema. Six rules decide every page, borrowed from the tools people find calm to use -- Apple's clarity and deference, Stripe's summary-first records, Linear's quiet density, and Nielsen's recognition over recall -- and each is enforced in code rather than hoped for:
+
+- *Say it in their words.* A type is "Form submission", a status is "In progress", a field is "Email permission". Internal names, raw ids and UUIDs never reach a page by default. (=venture_entity_type_dup_label()=, the choice labels, the caption register.)
+- *Lead with what they came for.* A record page is a title, a status, the content somebody wrote and the type's own block; its details sit beside it, not in front of it. A form submission shows who wrote in and what they wrote. (=docs/record-view.org=)
+- *Show what is set; fold the rest.* Empty fields are not rows. Machinery -- replay keys, digests, revisions -- and the full field list are one click away, never on the page. Forms keep the essentials in view and fold the rest. Progressive disclosure is =<details>=, so it needs no script.
+- *One primary action per page.* Edit on a record, New on a list, Save on a form. Actions that ask for input stay folded behind their name until chosen.
+- *Know where you are.* Every record, list and form carries a trail -- "Customers / Contacts" -- read from the same map as the sidebar, and the sidebar opens the group you are in and folds the others.
+- *Derive, never hand-write.* All of the above comes from the field table through one classification (=venture_field_spec_get_role()=). A new record type, or a plugin's, reads this way the day it registers; no page is written per type.
 
 ** Two looks
 
@@ -34,14 +45,20 @@ Every rule in the stylesheet is written once against custom properties; a theme 
 The hierarchy is done by type alone. Nothing is boxed, tinted or iconed to say what it is.
 
 - *Macro* — headlines. The heavy grotesque, uppercase, tight (=letter-spacing: -0.035em=), leading under one, sized with =clamp()= so a page title scales with the viewport without ever wrapping badly. Only =h1=, =h2=, stat values and the dashboard's big figures are set this way.
-- *Micro* — readings. Small monospace, uppercase, tracked out (=10.5px=, =letter-spacing: 0.1em=). Every label in the interface is this: table headers, field captions, card heads, the navigation, badges, buttons, stat labels, timestamps, coordinates.
+- *Micro* — readings. Small monospace, uppercase, tracked out (=10.5px=, =letter-spacing: 0.1em=). The chrome is this: table headers, card heads, the navigation, badges, buttons, stat labels, timestamps, coordinates.
+- *Captions* — the name of a field beside its value or above its input, in a record's Details and in a form. Sentence case, small, muted, in the sans. A caption like "Email permission outcome" is read rather than scanned, and four tracked-out words in capitals made every record page shout; the micro register stays on the chrome.
 - *Prose* — sentences. Plain sans at =13–14px= in sentence case: a ticket body, a comment, a description, a subtitle, a form's help text. An operator reads these, so they are never shouted.
 
-The rule for a new element is to ask which of the three it is. A thing that labels a value is micro. A thing a person reads is prose. A thing that names the page is macro.
+The rule for a new element is to ask which of these it is. A thing that labels the interface is micro; a thing that names a field is a caption. A thing a person reads is prose. A thing that names the page is macro.
 
 The machine-readable HTML elements are set in the mono automatically: =<code>=, =<samp>=, =<kbd>=, =<data>=, =<output>= and =<time>=. Use them for what they mean — a keystroke in =<kbd>=, a value the program produced in =<samp>=, a figure with a machine value in =<data>= — and the type follows.
 
 ** Geometry
+
+Ticket cards contain their absolutely positioned screen-reader captions.
+They must not rely on a reveal animation's transform to do so: reduced motion
+removes that transform, and off-screen board columns would otherwise widen
+the whole page. The board itself owns horizontal scrolling.
 
 Corners are ninety degrees. There is no =border-radius= anywhere, no gradient, no soft shadow; the =--radius-*= and =--shadow-*= tokens still exist for anything written against them and resolve to zero and none.
 
@@ -88,7 +105,7 @@ A plugin page or a custom widget should use these and nothing else.
 | =--micro-size=, =--micro-track=    | the micro register's size and tracking                     |
 | =--space-1= … =--space-8=          | 4, 8, 12, 16, 24, 40, 64, 96 pixels                        |
 
-The classes worth knowing when writing markup: =.card= with =.card-head= and =.card-body=; =.grid.cols-N= and =.bento= for compartments that share rules; =.stat= with =.stat-label= and =.stat-value=; =table.data=; =.badge= with =.positive= / =.negative= / =.warning= / =.info=; =.btn= with =.btn-primary=, =.btn-ghost=, =.btn-danger=, =.btn-sm=; =.notice= with the same four statuses; =.field= with =.field-label= and =.field-help=; =.page-head= with =.page-title=, =.eyebrow= and =.page-actions=.
+The classes worth knowing when writing markup: =.card= with =.card-head= and =.card-body=; =.grid.cols-N= and =.bento= for compartments that share rules; =.stat= with =.stat-label= and =.stat-value=; =table.data=; =.badge= with =.positive= / =.negative= / =.warning= / =.info=; =.btn= with =.btn-primary=, =.btn-ghost=, =.btn-danger=, =.btn-sm=; =.notice= with the same four statuses; =.field= with =.field-label= and =.field-help=; =.page-head= with =.page-title=, =.eyebrow= and =.page-actions=; =.crumbs= for the trail above a title; =.record-layout= with =.record-main= and =.record-aside=; =dl.facts= of =.fact= rows; =details.all-fields= and =details.form-section= for folded content; =.status-badge= with a tone class.
 
 ** Pickers
 
@@ -99,6 +116,22 @@ So the select stays — hidden, and still what the form posts and what every exi
 The panel is positioned against the viewport rather than its container. A card clips its contents — it has to, or a table's corners escape it — so a panel laid out inside one is cut off at the card's edge.
 
 Where a form wants a record's id, the same idea applies twice over: a search box in front of the number input finds the record by name through =/ui/records/search=, and the id it fills in came from a record that exists. Asking for a number meant opening the list in another tab to read one off it, and a mistyped digit links to a different record silently.
+
+** Home and the ticket board
+
+*Home answers the morning's questions on one screen.* The =today= dashboard template -- the demo's home -- is four rows: money in and out this month, invoices and bills past due, what needs you (your tickets, the triage queue, promises missed, bills to approve), then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next. Every figure links to the records behind it. The home page's head is one line: the page's name, today's date and *Edit this page*; the other dashboards are in the sidebar. A metric's period reads as words ("September 2026", "All time"), never as the parameter it was asked with. The widgets are the dashboard kinds, rendered in the core like any other page's -- the web layer draws only the frame.
+
+*A ticket card answers the questions you would open it for.* The number, the priority in words when it is urgent or high, and the service-level clock across the top; the title; whose it is (the company, else the person who raised it, else "Internal") and who has it ("Unassigned" when nobody does); how long ago it was opened, its due date, its points; at most three tags. The head of the board says how the queue stands -- open, waiting to triage, past a promise -- and the controls are one labelled toolbar: whose tickets, a *Type* menu in words, board or list, and *Save view*. Columns are headings with human names and scroll sideways, snapping to a column; on a phone each column is most of the screen wide.
+
+** A keyboard, a screen reader, a phone
+
+- *A way past the sidebar.* The first thing Tab reaches is *Skip to content*, visible only while focused; =<main id="main">= takes the focus. The sidebar is a =<nav aria-label="Main">= and its search box is labelled.
+- *Every control is named.* A button that shows only an arrow, a bin or a cross carries an =aria-label=; a table column of such buttons has a heading only a screen reader sees (=.visually-hidden=, clipped rather than hidden, so it is still read). =tests/test-record-view.c= checks every button on the main pages for a name.
+- *Focus is always visible*, in both looks and every theme, with the accent ring -- including on ghost buttons and summaries that once turned it off.
+- *Refusals are announced.* An error notice (=notice negative=) and the error page carry =role="alert"=; toasts appear in a polite live region that is on the page from the start, because a region added with its first message is often not read out, and a failure toast is an alert of its own.
+- *On a phone* the sidebar is one line -- the name, the entity, search, New, Inbox -- and a *Menu* button (=aria-expanded=, =aria-controls=) that opens the same list a desk shows, folded groups and all. It is drawn open and folded by script only on a narrow screen, so with scripting off every link is still there. Dashboard figures sit two to a row and everything else takes the full width; a document's lines become small blocks with their own captions; a table of records scrolls inside its card instead of pushing the page sideways.
+
+Rules for these are appended to both stylesheets as one block, written against the tokens, so the two looks stay in step.
 
 ** Why this and not the usual
 
@@ -121,3 +154,12 @@ contact, deal, ticket and venture forms expose owner and team references.
 An organization viewer's new-record submission becomes a confirmation;
 applying it still requires an authorized approver. See
 [[file:orgaccess.org][Organization access]] for the full role matrix.
+
+* Form submission feedback
+
+Validation refusals stay above the form with its entered values intact. A
+request in flight blocks a second submit; when it completes, controls regain
+their previous disabled state. A lost or unreadable response is an /unknown
+outcome/, since the write may already have committed. The notice asks the
+person to check the record before retrying; it never promises nothing was
+saved based on a network error.

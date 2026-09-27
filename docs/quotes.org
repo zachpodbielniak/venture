@@ -23,6 +23,16 @@ amount. Three units at $19.99 with 10% discount and 5% tax give subtotal
 $59.97, discount $6.00, tax $2.70 and total $56.67. All arithmetic uses
 =VentureMoney=, including overflow and cross-currency refusal.
 
+A line may instead name a tax rate, =tax_code_id=, exactly as an invoice
+line does; the rate's exact fraction is then used in place of
+=tax_percent=, so 8.875% of $53.97 is $4.79 and no whole percent is
+involved. The rate must belong to the quote's organization. The quote
+sheet at =/quotes/compose= offers "No tax" and the tax rates, like the
+invoice sheet, and the printed quote names the rate. Acceptance copies
+the rate record onto each invoice line, so the invoice charges what the
+quote showed. Lines written before migration =000680= keep their
+percent and name no rate.
+
 A line with a product and no supplied price uses the company's
 =default_price_list_id=, or the organization's default list for the quote
 currency. The highest applicable =min_quantity=
@@ -55,6 +65,15 @@ they are being saved.
 - =decline= requires a reason. =venture_quote_service_sweep()= expires sent
   quotes whose validity elapsed, within one exact organization.
 
+A line naming a plan price (=plan_price_id=) proposes a subscription: it is
+priced at the plan price, its quantity is the seats, it takes no discount or
+tax rate of its own, and a quote has at most one. It is taxed as the
+subscription's first invoice will tax it -- the price's rate, else the
+customer's address rate, nothing when the customer is exempt -- so the
+quote's total is what the customer will be charged. Acceptance leaves it out of the acceptance
+invoice, and =start-subscription= on the accepted quote starts it through the
+billing service -- once. See [[file:billing.org][SaaS billing]].
+
 A quote with =billing-mode=progress= is accepted without issuing the full invoice; progress slices are billed through =VentureProgressService=.
 
 The invoice number is =QUOTE-= followed by the quote number. Existing
@@ -77,6 +96,7 @@ venturectl quote send 1
 venturectl quote accept 1 'by=Alex Buyer'
 venturectl quote decline 1 'reason=Budget deferred'
 venturectl quote revise 1
+venturectl quote start-subscription 1
 #+end_src
 
 REST actions are =POST /api/v1/quotes/:id/send=, =accept=, =decline= and

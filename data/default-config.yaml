@@ -434,6 +434,16 @@ mail:
   from_address: ""
   from_name: Venture
   reply_to: ""
+  # Mail the customer a receipt, with its PDF, when a payment is recorded.
+  receipts: true
+
+# Customer mail about subscriptions. See docs/billing.org.
+billing:
+  # Days before a free trial ends that the renewal sweep mails the customer
+  # its end date and first invoice. Zero sends no reminder.
+  trial_reminder_days: 3
+  # Mail the customer when a subscription's price or seats change.
+  price_change_notices: true
 
 # Knowledge bases: documents the assistant can read, indexed by meaning.
 # The embedding_* keys are legacy migration hints only; organization

@@ -358,3 +358,187 @@ venture_portal_actions_register(VentureDatabase *database)
 	venture_action_registry_register(venture_database_get_action_registry(database), action,
 		portal_allowed, portal_invoke, venture_portal_service_get(database), NULL, &error);
 }
+
+/* --- Subscriptions ---------------------------------------------------------
+ *
+ * A customer manages their own plan here, and only through
+ * venture_billing_service_execute(), so every rule an operator is held to
+ * -- the plan's venture, the price being offered, the version the page was
+ * read at -- holds for them too. What they may do is deliberately less
+ * than an operator: switch to another price the same venture sells (at
+ * renewal unless they ask for now) or cancel at renewal. Nothing here
+ * pauses, cancels immediately or touches seats.
+ */
+
+static gboolean
+not_found(GError **error)
+{
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Not found");
+	return FALSE;
+}
+
+static gboolean
+billing_available(void)
+{
+	return venture_entity_registry_lookup(venture_entity_registry_get_default(), "customer_subscription") != G_TYPE_INVALID;
+}
+
+/*
+ * The subscription @id if the invited customer owns it. Another customer's
+ * subscription, another organization's, a deleted one or one that does
+ * not exist are all the same answer, NOT_FOUND, so a guessed id says
+ * nothing about whether it exists.
+ */
+static VentureEntity *
+own_subscription(VenturePortalService *self, VentureCustomerPortalAccess *access, gint64 id, GError **error)
+{
+	g_autoptr(VentureEntity) sub = NULL;
+	gint64 company = 0, owner = 0;
+	if (!billing_available() || id <= 0)
+	{
+		not_found(error);
+		return NULL;
+	}
+	sub = venture_database_get(self->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, id, NULL);
+	g_object_get(access, "company-id", &company, NULL);
+	if (sub != NULL)
+		g_object_get(sub, "company-id", &owner, NULL);
+	if (sub == NULL || venture_entity_is_deleted(sub) || owner != company ||
+		venture_entity_get_organization_id(sub) != venture_entity_get_organization_id(VENTURE_ENTITY(access)))
+	{
+		not_found(error);
+		return NULL;
+	}
+	return g_steal_pointer(&sub);
+}
+
+GPtrArray *
+venture_portal_service_subscriptions(VenturePortalService *self, VentureCustomerPortalAccess *access, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	gint64 company = 0;
+	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
+	if (!billing_available())
+		return g_ptr_array_new_with_free_func(g_object_unref);
+	g_object_get(access, "company-id", &company, NULL);
+	query = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+	venture_query_set_organization(query, venture_entity_get_organization_id(VENTURE_ENTITY(access)));
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "company-id", VENTURE_FILTER_OP_EQ, company, error) ||
+		!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+		return NULL;
+	return venture_database_find(self->database, query, error);
+}
+
+GPtrArray *
+venture_portal_service_offered_prices(VenturePortalService *self, VentureCustomerPortalAccess *access,
+	gint64 subscription_id, GError **error)
+{
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureEntity) current_plan = NULL;
+	g_autoptr(VentureQuery) plans_query = NULL;
+	g_autoptr(GPtrArray) plans = NULL;
+	g_autofree gchar *currency = NULL;
+	GPtrArray *offered;
+	gint64 price_id = 0, plan_id = 0, venture = 0;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
+	sub = own_subscription(self, access, subscription_id, error);
+	if (sub == NULL)
+		return NULL;
+	g_object_get(sub, "plan-price-id", &price_id, NULL);
+	current = venture_database_get(self->database, VENTURE_TYPE_PLAN_PRICE, price_id, error);
+	if (current == NULL)
+		return NULL;
+	g_object_get(current, "plan-id", &plan_id, "currency", &currency, NULL);
+	current_plan = venture_database_get(self->database, VENTURE_TYPE_PLAN, plan_id, error);
+	if (current_plan == NULL)
+		return NULL;
+	/* The venture that sells what they have now -- or, for a shared plan,
+	 * the shared plans. A customer is never shown another venture's
+	 * products; the billing service would refuse them anyway. */
+	g_object_get(current_plan, "venture-id", &venture, NULL);
+	plans_query = venture_query_new(VENTURE_TYPE_PLAN);
+	venture_query_set_organization(plans_query, venture_entity_get_organization_id(sub));
+	venture_query_set_limit(plans_query, 0);
+	if (!venture_query_add_filter_int(plans_query, "venture-id", VENTURE_FILTER_OP_EQ, venture, error) ||
+		!venture_query_add_order(plans_query, "id", VENTURE_SORT_ASCENDING, error))
+		return NULL;
+	plans = venture_database_find(self->database, plans_query, error);
+	if (plans == NULL)
+		return NULL;
+	offered = g_ptr_array_new_with_free_func(g_object_unref);
+	for (i = 0; i < plans->len; i++)
+	{
+		VentureEntity *plan = g_ptr_array_index(plans, i);
+		g_autoptr(VentureQuery) q = NULL;
+		g_autoptr(GPtrArray) prices = NULL;
+		gboolean active = FALSE;
+		guint j;
+		g_object_get(plan, "active", &active, NULL);
+		if (!active)
+			continue;
+		q = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+		venture_query_set_organization(q, venture_entity_get_organization_id(sub));
+		venture_query_set_limit(q, 0);
+		venture_query_add_filter_int(q, "plan-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(plan), NULL);
+		venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, NULL);
+		prices = venture_database_find(self->database, q, NULL);
+		for (j = 0; prices != NULL && j < prices->len; j++)
+		{
+			VentureEntity *price = g_ptr_array_index(prices, j);
+			g_autofree gchar *price_currency = NULL;
+			gboolean price_active = FALSE;
+			g_object_get(price, "active", &price_active, "currency", &price_currency, NULL);
+			/* A change of currency is refused by the service; do not offer it. */
+			if (price_active && venture_entity_get_id(price) != price_id && g_strcmp0(price_currency, currency) == 0)
+				g_ptr_array_add(offered, g_object_ref(price));
+		}
+	}
+	return offered;
+}
+
+gboolean
+venture_portal_service_manage_subscription(VenturePortalService *self, const gchar *token, gint64 subscription_id,
+	const gchar *action, gint64 plan_price_id, gboolean now, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) access = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureBillingRequest) request = NULL;
+	g_autoptr(GDateTime) at = NULL;
+	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), FALSE);
+	/* The token is checked again on every request: a revoked link stops
+	 * working at once, not when the page is next loaded. */
+	access = venture_portal_service_lookup(self, token, error);
+	if (access == NULL)
+		return FALSE;
+	sub = own_subscription(self, VENTURE_CUSTOMER_PORTAL_ACCESS(access), subscription_id, error);
+	if (sub == NULL)
+		return FALSE;
+	request = venture_billing_request_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(request), venture_entity_get_organization_id(sub));
+	at = venture_time_now();
+	g_object_set(request, "subscription-id", subscription_id, "at", at,
+		"expected-version", venture_entity_get_version(sub), NULL);
+	if (g_strcmp0(action, "change") == 0)
+	{
+		g_autoptr(GPtrArray) offered = venture_portal_service_offered_prices(self,
+			VENTURE_CUSTOMER_PORTAL_ACCESS(access), subscription_id, error);
+		gboolean listed = FALSE;
+		guint i;
+		if (offered == NULL)
+			return FALSE;
+		for (i = 0; i < offered->len; i++)
+			if (venture_entity_get_id(g_ptr_array_index(offered, i)) == plan_price_id)
+				listed = TRUE;
+		if (!listed)
+			return refuse(error, "that plan is not one you can switch to");
+		g_object_set(request, "action", "change", "plan-price-id", plan_price_id, "at-period-end", !now, NULL);
+	}
+	else if (g_strcmp0(action, "cancel") == 0)
+		g_object_set(request, "action", "cancel", "at-period-end", TRUE, NULL);
+	else
+		return refuse(error, "choose to switch plan or to cancel at renewal");
+	return venture_billing_service_execute(venture_billing_service_get(self->database), request, actor, error);
+}

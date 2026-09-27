@@ -192,7 +192,9 @@ venture_web_sequence_fields(VentureWebServer *self, GString *content, VentureEnt
 {
 	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(row);
 	guint i;
-	g_string_append(content, "<dl class=\"detail detail-grid\">");
+	/* The same reading as a record's Details: what is set, nothing
+	 * else -- an enrollment that has not exited has no exit reason. */
+	g_string_append(content, "<dl class=\"facts\">");
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
@@ -202,11 +204,13 @@ venture_web_sequence_fields(VentureWebServer *self, GString *content, VentureEnt
 			g_strcmp0(name, "enrollment-reason") && g_strcmp0(name, "state") &&
 			g_strcmp0(name, "subject") && g_strcmp0(name, "error"))
 			continue;
-		g_string_append(content, "<dt>");
+		if (venture_web_value_is_empty(row, spec))
+			continue;
+		g_string_append(content, "<div class=\"fact\"><dt>");
 		venture_html_escape_append(content, venture_field_spec_get_label(spec));
 		g_string_append(content, "</dt><dd>");
 		venture_web_append_detail_value(self, content, row, spec);
-		g_string_append(content, "</dd>");
+		g_string_append(content, "</dd></div>");
 	}
 	g_string_append(content, "</dl>");
 }

@@ -245,7 +245,18 @@ venture_web_error_response(const GError *error)
 	json_builder_end_object(builder);
 	node = json_builder_get_root(builder);
 
-	return venture_web_json_response(node, status);
+	{
+		HtmxResponse *response = venture_web_json_response(node, status);
+
+		/* Kept on the response so the pipeline can give a person in a
+		 * browser a page instead of this JSON; see
+		 * venture_web_error_for_browser(). */
+		g_object_set_data_full(G_OBJECT(response), "venture-error",
+			(NULL != error) ? g_error_copy(error)
+			                : g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_FAILED, "Unknown error"),
+			(GDestroyNotify)g_error_free);
+		return response;
+	}
 }
 
 static HtmxResponse *
@@ -953,6 +964,23 @@ venture_web_label_from_name(const gchar *name)
 	return label;
 }
 
+/*
+ * An enumeration value, as a person reads it: "in_progress" is "In
+ * progress". For text on a page only -- the nick itself is still what a
+ * form posts, a data attribute carries and a class name is built from.
+ */
+static void
+venture_web_append_nick(
+	GString	*html,
+	GType	 enum_type,
+	gint	 value
+){
+	g_autofree gchar *label = NULL;
+
+	label = venture_web_label_from_name(venture_enum_to_nick(enum_type, value));
+	venture_html_escape_append(html, label);
+}
+
 static const VentureWebNavLink venture_web_nav_links[] = {
 	{
 		"/", "Dashboard",
@@ -1064,7 +1092,17 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"finance"
 	},
 	{
-		"/e/tax_category", "Tax",
+		"/e/tax_code", "Tax rates",
+		VENTURE_ICON(
+			"<path d=\"M19 5L5 19\"/>"
+			"<circle cx=\"7.5\" cy=\"7.5\" r=\"2.5\"/>"
+			"<circle cx=\"16.5\" cy=\"16.5\" r=\"2.5\"/>"
+		),
+		NULL,
+		"finance"
+	},
+	{
+		"/e/tax_category", "Tax categories",
 		VENTURE_ICON(
 			"<path d=\"M19 5L5 19\"/>"
 			"<circle cx=\"7.5\" cy=\"7.5\" r=\"2.5\"/>"
@@ -1144,7 +1182,12 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "billing"
 	},
 	{
-		"/e/recurring_schedule", "Recurring",
+		"/e/plan", "Plans & prices",
+		VENTURE_ICON("<path d=\"M4 7h16\"/><path d=\"M4 12h16\"/><path d=\"M4 17h10\"/>"),
+		NULL, "billing"
+	},
+	{
+		"/e/recurring_schedule", "Repeating invoices & bills",
 		VENTURE_ICON("<path d=\"M4 12a8 8 0 1 0 3-6\"/><path d=\"M3 3v6h6\"/>"),
 		NULL, "recurring"
 	},
@@ -1504,7 +1547,9 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
 	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
 	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
+	{ "/e/vendor_bill", "Bills", VENTURE_ICON("<path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/><path d=\"M14 3v5h5\"/><path d=\"M9 13h6\"/>"), NULL, "payables" },
 	{ "/payables", "Pay bills", VENTURE_ICON("<path d=\"M4 12h16M14 6l6 6-6 6\"/>"), NULL, "payables" },
+	{ "/e/fixed_asset", "Assets", VENTURE_ICON("<rect x=\"3\" y=\"7\" width=\"18\" height=\"12\" rx=\"1\"/><path d=\"M8 7V5h8v2\"/><path d=\"M3 12h18\"/>"), NULL, "assets" },
 	{ "/claims", "Claims", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "claims" },
 	{ "/payroll", "Payroll", VENTURE_ICON("<path d=\"M4 6h16M4 12h16M4 18h10\"/>"), NULL, "payroll" },
 	{ "/purchasing", "Purchasing", VENTURE_ICON("<path d=\"M4 7h16M4 12h10M4 17h7\"/>"), NULL, "goods" },
@@ -1532,22 +1577,44 @@ venture_accountant_web_navigation(VentureWebServer *self, HtmxRequest *request);
 static void
 venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *request, GString *html, const gchar *active);
 /*
- * The five questions an owner asks, and the pages that answer each. The
- * link table above is not reordered for them: a row named here is drawn
- * under its question, everything else stays under the heading it carries.
- * A page is named under one question only; test-plugin holds it to that.
+ * The sidebar's map, and the pages under each part of it. The link table
+ * above is not reordered for it: a row named here is drawn under its
+ * section, and only the overview keeps the heading it carries. A page is
+ * named once; test-plugin holds it to that.
+ *
+ * Seven areas, in the order of a working day: the money (what came in,
+ * what went out, the bank and the books behind both -- one place, not
+ * three), the customers, the growth work, the support desk, what is being
+ * built, and the settings. Every page of the app is in exactly one.
  */
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-	"/e/refund", "/e/collection_case", "/e/customer_subscription",
-	"/sales-orders", "/bankfeed",
+	"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
+	"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 	NULL
 };
 
 static const gchar *const venture_web_nav_money_out[] = {
-	"/e/expense", "/payables", "/purchasing", "/claims", "/payroll",
-	"/e/recurring_schedule",
+	"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll",
+	NULL
+};
+
+static const gchar *const venture_web_nav_bank[] = {
+	"/bankfeed", "/money/calendar",
+	NULL
+};
+
+static const gchar *const venture_web_nav_books[] = {
+	"/accounting", "/e/account", "/e/journal", "/e/journal_line",
+	"/e/tax_code", "/e/tax_category", "/tax-filings", "/e/fiscal_year", "/close",
+	"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
+	"/e/accounting_cutover",
+	NULL
+};
+
+static const gchar *const venture_web_nav_customers[] = {
+	"/e/company", "/e/contact", "/worklist", "/customers/duplicates",
 	NULL
 };
 
@@ -1556,23 +1623,58 @@ static const gchar *const venture_web_nav_growth[] = {
 	NULL
 };
 
-static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/worklist",
-	NULL
-};
-
 static const gchar *const venture_web_nav_support[] = {
 	"/tickets", "/sprints", "/kb",
 	NULL
 };
 
+static const gchar *const venture_web_nav_ideas[] = {
+	"/e/idea", "/e/research_note",
+	NULL
+};
+
+static const gchar *const venture_web_nav_code[] = {
+	"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge",
+	NULL
+};
+
+static const gchar *const venture_web_nav_factory[] = {
+	"/factory", "/e/milestone", "/e/release", "/e/build",
+	"/e/environment", "/e/deployment", "/e/incident",
+	NULL
+};
+
+static const gchar *const venture_web_nav_business[] = {
+	"/e/venture", "/entities", "/modules",
+	NULL
+};
+
+static const gchar *const venture_web_nav_people[] = {
+	"/account", "/account/tokens", "/users", "/assistant",
+	NULL
+};
+
+static const gchar *const venture_web_nav_system[] = {
+	"/settings", "/automations", "/plugins", "/webhooks", "/federation",
+	"/e/mail_message", "/e/audit_entry",
+	NULL
+};
+
 static const VentureWebNavSection venture_web_nav_sections[] = {
-	{ "Money in", venture_web_nav_money_in },
-	{ "Money out", venture_web_nav_money_out },
-	{ "Growth", venture_web_nav_growth },
-	{ "Customers", venture_web_nav_customers },
-	{ "Support", venture_web_nav_support },
-	{ NULL, NULL }
+	{ "Money in", "Money", venture_web_nav_money_in },
+	{ "Money out", "Money", venture_web_nav_money_out },
+	{ "Bank", "Money", venture_web_nav_bank },
+	{ "Books", "Money", venture_web_nav_books },
+	{ "Customers", NULL, venture_web_nav_customers },
+	{ "Growth", NULL, venture_web_nav_growth },
+	{ "Support", NULL, venture_web_nav_support },
+	{ "Ideas", "Build", venture_web_nav_ideas },
+	{ "Code", "Build", venture_web_nav_code },
+	{ "Factory", "Build", venture_web_nav_factory },
+	{ "Your business", "Settings", venture_web_nav_business },
+	{ "People and access", "Settings", venture_web_nav_people },
+	{ "System", "Settings", venture_web_nav_system },
+	{ NULL, NULL, NULL }
 };
 
 const VentureWebNavSection *
@@ -1626,51 +1728,112 @@ venture_web_append_nav_item(
 }
 
 /*
- * The five questions, each drawn from the rows it names. A row whose
- * module is off is not offered, and the heading follows the first row
- * actually shown, so a question every one of whose modules is off leaves
- * no heading over nothing -- the same rule the table's own headings keep.
+ * A heading and its rows, folded. The group holding the page you are on
+ * is open; the others are one click away, and the script beneath the
+ * sidebar reopens the ones a person left open. Seventy rows at once is a
+ * list nobody reads; nine headings is a map.
+ *
+ * <details>, so it works with scripting off, and the heading keeps its
+ * nav-section class so it is styled like the headings that do not fold.
+ */
+static void
+venture_web_append_nav_group(
+	GString		*html,
+	const gchar	*heading,
+	const gchar	*items,
+	gboolean	 open
+){
+	g_autofree gchar *slug = NULL;
+
+	slug = g_ascii_strdown(heading, -1);
+	g_strdelimit(slug, " ", '-');
+
+	g_string_append_printf(html, "<details class=\"nav-group\" "
+	                       "data-nav-group=\"%s\"%s><summary class=\"nav-section\">",
+	                       slug, open ? " open" : "");
+	venture_html_escape_append(html, heading);
+	g_string_append(html, "</summary>");
+	g_string_append(html, items);
+	g_string_append(html, "</details>");
+}
+
+/*
+ * The sections, each drawn from the rows it names. Consecutive sections of
+ * one group are one folding area with a small label per section inside
+ * it; a section with no group is an area of its own. A row whose module is
+ * off is not offered, and a label or an area with nothing under it is not
+ * drawn -- the same rule the table's own headings keep.
  */
 static void
 venture_web_append_nav_sections(
 	VentureWebServer	*self,
 	GString			*html,
+	const VentureWebNavLink	*links,
 	const gchar		*active
 ){
 	const VentureWebNavSection *sections;
-	const VentureWebNavLink *links;
 	gsize i;
 
 	sections = venture_web_navigation_sections();
-	links = venture_web_navigation();
 
-	for (i = 0; NULL != sections[i].heading; i++)
+	for (i = 0; NULL != sections[i].heading; )
 	{
-		gboolean shown = FALSE;
+		g_autoptr(GString) area = NULL;
+		const gchar *group;
+		gboolean open = FALSE;
 		gsize j;
 
-		for (j = 0; NULL != sections[i].paths[j]; j++)
+		area = g_string_new(NULL);
+		group = sections[i].group;
+
+		/* Every section of this area. */
+		for (j = i; NULL != sections[j].heading; j++)
 		{
-			gsize k;
+			g_autoptr(GString) items = NULL;
+			gsize p;
 
-			for (k = 0; NULL != links[k].path; k++)
+			if ((j > i) && ((NULL == group) ||
+			                (0 != g_strcmp0(group, sections[j].group))))
+				break;
+
+			items = g_string_new(NULL);
+
+			for (p = 0; NULL != sections[j].paths[p]; p++)
 			{
-				if (0 != g_strcmp0(links[k].path, sections[i].paths[j]))
-					continue;
+				gsize k;
 
-				if (!venture_web_module_enabled(self, links[k].module))
-					continue;
-
-				if (!shown)
+				for (k = 0; NULL != links[k].path; k++)
 				{
-					venture_web_append_nav_heading(html,
-						sections[i].heading);
-					shown = TRUE;
-				}
+					if (0 != g_strcmp0(links[k].path, sections[j].paths[p]))
+						continue;
 
-				venture_web_append_nav_item(html, &links[k], active);
+					if (!venture_web_module_enabled(self, links[k].module))
+						continue;
+
+					open = open || (0 == g_strcmp0(active, links[k].path));
+					venture_web_append_nav_item(items, &links[k], active);
+				}
 			}
+
+			if (0 == items->len)
+				continue;
+
+			if (NULL != group)
+			{
+				g_string_append(area, "<div class=\"nav-sub\">");
+				venture_html_escape_append(area, sections[j].heading);
+				g_string_append(area, "</div>");
+			}
+
+			g_string_append(area, items->str);
 		}
+
+		if (0 != area->len)
+			venture_web_append_nav_group(html,
+				(NULL != group) ? group : sections[i].heading,
+				area->str, open);
+
+		i = j;
 	}
 }
 
@@ -1735,10 +1898,17 @@ venture_web_page(
 		g_string_append(html, ";}</style>");
 	}
 
-	g_string_append(html, "</head><body><div class=\"app\">");
+	/*
+	 * The first thing a keyboard reaches is a way past the sidebar: forty
+	 * links stand between a Tab and the page otherwise. Visible only
+	 * while focused.
+	 */
+	g_string_append(html, "</head><body>"
+	                      "<a class=\"skip-link visually-hidden\" href=\"#main\">"
+	                      "Skip to content</a><div class=\"app\">");
 
 	/* Sidebar */
-	g_string_append(html, "<nav class=\"sidebar\">");
+	g_string_append(html, "<nav class=\"sidebar\" aria-label=\"Main\">");
 	g_string_append(html, "<a class=\"brand\" href=\"/\">"
 	                      "<span class=\"brand-mark\">V</span>");
 	venture_html_escape_append(html, ui_title);
@@ -1754,8 +1924,42 @@ venture_web_page(
 	g_string_append(html,
 		"<form class=\"sidebar-search\" action=\"/search\" method=\"get\">"
 		"<input type=\"search\" name=\"q\" placeholder=\"Search\xe2\x80\xa6\" "
+		"aria-label=\"Search everything\" "
 		"data-global-search title=\"Search everything (Ctrl+K)\">"
 		"</form>");
+
+	/*
+	 * Making something is one click from anywhere: the things people
+	 * create every day, behind one button at the top of the sidebar,
+	 * each going to the page that makes it best -- an invoice to its
+	 * composer, a subscription to its plan picker. Only what is on.
+	 */
+	{
+		static const struct { const gchar *label; const gchar *path; const gchar *module; } creates[] = {
+			{ "Invoice", "/invoices/compose", "invoicing" },
+			{ "Quote", "/quotes/compose", "quotes" },
+			{ "Subscription", "/billing/subscriptions/new", "billing" },
+			{ "Expense", "/e/expense/new", "finance" },
+			{ "Supplier bill", "/bills/compose", "payables" },
+			{ "Contact", "/e/contact/new", "crm" },
+			{ "Company", "/e/company/new", "crm" },
+			{ "Deal", "/e/deal/new", "crm" },
+			{ "Ticket", "/e/ticket/new", "tickets" },
+		};
+		gsize k;
+
+		g_string_append(html, "<details class=\"quick-new\"><summary class=\"btn btn-primary\">"
+		                      "<span aria-hidden=\"true\">+</span> New</summary><div class=\"quick-new-menu\">");
+		for (k = 0; k < G_N_ELEMENTS(creates); k++)
+		{
+			if (!venture_web_module_enabled(self, creates[k].module))
+				continue;
+			g_string_append_printf(html, "<a href=\"%s\">", creates[k].path);
+			venture_html_escape_append(html, creates[k].label);
+			g_string_append(html, "</a>");
+		}
+		g_string_append(html, "</div></details>");
+	}
 
 	venture_accountant_web_append_inbox_nav(self, request, html, active);
 
@@ -1766,49 +1970,85 @@ venture_web_page(
 		const gchar *section = NULL;
 		const gchar *shown = NULL;
 		gboolean questions_shown = FALSE;
+		g_autoptr(GString) items = NULL;
+		gboolean open = FALSE;
 
 		links = venture_accountant_web_navigation(self, request);
+		items = g_string_new(NULL);
 
-		g_string_append(html, "<div class=\"nav\">");
+		/*
+		 * On a phone the menu folds behind one button; on a desk the
+		 * button is hidden. The menu is drawn showing and folded by the
+		 * script below only on a narrow screen, so with scripting off
+		 * every link is still there.
+		 */
+		g_string_append(html, "<button type=\"button\" class=\"btn sidebar-menu-toggle\" "
+		                      "aria-expanded=\"true\" aria-controls=\"site-menu\" "
+		                      "data-menu-toggle>Menu</button>");
+		g_string_append(html, "<div class=\"nav\" id=\"site-menu\">");
 
-		for (i = 0; NULL != links[i].path; i++)
+		/*
+		 * Rows are gathered under their heading and drawn when the next
+		 * heading starts. The first heading -- the overview -- is drawn
+		 * open and unfolded, the questions follow it, and every other
+		 * heading folds.
+		 */
+		for (i = 0; ; i++)
 		{
+			gboolean end;
+
+			end = (NULL == links[i].path);
+
 			/* A section heading belongs to the first link that carries
 			 * it and every link after, until the next heading. */
-			if (NULL != links[i].section)
+			if (!end && (NULL != links[i].section))
 				section = links[i].section;
 
-			/* A row one of the five questions gathers is drawn there,
-			 * not here. */
-			if (venture_web_nav_link_claimed(links[i].path))
+			/* A row one of the questions gathers is drawn there, not
+			 * here. */
+			if (!end && venture_web_nav_link_claimed(links[i].path))
 				continue;
 
 			/* A link whose module is off is not offered. The heading
 			 * follows the first link actually shown under it, so a
 			 * section emptied by configuration leaves no orphan. */
-			if (!venture_web_module_enabled(self, links[i].module))
+			if (!end && !venture_web_module_enabled(self, links[i].module))
 				continue;
 
-			if ((NULL != section) && (section != shown))
+			if (end || ((NULL != section) && (section != shown)))
 			{
-				/* The five questions come right after the first
-				 * heading: the overview stays on top, the questions
-				 * follow, and the rest keep their place. */
-				if ((NULL != shown) && !questions_shown)
+				/* Close the heading being gathered. */
+				if (NULL != shown)
 				{
-					venture_web_append_nav_sections(self, html, active);
-					questions_shown = TRUE;
+					if (!questions_shown)
+					{
+						venture_web_append_nav_heading(html, shown);
+						g_string_append(html, items->str);
+						venture_web_append_nav_sections(self, html,
+							links, active);
+						questions_shown = TRUE;
+					}
+					else
+					{
+						venture_web_append_nav_group(html, shown,
+							items->str, open);
+					}
 				}
 
-				venture_web_append_nav_heading(html, section);
+				if (end)
+					break;
+
+				g_string_truncate(items, 0);
+				open = FALSE;
 				shown = section;
 			}
 
-			venture_web_append_nav_item(html, &links[i], active);
+			open = open || (0 == g_strcmp0(active, links[i].path));
+			venture_web_append_nav_item(items, &links[i], active);
 		}
 
 		if (!questions_shown)
-			venture_web_append_nav_sections(self, html, active);
+			venture_web_append_nav_sections(self, html, links, active);
 
 		/* The operator's own pages, after the built-in ones. */
 		venture_web_append_dashboard_nav(self, request, html, active);
@@ -1836,9 +2076,7 @@ venture_web_page(
 			                      "<span class=\"name\">");
 			venture_html_escape_append(html, principal->name);
 			g_string_append(html, "</span><span class=\"role\">");
-			venture_html_escape_append(html,
-				venture_enum_to_nick(VENTURE_TYPE_USER_ROLE,
-				                     (gint)principal->role));
+			venture_web_append_nick(html, VENTURE_TYPE_USER_ROLE, (gint)principal->role);
 			g_string_append(html, "</span></div>");
 		}
 	}
@@ -1883,6 +2121,14 @@ venture_web_page(
 	g_string_append(html, "<a class=\"btn btn-ghost btn-sm\" "
 	                      "href=\"/logout\">Sign out</a>");
 	g_string_append(html, "</div></nav>");
+	g_string_append(html, "<script>(function(){try{"
+		"var s=document.querySelector('.sidebar'),b=s&&s.querySelector('[data-menu-toggle]');"
+		"if(!b)return;"
+		"function set(open){s.classList.toggle('menu-closed',!open);"
+		"b.setAttribute('aria-expanded',open?'true':'false');}"
+		"if(window.matchMedia('(max-width: 900px)').matches)set(false);"
+		"b.addEventListener('click',function(){set(s.classList.contains('menu-closed'));});"
+		"}catch(e){}})();</script>");
 
 	/*
 	 * Put the sidebar back where the reader left it, and make sure the
@@ -1923,6 +2169,19 @@ venture_web_page(
 		"var n=document.querySelector('.sidebar .nav');"
 		"if(!n)return;"
 		"var k='venture.nav.scroll',t=null;"
+		/* Reopen the groups a person left open, and remember each
+		 * toggle. Before the scroll is restored, so it is measured
+		 * against the sidebar as it will actually be drawn. The group
+		 * holding the current page is open anyway and is not stored. */
+		"var g='venture.nav.open',o=[];"
+		"try{o=JSON.parse(localStorage.getItem(g)||'[]')||[];}catch(e){}"
+		"var gs=n.querySelectorAll('details[data-nav-group]');"
+		"Array.prototype.forEach.call(gs,function(d){"
+		"if(o.indexOf(d.getAttribute('data-nav-group'))>=0)d.open=true;"
+		"d.addEventListener('toggle',function(){var s=[];"
+		"Array.prototype.forEach.call(gs,function(x){"
+		"if(x.open&&!x.querySelector('.active'))s.push(x.getAttribute('data-nav-group'));});"
+		"try{localStorage.setItem(g,JSON.stringify(s));}catch(e){}});});"
 		"var v=sessionStorage.getItem(k);"
 		"if(v)n.scrollTop=parseInt(v,10)||0;"
 		"var a=n.querySelector('.nav-item.active');"
@@ -1939,10 +2198,17 @@ venture_web_page(
 		"},{passive:true});"
 		"}catch(e){}})();</script>");
 
-	/* Main */
-	g_string_append(html, "<main class=\"main\">");
+	/* Main. Focusable so the skip link lands a keyboard inside it. */
+	g_string_append(html, "<main class=\"main\" id=\"main\" tabindex=\"-1\">");
 	g_string_append(html, content);
 	g_string_append(html, "</main>");
+
+	/*
+	 * Where toasts appear, present from the start: a live region added
+	 * at the moment of the first message is often not announced at all,
+	 * because the reader was not yet watching it.
+	 */
+	g_string_append(html, "<div class=\"toasts\" role=\"status\" aria-live=\"polite\"></div>");
 
 	/*
 	 * The AI surface: a floating launcher, and a right-hand panel it
@@ -1959,7 +2225,7 @@ venture_web_page(
 	{
 		g_string_append(html,
 			"<button type=\"button\" class=\"ai-fab\" data-ai-toggle "
-			"title=\"Ask VENTURE (Ctrl+/)\">"
+			"aria-label=\"Ask VENTURE\" title=\"Ask VENTURE (Ctrl+/)\">"
 			"<span class=\"spark\">"
 			"<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\">"
 			"<path d=\"M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9-1.9 6.1-1.9-6.1L4 10.5l6.1-1.9L12 2.5z\"/></svg>"
@@ -1987,15 +2253,19 @@ venture_web_page(
 			"<div class=\"ai-panel-actions\">"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
 			"data-ai-threads title=\"Previous conversations\" "
+			"aria-label=\"Previous conversations\" "
 			"hx-get=\"/ui/chat/threads\" hx-target=\"#chat-log\" "
 			"hx-swap=\"innerHTML\">\xe2\x98\xb0</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
-			"data-ai-new title=\"New conversation\">+</button>"
+			"data-ai-new title=\"New conversation\" "
+			"aria-label=\"New conversation\">+</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
-			"data-ai-export title=\"Download this conversation as org\">"
+			"data-ai-export title=\"Download this conversation as org\" "
+			"aria-label=\"Download this conversation\">"
 			"\xe2\xa4\x93</button>"
 			"<button type=\"button\" class=\"btn btn-ghost btn-sm\" "
-			"data-ai-close title=\"Hide (Esc)\">\xc3\x97</button>"
+			"data-ai-close title=\"Hide (Esc)\" "
+			"aria-label=\"Close the assistant\">\xc3\x97</button>"
 			"</div></div>");
 
 		g_string_append(html, "<div class=\"ai-panel-body chat-log\" "
@@ -2044,9 +2314,10 @@ venture_web_page(
 			"image/png,image/jpeg,image/webp,image/gif\">"
 			"<button type=\"button\" class=\"btn btn-ghost chat-attach\" "
 			"data-ai-attach "
-			"title=\"Attach a file or screenshot (or just paste one)\">"
+			"title=\"Attach a file or screenshot (or just paste one)\" "
+			"aria-label=\"Attach a file\">"
 			"\xf0\x9f\x93\x8e</button>"
-			"<textarea name=\"message\" rows=\"1\" "
+			"<textarea name=\"message\" rows=\"1\" aria-label=\"Message\" "
 			"placeholder=\"Ask about your ventures, or describe a change\">"
 			"</textarea>"
 			"<button class=\"btn btn-primary\" type=\"submit\">Send</button>"
@@ -2493,7 +2764,6 @@ venture_web_api_write(
 	return venture_web_json_response(node, created ? 201 : 200);
 }
 
-#include "billing/venture-billing-web.inc"
 
 static HtmxResponse *
 venture_web_api_create(
@@ -2984,7 +3254,7 @@ venture_web_ui_overview(
 			/* One failing report must not take the dashboard down;
 			 * the others are still useful and the failure is shown
 			 * in place. */
-			g_string_append(content, "<div class=\"notice negative\">");
+			g_string_append(content, "<div class=\"notice negative\" role=\"alert\">");
 			venture_html_escape_append(content, local_error->message);
 			g_string_append(content, "</div>");
 			continue;
@@ -3253,9 +3523,7 @@ venture_web_ui_overview(
 			venture_html_escape_append(content,
 				venture_string_is_empty(actor) ? "The system" : actor);
 			g_string_append(content, "</span> ");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_AUDIT_ACTION,
-				                     (gint)action));
+			venture_web_append_nick(content, VENTURE_TYPE_AUDIT_ACTION, (gint)action);
 			g_string_append(content, " ");
 
 			if (!venture_string_is_empty(target_type) &&
@@ -3308,6 +3576,138 @@ venture_web_ui_overview(
 		venture_web_page(self, request, "/", "Dashboard", content->str), 200);
 }
 
+/* --- Errors a person sees ------------------------------------------------- */
+
+/* What went wrong, in the words a person uses, by kind of failure. */
+static const gchar *
+venture_web_error_title(const GError *error)
+{
+	if (NULL == error || VENTURE_ERROR != error->domain)
+		return "Something went wrong";
+
+	switch ((VentureError)error->code)
+	{
+	case VENTURE_ERROR_VALIDATION:
+	case VENTURE_ERROR_INVALID_ARGUMENT:
+		return "That didn\xe2\x80\x99t save \xe2\x80\x94 something needs fixing";
+	case VENTURE_ERROR_CONFLICT:
+		return "Someone else changed this first";
+	case VENTURE_ERROR_ALREADY_EXISTS:
+		return "That already exists";
+	case VENTURE_ERROR_NOT_FOUND:
+		return "We couldn\xe2\x80\x99t find that";
+	case VENTURE_ERROR_PERMISSION_DENIED:
+		return "You don\xe2\x80\x99t have access to do that";
+	case VENTURE_ERROR_BALANCE:
+		return "Those figures don\xe2\x80\x99t balance";
+	default:
+		return "Something went wrong";
+	}
+}
+
+/*
+ * A service's message without the service's name: "VentureDocumentService:
+ * at least one line is required" is read as "At least one line is
+ * required". The JSON keeps the prefix; it is useful in a log.
+ */
+static gchar *
+venture_web_error_words(const gchar *message)
+{
+	const gchar *text = message != NULL ? message : "";
+	const gchar *colon = strstr(text, ": ");
+	gchar *words;
+
+	if (g_str_has_prefix(text, "Venture") && colon != NULL && colon - text < 48 &&
+	    strchr(text, ' ') == colon + 1)
+		text = colon + 2;
+	words = g_strdup(text);
+	if (g_ascii_islower(words[0]))
+		words[0] = g_ascii_toupper(words[0]);
+	return words;
+}
+
+/*
+ * The same failure every route reports as JSON, shown to a person as a
+ * page when a browser asked for one: a plain form post with scripting off,
+ * or a link followed. Scripted callers are left the JSON -- htmx and the
+ * page's own form handling ask with a header and show it in place, and the
+ * API is the API. A server fault keeps its detail folded: it is for
+ * whoever reports it, not something the reader can act on.
+ */
+static void
+venture_web_error_for_browser(VentureWebServer *self, HtmxContext *context)
+{
+	HtmxResponse *response = htmx_context_get_response(context);
+	HtmxRequest *request = htmx_context_get_request(context);
+	SoupServerMessage *message = htmx_request_get_message(request);
+	SoupMessageHeaders *headers;
+	const GError *error;
+	const gchar *path = htmx_request_get_path(request);
+	const gchar *accept;
+	gboolean fault;
+	guint status;
+	g_autoptr(GString) body = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+
+	error = g_object_get_data(G_OBJECT(response), "venture-error");
+	if (NULL == error || NULL == message)
+		return;
+	if (g_str_has_prefix(path, "/api/") || g_str_has_prefix(path, "/hooks/") ||
+	    g_str_has_prefix(path, "/federation/") || g_str_has_prefix(path, "/mcp"))
+		return;
+	headers = soup_server_message_get_request_headers(message);
+	accept = soup_message_headers_get_one(headers, "Accept");
+	if (NULL != soup_message_headers_get_one(headers, "HX-Request") ||
+	    NULL != soup_message_headers_get_one(headers, "X-Venture-Inline") ||
+	    NULL == accept || NULL == strstr(accept, "text/html"))
+		return;
+
+	status = htmx_response_get_status(response);
+	fault = status >= 500;
+	body = g_string_new("<div class=\"empty error-page\" role=\"alert\"><h3>");
+	venture_html_escape_append(body, venture_web_error_title(error));
+	g_string_append(body, "</h3>");
+	if (fault)
+		g_string_append(body, "<p class=\"muted\">The request could not be completed. Check the record before trying again; "
+			"if it keeps happening, the detail below is what to send along.</p>"
+			"<details class=\"error-detail\"><summary>Detail</summary><p>");
+	else
+		g_string_append(body, "<p class=\"error-message\">");
+	{
+		g_autofree gchar *words = venture_web_error_words(error->message);
+		venture_html_escape_append(body, words);
+	}
+	g_string_append(body, fault ? "</p></details>" : "</p>");
+
+	/*
+	 * The operator chrome -- the sidebar, the record navigation, the
+	 * install's modules -- is for somebody signed in. A refusal on a
+	 * public route (a portal or payment token, a lead form, a booking
+	 * page) is read by a customer or a stranger, so it gets a bare page
+	 * like the one it came from, with no way into the app to show them.
+	 */
+	principal = venture_auth_authenticate(self->auth, request);
+	if (NULL == principal || !principal->authenticated)
+	{
+		g_autoptr(GString) page = g_string_new("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+			"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
+
+		venture_html_escape_append(page, venture_web_error_title(error));
+		g_string_append(page, "</title></head><body><main>");
+		g_string_append(page, body->str);
+		g_string_append(page, "<p><button type=\"button\" onclick=\"history.back()\">Go back</button></p>"
+			"</div></main></body></html>");
+		htmx_context_set_response(context, venture_web_html_response(
+			g_string_free(g_steal_pointer(&page), FALSE), status));
+		return;
+	}
+	g_string_append(body, "<p><button type=\"button\" class=\"btn btn-primary\" onclick=\"history.back()\">"
+		"Go back and fix it</button> <a class=\"btn\" href=\"/\">Home</a></p></div>");
+
+	htmx_context_set_response(context, venture_web_html_response(
+		venture_web_page(self, request, NULL, venture_web_error_title(error), body->str), status));
+}
+
 /* --- The 404 -------------------------------------------------------------- */
 
 /*
@@ -3345,7 +3745,10 @@ venture_web_not_found_middleware(
 	if (!venture_web_hosted_finish(self, context)) return;
 
 	if (NULL != htmx_context_get_response(context))
+	{
+		venture_web_error_for_browser(self, context);
 		return;
+	}
 
 	request = htmx_context_get_request(context);
 	path = htmx_request_get_path(request);
@@ -3738,7 +4141,7 @@ venture_web_ui_automations_save(
 	{
 		g_autoptr(GString) body = NULL;
 
-		body = g_string_new("<div class=\"notice negative\">"
+		body = g_string_new("<div class=\"notice negative\" role=\"alert\">"
 		                    "Not saved: ");
 		venture_html_escape_append(body, message);
 		g_string_append(body, "</div><p><a class=\"btn\" "
@@ -4023,7 +4426,7 @@ venture_web_ui_invoice_status(
  * chrome, no sidebar, just the document. The browser's print dialog is the
  * PDF generator; it is already installed everywhere.
  */
-static void quote_buttons(GString *html, VentureEntity *record);
+static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 
 static HtmxResponse *
@@ -4103,8 +4506,7 @@ venture_web_ui_invoice_print(
 	g_string_append(html, "</h1><div class=\"meta\">");
 	venture_html_escape_append(html, ui_title);
 	g_string_append(html, "</div></div><span class=\"status\">");
-	venture_html_escape_append(html,
-		venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, (gint)status));
+	venture_web_append_nick(html, VENTURE_TYPE_INVOICE_STATUS, (gint)status);
 	g_string_append(html, "</span></div>");
 
 	g_string_append(html, "<div class=\"meta\">");
@@ -4469,7 +4871,7 @@ venture_web_ui_plugins_config(
 	{
 		g_autoptr(GString) body = NULL;
 
-		body = g_string_new("<div class=\"notice negative\">");
+		body = g_string_new("<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(body, error->message);
 		g_string_append(body, "</div><p><a class=\"btn\" "
 		                      "href=\"/plugins\">Back</a></p>");
@@ -4609,7 +5011,14 @@ venture_web_ui_search(
 
 			g_string_append(content, "<div class=\"card search-group\">"
 			                         "<div class=\"card-head\"><h2>");
-			venture_html_escape_append(content, names[i]);
+			{
+				g_autofree gchar *plural = NULL;
+
+				/* "Companies", not "company": a group of results
+				 * is named the way the sidebar names the list. */
+				plural = venture_entity_type_dup_label(entity_type, TRUE);
+				venture_html_escape_append(content, plural);
+			}
 			{
 				g_autofree gchar *escaped = NULL;
 
@@ -4671,6 +5080,27 @@ venture_web_ui_search(
  *
  * Returns: (transfer full): the query-string, starting with "?", or ""
  */
+/*
+ * The record view: how a record, its list and its form read to a person.
+ * Defined in venture-web-record-view.inc, beside the detail renderer it
+ * builds on; declared here because the list and the form come first.
+ */
+static gchar *venture_web_type_label(GType type, gboolean plural);
+static void venture_web_append_crumbs(GString *html, GType type,
+	const gchar *type_name, gboolean link_list);
+static GPtrArray *venture_web_list_columns(GPtrArray *specs,
+	GPtrArray *records);
+static void venture_web_append_list_cell(VentureWebServer *self,
+	GString *html, VentureEntity *record, VentureFieldSpec *spec);
+static guint venture_web_form_group(VentureFieldSpec *spec,
+	guint *facts_seen);
+static VentureFieldSpec *venture_web_list_drop_title(GPtrArray *columns,
+	GPtrArray *records);
+static gboolean venture_web_value_is_empty(VentureEntity *record,
+	VentureFieldSpec *spec);
+static gchar *venture_web_choice_label(VentureFieldSpec *spec,
+	const gchar *nick);
+
 static gchar *
 venture_web_list_query_string(
 	HtmxRequest	*request,
@@ -5460,7 +5890,7 @@ venture_web_ui_import(
 	if (error_count > 0)
 	{
 		g_string_append_printf(content,
-			"<div class=\"notice negative\">Nothing was imported: "
+			"<div class=\"notice negative\" role=\"alert\">Nothing was imported: "
 			"%u row%s failed validation.</div><ul>",
 			error_count, (1 == error_count) ? "" : "s");
 		g_string_append(content, errors->str);
@@ -5523,6 +5953,8 @@ venture_web_ui_list(
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) records = NULL;
 	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(GPtrArray) columns = NULL;
+	g_autofree gchar *heading = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureEntity *prototype;
@@ -5533,7 +5965,6 @@ venture_web_ui_list(
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
-	guint shown;
 	guint i;
 	guint j;
 
@@ -5555,8 +5986,12 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
-		                       error->message);
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Not found", body), 404);
 	}
@@ -5576,8 +6011,12 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
-		                       error->message);
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Bad request", body), 400);
 	}
@@ -5607,8 +6046,12 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
-		                       error->message);
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Error", body), 500);
 	}
@@ -5625,16 +6068,13 @@ venture_web_ui_list(
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
 	path = g_strdup_printf("/e/%s", type_name);
+	heading = venture_web_type_label(entity_type, TRUE);
 	content = g_string_new(NULL);
 
-	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">"
-	                         "<h1>");
-	{
-		g_autofree gchar *heading = NULL;
-
-		heading = venture_web_label_from_name(type_name);
-		venture_html_escape_append(content, heading);
-	}
+	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">");
+	venture_web_append_crumbs(content, entity_type, type_name, FALSE);
+	g_string_append(content, "<h1>");
+	venture_html_escape_append(content, heading);
 	g_string_append(content, "</h1><span class=\"subtitle\">");
 	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
 	                       (1 == total) ? "" : "s");
@@ -5662,8 +6102,23 @@ venture_web_ui_list(
 	venture_web_append_save_view_form(content, request, type_name, FALSE);
 
 	if (venture_web_type_accepts_writes(entity_type, NULL))
-		g_string_append_printf(content,
-			"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New</a>", type_name);
+	{
+		g_autofree gchar *singular = NULL;
+		g_autofree gchar *lower = NULL;
+
+		/* "New contact", not "New": the button says what it makes. */
+		singular = venture_web_type_label(entity_type, FALSE);
+		lower = g_ascii_strdown(singular, -1);
+		if (NULL != venture_entity_type_get_create_path(entity_type))
+			g_string_append_printf(content,
+				"<a class=\"btn btn-primary\" href=\"%s\">New ",
+				venture_entity_type_get_create_path(entity_type));
+		else
+			g_string_append_printf(content,
+				"<a class=\"btn btn-primary\" href=\"/e/%s/new\">New ", type_name);
+		venture_html_escape_append(content, lower);
+		g_string_append(content, "</a>");
+	}
 	g_string_append(content, "</div></div>");
 
 	/* The registry prototype is one process-wide object per type; a
@@ -5699,10 +6154,42 @@ venture_web_ui_list(
 			       "data-bulk-all title=\"Select all\"></th>" : "");
 	}
 
-	shown = 0;
 	current_order = htmx_request_get_query_param(request, "order");
 
-	for (i = 0; i < specs->len; i++)
+	/* What somebody scans this list for; see venture_web_list_columns().
+	 * The record's own name leads, as the link; the field it came from
+	 * is not repeated beside it. */
+	columns = venture_web_list_columns(specs, records);
+	{
+		VentureFieldSpec *title;
+
+		title = venture_web_list_drop_title(columns, records);
+
+		if (NULL == title)
+		{
+			g_string_append(content, "<th>Name</th>");
+		}
+		else
+		{
+			const gchar *field_name = venture_field_spec_get_name(title);
+			g_autofree gchar *descending = g_strdup_printf("-%s", field_name);
+			g_autofree gchar *suffix = NULL;
+			gboolean asc = (0 == g_strcmp0(current_order, field_name));
+			gboolean desc = (0 == g_strcmp0(current_order, descending));
+
+			suffix = venture_web_list_query_string(request,
+				asc ? descending : field_name, 0);
+			g_string_append_printf(content,
+				"<th%s><a class=\"th-sort\" href=\"/e/%s%s\">",
+				(asc || desc) ? " class=\"sorted\"" : "", type_name, suffix);
+			venture_html_escape_append(content,
+				venture_field_spec_get_label(title));
+			g_string_append(content, asc ? " \xe2\x96\xb2</a></th>"
+				: desc ? " \xe2\x96\xbc</a></th>" : "</a></th>");
+		}
+	}
+
+	for (i = 0; i < columns->len; i++)
 	{
 		VentureFieldSpec *spec;
 		const gchar *field_name;
@@ -5711,12 +6198,7 @@ venture_web_ui_list(
 		gboolean sorted_asc;
 		gboolean sorted_desc;
 
-		spec = g_ptr_array_index(specs, i);
-
-		/* A list with forty columns is unreadable; the first several
-		 * declared fields are the ones that identify a record. */
-		if (!venture_field_spec_get_show_in_list(spec) || (shown >= 7))
-			continue;
+		spec = g_ptr_array_index(columns, i);
 
 		/*
 		 * Each header is a link that sorts by its column, and clicking
@@ -5744,10 +6226,8 @@ venture_web_ui_list(
 			g_string_append(content, " \xe2\x96\xbc");
 
 		g_string_append(content, "</a></th>");
-		shown++;
 	}
 
-	g_string_append(content, "<th class=\"row-actions\"></th>");
 	g_string_append(content, "</tr></thead><tbody>");
 
 	for (j = 0; j < records->len; j++)
@@ -5755,7 +6235,6 @@ venture_web_ui_list(
 		VentureEntity *record;
 
 		record = g_ptr_array_index(records, j);
-		shown = 0;
 
 		g_string_append_printf(content, "<tr data-href=\"/e/%s/%"
 		                       G_GINT64_FORMAT "\">",
@@ -5766,101 +6245,23 @@ venture_web_ui_list(
 				"<td class=\"tick\"><input type=\"checkbox\" data-bulk-id=\"%"
 				G_GINT64_FORMAT "\"></td>", venture_entity_get_id(record));
 
-		for (i = 0; i < specs->len; i++)
+		/* The first cell is the link to the record -- a real anchor, so
+		 * it works from the keyboard and with scripting off -- and the
+		 * rest of the row is clickable through data-href. An "Open"
+		 * button on every row was a column of the same word. */
 		{
-			VentureFieldSpec *spec;
-			g_auto(GValue) value = G_VALUE_INIT;
-			g_autofree gchar *text = NULL;
+			g_autofree gchar *name = venture_entity_get_display_name(record);
 
-			spec = g_ptr_array_index(specs, i);
-
-			if (!venture_field_spec_get_show_in_list(spec) || (shown >= 7))
-				continue;
-
-			if (!venture_entity_get_field(record,
-			                              venture_field_spec_get_name(spec),
-			                              &value))
-			{
-				g_string_append(content, "<td></td>");
-				shown++;
-				continue;
-			}
-
-			if (G_VALUE_HOLDS(&value, VENTURE_TYPE_MONEY))
-			{
-				const VentureMoney *money;
-
-				money = g_value_get_boxed(&value);
-				text = (NULL != money)
-					? venture_money_to_display_string(money, TRUE)
-					: g_strdup("");
-
-				g_string_append(content, "<td class=\"num\">");
-			}
-			else if (G_VALUE_HOLDS(&value, G_TYPE_DATE_TIME))
-			{
-				text = venture_time_to_date_string(
-					g_value_get_boxed(&value),
-					venture_context_get_timezone(self->context));
-
-				if (NULL == text)
-					text = g_strdup("");
-
-				g_string_append(content, "<td>");
-			}
-			else if (G_VALUE_HOLDS_STRING(&value))
-			{
-				text = venture_truncate(g_value_get_string(&value), 60);
-
-				if (NULL == text)
-					text = g_strdup("");
-
-				g_string_append(content, "<td>");
-			}
-			else if (G_VALUE_HOLDS_ENUM(&value))
-			{
-				/* The nick, not the JSON rendering: a status cell
-				 * reading &quot;active&quot; is the quoting of a
-				 * serialisation leaking into a table. */
-				text = g_strdup(venture_enum_to_nick(G_VALUE_TYPE(&value),
-				                                     g_value_get_enum(&value)));
-
-				if (NULL == text)
-					text = g_strdup("");
-
-				g_string_append(content, "<td>");
-			}
-			else if (G_VALUE_HOLDS_BOOLEAN(&value))
-			{
-				text = g_strdup(g_value_get_boolean(&value) ? "yes" : "");
-				g_string_append(content, "<td>");
-			}
-			else
-			{
-				g_autoptr(JsonNode) node = NULL;
-
-				node = venture_json_node_from_value(&value);
-				text = venture_json_to_string(node, FALSE);
-
-				if (0 == g_strcmp0(text, "null"))
-				{
-					g_free(text);
-					text = g_strdup("");
-				}
-
-				g_string_append(content, "<td class=\"num\">");
-			}
-
-			venture_html_escape_append(content, text);
-			g_string_append(content, "</td>");
-			shown++;
+			g_string_append_printf(content,
+				"<td class=\"row-title\"><a href=\"/e/%s/%" G_GINT64_FORMAT "\">",
+				type_name, venture_entity_get_id(record));
+			venture_html_escape_append(content, name);
+			g_string_append(content, "</a></td>");
 		}
 
-		g_string_append_printf(content,
-			"<td class=\"row-actions\">"
-			"<a class=\"btn btn-sm\" href=\"/e/%s/%" G_GINT64_FORMAT
-			"\">Open</a></td>",
-			type_name, venture_entity_get_id(record));
+		for (i = 0; i < columns->len; i++)
+			venture_web_append_list_cell(self, content, record,
+			                             g_ptr_array_index(columns, i));
 
 		g_string_append(content, "</tr>");
 	}
@@ -5925,7 +6326,7 @@ venture_web_ui_list(
 	g_string_append(content, "</div>");
 
 	return venture_web_html_response(
-		venture_web_page(self, request, path, type_name, content->str), 200);
+		venture_web_page(self, request, path, heading, content->str), 200);
 }
 
 static HtmxResponse *
@@ -5950,9 +6351,17 @@ venture_web_ui_reports(
 	reports = venture_report_registry_list(
 		venture_context_get_report_registry(self->context));
 
+	/*
+	 * One scannable list with a filter, not forty cards to scroll past:
+	 * the name opens the report, the sentence says what it answers, and
+	 * the export sits at the end of the row. Typing narrows the list.
+	 */
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>Reports</h1></div></div>"
-	                       "<div class=\"grid cols-2\">");
+	                       "<h1>Reports</h1><span class=\"subtitle\">Every question the books "
+	                       "and the records can answer.</span></div><div class=\"page-actions\">"
+	                       "<input type=\"search\" placeholder=\"Find a report\xe2\x80\xa6\" "
+	                       "aria-label=\"Find a report\" data-report-filter autofocus></div></div>"
+	                       "<div class=\"card\"><table class=\"data report-index\"><tbody>");
 
 	for (i = 0; i < reports->len; i++)
 	{
@@ -5962,23 +6371,23 @@ venture_web_ui_reports(
 		if (venture_statements_owns_report(self->context, venture_report_get_name(report)))
 			continue;
 
-		g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-		                         "<h2>");
+		g_string_append_printf(content, "<tr data-report-row><td class=\"row-title\">"
+			"<a href=\"/reports/%s\">", venture_report_get_name(report));
 		venture_html_escape_append(content, venture_report_get_title(report));
-		g_string_append(content, "</h2><p class=\"muted\">");
+		g_string_append(content, "</a></td><td class=\"muted\">");
 		venture_html_escape_append(content,
 			venture_report_get_description(report));
-		g_string_append(content, "</p>");
 		g_string_append_printf(content,
-			"<a class=\"btn btn-primary btn-sm\" href=\"/reports/%s\">Open</a> "
-			"<a class=\"btn btn-sm\" "
-			"href=\"/api/v1/reports/%s?format=csv\">CSV</a>",
-			venture_report_get_name(report),
+			"</td><td class=\"row-end\"><a class=\"btn btn-sm btn-ghost\" "
+			"href=\"/api/v1/reports/%s?format=csv\">CSV</a></td></tr>",
 			venture_report_get_name(report));
-		g_string_append(content, "</div></div>");
 	}
 
-	g_string_append(content, "</div>");
+	g_string_append(content, "</tbody></table></div>"
+		"<script>(function(){var f=document.querySelector('[data-report-filter]');if(!f)return;"
+		"f.addEventListener('input',function(){var q=f.value.toLowerCase();"
+		"document.querySelectorAll('[data-report-row]').forEach(function(r){"
+		"r.hidden=q&&r.textContent.toLowerCase().indexOf(q)<0;});});})();</script>");
 
 	venture_statements_append_index(self->context, content);
 
@@ -6027,7 +6436,7 @@ venture_web_ui_report(
 	{
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Not found",
-				"<div class=\"notice negative\">No such report.</div>"), 404);
+				"<div class=\"notice negative\" role=\"alert\">No such report.</div>"), 404);
 	}
 
 	requested_period = htmx_request_get_query_param(request, "period");
@@ -6038,8 +6447,12 @@ venture_web_ui_report(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
-		                       error->message);
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Bad period", body), 400);
 	}
@@ -6074,8 +6487,12 @@ venture_web_ui_report(
 	{
 		g_autofree gchar *body = NULL;
 
-		body = g_strdup_printf("<div class=\"notice negative\">%s</div>",
-		                       error->message);
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
+		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Error", body), 500);
 	}
@@ -6297,7 +6714,7 @@ venture_web_ui_login_submit(
 		g_autofree gchar *html = NULL;
 
 		body = g_string_new("<div class=\"auth-form\">"
-		                    "<div class=\"notice negative\">"
+		                    "<div class=\"notice negative\" role=\"alert\">"
 		                    "<span class=\"notice-icon\">"
 		                    VENTURE_ICON(
 		                        "<circle cx=\"12\" cy=\"12\" r=\"9\"/>"
@@ -6596,10 +7013,15 @@ venture_web_append_form_field_scoped(
 
 			for (i = 0; (NULL != choices) && (NULL != choices[i]); i++)
 			{
+				g_autofree gchar *shown = NULL;
+
+				/* The value posts as the nick; the person reads
+				 * "In progress", not "in_progress". */
+				shown = venture_web_choice_label(spec, choices[i]);
 				g_string_append_printf(content, "<option value=\"%s\"%s>",
 					choices[i],
 					(0 == g_strcmp0(choices[i], current)) ? " selected" : "");
-				venture_html_escape_append(content, choices[i]);
+				venture_html_escape_append(content, shown);
 				g_string_append(content, "</option>");
 			}
 
@@ -6613,11 +7035,25 @@ venture_web_append_form_field_scoped(
 			g_autoptr(GPtrArray) options = NULL;
 			GType target;
 
+			const gchar *parent = NULL;
+
 			target = venture_entity_registry_lookup(
 				venture_context_get_entity_registry(self->context),
 				venture_field_spec_get_reference_type(spec));
 
-			g_string_append_printf(content, "<select name=\"%s\">", name);
+			/* A reference that must share the record's parent says which
+			 * field that is, and each option says whose it is, so the
+			 * page offers only the chosen customer's people. */
+			if (NULL != record &&
+			    0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_SAME_PARENT))
+				parent = venture_entity_class_get_shared_parent(
+					VENTURE_ENTITY_GET_CLASS(record), name);
+
+			if (NULL != parent)
+				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\">",
+					name, parent);
+			else
+				g_string_append_printf(content, "<select name=\"%s\">", name);
 			g_string_append(content, "<option value=\"\">—</option>");
 
 			if (G_TYPE_INVALID != target)
@@ -6650,10 +7086,18 @@ venture_web_append_form_field_scoped(
 					display = venture_entity_get_display_name(option);
 
 					g_string_append_printf(content,
-						"<option value=\"%" G_GINT64_FORMAT "\"%s>", id,
+						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
 						((NULL != current) &&
 						 (g_ascii_strtoll(current, NULL, 10) == id))
 							? " selected" : "");
+					if (NULL != parent)
+					{
+						gint64 owner = 0;
+
+						g_object_get(option, parent, &owner, NULL);
+						g_string_append_printf(content, " data-parent=\"%" G_GINT64_FORMAT "\"", owner);
+					}
+					g_string_append(content, ">");
 					venture_html_escape_append(content, display);
 					g_string_append(content, "</option>");
 				}
@@ -6757,6 +7201,10 @@ venture_web_ui_form(
 	GType entity_type;
 	const gchar *type_name;
 	const gchar *id_text;
+	GString *groups[4];
+	guint counts[4] = { 0, 0, 0, 0 };
+	guint facts_seen = 0;
+	gboolean more_filled = FALSE;
 	gint64 id;
 	guint i;
 
@@ -6798,10 +7246,31 @@ venture_web_ui_form(
 	specs = venture_entity_get_field_specs(record);
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>");
-	g_string_append(content, (0 != id) ? "Edit " : "New ");
-	venture_html_escape_append(content, type_name);
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">");
+	venture_web_append_crumbs(content, entity_type, type_name, TRUE);
+	g_string_append(content, "<h1>");
+
+	/* "New contact" or "Edit Jane Doe": what is being made, or which one
+	 * is being changed. */
+	if (0 != id)
+	{
+		g_autofree gchar *name = NULL;
+
+		name = venture_entity_get_display_name(record);
+		g_string_append(content, "Edit ");
+		venture_html_escape_append(content, name);
+	}
+	else
+	{
+		g_autofree gchar *singular = NULL;
+		g_autofree gchar *lower = NULL;
+
+		singular = venture_web_type_label(entity_type, FALSE);
+		lower = g_ascii_strdown(singular, -1);
+		g_string_append(content, "New ");
+		venture_html_escape_append(content, lower);
+	}
+
 	g_string_append(content, "</h1></div></div>");
 
 	if (0 != id)
@@ -6815,9 +7284,6 @@ venture_web_ui_form(
 		g_string_append_printf(content, "<form method=\"post\" action=\"/e/%s\">",
 		                       type_name);
 	}
-
-	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-	                         "<div class=\"form-grid\">");
 
 	{
 		gint64 org = (0 != id)
@@ -6834,10 +7300,43 @@ venture_web_ui_form(
 		venture_custom_fields_order_specs(venture_context_get_database(self->context), org, type_name, specs);
 	}
 
+	/*
+	 * A "New" button on a related panel names its parent in the query
+	 * string (?company_id=4). Applied before any markup is built, so a
+	 * refusal has nothing half-made to free.
+	 */
+	for (i = 0; id == 0 && i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		g_autofree gchar *wire = NULL;
+		const gchar *value;
+
+		if (venture_field_spec_get_kind(spec) != VENTURE_FIELD_KIND_REFERENCE ||
+		    0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_SENSITIVE))
+			continue;
+		wire = g_strdup(venture_field_spec_get_name(spec));
+		g_strdelimit(wire, "-", '_');
+		value = htmx_request_get_query_param(request, wire);
+		if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
+			return venture_web_error_response(error);
+	}
+
+	/*
+	 * Four groups, each drawn from the field's role: the essentials in
+	 * view, what somebody writes given full width, the rest under "More
+	 * details", and the machinery under "Advanced". Folded groups are
+	 * <details>, so every input is still in the form and still posts.
+	 */
+	groups[0] = g_string_new(NULL);
+	groups[1] = g_string_new(NULL);
+	groups[2] = g_string_new(NULL);
+	groups[3] = g_string_new(NULL);
+
 	for (i = 0; i < specs->len; i++)
 	{
 		VentureFieldSpec *spec;
 		VentureColumnFlags flags;
+		guint group;
 
 		spec = g_ptr_array_index(specs, i);
 		flags = venture_field_spec_get_flags(spec);
@@ -6850,19 +7349,57 @@ venture_web_ui_form(
 		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE))
 			continue;
 
-		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_REFERENCE)
-		{
-			g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
-			const gchar *value;
-			g_strdelimit(wire, "-", '_');
-			value = htmx_request_get_query_param(request, wire);
-			if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
-				return venture_web_error_response(error);
-		}
-		venture_web_append_form_field(self, content, spec, record);
+		/* A new record is made to be used: "Active" starts ticked. A plan
+		 * or price saved with it unticked was never offered anywhere, and
+		 * nothing on the page said why. */
+		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_BOOLEAN &&
+		    g_strcmp0(venture_field_spec_get_name(spec), "active") == 0)
+			g_object_set(record, "active", TRUE, NULL);
+
+		group = venture_web_form_group(spec, &facts_seen);
+		counts[group]++;
+
+		/* Something already filled in keeps its group open on an edit:
+		 * a folded value is one nobody checks before saving. */
+		if ((0 != id) && (2 == group) &&
+		    !venture_web_value_is_empty(record, spec))
+			more_filled = TRUE;
+
+		venture_web_append_form_field(self, groups[group], spec, record);
 	}
 
-	g_string_append(content, "</div></div></div>");
+	if (counts[0] > 0)
+		g_string_append_printf(content,
+			"<section class=\"card form-section\"><div class=\"card-body\">"
+			"<div class=\"form-grid\">%s</div></div></section>",
+			groups[0]->str);
+
+	if (counts[1] > 0)
+		g_string_append_printf(content,
+			"<section class=\"card form-section form-prose\">"
+			"<div class=\"card-body\">%s</div></section>",
+			groups[1]->str);
+
+	if (counts[2] > 0)
+		g_string_append_printf(content,
+			"<details class=\"card form-section form-more\"%s>"
+			"<summary>More details <span class=\"count\">%u</span>"
+			"</summary><div class=\"card-body\"><div class=\"form-grid\">"
+			"%s</div></div></details>",
+			(more_filled || (0 == counts[0])) ? " open" : "",
+			counts[2], groups[2]->str);
+
+	if (counts[3] > 0)
+		g_string_append_printf(content,
+			"<details class=\"card form-section form-advanced\">"
+			"<summary>Advanced <span class=\"count\">%u</span></summary>"
+			"<div class=\"card-body\"><p class=\"field-help\">Set by "
+			"VENTURE or an integration. Change these only if you know "
+			"why.</p><div class=\"form-grid\">%s</div></div></details>",
+			counts[3], groups[3]->str);
+
+	for (i = 0; i < G_N_ELEMENTS(groups); i++)
+		g_string_free(groups[i], TRUE);
 
 	/*
 	 * Which entity this belongs to, on every form. It is the field most
@@ -6897,7 +7434,8 @@ venture_web_ui_form(
 
 			g_string_append(content,
 				"<div class=\"card\"><div class=\"card-body\">"
-				"<div class=\"field\"><label>Entity"
+				"<div class=\"field\"><label><span class=\"field-label\">"
+				"Belongs to</span>"
 				"<select name=\"organization_id\">");
 
 			for (j = 0; j < organizations->len; j++)
@@ -7642,9 +8180,7 @@ venture_web_append_detail_value(
 	}
 	else if (G_VALUE_HOLDS_ENUM(&value))
 	{
-		venture_html_escape_append(content,
-			venture_enum_to_nick(G_VALUE_TYPE(&value),
-			                     g_value_get_enum(&value)));
+		venture_web_append_nick(content, G_VALUE_TYPE(&value), g_value_get_enum(&value));
 	}
 	else if (VENTURE_FIELD_KIND_REFERENCE == venture_field_spec_get_kind(spec))
 	{
@@ -7744,6 +8280,17 @@ venture_web_append_knowledge(
 #include "cutover/venture-cutover-panel.inc"
 #include "setup/venture-setup-panel.inc"
 #include "backup/venture-backup-web.inc"
+#include "venture-web-record-view.inc"
+
+/* The customer and contact pickers, defined with the document composer;
+ * the new-subscription page shares them. */
+static void document_append_parties(VentureWebServer *self, GString *html,
+	gint64 organization);
+#include "payables/venture-bill-compose-web.inc"
+#include "billing/venture-plan-web.inc"
+#include "billing/venture-subscription-web.inc"
+#include "billing/venture-billing-web.inc"
+#include "documents/venture-financial-documents-web.inc"
 
 static void
 venture_web_append_related(
@@ -7754,6 +8301,7 @@ venture_web_append_related(
 	g_autofree GType *types = NULL;
 	const gchar *own_name;
 	guint n_types;
+	guint groups = 0;
 	guint i;
 
 	own_name = venture_entity_get_entity_name(record);
@@ -7790,6 +8338,12 @@ venture_web_append_related(
 		 * "ticket_comment #2" links above it says the same thing worse.
 		 * Watches and notifications reference a user and are private.
 		 */
+		/* An invoice's lines are its Lines panel, with quantities,
+		 * prices and the total; a list of their names below it is the
+		 * same thing said worse. */
+		if (VENTURE_TYPE_INVOICE_LINE == types[i])
+			continue;
+
 		if ((VENTURE_TYPE_TICKET_COMMENT == types[i]) ||
 		    (VENTURE_TYPE_WORKLOG == types[i]) ||
 		    (VENTURE_TYPE_WATCH == types[i]) ||
@@ -7844,18 +8398,40 @@ venture_web_append_related(
 
 			related_name = venture_entity_get_entity_name(prototype);
 
-			g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-			                         "<h2>");
-			venture_html_escape_append(content, related_name);
+			if (0 == groups++)
+				g_string_append(content,
+					"<section class=\"card related-records\">"
+					"<div class=\"card-head\"><h2>Related</h2></div>"
+					"<div class=\"card-body\">");
 
-			/* Named by the field, because a type can point at the same
-			 * target twice -- a ticket has both a parent ticket and
-			 * child tickets. */
-			g_string_append(content, " <span class=\"muted\">by ");
-			venture_html_escape_append(content,
-			                           venture_field_spec_get_label(spec));
-			g_string_append_printf(content, "</span> <span class=\"count\">%u"
-			                                "</span></h2><ul class=\"related\">",
+			g_string_append(content, "<div class=\"related-group\">"
+			                         "<h3>");
+			{
+				g_autofree gchar *plural = NULL;
+				g_autofree gchar *target = NULL;
+
+				plural = venture_web_type_label(types[i], TRUE);
+				target = venture_web_type_label(G_OBJECT_TYPE(record), FALSE);
+				venture_html_escape_append(content, plural);
+
+				/* Named by the field only when it says something the
+				 * type does not: a ticket has both a parent ticket and
+				 * child tickets, a billing request names a company as
+				 * its customer. "Contacts, as company" says nothing. */
+				if (0 != g_ascii_strcasecmp(
+					venture_field_spec_get_label(spec), target))
+				{
+					g_autofree gchar *lower = NULL;
+
+					lower = g_ascii_strdown(
+						venture_field_spec_get_label(spec), -1);
+					g_string_append(content, " <span class=\"muted\">as ");
+					venture_html_escape_append(content, lower);
+					g_string_append(content, "</span>");
+				}
+			}
+			g_string_append_printf(content, " <span class=\"count\">%u"
+			                                "</span></h3><ul class=\"related\">",
 			                       related->len);
 
 			for (k = 0; k < related->len; k++)
@@ -7875,14 +8451,30 @@ venture_web_append_related(
 
 			{
 				g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
+				g_autofree gchar *singular = venture_web_type_label(types[i], FALSE);
+				g_autofree gchar *lower = g_ascii_strdown(singular, -1);
+
 				g_strdelimit(wire, "-", '_');
-				g_string_append_printf(content,
-					"</ul><a class=\"btn btn-sm\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
-					"New %s</a></div></div>", related_name, wire, venture_entity_get_id(record),
-					venture_entity_get_organization_id(record), related_name);
+				/* A type with a page of its own is made there, even from
+				 * here: the generated form makes an invoice with no lines.
+				 * Those pages take no prefill, so none is passed. */
+				if (NULL != venture_entity_type_get_create_path(types[i]))
+					g_string_append_printf(content,
+						"</ul><a class=\"btn btn-sm btn-ghost\" href=\"%s\">New ",
+						venture_entity_type_get_create_path(types[i]));
+				else
+					g_string_append_printf(content,
+						"</ul><a class=\"btn btn-sm btn-ghost\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
+						"New ", related_name, wire, venture_entity_get_id(record),
+						venture_entity_get_organization_id(record));
+				venture_html_escape_append(content, lower);
+				g_string_append(content, "</a></div>");
 			}
 		}
 	}
+
+	if (groups > 0)
+		g_string_append(content, "</div></section>");
 }
 
 /*
@@ -8119,6 +8711,8 @@ venture_web_append_ticket_relations(
 		venture_context_get_entity_registry(self->context));
 
 	g_string_append_printf(content,
+		"<details class=\"add-form\"><summary class=\"btn btn-sm\">"
+		"Relate a record</summary>"
 		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
 		"/relate\" class=\"relate-form\">", ticket_id);
 
@@ -8133,11 +8727,7 @@ venture_web_append_ticket_relations(
 		    (0 == g_strcmp0(type_names[i], "audit_entry")))
 			continue;
 
-		g_string_append(content, "<option value=\"");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "\">");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "</option>");
+		venture_web_append_type_option(self, content, type_names[i]);
 	}
 
 	/* Searched rather than typed, the same as the link form below it. */
@@ -8148,7 +8738,7 @@ venture_web_append_ticket_relations(
 		"<input type=\"number\" name=\"subject_id\" placeholder=\"id\" "
 		"min=\"1\" required></span> "
 		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
-		"<button class=\"btn\" type=\"submit\">Relate</button></form>");
+		"<button class=\"btn\" type=\"submit\">Relate</button></form></details>");
 
 	g_string_append(content, "</div></div>");
 }
@@ -8301,7 +8891,11 @@ venture_web_append_links(
 	type_names = venture_entity_registry_list_names(
 		venture_context_get_entity_registry(self->context));
 
-	g_string_append(content, "<form method=\"post\" action=\"/links\" "
+	/* The form is folded behind its button: the card says what is
+	 * linked, and making a link is one click further. */
+	g_string_append(content, "<details class=\"add-form\"><summary class=\"btn btn-sm\">"
+	                         "Link a record</summary>"
+	                         "<form method=\"post\" action=\"/links\" "
 	                         "class=\"relate-form\">");
 	g_string_append_printf(content,
 		"<input type=\"hidden\" name=\"source_type\" value=\"%s\">"
@@ -8321,11 +8915,7 @@ venture_web_append_links(
 		    (0 == g_strcmp0(type_names[i], "audit_entry")))
 			continue;
 
-		g_string_append(content, "<option value=\"");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "\">");
-		venture_html_escape_append(content, type_names[i]);
-		g_string_append(content, "</option>");
+		venture_web_append_type_option(self, content, type_names[i]);
 	}
 
 	/*
@@ -8345,7 +8935,7 @@ venture_web_append_links(
 		"<input type=\"number\" name=\"target_id\" placeholder=\"id\" "
 		"min=\"1\" required></span> "
 		"<input type=\"text\" name=\"note\" placeholder=\"why (optional)\"> "
-		"<button class=\"btn\" type=\"submit\">Link</button></form>");
+		"<button class=\"btn\" type=\"submit\">Link</button></form></details>");
 
 	g_string_append(content, "</div></div>");
 }
@@ -9089,14 +9679,20 @@ venture_web_append_invoice_block(
 				venture_entity_get_organization_id(record), NULL, NULL);
 			stripe = configured;
 		}
+		/* data-no-inline: the answer is a 303 to Stripe. A scripted post
+		 * cannot follow it across origins, so the operator would be told
+		 * the result was uncertain and every retry would open another
+		 * Checkout Session. The browser's own post follows it. */
 		if (stripe && venture_stripe_service_can_checkout(stripe, id, NULL))
-			g_string_append_printf(content, "<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT "/checkout\"><button class=\"btn btn-primary\" type=\"submit\">Pay with Stripe</button></form>", id);
+			g_string_append_printf(content, "<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT "/checkout\" data-no-inline><button class=\"btn btn-primary\" type=\"submit\">Pay with Stripe</button></form>", id);
 	}
 
 
 	g_string_append_printf(content,
 		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
-		"/print\" target=\"_blank\">Print</a>", id);
+		"/pdf\" target=\"_blank\">Download PDF</a> "
+		"<a class=\"btn\" href=\"/invoices/%" G_GINT64_FORMAT
+		"/print\" target=\"_blank\">Print</a>", id, id);
 
 	if (venture_context_module_enabled(self->context, "mail"))
 		g_string_append_printf(content,
@@ -9233,8 +9829,9 @@ venture_web_ui_detail(
 	HtmxResponse *redirect;
 	GType entity_type;
 	const gchar *type_name;
+	g_autoptr(GString) composer = g_string_new(NULL);
+	g_autoptr(GString) ticket_relations = g_string_new(NULL);
 	gint64 id;
-	guint i;
 
 	self = user_data;
 
@@ -9268,102 +9865,60 @@ venture_web_ui_detail(
 			return forward;
 	}
 
-	specs = venture_entity_get_field_specs(record);
-	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
-
+	specs = venture_web_visible_specs(record);
 	title = venture_entity_get_display_name(record);
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>");
-	venture_html_escape_append(content, title);
-	g_string_append(content, "</h1><span class=\"subtitle\">");
-	venture_html_escape_append(content, type_name);
-	g_string_append(content, "</span></div><div class=\"page-actions\">");
-	/* Watching comes first so it sits beside the title on every page;
-	 * the audit log and a notification are not things to follow. */
-	if (venture_data_class_for_type(entity_type) != VENTURE_DATA_CLASS_TENANT_ADMIN &&
-	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
-	    (VENTURE_TYPE_NOTIFICATION != entity_type) &&
-	    (VENTURE_TYPE_WATCH != entity_type))
-		venture_web_append_watch_button(self, content, principal, record);
-
-	if (venture_web_type_accepts_writes(entity_type, NULL))
-		g_string_append_printf(content,
-			"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT "/edit\">Edit</a> ", type_name, id);
-	g_string_append_printf(content, "<a class=\"btn\" href=\"/e/%s\">All %s</a>", type_name, type_name);
-	g_string_append(content, "</div></div>");
-
-	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
-	                         "<dl class=\"detail detail-grid\">");
-
-	for (i = 0; i < specs->len; i++)
 	{
-		VentureFieldSpec *spec;
+		g_autoptr(GString) actions = NULL;
 
-		spec = g_ptr_array_index(specs, i);
+		actions = g_string_new(NULL);
 
-		/* A sensitive value is not shown for reading either. */
-		if (0 != (venture_field_spec_get_flags(spec) &
-		          VENTURE_COLUMN_FLAG_SENSITIVE))
-			continue;
+		/* Watching comes first so it sits beside the title on every page;
+		 * the audit log and a notification are not things to follow. */
+		if (venture_data_class_for_type(entity_type) != VENTURE_DATA_CLASS_TENANT_ADMIN &&
+		    (VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
+		    (VENTURE_TYPE_NOTIFICATION != entity_type) &&
+		    (VENTURE_TYPE_WATCH != entity_type))
+			venture_web_append_watch_button(self, actions, principal, record);
 
-		g_string_append(content, "<dt>");
-		venture_html_escape_append(content, venture_field_spec_get_label(spec));
-		g_string_append(content, "</dt><dd>");
-		venture_web_append_detail_value(self, content, record, spec);
-		g_string_append(content, "</dd>");
+		/* One primary action. The way back to the list is the
+		 * breadcrumb, not a second button competing with it. */
+		if (venture_web_type_accepts_writes(entity_type, NULL))
+			g_string_append_printf(actions,
+				"<a class=\"btn btn-primary\" href=\"/e/%s/%" G_GINT64_FORMAT "/edit\">Edit</a>", type_name, id);
+
+		content = g_string_new(NULL);
+		venture_web_append_record_head(content, record, specs, type_name,
+		                               actions->str);
 	}
 
-	g_string_append(content, "</dl></div></div>");
+	/*
+	 * Two columns: what the record is about on the left, its details on
+	 * the right. Everything the page appends after this point -- the
+	 * type's own blocks, related records, the activity -- is the left
+	 * column, and the side panel closes the layout at the end.
+	 */
+	g_string_append(content, "<div class=\"record-layout\"><div class=\"record-main\">");
+	venture_web_append_record_content(self, content, record, specs);
 
-	if (venture_web_module_enabled(self, "federation") &&
-		venture_entity_type_get_federation_access(entity_type) &&
-		venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL))
-	{
-		g_string_append(content, "<section class=\"card\"><h2>Federation sharing</h2><p>This record stays private unless explicitly granted. Use its UUID to select exact fields and peers.</p><code>");
-		venture_html_escape_append(content, venture_entity_get_uuid(record));
-		g_string_append(content, "</code><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></section>");
-	}
-
-	venture_stripe_web_settings_link(self, content, record, principal);
-	venture_mail_web_settings_link(self, content, record, principal);
-	if (G_OBJECT_TYPE(record) == VENTURE_TYPE_ORGANIZATION && venture_context_module_enabled(self->context, "oidc")) {
-		static const gint oidc_roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
-		if (venture_access_policy_has_organization_role(venture_database_get_access_policy(venture_context_get_database(self->context)),
-			principal, venture_entity_get_id(record), oidc_roles, G_N_ELEMENTS(oidc_roles)))
-			g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a></p>", venture_entity_get_id(record));
-	}
-	venture_attribution_web_settings_link(self, content, record, principal);
-	venture_billing_web_buttons(self, content, record, principal);
-	venture_web_append_record_actions(self, content, record, principal);
-	venture_web_append_related(self, content, record);
-	venture_bank_append_actions(content, record);
-	venture_cutover_append_actions(content, record);
-	venture_setup_append_actions(content, record);
-	if (venture_context_module_enabled(self->context, "backup"))
-		venture_backup_append_actions(content, record);
-	venture_web_sequence_panel(self, content, principal, record);
-
-	/* A link is not offered on a link; the audit log is not linkable. */
-	if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
-	    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
-		venture_web_append_links(self, content, record);
-
-	if (venture_web_module_enabled(self, "kb"))
-		venture_web_append_knowledge(self, content, record);
-
+	/*
+	 * The record's own business first: an invoice's lines and total, a
+	 * ticket's desk and reply box, a release's changelog. These are what
+	 * a person opened the page for; the generic panels come after them.
+	 */
 	/* An invoice's lines and total, with the actions its status allows.
 	 * The other type-specific block, for the same reason as the ticket
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
 		venture_web_append_invoice_block(self, content, record);
-	quote_buttons(content, record);
+	venture_web_append_payment_receipt(self, content, record);
+	quote_buttons(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
-		venture_web_append_asset_actions(content, record);
+		venture_web_append_asset_actions(self, content, record);
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
@@ -9420,7 +9975,7 @@ venture_web_ui_detail(
 	/* What else this ticket is about, for the many tickets that are
 	 * about something other than code. */
 	if (VENTURE_TYPE_TICKET == entity_type)
-		venture_web_append_ticket_relations(self, content, record);
+		venture_web_append_ticket_relations(self, ticket_relations, record);
 
 	/* The desk: service level, macros, time. Above the composer, because
 	 * "apply the canned reply" and "write a reply" are the same moment. */
@@ -9437,14 +9992,14 @@ venture_web_ui_detail(
 
 	if (VENTURE_TYPE_TICKET == entity_type)
 	{
-		g_string_append(content,
+		g_string_append(composer,
 			"<div class=\"card comment-composer\">"
 			"<div class=\"card-head\"><h2>Add a comment</h2></div>"
 			"<div class=\"card-body\">");
-		g_string_append_printf(content,
+		g_string_append_printf(composer,
 			"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT
 			"/comment\">", id);
-		g_string_append(content,
+		g_string_append(composer,
 			"<textarea name=\"body\" rows=\"3\" required "
 			"placeholder=\"What happened?\"></textarea>"
 			"<div class=\"comment-actions\">"
@@ -9461,14 +10016,102 @@ venture_web_ui_detail(
 	venture_web_support_rollup_append_company_block(self, request, content,
 	                                                record);
 
-	/* What happened, last. The audit log has its own page; this is the
-	 * record's own story, with its conversation woven in. */
-	if ((VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
-	    (VENTURE_TYPE_NOTIFICATION != entity_type))
-		venture_web_append_activity(self, content, record);
 
-	return venture_web_html_response(
-		venture_web_page(self, request, NULL, title, content->str), 200);
+	/* What can be done to it, and where its settings live. */
+	if (venture_web_module_enabled(self, "federation") &&
+		venture_entity_type_get_federation_access(entity_type) &&
+		venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL))
+	{
+		/* The identifier a grant names is under "All fields", with the
+		 * rest of the record's machinery, not printed on the page. */
+		g_string_append(content, "<section class=\"card\"><div class=\"card-head\"><h2>Federation sharing</h2></div><div class=\"card-body\"><p>This record stays private unless explicitly granted. A grant names it by the stable identifier under All fields.</p><p><a class=\"btn\" href=\"/e/federation_grant/new\">Create sharing grant</a> <a href=\"/federation\">Federation workspace</a></p></div></section>");
+	}
+
+	venture_stripe_web_settings_link(self, content, record, principal);
+	venture_mail_web_settings_link(self, content, record, principal);
+	if (G_OBJECT_TYPE(record) == VENTURE_TYPE_ORGANIZATION && venture_context_module_enabled(self->context, "oidc")) {
+		static const gint oidc_roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+		if (venture_access_policy_has_organization_role(venture_database_get_access_policy(venture_context_get_database(self->context)),
+			principal, venture_entity_get_id(record), oidc_roles, G_N_ELEMENTS(oidc_roles)))
+			g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/oidc\">Sign-in settings</a></p>", venture_entity_get_id(record));
+	}
+	venture_attribution_web_settings_link(self, content, record, principal);
+	venture_billing_web_buttons(self, content, record, principal);
+	venture_plan_web_panel(self, content, record, principal);
+
+	/*
+	 * What can be done to it goes beside its details, at the top of the
+	 * right-hand column: the controls sit next to the facts they act on,
+	 * not halfway down a scroll. Everything else about the record --
+	 * its history, what points at it, its follow-ups and links -- is one
+	 * row of tabs instead of a stack of cards to scroll past.
+	 */
+	{
+		g_autoptr(GString) actions = g_string_new(NULL);
+		g_autoptr(GString) activity = g_string_new(NULL);
+		g_autoptr(GString) related = g_string_new(NULL);
+		g_autoptr(GString) followups = g_string_new(NULL);
+		g_autoptr(GString) links = g_string_new(NULL);
+		const gchar *labels[4];
+		GString *panels[4];
+		guint count = 0;
+
+		venture_web_append_record_actions(self, actions, record, principal);
+		venture_bank_append_actions(actions, record);
+		venture_cutover_append_actions(actions, record);
+		venture_setup_append_actions(actions, record);
+		if (venture_context_module_enabled(self->context, "backup"))
+			venture_backup_append_actions(actions, record);
+
+		venture_web_sequence_panel(self, followups, principal, record);
+		venture_web_append_related(self, related, record);
+
+		/* A link is not offered on a link; the audit log is not linkable. */
+		if ((VENTURE_TYPE_RECORD_LINK != entity_type) &&
+		    (VENTURE_TYPE_AUDIT_ENTRY != entity_type))
+			venture_web_append_links(self, links, record);
+
+		if (venture_web_module_enabled(self, "kb"))
+			venture_web_append_knowledge(self, links, record);
+
+		/* The audit log has its own page; this is the record's own
+		 * story, with its conversation woven in. */
+		if ((VENTURE_TYPE_AUDIT_ENTRY != entity_type) &&
+		    (VENTURE_TYPE_NOTIFICATION != entity_type))
+		{
+			/* A ticket's reply box heads its conversation. */
+			g_string_append(activity, composer->str);
+			venture_web_append_activity(self, activity, record);
+		}
+
+		/* What else a ticket is about sits with its links. */
+		g_string_prepend(links, ticket_relations->str);
+
+#define VENTURE_WEB_TAB(label, panel) \
+		if (0 != (panel)->len) { labels[count] = (label); panels[count] = (panel); count++; }
+		VENTURE_WEB_TAB((VENTURE_TYPE_TICKET == entity_type) ? "Conversation" : "Activity", activity)
+		VENTURE_WEB_TAB("Related", related)
+		VENTURE_WEB_TAB("Follow-ups", followups)
+		VENTURE_WEB_TAB("Links and knowledge", links)
+#undef VENTURE_WEB_TAB
+
+		venture_web_append_tabs(content, labels, panels, count);
+
+		g_string_append(content, "</div>");
+		venture_web_append_record_aside(self, content, record, specs,
+		                                actions->str);
+		g_string_append(content, "</div>");
+	}
+
+	{
+		g_autofree gchar *active = NULL;
+
+		active = g_strdup_printf("/e/%s", type_name);
+
+		return venture_web_html_response(
+			venture_web_page(self, request, active, title, content->str),
+			200);
+	}
 }
 
 /*
@@ -9671,14 +10314,68 @@ venture_web_ticket_query(
 }
 
 /*
+ * Whose ticket this is, in words: the company, else the person who raised
+ * it, else "Internal" for your own work. Looked up once per board, since a
+ * customer with ten tickets would otherwise be read ten times.
+ */
+static const gchar *
+venture_web_ticket_customer(
+	VentureWebServer	*self,
+	GHashTable		*names,
+	VentureEntity		*ticket
+){
+	gint64 company = 0;
+	gint64 contact = 0;
+	GType type;
+	gint64 id;
+	g_autofree gchar *key = NULL;
+	const gchar *known;
+
+	g_object_get(ticket, "company-id", &company, "contact-id", &contact, NULL);
+
+	if (company > 0)
+	{
+		type = VENTURE_TYPE_COMPANY;
+		id = company;
+	}
+	else if (contact > 0)
+	{
+		type = VENTURE_TYPE_CONTACT;
+		id = contact;
+	}
+	else
+		return NULL;
+
+	key = g_strdup_printf("%s:%" G_GINT64_FORMAT, g_type_name(type), id);
+	known = g_hash_table_lookup(names, key);
+
+	if (NULL == known)
+	{
+		g_autoptr(VentureEntity) record = NULL;
+		gchar *name;
+
+		record = venture_database_get(venture_context_get_database(self->context),
+		                              type, id, NULL);
+		name = (NULL != record) ? venture_entity_get_display_name(record)
+		                        : g_strdup("");
+		g_hash_table_insert(names, g_steal_pointer(&key), name);
+		known = name;
+	}
+
+	return ('\0' != *known) ? known : NULL;
+}
+
+/*
  * Renders one card. Everything on it answers a question you would otherwise
- * open the ticket to ask: who has it, when it is due, who asked.
+ * open the ticket to ask: what it is, whose it is, who has it, how long it
+ * has waited and whether a promise is running out.
  */
 static void
 venture_web_append_ticket_card(
 	VentureWebServer	*self,
 	GString			*content,
-	VentureEntity		*ticket
+	VentureEntity		*ticket,
+	GHashTable		*names
 ){
 	g_autofree gchar *title = NULL;
 	g_autofree gchar *assignee = NULL;
@@ -9686,6 +10383,8 @@ venture_web_append_ticket_card(
 	g_autoptr(GDateTime) due = NULL;
 	VentureTicketKind kind;
 	VenturePriority priority;
+	const gchar *customer;
+	GDateTime *opened;
 	gint64 id;
 	gint64 points = 0;
 
@@ -9697,25 +10396,67 @@ venture_web_append_ticket_card(
 
 	g_string_append_printf(content,
 		"<article class=\"card ticket-card priority-%s\" draggable=\"true\" "
-		"data-ticket=\"%" G_GINT64_FORMAT "\">",
-		venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority), id);
+		"data-ticket=\"%" G_GINT64_FORMAT "\" aria-labelledby=\"ticket-%"
+		G_GINT64_FORMAT "-title\">",
+		venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority), id, id);
+
+	/* Priority reads off the card's edge; urgent and high also say it in
+	 * words, because a colour is not a word to everybody. */
+	g_string_append_printf(content,
+		"<div class=\"ticket-top\"><span class=\"ticket-ref\">#%" G_GINT64_FORMAT
+		"</span>", id);
+
+	if ((VENTURE_PRIORITY_URGENT == priority) || (VENTURE_PRIORITY_HIGH == priority))
+		g_string_append_printf(content, "<span class=\"ticket-priority\">%s</span>",
+			(VENTURE_PRIORITY_URGENT == priority) ? "Urgent" : "High");
+
+	/* The service-level clock: the one thing on the card that moves. */
+	venture_web_append_sla_badge(content, ticket);
+	g_string_append(content, "</div>");
 
 	g_string_append_printf(content,
-		"<a class=\"ticket-title\" href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
-		id);
+		"<a class=\"ticket-title\" id=\"ticket-%" G_GINT64_FORMAT "-title\" "
+		"href=\"/e/ticket/%" G_GINT64_FORMAT "\">", id, id);
 	venture_html_escape_append(content, title);
 	g_string_append(content, "</a>");
 
-	g_string_append(content, "<div class=\"ticket-meta\">");
+	/* Who it is for and who has it, as words with a label a screen reader
+	 * reads out and a sighted reader gets from the icon-free layout. */
+	customer = venture_web_ticket_customer(self, names, ticket);
+	g_string_append(content, "<p class=\"ticket-who\">"
+	                         "<span class=\"visually-hidden\">For </span>");
+	if (NULL != customer)
+	{
+		g_string_append(content, "<span class=\"ticket-customer\">");
+		venture_html_escape_append(content, customer);
+		g_string_append(content, "</span>");
+	}
+	else
+		g_string_append_printf(content, "<span class=\"ticket-customer muted\">%s</span>",
+			(VENTURE_TICKET_KIND_EXTERNAL == kind) ? "A customer" : "Internal");
 
-	g_string_append_printf(content, "<span class=\"badge kind-%s\">%s</span>",
-		venture_enum_to_nick(VENTURE_TYPE_TICKET_KIND, (gint)kind),
-		(VENTURE_TICKET_KIND_EXTERNAL == kind) ? "support" : "internal");
-
+	g_string_append(content, "<span class=\"visually-hidden\">, assigned to </span>");
 	if (!venture_string_is_empty(assignee))
 	{
 		g_string_append(content, "<span class=\"ticket-assignee\">");
 		venture_html_escape_append(content, assignee);
+		g_string_append(content, "</span>");
+	}
+	else
+		g_string_append(content, "<span class=\"ticket-assignee muted\">"
+			"Unassigned</span>");
+	g_string_append(content, "</p>");
+
+	g_string_append(content, "<p class=\"ticket-when\">");
+	opened = venture_entity_get_created_at(ticket);
+	if (NULL != opened)
+	{
+		g_autofree gchar *age = venture_time_to_relative_string(opened);
+		g_autofree gchar *exact = g_date_time_format(opened, "%Y-%m-%d %H:%M");
+
+		g_string_append_printf(content, "<span class=\"ticket-age\" title=\"Opened %s\">"
+			"Opened ", exact);
+		venture_html_escape_append(content, age);
 		g_string_append(content, "</span>");
 	}
 
@@ -9727,36 +10468,36 @@ venture_web_append_ticket_card(
 
 		now = venture_time_now();
 		overdue = (g_date_time_compare(due, now) < 0);
-		when = g_date_time_format(due, "%d %b");
+		when = g_date_time_format(due, "%-d %b");
 
 		/* Overdue is called out rather than left to be worked out from a
 		 * date, because the whole point of a due date is noticing. */
-		g_string_append_printf(content, "<span class=\"ticket-due%s\">",
-		                       overdue ? " overdue" : "");
+		g_string_append_printf(content, "<span class=\"ticket-due%s\">%s ",
+		                       overdue ? " overdue" : "",
+		                       overdue ? "Was due" : "Due");
 		venture_html_escape_append(content, when);
 		g_string_append(content, "</span>");
 	}
 
-	/* The service-level clock, and the weight in the sprint. */
-	venture_web_append_sla_badge(content, ticket);
-
 	if (points > 0)
 		g_string_append_printf(content,
-			"<span class=\"ticket-points\" title=\"Story points\">%"
-			G_GINT64_FORMAT "</span>", points);
+			"<span class=\"ticket-points\">%" G_GINT64_FORMAT " pt%s</span>",
+			points, (1 == points) ? "" : "s");
 
-	g_string_append(content, "</div>");
+	g_string_append(content, "</p>");
 
 	if (!venture_string_is_empty(tags))
 	{
 		g_auto(GStrv) parts = NULL;
 		gsize i;
+		guint shown = 0;
 
 		parts = g_strsplit(tags, ",", -1);
 
 		g_string_append(content, "<div class=\"ticket-tags\">");
 
-		for (i = 0; NULL != parts[i]; i++)
+		/* Three at most: a card is a glance, the ticket has the rest. */
+		for (i = 0; (NULL != parts[i]) && (shown < 3); i++)
 		{
 			g_autofree gchar *tag = NULL;
 
@@ -9768,19 +10509,21 @@ venture_web_append_ticket_card(
 			g_string_append(content, "<span class=\"tag\">");
 			venture_html_escape_append(content, tag);
 			g_string_append(content, "</span>");
+			shown++;
 		}
 
 		g_string_append(content, "</div>");
 	}
 
 	/*
-	 * A form per card, so the board works with scripting off. The drag
-	 * handler posts the same endpoint; this is the fallback, not a
-	 * duplicate implementation.
+	 * A form per card, so the board works with scripting off and from
+	 * the keyboard. The drag handler posts the same endpoint; this is
+	 * the fallback, not a duplicate implementation.
 	 */
 	g_string_append_printf(content,
 		"<form method=\"post\" action=\"/tickets/%" G_GINT64_FORMAT "/move\" "
-		"class=\"ticket-move\"><select name=\"status\">", id);
+		"class=\"ticket-move\"><select name=\"status\" data-no-picker "
+		"aria-label=\"Move ticket #%" G_GINT64_FORMAT " to\">", id, id);
 
 	{
 		gsize i;
@@ -9790,14 +10533,16 @@ venture_web_append_ticket_card(
 
 		for (i = 0; i < G_N_ELEMENTS(venture_web_board_columns); i++)
 		{
+			g_autofree gchar *label = NULL;
 			const gchar *nick;
 
 			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
 			                            (gint)venture_web_board_columns[i]);
+			label = venture_web_label_from_name(nick);
 
 			g_string_append_printf(content, "<option value=\"%s\"%s>", nick,
 				(venture_web_board_columns[i] == current) ? " selected" : "");
-			venture_html_escape_append(content, nick);
+			venture_html_escape_append(content, label);
 			g_string_append(content, "</option>");
 		}
 	}
@@ -9907,14 +10652,52 @@ venture_web_ui_tickets(
 	issue_type = htmx_request_get_query_param(request, "issue_type");
 	board = (0 != g_strcmp0(view, "list"));
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>Tickets</h1><span class=\"subtitle\">");
-	g_string_append_printf(content, "%u open item%s", tickets->len,
-	                       (1 == tickets->len) ? "" : "s");
-	g_string_append(content, "</span></div><div class=\"page-actions\">");
+	/*
+	 * The head says how the queue stands in one line -- how many are
+	 * open, how many nobody has looked at, how many broke a promise --
+	 * so the board answers "how are we doing" before anybody scrolls.
+	 */
+	{
+		guint triage = 0;
+		guint breached = 0;
+		guint open = 0;
+		guint i;
+
+		for (i = 0; i < tickets->len; i++)
+		{
+			VentureEntity *ticket = g_ptr_array_index(tickets, i);
+			VentureTicketStatus status;
+			gboolean missed = FALSE;
+
+			g_object_get(ticket, "status", &status, "sla-breached", &missed, NULL);
+
+			if ((VENTURE_TICKET_STATUS_DONE == status) ||
+			    (VENTURE_TICKET_STATUS_CANCELLED == status))
+				continue;
+
+			open++;
+			if (VENTURE_TICKET_STATUS_TRIAGE == status)
+				triage++;
+			if (missed)
+				breached++;
+		}
+
+		content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+		                       "<h1>Tickets</h1><span class=\"subtitle\">");
+		g_string_append_printf(content, "%u open", open);
+		if (triage > 0)
+			g_string_append_printf(content, " &middot; %u waiting to triage", triage);
+		if (breached > 0)
+			g_string_append_printf(content,
+				" &middot; <span class=\"subtitle-alert\">%u past a promise</span>", breached);
+		g_string_append(content, "</span></div><div class=\"page-actions\">"
+			"<a class=\"btn btn-primary\" href=\"/e/ticket/new\">New ticket</a>"
+			"</div></div>");
+	}
 
 	/* The filters, as links rather than a form: each is a URL you can
 	 * bookmark, which is what people actually want from a saved view. */
+	g_string_append(content, "<nav class=\"board-toolbar\" aria-label=\"Ticket filters\">");
 	{
 		static const struct
 		{
@@ -9923,31 +10706,28 @@ venture_web_ui_tickets(
 		} kinds[] = {
 			{ "all",      "All" },
 			{ "internal", "Internal" },
-			{ "external", "Support" }
+			{ "external", "Customers" }
 		};
 		gsize i;
 
-		g_string_append(content, "<div class=\"segmented\">");
+		g_string_append(content, "<div class=\"segmented\" role=\"group\" "
+		                         "aria-label=\"Whose tickets\">");
 
 		for (i = 0; i < G_N_ELEMENTS(kinds); i++)
 		{
+			g_autofree gchar *url = NULL;
 			gboolean active;
 
 			active = (0 == g_strcmp0(kinds[i].value, "all"))
 				? (venture_string_is_empty(kind) ||
 				   (0 == g_strcmp0(kind, "all")))
 				: (0 == g_strcmp0(kind, kinds[i].value));
+			url = venture_web_ticket_url(kinds[i].value, issue_type, board);
 
-			{
-				g_autofree gchar *url = NULL;
-
-				url = venture_web_ticket_url(kinds[i].value, issue_type,
-				                             board);
-
-				g_string_append_printf(content,
-					"<a class=\"seg%s\" href=\"%s\">%s</a>",
-					active ? " active" : "", url, kinds[i].label);
-			}
+			g_string_append_printf(content,
+				"<a class=\"seg%s\" href=\"%s\"%s>%s</a>",
+				active ? " active" : "", url,
+				active ? " aria-current=\"true\"" : "", kinds[i].label);
 		}
 
 		g_string_append(content, "</div>");
@@ -9957,39 +10737,48 @@ venture_web_ui_tickets(
 	 * The issue type: what shape of work, as distinct from the kind
 	 * above, which is whose problem it is. Both filter at once, so
 	 * "external bugs" is expressible -- which is the pair most worth
-	 * looking at.
+	 * looking at. Folded into one control, because six segments beside
+	 * three more pushed the board off the first screen.
 	 */
 	{
 		g_autoptr(GEnumClass) types = NULL;
 		g_autofree gchar *all_url = NULL;
+		g_autofree gchar *current = NULL;
+		gboolean any;
 		guint i;
 
 		types = g_type_class_ref(VENTURE_TYPE_ISSUE_TYPE);
 		all_url = venture_web_ticket_url(kind, "all", board);
+		any = venture_string_is_empty(issue_type) ||
+		      (0 == g_strcmp0(issue_type, "all"));
+		current = any ? g_strdup("Any type")
+		              : venture_web_label_from_name(issue_type);
 
-		g_string_append(content, "<div class=\"segmented\">");
+		g_string_append(content, "<details class=\"filter-menu\">"
+		                         "<summary class=\"btn\">Type: ");
+		venture_html_escape_append(content, current);
 		g_string_append_printf(content,
-			"<a class=\"seg%s\" href=\"%s\">Any type</a>",
-			(venture_string_is_empty(issue_type) ||
-			 (0 == g_strcmp0(issue_type, "all"))) ? " active" : "",
-			all_url);
+			"</summary><div class=\"filter-menu-panel\">"
+			"<a href=\"%s\"%s>Any type</a>", all_url,
+			any ? " aria-current=\"true\"" : "");
 
 		for (i = 0; i < types->n_values; i++)
 		{
 			g_autofree gchar *url = NULL;
+			g_autofree gchar *label = NULL;
 			const gchar *nick;
 
 			nick = types->values[i].value_nick;
 			url = venture_web_ticket_url(kind, nick, board);
+			label = venture_web_label_from_name(nick);
 
-			g_string_append_printf(content,
-				"<a class=\"seg%s\" href=\"%s\">",
-				(0 == g_strcmp0(issue_type, nick)) ? " active" : "", url);
-			venture_html_escape_append(content, nick);
+			g_string_append_printf(content, "<a href=\"%s\"%s>", url,
+				(0 == g_strcmp0(issue_type, nick)) ? " aria-current=\"true\"" : "");
+			venture_html_escape_append(content, label);
 			g_string_append(content, "</a>");
 		}
 
-		g_string_append(content, "</div>");
+		g_string_append(content, "</div></details>");
 	}
 
 	{
@@ -10000,33 +10789,41 @@ venture_web_ui_tickets(
 		list_url = venture_web_ticket_url(kind, issue_type, FALSE);
 
 		g_string_append_printf(content,
-			"<div class=\"segmented\">"
-			"<a class=\"seg%s\" href=\"%s\">Board</a>"
-			"<a class=\"seg%s\" href=\"%s\">List</a>"
+			"<div class=\"segmented\" role=\"group\" aria-label=\"Show as\">"
+			"<a class=\"seg%s\" href=\"%s\"%s>Board</a>"
+			"<a class=\"seg%s\" href=\"%s\"%s>List</a>"
 			"</div>",
 			board ? " active" : "", board_url,
-			board ? "" : " active", list_url);
+			board ? " aria-current=\"true\"" : "",
+			board ? "" : " active", list_url,
+			board ? "" : " aria-current=\"true\"");
 	}
 
 	venture_web_append_save_view_form(content, request, "ticket", board);
-	g_string_append(content,
-		"<a class=\"btn btn-primary\" href=\"/e/ticket/new\">New ticket</a>");
-	g_string_append(content, "</div></div>");
+	g_string_append(content, "</nav>");
 
 	if (board)
 	{
+		g_autoptr(GHashTable) names = NULL;
 		gsize column;
 
-		g_string_append(content, "<div class=\"board\" data-board>");
+		names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+		/* A region a keyboard can scroll sideways, and a screen reader
+		 * can name: six columns do not fit a laptop, let alone a phone. */
+		g_string_append(content, "<div class=\"board\" data-board tabindex=\"0\" "
+		                         "role=\"region\" aria-label=\"Ticket board\">");
 
 		for (column = 0; column < G_N_ELEMENTS(venture_web_board_columns); column++)
 		{
+			g_autofree gchar *heading = NULL;
 			const gchar *nick;
 			guint count;
 			guint i;
 
 			nick = venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
 			                            (gint)venture_web_board_columns[column]);
+			heading = venture_web_label_from_name(nick);
 			count = 0;
 
 			for (i = 0; i < tickets->len; i++)
@@ -10041,18 +10838,18 @@ venture_web_ui_tickets(
 			}
 
 			g_string_append_printf(content,
-				"<section class=\"board-column\" data-status=\"%s\">"
-				"<header class=\"board-column-head\"><span>", nick);
-			{
-				g_autofree gchar *heading = NULL;
-
-				heading = venture_web_label_from_name(nick);
-				venture_html_escape_append(content, heading);
-			}
+				"<section class=\"board-column\" data-status=\"%s\" "
+				"aria-labelledby=\"column-%s\">"
+				"<header class=\"board-column-head\"><h2 id=\"column-%s\">",
+				nick, nick, nick);
+			venture_html_escape_append(content, heading);
 			g_string_append_printf(content,
-				"</span><span class=\"count\">%u</span></header>"
+				"</h2><span class=\"count\" aria-label=\"%u ticket%s\">%u</span></header>"
 				"<div class=\"board-column-body\" data-drop=\"%s\">",
-				count, nick);
+				count, (1 == count) ? "" : "s", count, nick);
+
+			if (0 == count)
+				g_string_append(content, "<p class=\"board-empty\">Nothing here</p>");
 
 			for (i = 0; i < tickets->len; i++)
 			{
@@ -10065,7 +10862,7 @@ venture_web_ui_tickets(
 				if (status != venture_web_board_columns[column])
 					continue;
 
-				venture_web_append_ticket_card(self, content, ticket);
+				venture_web_append_ticket_card(self, content, ticket, names);
 			}
 
 			g_string_append(content, "</div></section>");
@@ -10082,7 +10879,7 @@ venture_web_ui_tickets(
 		                         "<th>Title</th><th>Kind</th><th>Status</th>"
 		                         "<th>Priority</th><th>Assignee</th>"
 		                         "<th>Due</th>"
-		                         "<th class=\"row-actions\"></th>"
+		                         "<th class=\"row-actions\"><span class=\"visually-hidden\">Actions</span></th>"
 		                         "</tr></thead><tbody>");
 
 		for (i = 0; i < tickets->len; i++)
@@ -10106,16 +10903,11 @@ venture_web_ui_tickets(
 				venture_entity_get_id(ticket));
 			venture_html_escape_append(content, title);
 			g_string_append(content, "</a></td><td>");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_TICKET_KIND,
-				                     (gint)ticket_kind));
+			venture_web_append_nick(content, VENTURE_TYPE_TICKET_KIND, (gint)ticket_kind);
 			g_string_append(content, "</td><td>");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_TICKET_STATUS,
-				                     (gint)status));
+			venture_web_append_nick(content, VENTURE_TYPE_TICKET_STATUS, (gint)status);
 			g_string_append(content, "</td><td>");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_PRIORITY, (gint)priority));
+			venture_web_append_nick(content, VENTURE_TYPE_PRIORITY, (gint)priority);
 			g_string_append(content, "</td><td>");
 			venture_html_escape_append(content, assignee);
 			g_string_append(content, "</td><td>");
@@ -10531,8 +11323,12 @@ venture_web_ui_entities(
 		g_string_append(content, "<tr><td>");
 		venture_html_escape_append(content, name);
 		g_string_append(content, "</td><td>");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_ORGANIZATION_KIND, (gint)kind));
+		{
+			g_autofree gchar *form = venture_web_label_from_name(
+				venture_enum_to_nick(VENTURE_TYPE_ORGANIZATION_KIND, (gint)kind));
+
+			venture_html_escape_append(content, form);
+		}
 		g_string_append(content, "</td><td class=\"muted\">");
 
 		if (0 != parent)
@@ -10646,8 +11442,10 @@ venture_web_ui_entities(
 
 		for (j = 0; (NULL != nicks) && (NULL != nicks[j]); j++)
 		{
+			g_autofree gchar *shown = venture_web_label_from_name(nicks[j]);
+
 			g_string_append_printf(content, "<option value=\"%s\">", nicks[j]);
-			venture_html_escape_append(content, nicks[j]);
+			venture_html_escape_append(content, shown);
 			g_string_append(content, "</option>");
 		}
 	}
@@ -11133,8 +11931,7 @@ venture_web_ui_account(
 		venture_html_escape_append(content,
 			venture_string_is_empty(display_name) ? "—" : display_name);
 		g_string_append(content, "</dd><dt>Role</dt><dd>");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
+		venture_web_append_nick(content, VENTURE_TYPE_USER_ROLE, (gint)role);
 		g_string_append(content, "</dd></dl>");
 
 		g_string_append_printf(content,
@@ -11409,8 +12206,7 @@ venture_web_ui_tokens(
 		venture_html_escape_append(content,
 			venture_string_is_empty(prefix) ? "\xe2\x80\x94" : prefix);
 		g_string_append(content, "\xe2\x80\xa6</code></td><td>");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
+		venture_web_append_nick(content, VENTURE_TYPE_USER_ROLE, (gint)role);
 		g_string_append(content, "</td><td class=\"muted small\">");
 
 		if (NULL != expires_at)
@@ -11651,8 +12447,8 @@ venture_web_append_knowledge(
 	links = venture_kb_crossref_links_for(kb, type_name, record_id, NULL);
 
 	g_string_append(content,
-		"<div class=\"card\"><div class=\"card-body\">"
-		"<div class=\"section-head\"><h2>Related knowledge</h2>");
+		"<div class=\"card\"><div class=\"card-head\">"
+		"<h2>Related knowledge</h2>");
 
 	/*
 	 * The button is offered even when links exist, because the record's
@@ -11663,7 +12459,7 @@ venture_web_append_knowledge(
 		"<button class=\"btn btn-sm\" hx-post=\"/api/v1/kb/crossref/%s/%"
 		G_GINT64_FORMAT "\" hx-swap=\"none\" "
 		"hx-on::after-request=\"window.location.reload()\">"
-		"%s</button></div>",
+		"%s</button></div><div class=\"card-body\">",
 		type_name, record_id,
 		((NULL != links) && (links->len > 0)) ? "Recompute" : "Find related");
 
@@ -12687,6 +13483,7 @@ venture_web_ui_settings(
 		"<div class=\"card\"><div class=\"card-body\">"
 		"<div class=\"metric-label\">Database</div>"
 		"<div class=\"metric-value small\">");
+	/* A product name, not a phrase: "sqlite" stays as the program says it. */
 	venture_html_escape_append(content,
 		venture_enum_to_nick(VENTURE_TYPE_DATABASE_BACKEND,
 			(gint)venture_database_get_backend(
@@ -13275,7 +14072,7 @@ venture_web_chat_append_failure(
 	                      VENTURE_SPARK
 	                      "</span>"
 	                      "<div class=\"msg-content\">"
-	                      "<div class=\"notice negative\"><span>");
+	                      "<div class=\"notice negative\" role=\"alert\"><span>");
 	venture_html_escape_append(html, message);
 	g_string_append(html, "</span></div>"
 	                      "<div class=\"chat-retry\">"
@@ -14670,9 +15467,7 @@ venture_web_ui_harness(
 				(VENTURE_AGENT_SESSION_STATE_FAILED == state) ? "negative"
 					: (VENTURE_AGENT_SESSION_STATE_WORKING == state)
 						? "warning" : "");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_AGENT_SESSION_STATE,
-				                     (gint)state));
+			venture_web_append_nick(content, VENTURE_TYPE_AGENT_SESSION_STATE, (gint)state);
 			g_string_append_printf(content, "</span></td>"
 				"<td class=\"num\">%" G_GINT64_FORMAT "</td></tr>", turns);
 		}
@@ -14790,7 +15585,7 @@ venture_web_ui_harness_session(
 
 	if (!venture_string_is_empty(failure))
 	{
-		g_string_append(content, "<div class=\"notice negative\"><span>");
+		g_string_append(content, "<div class=\"notice negative\" role=\"alert\"><span>");
 		venture_html_escape_append(content, failure);
 		g_string_append(content, "</span></div>");
 	}
@@ -16072,7 +16867,7 @@ venture_web_ui_chat_decide(
 
 	if (!decided)
 	{
-		g_string_append(html, "<div class=\"notice negative\">");
+		g_string_append(html, "<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(html, error->message);
 		g_string_append(html, "</div>");
 	}
@@ -19237,8 +20032,7 @@ venture_web_ui_ticket_runs(
 			             NULL);
 
 			g_string_append(content, "<li><span class=\"badge\">");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_FORGE_RUN_STATE, state));
+			venture_web_append_nick(content, VENTURE_TYPE_FORGE_RUN_STATE, state);
 			g_string_append(content, "</span> ");
 
 			if (!venture_string_is_empty(branch))
@@ -21637,8 +22431,7 @@ venture_web_append_release_block(
 			             NULL);
 
 			g_string_append(content, "<li><span class=\"badge\">");
-			venture_html_escape_append(content,
-				venture_enum_to_nick(VENTURE_TYPE_ISSUE_TYPE, (gint)issue_type));
+			venture_web_append_nick(content, VENTURE_TYPE_ISSUE_TYPE, (gint)issue_type);
 			g_string_append_printf(content,
 				"</span> <a href=\"/e/ticket/%" G_GINT64_FORMAT "\">",
 				venture_entity_get_id(ticket));
@@ -22346,8 +23139,7 @@ venture_web_factory_milestone_row(
 	                                       &total, &done);
 
 	g_string_append(content, "<li><span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_MILESTONE_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_MILESTONE_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/milestone/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22383,8 +23175,7 @@ venture_web_factory_release_row(
 	             "released-at", &released, NULL);
 
 	g_string_append(content, "<li><span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_RELEASE_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_RELEASE_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/release/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22424,8 +23215,7 @@ venture_web_factory_build_row(
 	     : (VENTURE_BUILD_STATUS_FAILED == status) ? " negative" : "";
 
 	g_string_append_printf(content, "<li><span class=\"badge%s\">", tone);
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_BUILD_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_BUILD_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/build/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22469,8 +23259,7 @@ venture_web_factory_environment_row(
 	g_object_get(record, "name", &name, "kind", &kind, NULL);
 
 	g_string_append(content, "<li><span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_ENVIRONMENT_KIND, (gint)kind));
+	venture_web_append_nick(content, VENTURE_TYPE_ENVIRONMENT_KIND, (gint)kind);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/environment/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22526,11 +23315,9 @@ venture_web_factory_incident_row(
 		((VENTURE_INCIDENT_SEVERITY_SEV1 == severity) ||
 		 (VENTURE_INCIDENT_SEVERITY_SEV2 == severity)) ? " negative"
 		                                              : " warning");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_INCIDENT_SEVERITY, (gint)severity));
+	venture_web_append_nick(content, VENTURE_TYPE_INCIDENT_SEVERITY, (gint)severity);
 	g_string_append(content, "</span> <span class=\"badge\">");
-	venture_html_escape_append(content,
-		venture_enum_to_nick(VENTURE_TYPE_INCIDENT_STATUS, (gint)status));
+	venture_web_append_nick(content, VENTURE_TYPE_INCIDENT_STATUS, (gint)status);
 	g_string_append_printf(content,
 		"</span> <a href=\"/e/incident/%" G_GINT64_FORMAT "\">",
 		venture_entity_get_id(record));
@@ -22756,7 +23543,7 @@ venture_web_dashboard_load(
 
 		return venture_web_html_response(
 			venture_web_page(self, request, "/dashboards", "Not found",
-				"<div class=\"notice negative\">No such dashboard.</div>"),
+				"<div class=\"notice negative\" role=\"alert\">No such dashboard.</div>"),
 			404);
 	}
 
@@ -22909,22 +23696,22 @@ venture_web_append_widget_card(
 			G_GINT64_FORMAT "/move\" class=\"inline nudge\">"
 			"<span class=\"muted small\">Move</span>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"left\" "
-			"title=\"Move left\">&larr;</button>"
+			"title=\"Move left\" aria-label=\"Move left\">&larr;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"up\" "
-			"title=\"Move up\">&uarr;</button>"
+			"title=\"Move up\" aria-label=\"Move up\">&uarr;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"down\" "
-			"title=\"Move down\">&darr;</button>"
+			"title=\"Move down\" aria-label=\"Move down\">&darr;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"right\" "
-			"title=\"Move right\">&rarr;</button>"
+			"title=\"Move right\" aria-label=\"Move right\">&rarr;</button>"
 			"<span class=\"muted small\">Size</span>"
 			"<button class=\"btn btn-sm\" name=\"direction\" "
-			"value=\"narrower\" title=\"Narrower\">W&minus;</button>"
+			"value=\"narrower\" title=\"Narrower\" aria-label=\"Narrower\">W&minus;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"wider\" "
-			"title=\"Wider\">W+</button>"
+			"title=\"Wider\" aria-label=\"Wider\">W+</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" "
-			"value=\"shorter\" title=\"Shorter\">H&minus;</button>"
+			"value=\"shorter\" title=\"Shorter\" aria-label=\"Shorter\">H&minus;</button>"
 			"<button class=\"btn btn-sm\" name=\"direction\" value=\"taller\" "
-			"title=\"Taller\">H+</button></form>"
+			"title=\"Taller\" aria-label=\"Taller\">H+</button></form>"
 			"<form method=\"post\" action=\"/dashboards/%s/widgets/%"
 			G_GINT64_FORMAT "/delete\" class=\"inline\">"
 			"<button class=\"btn btn-sm btn-danger\" type=\"submit\">"
@@ -22937,7 +23724,7 @@ venture_web_append_widget_card(
 
 	if (NULL != result->error)
 	{
-		g_string_append(content, "<div class=\"notice negative\">");
+		g_string_append(content, "<div class=\"notice negative\" role=\"alert\">");
 		venture_html_escape_append(content, result->error);
 		g_string_append(content, "</div>");
 	}
@@ -23069,19 +23856,32 @@ venture_web_render_home_dashboard(
 	g_object_get(dashboard, "name", &name, "slug", &slug,
 	             "description", &description, NULL);
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>");
-	venture_html_escape_append(content, name);
-	g_string_append(content, "</h1><span class=\"subtitle\">");
-	venture_html_escape_append(content,
-		!venture_string_is_empty(description) ? description
-		                                      : "Your home dashboard");
-	g_string_append(content, "</span></div><div class=\"page-actions\">"
-	                         "<a class=\"btn\" href=\"/overview\">Built-in "
-	                         "overview</a> ");
+	/*
+	 * The home page's head is one line: the page's name, today's date --
+	 * a home page is read as "where do things stand today" -- and the one
+	 * thing done to the page itself. The other dashboards are in the
+	 * sidebar; the built-in overview stays one quiet link away.
+	 */
+	{
+		g_autoptr(GDateTime) now = g_date_time_new_now_local();
+		g_autofree gchar *today = g_date_time_format(now, "%A %-d %B");
+
+		content = g_string_new("<div class=\"page-head home-head\"><div class=\"page-title\">"
+		                       "<h1>");
+		venture_html_escape_append(content, name);
+		g_string_append(content, "</h1><span class=\"subtitle\">");
+		venture_html_escape_append(content, today);
+		if (!venture_string_is_empty(description))
+		{
+			g_string_append(content, " &middot; ");
+			venture_html_escape_append(content, description);
+		}
+	}
 	g_string_append_printf(content,
-		"<a class=\"btn\" href=\"/dashboards\">All dashboards</a> "
-		"<a class=\"btn btn-primary\" href=\"/dashboards/%s/edit\">Edit</a>"
+		"</span></div><div class=\"page-actions\">"
+		"<a class=\"btn btn-ghost\" href=\"/overview\">Built-in overview</a>"
+		"<a class=\"btn btn-ghost\" href=\"/dashboards\">All dashboards</a>"
+		"<a class=\"btn\" href=\"/dashboards/%s/edit\">Edit this page</a>"
 		"</div></div>", slug);
 
 	venture_web_append_dashboard_grid(self, request, principal, dashboard,
@@ -23221,8 +24021,7 @@ venture_web_ui_dashboards(
 		venture_html_escape_append(content,
 			!venture_string_is_empty(description) ? description : "");
 		g_string_append(content, "</p><p><span class=\"badge\">");
-		venture_html_escape_append(content,
-			venture_enum_to_nick(VENTURE_TYPE_DASHBOARD_PURPOSE, (gint)purpose));
+		venture_web_append_nick(content, VENTURE_TYPE_DASHBOARD_PURPOSE, (gint)purpose);
 		g_string_append(content, "</span>");
 
 		if (home)
@@ -26025,6 +26824,100 @@ venture_web_append_watch_button(
  * moved, comments and worklogs on a ticket, newest first. Rendered from
  * the same JSON the API returns.
  */
+/*
+ * One side of a change in a record's history, read the way the record's
+ * own page reads it: a status in words, a date as a day, a reference as
+ * the other record's name, money as money. The field spec says which;
+ * without one the raw value is shown as it is.
+ *
+ * Returns: (transfer full) (nullable): the text
+ */
+static gchar *
+venture_web_change_text(
+	VentureWebServer	*self,
+	VentureFieldSpec	*spec,
+	JsonNode		*node
+){
+	VentureFieldKind kind;
+
+	if ((NULL == node) || JSON_NODE_HOLDS_NULL(node))
+		return NULL;
+
+	if (NULL == spec)
+		return JSON_NODE_HOLDS_VALUE(node) ? venture_web_node_text(node)
+		                                   : venture_web_json_to_display(node);
+
+	kind = venture_field_spec_get_kind(spec);
+
+	if (JSON_NODE_HOLDS_OBJECT(node))
+		return venture_web_json_to_display(node);
+
+	if (!JSON_NODE_HOLDS_VALUE(node))
+		return NULL;
+
+	if ((VENTURE_FIELD_KIND_ENUM == kind ||
+	     VENTURE_FIELD_ROLE_STATUS == venture_field_spec_get_role(spec)) &&
+	    G_TYPE_STRING == json_node_get_value_type(node))
+		return venture_web_choice_label(spec, json_node_get_string(node));
+
+	if (VENTURE_FIELD_KIND_BOOLEAN == kind &&
+	    G_TYPE_BOOLEAN == json_node_get_value_type(node))
+		return g_strdup(json_node_get_boolean(node) ? "Yes" : "No");
+
+	if ((VENTURE_FIELD_KIND_DATE == kind || VENTURE_FIELD_KIND_DATETIME == kind) &&
+	    G_TYPE_STRING == json_node_get_value_type(node))
+	{
+		g_autoptr(GDateTime) when = venture_time_from_string(json_node_get_string(node), NULL);
+		g_autoptr(GDateTime) local = NULL;
+
+		if (NULL == when)
+			return g_strdup(json_node_get_string(node));
+		if (VENTURE_FIELD_KIND_DATE == kind ||
+		    (0 == g_date_time_get_hour(when) && 0 == g_date_time_get_minute(when) &&
+		     0 == g_date_time_get_second(when)))
+			return venture_time_to_date_string(when, venture_context_get_timezone(self->context));
+		local = g_date_time_to_timezone(when, venture_context_get_timezone(self->context));
+		return g_date_time_format(local, "%Y-%m-%d %H:%M");
+	}
+
+	if (VENTURE_FIELD_KIND_REFERENCE == kind &&
+	    G_TYPE_INT64 == json_node_get_value_type(node))
+	{
+		gint64 id = json_node_get_int(node);
+		GType target;
+		g_autoptr(VentureEntity) other = NULL;
+
+		if (0 == id)
+			return NULL;
+		target = venture_entity_registry_lookup(venture_context_get_entity_registry(self->context),
+			venture_field_spec_get_reference_type(spec));
+		if (G_TYPE_INVALID != target)
+			other = venture_database_get(venture_context_get_database(self->context), target, id, NULL);
+		return (NULL != other) ? venture_entity_get_display_name(other) : g_strdup("A deleted record");
+	}
+
+	return venture_web_node_text(node);
+}
+
+/* The spec for a history member, whichever spelling the diff used. */
+static VentureFieldSpec *
+venture_web_change_spec(GPtrArray *specs, const gchar *member)
+{
+	g_autofree gchar *dashed = g_strdup(member);
+	guint i;
+
+	g_strdelimit(dashed, "_", '-');
+	for (i = 0; (NULL != specs) && (i < specs->len); i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+
+		if (0 == g_strcmp0(venture_field_spec_get_name(spec), dashed))
+			return spec;
+	}
+
+	return NULL;
+}
+
 static void
 venture_web_append_activity(
 	VentureWebServer	*self,
@@ -26032,6 +26925,7 @@ venture_web_append_activity(
 	VentureEntity		*record
 ){
 	g_autoptr(JsonNode) events = NULL;
+	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(record);
 	JsonArray *array;
 	guint i;
 
@@ -26181,6 +27075,7 @@ venture_web_append_activity(
 				for (cursor = members; NULL != cursor; cursor = cursor->next)
 				{
 					JsonNode *pair;
+					VentureFieldSpec *spec;
 					const gchar *member;
 					g_autofree gchar *from = NULL;
 					g_autofree gchar *to = NULL;
@@ -26198,22 +27093,30 @@ venture_web_append_activity(
 					}
 
 					pair = json_object_get_member(diff, member);
+					spec = venture_web_change_spec(specs, member);
+
+					/* Machinery changes are not history a person reads. */
+					if ((NULL != spec) &&
+					    (VENTURE_FIELD_ROLE_TECHNICAL == venture_field_spec_get_role(spec)))
+						continue;
 
 					if ((NULL != pair) && JSON_NODE_HOLDS_OBJECT(pair))
 					{
 						JsonObject *fromto;
 
 						fromto = json_node_get_object(pair);
-						from = venture_web_node_text(
+						from = venture_web_change_text(self, spec,
 							json_object_get_member(fromto, "from"));
-						to = venture_web_node_text(
+						to = venture_web_change_text(self, spec,
 							json_object_get_member(fromto, "to"));
 					}
 
 					{
 						g_autofree gchar *label = NULL;
 
-						label = venture_web_label_from_name(member);
+						label = (NULL != spec)
+							? g_strdup(venture_field_spec_get_label(spec))
+							: venture_web_label_from_name(member);
 						g_string_append(content, "<dt>");
 						venture_html_escape_append(content, label);
 						g_string_append(content, "</dt><dd><s>");
@@ -28286,7 +29189,10 @@ venture_web_api_palette(
 			continue;
 
 		list_url = g_strdup_printf("/e/%s", names[i]);
-		new_url = g_strdup_printf("/e/%s/new", names[i]);
+		/* The same page every other "New" button goes to. */
+		new_url = (NULL != venture_entity_type_get_create_path(entity_type))
+			? g_strdup(venture_entity_type_get_create_path(entity_type))
+			: g_strdup_printf("/e/%s/new", names[i]);
 
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "type");
@@ -29370,6 +30276,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
+#include "tax/venture-tax-rate-web.inc"
 #include "tax/venture-sales-tax-web.inc"
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
@@ -29519,6 +30426,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/vendor_bill/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bills/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payables", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/bills/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bill_compose, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/bills/compose", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_bill_compose, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/payables/pay", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench_pay, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/payables/pay", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_payables_workbench, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/claims", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_claims_workbench, self);
@@ -29539,6 +30448,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/close/open", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/close/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/close/:id/pack", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, close_api, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-rates/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tax_rate_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tax-rates/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tax_rate_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-filings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filings_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
@@ -29558,6 +30469,8 @@ venture_web_server_new(
 	venture_equity_web_register(router, self);
 	venture_group_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_print, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/pdf", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_financial_document, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/payments/:id/receipt", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_financial_document, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/quotes/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/quotes/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/quotes/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, quote_route, self);
@@ -29730,6 +30643,13 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/billing/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/:id/action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/plans/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/:id/discounts", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_discounts, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/:id/prices", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_prices, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plans/:id/prices/:price/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_plan_web_move, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/billing/subscriptions/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_new, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/billing/subscriptions/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_billing_web_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/widget-kinds", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_widget_kinds, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboard-templates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_templates, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboards, self);

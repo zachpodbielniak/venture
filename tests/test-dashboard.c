@@ -766,6 +766,52 @@ test_dashboard_one_home(
 }
 
 /*
+ * A template's "New" link goes where every other "New" button for the type
+ * goes. A type with a page of its own (a bill is composed with its lines)
+ * must not be linked to the generated form, which makes one with none. If
+ * this regresses, the Today page's "New bill" makes a bill with no lines
+ * and no total, which nothing else in the app can produce.
+ */
+static void
+test_dashboard_template_new_links(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	const VentureDashboardTemplate *templates;
+	gsize n_templates;
+	gsize i;
+
+	(void)fixture;
+	(void)user_data;
+
+	templates = venture_dashboard_get_templates(&n_templates);
+	for (i = 0; i < n_templates; i++)
+	{
+		const gchar *at = templates[i].definition;
+
+		while (NULL != (at = strstr(at, "/e/")))
+		{
+			const gchar *end;
+			g_autofree gchar *name = NULL;
+			GType type;
+
+			at += 3;
+			end = at + strcspn(at, "/ \\\"?");
+			if (!g_str_has_prefix(end, "/new"))
+				continue;
+			name = g_strndup(at, end - at);
+			type = venture_entity_registry_lookup_any(
+				venture_entity_registry_get_default(), name);
+			g_assert_true(G_TYPE_INVALID != type);
+			if (NULL != venture_entity_type_get_create_path(type))
+				g_error("template %s links /e/%s/new; %s makes one",
+				        templates[i].name, name,
+				        venture_entity_type_get_create_path(type));
+		}
+	}
+}
+
+/*
  * Every shipped template imports, an export re-imports to the same shape,
  * and importing twice yields two dashboards rather than a refusal.
  */
@@ -1682,7 +1728,7 @@ test_dashboard_http_round_trip(
 	/* The rendered element, not the two words: the stylesheet and the
 	 * script are inlined into every page, and either may mention a
 	 * class name without anything on the page carrying it. */
-	g_assert_null(strstr(page, "<div class=\"notice negative\">"));
+	g_assert_null(strstr(page, "<div class=\"notice negative\""));
 	g_assert_nonnull(strstr(page, "widget-environments"));
 	g_clear_pointer(&page, g_free);
 
@@ -1882,6 +1928,83 @@ test_dashboard_swap(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/*
+ * The "Today" template is a home page that answers the morning's
+ * questions: money in and out, what is overdue both ways, what needs you
+ * and how support is holding up. Every one of its widgets has to answer
+ * -- a card naming a field, filter or report that does not exist would be
+ * an error in the middle of somebody's home page -- and as home it is
+ * one line of head: the page's name, today's date and "Edit this page".
+ * A period reads as words, never as the parameter it was asked with.
+ * If this regresses, the default home page shows "this_month" and a red
+ * card where a figure should be.
+ */
+static void
+test_dashboard_http_today_home(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonArray *widgets;
+	gboolean money_in = FALSE, overdue = FALSE, triage = FALSE, approvals = FALSE;
+	guint i;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_post_form(fixture, "/dashboards",
+	                                  "template=today", &location), ==,
+	                 SOUP_STATUS_FOUND);
+	g_assert_cmpstr(location, ==, "/dashboards/today");
+
+	g_assert_cmpuint(server_get(fixture, "/api/v1/dashboards/today", &body),
+	                 ==, SOUP_STATUS_OK);
+	node = venture_json_parse(body, &error);
+	g_assert_no_error(error);
+	widgets = json_object_get_array_member(json_node_get_object(node), "widgets");
+	g_assert_cmpuint(json_array_get_length(widgets), >=, 12);
+
+	for (i = 0; i < json_array_get_length(widgets); i++)
+	{
+		JsonObject *widget = json_array_get_object_element(widgets, i);
+		const gchar *title = json_object_get_string_member_with_default(widget,
+			"title", "");
+		const gchar *kind = json_object_get_string_member(widget, "kind");
+
+		if (!json_object_get_null_member(widget, "error"))
+			g_error("widget \"%s\" (%s) failed: %s", title, kind,
+			        json_object_get_string_member(widget, "error"));
+
+		money_in = money_in || (0 == g_strcmp0(title, "Money in"));
+		overdue = overdue || (0 == g_strcmp0(title, "Overdue invoices"));
+		triage = triage || (0 == g_strcmp0(title, "To triage"));
+		approvals = approvals || (0 == g_strcmp0(kind, "confirmations"));
+	}
+
+	g_assert_true(money_in);
+	g_assert_true(overdue);
+	g_assert_true(triage);
+	g_assert_true(approvals);
+
+	g_clear_pointer(&location, g_free);
+	g_assert_cmpuint(server_post_form(fixture, "/dashboards/today",
+		"name=Today&slug=today&purpose=overview&layout=four_columns&home=true",
+		&location), ==, SOUP_STATUS_FOUND);
+
+	g_assert_cmpuint(server_get(fixture, "/", &page), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "<div class=\"page-head home-head\">"));
+	g_assert_nonnull(strstr(page, "<h1>Today</h1>"));
+	g_assert_nonnull(strstr(page, "Edit this page</a>"));
+	g_assert_nonnull(strstr(page, "href=\"/overview\""));
+	g_assert_nonnull(strstr(page, "widget-grid cols-4"));
+	g_assert_nonnull(strstr(page, "<span class=\"figure-note\">"));
+	g_assert_null(strstr(page, "<span class=\"figure-note\">this_month"));
+	g_assert_null(strstr(page, "<span class=\"figure-note\">all<"));
+}
+
 int
 main(
 	int	 argc,
@@ -1905,6 +2028,7 @@ main(
 	ADD("/dashboard/widget-off-and-unknown",
 	    test_dashboard_widget_off_and_unknown);
 	ADD("/dashboard/one-home", test_dashboard_one_home);
+	ADD("/dashboard/template-new-links", test_dashboard_template_new_links);
 	ADD("/dashboard/templates-and-export",
 	    test_dashboard_templates_and_export);
 	ADD("/dashboard/move-widget", test_dashboard_move_widget);
@@ -1920,6 +2044,7 @@ main(
 	ADD("/dashboard/http/personal-is-private",
 	    test_dashboard_http_personal_is_private);
 	ADD("/dashboard/http/module-off", test_dashboard_http_module_off);
+	ADD("/dashboard/http/today-home", test_dashboard_http_today_home);
 
 	return g_test_run();
 }

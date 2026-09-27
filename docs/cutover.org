@@ -56,6 +56,8 @@ imports touches income, expense, sales tax payable or recoverable tax:
 | stock on hand          | inventory receipt and FIFO cost layer      | Dr inventory / Cr goods received not invoiced, then Dr GRNI / Cr clearing |
 | trial balance          | none                                       | one journal per currency, see below    |
 
+Opening receipts and prepayments carry the method =opening=, which is also what tells the receipt sender to stay quiet: an import emails no customer a receipt for money they paid the old system (see =docs/mail.org=, Invoices and receipts).
+
 Why: the source system already recognised that revenue, expense and tax. An
 open invoice from March issued as ordinary revenue in a July cutover would put
 40,000 of last half-year's sales into this year's P&L and 3,200 of tax, which
@@ -515,7 +517,8 @@ The walk, inside one transaction, in this order:
    document. A real receipt or payment is then recorded again as an unapplied
    deposit on the same date, method and a =Cutover rollback: unapplied from
    NUMBER= reference: that cash really moved, and the bank statement still
-   shows it.
+   shows it. The re-deposit is marked as bookkeeping, so the customer is not
+   sent a second receipt for money they already have one for.
 2. *Imported payments.* An opening receipt, payment or prepayment applied to
    a document outside the batch is refunded there at that document's latest
    event; whatever is still unused is refunded at its latest allocation.

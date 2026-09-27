@@ -1000,7 +1000,9 @@ a.card:hover::before, a.card:hover::after { border-color: var(--accent); }
  * the micro register. The press feedback is a one-pixel translate down
  * and right, the way a physical key moves, and nothing scales.
  */
-.btn {
+/* A button nobody gave a class is still a button: styled by exclusion,
+ * not by listing which modules remembered to write class="btn". */
+.btn, .main button:not([class]) {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -1021,7 +1023,7 @@ a.card:hover::before, a.card:hover::after { border-color: var(--accent); }
 	            color var(--transition);
 }
 
-.btn:hover { background: var(--surface-hover); border-color: var(--text);
+.btn:hover, .main button:not([class]):hover { background: var(--surface-hover); border-color: var(--text);
              color: var(--text); text-decoration: none; }
 .btn:active { transform: translate(1px, 1px); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed;
@@ -4056,3 +4058,915 @@ textarea.assist-text {
 }
 
 .secret:hover { border-color: var(--accent); }
+
+/* ==========================================================================
+   Record view -- one reading of every record
+   ========================================================================== */
+
+/*
+ * A record page is a headline, the content that matters, and its details.
+ * The trail above the title says where the page sits; the status is a
+ * badge beside the name; the left column is what the record is about and
+ * the right column is the facts that are filled in. Machinery is one
+ * click away under "All fields", never on the page by default.
+ *
+ * Field captions here are sentence case, not the micro register. A label
+ * like "Email permission outcome" is read, not scanned, and tracked-out
+ * capitals make a four-word caption a chore; the micro register stays on
+ * the chrome -- navigation, buttons, badges, column heads.
+ */
+
+.crumbs {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	font-family: var(--font-mono);
+	font-size: var(--micro-size);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: var(--micro-track);
+	color: var(--text-faint);
+}
+
+.crumbs::before { content: ">>>"; color: var(--accent); }
+.crumbs .crumb + .crumb::before { content: "/"; margin-right: 6px;
+                                  color: var(--text-faint); }
+.crumbs a.crumb { color: var(--text-muted); text-decoration: none; }
+.crumbs a.crumb:hover { color: var(--accent); }
+
+.title-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-3);
+	min-width: 0;
+}
+
+.title-line h1 { margin: 0; overflow-wrap: anywhere; }
+.status-badge { font-size: 11px; }
+
+.record-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+	gap: var(--space-5);
+	align-items: start;
+}
+
+.record-main { display: flex; flex-direction: column; gap: var(--space-5);
+               min-width: 0; }
+.record-main > * { margin-top: 0; margin-bottom: 0; }
+.record-aside { display: flex; flex-direction: column; gap: var(--space-5);
+                min-width: 0; position: sticky; top: var(--space-4); }
+
+@media (max-width: 1100px) {
+	.record-layout { grid-template-columns: minmax(0, 1fr); }
+	/* On one column the facts come first: they answer "what is this". */
+	.record-aside { order: -1; position: static; }
+}
+
+/* Prose somebody wrote, at a size somebody reads. */
+.prose {
+	font-size: 14px;
+	line-height: 1.65;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	max-width: 72ch;
+}
+
+dl.facts { margin: 0; display: flex; flex-direction: column; }
+
+dl.facts .fact {
+	display: grid;
+	grid-template-columns: minmax(96px, 38%) 1fr;
+	gap: var(--space-3);
+	padding: var(--space-2) 0;
+	border-bottom: 1px solid var(--border);
+	font-size: 13px;
+}
+
+dl.facts .fact:last-child { border-bottom: 0; }
+dl.facts dt { color: var(--text-muted); font-size: 12.5px; }
+dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* A disclosure: the summary is a quiet control, the count says how much
+ * is behind it. */
+details.all-fields, details.form-section { margin-top: var(--space-3); }
+
+details.all-fields > summary,
+details.form-section > summary {
+	cursor: pointer;
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	font-family: var(--font-mono);
+	font-size: var(--micro-size);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: var(--micro-track);
+	color: var(--text-muted);
+	padding: var(--space-2) 0;
+}
+
+details.form-section > summary { padding: var(--space-3) var(--space-4); }
+details.all-fields > summary::-webkit-details-marker,
+details.form-section > summary::-webkit-details-marker { display: none; }
+details.all-fields > summary::before,
+details.form-section > summary::before { content: "+"; color: var(--accent); }
+details[open].all-fields > summary::before,
+details[open].form-section > summary::before { content: "\2212"; }
+details.all-fields > summary:hover,
+details.form-section > summary:hover { color: var(--text); }
+details .count { color: var(--text-faint); font-weight: 400; }
+details[open].form-section > summary { border-bottom: 1px solid var(--border); }
+
+/* Captions a person reads: sentence case, small, muted. */
+.field .field-label {
+	font-family: var(--font);
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 12.5px;
+	font-weight: 500;
+}
+
+.form-section { margin-bottom: var(--space-4); }
+.form-prose textarea { min-height: 7em; }
+.form-prose .field + .field { margin-top: var(--space-4); }
+
+/* A record's actions: one card, a row of buttons; an action that asks for
+ * something opens its form in place under its own name. */
+.record-actions .card-body { display: flex; flex-wrap: wrap; gap: var(--space-2);
+                             align-items: flex-start; }
+.record-actions form { margin: 0; }
+.record-actions details.record-action { flex: 0 0 auto; }
+.record-actions details[open].record-action { flex: 1 1 100%; }
+.record-actions details.record-action > summary { list-style: none; display: inline-flex; }
+.record-actions details.record-action > summary::-webkit-details-marker { display: none; }
+.record-actions details[open].record-action > form {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	margin-top: var(--space-3);
+	padding-top: var(--space-3);
+	border-top: 1px solid var(--border);
+}
+.record-actions details[open].record-action > form > .btn { align-self: flex-start; }
+
+/* Everything that points at a record, in one card: a short heading per
+ * kind of record, its names, and a way to add another. */
+.related-records .card-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.related-group + .related-group { border-top: 1px solid var(--border); padding-top: var(--space-4); }
+.related-group h3 { margin: 0 0 var(--space-2); font-size: 14px; font-weight: 600;
+                    text-transform: none; letter-spacing: 0; font-family: var(--font); }
+.related-group h3 .count { color: var(--text-faint); font-weight: 400; margin-left: 4px; }
+.related-group ul.related { margin: 0 0 var(--space-2); padding: 0; list-style: none; }
+.related-group ul.related li { padding: 3px 0; }
+
+/* ==========================================================================
+   Sidebar groups -- a map, not a list
+   ========================================================================== */
+
+/*
+ * Every heading after the overview folds. The group you are in is open,
+ * the ones you opened stay open (the sidebar's own script remembers them),
+ * and the rest are a line each: nine headings read at a glance where
+ * seventy rows did not. The heading is the summary, drawn exactly like the
+ * headings that do not fold, with a count-free chevron on the right.
+ */
+details.nav-group > summary.nav-section {
+	list-style: none;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 6px;
+	padding: var(--space-3) var(--space-4) var(--space-2);
+	transition: color var(--transition);
+}
+
+details.nav-group > summary.nav-section::-webkit-details-marker { display: none; }
+details.nav-group > summary.nav-section::after { content: "+"; color: var(--text-faint);
+                                                  margin-left: auto; }
+details[open].nav-group > summary.nav-section::after { content: "\2212"; }
+details.nav-group > summary.nav-section:hover { color: var(--text); }
+details.nav-group:has(.nav-item.active) > summary.nav-section { color: var(--text); }
+details[open].nav-group { padding-bottom: var(--space-2); }
+
+/* A card's "add" form, folded behind its button until somebody asks. */
+details.add-form > summary { list-style: none; display: inline-flex; }
+details.add-form > summary::-webkit-details-marker { display: none; }
+details[open].add-form > summary { margin-bottom: var(--space-3); }
+
+/* A list leads with each record's name, as its link. Ink, not the accent:
+ * a column of red would be a column shouting; it lights on hover. */
+table.data td.row-title a { color: var(--text); font-weight: 600; text-decoration: none; }
+table.data td.row-title a:hover { color: var(--accent); text-decoration: underline; }
+
+/* ==========================================================================
+   Room to read -- space, legibility and welcoming inputs
+   ========================================================================== */
+
+/*
+ * The page uses the screen it is given: a wide window is a wide page, not
+ * a column with two margins of nothing. Type is a size up everywhere a
+ * person reads, headlines are a size down so a title is not a third of
+ * the first screen, and controls are tall enough to hit without aiming.
+ */
+body { font-size: 15px; line-height: 1.6; }
+
+.main {
+	max-width: 1680px;
+	padding: var(--space-5) var(--space-6) var(--space-7);
+}
+
+h1 { font-size: clamp(24px, 2vw, 32px); line-height: 1.05; }
+
+.page-head {
+	margin-bottom: var(--space-5);
+	padding-bottom: var(--space-3);
+	align-items: center;
+}
+
+.page-title { gap: 4px; }
+.page-title .subtitle { font-size: 14px; }
+
+/* Actions sit in one place on every page: top right, beside the title,
+ * primary last. */
+.page-actions { gap: var(--space-2); align-items: center; }
+
+.card-body { padding: var(--space-5); }
+
+/* Inputs are an invitation, not a slot: tall, softly ruled, a clear edge
+ * on hover and a clear ring on focus, the label above in plain words. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="reset"]),
+select, textarea {
+	min-height: 42px;
+	padding: 10px 12px;
+	font-size: 15px;
+	border-color: var(--border);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):hover,
+select:hover, textarea:hover { border-color: var(--text-muted); }
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):focus,
+select:focus, textarea:focus {
+	border-color: var(--accent);
+	/* A hard second rule, as above: nothing glows. */
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+textarea { min-height: 96px; }
+
+.field .field-label, .doc-field .field-label {
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--text);
+}
+
+.field-help { font-size: 13px; }
+.form-grid { gap: var(--space-5) var(--space-5); }
+
+table.data td { padding: 12px var(--space-4); font-size: 14.5px; }
+
+/* The sidebar: areas, and a quiet label for each part of an area. */
+.nav-sub {
+	padding: var(--space-3) var(--space-4) 4px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--text-faint);
+	letter-spacing: 0.04em;
+}
+
+details.nav-group > summary.nav-section { font-size: 11.5px; padding-top: var(--space-4); }
+
+/* --- A document being written: invoice or quote ------------------------- */
+
+.doc-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+	gap: var(--space-5);
+	align-items: start;
+}
+
+@media (max-width: 1100px) { .doc-layout { grid-template-columns: minmax(0, 1fr); } }
+
+.doc-aside { display: flex; flex-direction: column; gap: var(--space-4);
+             position: sticky; top: var(--space-4); }
+
+.doc-parties {
+	display: grid;
+	grid-template-columns: 2fr 1.5fr 1fr;
+	gap: var(--space-4);
+	margin-bottom: var(--space-5);
+}
+
+@media (max-width: 800px) { .doc-parties { grid-template-columns: 1fr; } }
+
+.doc-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.doc-field + .doc-field { margin-top: var(--space-4); }
+.doc-parties .doc-field + .doc-field { margin-top: 0; }
+
+table.line-items { width: 100%; border-collapse: collapse; }
+table.line-items th {
+	text-align: left;
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--text-muted);
+	padding: 0 6px var(--space-2);
+	border-bottom: 1px solid var(--border);
+}
+table.line-items th.num, table.line-items td.num { text-align: right; }
+table.line-items td { padding: 8px 6px; vertical-align: top;
+                      border-bottom: 1px solid var(--border); }
+table.line-items td.line-item { width: 42%; }
+table.line-items td.line-item input { margin-bottom: 6px; }
+table.line-items td.num input { text-align: right; min-width: 70px; }
+table.line-items .line-product { min-height: 34px; padding: 6px 10px; font-size: 13.5px;
+                                 color: var(--text-muted); }
+table.line-items .line-amount { font-family: var(--font-mono); padding-top: 18px;
+                                font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.line-items .line-remove { width: 36px; padding-top: 12px; }
+.add-line { margin-top: var(--space-3); }
+
+dl.totals { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+dl.totals > div { display: flex; justify-content: space-between; gap: var(--space-3); }
+dl.totals dt { color: var(--text-muted); }
+dl.totals dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+dl.totals .grand { border-top: 1px solid var(--border-strong); padding-top: 10px; margin-top: 4px;
+                   font-size: 20px; font-weight: 700; }
+dl.totals .grand dt { color: var(--text); }
+
+/* A label and its control on one line, for a choice that sits beside the
+ * page's action. */
+.inline-field { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; }
+.inline-field select { width: auto; min-width: 170px; }
+td.overdue { color: var(--negative); }
+
+/* A record's secondary panels, as tabs rather than a scroll of cards. */
+.record-tabs { display: flex; flex-direction: column; gap: var(--space-4); }
+.record-tabs .tab-radio { position: absolute; opacity: 0; pointer-events: none; }
+.record-tabs .tab-list { display: flex; gap: var(--space-1); flex-wrap: wrap;
+                         border-bottom: 1px solid var(--border); }
+.record-tabs .tab-list label {
+	padding: 10px 16px;
+	cursor: pointer;
+	font-weight: 600;
+	font-size: 14px;
+	color: var(--text-muted);
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px;
+}
+.record-tabs .tab-list label:hover { color: var(--text); }
+.record-tabs .tab-panel { display: none; flex-direction: column; gap: var(--space-4); }
+.record-tabs .tab-panel > * { margin: 0; }
+#record-tab-0:checked ~ .tab-panel[data-tab="0"],
+#record-tab-1:checked ~ .tab-panel[data-tab="1"],
+#record-tab-2:checked ~ .tab-panel[data-tab="2"],
+#record-tab-3:checked ~ .tab-panel[data-tab="3"] { display: flex; }
+#record-tab-0:checked ~ .tab-list label[for="record-tab-0"],
+#record-tab-1:checked ~ .tab-list label[for="record-tab-1"],
+#record-tab-2:checked ~ .tab-list label[for="record-tab-2"],
+#record-tab-3:checked ~ .tab-list label[for="record-tab-3"] { color: var(--text); border-bottom-color: var(--accent); }
+/* The radio is what takes focus, and it is invisible: its label shows it. */
+#record-tab-0:focus-visible ~ .tab-list label[for="record-tab-0"],
+#record-tab-1:focus-visible ~ .tab-list label[for="record-tab-1"],
+#record-tab-2:focus-visible ~ .tab-list label[for="record-tab-2"],
+#record-tab-3:focus-visible ~ .tab-list label[for="record-tab-3"],
+.record-tabs .tab-list label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.record-aside .record-actions .card-body { flex-direction: column; align-items: stretch; }
+.record-aside .record-actions .btn, .record-aside .record-actions summary.btn { width: 100%; justify-content: flex-start; }
+table.line-items th { white-space: nowrap; }
+
+/* A table nobody gave a class is still a table: read like the others. */
+.main table:not([class]) { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.main table:not([class]) th {
+	text-align: left; font-size: 12.5px; font-weight: 600; color: var(--text-muted);
+	padding: 10px var(--space-4); border-bottom: 1px solid var(--border-strong);
+}
+.main table:not([class]) td { padding: 10px var(--space-4); border-bottom: 1px solid var(--border);
+                               vertical-align: top; }
+.main table:not([class]) tbody tr:hover { background: var(--surface-hover); }
+.card > table:not([class]), .card > form > table:not([class]) { margin: 0; }
+table.report-index td.row-title { width: 28%; white-space: nowrap; }
+table.report-index td.row-end, table.data td.row-end { text-align: right; width: 1%; white-space: nowrap; }
+tr[hidden] { display: none; }
+
+/* ==========================================================================
+   Life -- the small things that make a page feel made
+   ========================================================================== */
+
+/* A record's initials, shaded by its name from the neutral grounds: the
+ * status hues mean something, and a name's hash means nothing. */
+.avatar {
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 44px;
+	height: 44px;
+	font-weight: 700;
+	font-size: 16px;
+	letter-spacing: 0.02em;
+	border-radius: var(--radius);
+	border: 1px solid currentColor;
+}
+.avatar.tone-sunken { color: var(--text);         background: var(--surface-sunken); }
+.avatar.tone-raised { color: var(--text-muted);   background: var(--surface-raised); }
+.avatar.tone-hover  { color: var(--text);         background: var(--surface-hover); }
+.avatar.tone-ink    { color: var(--ink-contrast); background: var(--ink); border-color: var(--ink); }
+
+/* The one-click "+ New": a button at the top of the sidebar, its menu a
+ * floating panel of the things people make every day. */
+.quick-new { position: relative; padding: 0 var(--space-4) var(--space-3); }
+.quick-new > summary { list-style: none; width: 100%; justify-content: center; cursor: pointer; }
+.quick-new > summary::-webkit-details-marker { display: none; }
+.quick-new-menu {
+	position: absolute;
+	z-index: 50;
+	left: var(--space-4);
+	right: var(--space-4);
+	top: calc(100% - 4px);
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 2px;
+	padding: 6px;
+	background: var(--surface-raised);
+	box-shadow: var(--ring);
+	border-radius: var(--radius);
+}
+.quick-new-menu a {
+	padding: 9px 10px;
+	color: var(--text);
+	font-size: 13.5px;
+	border-radius: var(--radius-sm);
+	text-decoration: none;
+}
+.quick-new-menu a:hover { background: var(--accent-soft); color: var(--accent); }
+
+/* "How often?" -- the choice that decides what kind of billing this is,
+ * as three cards you can read, not three words to guess between. */
+.how-often {
+	display: grid;
+	grid-template-columns: auto repeat(3, minmax(0, 1fr));
+	gap: var(--space-3);
+	align-items: stretch;
+	margin-bottom: var(--space-5);
+}
+.how-often-label { align-self: center; font-weight: 600; color: var(--text-muted); padding-right: var(--space-2); }
+.how-often-choice {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: var(--space-3) var(--space-4);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+	color: var(--text);
+	text-decoration: none;
+	transition: border-color var(--transition), background var(--transition), transform var(--transition);
+}
+.how-often-choice span { font-size: 13px; color: var(--text-muted); line-height: 1.45; }
+.how-often-choice:hover { border-color: var(--accent); text-decoration: none; transform: translateY(-1px); }
+.how-often-choice.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+@media (max-width: 900px) { .how-often { grid-template-columns: 1fr; } }
+
+/* A choice between two outcomes, each with the sentence that says what it
+ * does -- the plan change "at renewal" or "right now". */
+.choice-cards { border: 0; padding: 0; margin: var(--space-4) 0; display: grid; gap: var(--space-2); }
+.choice-card {
+	display: flex;
+	gap: var(--space-3);
+	align-items: flex-start;
+	padding: var(--space-3) var(--space-4);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	cursor: pointer;
+	transition: border-color var(--transition), background var(--transition);
+}
+.choice-card > span { display: flex; flex-direction: column; gap: 2px; }
+.choice-card .muted { font-size: 13px; }
+.choice-card:hover { border-color: var(--text-muted); }
+.choice-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.plan-change .btn { margin-top: var(--space-2); }
+
+/* "What happens next" -- the sentence a person came for, large. */
+.next-up .next-up-lead { font-size: 18px; line-height: 1.5; margin: 0 0 var(--space-3); }
+.next-up p:last-child { margin-bottom: 0; }
+.explainer h3 { font-size: 15px; text-transform: none; letter-spacing: 0; font-family: var(--font);
+                font-weight: 700; margin-bottom: var(--space-3); }
+.explainer p { font-size: 14px; color: var(--text-muted); }
+.explainer strong { color: var(--text); }
+
+/* Rows and cards answer the pointer, briefly. */
+table.data tbody tr, .main table:not([class]) tbody tr { transition: background var(--transition); }
+.card { transition: border-color var(--transition), transform var(--transition); }
+.record-tabs .tab-list label { transition: color var(--transition), border-color var(--transition); }
+@media (prefers-reduced-motion: reduce) {
+	.how-often-choice:hover, .card { transform: none; transition: none; }
+}
+
+/* ==========================================================================
+   Checkboxes and radios -- drawn, in both looks
+   ========================================================================== */
+
+/*
+ * A box you can hit and a tick you can see. The native control is
+ * replaced (appearance: none) and drawn from tokens: a ruled square, the
+ * accent when set, and a tick cut from the ground colour so it reads on
+ * every theme. Radios are the same size with a dot.
+ */
+input[type="checkbox"], input[type="radio"] {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 20px;
+	height: 20px;
+	margin: 0;
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	vertical-align: middle;
+	cursor: pointer;
+	border: 1.5px solid var(--text-muted);
+	background: var(--surface-raised);
+	border-radius: var(--radius-sm);
+	transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+input[type="radio"] { border-radius: 50%; }
+
+input[type="checkbox"]::before, input[type="radio"]::before {
+	content: "";
+	transform: scale(0);
+	transition: transform var(--transition);
+}
+input[type="checkbox"]::before {
+	width: 10px;
+	height: 6px;
+	border-left: 2.5px solid var(--bg);
+	border-bottom: 2.5px solid var(--bg);
+	background: none;
+	margin-top: -3px;
+	transform: rotate(-45deg) scale(0);
+}
+input[type="radio"]::before {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--bg);
+}
+
+input[type="checkbox"]:hover, input[type="radio"]:hover { border-color: var(--accent); }
+input[type="checkbox"]:checked, input[type="radio"]:checked {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+input[type="checkbox"]:checked::before { transform: rotate(-45deg) scale(1); }
+input[type="radio"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+	box-shadow: none;
+}
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* A yes/no field reads as one line: the box, then what it means. */
+.field label:has(> input[type="checkbox"]) {
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+	min-height: 42px;
+	cursor: pointer;
+}
+.field label:has(> input[type="checkbox"]) > input[type="checkbox"] { order: -1; }
+.checkbox { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
+.checkbox input { width: 20px; }
+.next-up form { margin: var(--space-2) 0 var(--space-3); }
+.timeline-diff dt { text-transform: none; letter-spacing: 0; font-family: var(--font); }
+
+/* The line's delete: a bin, in the one red, big enough to hit. */
+table.line-items td.line-remove { width: 44px; padding-top: 10px; text-align: center; }
+.line-delete { display: inline-flex; align-items: center; justify-content: center;
+	width: 36px; height: 36px; padding: 0; border: 1px solid transparent;
+	background: transparent; color: var(--negative); cursor: pointer; }
+.line-delete:hover, .line-delete:focus-visible { background: var(--negative-soft);
+	border-color: var(--negative); outline: none; }
+table.line-items td.line-tax { min-width: 150px; }
+table.line-items td.line-tax select { width: 100%; }
+table.line-items td.line-tax select:disabled { opacity: .45; }
+
+/* Tax exemption beside the totals. */
+.doc-exempt .exempt-detail { margin-top: var(--space-3); display: grid; gap: var(--space-3); }
+.doc-exempt .exempt-detail[hidden] { display: none; }
+
+/* A refusal, above the form that caused it, with the typing kept. */
+.form-error { margin: 0 0 var(--space-4); padding: 12px 16px;
+	border-left: 3px solid var(--negative); background: var(--negative-soft);
+	color: var(--text); font-size: 14.5px; line-height: 1.5; }
+.form-error[hidden] { display: none; }
+.error-page .error-message { font-size: 15px; max-width: 60ch; margin: var(--space-3) auto; }
+.error-page .error-detail { max-width: 60ch; margin: var(--space-3) auto; text-align: left; }
+
+/* A price box says its currency, so "49" is enough to type. */
+.money-input { display: inline-flex; align-items: center; gap: 8px; width: 100%; }
+.money-input input { flex: 1; min-width: 90px; text-align: right; }
+.money-input .unit { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-muted); }
+
+/* Adding a price beneath a plan's prices. */
+.price-add { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.price-add h3 { margin: 0 0 var(--space-3); font-size: 15px; }
+table.line-items select[name$="-interval"] { min-width: 170px; }
+table.line-items .checkbox { white-space: nowrap; }
+.doc-sheet textarea + table.line-items, .doc-sheet label + table.line-items { margin-top: var(--space-4); }
+.picker-group { padding: 10px 12px 4px; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase;
+	color: var(--text-muted); font-family: var(--font-mono); }
+
+/* Words for a screen reader that a sighted reader gets from the layout:
+ * the heading over the column of remove buttons, a skip link until it is
+ * focused. Clipped, not display:none, which would hide it from both. */
+.visually-hidden:not(:focus):not(:focus-within) {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ==========================================================================
+   The home page, the ticket board and the phone (appended as one block
+   so the two looks stay in step; every value is a token)
+   ========================================================================== */
+
+/* A skip link is the first stop for a keyboard: shown only while it has
+ * focus, over everything, where a sighted keyboard user will see it. */
+.skip-link:focus {
+	position: fixed;
+	top: var(--space-2);
+	left: var(--space-2);
+	z-index: 10000;
+	padding: var(--space-2) var(--space-3);
+	background: var(--surface-raised);
+	color: var(--text);
+	outline: 2px solid var(--accent);
+}
+
+.main:focus { outline: none; }
+
+/* Every control a keyboard can reach says where it is, in both looks and
+ * every theme -- including the ones a stylesheet had turned the ring off
+ * for, like a borderless ghost button or a summary. */
+a:focus-visible, button:focus-visible, summary:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible,
+input:not([type="hidden"]):focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* --- Home ---------------------------------------------------------------- */
+
+.home-head { margin-bottom: var(--space-4); }
+.home-head .page-actions { gap: var(--space-2); }
+
+/* A figure fills its row, so a row of four reads as one strip rather than
+ * four boxes hanging from a line. */
+.widget-grid:not(.editing) > .widget-count,
+.widget-grid:not(.editing) > .widget-metric { align-self: stretch; }
+
+/* --- The ticket board ---------------------------------------------------- */
+
+.board-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2);
+	margin-bottom: var(--space-4);
+}
+
+.board-toolbar .save-view { margin-left: auto; }
+
+.subtitle-alert { color: var(--negative); font-weight: 600; }
+
+.filter-menu { position: relative; }
+.filter-menu > summary { list-style: none; cursor: pointer; }
+.filter-menu > summary::-webkit-details-marker { display: none; }
+.filter-menu > summary::after {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-left: 8px;
+	border-right: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	transform: translateY(-2px) rotate(45deg);
+}
+
+.filter-menu-panel {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	min-width: 180px;
+	padding: var(--space-1) 0;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+}
+
+.filter-menu-panel a {
+	padding: 6px var(--space-3);
+	color: var(--text);
+	text-decoration: none;
+	font-size: 13px;
+}
+
+.filter-menu-panel a:hover { background: var(--surface-hover); }
+.filter-menu-panel a[aria-current] { color: var(--accent); font-weight: 600; }
+.filter-menu-panel a[aria-current] { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* Six columns do not fit a laptop: the board scrolls sideways and each
+ * column snaps to the edge, so a flick lands on a column, not between. */
+.board {
+	grid-auto-columns: minmax(248px, 1fr);
+	scroll-snap-type: x proximity;
+}
+
+.board-column { scroll-snap-align: start; }
+
+/* The column's name is a heading for a screen reader and a label for
+ * everybody else: the micro register, not a headline. */
+.board-column-head h2 {
+	margin: 0;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
+	color: inherit;
+}
+
+.board-empty {
+	margin: 0;
+	padding: var(--space-3);
+	color: var(--text-faint);
+	font-size: 12.5px;
+	text-align: center;
+}
+
+.ticket-card { gap: 6px; }
+
+.ticket-top {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+}
+
+.ticket-top .badge { margin-left: auto; }
+.priority-urgent .ticket-priority { color: var(--negative); font-weight: 700; }
+.priority-high .ticket-priority { color: var(--warning); font-weight: 700; }
+
+.ticket-who {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--space-2);
+	margin: 0;
+	font-size: 12.5px;
+	color: var(--text-muted);
+	min-width: 0;
+}
+
+.ticket-customer {
+	font-weight: 600;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.ticket-customer.muted, .ticket-assignee.muted { color: var(--text-faint); font-weight: 400; }
+.ticket-assignee { flex: none; }
+
+.ticket-when {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px var(--space-2);
+	margin: 0;
+	font-size: 12px;
+	color: var(--text-faint);
+}
+
+.ticket-points { font-variant-numeric: tabular-nums; }
+
+/* The move form: out of the way until the card is hovered or a keyboard
+ * is inside it, then a full-width row. */
+.ticket-move select { flex: 1; min-width: 0; }
+
+/* --- The phone ----------------------------------------------------------- */
+
+.sidebar-menu-toggle { display: none; }
+
+@media (max-width: 900px) {
+	/* The menu is one button on the first line; opened, it is the same
+	 * list a desk shows, folded groups and all -- a single scrolling
+	 * strip had hidden every group's heading and so every group. */
+	.sidebar-menu-toggle { display: inline-flex; margin-left: auto; }
+	.sidebar .nav { flex-direction: column; overflow: visible; padding-bottom: var(--space-2); }
+	.sidebar .nav .nav-section { display: block; }
+	.sidebar .nav .nav-item { border-bottom: 0; border-left: 2px solid transparent; }
+	.sidebar .nav .nav-item.active { border-left-color: var(--accent); }
+	.sidebar .nav .nav-item .count { display: inline; }
+	.sidebar .sidebar-footer { display: flex; flex: 1 0 100%; }
+	.sidebar.menu-closed .nav,
+	.sidebar.menu-closed .sidebar-footer { display: none; }
+
+	/* Figures two to a row, everything else the full width, each as tall
+	 * as it needs: a phone does not scroll past a screen of one number. */
+	.widget-grid:not(.editing) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; }
+	.widget-grid:not(.editing) > .widget { grid-column: 1 / -1 !important; }
+	.widget-grid:not(.editing) > .widget-count,
+	.widget-grid:not(.editing) > .widget-metric { grid-column: auto !important; }
+	.widget-grid:not(.editing) > .widget-count .card-head,
+	.widget-grid:not(.editing) > .widget-metric .card-head { flex-wrap: wrap; gap: 4px; }
+	.widget-grid .card-head h2 { line-height: 1.3; }
+	/* Two to a row leaves a figure half a phone: it shrinks to fit
+	 * rather than running out of its card. */
+	.widget-grid:not(.editing) .figure { font-size: clamp(20px, 6.4vw, 30px); overflow-wrap: anywhere; }
+
+	.page-actions .btn { flex: 0 1 auto; }
+	.board-toolbar .save-view { margin-left: 0; }
+	.board { grid-auto-columns: 84vw; }
+
+	/* Tables keep their columns and scroll inside their card rather than
+	 * pushing the page sideways. */
+	.table-wrap { overflow-x: auto; }
+}
+
+@media (max-width: 480px) {
+	.main { padding-left: var(--space-3); padding-right: var(--space-3); }
+	.page-title h1 { font-size: 26px; }
+}
+
+/* A document's lines on a phone: a row of five inputs cannot share 360
+ * pixels, so each line becomes a small block -- what it is across the
+ * top, the figures two by two under their own captions. The header row
+ * goes to the screen reader only; every input carries its own label. */
+@media (max-width: 640px) {
+	.line-items:has(tr.line-row) thead {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+	}
+
+	.line-items:has(tr.line-row),
+	.line-items:has(tr.line-row) tbody { display: block; width: 100%; }
+
+	.line-items tr.line-row {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: var(--space-2);
+		padding: var(--space-3) 0;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.line-items tr.line-row > td {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 0;
+		border: 0;
+		text-align: left;
+		min-width: 0;
+	}
+
+	table.line-items tr.line-row > td.line-item { grid-column: 1 / -1; gap: var(--space-2); width: auto; }
+	table.line-items tr.line-row > td.line-item input { margin-bottom: 0; }
+
+	.line-items tr.line-row > td[data-label]::before {
+		content: attr(data-label);
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+
+	.line-items tr.line-row input:not([type="checkbox"]):not([type="radio"]),
+	.line-items tr.line-row select { width: 100%; min-width: 0; }
+
+	.line-items tr.line-row > td.line-amount { justify-content: flex-end; font-weight: 600; }
+	.line-items tr.line-row > td.line-remove { align-items: flex-end; justify-content: flex-end; }
+}
+
+/* A table of records rather than of inputs keeps its columns on a phone
+ * and scrolls inside its card, instead of pushing the page sideways. */
+@media (max-width: 640px) {
+	table.line-items:not(:has(tr.line-row)) { display: block; overflow-x: auto; }
+}

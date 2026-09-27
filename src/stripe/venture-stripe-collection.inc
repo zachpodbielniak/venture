@@ -79,6 +79,12 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 		!venture_access_policy_check_write(venture_database_get_access_policy(self->database), invoice, "write", error)) goto fail;
 	sources = find_id(self, VENTURE_TYPE_SUBSCRIPTION_EVENT, "invoice-id", invoice_id, error);
 	if (!sources) goto fail;
+	if (sources->len == 0)
+	{
+		g_clear_pointer(&sources, g_ptr_array_unref);
+		sources = find_id(self, VENTURE_TYPE_SUBSCRIPTION_EVENT, "final-invoice-id", invoice_id, error);
+		if (!sources) goto fail;
+	}
 	if (sources->len != 1) { refuse(error, "Automatic collection requires one immutable billing source event"); goto fail; }
 	source_id = venture_entity_get_id(g_ptr_array_index(sources, 0));
 	subscription_id = stripe_number(g_ptr_array_index(sources, 0), "subscription-id");
@@ -92,7 +98,8 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 		if (stripe_flag(candidate, "enabled") && !g_strcmp0(status, "active")) g_set_object(&authorization, candidate);
 	}
 	if (!authorization) { refuse(error, "Subscription requires verified reusable payment authorization"); goto fail; }
-	if (!stripe_authorized_terms(self, authorization, error)) goto fail;
+	if (!stripe_authorized_terms_for_collection(self, authorization,
+		stripe_number(g_ptr_array_index(sources, 0), "final-invoice-id") == invoice_id, error)) goto fail;
 	if (stripe_number(authorization, "company-id") != stripe_number(invoice, "company-id") ||
 		stripe_number(g_ptr_array_index(sources, 0), "to-plan-price-id") != stripe_number(authorization, "plan-price-id") ||
 		stripe_number(g_ptr_array_index(sources, 0), "to-seats") != stripe_number(authorization, "seats"))
@@ -189,7 +196,8 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 			{
 				g_autoptr(VentureEntity) permission = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION,
 					venture_entity_get_id(authorization), error);
-				if (!permission || !stripe_flag(permission, "enabled") || !stripe_authorized_terms(self, permission, error))
+				if (!permission || !stripe_flag(permission, "enabled") || !stripe_authorized_terms_for_collection(self, permission,
+					stripe_number(g_ptr_array_index(sources, 0), "final-invoice-id") == invoice_id, error))
 				{
 					if (!error || !*error) refuse(error, "Customer authorization was revoked before collection");
 					goto fail;

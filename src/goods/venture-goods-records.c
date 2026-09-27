@@ -69,7 +69,7 @@ static const VentureFieldDecl sales_order_fields[] = {
 	VENTURE_FIELD("number", "Number", NULL, VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("status", "Status", "draft, allocated, partial, fulfilled, invoiced, cancelled"),
 	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),

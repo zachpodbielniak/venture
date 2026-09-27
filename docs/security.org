@@ -176,3 +176,32 @@ action registry and =venturectl=, the organization setting, and the HTTP
 gate, sign-in and REST/CSV/audit redaction. Every clock-dependent check
 uses the service's =fixed-time= property. The migration guard is run
 against half-present schemas and refuses each.
+
+* API token names in shared history
+
+The token's name stays editable and visible on the owner-only token page.
+Shared audit entries use =API token #<id>= for both token actors and token
+targets. Renaming a token records that its name changed, with
+=changed: true, redacted: true=, without either name value. This keeps a
+name-only edit persistent without disclosing it to viewers of the audit
+trail. Other changed fields retain their normal audit representation.
+
+Upgrade migrations rewrite the token names already recorded in these places,
+and only these:
+
+- =audit_entries.actor= and =audit_entries.approved_by= (=000640=): a name
+  exactly one token holds becomes =API token #<id>=; a name two tokens
+  share becomes =API token=.
+- =notifications.actor= and the actor that leads =notifications.title=
+  (=000645=), by the same rule.
+- =audit_entries.target_label= and the =name= change in =diff= for
+  =api_token= targets (=000685=), including entries whose token was
+  deleted. Other fields in the diff and other records are preserved.
+
+Anything else that copied a token's name as free text before this release
+keeps it: ticket comment authors, ticket assignees, worklog authors,
+=deployed_by=, bank-match =created_by= / =reconciled_by= / =reopened_by=,
+=enrolled_by=, approver and =approved_by= fields on records, deal-event
+=by=, =accepted_by=, activity owners, and the audit diffs of those fields.
+Nothing in those strings says reliably which were a token, so a rewrite
+would be a guess.

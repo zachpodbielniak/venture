@@ -583,7 +583,9 @@ static const VentureFieldDecl venture_tax_code_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTaxCode, venture_tax_code, venture_tax_code_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Tax rate", "Tax rates");
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/tax-rates/new");)
 
 gboolean
 venture_tax_code_get_rate(VentureTaxCode *self, gint64 *numerator, gint64 *denominator, GError **error)
@@ -764,8 +766,11 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInteraction, venture_interaction, venture
 
 static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
+	/* Somebody at the deal's company, never at another: the flag makes
+	 * the save refuse a stranger and the form offer only the account's
+	 * people. */
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SAME_PARENT),
 	/* The account as well as the person: people move, accounts persist,
 	 * and the pipeline is usually read by account. */
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
@@ -1329,9 +1334,10 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("assignee", "Assignee", "Who is doing it",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
-	/* Who asked. Set for an external ticket, empty for your own work. */
+	/* Who asked. Set for an external ticket, empty for your own work;
+	 * when the company is set too, somebody at that company. */
 	VENTURE_FIELD_REF("contact-id", "Raised by", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
@@ -2789,7 +2795,7 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_REF("company-id", "Bill to", NULL, "company",
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("contact-id", "Attention of", NULL, "contact",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture",
 	                  VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("issued-at", "Issued", NULL, VENTURE_FIELD_KIND_DATETIME,
@@ -2801,9 +2807,11 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	VENTURE_FIELD_TEXT("terms", "Terms", "Payment terms shown on the "
 	                   "printed invoice"),
 	VENTURE_FIELD_TEXT("notes", "Notes", "Internal; never printed"),
+	/* Machinery: it mirrors the status badge for plugins that extend the
+	 * lifecycle, so the page shows it under "All fields", not beside it. */
 	VENTURE_FIELD("workflow-state", "Workflow state",
 		"Set through VentureSettlementService; plugins may extend the lifecycle",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD_MONEY("shipping-amount", "Shipping", "Optional shipping frozen at issuance"),
 	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issue from the customer or this invoice",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
@@ -2829,7 +2837,21 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureInvoice, venture_invoice, venture_invoice_fields)
+/* An invoice is known by its number: "Invoice INV-0041". */
+static gchar *
+venture_invoice_display_name(VentureEntity *self)
+{
+	g_autofree gchar *number = NULL;
+
+	g_object_get(self, "number", &number, NULL);
+	if (venture_string_is_empty(number))
+		return g_strdup_printf("Invoice #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+	return g_strdup_printf("Invoice %s", number);
+}
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInvoice, venture_invoice, venture_invoice_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_invoice_display_name;
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");)
 
 /*
  * One line of an invoice. The amount is quantity times unit price, computed
@@ -3365,7 +3387,12 @@ venture_audit_entry_new_for_change(
 	{
 		g_autofree gchar *label = NULL;
 
-		label = venture_entity_get_display_name(target);
+		/* This label is shared with viewers; the token's owner-only
+		 * display name must not escape through its own audit record. */
+		label = VENTURE_IS_API_TOKEN(target)
+			? g_strdup_printf("API token #%" G_GINT64_FORMAT,
+				venture_entity_get_id(target))
+			: venture_entity_get_display_name(target);
 
 		g_object_set(entry,
 		             "target-type", venture_entity_get_entity_name(target),
@@ -3385,6 +3412,20 @@ venture_audit_entry_new_for_change(
 		g_autofree gchar *text = NULL;
 
 		text = venture_json_to_string(diff, FALSE);
+		if (VENTURE_IS_API_TOKEN(target) && JSON_NODE_HOLDS_OBJECT(diff) &&
+			json_object_has_member(json_node_get_object(diff), "name"))
+		{
+			g_autoptr(JsonNode) private_diff = venture_json_parse(text, NULL);
+			JsonObject *marker = json_object_new();
+
+			/* JSON node copies share objects. Round-tripping gives this
+			 * audit entry its own copy without changing the save's diff. */
+			json_object_set_boolean_member(marker, "changed", TRUE);
+			json_object_set_boolean_member(marker, "redacted", TRUE);
+			json_object_set_object_member(json_node_get_object(private_diff), "name", marker);
+			g_clear_pointer(&text, g_free);
+			text = venture_json_to_string(private_diff, FALSE);
+		}
 		g_object_set(entry, "diff", text, NULL);
 	}
 

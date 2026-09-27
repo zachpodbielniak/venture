@@ -1462,7 +1462,7 @@ test_statement_options(Fixture *f, gconstpointer data)
 	server = start_server(f, &state_dir);
 	path = g_strdup_printf("/api/v1/reports/customer_statement?period=2026-01&%s&currency=EUR", customer);
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, "invoice_event #1"));
+	g_assert_nonnull(strstr(body, "Invoice event #1"));
 	expected = venture_json_parse(body, NULL);
 	argv[2] = venture_web_server_get_base_url(server);
 	response = run_cli(argv, NULL, TRUE);
@@ -1473,7 +1473,7 @@ test_statement_options(Fixture *f, gconstpointer data)
 	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/reports/customer_statement?period=2026-01&%s&currency=EUR", customer);
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, "invoice_event #1"));
+	g_assert_nonnull(strstr(body, "Invoice event #1"));
 	g_assert_nonnull(strstr(body, "currency=EUR"));
 	venture_web_server_stop(server);
 	g_clear_object(&server);

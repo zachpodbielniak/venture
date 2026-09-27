@@ -60,12 +60,22 @@ static const VentureFieldDecl event_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureVendorBillEvent, venture_vendor_bill_event, event_fields)
 
+/* A bill is known by the number the supplier printed on it. */
+static gchar *
+vendor_bill_display_name(VentureEntity *self)
+{
+	g_autofree gchar *number = NULL;
+	g_object_get(self, "number", &number, NULL);
+	if (number == NULL || number[0] == '\0')
+		return g_strdup_printf("Bill #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+	return g_strdup_printf("Bill %s", number);
+}
 static const VentureFieldDecl bill_fields[] = {
-	VENTURE_FIELD_REF("company-id", "Vendor", "A supplier company", "company", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("company-id", "Supplier", "A supplier company", "company", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("number", "Number", NULL, VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("bill-date", "Bill date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD("due-date", "Due date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("due-date", "Due", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("currency", "Currency", "Uppercase ISO 4217 code"),
 	VENTURE_FIELD_NAME("status", "Status", "draft, approved, partially_paid, paid, void; VenturePayablesService owns transitions"),
 	VENTURE_FIELD_REF("venture-id", "Venture", NULL, "venture", VENTURE_COLUMN_FLAG_NONE),
@@ -77,7 +87,10 @@ static const VentureFieldDecl bill_fields[] = {
 	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated bill entered the ledger",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
-VENTURE_DEFINE_ENTITY(VentureVendorBill, venture_vendor_bill, bill_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVendorBill, venture_vendor_bill, bill_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = vendor_bill_display_name;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Supplier bill", NULL);
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/bills/compose");)
 
 static const VentureFieldDecl bill_line_fields[] = {
 	VENTURE_FIELD_REF("bill-id", "Bill", NULL, "vendor_bill", VENTURE_COLUMN_FLAG_NOT_NULL),

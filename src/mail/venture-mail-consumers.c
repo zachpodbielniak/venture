@@ -146,6 +146,30 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
 		g_object_set(message, "to", email, "html-body", body, "idempotency-key", key,
 			"related-type", "invoice", "related-id", invoice_id, NULL);
 	}
+	/* The invoice itself, as a PDF the customer can print and file. */
+	{
+		g_autoptr(GBytes) pdf = venture_financial_documents_invoice_pdf(context, invoice, error);
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+		g_autoptr(JsonNode) root = NULL;
+		g_autofree gchar *name = NULL, *encoded = NULL, *attachments = NULL;
+		gconstpointer bytes;
+		gsize size;
+		if (!pdf) goto fail;
+		bytes = g_bytes_get_data(pdf, &size);
+		encoded = g_base64_encode(bytes, size);
+		name = venture_financial_documents_filename(invoice);
+		json_builder_begin_array(builder);
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "type"); json_builder_add_string_value(builder, "inline");
+		json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, name);
+		json_builder_set_member_name(builder, "mime"); json_builder_add_string_value(builder, "application/pdf");
+		json_builder_set_member_name(builder, "data"); json_builder_add_string_value(builder, encoded);
+		json_builder_end_object(builder);
+		json_builder_end_array(builder);
+		root = json_builder_get_root(builder);
+		attachments = json_to_string(root, FALSE);
+		g_object_set(message, "attachments", attachments, NULL);
+	}
 	queued = venture_mail_outbox_enqueue(outbox, message, actor, error);
 	if (!queued || !venture_settlement_service_record_mail(settlement, VENTURE_INVOICE(invoice), actor, error)) goto fail;
 	if (!venture_database_commit(db, error)) return NULL;
