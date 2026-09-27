@@ -110,7 +110,18 @@ its ordinary $30 invoice, creates a $14.48 customer credit through
 settlement, and applies it, leaving *$15.52* outstanding. Credit beyond an
 invoice's amount remains customer credit. The allocation covers the whole
 invoice balance, including tax and metered usage, rather than only the base
-price. Adjustments accumulate exactly
+price.
+
+A carried credit gives back tax the way cancelling now does: when the
+invoice of the period being credited charged tax, the credit note carries
+the same share of it (=tax-amount= and that line's jurisdiction) and its
+amount is the difference plus that tax. $100 a month at 10% moved to $50
+half way through a 30-day month credits $25.00 plus $2.50: *$27.50*, the
+tax the customer paid on the days they did not use. A carried charge is
+the mirror image: it is added to the new period's line and taxed with it.
+The share is the credited invoice line's frozen tax over its frozen
+income, so an exemption or an address rate carries over unchanged.
+Adjustments accumulate exactly
 until renewal. Trials and scheduled changes add no immediate adjustment.
 
 Changes compare the discounted prices while the discount covers the current
@@ -320,9 +331,14 @@ than "renewal".
 * Starting a subscription from a quote
 
 A quote line may name a plan price (=plan_price_id=); its =quantity= is the
-seats. The line is priced at the plan price, takes no discount or tax of its
-own (the subscription's invoices would not charge them), a flat price takes
-one seat, and a quote proposes one subscription. Accepting the quote leaves
+seats. The line is priced at the plan price and takes no discount or tax
+rate of its own (the subscription's invoices would not charge them); it
+carries the price's tax rate, and the quote taxes it as the first invoice
+will -- nothing for an exempt customer, the price's rate when it has one,
+otherwise the customer's address rate as of today, through
+=venture_billing_service_price_tax_rate()=, the same answer the
+next-invoice preview gives. A flat price takes one seat, and a quote
+proposes one subscription. Accepting the quote leaves
 that line out of the acceptance invoice -- the subscription's first invoice
 bills it -- and a quote that is only a subscription issues no acceptance
 invoice at all.
@@ -388,7 +404,7 @@ The next invoice a customer is told about -- in the trial reminder, the
 price-change notice and the customer portal -- is worked out as the
 renewal will issue it: the price, the discount while it covers invoices,
 a carried part-period charge, and the explicit price tax rate or the
-customer-address rate effective at renewal, unless the customer is exempt; a carried credit comes off after tax. This is the scheduled base
+customer-address rate effective at renewal, unless the customer is exempt; a carried credit comes off after tax, together with the tax the credited period's invoice charged on it. This is the scheduled base
 charge, not a forecast of usage: metered units can still accrue before
 renewal and add their own line.
 
@@ -429,7 +445,11 @@ has: at renewal, or right now with the difference prorated. =POST
 =change= =billing_request= per trialing, active or past-due subscription
 through =venture_billing_service_execute()=, all inside one transaction.
 Any refusal rolls every move back, and the page says which customer
-stopped it and why. Paused subscriptions cannot change terms and stay.
+stopped it and why. Paused subscriptions cannot change terms and stay. A
+subscription already scheduled to switch onto the retired price at
+renewal is redirected to the new price at renewal -- whichever timing was
+chosen, since it keeps its current price until then -- or it would land
+on the retired price anyway.
 
 A plan belongs to a venture -- the sheet asks whose, and picks it when
 there is only one -- or is shared by every venture. A customer is put
@@ -475,10 +495,17 @@ or with mail off, nothing is queued and nothing fails. See
   (3) before the trial ends, the date and what the first invoice will be.
   Keyed by the subscription, so once. The subscription's "What happens
   next" says whether it was queued or sent, and to whom, or when it will be.
+  A subscription whose invoice cannot be worked out (its company deleted,
+  say) is skipped with a log line rather than rolling back the sweep's
+  renewals; the next sweep tries it again.
 - =change= and =change-seats= tell the customer what changed, when it takes
   effect and the next invoice, keyed by the change's =subscription_event=
   uuid, so each change once. =billing.price_change_notices: false= turns
   them off.
+
+Both give dates on the business calendar, =locale.timezone=, as the
+portal does: a trial ending at 02:00 UTC ends the evening before in New
+York, and the reminder says so. A carried credit is quoted with its tax.
 
 "What the next invoice will be" is =venture_billing_service_next_invoice()=:
 the price the subscription switches to at renewal, the discount while it

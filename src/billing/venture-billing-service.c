@@ -11,6 +11,7 @@ struct _VentureBillingService
 	gboolean busy;
 	gint64 trial_reminder_days;	/* billing.trial_reminder_days; zero sends none */
 	gboolean price_change_notices;	/* billing.price_change_notices */
+	gchar *timezone;	/* locale.timezone, the zone a notice's dates are read in */
 };
 G_DEFINE_FINAL_TYPE(VentureBillingService, venture_billing_service, G_TYPE_OBJECT)
 
@@ -19,7 +20,8 @@ G_DEFINE_FINAL_TYPE(VentureBillingService, venture_billing_service, G_TYPE_OBJEC
 enum
 {
 	PROP_TRIAL_REMINDER_DAYS = 10,
-	PROP_PRICE_CHANGE_NOTICES
+	PROP_PRICE_CHANGE_NOTICES,
+	PROP_TIMEZONE
 };
 
 static gboolean
@@ -62,6 +64,8 @@ get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 		g_value_set_int64(value, VENTURE_BILLING_SERVICE(object)->trial_reminder_days);
 	else if (id == PROP_PRICE_CHANGE_NOTICES)
 		g_value_set_boolean(value, VENTURE_BILLING_SERVICE(object)->price_change_notices);
+	else if (id == PROP_TIMEZONE)
+		g_value_set_string(value, VENTURE_BILLING_SERVICE(object)->timezone);
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -80,6 +84,11 @@ set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 		self->trial_reminder_days = g_value_get_int64(value);
 	else if (id == PROP_PRICE_CHANGE_NOTICES)
 		self->price_change_notices = g_value_get_boolean(value);
+	else if (id == PROP_TIMEZONE)
+	{
+		g_free(self->timezone);
+		self->timezone = g_value_dup_string(value);
+	}
 	else
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
@@ -90,6 +99,7 @@ finalize(GObject *object)
 	VentureBillingService *self = VENTURE_BILLING_SERVICE(object);
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
+	g_clear_pointer(&self->timezone, g_free);
 	G_OBJECT_CLASS(venture_billing_service_parent_class)->finalize(object);
 }
 
@@ -122,6 +132,13 @@ venture_billing_service_class_init(VentureBillingServiceClass *klass)
 		g_param_spec_boolean("price-change-notices", "Price change notices",
 			"Mail the customer when a subscription's price or seats change",
 			TRUE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+	/* The customer reads a notice's dates on the business calendar the
+	 * portal shows them in; a trial ending at 02:00 UTC ends the evening
+	 * before in New York. Unbound, dates are UTC. */
+	g_object_class_install_property(object, PROP_TIMEZONE,
+		g_param_spec_string("timezone", "Timezone",
+			"IANA zone a notice's dates are read in; empty means UTC",
+			NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 	/**
 	 * VentureBillingService::changing:
 	 * @self: the service
@@ -592,6 +609,10 @@ keep_discount_for(VentureEntity *sub, VentureEntity *from, VentureEntity *to)
 		g_object_set(sub, "discount-id", (gint64)0, "discount-periods-used", (gint64)0, NULL);
 }
 
+static VentureMoney *
+carried_credit(VentureBillingService *self, VentureEntity *sub, const VentureMoney *adjustment,
+	VentureMoney **tax, gint64 *jurisdiction, GError **error);
+
 static gboolean
 issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	GDateTime *at, GDateTime *period_start, const VentureActor *actor, gint64 *invoice_id, GError **error)
@@ -672,13 +693,18 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	{
 		g_autoptr(VentureEntity) credit = new_record(VENTURE_TYPE_CUSTOMER_CREDIT, org);
 		g_autoptr(VentureEntity) allocation = new_record(VENTURE_TYPE_PAYMENT_ALLOCATION, org);
-		g_autoptr(VentureMoney) credit_amount = venture_money_multiply_rational(adjustment, -1, 1, error);
-		g_autoptr(VentureMoney) difference = NULL, balance = NULL;
+		g_autoptr(VentureMoney) tax = NULL, credit_amount = NULL, difference = NULL, balance = NULL;
+		gint64 jurisdiction = 0;
 		const VentureMoney *applied;
+		/* This invoice's event is not written yet, so the newest billed
+		 * period is still the one the difference is credited against. */
+		credit_amount = carried_credit(self, sub, adjustment, &tax, &jurisdiction, error);
 		if (credit_amount == NULL)
 			return FALSE;
 		g_object_set(credit, "customer-id", number(sub, "company-id"), "kind", "credit_note", "date", at,
 			"amount", credit_amount, "reference", "Subscription proration", NULL);
+		if (tax != NULL && !venture_money_is_zero(tax))
+			g_object_set(credit, "tax-amount", tax, "tax-jurisdiction-id", jurisdiction, NULL);
 		if (!venture_database_save(self->database, credit, actor, error))
 			return FALSE;
 		/* Credit covers the full invoice, including tax and metered usage.
@@ -754,6 +780,70 @@ period_line(VentureBillingService *self, gint64 invoice, gint64 org, GError **er
 }
 
 /*
+ * The tax on @net at the share @invoice's period line charged: its frozen
+ * tax over its frozen income, so an exemption, an address rate and the
+ * rate in force when the period was billed all carry over without being
+ * looked up again. Credit given back for part of a period is the tax paid
+ * on that part, which is what the return has to show reversed. @tax is
+ * NULL when the line charged none; @jurisdiction is the line's either way.
+ */
+static gboolean
+period_tax_share(VentureBillingService *self, gint64 invoice, gint64 org, const VentureMoney *net,
+	VentureMoney **tax, gint64 *jurisdiction, GError **error)
+{
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureMoney) line_net = NULL, line_tax = NULL;
+
+	*tax = NULL;
+	*jurisdiction = 0;
+	line = period_line(self, invoice, org, error);
+	if (line == NULL)
+		return FALSE;
+	g_object_get(line, "income-amount", &line_net, "tax-amount", &line_tax, "tax-jurisdiction-id", jurisdiction, NULL);
+	if (line_net != NULL && line_tax != NULL && venture_money_get_amount(line_net) > 0 &&
+		venture_money_get_amount(line_tax) > 0)
+	{
+		g_autoptr(VentureMoney) scaled = venture_money_rescale(line_tax, venture_money_get_exponent(line_net), error);
+		if (scaled == NULL)
+			return FALSE;
+		*tax = venture_money_multiply_rational(net, venture_money_get_amount(scaled),
+			venture_money_get_amount(line_net), error);
+		if (*tax == NULL)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/*
+ * The credit note a negative carried difference becomes: the unused part
+ * of the period being served plus the tax that period's invoice charged
+ * on it, as an immediate cancellation gives back -- the mirror of a
+ * positive difference, which rides on the next period line and is taxed
+ * with it. Without the tax, $100 a month at 10% moved to $50 half way
+ * through credits $25.00 of the $27.50 the customer paid for those days.
+ * @tax is NULL when that invoice charged none, or no period was invoiced.
+ */
+static VentureMoney *
+carried_credit(VentureBillingService *self, VentureEntity *sub, const VentureMoney *adjustment,
+	VentureMoney **tax, gint64 *jurisdiction, GError **error)
+{
+	g_autoptr(VentureMoney) net = venture_money_negate(adjustment);
+	g_autoptr(GDateTime) billed_start = NULL;
+	gint64 billed = 0, invoice = 0;
+
+	*tax = NULL;
+	*jurisdiction = 0;
+	if (!billed_periods(self, sub, &billed, &invoice, &billed_start, error))
+		return NULL;
+	if (invoice != 0 && !period_tax_share(self, invoice, venture_entity_get_organization_id(sub), net, tax,
+		jurisdiction, error))
+		return NULL;
+	if (*tax == NULL)
+		return g_steal_pointer(&net);
+	return venture_money_add(net, *tax, error);
+}
+
+/*
  * Fills @out with what cancelling @sub at @at credits; a zero net when
  * nothing is owed back. Only a period that was actually invoiced is
  * credited: a trial, a period nobody billed, and a date outside the
@@ -765,9 +855,8 @@ unused_credit(VentureBillingService *self, VentureEntity *sub, VentureEntity *pr
 {
 	g_autoptr(VentureMoney) charge = price_amount(price, number(sub, "seats"), error);
 	g_autoptr(VentureMoney) normalized = NULL, delta = NULL, unused = NULL, pending = NULL, net = NULL;
-	g_autoptr(VentureEntity) discount = NULL, line = NULL;
+	g_autoptr(VentureEntity) discount = NULL;
 	g_autoptr(GDateTime) start = NULL, end = NULL, billed_start = NULL;
-	g_autoptr(VentureMoney) line_net = NULL, line_tax = NULL;
 	gint64 billed = 0, invoice = 0;
 	gint state = choice(sub, "status");
 	if (charge == NULL)
@@ -809,22 +898,8 @@ unused_credit(VentureBillingService *self, VentureEntity *sub, VentureEntity *pr
 	g_clear_pointer(&out->net, venture_money_free);
 	out->net = venture_money_negate(net);
 	out->invoice = invoice;
-	line = period_line(self, invoice, venture_entity_get_organization_id(sub), error);
-	if (line == NULL)
-		return FALSE;
-	g_object_get(line, "income-amount", &line_net, "tax-amount", &line_tax, "tax-jurisdiction-id", &out->jurisdiction, NULL);
-	if (line_net != NULL && line_tax != NULL && venture_money_get_amount(line_net) > 0 &&
-		venture_money_get_amount(line_tax) > 0)
-	{
-		g_autoptr(VentureMoney) scaled = venture_money_rescale(line_tax, venture_money_get_exponent(line_net), error);
-		if (scaled == NULL)
-			return FALSE;
-		out->tax = venture_money_multiply_rational(out->net, venture_money_get_amount(scaled),
-			venture_money_get_amount(line_net), error);
-		if (out->tax == NULL)
-			return FALSE;
-	}
-	return TRUE;
+	return period_tax_share(self, invoice, venture_entity_get_organization_id(sub), out->net, &out->tax,
+		&out->jurisdiction, error);
 }
 
 /*
@@ -947,12 +1022,59 @@ customer_address(VentureBillingService *self, VentureEntity *sub, gint64 org, gc
 	return NULL;
 }
 
+gboolean
+venture_billing_service_price_tax_rate(VentureBillingService *self, VenturePlanPrice *price, gint64 company_id,
+	GDateTime *at, gint64 *numerator, gint64 *denominator, GError **error)
+{
+	VentureEntity *p = VENTURE_ENTITY(price);
+	g_autoptr(VentureEntity) customer = NULL;
+	gint64 org = venture_entity_get_organization_id(p);
+	gboolean exempt = FALSE;
+
+	g_return_val_if_fail(VENTURE_IS_BILLING_SERVICE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_PLAN_PRICE(price), FALSE);
+	g_return_val_if_fail(numerator != NULL && denominator != NULL, FALSE);
+	*numerator = 0;
+	*denominator = 100;
+	if (self->database == NULL)
+		return refuse(error, VENTURE_ERROR_CONFLICT, "service is unavailable");
+	if (company_id > 0)
+	{
+		customer = load(self, VENTURE_TYPE_COMPANY, company_id, org, error);
+		if (customer == NULL)
+			return FALSE;
+		exempt = flag(customer, "tax-exempt");
+	}
+	if (number(p, "tax-code-id") != 0)
+	{
+		g_autoptr(VentureEntity) code = NULL;
+		if (exempt)
+			return TRUE;
+		code = load(self, VENTURE_TYPE_TAX_CODE, number(p, "tax-code-id"), org, error);
+		return code != NULL && venture_tax_code_get_rate(VENTURE_TAX_CODE(code), numerator, denominator, error);
+	}
+	{
+		g_autoptr(VentureEntity) invoice = g_object_new(VENTURE_TYPE_INVOICE, "company-id", company_id, NULL);
+		g_autoptr(VentureEntity) line = g_object_new(VENTURE_TYPE_INVOICE_LINE,
+			"product-id", number(p, "product-id"), NULL);
+
+		venture_entity_set_organization_id(invoice, org);
+		venture_entity_set_organization_id(line, org);
+		/* Resolve the address/product tax through settlement's existing
+		 * selector, on detached records: asking writes nothing. */
+		return venture_sales_tax_service_freeze_line(venture_sales_tax_service_get(self->database),
+			invoice, line, at, exempt, numerator, denominator, error);
+	}
+}
+
 /*
  * What the next invoice will charge, worked out the way issue() will work
  * it out -- the price it switches to at renewal, the discount while it
  * still covers invoices, the part-period difference carried to it, and
- * the price's tax unless the customer is exempt -- without writing anything: the discount is counted on a copy. A credit
- * larger than the charge leaves nothing to pay, never a negative invoice.
+ * the price's tax unless the customer is exempt, a carried credit with the
+ * tax it gives back -- without writing anything: the discount is counted
+ * on a copy. A credit larger than the charge leaves nothing to pay, never
+ * a negative invoice.
  * NULL with no error when nothing more will be invoiced.
  */
 static VentureMoney *
@@ -986,7 +1108,8 @@ preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org
 		return NULL;
 	g_object_get(sub, "pending-adjustment", &adjustment, NULL);
 	/* A charge carried from a change is on the invoice line and taxed with
-	 * it; a credit is applied after, untaxed -- as issue() does. */
+	 * it; a credit is applied after, with the tax the credited period's
+	 * invoice charged on it -- as issue() does. */
 	if (adjustment != NULL && venture_money_get_amount(adjustment) > 0)
 	{
 		VentureMoney *charged = venture_money_add(discounted, adjustment, error);
@@ -996,39 +1119,28 @@ preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org
 		discounted = charged;
 		g_clear_pointer(&adjustment, venture_money_free);
 	}
+	else if (adjustment != NULL && venture_money_get_amount(adjustment) < 0)
 	{
-		g_autoptr(VentureEntity) customer = load(self, VENTURE_TYPE_COMPANY, number(sub, "company-id"), org, error);
+		g_autoptr(VentureMoney) credit_tax = NULL;
+		gint64 jurisdiction = 0;
+		VentureMoney *gross = carried_credit(self, sub, adjustment, &credit_tax, &jurisdiction, error);
+
+		if (gross == NULL)
+			return NULL;
+		g_clear_pointer(&adjustment, venture_money_free);
+		adjustment = venture_money_negate(gross);
+		venture_money_free(gross);
+	}
+	{
 		g_autoptr(VentureMoney) tax = NULL;
+		g_autoptr(GDateTime) renews = NULL;
 		VentureMoney *taxed;
 		gint64 numerator = 0, denominator = 100;
 
-		if (customer == NULL)
+		g_object_get(sub, "current-period-end", &renews, NULL);
+		if (!venture_billing_service_price_tax_rate(self, VENTURE_PLAN_PRICE(price), number(sub, "company-id"),
+			renews, &numerator, &denominator, error))
 			return NULL;
-		if (!flag(customer, "tax-exempt") && number(price, "tax-code-id") != 0)
-		{
-			g_autoptr(VentureEntity) code = load(self, VENTURE_TYPE_TAX_CODE, number(price, "tax-code-id"), org, error);
-
-			if (code == NULL || !venture_tax_code_get_rate(VENTURE_TAX_CODE(code),
-				&numerator, &denominator, error))
-				return NULL;
-		}
-		else if (number(price, "tax-code-id") == 0)
-		{
-			g_autoptr(VentureEntity) invoice = g_object_new(VENTURE_TYPE_INVOICE,
-				"company-id", number(sub, "company-id"), NULL);
-			g_autoptr(VentureEntity) line = g_object_new(VENTURE_TYPE_INVOICE_LINE,
-				"product-id", number(price, "product-id"), NULL);
-			g_autoptr(GDateTime) renews = NULL;
-
-			venture_entity_set_organization_id(invoice, org);
-			venture_entity_set_organization_id(line, org);
-			g_object_get(sub, "current-period-end", &renews, NULL);
-			/* Resolve the renewal's address/product tax through settlement's
-			 * existing selector, on detached records: a preview writes nothing. */
-			if (!venture_sales_tax_service_freeze_line(venture_sales_tax_service_get(self->database),
-				invoice, line, renews, flag(customer, "tax-exempt"), &numerator, &denominator, error))
-				return NULL;
-		}
 		tax = venture_money_multiply_rational(discounted, numerator, denominator, error);
 		if (tax == NULL)
 			return NULL;
@@ -1089,6 +1201,16 @@ queue_notice(VentureBillingService *self, VentureEntity *sub, gint64 org, const 
 	return queued != NULL;
 }
 
+/* @when as the calendar day the customer sees it on. */
+static gchar *
+notice_day(VentureBillingService *self, GDateTime *when)
+{
+	g_autoptr(GTimeZone) zone = NULL;
+	if (!venture_string_is_empty(self->timezone))
+		zone = venture_time_get_timezone(self->timezone);
+	return venture_time_to_date_string(when, zone);
+}
+
 static gchar *
 trial_reminder_key(VentureEntity *sub)
 {
@@ -1120,11 +1242,25 @@ trial_reminder(VentureBillingService *self, VentureEntity *sub, GDateTime *at, c
 	to = customer_address(self, sub, org, &name);
 	if (to == NULL)
 		return TRUE;
-	amount = preview_next_invoice(self, sub, org, error);
+	/* The reminder runs inside the renewal sweep's transaction, so a
+	 * subscription whose invoice cannot be worked out -- its company
+	 * deleted, its price gone -- must cost only its own reminder, not roll
+	 * back every renewal the sweep made. Nothing has been written yet, so
+	 * skipping is clean, and the sweep tries again next time. */
+	{
+		g_autoptr(GError) failure = NULL;
+		amount = preview_next_invoice(self, sub, org, &failure);
+		if (failure != NULL)
+		{
+			g_message("Trial reminder skipped for subscription %" G_GINT64_FORMAT " -- %s",
+				venture_entity_get_id(sub), failure->message);
+			return TRUE;
+		}
+	}
 	if (amount == NULL)
-		return error == NULL || *error == NULL;
+		return TRUE;
 	key = trial_reminder_key(sub);
-	day = venture_time_to_date_string(trial_end, NULL);
+	day = notice_day(self, trial_end);
 	money = venture_money_to_display_string(amount, TRUE);
 	terms = terms_text(self, number(sub, "pending-plan-price-id") != 0 ? number(sub, "pending-plan-price-id") :
 		number(sub, "plan-price-id"), number(sub, "seats"), org);
@@ -1168,8 +1304,8 @@ price_change_notice(VentureBillingService *self, VentureEntity *sub, VentureEnti
 		return FALSE;
 	before = terms_text(self, from_price, from_seats, org);
 	after = terms_text(self, to_price, seats, org);
-	effective_day = venture_time_to_date_string(effective, NULL);
-	renew_day = venture_time_to_date_string(renews, NULL);
+	effective_day = notice_day(self, effective);
+	renew_day = notice_day(self, renews);
 	subject = g_strdup(scheduled ? "Your subscription changes at renewal" : "Your subscription has changed");
 	body = g_string_new(NULL);
 	g_string_append_printf(body, "Hello %s,\n\nYour subscription is changing from %s to %s.\n\n", name, before, after);
@@ -1188,7 +1324,9 @@ price_change_notice(VentureBillingService *self, VentureEntity *sub, VentureEnti
 		}
 		else if (adjustment != NULL && venture_money_get_amount(adjustment) < 0)
 		{
-			g_autoptr(VentureMoney) credit = venture_money_multiply_rational(adjustment, -1, 1, NULL);
+			g_autoptr(VentureMoney) credit_tax = NULL;
+			gint64 jurisdiction = 0;
+			g_autoptr(VentureMoney) credit = carried_credit(self, sub, adjustment, &credit_tax, &jurisdiction, NULL);
 			g_autofree gchar *part = credit != NULL ? venture_money_to_display_string(credit, TRUE) : NULL;
 			if (part != NULL)
 				g_string_append_printf(body, ", after a credit of %s for the rest of this period", part);
@@ -1815,12 +1953,15 @@ gboolean
 venture_billing_service_move_customers(VentureBillingService *self, VenturePlanPrice *from, VenturePlanPrice *to,
 	gboolean at_period_end, GDateTime *at, const VentureActor *actor, guint *moved, GError **error)
 {
-	g_autoptr(VentureQuery) q = NULL;
-	g_autoptr(GPtrArray) subs = NULL;
+	/* On the retired price now, and due to move onto it at renewal: a
+	 * pending change still lands a customer on it, so it is redirected. */
+	static const gchar *const holds[] = { "plan-price-id", "pending-plan-price-id" };
+	g_autoptr(GPtrArray) subs = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GArray) pending = g_array_new(FALSE, FALSE, sizeof(gboolean));
 	VentureEntity *old_price = VENTURE_ENTITY(from);
 	VentureEntity *new_price = VENTURE_ENTITY(to);
 	gint64 org = venture_entity_get_organization_id(old_price);
-	guint i, count = 0;
+	guint i, h, count = 0;
 
 	g_return_val_if_fail(VENTURE_IS_BILLING_SERVICE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_PLAN_PRICE(from) && VENTURE_IS_PLAN_PRICE(to), FALSE);
@@ -1833,19 +1974,31 @@ venture_billing_service_move_customers(VentureBillingService *self, VenturePlanP
 		number(old_price, "plan-id") != number(new_price, "plan-id") ||
 		venture_entity_get_id(old_price) == venture_entity_get_id(new_price))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "customers move to another price of the same plan");
-	q = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
-	venture_query_set_organization(q, org);
-	venture_query_set_limit(q, 0);
-	if (!venture_query_add_filter_int(q, "plan-price-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(old_price), error) ||
-		!venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, error))
-		return FALSE;
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	subs = venture_database_find(self->database, q, error);
-	if (subs == NULL)
+	for (h = 0; h < G_N_ELEMENTS(holds); h++)
 	{
-		venture_database_rollback(self->database);
-		return FALSE;
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+		g_autoptr(GPtrArray) found = NULL;
+		venture_query_set_organization(q, org);
+		venture_query_set_limit(q, 0);
+		if (!venture_query_add_filter_int(q, holds[h], VENTURE_FILTER_OP_EQ, venture_entity_get_id(old_price), error) ||
+			!venture_query_add_order(q, "id", VENTURE_SORT_ASCENDING, error) ||
+			(found = venture_database_find(self->database, q, error)) == NULL)
+		{
+			venture_database_rollback(self->database);
+			return FALSE;
+		}
+		for (i = 0; i < found->len; i++)
+		{
+			VentureEntity *sub = g_ptr_array_index(found, i);
+			gboolean scheduled = h == 1;
+			/* Already moved by the first pass. */
+			if (scheduled && number(sub, "plan-price-id") == venture_entity_get_id(old_price))
+				continue;
+			g_ptr_array_add(subs, g_object_ref(sub));
+			g_array_append_val(pending, scheduled);
+		}
 	}
 	for (i = 0; i < subs->len; i++)
 	{
@@ -1853,13 +2006,17 @@ venture_billing_service_move_customers(VentureBillingService *self, VenturePlanP
 		g_autoptr(VentureEntity) instruction = NULL;
 		g_autoptr(GError) refusal = NULL;
 		gint state = choice(sub, "status");
+		/* A customer due to move at renewal agreed to their current price
+		 * until then, so only where they land changes, whenever the rest
+		 * move. */
+		gboolean at_end = at_period_end || g_array_index(pending, gboolean, i);
 		/* Trialing, active and past due: the customers still on it. A
 		 * paused subscription cannot change terms and stays put. */
 		if (state > 2)
 			continue;
 		instruction = new_record(VENTURE_TYPE_BILLING_REQUEST, org);
 		g_object_set(instruction, "action", "change", "subscription-id", venture_entity_get_id(sub),
-			"plan-price-id", venture_entity_get_id(new_price), "at-period-end", at_period_end, "at", at,
+			"plan-price-id", venture_entity_get_id(new_price), "at-period-end", at_end, "at", at,
 			"expected-version", venture_entity_get_version(sub), NULL);
 		if (!venture_billing_service_execute(self, VENTURE_BILLING_REQUEST(instruction), actor, &refusal))
 		{

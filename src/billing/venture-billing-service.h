@@ -53,8 +53,11 @@ VentureMoney *venture_billing_service_cancel_credit(VentureBillingService *self,
  *
  * Moves every trialing, active and past-due subscription on @from to @to,
  * each by an ordinary `change` instruction through
- * venture_billing_service_execute(), all in one transaction. One refusal
- * rolls every move back, and the error names the customer it stopped at.
+ * venture_billing_service_execute(), all in one transaction. A
+ * subscription scheduled to move onto @from at renewal is redirected to
+ * @to at renewal instead, whatever @at_period_end says, since it keeps its
+ * current price until then. One refusal rolls every move back, and the
+ * error names the customer it stopped at.
  *
  * Returns: TRUE when every subscription moved
  */
@@ -105,6 +108,27 @@ gboolean venture_billing_prepare_request(VentureBillingService *self, VentureBil
  */
 VentureMoney *venture_billing_service_next_invoice(VentureBillingService *self,
 	VentureCustomerSubscription *subscription, GError **error);
+/**
+ * venture_billing_service_price_tax_rate:
+ * @self: the billing service
+ * @price: the plan price an invoice will charge
+ * @company_id: the customer, or 0 for none
+ * @at: (nullable): when the invoice will be issued, for an address rate's effective dates
+ * @numerator: (out): the rate's numerator; 0 when nothing is charged
+ * @denominator: (out): the rate's denominator
+ * @error: (out) (optional): error location
+ *
+ * The tax rate a subscription invoice for @price will charge @company_id,
+ * decided the way issue does: nothing for an exempt customer, the price's
+ * tax code when it has one, otherwise the customer's address rate through
+ * the sales-tax selector. Nothing is written. The next-invoice preview and
+ * a quote's subscription line both ask this, so neither can promise a
+ * figure the invoice will not charge.
+ *
+ * Returns: TRUE when the rate was worked out
+ */
+gboolean venture_billing_service_price_tax_rate(VentureBillingService *self, VenturePlanPrice *price,
+	gint64 company_id, GDateTime *at, gint64 *numerator, gint64 *denominator, GError **error);
 /**
  * venture_billing_service_trial_reminder:
  * @self: the billing service

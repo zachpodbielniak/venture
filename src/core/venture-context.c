@@ -184,6 +184,8 @@ venture_context_new(
 		"trial-reminder-days", G_BINDING_SYNC_CREATE);
 	g_object_bind_property(config, "billing-price-change-notices", venture_billing_service_get(self->database),
 		"price-change-notices", G_BINDING_SYNC_CREATE);
+	g_object_bind_property(config, "locale-timezone", venture_billing_service_get(self->database), "timezone",
+		G_BINDING_SYNC_CREATE);
 	/* Generated invoice dates and same-day receipts follow the business
 	 * calendar, not the zone the process runs in. */
 	g_object_bind_property(config, "locale-timezone", venture_settlement_service_get(self->database), "timezone",

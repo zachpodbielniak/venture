@@ -2028,6 +2028,196 @@ test_proration_credit_full_invoice(Fixture *f, gconstpointer data)
 	g_assert_cmpint(money_field(allocation, "amount"), ==, metered ? 1500 : 1100);
 }
 
+/*
+ * A downgrade's carried credit gives back the tax too, as cancelling now
+ * does: $100 a month at 10%, moved to $50 half way through April. The
+ * $50 difference spread over thirty days puts the remainder cents on the
+ * first ones, so the fifteen unused days are $24.95, charged $2.495 of
+ * tax -- $2.50 half to even -- and the renewal's credit note is $27.45
+ * with the $2.50 on it, not the untaxed $24.95. The preview promised the
+ * same. If this regresses, a downgrading customer quietly loses the tax
+ * on the days they paid for and the sales tax return overstates what was
+ * collected.
+ */
+static void
+test_proration_credit_downgrade_tax(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) base = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) high = record(f, "plan_price");
+	g_autoptr(VentureEntity) low = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL, sub = NULL, credit = NULL, line = NULL;
+	g_autoptr(VentureMoney) preview = NULL, balance = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 code = tax_rate(f, 10, 100), id, jurisdiction = 0, credit_jurisdiction = -1;
+
+	(void)data;
+	g_object_set(high, "plan-id", integer(base, "plan-id"), "currency", "USD", "active", TRUE, "tax-code-id", code, NULL);
+	field(high, "amount", "100 USD");
+	save(f, high);
+	g_object_set(low, "plan-id", integer(base, "plan-id"), "currency", "USD", "active", TRUE, "tax-code-id", code, NULL);
+	field(low, "amount", "50 USD");
+	save(f, low);
+	a = request(f, "start", 0, "2026-04-01");
+	g_object_set(a, "company-id", f->company, "plan-price-id", venture_entity_get_id(high), NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	g_assert_cmpint(invoice_total(f, a), ==, 11000);
+	g_clear_object(&a);
+	line = last_of(f, "invoice_line");
+	g_object_get(line, "tax-jurisdiction-id", &jurisdiction, NULL);
+
+	/* Fifteen of April's thirty days left. */
+	a = request(f, "change", id, "2026-04-16");
+	g_object_set(a, "plan-price-id", venture_entity_get_id(low), NULL);
+	save(f, a);
+	g_assert_cmpint(money_field(a, "proration-amount"), ==, -2495);
+	g_clear_object(&a);
+
+	/* May: $55.00 taxed, less the $27.45 credit. */
+	sub = subscription(f, id);
+	preview = venture_billing_service_next_invoice(venture_billing_service_get(f->db),
+		VENTURE_CUSTOMER_SUBSCRIPTION(sub), &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(preview), ==, 5500 - 2745);
+
+	a = request(f, "renew", id, "2026-05-01");
+	save(f, a);
+	credit = last_of(f, "customer_credit");
+	g_assert_cmpint(money_field(credit, "amount"), ==, 2745);
+	g_assert_cmpint(money_field(credit, "tax-amount"), ==, 250);
+	g_object_get(credit, "tax-jurisdiction-id", &credit_jurisdiction, NULL);
+	g_assert_cmpint(credit_jurisdiction, ==, jurisdiction);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db),
+		integer(a, "invoice-id"), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 5500 - 2745);
+}
+
+/*
+ * A reminder's date is the day on the business calendar, as the portal
+ * shows it: a trial started at 02:00 UTC on 1 January ends at 02:00 UTC
+ * on the 15th, which is the evening of the 14th in New York. If this
+ * regresses, the mail and the portal name different days for the same
+ * trial, and the customer believes whichever lets them keep it longer.
+ */
+static void
+test_trial_reminder_zone(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GPtrArray) sent = NULL;
+	g_autofree gchar *subject = NULL;
+	(void)data;
+	g_object_set(p, "trial-days", (gint64)14, NULL);
+	save(f, p);
+	customer_email(f, "accounts@customer.test");
+	g_object_set(venture_billing_service_get(f->db), "timezone", "America/New_York", NULL);
+	a = request(f, "start", 0, "2026-01-01T02:00:00Z");
+	g_object_set(a, "company-id", f->company, "plan-price-id", f->price, "seats", (gint64)2, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	a = request(f, "renew-sweep", 0, "2026-01-13");
+	save(f, a);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 1);
+	subject = text(g_ptr_array_index(sent, 0), "subject");
+	g_assert_cmpstr(subject, ==, "Your trial ends on 2026-01-14");
+	g_object_set(venture_billing_service_get(f->db), "timezone", NULL, NULL);
+}
+
+/*
+ * A trial reminder that cannot be worked out -- its customer company was
+ * deleted -- is skipped, and the sweep still renews everyone else. The
+ * reminder runs inside the sweep's transaction, so an error from it used
+ * to roll back every renewal in the organization, every day, until
+ * somebody noticed nobody was being invoiced.
+ */
+static void
+test_trial_reminder_broken(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) base = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) trial = record(f, "plan_price");
+	g_autoptr(VentureEntity) gone = record(f, "company");
+	g_autoptr(VentureEntity) contact = record(f, "contact");
+	g_autoptr(VentureEntity) a = NULL;
+	g_autoptr(GPtrArray) sent = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(trial, "plan-id", integer(base, "plan-id"), "currency", "USD", "active", TRUE,
+		"trial-days", (gint64)14, NULL);
+	field(trial, "amount", "30 USD");
+	save(f, trial);
+	g_object_set(gone, "name", "Gone customer", NULL);
+	save(f, gone);
+	g_object_set(contact, "name", "Still reachable", "email", "left@customer.test",
+		"company-id", venture_entity_get_id(gone), NULL);
+	save(f, contact);
+	/* Due to renew on 1 February. */
+	(void)start(f);
+	a = request(f, "start", 0, "2026-01-20");
+	g_object_set(a, "company-id", venture_entity_get_id(gone), "contact-id", venture_entity_get_id(contact),
+		"plan-price-id", venture_entity_get_id(trial), NULL);
+	save(f, a);
+	g_clear_object(&a);
+	g_assert_true(venture_database_delete(f->db, gone, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, "invoice"), ==, 1);
+
+	/* Its trial ends on 3 February, inside the reminder window. */
+	a = request(f, "renew-sweep", 0, "2026-02-01");
+	save(f, a);
+	g_assert_cmpint(count(f, "invoice"), ==, 2);
+	sent = mail(f);
+	g_assert_cmpuint(sent->len, ==, 0);
+}
+
+/*
+ * A customer scheduled to switch onto a retired price at renewal is still
+ * one of its customers: moving them redirects the switch to the new price,
+ * at renewal, even when everyone else moves now -- they agreed to their
+ * current price until then. If this regresses, retiring a price moves
+ * nobody who had only chosen it, and they land on it at their renewal.
+ */
+static void
+test_move_pending_customers(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) base = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) retiring = record(f, "plan_price");
+	g_autoptr(VentureEntity) next = record(f, "plan_price");
+	g_autoptr(VentureEntity) a = NULL, s = NULL;
+	g_autoptr(GDateTime) at = g_date_time_new_utc(2026, 1, 20, 0, 0, 0);
+	g_autoptr(GError) error = NULL;
+	gint64 id;
+	guint moved = 0;
+	(void)data;
+	g_object_set(retiring, "plan-id", integer(base, "plan-id"), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(retiring, "amount", "35 USD");
+	save(f, retiring);
+	g_object_set(next, "plan-id", integer(base, "plan-id"), "currency", "USD", "active", TRUE, "per-seat", TRUE, NULL);
+	field(next, "amount", "40 USD");
+	save(f, next);
+	id = start(f);
+	a = request(f, "change", id, "2026-01-10");
+	g_object_set(a, "plan-price-id", venture_entity_get_id(retiring), "at-period-end", TRUE, NULL);
+	save(f, a);
+	g_clear_object(&a);
+	g_object_set(retiring, "active", FALSE, NULL);
+	save(f, retiring);
+
+	g_assert_true(venture_billing_service_move_customers(venture_billing_service_get(f->db),
+		VENTURE_PLAN_PRICE(retiring), VENTURE_PLAN_PRICE(next), FALSE, at, NULL, &moved, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(moved, ==, 1);
+	s = subscription(f, id);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, f->price);
+	g_assert_cmpint(integer(s, "pending-plan-price-id"), ==, venture_entity_get_id(next));
+	g_clear_object(&s);
+	a = request(f, "renew", id, "2026-02-01");
+	save(f, a);
+	s = subscription(f, id);
+	g_assert_cmpint(integer(s, "plan-price-id"), ==, venture_entity_get_id(next));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2087,5 +2277,9 @@ main(int argc, char **argv)
 	g_test_add("/billing/price-tax", Fixture, NULL, setup, test_price_tax, teardown);
 	g_test_add("/billing/mrr-discount", Fixture, NULL, setup, test_mrr_discount, teardown);
 	g_test_add("/billing/move-customers", Fixture, NULL, setup, test_move_customers, teardown);
+	g_test_add("/billing/move-pending-customers", Fixture, NULL, setup, test_move_pending_customers, teardown);
+	g_test_add("/billing/proration-credit-downgrade-tax", Fixture, NULL, setup, test_proration_credit_downgrade_tax, teardown);
+	g_test_add("/billing/trial-reminder-zone", Fixture, NULL, setup, test_trial_reminder_zone, teardown);
+	g_test_add("/billing/trial-reminder-broken", Fixture, NULL, setup, test_trial_reminder_broken, teardown);
 	return g_test_run();
 }
