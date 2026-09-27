@@ -224,11 +224,13 @@ snapshot_excluded(const gchar *name)
 {
 	/* Evidence and delivery queues are effects of requesting consent, not
 	 * inputs to the financial calculation. Everything else is conservatively
-	 * included, so a new module cannot accidentally omit a dependency. */
+	 * included, so a new module cannot accidentally omit a dependency.
+	 * `session` is not here: it names the sessions module's runs of effort,
+	 * whose posted yields are stock -- business data, not a login. */
 	static const gchar *const excluded[] = {
 		"accounting_approval", "audit_entry", "audit_log", "notification", "watch",
 		"webhook_delivery", "chat_thread", "chat_message", "mail_message", "mail_delivery",
-		"mail_attempt", "session", "user_session", "user", "api_token", NULL
+		"mail_attempt", "user_session", "user", "api_token", NULL
 	};
 	return g_strv_contains(excluded, name);
 }

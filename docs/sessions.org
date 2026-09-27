@@ -1,0 +1,482 @@
+#+title: Sessions
+#+description: Time-boxed runs of effort, what each yielded, posting goods into stock once, and what an hour of each kind is worth
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+#+version: 0.1.0
+
+* Effort measured by what it yielded
+
+A lot of work comes in runs: you start, you do the thing for a while, you
+stop, and what matters afterwards is what the run produced and how long
+it took. The =sessions= module keeps those runs, generically, in two
+record types, one action and one report:
+
+- =session= :: a time-boxed stretch of effort -- when it started and
+  ended, what kind of run it was (=activity=), what it cost.
+- =session_yield= :: one thing it produced: /goods/ (units of a product)
+  or /money/ (an amount), never both.
+- =post= :: the action on a session that puts its goods into stock --
+  each yield once, at no cost, in one transaction.
+- =session_performance= :: the report that compares kinds of run: hours,
+  what they yielded, what they cost, and what an hour of each is worth.
+
+The same records describe:
+
+- *A farming run in a game*: a session is forty minutes on a herb route;
+  its yields are 38 herbs and 12 gold looted from mobs; posting puts the
+  herbs into the character's bags; the report says which route makes the
+  most gold an hour.
+- *A market stall*: a session is Saturday at the farmers' market; its cost
+  is the pitch fee and the fuel; its yield is the cash taken (money) and
+  the jars of jam made the night before are sales elsewhere. Compare
+  Saturday markets against Sunday ones by net per hour.
+- *A production shift*: a session is a four-hour shift on the press; its
+  yields are the units that came off it; posting puts them into finished
+  goods. (A shift that /consumes/ stock is a craft -- see
+  [[file:production.org][Production]] -- and a session can sit alongside
+  it to record the hours.)
+- *A study or writing block*: a session is a two-hour block; its yield is
+  a finished chapter recorded as a product, or nothing at all; the report
+  shows how many hours went into each activity this month.
+- *Foraging, fishing, picking*: the yields are what you gathered; posting
+  puts them in the pantry at no cost, because nothing was paid for them.
+
+The module is =sessions=. It requires only =core=: a run that yields money,
+or nothing, needs no product. It suggests =sales=, which owns products,
+inventory items and locations -- a goods yield names a product, posting
+fills an inventory item, and a session's location is a =location= -- and
+=market=, whose observed prices value goods that were recorded without a
+value. With =sales= off the module still works for money yields; goods and
+posting are refused with a message that says so (see below). See
+[[file:modules.org][Modules]].
+
+* Sessions
+
+** Fields
+
+| Field         | Kind      | For                                                                 |
+|---------------+-----------+---------------------------------------------------------------------|
+| =name=        | string    | what you call this run; required                                    |
+| =venture_id=  | reference | optional: the venture it was for                                    |
+| =activity=    | string    | what kind of run it was; indexed. Sessions of one activity are compared |
+| =category_id= | reference | optional: where it is filed ([[file:taxonomy.org][Taxonomy]]); the category's =applies_to= must be empty or =session= |
+| =location_id= | reference | optional: where it happened, and where its goods land when posted (sales module) |
+| =started_at=  | datetime  | when it began; required                                             |
+| =ended_at=    | datetime  | when it finished; empty while it is still going                     |
+| =minutes=     | integer   | how long it took; derived from the two times                        |
+| =cost=        | money     | optional: what it took -- consumables, fees, fuel, a repair bill     |
+| =tags=        | string    | comma separated                                                     |
+| =notes=       | text      |                                                                     |
+| =posted_at=   | datetime  | technical: when its goods were last put into stock; set by Post     |
+
+=activity= is free text on purpose. "herbing", "mining", "saturday
+market" and "chapter drafting" are all somebody's activity; a fixed list
+would be wrong for everybody. Keep one spelling per kind of run -- the
+report groups by the exact string. =category_id= is the tree-shaped
+alternative when activities themselves group (Farming / Herbs, Farming /
+Ore).
+
+** Length
+
+=minutes= follows the times, because two sources of one fact disagree
+sooner or later and the report divides by this one. The save validator
+(=src/sessions/venture-sessions.c=) decides it for every writer -- the form,
+the API, an approved staged change, the assistant:
+
+| Written                         | Result                                                         |
+|---------------------------------+----------------------------------------------------------------|
+| started and ended               | minutes = the difference, to the nearest minute                |
+| started and minutes (no end)    | the end is filled in: started + minutes (a finished session)   |
+| started only                    | an open session; minutes is 0                                  |
+| started, ended and minutes that disagree | refused: "minutes is 45 but the times give 60; change the end instead, or leave minutes empty" |
+
+The fill-in is the factory's rule for a derived date: a date given is
+kept, only an empty one is filled. "I farmed for 90 minutes" is a
+finished session; you need not work out when it ended.
+
+A minutes value that is /already stored/ is not a disagreement: a form
+posts every field back, so editing a finished session's end recomputes its
+minutes rather than refusing the stale figure. Clearing the end reopens
+the session and zeroes its minutes.
+
+** What the save refuses
+
+- no =started_at=;
+- an end before the start;
+- negative minutes, and a run longer than a year
+  (=VENTURE_SESSIONS_MAX_MINUTES=) -- an end date typed in the wrong year
+  would otherwise make every per-hour figure nonsense;
+- minutes written that disagree with the two times;
+- a venture, category or location in another organization (only when the
+  reference is being written, the rule every reference follows).
+
+=posted_at= is the post's to write. Anything else writing it is ignored,
+not refused: a form posts every field back, and a timestamp that went
+through a text box need not come back byte for byte.
+
+* Yields
+
+** Fields
+
+| Field               | Kind      | For                                                               |
+|---------------------+-----------+-------------------------------------------------------------------|
+| =session_id=        | reference | the session that produced it; required                            |
+| =product_id=        | reference | goods: what it produced                                           |
+| =quantity=          | integer   | goods: how many units; at least 1                                 |
+| =amount=            | money     | money: what it produced directly; more than zero                  |
+| =unit_value=        | money     | goods, optional: what one unit was worth when recorded            |
+| =inventory_item_id= | reference | goods, optional: the stock it lands in when posted                |
+| =inventory_txn_id=  | reference | technical: the movement that put it into stock; set by Post       |
+| =notes=             | text      |                                                                   |
+
+** Two forms, exactly one
+
+A yield is either goods or money:
+
+- *Goods* -- =product_id= and =quantity= (≥ 1). Ore mined, pastries
+  baked, a chapter finished. Posting puts them into stock. =unit_value=
+  and =inventory_item_id= belong to this form only.
+- *Money* -- =amount= (> 0). Coins looted, cash taken at the stall, a
+  bounty. Counted by the report in its own currency; it never touches
+  inventory, and posting leaves it alone.
+
+Both at once is refused ("a yield is goods or money, not both; record the
+amount as a second yield"): the report would count it twice. Neither is
+refused too. A loss is not a negative yield -- what a session cost goes in
+its =cost=.
+
+** =unit_value= is a valuation, not a cost
+
+=unit_value= is what one unit was reckoned to be worth when it was
+recorded -- the market price of a herb that day, the shelf price of a jar.
+It is what the report values the goods at. It is *not* what they cost:
+nothing was paid for a herb picked off the ground. Posting therefore gives
+the received units a *zero* cost layer (see below), and =unit_value= is
+free to change after posting -- it moves nothing.
+
+** What the save refuses
+
+The validator runs for every writer:
+
+- no session, a session that does not exist, or one in another
+  organization (held always: a yield is part of its session);
+- neither form, or both;
+- goods with a quantity below 1; money that is zero or negative;
+- a quantity, unit value or stock on a money yield;
+- a negative unit value;
+- a product or stock in another organization;
+- stock that holds a different product ("Stock #7 holds Copper Ore, not
+  Peacebloom") -- posting ore into the herb bag would be wrong on both
+  shelves;
+- goods while the sales module is off, when the product is being written
+  ("goods name a product, and products belong to the sales module, which
+  is off; record an amount instead, or turn sales on"). A yield recorded
+  before sales was switched off stays editable;
+- =inventory_txn_id= written by anything but the post ("is set by posting
+  the session, not by hand"). A hand-written one could make a yield look
+  posted with nothing on the shelf, or clear it and post the same units
+  twice.
+
+** A posted yield is frozen
+
+Once a yield has an =inventory_txn_id=, its units are on the shelf and the
+movement records how many and where. So:
+
+- its =product_id=, =quantity=, =inventory_item_id=, =session_id= and
+  =amount= cannot change ("is posted: its units are in stock as movement
+  #41 ... Record a correction as a stock adjustment");
+- its =unit_value= and =notes= can -- they move nothing;
+- it cannot be deleted, and neither can its session ("This session has
+  yields in stock"). Deleting would leave the units on the shelf with no
+  record of where they came from. Both refusals come from
+  =venture_sessions_check_write()=, which sits in the database's subsystem
+  guard list and therefore covers delete, purge and restore from every
+  door.
+
+Correcting a posted yield is an inventory question, not a session one:
+adjust the stock, and add a note to the yield.
+
+The session's page lists its yields under related records, with New to
+add one; there is no bespoke yields block. The Post button is in the
+page's Actions card.
+
+* Posting
+
+** What one post does
+
+=post= is a record action on =session=. It takes no parameters: where each
+yield goes is on the records, where the page shows it. In one database
+transaction, =venture_sessions_post()=:
+
+1. refuses when the sales module is off (there is no stock to post into);
+2. reads the session's live yields, oldest first;
+3. for every *goods* yield with no =inventory_txn_id=:
+   - finds its stock (below);
+   - receives =quantity= units into it through
+     =venture_inventory_service_produce()= with no draws: a positive
+     =production= inventory transaction, dated the session's =ended_at=
+     (now for an open session), =reference= =session:<id>=, and a
+     *zero-cost* layer;
+   - stamps the yield with the transaction and the stock it landed in;
+4. if anything was posted, stamps the session's =posted_at= with now.
+
+Money yields and already-posted yields are skipped. A refusal or a failure
+at any step -- the last yield's write included -- rolls everything back:
+no movement, no layer, no stamp.
+
+The action returns the session as it stands afterwards. Stamping it is a
+save, which bumps its version; the object the action returns is that
+saved one, so a caller that edits it next does not conflict with itself
+(AGENTS.md, "Derived writes bump the version").
+
+** Idempotent
+
+A posted yield is never posted again -- the =inventory_txn_id= stamp is the
+whole of the mechanism. So:
+
+- posting twice posts nothing the second time, and writes nothing at all
+  (the session is not re-stamped, its version does not move);
+- a yield added after a post is the only one the next post touches;
+- a retried request -- a network timeout, a double click, a staged post
+  approved after somebody posted by hand -- succeeds and changes nothing.
+
+Nothing to post is a success, not an error: =venture_sessions_post()=
+reports how many it posted (0), and the action returns the session. That
+is also why the Post button is offered on a session with nothing new: a
+retry must not be refused.
+
+** Which stock
+
+- The yield's own =inventory_item_id= when set. It is checked again at the
+  post -- the item may have been edited or deleted since -- and a stale one
+  is refused, saying to set the yield's Stock again.
+- Otherwise =venture_production_find_stock()=, the craft's finder: the one
+  inventory item for the product in the session's organization, at
+  exactly the session's =location_id= (not its children), or anywhere
+  when the session names no location. None is refused naming what to
+  create; more than one is refused naming every place and its id, and --
+  for a session -- the two ways to answer it: set the session's location,
+  or the yield's Stock.
+
+The stock found is written onto the yield when it posts, so the page shows
+where the units went.
+
+** Why the cost layer is zero
+
+The units were not bought. A cost layer at their =unit_value= would book
+the profit when the herb was picked (inventory up, at market value) and
+none when it sold (cost of goods sold equal to the price). Zero is the
+honest cost: the whole margin shows up when the goods are sold, where the
+books record revenue. The layer is still needed -- the sale path refuses
+to issue units that have no layer -- so it is written, at zero, in the
+item's unit-cost currency or else the organization's book currency.
+
+The session's own =cost= is not spread over the units either. It is the
+run's expense, and the performance report nets it off; putting it into
+the layers as well would count it twice. If the run's consumables should
+reach cost of goods sold, record them as a craft (consumed components) or
+as an expense.
+
+No journal is posted: stock arrived from outside the books at no cost, so
+account 1200 does not move. =inventory_valuation= includes the units at
+zero.
+
+** Staging
+
+=post= is stageable. A staged action holds only its subject; approval
+performs the whole post afresh in one transaction, posting whatever is
+unposted then. A post proposed for three yields and approved after a
+fourth was added posts four.
+
+** Organization
+
+A record action is judged in its record's organization, so the session
+places the post: the access policy checks the session, every item is
+looked up in the session's organization, and the movements are filed
+there. No =organization_id= parameter is needed, or accepted.
+
+* Reports
+
+** =session_performance=
+
+One row per group and currency: how each kind of run did, in the sessions
+that *started* in the period.
+
+| Option            | Meaning                                                                          |
+|-------------------+----------------------------------------------------------------------------------|
+| =group_by=        | =activity= (default), =category=, =location= or =venture=                        |
+| =category_depth=  | with =group_by= =category= or =location=: roll up to this level of the tree, 0 being the top |
+| =price_source=    | value goods with no =unit_value= at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
+| =as_of=           | value every goods yield at this date instead of at the end of its session        |
+| =venture_id=      | only this venture's sessions                                                     |
+| =organization_id= | the legal entity; the default organization otherwise                             |
+
+=group_by=location= reads locations, which belong to the sales module; with
+sales off it is refused rather than answered as "No location" for
+everything. =category_depth= on any other grouping, an unknown grouping
+and a depth outside the tree are refused.
+
+| Column           | What                                                                          |
+|------------------+-------------------------------------------------------------------------------|
+| =group=          | the activity, the category or location path ("Farming / Herbs"), or the venture |
+| =currency=       | the one currency this row's money is in; empty for a group with no money    |
+| =sessions=       | sessions in the group                                                         |
+| =open=           | of those, still open (no =ended_at=)                                          |
+| =hours=          | Σ minutes ÷ 60 of *finished* sessions                                         |
+| =units=          | Σ quantity of goods yields                                                    |
+| =value=          | Σ goods quantity × unit value                                                 |
+| =amount=         | Σ money yields                                                                |
+| =cost=           | Σ session cost                                                                |
+| =net=            | value + amount − cost                                                         |
+| =value_per_hour= | (value + amount) of finished sessions ÷ their hours                          |
+| =net_per_hour=   | that less their cost, ÷ the same hours                                        |
+| =priced_by=      | how goods were valued: "unit value", the source, "prices seen, any source", "list price" |
+| =note=           | goods with no value                                                           |
+
+*One row per currency, and the counts repeat.* A run that yields gold and
+costs dollars reads as two rows -- a GOLD row with its value, amount, net
+and rates, and a USD row with its cost, a negative net and a negative net
+per hour -- never one number in neither currency. =sessions=, =open=,
+=hours= and =units= belong to the group, not to a currency, and repeat on
+every currency row of it: do not add them down the column. A group with no
+money at all (a study block) still gets one row, with no currency.
+
+*Rates over finished hours.* An open session's yields and cost are in the
+totals, but not in =value_per_hour= or =net_per_hour=: it has not finished
+spending its hours, and dividing its yields by the finished sessions'
+hours would inflate them. Rates are one exact division rounded half to
+even, like every money figure here.
+
+*How goods are valued.* In order:
+
+1. the yield's own =unit_value=;
+2. with the market module on, the latest price observed from
+   =price_source= at the session's end (or at =as_of=), through
+   =venture_market_latest_price()=; nothing else -- falling back to a list
+   price would mix two kinds of number in one total without saying which;
+3. with the market module off, the product's =list_price=.
+
+=as_of= is the "what is everything I gathered worth today" question: every
+yield is valued at one date. Without it each yield is valued as of the end
+of its own session (an open one: now), which is what it was worth when it
+was made.
+
+*A missing value is named, not zero.* Goods with neither a unit value nor a
+price are named in =note=, and =value=, =net= and both rates are left blank
+on every row of the group -- the missing thing might have been worth
+anything, in any currency. What does not depend on it still stands: counts,
+hours, money yielded and cost.
+
+A worked example: three herbing runs, the ore observed at 2.5 gold
+("market value") before the second run ended and at 7 after.
+
+| Run      | Hours | Yields                                  | Cost     |
+|----------+-------+-----------------------------------------+----------|
+| one      | 2     | 10 herbs at 1 gold (unit value), 5 gold | 1.00 USD |
+| two      | 1     | 4 ore, no unit value                    |          |
+| three    | open  | 1 herb at 1 gold                        |          |
+
+| Row  | sessions | open | hours | units | value   | amount | cost | net      | value/hour | net/hour  |
+|------+----------+------+-------+-------+---------+--------+------+----------+------------+-----------|
+| GOLD | 3        | 1    | 3     | 15    | 21 GOLD | 5 GOLD |      | 26 GOLD  | 8.3333 GOLD | 8.3333 GOLD |
+| USD  | 3        | 1    | 3     | 15    |         |        | 1.00 | -1.00    |            | -0.33 USD |
+
+21 = 10 + 4 × 2.5 + 1 (the 7-gold observation came after run two ended).
+The rate is 25 gold (runs one and two) over 3 hours; run three's herb is
+in the value, not in the rate. With =as_of=2026-03-10= the ore is valued at
+7 and =value= reads 39 GOLD.
+
+** Where it is asked from
+
+=/reports/session_performance= (with a form for =group_by=,
+=category_depth=, =price_source= -- only while the market module is on --,
+=as_of= and the period), =GET /api/v1/reports/session_performance?…=,
+=venturectl report=, the assistant's and MCP's =venture_report= tool. Every
+option it takes was already forwarded by all five doors; the descriptions
+name it.
+
+It refuses, naming the bound, more than =VENTURE_AGGREGATE_MAX_ROWS=
+sessions rather than answering for some.
+
+* API and CLI
+
+#+begin_src sh
+venturectl describe session
+venturectl describe session_yield
+
+# A finished run: the minutes are worked out
+venturectl create session name="Elwynn loop" activity=herbing location_id=2 \
+    started_at=2026-03-01T10:00:00Z ended_at=2026-03-01T10:40:00Z cost="0.5000 GOLD"
+# Or just how long it took: the end is filled in
+venturectl create session name="Mine run" activity=mining \
+    started_at=2026-03-02T19:00:00Z minutes=55
+
+# What it yielded: goods, or money
+venturectl create session_yield session_id=8 product_id=11 quantity=38 unit_value="0.1200 GOLD"
+venturectl create session_yield session_id=8 product_id=12 quantity=6 inventory_item_id=31
+venturectl create session_yield session_id=8 amount="12.3400 GOLD"
+
+# Into stock, once; again posts only what is new
+venturectl act session 8 post
+venturectl --stage act session 8 post          # propose; approval posts
+curl -X POST .../api/v1/session/8/actions/post -d '{}'
+
+# Everything session 8 put into stock
+venturectl list inventory_txn reference=session:8
+
+# Which route is worth the time
+venturectl report session_performance this_month group_by=activity price_source="market value"
+venturectl report session_performance 2026 group_by=category category_depth=0
+venturectl report session_performance all group_by=location as_of=2026-03-31
+#+end_src
+
+On the wire the fields use underscores (=started_at=, =unit_value=,
+=inventory_item_id=); a POST with dashed keys is silently ignored field by
+field. =act session N post= takes no arguments.
+
+The sidebar files *Sessions* under Operations.
+
+* A game: farming runs, end to end
+
+A player farming herbs for the auction house, with a =GOLD= currency (see
+[[file:currencies.org][Currencies]]), characters and their bags as
+locations, and the auction house's observed prices in the market module:
+
+1. Record the run: =activity=herbing=, =location_id= the character, the
+   start and end (or =minutes=), =cost= the repair bill.
+2. Record the yields: each herb type as goods (=unit_value= if you noted
+   the price, else leave it to the report), the gold looted from mobs as
+   money.
+3. =act session N post=: the herbs arrive in the character's inventory
+   items at zero cost; the gold is not stock and stays on the session.
+4. Next week, =report session_performance group_by=activity
+   price_source="market value"= compares herbing with mining by gold per
+   hour, net of repairs -- and with =category_depth=, "Farming" as a whole
+   against "Crafting".
+
+Nothing in the module knows it is a game: the same steps are a stall's
+Saturday (cash as money, the fee as cost) or a shift on the press (units
+as goods into finished stock).
+
+* Traps
+
+- *=minutes= follows the times.* Do not write a duration that disagrees
+  with them; change the end. Only an empty end is filled from minutes.
+- *=unit_value= is not a cost.* Posting writes a zero cost layer; do not
+  "fix" it to the unit value. The session's =cost= is the run's expense
+  and is not spread over the units.
+- *=inventory_txn_id= and =posted_at= are the post's.* The validators let
+  them change only for the object the post is saving (a permit on the
+  database, the pattern the inventory service uses for its own rows).
+- *A posted yield is frozen and undeletable, and so is its session.*
+  Correct stock with an adjustment.
+- *Posting with nothing new succeeds.* It is idempotent by design; do not
+  make it an error.
+- *A goods yield needs the sales module.* Money yields do not; the module
+  requires only core.
+- *The report's counts repeat per currency row.* Never sum =sessions= or
+  =hours= down the column.
+- *A missing value is blank, not zero,* and it blanks the group's value,
+  net and rates in every currency.

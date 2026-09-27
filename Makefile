@@ -166,6 +166,8 @@ CORE_SRCS += src/market/venture-market-records.c
 SERVER_ONLY_SRCS += $(filter-out src/market/venture-market-records.c,$(wildcard src/market/*.c))
 CORE_SRCS += src/production/venture-production-records.c
 SERVER_ONLY_SRCS += $(filter-out src/production/venture-production-records.c,$(wildcard src/production/*.c))
+CORE_SRCS += src/sessions/venture-sessions-records.c
+SERVER_ONLY_SRCS += $(filter-out src/sessions/venture-sessions-records.c,$(wildcard src/sessions/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -278,6 +280,7 @@ PUBLIC_HDRS += $(wildcard src/crm-import/*.h)
 PUBLIC_HDRS += $(wildcard src/dedupe/*.h)
 PUBLIC_HDRS += $(wildcard src/market/*.h)
 PUBLIC_HDRS += $(wildcard src/production/*.h)
+PUBLIC_HDRS += $(wildcard src/sessions/*.h)
 PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;

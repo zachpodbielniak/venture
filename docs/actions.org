@@ -111,6 +111,15 @@ only its parameters and approval re-performs it, recounting stock then.
 Its =allowed= callback hides it on an inactive recipe rather than offering
 a button that can only be refused.
 
+=post= on =session= (see [[file:sessions.org][Sessions]]) is the same shape
+with no parameters at all: where each yield goes is on the records. It is
+idempotent -- a yield stamped with its inventory transaction is never
+posted again -- so nothing new to post is a success that returns the
+session unchanged, and its =allowed= callback does /not/ hide it on a
+session with nothing new: a retried post must not be refused. It hides it
+only while the sales module is off. It returns the session re-read after
+the stamp, because stamping bumped the version.
+
 * Services that own their transaction
 
 An action may declare =service-transaction=true= only when its service provides atomicity itself, including any whole-operation accounting consent before its first write. The registry retains parameter, role, access and veto checks but delegates the transaction and posting decision to that service. This distinguishes a draft invoice batch from the same batch with =post=true= without creating a second business-policy implementation in the registry. Recurring/batch, setup and cutover actions use this contract; saved batch application includes its result evidence in the service transaction. Existing declarations default to the registry-owned transaction.

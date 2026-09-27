@@ -437,7 +437,7 @@ venture_production_find_stock(
 
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 		            "%s is kept in %u places -- %s; name the location_id to "
-		            "craft from", product, items->len, places->str);
+		            "use", product, items->len, places->str);
 	}
 
 	return FALSE;

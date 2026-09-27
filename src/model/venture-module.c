@@ -858,6 +858,17 @@ static GType (*const production_types[]) (void) = {
 };
 static const gchar *const production_reports[] = { "recipe_margin", NULL };
 
+/* Effort measured by its outcome. It requires only core: a study block or
+ * a market day that yields money needs no product. It suggests sales,
+ * whose products and stock a goods yield names and posting fills (the
+ * references are refused while it is off, and so is the post), and
+ * market, whose observed prices value goods with no recorded value. */
+static const gchar *const sessions_suggests[] = { "sales", "market", NULL };
+static GType (*const sessions_types[]) (void) = {
+	venture_session_get_type, venture_session_yield_get_type, NULL
+};
+static const gchar *const sessions_reports[] = { "session_performance", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1255,6 +1266,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"with each recipe's margin at a chosen price source.",
 		venture_module_requires_sales, production_suggests, production_types,
 		production_reports, NULL, FALSE
+	},
+	{
+		"sessions", "Sessions",
+		"Time-boxed runs of effort -- a farming route, a market day, a "
+		"study block, a shift -- with what each yielded, goods put into "
+		"stock once, and what an hour of each kind is worth.",
+		venture_module_requires_core, sessions_suggests, sessions_types,
+		sessions_reports, NULL, FALSE
 	}
 };
 

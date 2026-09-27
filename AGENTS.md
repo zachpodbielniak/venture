@@ -625,6 +625,39 @@ than one that fails.
   its figures blank. Market off means recorded costs, and a
   `price_source` is refused. A recipe priced in two currencies gets a note
   and no money figures.
+- **A session yield's `unit-value` is never a cost.** `post` receives
+  goods through `venture_inventory_service_produce()` with no draws, which
+  writes a *zero* cost layer: nothing was paid for them, and a layer at
+  market value books the profit when they were gathered and none when
+  they sold. The session's own `cost` is not spread over the units either
+  -- `session_performance` nets it off, and it would count twice.
+- **`inventory-txn-id` and `posted-at` are the post's to write.** The
+  validators let them change only for the object `sessions_save_permitted()`
+  names on the database; a hand-set `inventory-txn-id` is refused (it would
+  make a yield look posted, or clearing it would post it twice) and a
+  hand-set `posted-at` is silently restored (forms post every field back).
+  The stamp is the whole of posting's idempotency, so a second post is a
+  success that writes nothing -- do not make it an error, and do not hide
+  the action when there is nothing new, or a retry is refused.
+- **A posted yield and its session cannot be deleted.** The refusal is
+  `venture_sessions_check_write()` in the database's subsystem guard list
+  (removal), not a save validator -- validators never see a delete.
+- **`minutes` follows the times.** Both set: derived. Only minutes
+  written: the end is filled. A written minutes that disagrees is refused
+  -- but only when it *changed*, because a form posts the stored value
+  back after the end was edited.
+- **`sessions` requires only core, so its code must survive sales off.**
+  Goods yields and `post` refuse with the switch named; the report still
+  runs (money yields, list prices); `group_by=location` is refused. Test
+  with `venture_config_set_module_enabled(config, "sales", FALSE)`.
+- **`session_performance` repeats group counts on every currency row.**
+  A group is sessions x currencies; `sessions`, `open`, `hours` and
+  `units` belong to the group. Rates divide finished sessions' money by
+  finished hours only; an unvalued goods yield blanks the group's value,
+  net and rates in every currency rather than reading zero.
+- **`session` was on the accounting approval's snapshot exclusion list**
+  as a guess at a login table that never existed. It is business data now
+  and was removed from that list; do not add it back.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

@@ -1451,7 +1451,7 @@ venturectl list inventory_txn reference=recipe:3  # everything the recipe made o
 - Refusals (exit 2) say what to do: `Short of <product>` (unless its item
   allows negative stock), a reusable component not on hand (allow-negative
   does **not** apply to tools), a product kept in several places ("name
-  the location_id to craft from"), no inventory item for the output
+  the location_id to use"), no inventory item for the output
   ("create an inventory item for it there (product_id=… location_id=…)"),
   an inactive recipe, no components, inputs costed in two currencies.
 - `location_id` means exactly that location for every component and the
@@ -1471,4 +1471,73 @@ the output. Two currencies in one recipe: a note and no money figures.
 ```sh
 venturectl report recipe_margin all price_source="market value"
 venturectl report recipe_margin all category_id=4 as_of=2026-03-01
+```
+
+## Sessions: runs of effort and what they yielded
+
+Module `sessions` (requires only `core`; suggests `sales` and `market`).
+Check `venturectl describe session` and `describe session_yield`.
+
+- `session`: `name`, `venture_id`, `activity` (free text, one spelling per
+  kind of run — the report groups by the exact string), `category_id`,
+  `location_id`, `started_at` (required), `ended_at` (empty = still open),
+  `minutes`, `cost` (money), `tags`, `notes`, `posted_at` (technical).
+- **`minutes` is derived**: both times set → the difference; only
+  `started_at` and `minutes` → `ended_at` is filled in; only `started_at` →
+  open, minutes 0. A `minutes` that disagrees with the two times is
+  refused (exit 2) — change `ended_at` instead. An end before the start,
+  negative minutes and a run over a year are refused. Writing
+  `posted_at` by hand is ignored.
+- `session_yield`: **goods** (`product_id` + `quantity` ≥ 1, optional
+  `unit_value`, optional `inventory_item_id`) **or money** (`amount` > 0),
+  never both, never neither. `unit_value` is a valuation, not a cost.
+  `inventory_txn_id` is set by posting only (writing it is refused).
+  Goods need the sales module; money does not.
+- A **posted** yield (it has `inventory_txn_id`) cannot change product,
+  quantity, stock or session, and cannot be deleted; nor can a session
+  with posted yields. `unit_value` and `notes` stay editable. Correct
+  stock with an adjustment.
+
+Posting is the `post` action on a session; it takes no arguments:
+
+```sh
+venturectl create session name="Elwynn loop" activity=herbing location_id=2 \
+    started_at=2026-03-01T10:00:00Z ended_at=2026-03-01T10:40:00Z cost="0.5000 GOLD"
+venturectl create session name="Mine run" activity=mining started_at=2026-03-02T19:00:00Z minutes=55
+venturectl create session_yield session_id=8 product_id=11 quantity=38 unit_value="0.1200 GOLD"
+venturectl create session_yield session_id=8 amount="12.3400 GOLD"
+venturectl act session 8 post
+venturectl list inventory_txn reference=session:8
+```
+
+- One transaction: each unposted goods yield arrives as a positive
+  `production` inventory transaction (reference `session:<id>`, dated the
+  session's end) with a **zero-cost** layer, and is stamped with it and
+  the stock it landed in; the session gets `posted_at`. Money yields are
+  left alone. Any refusal writes nothing.
+- **Idempotent**: posting again posts only yields added since; nothing
+  new is a success that changes nothing. Retrying is safe.
+- Stock: the yield's `inventory_item_id`, else the one item for the
+  product at exactly the session's `location_id` (anywhere when none).
+  Several places → refused, naming them ("name the location_id to use";
+  set the session's location or the yield's Stock); none → "No stock of
+  <product>" with what to create. Sales off → refused. Stageable.
+
+Report `session_performance` — `group_by` (`activity` default, `category`,
+`location`, `venture`), `category_depth` (category/location only),
+`price_source` (exact; needs the market module, refused without it),
+`as_of` (value every yield at that date instead of its session's end),
+`venture_id`, `organization_id`; the period bounds `started_at`. One row
+per group **and currency**: `sessions`, `open`, `hours` (finished
+sessions), `units`, `value` (goods), `amount` (money yields), `cost`,
+`net`, `value_per_hour`, `net_per_hour` (finished sessions over their
+hours), `priced_by`, `note`. **`sessions`/`open`/`hours`/`units` repeat on
+each currency row of a group — never sum them down the column.** Goods are
+valued at `unit_value`, else the latest observation from `price_source`
+(market on) or the list price (market off); goods with no value are named
+in `note` and value, net and the rates are blank, **not zero**.
+
+```sh
+venturectl report session_performance this_month group_by=activity price_source="market value"
+venturectl report session_performance 2026 group_by=category category_depth=0
 ```

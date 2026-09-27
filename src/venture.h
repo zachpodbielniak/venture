@@ -130,6 +130,7 @@
 #include "orgaccess/venture-mfa-records.h"
 #include "market/venture-market-records.h"
 #include "production/venture-production-records.h"
+#include "sessions/venture-sessions-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -325,6 +326,7 @@
 #include "report/venture-aggregate-report.h"
 #include "market/venture-market.h"
 #include "production/venture-production.h"
+#include "sessions/venture-sessions.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

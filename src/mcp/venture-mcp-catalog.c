@@ -806,18 +806,18 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "type", "aggregate: the record type to read.");
 		venture_mcp_catalog_add_string_property(builder, "measure", "aggregate: the field to aggregate, or count.");
 		venture_mcp_catalog_add_string_property(builder, "aggregate", "aggregate: sum, avg, min, max, count or count_distinct.");
-		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference. listing_performance: product, category or channel.");
-		venture_mcp_catalog_add_integer_property(builder, "category_depth", "aggregate: roll category and location groups up to this level.");
+		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference. listing_performance: product, category or channel. session_performance: activity, category, location or venture.");
+		venture_mcp_catalog_add_integer_property(builder, "category_depth", "aggregate, listing_performance, session_performance: roll category and location groups up to this level.");
 		venture_mcp_catalog_add_string_property(builder, "date_field", "aggregate: the date field the period bounds.");
 		venture_mcp_catalog_add_string_property(builder, "bucket", "aggregate: day, week, month, quarter or year; price_history: day, week or month.");
 		venture_mcp_catalog_add_string_property(builder, "filter", "aggregate: a list-page query string, e.g. status=open.");
 		venture_mcp_catalog_add_string_property(builder, "per", "aggregate: hour or day, adding a rate over the elapsed window.");
 		/* The market reports' questions. */
-		venture_mcp_catalog_add_integer_property(builder, "venture_id", "Narrow to one venture (aggregate, listing_performance).");
+		venture_mcp_catalog_add_integer_property(builder, "venture_id", "Narrow to one venture (aggregate, listing_performance, recipe_margin, session_performance).");
 		venture_mcp_catalog_add_integer_property(builder, "product_id", "price_history: the product whose observed prices to show.");
 		venture_mcp_catalog_add_string_property(builder, "source", "price_history: only this price source, matched exactly.");
 		/* The production report's questions. */
-		venture_mcp_catalog_add_string_property(builder, "price_source", "recipe_margin: price at the latest observation from this source, matched exactly.");
+		venture_mcp_catalog_add_string_property(builder, "price_source", "recipe_margin, session_performance: price at the latest observation from this source, matched exactly.");
 		venture_mcp_catalog_add_integer_property(builder, "category_id", "recipe_margin: only recipes in this category or beneath it.");
 
 		json_builder_set_member_name(builder, "format");

@@ -737,6 +737,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_listing_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_recipe_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_recipe_component_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_session_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_session_yield_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_plugin_config_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_user_get_type, VENTURE_DATA_CLASS_PERSONAL },
 		{ venture_api_token_get_type, VENTURE_DATA_CLASS_PERSONAL },

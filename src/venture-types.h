@@ -167,7 +167,6 @@ typedef struct _VenturePluginInfo		VenturePluginInfo;
 
 typedef struct _VentureWebServer			VentureWebServer;
 typedef struct _VentureAuth			VentureAuth;
-typedef struct _VentureSession			VentureSession;
 
 /* --- Common function types ----------------------------------------------- */
 

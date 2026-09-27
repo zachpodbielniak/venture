@@ -33,6 +33,24 @@ below zero on an item that allows it) are consumed at no cost. Inputs whose
 costs are in two currencies are refused. Without the =goods= module there
 are no layers and a craft moves quantities only.
 
+* Session yields
+
+Posting a session (see [[file:sessions.org][Sessions]]) calls the same
+=venture_inventory_service_produce()= with *no draws*: each goods yield
+arrives as one positive =production= transaction, referenced
+=session:<id>= and dated the session's end, and -- because nothing was
+consumed -- receives one *zero-cost* layer, in the item's unit-cost
+currency or else the organization's book currency. The yield's
+=unit_value= is a valuation and is never written into a layer: a layer at
+market value would book the profit when the goods were gathered and none
+when they sold. The zero layer still matters, because the issue path
+refuses units that have none. No journal is posted, so account 1200 does
+not move, and =inventory_valuation= counts the units at zero.
+
+Posting is idempotent: a yield stamped with its transaction is never
+posted again, and a posted yield (and its session) cannot be deleted --
+correct its stock with an adjustment instead.
+
 * Where stock is
 
 =inventory_item.location_id= names a =location= record: a place that can

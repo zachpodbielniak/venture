@@ -1775,6 +1775,21 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/recipe/1/actions/craft", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Sessions likewise: their records, their report and the post
+	 * action, which puts goods into stock, must all still ask. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/session"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/session_yield"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/session_performance"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/session_performance"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/session"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/session/1/actions/post", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/collections"),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",

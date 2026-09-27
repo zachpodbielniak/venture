@@ -2733,7 +2733,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"For the categories report, the product field to group by "
 		"(defaults to genre); for aggregate, up to 3 comma-separated "
 		"fields, reference.field following one reference; for "
-		"listing_performance, product, category or channel", FALSE);
+		"listing_performance, product, category or channel; for "
+		"session_performance, activity, category, location or venture", FALSE);
 	/* The aggregate report answers "how much / how many, grouped by
 	 * what" for any type, so it is the report to reach for before
 	 * totalling query results; its options are declared here because a
@@ -2745,7 +2746,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "aggregate", "string",
 		"aggregate: sum, avg, min, max, count or count_distinct", FALSE);
 	ai_tool_add_parameter(report, "category_depth", "integer",
-		"aggregate and listing_performance: roll category (and location) groups up to this level; 0 is the top", FALSE);
+		"aggregate, listing_performance and session_performance: roll category (and location) groups up to this level; 0 is the top", FALSE);
 	ai_tool_add_parameter(report, "date_field", "string",
 		"aggregate: the date field the period bounds, e.g. occurred_at", FALSE);
 	ai_tool_add_parameter(report, "bucket", "string",
@@ -2755,13 +2756,13 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "per", "string",
 		"aggregate: hour or day, adding a rate over the elapsed window", FALSE);
 	ai_tool_add_parameter(report, "venture_id", "integer",
-		"Narrow to one venture, where the report takes one (aggregate, listing_performance, recipe_margin)", FALSE);
+		"Narrow to one venture, where the report takes one (aggregate, listing_performance, recipe_margin, session_performance)", FALSE);
 	ai_tool_add_parameter(report, "product_id", "integer",
 		"price_history: the product whose observed prices to show", FALSE);
 	ai_tool_add_parameter(report, "source", "string",
 		"price_history: only this price source, e.g. market value", FALSE);
 	ai_tool_add_parameter(report, "price_source", "string",
-		"recipe_margin: price components and output at the latest observation from this source", FALSE);
+		"recipe_margin and session_performance: price at the latest observation from this source", FALSE);
 	ai_tool_add_parameter(report, "category_id", "integer",
 		"recipe_margin: only recipes filed in this category or beneath it", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);

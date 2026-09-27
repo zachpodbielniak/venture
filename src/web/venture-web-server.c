@@ -1129,6 +1129,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"production"
 	},
 	{
+		"/e/session", "Sessions",
+		VENTURE_ICON(
+			"<circle cx=\"12\" cy=\"13\" r=\"8\"/><path d=\"M12 9v4l2.5 2.5\"/>"
+			"<path d=\"M10 2h4\"/>"
+		),
+		NULL,
+		"sessions"
+	},
+	{
 		"/e/expense", "Expenses",
 		VENTURE_ICON(
 			"<path d=\"M3 7l6 6 4-4 8 8\"/><path d=\"M15 17h6v-6\"/>"
@@ -1697,7 +1706,7 @@ static const gchar *const venture_web_nav_support[] = {
 /* Where things are and how they are grouped: the structure the rest of
  * the pages hang their records from, rather than money or people. */
 static const gchar *const venture_web_nav_operations[] = {
-	"/e/category", "/e/location", "/e/recipe",
+	"/e/category", "/e/location", "/e/recipe", "/e/session",
 	NULL
 };
 
@@ -6740,6 +6749,75 @@ venture_web_production_controls(
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
+/*
+ * session_performance's questions, as a form: what to compare, how far
+ * up a tree to roll it, the price source for goods with no recorded
+ * value (only while the market module is on -- the report refuses one
+ * without it), the date to value at and the period. All are query
+ * parameters the API takes too.
+ */
+static void
+venture_web_sessions_controls(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureReport		*report,
+	GString			*content
+){
+	static const gchar *const groups[] = { "activity", "category", "location", "venture", NULL };
+	const gchar *organization;
+	const gchar *group_by;
+	const gchar *value;
+	guint i;
+
+	if (0 != g_strcmp0(venture_report_get_name(report), "session_performance"))
+		return;
+
+	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
+		venture_html_escape_append(content, organization);
+		g_string_append(content, "\">");
+	}
+
+	group_by = htmx_request_get_query_param(request, "group_by");
+	g_string_append(content, "<label>Group by<select name=\"group_by\">");
+
+	for (i = 0; NULL != groups[i]; i++)
+		g_string_append_printf(content, "<option value=\"%s\"%s>%s</option>",
+		                       groups[i],
+		                       (0 == g_strcmp0(groups[i], group_by)) ? " selected" : "",
+		                       groups[i]);
+
+	g_string_append(content, "</select></label>");
+
+	value = htmx_request_get_query_param(request, "category_depth");
+	g_string_append(content, "<label>Tree depth<input name=\"category_depth\" value=\"");
+	venture_html_escape_append(content, (NULL != value) ? value : "");
+	g_string_append(content, "\" placeholder=\"0 is the top\"></label>");
+
+	if (venture_web_module_enabled(self, "market"))
+	{
+		value = htmx_request_get_query_param(request, "price_source");
+		g_string_append(content, "<label>Price source<input name=\"price_source\" value=\"");
+		venture_html_escape_append(content, (NULL != value) ? value : "");
+		g_string_append(content, "\" placeholder=\"any source\"></label>");
+	}
+
+	value = htmx_request_get_query_param(request, "as_of");
+	g_string_append(content, "<label>Value as of<input name=\"as_of\" value=\"");
+	venture_html_escape_append(content, (NULL != value) ? value : "");
+	g_string_append(content, "\" placeholder=\"each session's end\"></label>");
+
+	value = htmx_request_get_query_param(request, "period");
+	g_string_append(content, "<label>Period<input name=\"period\" value=\"");
+	venture_html_escape_append(content, (NULL != value) ? value : "");
+	g_string_append(content, "\" placeholder=\"this_month\"></label>");
+	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
 static HtmxResponse *
 venture_web_ui_report(
 	HtmxRequest	*request,
@@ -6835,6 +6913,7 @@ venture_web_ui_report(
 		venture_web_aggregate_controls(request, report, form);
 		venture_web_market_controls(self, request, report, form);
 		venture_web_production_controls(self, request, report, form);
+		venture_web_sessions_controls(self, request, report, form);
 		body = g_strdup_printf("%s<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       form->str, words);
 		return venture_web_html_response(
@@ -6931,6 +7010,7 @@ venture_web_ui_report(
 	venture_web_aggregate_controls(request, report, content);
 	venture_web_market_controls(self, request, report, content);
 	venture_web_production_controls(self, request, report, content);
+	venture_web_sessions_controls(self, request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 

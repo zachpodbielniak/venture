@@ -161,6 +161,11 @@ venture_context_new(
 	 * take it, and the craft action that turns stock into other stock. */
 	venture_production_install(self);
 
+	/* Sessions whose length follows their times, yields that are goods
+	 * or money and never both, and the post action that puts goods into
+	 * stock once. */
+	venture_sessions_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding
