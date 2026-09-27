@@ -6553,10 +6553,10 @@ venture_web_aggregate_controls(
 		const gchar *value;
 
 		value = htmx_request_get_query_param(request, texts[i].name);
-		g_string_append_printf(content, "<label>%s<input name=\"%s\" value=\"",
+		g_string_append_printf(content, "<div class=\"field\"><label>%s<input name=\"%s\" value=\"",
 		                       texts[i].label, texts[i].name);
 		venture_html_escape_append(content, (NULL != value) ? value : "");
-		g_string_append_printf(content, "\" placeholder=\"%s\"></label>",
+		g_string_append_printf(content, "\" placeholder=\"%s\"></label></div>",
 		                       texts[i].placeholder);
 	}
 
@@ -6565,7 +6565,7 @@ venture_web_aggregate_controls(
 		const gchar *value;
 
 		value = htmx_request_get_query_param(request, selects[i].name);
-		g_string_append_printf(content, "<label>%s<select name=\"%s\">",
+		g_string_append_printf(content, "<div class=\"field\"><label>%s<select name=\"%s\">",
 		                       selects[i].label, selects[i].name);
 
 		for (j = 0; (j < G_N_ELEMENTS(selects[i].choices)) &&
@@ -6581,7 +6581,7 @@ venture_web_aggregate_controls(
 			                       ('\0' == choice[0]) ? "default" : choice);
 		}
 
-		g_string_append(content, "</select></label>");
+		g_string_append(content, "</select></label></div>");
 	}
 
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
@@ -6644,7 +6644,7 @@ venture_web_market_controls(
 		                                 query, NULL);
 		chosen = htmx_request_get_query_param(request, "product_id");
 
-		g_string_append(content, "<label>Product<select name=\"product_id\">"
+		g_string_append(content, "<div class=\"field\"><label>Product<select name=\"product_id\">"
 		                         "<option value=\"\">choose</option>");
 
 		for (i = 0; (NULL != products) && (i < products->len); i++)
@@ -6665,15 +6665,15 @@ venture_web_market_controls(
 			g_string_append(content, "</option>");
 		}
 
-		g_string_append(content, "</select></label>");
+		g_string_append(content, "</select></label></div>");
 
 		source = htmx_request_get_query_param(request, "source");
-		g_string_append(content, "<label>Source<input name=\"source\" value=\"");
+		g_string_append(content, "<div class=\"field\"><label>Source<input name=\"source\" value=\"");
 		venture_html_escape_append(content, (NULL != source) ? source : "");
-		g_string_append(content, "\" placeholder=\"every source\"></label>");
+		g_string_append(content, "\" placeholder=\"every source\"></label></div>");
 
 		bucket = htmx_request_get_query_param(request, "bucket");
-		g_string_append(content, "<label>Bucket<select name=\"bucket\">");
+		g_string_append(content, "<div class=\"field\"><label>Bucket<select name=\"bucket\">");
 
 		for (i = 0; NULL != buckets[i]; i++)
 			g_string_append_printf(content, "<option value=\"%s\"%s>%s</option>",
@@ -6681,7 +6681,7 @@ venture_web_market_controls(
 			                       (0 == g_strcmp0(buckets[i], bucket)) ? " selected" : "",
 			                       buckets[i]);
 
-		g_string_append(content, "</select></label>");
+		g_string_append(content, "</select></label></div>");
 	}
 	else
 	{
@@ -6691,7 +6691,7 @@ venture_web_market_controls(
 		guint i;
 
 		group_by = htmx_request_get_query_param(request, "group_by");
-		g_string_append(content, "<label>Group by<select name=\"group_by\">");
+		g_string_append(content, "<div class=\"field\"><label>Group by<select name=\"group_by\">");
 
 		for (i = 0; NULL != groups[i]; i++)
 			g_string_append_printf(content, "<option value=\"%s\"%s>%s</option>",
@@ -6699,17 +6699,17 @@ venture_web_market_controls(
 			                       (0 == g_strcmp0(groups[i], group_by)) ? " selected" : "",
 			                       groups[i]);
 
-		g_string_append(content, "</select></label>");
+		g_string_append(content, "</select></label></div>");
 
 		depth = htmx_request_get_query_param(request, "category_depth");
-		g_string_append(content, "<label>Category depth<input name=\"category_depth\" value=\"");
+		g_string_append(content, "<div class=\"field\"><label>Category depth<input name=\"category_depth\" value=\"");
 		venture_html_escape_append(content, (NULL != depth) ? depth : "");
-		g_string_append(content, "\" placeholder=\"0 is the top\"></label>");
+		g_string_append(content, "\" placeholder=\"0 is the top\"></label></div>");
 	}
 
-	g_string_append(content, "<label>Period<input name=\"period\" value=\"");
+	g_string_append(content, "<div class=\"field\"><label>Period<input name=\"period\" value=\"");
 	venture_html_escape_append(content, (NULL != period) ? period : "");
-	g_string_append(content, "\" placeholder=\"this_month\"></label>");
+	g_string_append(content, "\" placeholder=\"this_month\"></label></div>");
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
@@ -6746,15 +6746,15 @@ venture_web_production_controls(
 	if (venture_web_module_enabled(self, "market"))
 	{
 		source = htmx_request_get_query_param(request, "price_source");
-		g_string_append(content, "<label>Price source<input name=\"price_source\" value=\"");
+		g_string_append(content, "<div class=\"field\"><label>Price source<input name=\"price_source\" value=\"");
 		venture_html_escape_append(content, (NULL != source) ? source : "");
-		g_string_append(content, "\" placeholder=\"any source\"></label>");
+		g_string_append(content, "\" placeholder=\"any source\"></label></div>");
 	}
 
 	as_of = htmx_request_get_query_param(request, "as_of");
-	g_string_append(content, "<label>As of<input name=\"as_of\" value=\"");
+	g_string_append(content, "<div class=\"field\"><label>As of<input name=\"as_of\" value=\"");
 	venture_html_escape_append(content, (NULL != as_of) ? as_of : "");
-	g_string_append(content, "\" placeholder=\"today\"></label>");
+	g_string_append(content, "\" placeholder=\"today\"></label></div>");
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
@@ -6792,7 +6792,7 @@ venture_web_sessions_controls(
 	}
 
 	group_by = htmx_request_get_query_param(request, "group_by");
-	g_string_append(content, "<label>Group by<select name=\"group_by\">");
+	g_string_append(content, "<div class=\"field\"><label>Group by<select name=\"group_by\">");
 
 	for (i = 0; NULL != groups[i]; i++)
 		g_string_append_printf(content, "<option value=\"%s\"%s>%s</option>",
@@ -6800,30 +6800,30 @@ venture_web_sessions_controls(
 		                       (0 == g_strcmp0(groups[i], group_by)) ? " selected" : "",
 		                       groups[i]);
 
-	g_string_append(content, "</select></label>");
+	g_string_append(content, "</select></label></div>");
 
 	value = htmx_request_get_query_param(request, "category_depth");
-	g_string_append(content, "<label>Tree depth<input name=\"category_depth\" value=\"");
+	g_string_append(content, "<div class=\"field\"><label>Tree depth<input name=\"category_depth\" value=\"");
 	venture_html_escape_append(content, (NULL != value) ? value : "");
-	g_string_append(content, "\" placeholder=\"0 is the top\"></label>");
+	g_string_append(content, "\" placeholder=\"0 is the top\"></label></div>");
 
 	if (venture_web_module_enabled(self, "market"))
 	{
 		value = htmx_request_get_query_param(request, "price_source");
-		g_string_append(content, "<label>Price source<input name=\"price_source\" value=\"");
+		g_string_append(content, "<div class=\"field\"><label>Price source<input name=\"price_source\" value=\"");
 		venture_html_escape_append(content, (NULL != value) ? value : "");
-		g_string_append(content, "\" placeholder=\"any source\"></label>");
+		g_string_append(content, "\" placeholder=\"any source\"></label></div>");
 	}
 
 	value = htmx_request_get_query_param(request, "as_of");
-	g_string_append(content, "<label>Value as of<input name=\"as_of\" value=\"");
+	g_string_append(content, "<div class=\"field\"><label>Value as of<input name=\"as_of\" value=\"");
 	venture_html_escape_append(content, (NULL != value) ? value : "");
-	g_string_append(content, "\" placeholder=\"each session's end\"></label>");
+	g_string_append(content, "\" placeholder=\"each session's end\"></label></div>");
 
 	value = htmx_request_get_query_param(request, "period");
-	g_string_append(content, "<label>Period<input name=\"period\" value=\"");
+	g_string_append(content, "<div class=\"field\"><label>Period<input name=\"period\" value=\"");
 	venture_html_escape_append(content, (NULL != value) ? value : "");
-	g_string_append(content, "\" placeholder=\"this_month\"></label>");
+	g_string_append(content, "\" placeholder=\"this_month\"></label></div>");
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
@@ -6839,9 +6839,9 @@ venture_web_goals_input(
 	const gchar *value;
 
 	value = htmx_request_get_query_param(request, name);
-	g_string_append_printf(content, "<label>%s<input name=\"%s\" value=\"", label, name);
+	g_string_append_printf(content, "<div class=\"field\"><label>%s<input name=\"%s\" value=\"", label, name);
 	venture_html_escape_append(content, (NULL != value) ? value : "");
-	g_string_append_printf(content, "\" placeholder=\"%s\"></label>", placeholder);
+	g_string_append_printf(content, "\" placeholder=\"%s\"></label></div>", placeholder);
 }
 
 /*
@@ -6885,7 +6885,7 @@ venture_web_goals_controls(
 
 		status = htmx_request_get_query_param(request, "status");
 		statuses = venture_enum_list_nicks(VENTURE_TYPE_GOAL_STATUS);
-		g_string_append(content, "<label>Status<select name=\"status\">"
+		g_string_append(content, "<div class=\"field\"><label>Status<select name=\"status\">"
 		                         "<option value=\"\">any</option>");
 
 		for (i = 0; NULL != statuses[i]; i++)
@@ -6894,7 +6894,7 @@ venture_web_goals_controls(
 			                       (0 == g_strcmp0(statuses[i], status)) ? " selected" : "",
 			                       statuses[i]);
 
-		g_string_append(content, "</select></label>");
+		g_string_append(content, "</select></label></div>");
 		venture_web_goals_input(request, content, "Category", "category_id",
 		                        "id; includes beneath it");
 	}
@@ -6919,7 +6919,7 @@ venture_web_goals_controls(
 		                              query, NULL);
 		chosen = htmx_request_get_query_param(request, "goal_id");
 
-		g_string_append(content, "<label>Goal<select name=\"goal_id\">"
+		g_string_append(content, "<div class=\"field\"><label>Goal<select name=\"goal_id\">"
 		                         "<option value=\"\">every open goal</option>");
 
 		for (i = 0; (NULL != goals) && (i < goals->len); i++)
@@ -6940,7 +6940,7 @@ venture_web_goals_controls(
 			g_string_append(content, "</option>");
 		}
 
-		g_string_append(content, "</select></label>");
+		g_string_append(content, "</select></label></div>");
 
 		if (venture_web_module_enabled(self, "market"))
 			venture_web_goals_input(request, content, "Price source", "price_source",
@@ -6948,9 +6948,9 @@ venture_web_goals_controls(
 
 		include = htmx_request_get_query_param(request, "include_on_hand");
 		g_string_append_printf(content,
-			"<label>Stock on hand<select name=\"include_on_hand\">"
+			"<div class=\"field\"><label>Stock on hand<select name=\"include_on_hand\">"
 			"<option value=\"true\">take it off</option>"
-			"<option value=\"false\"%s>ignore it</option></select></label>",
+			"<option value=\"false\"%s>ignore it</option></select></label></div>",
 			(0 == g_strcmp0(include, "false")) ? " selected" : "");
 	}
 

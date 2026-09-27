@@ -1300,6 +1300,13 @@ test_http(
 	g_assert_cmpuint(server_get(fixture, "/reports/aggregate", &body), ==, 400);
 	g_assert_nonnull(strstr(body, "name=\"group_by\""));
 	g_assert_nonnull(strstr(body, "needs a type"));
+	/* Each option is a .field, as a record form's is, so a select --
+	 * enhanced into an inline picker -- stacks under its caption like a
+	 * text box does instead of sitting beside it. */
+	g_assert_nonnull(strstr(body,
+		"<div class=\"field\"><label>Aggregate<select name=\"aggregate\">"));
+	g_assert_nonnull(strstr(body,
+		"<div class=\"field\"><label>Record type<input name=\"type\""));
 
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(server_get(fixture,
