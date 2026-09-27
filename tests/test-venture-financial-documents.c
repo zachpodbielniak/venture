@@ -573,6 +573,36 @@ test_receipt_for_bare_save(Fixture *f, gconstpointer data)
 }
 
 /*
+ * An invoice with no tax on it says why, with the certificate, because
+ * the composer promises exactly that. If this regresses, an exempt
+ * customer's invoice is indistinguishable from one somebody forgot to tax.
+ */
+static void
+test_invoice_pdf_exemption(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) invoice = invoice_new(f);
+	g_autoptr(GBytes) pdf = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+
+	(void)data;
+
+	pdf = venture_financial_documents_invoice_pdf(f->context, invoice, &error);
+	g_assert_no_error(error);
+	text = bytes_text(pdf);
+	g_assert_null(strstr(text, "(Tax exempt"));
+	g_clear_pointer(&pdf, g_bytes_unref);
+	g_clear_pointer(&text, g_free);
+
+	g_object_set(invoice, "tax-exempt", TRUE,
+		"tax-exempt-reason", "Non-profit, certificate EX-12", NULL);
+	pdf = venture_financial_documents_invoice_pdf(f->context, invoice, &error);
+	g_assert_no_error(error);
+	text = bytes_text(pdf);
+	g_assert_nonnull(strstr(text, "(Tax exempt: Non-profit, certificate EX-12)"));
+}
+
+/*
  * A download keeps an accented invoice number: plain ASCII in filename=,
  * the real name percent-encoded in filename*=. If this regresses, raw
  * UTF-8 sits in a header a client decodes as Latin-1 and the file is saved
@@ -615,6 +645,8 @@ main(int argc, char *argv[])
 	           test_receipt_skips_bookkeeping, tear_down);
 	g_test_add("/financial-documents/receipt-for-bare-save", Fixture, NULL, set_up,
 	           test_receipt_for_bare_save, tear_down);
+	g_test_add("/financial-documents/invoice-pdf-exemption", Fixture, NULL, set_up,
+	           test_invoice_pdf_exemption, tear_down);
 	g_test_add("/financial-documents/content-disposition", Fixture, NULL, set_up,
 	           test_content_disposition, tear_down);
 

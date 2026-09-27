@@ -229,8 +229,10 @@ venture_financial_documents_invoice_pdf(
 	g_autoptr(GDateTime) issued = NULL, due = NULL;
 	g_autoptr(VentureMoney) subtotal = NULL, tax_total = NULL, total = NULL, balance = NULL, shipping = NULL;
 	g_autofree gchar *number = NULL, *terms = NULL, *title = NULL, *issued_text = NULL, *due_text = NULL;
+	g_autofree gchar *exempt_reason = NULL;
 	gint64 company_id = 0;
 	gint status = VENTURE_INVOICE_STATUS_DRAFT;
+	gboolean exempt = FALSE;
 	gdouble y, top;
 	guint i;
 
@@ -240,7 +242,7 @@ venture_financial_documents_invoice_pdf(
 	db = venture_context_get_database(context);
 	g_object_get(invoice, "number", &number, "terms", &terms, "issued-at", &issued,
 	             "due-at", &due, "company-id", &company_id, "shipping-amount", &shipping,
-	             "status", &status, NULL);
+	             "status", &status, "tax-exempt", &exempt, "tax-exempt-reason", &exempt_reason, NULL);
 
 	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
 	venture_query_set_limit(query, 0);
@@ -357,6 +359,29 @@ venture_financial_documents_invoice_pdf(
 		}
 		else if (venture_money_get_amount(balance) != venture_money_get_amount(total))
 			y = draw_total(pdf, y, "Balance due", balance, TRUE);
+	}
+
+	/*
+	 * An invoice with no tax on it has to say why: the certificate is what
+	 * the customer's own auditor, and this business's sales tax return,
+	 * ask to see, and the composer promises it is printed here.
+	 */
+	if (exempt)
+	{
+		g_autofree gchar *line = venture_string_is_empty(exempt_reason)
+			? g_strdup("Tax exempt")
+			: g_strdup_printf("Tax exempt: %s", exempt_reason);
+
+		if (y > DOC_BOTTOM - 24)
+		{
+			venture_pdf_writer_new_page(pdf);
+			y = DOC_MARGIN + 18;
+		}
+		y += 6;
+		venture_pdf_writer_set_grey(pdf, LABEL);
+		y = venture_pdf_writer_wrap_pages(pdf, DOC_MARGIN, y, DOC_RIGHT - DOC_MARGIN,
+			10, FALSE, line, DOC_MARGIN + 18, DOC_BOTTOM);
+		venture_pdf_writer_set_grey(pdf, INK);
 	}
 
 	if (!venture_string_is_empty(terms))

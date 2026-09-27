@@ -59,6 +59,8 @@ invoice fills itself in. The invoice freezes =tax_exempt= and a reason
 such as "Non-profit (501(c)(3)), certificate EX-12"; the JSON composer
 takes =tax_exempt= and =tax_exempt_reason=.
 
+The invoice PDF prints the exemption under the totals as =Tax exempt: <reason>= (just =Tax exempt= when no reason was frozen), so an invoice with no tax on it says why, with the certificate, to the customer's auditor and to the sales tax return.
+
 * Attention of
 
 "Attention of" must be somebody at the invoice's customer. The field is
