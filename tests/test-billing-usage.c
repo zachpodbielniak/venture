@@ -361,6 +361,76 @@ test_rate_of_the_period(Fixture *f, gconstpointer data)
 	g_assert_cmpint(owed(f, renew(f, id, "2026-02-01")), ==, 3100);
 }
 
+/* The one invoice whose number starts with @prefix, or 0. */
+static gint64
+invoice_numbered(Fixture *f, const gchar *prefix)
+{
+	g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GPtrArray) rows = NULL;
+	gint64 found = 0;
+	guint i;
+	venture_query_set_limit(q, 0);
+	rows = venture_database_find(f->db, q, NULL);
+	g_assert_nonnull(rows);
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autofree gchar *number = NULL;
+		g_object_get(g_ptr_array_index(rows, i), "number", &number, NULL);
+		if (g_str_has_prefix(number, prefix))
+		{
+			g_assert_cmpint(found, ==, 0);
+			found = venture_entity_get_id(VENTURE_ENTITY(g_ptr_array_index(rows, i)));
+		}
+	}
+	return found;
+}
+
+/*
+ * The last stretch of usage is billed when a subscription ends -- cancelled
+ * now, up to that moment, or at renewal, up to the period's end -- on an
+ * invoice of its own. If this regresses, a customer who cancels is never
+ * charged for what they used in their final period.
+ */
+static void
+test_final_usage_on_cancel(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) now = NULL, later = NULL;
+	g_autofree gchar *text = NULL;
+	gint64 id, scheduled, invoice;
+	(void)data;
+
+	/* Cancelled now: usage up to the cancellation, beyond the included 1,000. */
+	id = start(f, f->metered, "2026-01-01");
+	used(f, id, 1300, "2026-01-10T00:00:00Z", "early");
+	now = request(f, "cancel", id, "2026-01-15");
+	save(f, now);
+	invoice = invoice_numbered(f, "USAGE-");
+	g_assert_cmpint(invoice, >, 0);
+	g_assert_cmpint(owed(f, invoice), ==, 300);
+	text = lines(f, invoice);
+	g_assert_nonnull(strstr(text, "300 API calls \xc3\x97 $0.01"));
+	g_assert_nonnull(strstr(text, "2026-01-01 to 2026-01-15"));
+	g_clear_pointer(&text, g_free);
+
+	/* Cancelled at renewal: usage up to the period's end, billed when it ends. */
+	scheduled = start(f, f->metered, "2026-01-01");
+	used(f, scheduled, 1100, "2026-01-20T00:00:00Z", "late");
+	later = request(f, "cancel", scheduled, "2026-01-16");
+	g_object_set(later, "at-period-end", TRUE, NULL);
+	save(f, later);
+	/* The renewal that ends it issues only the usage invoice, and says so. */
+	invoice = renew(f, scheduled, "2026-02-01");
+	g_assert_cmpint(invoice, >, 0);
+	{
+		g_autoptr(VentureEntity) row = venture_database_get(f->db, VENTURE_TYPE_INVOICE, invoice, NULL);
+		g_autofree gchar *number = NULL;
+		g_object_get(row, "number", &number, NULL);
+		g_assert_true(g_str_has_prefix(number, "USAGE-"));
+		g_assert_true(g_str_has_suffix(number, "2026-02-01"));
+	}
+	g_assert_cmpint(owed(f, invoice), ==, 100);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -372,5 +442,6 @@ main(int argc, char *argv[])
 	g_test_add("/billing-usage/idempotent-and-closed", Fixture, NULL, setup, test_idempotent_and_closed, teardown);
 	g_test_add("/billing-usage/trial-not-charged", Fixture, NULL, setup, test_trial_not_charged, teardown);
 	g_test_add("/billing-usage/rate-of-the-period", Fixture, NULL, setup, test_rate_of_the_period, teardown);
+	g_test_add("/billing-usage/final-usage-on-cancel", Fixture, NULL, setup, test_final_usage_on_cancel, teardown);
 	return g_test_run();
 }

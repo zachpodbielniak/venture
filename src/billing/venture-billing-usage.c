@@ -119,31 +119,24 @@ usage_price(VentureDatabase *database, VentureEntity *sub, gint64 org, GError **
 	return load(database, VENTURE_TYPE_PLAN_PRICE, price_id, org, error);
 }
 
-gboolean
-venture_billing_usage_bill(VentureDatabase *database, VentureEntity *sub,
-	VentureEntity *invoice, GDateTime *period_start, const VentureActor *actor, GError **error)
+/*
+ * The usage line for [@from, @until) on @invoice: the units beyond those
+ * included, at @price's rate. Adds nothing when nothing is over, or the
+ * charge rounds to nothing; *@added says whether a line was written.
+ */
+static gboolean
+usage_line(VentureDatabase *database, VentureEntity *sub, VentureEntity *price, VentureEntity *invoice,
+	GDateTime *from, GDateTime *until, const VentureActor *actor, gboolean *added, GError **error)
 {
-	g_autoptr(GDateTime) start = NULL, end = NULL, trial_end = NULL;
-	g_autoptr(VentureEntity) price = NULL, line = NULL;
+	g_autoptr(VentureEntity) line = NULL;
 	g_autoptr(VentureMoney) rate = NULL, charge = NULL, rounded = NULL;
 	g_autofree gchar *unit = NULL, *rate_text = NULL, *over_text = NULL, *used_text = NULL;
 	g_autofree gchar *included_text = NULL, *from_day = NULL, *to_day = NULL, *description = NULL;
 	gint64 org = venture_entity_get_organization_id(sub);
 	gint64 used, included, over;
 
-	g_object_get(sub, "current-period-start", &start, "current-period-end", &end, "trial-end", &trial_end, NULL);
-	/* Only a renewal bills the period that has ended; a start has none. */
-	if (start == NULL || end == NULL || !g_date_time_equal(end, period_start))
-		return TRUE;
-	/* The period ending is the free trial: what was tried is not charged. */
-	if (trial_end != NULL && g_date_time_equal(trial_end, end))
-		return TRUE;
-	price = usage_price(database, sub, org, error);
-	if (price == NULL)
-		return FALSE;
-	if (!venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)))
-		return TRUE;
-	used = venture_billing_usage_total(database, org, venture_entity_get_id(sub), start, end, error);
+	*added = FALSE;
+	used = venture_billing_usage_total(database, org, venture_entity_get_id(sub), from, until, error);
 	if (used < 0)
 		return FALSE;
 	included = number(price, "included-units");
@@ -168,8 +161,8 @@ venture_billing_usage_bill(VentureDatabase *database, VentureEntity *sub,
 	over_text = venture_billing_format_count(over);
 	used_text = venture_billing_format_count(used);
 	included_text = venture_billing_format_count(included);
-	from_day = g_date_time_format(start, "%F");
-	to_day = g_date_time_format(end, "%F");
+	from_day = g_date_time_format(from, "%F");
+	to_day = g_date_time_format(until, "%F");
 	/* The line reads as the arithmetic, so the customer can check it:
 	 * "240 API calls x $0.01 (1,240 used, 1,000 included), ...". */
 	if (included > 0)
@@ -182,8 +175,90 @@ venture_billing_usage_bill(VentureDatabase *database, VentureEntity *sub,
 	/* Quantity stays the exact unity the base line uses; the count is in
 	 * the words and the money is already multiplied. */
 	g_object_set(line, "invoice-id", venture_entity_get_id(invoice), "description", description,
-		"quantity", 1.0, "unit-price", rounded, "product-id", number(price, "product-id"), NULL);
-	return venture_database_save(database, line, actor, error);
+		"quantity", 1.0, "unit-price", rounded, "product-id", number(price, "product-id"),
+		"tax-code-id", number(price, "tax-code-id"), NULL);
+	if (!venture_database_save(database, line, actor, error))
+		return FALSE;
+	*added = TRUE;
+	return TRUE;
+}
+
+gboolean
+venture_billing_usage_bill(VentureDatabase *database, VentureEntity *sub,
+	VentureEntity *invoice, GDateTime *period_start, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) start = NULL, end = NULL, trial_end = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	gint64 org = venture_entity_get_organization_id(sub);
+	gboolean added;
+
+	g_object_get(sub, "current-period-start", &start, "current-period-end", &end, "trial-end", &trial_end, NULL);
+	/* Only a renewal bills the period that has ended; a start has none. */
+	if (start == NULL || end == NULL || !g_date_time_equal(end, period_start))
+		return TRUE;
+	/* The period ending is the free trial: what was tried is not charged. */
+	if (trial_end != NULL && g_date_time_equal(trial_end, end))
+		return TRUE;
+	price = usage_price(database, sub, org, error);
+	if (price == NULL)
+		return FALSE;
+	if (!venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)))
+		return TRUE;
+	return usage_line(database, sub, price, invoice, start, end, actor, &added, error);
+}
+
+gboolean
+venture_billing_usage_bill_final(VentureDatabase *database, VentureEntity *sub, GDateTime *until,
+	const VentureActor *actor, gint64 *invoice_id, GError **error)
+{
+	g_autoptr(GDateTime) start = NULL, end = NULL, trial_end = NULL;
+	g_autoptr(VentureEntity) price = NULL, plan = NULL, invoice = NULL;
+	g_autofree gchar *day = NULL, *number_text = NULL;
+	gint64 org = venture_entity_get_organization_id(sub);
+	gint state = 0;
+	gboolean added = FALSE;
+
+	*invoice_id = 0;
+	g_object_get(sub, "current-period-start", &start, "current-period-end", &end, "trial-end", &trial_end,
+		"status", &state, NULL);
+	/* A trial is not charged, and an ended subscription has billed. */
+	if (start == NULL || state == 0 || state >= 4 || g_date_time_compare(until, start) <= 0 ||
+		(trial_end != NULL && g_date_time_compare(trial_end, start) > 0))
+		return TRUE;
+	if (end != NULL && g_date_time_compare(until, end) > 0)
+		until = end;
+	price = usage_price(database, sub, org, error);
+	if (price == NULL)
+		return FALSE;
+	if (!venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)))
+		return TRUE;
+	if (venture_billing_usage_total(database, org, venture_entity_get_id(sub), start, until, error) -
+		number(price, "included-units") <= 0)
+		return error == NULL || *error == NULL;
+	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(database)),
+		database, org, until, error))
+		return FALSE;
+	plan = load(database, VENTURE_TYPE_PLAN, number(price, "plan-id"), org, error);
+	if (plan == NULL)
+		return FALSE;
+	day = g_date_time_format(until, "%F");
+	/* One final usage invoice per subscription: the number says whose and when. */
+	number_text = g_strdup_printf("USAGE-%s-%s", venture_entity_get_uuid(sub), day);
+	invoice = g_object_new(VENTURE_TYPE_INVOICE, NULL);
+	venture_entity_set_organization_id(invoice, org);
+	g_object_set(invoice, "number", number_text, "company-id", number(sub, "company-id"),
+		"contact-id", number(sub, "contact-id"), "venture-id", number(plan, "venture-id"),
+		"issued-at", until, "due-at", until, NULL);
+	if (!venture_database_save(database, invoice, actor, error) ||
+		!usage_line(database, sub, price, invoice, start, until, actor, &added, error))
+		return FALSE;
+	if (!added)
+		return venture_database_delete(database, invoice, actor, error);
+	if (!venture_settlement_service_transition(venture_settlement_service_get(database),
+		VENTURE_INVOICE(invoice), "sent", until, actor, error))
+		return FALSE;
+	*invoice_id = venture_entity_get_id(invoice);
+	return TRUE;
 }
 
 gboolean

@@ -1242,6 +1242,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	gint64 old_seats;
 	gint64 old_price;
 	gint64 invoice_id = 0;
+	gint64 final_usage = 0;
 	gint state;
 	gint old_state;
 	gint kind = 0;
@@ -1329,6 +1330,10 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 					return refuse(error, VENTURE_ERROR_VALIDATION, "scheduled cancellation predates a later action; cancel immediately instead");
 				g_clear_pointer(&at, g_date_time_unref);
 				at = g_date_time_ref(end);
+				/* The ended period's usage is billed as it closes; the
+				 * invoice is never named on the cancel event. */
+				if (!venture_billing_usage_bill_final(self->database, sub, at, actor, &final_usage, error))
+					return FALSE;
 				state = 4;
 				kind = 7;
 				g_object_set(sub, "cancelled-at", at, "cancel-at-period-end", FALSE, NULL);
@@ -1412,6 +1417,9 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 				g_auto(UnusedCredit) credit = { NULL, NULL, 0, 0, 0 };
 				g_autoptr(VentureMoney) gross = NULL;
 				if (!unused_credit(self, sub, price, at, &credit, error))
+					return FALSE;
+				/* What was used up to now is billed as the subscription ends. */
+				if (!venture_billing_usage_bill_final(self->database, sub, at, actor, &final_usage, error))
 					return FALSE;
 				if (!venture_money_is_zero(credit.net))
 				{
@@ -1555,7 +1563,10 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	if ((g_strcmp0(verb, "change") == 0 || g_strcmp0(verb, "change-seats") == 0) &&
 		!price_change_notice(self, sub, event, old_price, old_seats, scheduled, actor, error))
 		return FALSE;
-	g_object_set(request, "subscription-id", venture_entity_get_id(sub), "invoice-id", invoice_id,
+	/* The request reports the invoice it caused, the final usage invoice
+	 * included; only the event must never name the latter. */
+	g_object_set(request, "subscription-id", venture_entity_get_id(sub), "invoice-id",
+		invoice_id != 0 ? invoice_id : final_usage,
 		"proration-amount", prorated, "processed", (gint64)1, NULL);
 	return TRUE;
 }

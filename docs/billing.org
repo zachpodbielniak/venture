@@ -354,8 +354,12 @@ the whole count times the rate, rounded once, half to even, to the currency
 the period, even when a scheduled change moves the price at that renewal.
 Usage within the included units adds no line; usage during a free trial is
 not charged; the plan discount applies to the base charge only.
-Known gap: a subscription cancelled (immediately or at period end) is not
-sent a final usage invoice for its last period.
+When a subscription ends -- cancelled now, or at renewal -- the usage of
+its last stretch, from the period's start to the moment it ends, is billed
+beyond the included units on an invoice of its own, numbered
+=USAGE-<subscription uuid>-<date>=. The billing request reports it; the
+cancel event never names it, because a subscription is looked up by the one
+event naming an invoice. A trial is not charged.
 
 Record usage with =POST /api/v1/usage_records= (or =usage_record=) or
 =venturectl billing usage SUB quantity=N [key=K] [at=DATE]=, which sends the

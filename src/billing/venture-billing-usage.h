@@ -43,6 +43,24 @@ gint64 venture_billing_usage_total(VentureDatabase *database, gint64 organizatio
 gboolean venture_billing_usage_bill(VentureDatabase *database, VentureEntity *subscription,
 	VentureEntity *invoice, GDateTime *period_start, const VentureActor *actor, GError **error);
 /**
+ * venture_billing_usage_bill_final: (skip)
+ * @database: the database
+ * @subscription: a subscription about to end
+ * @until: when it ends: the cancellation, or the end of its period
+ * @actor: (nullable): who is ending it
+ * @invoice_id: (out): the final usage invoice, or 0 when none was needed
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Bills the usage of the period's last stretch, [period start, @until),
+ * beyond the included units, on an invoice of its own. Nothing is billed
+ * for a trial, a flat price, or usage within what is included.
+ *
+ * Returns: %TRUE unless the invoice could not be written
+ */
+gboolean venture_billing_usage_bill_final(VentureDatabase *database, VentureEntity *subscription,
+	GDateTime *until, const VentureActor *actor, gint64 *invoice_id, GError **error);
+
+/**
  * venture_billing_usage_check_save: (skip)
  * @database: the database, lock held
  * @record: a usage record about to be written
