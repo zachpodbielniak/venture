@@ -192,8 +192,9 @@ venture_field_spec_get_display_order(const VentureFieldSpec *self);
  * %VENTURE_COLUMN_FLAG_SENSITIVE make a field technical; a JSON field is
  * structured; a field named like machinery (a `-key`, `-hash`, `-digest`,
  * `-version` or `-token`, or a string ending `-id`) is technical; long text
- * is content; an enumeration named `status`, `stage` or `state` is the
- * status; everything else is a fact.
+ * is content; an enumeration or a plain string named `status`, `stage` or
+ * `state` is the status (some services guard a string lifecycle with their
+ * own transitions); everything else is a fact.
  *
  * Returns: the field's #VentureFieldRole
  */

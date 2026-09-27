@@ -261,8 +261,19 @@
 
 			buttons.forEach(function (b) { b.disabled = true; });
 
+			/*
+			 * same-origin: a redirect to another origin (a payment page, an
+			 * identity provider) is refused before anything is sent there,
+			 * rather than succeeding or failing on that site's CORS policy.
+			 * The write already happened, so the operator is told to check
+			 * the record -- never re-posted. A form whose answer goes to
+			 * another origin carries data-no-inline and is posted by the
+			 * browser. ("manual" would hide the Location of every
+			 * same-origin post-redirect-get, which is most forms.)
+			 */
 			fetch(form.getAttribute("action") || window.location.href, {
 				method: "POST",
+				mode: "same-origin",
 				body: new URLSearchParams(data),
 				credentials: "same-origin",
 				headers: { "Accept": "text/html", "X-Venture-Inline": "1" }

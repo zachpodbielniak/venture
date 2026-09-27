@@ -5047,7 +5047,7 @@ static const VentureDashboardTemplate venture_dashboard_templates[] = {
 		" {\"kind\": \"confirmations\"},"
 		" {\"kind\": \"actions\", \"title\": \"Do\","
 		"  \"body\": \"New invoice | /invoices/compose\\nNew bill | "
-		"/e/vendor_bill/new\\nNew ticket | /e/ticket/new\\nTicket board | "
+		"/bills/compose\\nNew ticket | /e/ticket/new\\nTicket board | "
 		"/tickets\\nInbox | /inbox\"}"
 		"]}"
 	},

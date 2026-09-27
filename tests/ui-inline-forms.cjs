@@ -13,15 +13,15 @@ class Element {
     get textContent() { return (this.text || '') + this.children.map(x => x.textContent).join(''); }
 }
 class Form extends Element {
-    constructor() { super(); this.buttons = [new Element(), new Element()]; this.buttons[1].disabled = true; }
+    constructor(flags) { super(); this.flags = flags || []; this.buttons = [new Element(), new Element()]; this.buttons[1].disabled = true; }
     getAttribute(name) { return name === 'method' ? 'post' : name === 'action' ? '/fixture/save' : null; }
-    hasAttribute() { return false; }
+    hasAttribute(name) { return this.flags.includes(name); }
     querySelector() { return this.error || null; }
     querySelectorAll() { return this.buttons; }
     insertBefore(box) { this.error = box; }
 }
 async function scenario(kind) {
-    let listener, settle, requests = 0;
+    let listener, settle, options, requests = 0;
     const document = {
         readyState: 'loading',
         addEventListener(name, callback) { if (name === 'submit') listener = callback; },
@@ -29,15 +29,27 @@ async function scenario(kind) {
         createElement() { return new Element(); },
         createTextNode(textContent) { return {textContent}; }
     };
-    const fetch = () => { requests++; return new Promise((resolve, reject) => { settle = kind === 'lost' ? reject : resolve; }); };
+    const fetch = (url, init) => { requests++; options = init; return new Promise((resolve, reject) => { settle = kind === 'lost' ? reject : resolve; }); };
     const window = {fetch, location: {href: 'http://fixture/form'}, matchMedia: () => ({matches: false})};
     const context = {window, document, HTMLFormElement: Form, FormData: class {append() {}}, URLSearchParams: class {}, fetch};
     const source = fs.readFileSync('data/static/venture.js', 'utf8').replace('window.venture = {', 'window.testWireInlineForms = wireInlineForms; window.venture = {');
     vm.runInNewContext(source, context);
     window.testWireInlineForms();
-    const form = new Form();
-    function submit() { listener({target: form, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }}); }
+    const form = new Form(kind === 'no-inline' ? ['data-no-inline'] : []);
+    let prevented = false;
+    function submit() { listener({target: form, defaultPrevented: false, preventDefault() { prevented = true; this.defaultPrevented = true; }}); }
     submit();
+    if (kind === 'no-inline') {
+        /* The checkout and identity-provider forms answer with a redirect to
+         * another origin. Posted by script, the operator never reaches it and
+         * each retry opens another payment session: the browser must post. */
+        assert.equal(requests, 0, 'a data-no-inline form must not be posted by script');
+        assert.equal(prevented, false, 'a data-no-inline form must be left to the browser');
+        return;
+    }
+    /* A cross-origin redirect must be refused, not followed on the far
+     * site's CORS policy: the write is done and only a check is safe. */
+    assert.equal(options.mode, 'same-origin');
     assert.equal(requests, 1);
     submit();
     assert.equal(requests, 1, 'a second submit while the first is pending must not duplicate the write');
@@ -51,4 +63,4 @@ async function scenario(kind) {
         assert.match(form.error.textContent, /check.*before.*again/i);
     } else assert.match(form.error.textContent, /At least one line is required/);
 }
-(async () => { await scenario('lost'); await scenario('refused'); console.log('Lost response is uncertain; duplicate submits blocked; original disabled state preserved; validation reason shown.'); })().catch(error => { console.error(error); process.exit(1); });
+(async () => { await scenario('lost'); await scenario('refused'); await scenario('no-inline'); console.log('data-no-inline left to the browser; cross-origin redirects refused; Lost response is uncertain; duplicate submits blocked; original disabled state preserved; validation reason shown.'); })().catch(error => { console.error(error); process.exit(1); });

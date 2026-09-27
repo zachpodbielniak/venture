@@ -3645,6 +3645,7 @@ venture_web_error_for_browser(VentureWebServer *self, HtmxContext *context)
 	gboolean fault;
 	guint status;
 	g_autoptr(GString) body = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
 
 	error = g_object_get_data(G_OBJECT(response), "venture-error");
 	if (NULL == error || NULL == message)
@@ -3675,6 +3676,29 @@ venture_web_error_for_browser(VentureWebServer *self, HtmxContext *context)
 		venture_html_escape_append(body, words);
 	}
 	g_string_append(body, fault ? "</p></details>" : "</p>");
+
+	/*
+	 * The operator chrome -- the sidebar, the record navigation, the
+	 * install's modules -- is for somebody signed in. A refusal on a
+	 * public route (a portal or payment token, a lead form, a booking
+	 * page) is read by a customer or a stranger, so it gets a bare page
+	 * like the one it came from, with no way into the app to show them.
+	 */
+	principal = venture_auth_authenticate(self->auth, request);
+	if (NULL == principal || !principal->authenticated)
+	{
+		g_autoptr(GString) page = g_string_new("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+			"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
+
+		venture_html_escape_append(page, venture_web_error_title(error));
+		g_string_append(page, "</title></head><body><main>");
+		g_string_append(page, body->str);
+		g_string_append(page, "<p><button type=\"button\" onclick=\"history.back()\">Go back</button></p>"
+			"</div></main></body></html>");
+		htmx_context_set_response(context, venture_web_html_response(
+			g_string_free(g_steal_pointer(&page), FALSE), status));
+		return;
+	}
 	g_string_append(body, "<p><button type=\"button\" class=\"btn btn-primary\" onclick=\"history.back()\">"
 		"Go back and fix it</button> <a class=\"btn\" href=\"/\">Home</a></p></div>");
 
@@ -5960,8 +5984,12 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
 		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
-		                       error->message);
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Not found", body), 404);
 	}
@@ -5981,8 +6009,12 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
 		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
-		                       error->message);
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Bad request", body), 400);
 	}
@@ -6012,8 +6044,12 @@ venture_web_ui_list(
 	{
 		g_autofree gchar *body = NULL;
 
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
 		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
-		                       error->message);
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, NULL, "Error", body), 500);
 	}
@@ -6409,8 +6445,12 @@ venture_web_ui_report(
 	{
 		g_autofree gchar *body = NULL;
 
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
 		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
-		                       error->message);
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Bad period", body), 400);
 	}
@@ -6445,8 +6485,12 @@ venture_web_ui_report(
 	{
 		g_autofree gchar *body = NULL;
 
+		/* Escaped: a refusal can quote the request -- a filter names
+		 * the field it was given, which is whatever the URL said. */
+		g_autofree gchar *words = venture_html_escape(error->message);
+
 		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
-		                       error->message);
+		                       words);
 		return venture_web_html_response(
 			venture_web_page(self, request, "/reports", "Error", body), 500);
 	}
@@ -7255,6 +7299,27 @@ venture_web_ui_form(
 	}
 
 	/*
+	 * A "New" button on a related panel names its parent in the query
+	 * string (?company_id=4). Applied before any markup is built, so a
+	 * refusal has nothing half-made to free.
+	 */
+	for (i = 0; id == 0 && i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		g_autofree gchar *wire = NULL;
+		const gchar *value;
+
+		if (venture_field_spec_get_kind(spec) != VENTURE_FIELD_KIND_REFERENCE ||
+		    0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_SENSITIVE))
+			continue;
+		wire = g_strdup(venture_field_spec_get_name(spec));
+		g_strdelimit(wire, "-", '_');
+		value = htmx_request_get_query_param(request, wire);
+		if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
+			return venture_web_error_response(error);
+	}
+
+	/*
 	 * Four groups, each drawn from the field's role: the essentials in
 	 * view, what somebody writes given full width, the rest under "More
 	 * details", and the machinery under "Advanced". Folded groups are
@@ -7288,16 +7353,6 @@ venture_web_ui_form(
 		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_BOOLEAN &&
 		    g_strcmp0(venture_field_spec_get_name(spec), "active") == 0)
 			g_object_set(record, "active", TRUE, NULL);
-
-		if (id == 0 && venture_field_spec_get_kind(spec) == VENTURE_FIELD_KIND_REFERENCE)
-		{
-			g_autofree gchar *wire = g_strdup(venture_field_spec_get_name(spec));
-			const gchar *value;
-			g_strdelimit(wire, "-", '_');
-			value = htmx_request_get_query_param(request, wire);
-			if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
-				return venture_web_error_response(error);
-		}
 
 		group = venture_web_form_group(spec, &facts_seen);
 		counts[group]++;
@@ -8398,10 +8453,18 @@ venture_web_append_related(
 				g_autofree gchar *lower = g_ascii_strdown(singular, -1);
 
 				g_strdelimit(wire, "-", '_');
-				g_string_append_printf(content,
-					"</ul><a class=\"btn btn-sm btn-ghost\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
-					"New ", related_name, wire, venture_entity_get_id(record),
-					venture_entity_get_organization_id(record));
+				/* A type with a page of its own is made there, even from
+				 * here: the generated form makes an invoice with no lines.
+				 * Those pages take no prefill, so none is passed. */
+				if (NULL != venture_entity_type_get_create_path(types[i]))
+					g_string_append_printf(content,
+						"</ul><a class=\"btn btn-sm btn-ghost\" href=\"%s\">New ",
+						venture_entity_type_get_create_path(types[i]));
+				else
+					g_string_append_printf(content,
+						"</ul><a class=\"btn btn-sm btn-ghost\" href=\"/e/%s/new?%s=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT "\">"
+						"New ", related_name, wire, venture_entity_get_id(record),
+						venture_entity_get_organization_id(record));
 				venture_html_escape_append(content, lower);
 				g_string_append(content, "</a></div>");
 			}
@@ -9614,8 +9677,12 @@ venture_web_append_invoice_block(
 				venture_entity_get_organization_id(record), NULL, NULL);
 			stripe = configured;
 		}
+		/* data-no-inline: the answer is a 303 to Stripe. A scripted post
+		 * cannot follow it across origins, so the operator would be told
+		 * the result was uncertain and every retry would open another
+		 * Checkout Session. The browser's own post follows it. */
 		if (stripe && venture_stripe_service_can_checkout(stripe, id, NULL))
-			g_string_append_printf(content, "<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT "/checkout\"><button class=\"btn btn-primary\" type=\"submit\">Pay with Stripe</button></form>", id);
+			g_string_append_printf(content, "<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT "/checkout\" data-no-inline><button class=\"btn btn-primary\" type=\"submit\">Pay with Stripe</button></form>", id);
 	}
 
 
@@ -29120,7 +29187,10 @@ venture_web_api_palette(
 			continue;
 
 		list_url = g_strdup_printf("/e/%s", names[i]);
-		new_url = g_strdup_printf("/e/%s/new", names[i]);
+		/* The same page every other "New" button goes to. */
+		new_url = (NULL != venture_entity_type_get_create_path(entity_type))
+			? g_strdup(venture_entity_type_get_create_path(entity_type))
+			: g_strdup_printf("/e/%s/new", names[i]);
 
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "type");

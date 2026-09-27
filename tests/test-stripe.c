@@ -533,6 +533,13 @@ test_flow(Fixture *f, gconstpointer data)
 		path = g_strdup_printf("/e/invoice/%s", id);
 		g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &out), ==, 200);
 		g_assert_nonnull(strstr(out, "Pay with Stripe"));
+		{
+			/* The answer is a 303 to checkout.stripe.com. Posted by the
+			 * page's script it cannot be followed, the operator is told the
+			 * result is uncertain and each retry opens another session. */
+			g_autofree gchar *form = g_strdup_printf("action=\"/invoices/%s/checkout\" data-no-inline>", id);
+			g_assert_nonnull(strstr(out, form));
+		}
 		handler = g_signal_connect(venture_database_get_access_policy(f->database), "decide", G_CALLBACK(deny_stripe_event), NULL);
 		g_object_set(f->config, "security-require-auth", TRUE, NULL);
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json", "{}", NULL), ==, 400);

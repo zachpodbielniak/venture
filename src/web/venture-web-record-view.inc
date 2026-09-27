@@ -658,6 +658,9 @@ venture_web_append_record_content(
  * Whether @spec is the field the page is already titled with. The title
  * says it in the largest type on the page; Details saying it again is the
  * first row anybody reads, spent on nothing.
+ *
+ * A title may name the type before the value -- "Invoice INV-7" from a
+ * number of "INV-7" -- and that is still the same field said twice.
  */
 static gboolean
 venture_web_spec_is_title(
@@ -666,6 +669,9 @@ venture_web_spec_is_title(
 	const gchar		*title
 ){
 	g_auto(GValue) value = G_VALUE_INIT;
+	g_autofree gchar *label = NULL;
+	const gchar *text;
+	gsize length;
 
 	if ((VENTURE_FIELD_KIND_STRING != venture_field_spec_get_kind(spec)) ||
 	    !venture_entity_get_field(record, venture_field_spec_get_name(spec),
@@ -673,7 +679,16 @@ venture_web_spec_is_title(
 	    !G_VALUE_HOLDS_STRING(&value))
 		return FALSE;
 
-	return 0 == g_strcmp0(g_value_get_string(&value), title);
+	text = g_value_get_string(&value);
+	if (0 == g_strcmp0(text, title))
+		return TRUE;
+	if (venture_string_is_empty(text) || NULL == title)
+		return FALSE;
+
+	label = venture_web_type_label(G_OBJECT_TYPE(record), FALSE);
+	length = strlen(label);
+	return g_str_has_prefix(title, label) && ' ' == title[length] &&
+		0 == strcmp(title + length + 1, text);
 }
 
 /*
@@ -801,17 +816,18 @@ venture_web_append_record_aside(
 }
 
 /*
- * A record's initials in a tile, tinted by its name, so a page is
- * recognisable at a glance and two records never look the same. The tint
- * is one of the four status hues mixed into the ground -- tokens, not a
- * colour of our own.
+ * A record's initials in a tile, shaded by its name, so a page is
+ * recognisable at a glance. The shades are the neutral grounds and the
+ * ink, never the status hues: red means "look here" and green and amber
+ * are readings, so a tile tinted by a hash would say a customer is
+ * overdue or healthy because of how their name happens to hash.
  */
 static void
 venture_web_append_avatar(
 	GString		*html,
 	const gchar	*name
 ){
-	static const gchar *const tones[] = { "accent", "positive", "warning", "info" };
+	static const gchar *const tones[] = { "sunken", "raised", "hover", "ink" };
 	gchar initials[8] = { 0 };
 	const gchar *p;
 	guint n = 0;
@@ -1161,9 +1177,14 @@ venture_web_append_list_cell(
 		g_auto(GValue) value = G_VALUE_INIT;
 		g_autofree gchar *text = NULL;
 
+		g_autofree gchar *shown = NULL;
+
 		venture_entity_get_field(record, venture_field_spec_get_name(spec),
 		                         &value);
-		text = venture_truncate(g_value_get_string(&value), 60);
+		/* Redacted before it is cut short, as on the record page: a list
+		 * is a page, and a truncated URI can still carry the password. */
+		shown = venture_string_redact_uri(g_value_get_string(&value));
+		text = venture_truncate(shown, 60);
 		g_string_append(html, "<td>");
 		venture_html_escape_append(html, text);
 		g_string_append(html, "</td>");

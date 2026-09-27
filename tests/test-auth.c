@@ -3715,6 +3715,85 @@ test_auth_redirect_notices_render(
 }
 
 /*
+ * Posts a form the way a browser with scripting off does -- asking for
+ * HTML -- so a refusal comes back as the page a person would read.
+ */
+static guint
+server_fixture_browser_post(
+	ServerFixture	 *fixture,
+	const gchar	 *path,
+	const gchar	 *cookie,
+	const gchar	 *form_body,
+	gchar		**out_body
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", fixture->port, path);
+	message = soup_message_new("POST", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_headers_append(soup_message_get_request_headers(message),
+		"Accept", "text/html,application/xhtml+xml");
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie", cookie);
+	bytes = g_bytes_new(form_body, strlen(form_body));
+	soup_message_set_request_body_from_bytes(message,
+		"application/x-www-form-urlencoded", bytes);
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+	if (NULL != outcome.error)
+		g_error("POST %s: %s", path, outcome.error->message);
+
+	*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+	                      g_bytes_get_size(outcome.body));
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * A refusal on a public route is read by a stranger -- a prospect on a
+ * lead form, a customer holding a portal link -- so it must not arrive in
+ * the operator's chrome. If this regresses, a mistyped lead form shows an
+ * anonymous visitor the sidebar: the install's modules, its saved views
+ * and a search box, one click from the login page.
+ */
+static void
+test_auth_public_errors_have_no_chrome(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *stranger = NULL;
+	g_autofree gchar *operator_page = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_fixture_browser_post(fixture, "/f/no-such-form",
+		NULL, "name=Someone", &stranger), >=, 400);
+	g_assert_nonnull(strstr(stranger, "<html"));
+	g_assert_nonnull(strstr(stranger, "role=\"alert\""));
+	g_assert_null(strstr(stranger, "class=\"sidebar\""));
+	g_assert_null(strstr(stranger, "nav-item"));
+
+	/* The operator, signed in, still gets the page in the app. */
+	server_fixture_create_member(fixture, "opal", "o-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "opal", "o-long-password");
+	g_assert_cmpuint(server_fixture_browser_post(fixture, "/f/no-such-form",
+		cookie, "name=Someone", &operator_page), >=, 400);
+	g_assert_nonnull(strstr(operator_page, "class=\"sidebar\""));
+}
+
+/*
  * A url-encoded import is a 400 that says so, not a 500.
  *
  * This is what a browser sends when the form has no working encoding
@@ -5107,6 +5186,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-marks-the-active-entry", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_sidebar_marks_the_active_entry,
+	           server_fixture_tear_down);
+	g_test_add("/auth/public-errors-have-no-chrome", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_public_errors_have_no_chrome,
 	           server_fixture_tear_down);
 	g_test_add("/auth/redirect-notices-render", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_redirect_notices_render,

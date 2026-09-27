@@ -429,7 +429,8 @@ test_status_and_list(Fixture *f, gconstpointer data)
 	(void)data;
 
 	company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Bellhaven Books",
-	                       "external-id", "ext-9f2c", NULL);
+	                       "external-id", "ext-9f2c",
+	                       "source", "https://scout:hunter2@crm.example/lead", NULL);
 	save(f, company);
 
 	deal = g_object_new(VENTURE_TYPE_DEAL, "name", "Spring catalogue",
@@ -457,6 +458,26 @@ test_status_and_list(Fixture *f, gconstpointer data)
 
 	/* A column nobody filled in on this page is not drawn. */
 	g_assert_null(g_strstr_len(head, body - head, "Legal name"));
+
+	/* A pasted link keeps its password off the list, as off the record
+	 * page. If this regresses, a credential somebody pasted into a plain
+	 * text field is on every list page that shows the column. */
+	g_assert_nonnull(strstr(body, "crm.example"));
+	g_assert_null(strstr(list, "hunter2"));
+
+	/* An invoice is titled "Invoice INV-77" from its number; the number
+	 * is not a second column saying the same thing. */
+	{
+		g_autoptr(VentureEntity) invoice = NULL;
+		g_autofree gchar *invoices = NULL;
+
+		invoice = g_object_new(VENTURE_TYPE_INVOICE, "number", "INV-77",
+			"company-id", venture_entity_get_id(company), NULL);
+		save(f, invoice);
+		invoices = get(f, "/e/invoice");
+		g_assert_nonnull(strstr(invoices, "Invoice INV-77"));
+		g_assert_null(strstr(invoices, ">INV-77<"));
+	}
 
 	/* The list is titled in the plural, and its button says what it
 	 * makes. */
@@ -668,6 +689,23 @@ test_bill_sheet(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_object_get(bill, "status", &status, NULL);
 	g_assert_cmpstr(status, ==, "approved");
+
+	/* With no organization picked, the sheet is the one the post files
+	 * the bill under -- the default -- in that organization's currency.
+	 * If this regresses, the page totals in dollars a bill saved in euros. */
+	{
+		g_autoptr(VentureEntity) organization = NULL;
+		g_autofree gchar *page = NULL;
+
+		organization = venture_database_get(f->database, VENTURE_TYPE_ORGANIZATION,
+			f->organization_id, &error);
+		g_assert_no_error(error);
+		g_object_set(organization, "default-currency", "EUR", NULL);
+		g_assert_true(venture_database_save(f->database, organization, NULL, &error));
+		g_assert_no_error(error);
+		page = get(f, "/bills/compose");
+		g_assert_nonnull(strstr(page, "<dt>Total, EUR</dt>"));
+	}
 }
 
 /* A tax rate, as the rate page makes one. */
@@ -913,6 +951,22 @@ test_attention_of_same_customer(Fixture *f, gconstpointer data)
 		venture_entity_get_id(tesla));
 	g_assert_nonnull(strstr(page, "<select name=\"contact-id\" data-same-parent=\"company-id\">"));
 	g_assert_nonnull(strstr(page, parent));
+
+	/* Every "New invoice" goes to the composer -- the customer's related
+	 * panel and the command palette as well as the list. The generated
+	 * form makes an invoice with no lines, which is the thing
+	 * venture_entity_class_set_create_path() exists to prevent. */
+	{
+		g_autofree gchar *company_page = NULL, *company_path = NULL, *palette = NULL;
+
+		company_path = g_strdup_printf("/e/company/%" G_GINT64_FORMAT, venture_entity_get_id(amazon));
+		company_page = get(f, company_path);
+		g_assert_nonnull(strstr(company_page, "href=\"/invoices/compose\">New invoice"));
+		g_assert_null(strstr(company_page, "/e/invoice/new"));
+		palette = get(f, "/api/v1/palette?q=invoice");
+		g_assert_nonnull(strstr(palette, "/invoices/compose"));
+		g_assert_null(strstr(palette, "/e/invoice/new"));
+	}
 }
 
 /*
@@ -1048,6 +1102,50 @@ test_errors_for_people(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(post_form_full(f, "/invoices/compose", body,
 		NULL, FALSE, NULL, &plain), ==, 422);
 	g_assert_nonnull(strstr(plain, "\"message\""));
+}
+
+/* A GET whose status is part of the answer. */
+static guint
+get_status(Fixture *f, const gchar *path, gchar **out_body)
+{
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	Reply reply;
+
+	memset(&reply, 0, sizeof(reply));
+	session = soup_session_new_with_options("timeout", 15, NULL);
+	url = g_strconcat(venture_web_server_get_base_url(f->server), path, NULL);
+	message = soup_message_new("GET", url);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT,
+	                                 NULL, reply_done, &reply);
+	while (!reply.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(reply.error);
+	*out_body = g_strndup(g_bytes_get_data(reply.bytes, NULL),
+	                      g_bytes_get_size(reply.bytes));
+	g_bytes_unref(reply.bytes);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * A list refuses a filter on a field that does not exist and says which
+ * one -- a name taken straight from the query string. If this regresses,
+ * a link to /e/company?<script>... runs its script in the operator's
+ * session: a reflected XSS one click away from anybody who can send mail.
+ */
+static void
+test_list_refusal_is_escaped(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *page = NULL;
+
+	(void)data;
+
+	g_assert_cmpuint(get_status(f, "/e/company?%3Cimg%20src%3Dx%3E=1", &page), ==, 400);
+	g_assert_nonnull(strstr(page, "&lt;img"));
+	g_assert_null(strstr(page, "<img src=x>"));
 }
 
 /*
@@ -1269,6 +1367,8 @@ main(int argc, char *argv[])
 	           test_attention_of_same_customer, tear_down);
 	g_test_add("/record-view/attention-of-deals-and-tickets", Fixture, NULL, set_up,
 	           test_attention_of_deals_and_tickets, tear_down);
+	g_test_add("/record-view/list-refusal-is-escaped", Fixture, NULL, set_up,
+	           test_list_refusal_is_escaped, tear_down);
 	g_test_add("/record-view/errors-for-people", Fixture, NULL, set_up,
 	           test_errors_for_people, tear_down);
 	g_test_add("/record-view/accessible-shell", Fixture, NULL, set_up,

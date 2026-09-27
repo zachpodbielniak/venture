@@ -27,7 +27,7 @@ its behaviour comes from.
 
 | Role       | What decides it                                                  | Where it goes                           |
 |------------+------------------------------------------------------------------+-----------------------------------------|
-| status     | an enumeration named =status=, =stage= or =state=                | a badge beside the title; a list column |
+| status     | an enumeration or string named =status=, =stage= or =state=      | a badge beside the title; a list column |
 | content    | long text                                                        | a card of its own, when it is prose     |
 | fact       | everything else a person reads                                   | Details; list columns; the form         |
 | technical  | =TECHNICAL= or =SENSITIVE=, or a name that says machinery (below) | folded under All fields and Advanced    |
@@ -156,10 +156,22 @@ Every route reports a failure as JSON, and a person never sees it:
   a success goes where the server sends it. A file answer is saved.
   Opt a form out with =data-no-inline=; htmx and multipart forms are left
   alone.
+- The scripted post is =mode: "same-origin"=, so a redirect to another
+  origin is refused rather than followed and the operator is told to check
+  the record -- the write has happened, and nothing is posted twice. A form
+  whose answer is a redirect elsewhere must carry =data-no-inline= so the
+  browser posts it and follows: "Pay with Stripe" (a 303 to Checkout; each
+  scripted retry would open another session) and linking a sign-in
+  provider (a redirect to the identity provider). =redirect: "manual"= is
+  not an alternative: it hides the =Location= of every same-origin
+  post-redirect-get.
 - An htmx request's refusal is a toast.
 - With scripting off, a browser (=Accept: text/html=) is answered with a
-  page in the app saying what to fix and a button back to the form. A
-  server fault folds its detail away.
+  page saying what to fix and a button back to the form. A signed-in
+  person gets it in the app; anybody else -- a customer on a portal or
+  payment link, a visitor on a lead form or booking page -- gets a bare
+  page with no sidebar, because the operator chrome is not theirs to see.
+  A server fault folds its detail away.
 - The API, webhooks, federation and anything that did not ask for HTML
   get the JSON exactly as before.
 

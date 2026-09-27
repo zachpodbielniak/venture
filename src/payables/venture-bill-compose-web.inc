@@ -122,10 +122,18 @@ venture_bill_compose_page(VentureWebServer *self, HtmxRequest *request)
 	gint64 organization = venture_web_active_organization(self, request);
 	gboolean repeat = htmx_request_get_query_param(request, "repeat") != NULL &&
 		venture_web_module_enabled(self, "recurring");
-	g_autofree gchar *accounts = venture_bill_account_options(self, organization);
-	g_autofree gchar *currency = venture_bill_currency(self, organization);
+	g_autofree gchar *accounts = NULL;
+	g_autofree gchar *currency = NULL;
 	g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
 	g_autofree gchar *day = venture_time_to_date_string(today, NULL);
+
+	/* The organization the post will file the bill under -- the same
+	 * fallback, or the sheet offers every organization's accounts and
+	 * totals in a currency the saved bill is not in. */
+	if (organization == 0)
+		organization = venture_context_get_default_organization_id(self->context);
+	accounts = venture_bill_account_options(self, organization);
+	currency = venture_bill_currency(self, organization);
 
 	g_string_append(html, "<form method=\"post\" action=\"/bills/compose\" class=\"doc-compose\" data-doc-compose>"
 		"<div class=\"page-head\"><div class=\"page-title\">");
@@ -176,10 +184,13 @@ venture_bill_compose_page(VentureWebServer *self, HtmxRequest *request)
 	venture_bill_append_line_row(html, "__N__", accounts);
 	g_string_append(html, "</template></div></section><aside class=\"doc-aside\">");
 
-	g_string_append_printf(html, "<section class=\"card doc-totals\"><div class=\"card-body\">"
+	/* The currency is whatever the organization's settings say. */
+	g_string_append(html, "<section class=\"card doc-totals\"><div class=\"card-body\">"
 		"<dl class=\"totals\"><div><dt>Before tax</dt><dd data-subtotal>0.00</dd></div>"
 		"<div><dt>Tax</dt><dd data-tax-total>0.00</dd></div>"
-		"<div class=\"grand\"><dt>Total, %s</dt><dd data-total>0.00</dd></div></dl></div></section>", currency);
+		"<div class=\"grand\"><dt>Total, ");
+	venture_html_escape_append(html, currency);
+	g_string_append(html, "</dt><dd data-total>0.00</dd></div></dl></div></section>");
 
 	if (repeat)
 		g_string_append_printf(html, "<section class=\"card\"><div class=\"card-head\"><h2>Schedule</h2></div><div class=\"card-body\">"

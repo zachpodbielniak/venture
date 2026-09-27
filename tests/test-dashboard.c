@@ -766,6 +766,52 @@ test_dashboard_one_home(
 }
 
 /*
+ * A template's "New" link goes where every other "New" button for the type
+ * goes. A type with a page of its own (a bill is composed with its lines)
+ * must not be linked to the generated form, which makes one with none. If
+ * this regresses, the Today page's "New bill" makes a bill with no lines
+ * and no total, which nothing else in the app can produce.
+ */
+static void
+test_dashboard_template_new_links(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	const VentureDashboardTemplate *templates;
+	gsize n_templates;
+	gsize i;
+
+	(void)fixture;
+	(void)user_data;
+
+	templates = venture_dashboard_get_templates(&n_templates);
+	for (i = 0; i < n_templates; i++)
+	{
+		const gchar *at = templates[i].definition;
+
+		while (NULL != (at = strstr(at, "/e/")))
+		{
+			const gchar *end;
+			g_autofree gchar *name = NULL;
+			GType type;
+
+			at += 3;
+			end = at + strcspn(at, "/ \\\"?");
+			if (!g_str_has_prefix(end, "/new"))
+				continue;
+			name = g_strndup(at, end - at);
+			type = venture_entity_registry_lookup_any(
+				venture_entity_registry_get_default(), name);
+			g_assert_true(G_TYPE_INVALID != type);
+			if (NULL != venture_entity_type_get_create_path(type))
+				g_error("template %s links /e/%s/new; %s makes one",
+				        templates[i].name, name,
+				        venture_entity_type_get_create_path(type));
+		}
+	}
+}
+
+/*
  * Every shipped template imports, an export re-imports to the same shape,
  * and importing twice yields two dashboards rather than a refusal.
  */
@@ -1982,6 +2028,7 @@ main(
 	ADD("/dashboard/widget-off-and-unknown",
 	    test_dashboard_widget_off_and_unknown);
 	ADD("/dashboard/one-home", test_dashboard_one_home);
+	ADD("/dashboard/template-new-links", test_dashboard_template_new_links);
 	ADD("/dashboard/templates-and-export",
 	    test_dashboard_templates_and_export);
 	ADD("/dashboard/move-widget", test_dashboard_move_widget);
