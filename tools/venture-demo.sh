@@ -9,8 +9,9 @@
 # is start a server against a state directory it owns and can delete, seed a
 # small but complete business into it -- two ventures, a year of sales and
 # expenses, invoices, a pipeline, a support desk with service levels and a
-# sprint, a release that went out and an incident that followed -- and tell
-# you how to sign in.
+# sprint, a release that went out and an incident that followed -- plus a
+# second organization that trades inside a game world in its own gold, and
+# tell you how to sign in.
 #
 # The database is thrown away and rebuilt on every run. That is the point:
 # the demo is the same demo every time, and nothing you do to it matters.
@@ -47,6 +48,7 @@ detach="false"
 action="start"
 
 server_pid=""
+home_org=""
 token=""
 password=""
 base_url=""
@@ -485,13 +487,29 @@ now () {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+# The default organisation's id: the press and the studio's entity.
+#
+# Every lookup below that reads the books is scoped to it. The demo also
+# seeds a second organisation, whose sales post to a chart of its own, and
+# an unscoped "the account with code 1000" is then whichever of the two
+# the list happens to put first.
+default_organization () {
+    ctl --format json list organization is_default=true 2>/dev/null | python3 -c \
+        'import json, sys
+try:
+    rows = json.load(sys.stdin).get("records", [])
+    print(rows[0]["id"] if rows else "")
+except Exception:
+    pass' 2>/dev/null || true
+}
+
 # The id of an account in the chart every organisation starts with, by
 # code. Seeding looks accounts up rather than creating them so that the
 # demo's books are the ones a new install already has.
 account_id () {
     local code="$1"
 
-    ctl --format json list account "code=${code}" 2>/dev/null | python3 -c \
+    ctl --format json list account "code=${code}" "organization_id=${home_org}" 2>/dev/null | python3 -c \
         'import json, sys
 try:
     rows = json.load(sys.stdin).get("records", [])
@@ -687,10 +705,7 @@ seed_books () {
     # nobody's invoice -- the money the owner put in to start -- names the
     # legal entity itself, which is the only source a manual adjustment
     # legitimately has.
-    org="$(ctl --format json list organization 2>/dev/null | python3 -c \
-        'import json, sys
-rows = json.load(sys.stdin).get("records", [])
-print(rows[0]["id"] if rows else "")' 2>/dev/null || true)"
+    org="${home_org}"
 
     [[ -n "${org}" ]] || die "the server has no organisation to post against"
 
@@ -734,7 +749,7 @@ seed_periods () {
     # later posting dated inside it, which is why this runs after every
     # document has been written and posted. The first quarter is closed
     # and the rest left open, so the demo has both.
-    periods="$(ctl --format json list fiscal_period limit=12 2>/dev/null \
+    periods="$(ctl --format json list fiscal_period limit=12 "organization_id=${home_org}" 2>/dev/null \
         | python3 -c \
         'import json, sys
 try:
@@ -1590,6 +1605,390 @@ seed_factory () {
         description="Nothing is listening on that port; press Test to watch a delivery fail honestly."
 }
 
+# ──────────────────────────────────────────────────────────────────────────
+# A virtual economy
+#
+# The same software, pointed at something that is not a business: an
+# auction-house trade inside a game world, kept in the game's own gold. It
+# is a second organization -- its own entity, its own book currency -- so
+# its money never lands in the press's or the studio's figures, and every
+# report run for it answers in gold.
+#
+# Nothing here is specific to one game, and nothing is a feature of its
+# own. Gold is a currency record with coins; the characters and the bank
+# are locations; the item groups are a category tree; the price feeds are
+# observation sources; the auction house is a channel; farming is sessions;
+# a profession is a goal with recipe steps. docs/examples/game-economy.org
+# walks through the same model by hand.
+# ──────────────────────────────────────────────────────────────────────────
+
+# A copper count as gold, silver and copper, the way an amount in GOLD is
+# written: 1234567 is "123g 45s 67c GOLD". Only the coins that are not zero
+# are named; a coin may appear once and a bare number among them is refused.
+gold () {
+    local copper="$1"
+    local text=""
+
+    (( copper / 10000 > 0 )) && text+="$(( copper / 10000 ))g "
+    (( copper / 100 % 100 > 0 )) && text+="$(( copper / 100 % 100 ))s "
+    (( copper % 100 > 0 || copper == 0 )) && text+="$(( copper % 100 ))c "
+
+    printf '%sGOLD' "${text}"
+}
+
+# A timestamp N hours from now (negative is the past), for the records a
+# game economy dates to the hour: listings, sales, price checks.
+at_hour () {
+    date -u -d "$1 hours" +%Y-%m-%dT%H:00:00Z
+}
+
+# The same to the minute, for a session's start and end.
+at_minute () {
+    date -u -d "$1 minutes" +%Y-%m-%dT%H:%M:00Z
+}
+
+seed_virtual_economy () {
+    step "A second organization: an auction-house trade kept in gold"
+
+    local org
+    local venture
+    local materials herbs ore crafted potions flasks
+    local brisk tallow bank
+    local silverleaf duskroot copper ironstone vial mortar healing flask
+    local healing_recipe flask_recipe
+    local goal
+    local dashboard
+    local item
+
+    # The unit of account first: every money field below is written in it,
+    # and the organization names it as its book currency. Four digits of
+    # minor unit, because a hundred copper make a silver and a hundred
+    # silver a gold.
+    add currency code=GOLD name=Gold kind=virtual exponent=4 \
+        symbol_position=suffix \
+        denominations='[{"suffix":"g","units":10000},{"suffix":"s","units":100},{"suffix":"c","units":1}]' \
+        description="The in-game gold of Evermoor Online. 100 copper to the silver, 100 silver to the gold."
+
+    org="$(make_record organization name="Evermoor Trading" slug=evermoor \
+        kind=personal default_currency=GOLD fiscal_year_start_month=1 \
+        active=true notes="An auction-house trade inside a game world, kept in its own gold.")"
+
+    # What gold is worth in dollars, from the price of the game's token:
+    # a rate is exact, a numerator over a denominator, never a float.
+    add exchange_rate organization_id="${org}" from_currency=GOLD \
+        to_currency=USD rate_numerator=8 rate_denominator=100000 \
+        effective_at="$(day -90)" source=manual \
+        reason="Token price: 20 USD buys 250,000 gold"
+
+    # The venture type holds it to what a virtual economy has to say for
+    # itself -- the world is required -- and its attributes ride in the
+    # same request that creates it.
+    venture="$(make_record venture organization_id="${org}" \
+        name="Silverfen auction house" slug=silverfen-ah \
+        venture_type=virtual_economy status=active priority=normal \
+        description="Buy low, craft, sell high: herbs and ore in, potions and flasks out." \
+        started_at="$(day -120)" \
+        attributes.world="Evermoor Online" attributes.region="Silverfen (EU)" \
+        attributes.currency_code=GOLD attributes.faction=Tidewardens \
+        attributes.handle="Brisk#2211" attributes.marketplace=auction_house)"
+
+    # The item groups a trading addon would call its groups, as a tree
+    # that only products may use.
+    materials="$(make_record category organization_id="${org}" name=Materials applies_to=product position=1)"
+    herbs="$(make_record category organization_id="${org}" name=Herbs parent_id="${materials}" applies_to=product position=1)"
+    ore="$(make_record category organization_id="${org}" name=Ore parent_id="${materials}" applies_to=product position=2)"
+    crafted="$(make_record category organization_id="${org}" name=Crafted applies_to=product position=2)"
+    potions="$(make_record category organization_id="${org}" name=Potions parent_id="${crafted}" applies_to=product position=1)"
+    flasks="$(make_record category organization_id="${org}" name=Flasks parent_id="${crafted}" applies_to=product position=2)"
+
+    # Two characters and the guild bank: the places stock can be.
+    brisk="$(make_record location organization_id="${org}" name=Brisk kind=character active=true \
+        description="The gatherer: herbalism and mining.")"
+    tallow="$(make_record location organization_id="${org}" name=Tallow kind=character active=true \
+        description="The crafter: alchemy.")"
+    bank="$(make_record location organization_id="${org}" name="Guild bank" kind=bank active=true \
+        description="Finished goods waiting to be listed.")"
+
+    silverleaf="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name=Silverleaf sku=HERB-SL category_id="${herbs}" tags=herb,farmable \
+        list_price="$(gold 1850)" active=true)"
+    duskroot="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name=Duskroot sku=HERB-DR category_id="${herbs}" tags=herb,farmable \
+        list_price="$(gold 4200)" active=true)"
+    copper="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Copper ore" sku=ORE-CU category_id="${ore}" tags=ore,farmable \
+        list_price="$(gold 1200)" active=true)"
+    ironstone="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Ironstone ore" sku=ORE-FE category_id="${ore}" tags=ore,farmable \
+        list_price="$(gold 6500)" active=true)"
+    vial="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Crystal vial" sku=MAT-VIAL category_id="${materials}" tags=vendor \
+        cost="$(gold 400)" list_price="$(gold 400)" active=true)"
+    mortar="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Mortar and pestle" sku=TOOL-MP category_id="${materials}" tags=tool \
+        cost="$(gold 25000)" active=true)"
+    healing="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Healing potion" sku=POT-HEAL category_id="${potions}" tags=consumable \
+        list_price="$(gold 9500)" active=true)"
+    flask="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Flask of endurance" sku=FLK-END category_id="${flasks}" tags=consumable \
+        list_price="$(gold 68000)" active=true)"
+
+    # One stock item per product, where it is kept.
+    #
+    # Only the vials and the mortar get an opening count. A sale issues
+    # its units from FIFO cost layers and refuses units that have none,
+    # and a hand-typed adjustment carries no layer -- so everything that
+    # is sold here arrives the way it would in the game: gathered on a
+    # posted session (a zero-cost layer: nobody paid for the herbs) or
+    # crafted from those (a layer carrying what the inputs cost). The
+    # vials and the mortar are only ever consumed or needed by a craft,
+    # which takes unlayered units at no cost.
+    local product location opening
+    while read -r product location opening
+    do
+        item="$(make_record inventory_item organization_id="${org}" \
+            product_id="${product}" venture_id="${venture}" location_id="${location}")"
+
+        if (( opening > 0 ))
+        then
+            add inventory_txn organization_id="${org}" inventory_item_id="${item}" \
+                kind=adjustment quantity="${opening}" occurred_at="$(day -65)" \
+                reference=opening notes="Counted on the character"
+        fi
+    done <<< "${silverleaf} ${brisk} 0
+${duskroot} ${brisk} 0
+${copper} ${brisk} 0
+${ironstone} ${brisk} 0
+${vial} ${tallow} 200
+${mortar} ${tallow} 1
+${healing} ${bank} 0
+${flask} ${bank} 0"
+
+    step "Farming sessions, three of them posted into stock"
+
+    local session
+    local route start minutes
+    local n=0
+    while read -r route start minutes
+    do
+        n=$(( n + 1 ))
+        session="$(make_record session organization_id="${org}" venture_id="${venture}" \
+            name="${route//_/ } $(date -u -d "${start} hours" +%m-%d)" activity="${route//_/ }" \
+            location_id="${brisk}" started_at="$(at_minute $(( start * 60 )))" \
+            ended_at="$(at_minute $(( start * 60 + minutes )))" \
+            cost="$(gold 1500)" notes="Repairs and a flight")"
+
+        if [[ "${route}" == "herb_route" ]]
+        then
+            add session_yield organization_id="${org}" session_id="${session}" \
+                product_id="${silverleaf}" quantity=$(( 70 + n * 2 )) unit_value="$(gold 1850)"
+            add session_yield organization_id="${org}" session_id="${session}" \
+                product_id="${duskroot}" quantity=$(( 14 + n )) unit_value="$(gold 4200)"
+        else
+            add session_yield organization_id="${org}" session_id="${session}" \
+                product_id="${copper}" quantity=$(( 56 + n * 2 )) unit_value="$(gold 1200)"
+            add session_yield organization_id="${org}" session_id="${session}" \
+                product_id="${ironstone}" quantity=$(( 8 + n )) unit_value="$(gold 6500)"
+        fi
+
+        # What the mobs dropped, sold to a vendor on the spot: money, not goods.
+        add session_yield organization_id="${org}" session_id="${session}" \
+            amount="$(gold $(( 21500 + n * 1300 )))" notes="Vendor sales"
+
+        if (( n <= 3 ))
+        then
+            ctl act session "${session}" post > /dev/null \
+                || die "could not post the ${route} session"
+        fi
+    done <<< "herb_route -480 75
+ore_route -360 60
+herb_route -240 90
+ore_route -144 55
+herb_route -48 80"
+
+    step "Two recipes, and the potions and flasks crafted from the harvest"
+
+    # Filed by their output, not by a category of their own: the tree above
+    # groups products only (applies_to=product), and a recipe is not one.
+
+    healing_recipe="$(make_record recipe organization_id="${org}" venture_id="${venture}" \
+        name="Healing potion" output_product_id="${healing}" output_quantity=1 \
+        active=true)"
+    add recipe_component organization_id="${org}" recipe_id="${healing_recipe}" product_id="${silverleaf}" quantity=2
+    add recipe_component organization_id="${org}" recipe_id="${healing_recipe}" product_id="${vial}" quantity=1
+    add recipe_component organization_id="${org}" recipe_id="${healing_recipe}" product_id="${mortar}" quantity=1 reusable=true
+
+    flask_recipe="$(make_record recipe organization_id="${org}" venture_id="${venture}" \
+        name="Flask of endurance" output_product_id="${flask}" output_quantity=1 \
+        active=true)"
+    add recipe_component organization_id="${org}" recipe_id="${flask_recipe}" product_id="${duskroot}" quantity=3
+    add recipe_component organization_id="${org}" recipe_id="${flask_recipe}" product_id="${ironstone}" quantity=1
+    add recipe_component organization_id="${org}" recipe_id="${flask_recipe}" product_id="${vial}" quantity=1
+    add recipe_component organization_id="${org}" recipe_id="${flask_recipe}" product_id="${mortar}" quantity=1 reusable=true
+
+    # Herbs and vials leave stock, potions and flasks arrive, and the
+    # mortar is needed and kept. Enough for what the listings below sell:
+    # thirty potions and a handful of flasks.
+    ctl act recipe "${healing_recipe}" craft times=32 > /dev/null \
+        || die "could not craft the healing potions"
+    ctl act recipe "${flask_recipe}" craft times=5 > /dev/null \
+        || die "could not craft the flasks"
+
+    step "Sixty days of prices from two sources"
+
+    # Two feeds that disagree a little, as they do: the market's own
+    # smoothed value and the region's average. A history for the herb and
+    # the potion made from it, every fourth day -- enough for the price
+    # history report to have a shape and the demo to stay quick -- and one
+    # current market value for everything else a recipe or the shopping
+    # list has to price.
+    local base
+    local days
+    local wiggle
+    while read -r product base
+    do
+        for (( days = 60; days >= 4; days -= 4 ))
+        do
+            wiggle=$(( ((days * 7) % 9) - 4 ))
+            add price_observation organization_id="${org}" product_id="${product}" \
+                source="market value" price="$(gold $(( base + base * wiggle / 40 )))" \
+                volume=$(( 200 + (days * 13) % 170 )) observed_at="$(at_hour $(( -24 * days )))"
+            add price_observation organization_id="${org}" product_id="${product}" \
+                source="region average" price="$(gold $(( base + base * (wiggle + 2) / 50 )))" \
+                observed_at="$(at_hour $(( -24 * days - 6 )))"
+        done
+    done <<< "${silverleaf} 1850
+${healing} 9500"
+
+    while read -r product base
+    do
+        add price_observation organization_id="${org}" product_id="${product}" \
+            source="market value" price="$(gold "${base}")" volume=150 \
+            observed_at="$(at_hour -30)"
+    done <<< "${duskroot} 4200
+${copper} 1200
+${ironstone} 6500
+${vial} 400
+${flask} 68000"
+
+    step "Thirty auction-house listings and the sales they became"
+
+    # A ten-listing cycle of outcomes, so the sale rate is something other
+    # than 0% or 100%: expired and cancelled offers count as unsold, a
+    # partial one counts what it sold, and the four still open at the end
+    # are left out of the rate until they close.
+    local outcomes=(sold sold expired partial sold cancelled sold expired sold partial)
+    local i outcome quantity sold unit listed closed sale_arg sale fees deposit
+    local products=("${healing}" "${flask}" "${silverleaf}" "${copper}")
+    local stacks=(5 1 20 20)
+    local prices=(9500 68000 1850 1200)
+    for (( i = 0; i < 30; i++ ))
+    do
+        product="${products[i % 4]}"
+        quantity="${stacks[i % 4]}"
+        unit=$(( prices[i % 4] + prices[i % 4] * ((i * 5) % 7 - 3) / 50 ))
+        deposit=$(( unit * quantity * 15 / 1000 ))
+
+        if (( i >= 26 ))
+        then
+            add listing organization_id="${org}" product_id="${product}" \
+                channel="auction house" quantity="${quantity}" \
+                unit_price="$(gold "${unit}")" deposit="$(gold "${deposit}")" \
+                listed_at="$(at_hour $(( -6 - (29 - i) * 5 )))" outcome=open
+            continue
+        fi
+
+        outcome="${outcomes[i % 10]}"
+        listed=$(( -24 * (58 - 2 * i) ))
+        closed=$(( listed + 30 ))
+
+        case "${outcome}" in
+            sold)    sold="${quantity}" ;;
+            partial) sold=$(( quantity > 1 ? quantity / 2 : 1 )) ;;
+            *)       sold=0 ;;
+        esac
+
+        # A single flask cannot sell in part; it sold.
+        if [[ "${outcome}" == "partial" && "${quantity}" -eq 1 ]]
+        then
+            outcome=sold
+        fi
+
+        sale_arg=()
+        fees=0
+        if (( sold > 0 ))
+        then
+            # The house keeps five percent of what sold.
+            fees=$(( unit * sold * 5 / 100 ))
+            sale="$(make_record sale organization_id="${org}" venture_id="${venture}" \
+                product_id="${product}" occurred_at="$(at_hour "${closed}")" \
+                quantity="${sold}" gross="$(gold $(( unit * sold )))" \
+                fees="$(gold "${fees}")" channel="auction house" \
+                buyer_name="Auction house")"
+            sale_arg=(sale_id="${sale}")
+        fi
+
+        add listing organization_id="${org}" product_id="${product}" \
+            channel="auction house" quantity="${quantity}" quantity_sold="${sold}" \
+            unit_price="$(gold "${unit}")" deposit="$(gold "${deposit}")" \
+            fees="$(gold "${fees}")" listed_at="$(at_hour "${listed}")" \
+            closed_at="$(at_hour "${closed}")" outcome="${outcome}" "${sale_arg[@]}"
+    done
+
+    step "A profession to level, in recipe steps"
+
+    goal="$(make_record goal organization_id="${org}" venture_id="${venture}" \
+        name="Alchemy 1-300" metric=skill unit=level start_value=1 \
+        current_value=140 target_value=300 due_on="$(day 45)" status=active \
+        notes="Level alchemy on Tallow, crafting what sells on the way.")"
+
+    # The last step crafts nothing, so it names no recipe at all: a
+    # reference of 0 would be a record that does not exist.
+    local position name from to recipe reps finished crafts
+    while read -r position from to recipe reps finished name
+    do
+        crafts=()
+        if [[ "${recipe}" != "-" ]]
+        then
+            crafts=(recipe_id="${recipe}" repetitions="${reps}")
+        fi
+
+        add goal_step organization_id="${org}" goal_id="${goal}" position="${position}" \
+            name="${name}" from_value="${from}" to_value="${to}" done="${finished}" \
+            "${crafts[@]}"
+    done <<< "1 1 60 ${healing_recipe} 60 true Healing potions
+2 60 110 ${healing_recipe} 50 true More healing potions
+3 110 175 ${flask_recipe} 70 false Flasks of endurance
+4 175 240 ${flask_recipe} 65 false More flasks
+5 240 300 - - false Trainer quests to the cap"
+
+    step "A dashboard for the trade"
+
+    dashboard="$(make_record dashboard organization_id="${org}" name="Evermoor" slug=evermoor \
+        purpose=overview layout=three_columns venture_id="${venture}" position=20 \
+        description="The auction-house trade: what sold, what it cost, how far the profession has to go. Pick Evermoor Trading in the sidebar to see it.")"
+
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
+        title="Auction house gross, 30 days" entity_type=sale field=gross \
+        period=last_30_days options='{"date_field": "occurred_at"}' span=normal position=1
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
+        title="House cut, 30 days" entity_type=sale field=fees \
+        period=last_30_days options='{"date_field": "occurred_at"}' span=normal position=2
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=progress \
+        title="Alchemy" entity_type=goal record_id="${goal}" field=current_value \
+        options='{"target_field": "target_value", "start_field": "start_value"}' span=normal position=3
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
+        title="Minutes farmed, 30 days" entity_type=session field=minutes \
+        period=last_30_days options='{"date_field": "started_at"}' span=normal position=4
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
+        title="Sale rate by product" report_name=listing_performance period=last_90_days \
+        options='{"group_by": "product"}' span=wide position=5
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
+        title="Gold per hour" report_name=session_performance period=last_90_days \
+        span=full position=6
+}
+
 seed_dashboards () {
     step "Three dashboards"
 
@@ -1633,7 +2032,9 @@ except Exception:
     say ""
     say "${DIM}Two ventures, a year of trade posted to a general ledger, and"
     say "${counts} tickets on a desk with service levels, a sprint, a release"
-    say "and an incident. Money, sales and the books are all seeded.${OFF}"
+    say "and an incident. Money, sales and the books are all seeded."
+    say "A second organization, Evermoor Trading, runs an auction-house"
+    say "trade in a game world's gold: pick it in the sidebar.${OFF}"
     say ""
     say "  Today             ${base_url}/            ${DIM}(the home dashboard)${OFF}"
     say "  The desk          ${base_url}/dashboards/desk"
@@ -1643,6 +2044,7 @@ except Exception:
     say "  Sprints           ${base_url}/sprints"
     say "  Factory           ${base_url}/factory"
     say "  Reports           ${base_url}/reports"
+    say "  The gold trade    ${base_url}/dashboards/evermoor  ${DIM}(pick Evermoor Trading first)${OFF}"
     say "  Every record type ${base_url}/entities        ${DIM}(leads, quotes, bills, journals…)${OFF}"
     say ""
     say "${DIM}From the command line:"
@@ -1701,6 +2103,9 @@ do_start () {
     read_owner_password
     mint_token
 
+    home_org="$(default_organization)"
+    [[ -n "${home_org}" ]] || die "the server has no default organisation"
+
     local business
     local relations
     local receipt
@@ -1724,6 +2129,10 @@ do_start () {
     # the command substitution would not stop the run.
     business="$(seed_business)"
     read -r press studio book <<< "${business}"
+
+    # The second organization, straight after the first one's ventures: a
+    # game economy in its own gold, with nothing shared with the books.
+    seed_virtual_economy
 
     relations="$(seed_relations "${press}" "${studio}")"
     read -r shop agency buyer paid owing <<< "${relations}"
