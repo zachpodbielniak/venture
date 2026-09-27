@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-29]
-#+updated: [2026-09-12]
+#+updated: [2026-09-27]
 #+version: 0.6.0
 
 * venturectl mcp
@@ -57,7 +57,7 @@ Concretely: register a record type in a plugin, restart both, and it is in the =
 | =venture_update=        | change named fields of one                               |
 | =venture_delete=        | soft-delete one                                          |
 | =venture_reports=       | what reports there are                                   |
-| =venture_report=        | run one                                                  |
+| =venture_report=        | run one; the =aggregate= report's options are arguments  |
 | =venture_confirmations= | list, approve or reject anything waiting for a decision   |
 | =venture_modules=       | which modules the server runs, and why any is off        |
 | =venture_links=         | every link touching one record                           |

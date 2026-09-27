@@ -801,6 +801,17 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "organization_id", "Legal entity to report.");
 		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report.");
 		venture_mcp_catalog_add_string_property(builder, "as_of", "Inclusive historical cutoff.");
+		/* The aggregate report's question; the report's own schema in
+		 * venture_reports describes each in full. */
+		venture_mcp_catalog_add_string_property(builder, "type", "aggregate: the record type to read.");
+		venture_mcp_catalog_add_string_property(builder, "measure", "aggregate: the field to aggregate, or count.");
+		venture_mcp_catalog_add_string_property(builder, "aggregate", "aggregate: sum, avg, min, max, count or count_distinct.");
+		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference.");
+		venture_mcp_catalog_add_integer_property(builder, "category_depth", "aggregate: roll category and location groups up to this level.");
+		venture_mcp_catalog_add_string_property(builder, "date_field", "aggregate: the date field the period bounds.");
+		venture_mcp_catalog_add_string_property(builder, "bucket", "aggregate: day, week, month, quarter or year.");
+		venture_mcp_catalog_add_string_property(builder, "filter", "aggregate: a list-page query string, e.g. status=open.");
+		venture_mcp_catalog_add_string_property(builder, "per", "aggregate: hour or day, adding a rate over the elapsed window.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

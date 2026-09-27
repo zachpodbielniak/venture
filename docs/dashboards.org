@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-18]
-#+version: 0.6.0
+#+updated: [2026-09-27]
+#+version: 0.7.0
 
 * What this is
 
@@ -35,7 +35,7 @@ A dashboard's slug is its address, made from the name when you leave it blank an
 
 Three ways, all on =/dashboards=.
 
-*From a template.* Five ship: =today= (the daily questions -- money in and out this month, invoices and bills past due, your tickets, the triage queue, promises missed and bills to approve, then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next; the demo's home page), =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =work= (your tickets, what is due, what is waiting for a decision), and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
+*From a template.* Six ship: =today= (the daily questions -- money in and out this month, invoices and bills past due, your tickets, the triage queue, promises missed and bills to approve, then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next; the demo's home page), =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =progress= (totals and targets: sales gross, units sold and expenses this month as =sum= widgets, and running campaigns' spend against their budget as a =progress= widget), =work= (your tickets, what is due, what is waiting for a decision), and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
 
 *Empty*, with a name and a purpose, then add widgets.
 
@@ -65,6 +65,10 @@ Every widget has a kind, a title (or the kind supplies one), a width — one col
 | =search=         | a search box, for everything or for one type                                   | =entity_type=                                 |
 | =environments=   | each environment and the release it is running now (needs =factory=)           | =filter=, =order=, =limit=                    |
 | =milestone=      | one milestone's tickets done over planned; the soonest-due open one when no id is given (needs =factory=) | =record_id=                                   |
+| =sum=            | the total of a money or number field over the records matching a filter, optionally within a period; money is one figure per currency | =entity_type=, =field=, =filter=, =period=, =options= (={"date_field": "occurred_at"}=) |
+| =progress=       | a value field against a target field as a percentage and a bar: of one record, or summed over a filter, per currency | =entity_type=, =field=, =record_id=, =filter=, =period=, =options= (={"target_field": "budget"}=, =date_field=) |
+
+*Sum and progress* add up a numeric field --- money, an integer or a double, built in or custom, never sensitive --- with the same accumulator as the =aggregate= report (see [[file:reporting.org][Reporting]]), so the card and the report cannot disagree. Money is totalled per currency and shown as one figure each: a shop selling in dollars and gold shows two, never one number in neither. A number over no records is 0; money over none has no currency to be zero in, and says "Nothing to add up". A =period= bounds =options.date_field=, a declared date field; a period with no date field is an error in place rather than an all-time figure labelled "this month". A total reads every match, not the widget's =limit=, and is refused past the report's 20 000-record bound. =progress= divides the value by the target in the same currency; the bar stops at full while the words say how far past it ("(140%)"), a target of zero or none reads "no target", and a currency on one side only still gets its line (a gold target with no gold yet is 0%). With =record_id= it follows one record, otherwise it sums both fields over the filter. The value and the target must both be money or both numbers. The JSON carries each total as =venture_money_to_json()= (the exact minor units) beside the text the card shows.
 
 A *filter* is written exactly as on a list page's URL: =status=open&priority__in=high,urgent=. The same parser reads both, so what a widget shows is what that URL shows, and every count and list carries a link to its rows. Two placeholders are substituted for whoever is looking: ={me}= is their username and ={user_id}= their id, so a work dashboard's "my tickets" is =assignee={me}= and the same page answers for everyone who opens it. ={venture_id}= is the dashboard's venture.
 
@@ -72,7 +76,7 @@ An *order* is a field name, with a leading =-= for descending. A *period* is any
 
 A widget's *scope* is the viewer's: the entity picked in the sidebar and everything beneath it, the same as every list and report. A widget never scopes itself, so the same widget on a page and in an API call answers about the same rows.
 
-Every widget is checked at the save, whichever door it came through: the kind must exist, the record type must exist (even one whose module is off — the widget outlives the switch), the report must exist, the options must be a JSON object. A widget that cannot be answered when the page renders — a report that errored, a module that is off, a record that was deleted — says so in its place. One bad widget never takes the page down.
+Every widget is checked at the save, whichever door it came through: the kind must exist, the record type must exist (even one whose module is off — the widget outlives the switch), the report must exist, the options must be a JSON object. A =sum= or =progress= widget's =field=, =options.target_field= and =options.date_field= must exist and be the right kind; for a type whose module is off they cannot be read and are checked when the page renders instead. A widget that cannot be answered when the page renders — a report that errored, a module that is off, a record that was deleted — says so in its place. One bad widget never takes the page down.
 
 * The grid
 

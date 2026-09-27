@@ -3019,6 +3019,637 @@ venture_widget_kind_milestone(
 	return g_steal_pointer(&result);
 }
 
+/* --- sum and progress: totals of a numeric field -------------------------- */
+
+/*
+ * The organisation whose custom fields a widget may name: the widget's
+ * own, which is the one it was made in.
+ */
+static gint64
+venture_widget_field_organization(
+	VentureContext		*context,
+	VentureDashboardWidget	*widget
+){
+	gint64 organization_id;
+
+	organization_id = venture_entity_get_organization_id(VENTURE_ENTITY(widget));
+
+	if (organization_id <= 0)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	return organization_id;
+}
+
+/*
+ * A numeric field of the widget's type, for summing: money, an integer or
+ * a double, built in or custom, never sensitive.
+ */
+static VentureFieldSpec *
+venture_widget_numeric_field(
+	VentureContext		 *context,
+	VentureDashboardWidget	 *widget,
+	const gchar		 *entity_type,
+	const gchar		 *name,
+	const gchar		 *role,
+	gboolean		 *out_custom,
+	GError			**error
+){
+	g_autoptr(VentureFieldSpec) spec = NULL;
+	g_autoptr(GError) local = NULL;
+
+	if (NULL == name)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "This widget needs a %s: a money or number field", role);
+		return NULL;
+	}
+
+	spec = venture_aggregate_find_field(venture_context_get_database(context),
+		venture_widget_field_organization(context, widget), entity_type, name,
+		out_custom, &local);
+
+	/* Re-coded as a validation failure: at the save this is a bad
+	 * definition, the same as an unknown kind. */
+	if (NULL == spec)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "The %s: %s", role, local->message);
+		return NULL;
+	}
+
+	if (!venture_aggregate_field_is_numeric(spec))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "The %s \"%s\" is not money or a number, so it cannot "
+		            "be added up", role, name);
+		return NULL;
+	}
+
+	return g_steal_pointer(&spec);
+}
+
+/*
+ * The records a sum or a progress widget totals: the widget's filter in
+ * its scope, bounded by the period on options.date_field. Bounded in
+ * count as the aggregate report is, and refused past it rather than
+ * summed over a truncated set.
+ */
+static GPtrArray *
+venture_widget_numeric_rows(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	GType				  gtype,
+	VentureEntity			 *prototype,
+	const gchar			 *entity_type,
+	GError				**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autofree gchar *period_text = NULL;
+	g_autoptr(GError) local = NULL;
+	gint64 matched;
+
+	options = venture_widget_get_options(widget, &local);
+
+	if (NULL != local)
+	{
+		g_propagate_error(error, g_steal_pointer(&local));
+		return NULL;
+	}
+
+	query = venture_widget_build_query(context, widget, scope, gtype,
+	                                   prototype, 0, error);
+
+	if (NULL == query)
+		return NULL;
+
+	period_text = venture_widget_get_string(widget, "period");
+
+	if (NULL != period_text)
+	{
+		g_autoptr(VentureDateRange) period = NULL;
+		g_autoptr(VentureFieldSpec) date_spec = NULL;
+		const gchar *date_field;
+		gboolean custom;
+
+		date_field = ((NULL != options) && JSON_NODE_HOLDS_OBJECT(options))
+			? venture_json_object_get_string(json_node_get_object(options),
+			                                 "date_field", NULL)
+			: NULL;
+
+		/* Without a field to bound the period would be meaningless and
+		 * the figure would silently be all-time. */
+		if (venture_string_is_empty(date_field))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "A period needs options.date_field to bound");
+			return NULL;
+		}
+
+		date_spec = venture_aggregate_find_field(
+			venture_context_get_database(context),
+			venture_widget_field_organization(context, widget), entity_type,
+			date_field, &custom, error);
+
+		if (NULL == date_spec)
+			return NULL;
+
+		period = venture_context_parse_period(context, period_text, error);
+
+		if (NULL == period)
+			return NULL;
+
+		if (!venture_query_set_date_range(query,
+			venture_field_spec_get_name(date_spec), period, error))
+			return NULL;
+	}
+
+	/* The widget's limit is for lists; a total reads every match. */
+	venture_query_set_limit(query, 0);
+	matched = venture_database_count(venture_context_get_database(context),
+	                                 query, error);
+
+	if (matched < 0)
+		return NULL;
+
+	if (matched > VENTURE_AGGREGATE_MAX_ROWS)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "%" G_GINT64_FORMAT " records match; a total reads at "
+		            "most %d. Narrow the filter or the period", matched,
+		            VENTURE_AGGREGATE_MAX_ROWS);
+		return NULL;
+	}
+
+	return venture_database_find(venture_context_get_database(context), query,
+	                             error);
+}
+
+/*
+ * A total as text a person reads: money with its symbol or denominations,
+ * a number without a pointless fraction.
+ */
+static gchar *
+venture_widget_total_text(const VentureAggregateTotal *total)
+{
+	if (NULL != total->money)
+		return venture_money_to_display_string(total->money, TRUE);
+
+	if (total->number == (gdouble)(gint64)total->number)
+		return g_strdup_printf("%" G_GINT64_FORMAT, (gint64)total->number);
+
+	return g_strdup_printf("%.2f", total->number);
+}
+
+/*
+ * Writes one total into the builder: the money as its exact JSON form, or
+ * the number, with the text the page shows beside it.
+ */
+static void
+venture_widget_add_total(
+	JsonBuilder			*builder,
+	const VentureAggregateTotal	*total
+){
+	g_autofree gchar *text = NULL;
+
+	text = venture_widget_total_text(total);
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "currency");
+
+	if (NULL != total->currency)
+		json_builder_add_string_value(builder, total->currency);
+	else
+		json_builder_add_null_value(builder);
+
+	json_builder_set_member_name(builder, "value");
+
+	if (NULL != total->money)
+		json_builder_add_value(builder, venture_money_to_json(total->money));
+	else
+		json_builder_add_double_value(builder, total->number);
+
+	json_builder_set_member_name(builder, "display");
+	json_builder_add_string_value(builder, text);
+	json_builder_set_member_name(builder, "records");
+	json_builder_add_int_value(builder, total->count);
+	json_builder_end_object(builder);
+}
+
+static VentureWidgetResult *
+venture_widget_kind_sum(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(VentureFieldSpec) spec = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) totals = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *entity_type = NULL;
+	g_autofree gchar *field = NULL;
+	g_autofree gchar *period_text = NULL;
+	g_autofree gchar *escaped_link = NULL;
+	VentureEntity *prototype;
+	GType gtype;
+	gboolean custom;
+	guint i;
+
+	(void)user_data;
+
+	entity_type = venture_widget_get_string(widget, "entity-type");
+
+	if (!venture_widget_resolve_type(context, entity_type, &gtype, &prototype,
+	                                 error))
+		return NULL;
+
+	field = venture_widget_get_string(widget, "field");
+	spec = venture_widget_numeric_field(context, widget, entity_type, field,
+	                                    "field", &custom, error);
+
+	if (NULL == spec)
+		return NULL;
+
+	rows = venture_widget_numeric_rows(context, widget, scope, gtype,
+	                                   prototype, entity_type, error);
+
+	if (NULL == rows)
+		return NULL;
+
+	totals = venture_aggregate_sum(rows, spec, custom, error);
+
+	if (NULL == totals)
+		return NULL;
+
+	period_text = venture_widget_get_string(widget, "period");
+
+	result = venture_widget_result_new();
+	result->title = custom ? venture_widget_humanise(field)
+	                       : g_strdup(venture_field_spec_get_label(spec));
+	result->link = venture_widget_list_path(widget, entity_type, scope);
+	result->link_label = venture_widget_type_label(context, entity_type, TRUE);
+	escaped_link = venture_attribute_escape(result->link);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "entity_type");
+	json_builder_add_string_value(builder, entity_type);
+	json_builder_set_member_name(builder, "field");
+	json_builder_add_string_value(builder, field);
+	json_builder_set_member_name(builder, "period");
+
+	if (NULL != period_text)
+		json_builder_add_string_value(builder, period_text);
+	else
+		json_builder_add_null_value(builder);
+
+	json_builder_set_member_name(builder, "records");
+	json_builder_add_int_value(builder, rows->len);
+	json_builder_set_member_name(builder, "totals");
+	json_builder_begin_array(builder);
+
+	/* One figure per currency, from the same loop that writes the JSON:
+	 * a card that added dollars to gold would be wrong in both. */
+	html = g_string_new("<div class=\"widget-figure\">");
+
+	for (i = 0; i < totals->len; i++)
+	{
+		const VentureAggregateTotal *total;
+		g_autofree gchar *text = NULL;
+
+		total = g_ptr_array_index(totals, i);
+		venture_widget_add_total(builder, total);
+		text = venture_widget_total_text(total);
+		g_string_append_printf(html, "<a class=\"figure\" href=\"%s\">",
+		                       escaped_link);
+		venture_html_escape_append(html, text);
+		g_string_append(html, "</a>");
+	}
+
+	if (0 == totals->len)
+		g_string_append(html, "<p class=\"muted\">Nothing to add up.</p>");
+
+	if (NULL != period_text)
+	{
+		g_autoptr(VentureDateRange) range = NULL;
+
+		range = venture_context_parse_period(context, period_text, NULL);
+		g_string_append(html, "<span class=\"figure-note\">");
+		venture_html_escape_append(html, (NULL != range)
+			? venture_date_range_get_label(range) : period_text);
+		g_string_append(html, "</span>");
+	}
+
+	g_string_append(html, "</div>");
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
+/*
+ * The total in @totals for @currency (NULL for a number), or NULL.
+ */
+static const VentureAggregateTotal *
+venture_widget_total_for(
+	GPtrArray	*totals,
+	const gchar	*currency
+){
+	guint i;
+
+	for (i = 0; i < totals->len; i++)
+	{
+		const VentureAggregateTotal *total;
+
+		total = g_ptr_array_index(totals, i);
+
+		if (0 == g_strcmp0(total->currency, currency))
+			return total;
+	}
+
+	return NULL;
+}
+
+/*
+ * How far @value is toward @target, in percent; FALSE when there is no
+ * target to be a fraction of. A ratio for display -- the amounts
+ * themselves are never carried as doubles.
+ */
+static gboolean
+venture_widget_percent(
+	const VentureAggregateTotal	*value,
+	const VentureAggregateTotal	*target,
+	gdouble				*out_percent
+){
+	if ((NULL == target) ||
+	    ((NULL != target->money) && venture_money_is_zero(target->money)) ||
+	    ((NULL == target->money) && (0.0 == target->number)))
+		return FALSE;
+
+	if (NULL == value)
+	{
+		*out_percent = 0.0;
+		return TRUE;
+	}
+
+	if ((NULL != value->money) && (NULL != target->money))
+	{
+		g_autoptr(VentureMoney) scaled = NULL;
+
+		/* Same currency, but compare minor units only at one scale. */
+		scaled = venture_money_rescale(value->money,
+			venture_money_get_exponent(target->money), NULL);
+
+		if (NULL == scaled)
+			return FALSE;
+
+		*out_percent = 100.0 * (gdouble)venture_money_get_amount(scaled) /
+			(gdouble)venture_money_get_amount(target->money);
+		return TRUE;
+	}
+
+	*out_percent = 100.0 * value->number / target->number;
+
+	return TRUE;
+}
+
+static VentureWidgetResult *
+venture_widget_kind_progress(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(VentureFieldSpec) value_spec = NULL;
+	g_autoptr(VentureFieldSpec) target_spec = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) values = NULL;
+	g_autoptr(GPtrArray) targets = NULL;
+	g_autoptr(GPtrArray) currencies = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *entity_type = NULL;
+	g_autofree gchar *field = NULL;
+	g_autofree gchar *target_field = NULL;
+	VentureEntity *prototype;
+	gboolean value_custom;
+	gboolean target_custom;
+	gint64 record_id;
+	GType gtype;
+	guint i;
+
+	(void)user_data;
+
+	entity_type = venture_widget_get_string(widget, "entity-type");
+
+	if (!venture_widget_resolve_type(context, entity_type, &gtype, &prototype,
+	                                 error))
+		return NULL;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != *error))
+		return NULL;
+
+	if ((NULL != options) && JSON_NODE_HOLDS_OBJECT(options))
+		target_field = g_strdup(venture_json_object_get_string(
+			json_node_get_object(options), "target_field", NULL));
+
+	field = venture_widget_get_string(widget, "field");
+	value_spec = venture_widget_numeric_field(context, widget, entity_type,
+		field, "field", &value_custom, error);
+
+	if (NULL == value_spec)
+		return NULL;
+
+	target_spec = venture_widget_numeric_field(context, widget, entity_type,
+		target_field, "options.target_field", &target_custom, error);
+
+	if (NULL == target_spec)
+		return NULL;
+
+	if ((VENTURE_FIELD_KIND_MONEY == venture_field_spec_get_kind(value_spec)) !=
+	    (VENTURE_FIELD_KIND_MONEY == venture_field_spec_get_kind(target_spec)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s and %s must both be money or both be numbers to "
+		            "compare", field, target_field);
+		return NULL;
+	}
+
+	/* One record by id, or the sum over the filtered set. */
+	record_id = venture_widget_get_int(widget, "record-id");
+
+	if (0 != record_id)
+	{
+		VentureEntity *record;
+		GType record_type;
+
+		record = venture_widget_load_record(context, entity_type, record_id,
+		                                    &record_type, error);
+
+		if (NULL == record)
+			return NULL;
+
+		rows = g_ptr_array_new_with_free_func(g_object_unref);
+		g_ptr_array_add(rows, record);
+	}
+	else
+	{
+		rows = venture_widget_numeric_rows(context, widget, scope, gtype,
+		                                   prototype, entity_type, error);
+
+		if (NULL == rows)
+			return NULL;
+	}
+
+	values = venture_aggregate_sum(rows, value_spec, value_custom, error);
+
+	if (NULL == values)
+		return NULL;
+
+	targets = venture_aggregate_sum(rows, target_spec, target_custom, error);
+
+	if (NULL == targets)
+		return NULL;
+
+	/* Every currency either side has, in order: a target in gold with no
+	 * gold yet is 0%, not missing. */
+	currencies = g_ptr_array_new();
+
+	for (i = 0; i < targets->len; i++)
+		g_ptr_array_add(currencies,
+			((VentureAggregateTotal *)g_ptr_array_index(targets, i))->currency);
+
+	for (i = 0; i < values->len; i++)
+	{
+		const gchar *currency;
+
+		currency = ((VentureAggregateTotal *)g_ptr_array_index(values, i))->currency;
+
+		if (NULL == venture_widget_total_for(targets, currency))
+			g_ptr_array_add(currencies, (gpointer)currency);
+	}
+
+	result = venture_widget_result_new();
+	result->title = value_custom ? venture_widget_humanise(field)
+	                             : g_strdup(venture_field_spec_get_label(value_spec));
+
+	if (0 != record_id)
+	{
+		result->link = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, entity_type,
+		                               record_id);
+		result->link_label = g_strdup("Open");
+	}
+	else
+	{
+		result->link = venture_widget_list_path(widget, entity_type, scope);
+		result->link_label = venture_widget_type_label(context, entity_type, TRUE);
+	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "entity_type");
+	json_builder_add_string_value(builder, entity_type);
+	json_builder_set_member_name(builder, "field");
+	json_builder_add_string_value(builder, field);
+	json_builder_set_member_name(builder, "target_field");
+	json_builder_add_string_value(builder, target_field);
+	json_builder_set_member_name(builder, "record_id");
+
+	if (0 != record_id)
+		json_builder_add_int_value(builder, record_id);
+	else
+		json_builder_add_null_value(builder);
+
+	json_builder_set_member_name(builder, "records");
+	json_builder_add_int_value(builder, rows->len);
+	json_builder_set_member_name(builder, "lines");
+	json_builder_begin_array(builder);
+
+	html = g_string_new("<div class=\"widget-progress\">");
+
+	for (i = 0; i < currencies->len; i++)
+	{
+		const VentureAggregateTotal *value;
+		const VentureAggregateTotal *target;
+		g_autofree gchar *value_text = NULL;
+		g_autofree gchar *target_text = NULL;
+		gdouble percent;
+		gboolean has_percent;
+		gint width;
+
+		value = venture_widget_total_for(values, g_ptr_array_index(currencies, i));
+		target = venture_widget_total_for(targets, g_ptr_array_index(currencies, i));
+		value_text = (NULL != value) ? venture_widget_total_text(value) : g_strdup("0");
+		target_text = (NULL != target) ? venture_widget_total_text(target) : g_strdup("0");
+		percent = 0.0;
+		has_percent = venture_widget_percent(value, target, &percent);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "value");
+
+		if (NULL != value)
+			venture_widget_add_total(builder, value);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_set_member_name(builder, "target");
+
+		if (NULL != target)
+			venture_widget_add_total(builder, target);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_set_member_name(builder, "percent");
+
+		if (has_percent)
+			json_builder_add_double_value(builder, percent);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_end_object(builder);
+
+		/* The bar stops at full; the words say how far past it. */
+		width = has_percent ? (gint)CLAMP(percent, 0.0, 100.0) : 0;
+		g_string_append_printf(html,
+			"<div class=\"progress\"><div class=\"progress-fill\" "
+			"style=\"width:%d%%\"></div></div><p><strong>", width);
+		venture_html_escape_append(html, value_text);
+		g_string_append(html, "</strong> of <strong>");
+		venture_html_escape_append(html, target_text);
+		g_string_append(html, "</strong>");
+
+		if (has_percent)
+			g_string_append_printf(html, " (%.0f%%)", percent);
+		else
+			g_string_append(html, " <span class=\"muted\">no target</span>");
+
+		g_string_append(html, "</p>");
+	}
+
+	if (0 == currencies->len)
+		g_string_append(html, "<p class=\"muted\">Nothing to measure yet.</p>");
+
+	g_string_append(html, "</div>");
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
 /* ==========================================================================
  * The registry
  * ========================================================================== */
@@ -3133,6 +3764,12 @@ static const gchar *const venture_widget_uses_environments[] = {
 static const gchar *const venture_widget_uses_milestone[] = {
 	"record_id", NULL
 };
+static const gchar *const venture_widget_uses_sum[] = {
+	"entity_type", "field", "filter", "period", "options", NULL
+};
+static const gchar *const venture_widget_uses_progress[] = {
+	"entity_type", "field", "record_id", "filter", "period", "options", NULL
+};
 
 static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 	{
@@ -3229,6 +3866,19 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"open one when no id is given.",
 		"factory", venture_widget_uses_milestone,
 		venture_widget_kind_milestone
+	},
+	{
+		"sum", "Sum",
+		"The total of a money or number field over the records matching "
+		"a filter, optionally within a period on options.date_field; "
+		"money is one figure per currency.",
+		NULL, venture_widget_uses_sum, venture_widget_kind_sum
+	},
+	{
+		"progress", "Progress",
+		"A value field against a target field (options.target_field), "
+		"of one record or summed over a filter, as a percentage.",
+		NULL, venture_widget_uses_progress, venture_widget_kind_progress
 	}
 };
 
@@ -5153,6 +5803,46 @@ static const VentureDashboardTemplate venture_dashboard_templates[] = {
 		"Tax summary | /reports/tax\\nAll reports | /reports\"}"
 		"]}"
 	},
+	/*
+	 * Totals and targets: the sum and progress kinds, over records every
+	 * install has. A total is per currency, so a shop that sells in two
+	 * shows two figures, never one wrong one.
+	 */
+	{
+		"progress", "Totals and targets",
+		"What came in and went out this month as totals, units sold, and "
+		"each running campaign's spend against its budget.",
+		"sales",
+		"{"
+		"\"name\": \"Totals and targets\","
+		"\"slug\": \"totals-and-targets\","
+		"\"description\": \"Sums and progress, per currency.\","
+		"\"purpose\": \"reporting\","
+		"\"layout\": \"three_columns\","
+		"\"widgets\": ["
+		" {\"kind\": \"sum\", \"title\": \"Sales, gross\","
+		"  \"entity_type\": \"sale\", \"field\": \"gross\","
+		"  \"period\": \"this_month\","
+		"  \"options\": \"{\\\"date_field\\\": \\\"occurred_at\\\"}\"},"
+		" {\"kind\": \"sum\", \"title\": \"Units sold\","
+		"  \"entity_type\": \"sale\", \"field\": \"quantity\","
+		"  \"period\": \"this_month\","
+		"  \"options\": \"{\\\"date_field\\\": \\\"occurred_at\\\"}\"},"
+		" {\"kind\": \"sum\", \"title\": \"Expenses\","
+		"  \"entity_type\": \"expense\", \"field\": \"amount\","
+		"  \"period\": \"this_month\","
+		"  \"options\": \"{\\\"date_field\\\": \\\"occurred_at\\\"}\"},"
+		" {\"kind\": \"progress\", \"title\": \"Campaign spend against budget\","
+		"  \"entity_type\": \"campaign\", \"field\": \"spend\","
+		"  \"filter\": \"status=running\","
+		"  \"options\": \"{\\\"target_field\\\": \\\"budget\\\"}\","
+		"  \"span\": \"wide\"},"
+		" {\"kind\": \"note\", \"title\": \"Reading these\","
+		"  \"body\": \"Every total is per currency.\\n\\n- For groups, buckets "
+		"and averages use /reports/aggregate.\\n- A progress widget with a "
+		"record id follows one record.\"}"
+		"]}"
+	},
 	{
 		"work", "My work",
 		"What is on your plate: your tickets, what is due, what is "
@@ -5277,6 +5967,98 @@ venture_dashboard_create_from_template(
  * ========================================================================== */
 
 /*
+ * A sum or a progress widget names fields that must be there and be
+ * numbers, and a date field its period can bound. Checked at the save
+ * like the kind and the type, so a misspelt field is refused to whoever
+ * wrote it rather than shown as an error to whoever looks. A type whose
+ * module is off is let through unchecked -- its fields cannot be read
+ * while it is hidden, and the widget outlives the switch.
+ */
+static gboolean
+venture_dashboard_validate_numeric_fields(
+	VentureContext		 *context,
+	VentureDashboardWidget	 *widget,
+	const gchar		 *kind,
+	const gchar		 *entity_type,
+	JsonNode		 *options,
+	GError			**error
+){
+	g_autoptr(VentureFieldSpec) spec = NULL;
+	g_autofree gchar *field = NULL;
+	JsonObject *object;
+	const gchar *date_field;
+	gboolean custom;
+
+	if ((0 != g_strcmp0(kind, "sum")) && (0 != g_strcmp0(kind, "progress")))
+		return TRUE;
+
+	if (NULL == entity_type)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "A %s widget needs a record type", kind);
+		return FALSE;
+	}
+
+	if (G_TYPE_INVALID == venture_entity_registry_lookup(
+		venture_context_get_entity_registry(context), entity_type))
+		return TRUE;
+
+	field = venture_widget_get_string(widget, "field");
+	spec = venture_widget_numeric_field(context, widget, entity_type, field,
+	                                    "field", &custom, error);
+
+	if (NULL == spec)
+		return FALSE;
+
+	object = ((NULL != options) && JSON_NODE_HOLDS_OBJECT(options))
+		? json_node_get_object(options) : NULL;
+
+	if (0 == g_strcmp0(kind, "progress"))
+	{
+		g_autoptr(VentureFieldSpec) target = NULL;
+
+		target = venture_widget_numeric_field(context, widget, entity_type,
+			(NULL != object) ? venture_json_object_get_string(object,
+			                                           "target_field", NULL)
+			                 : NULL,
+			"options.target_field", &custom, error);
+
+		if (NULL == target)
+			return FALSE;
+	}
+
+	date_field = (NULL != object)
+		? venture_json_object_get_string(object, "date_field", NULL) : NULL;
+
+	if (!venture_string_is_empty(date_field))
+	{
+		g_autoptr(VentureFieldSpec) date_spec = NULL;
+		VentureFieldKind date_kind;
+
+		date_spec = venture_aggregate_find_field(
+			venture_context_get_database(context),
+			venture_widget_field_organization(context, widget), entity_type,
+			date_field, &custom, error);
+
+		if (NULL == date_spec)
+			return FALSE;
+
+		date_kind = venture_field_spec_get_kind(date_spec);
+
+		if (custom || ((VENTURE_FIELD_KIND_DATE != date_kind) &&
+		               (VENTURE_FIELD_KIND_DATETIME != date_kind)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "options.date_field \"%s\" is not a declared date "
+			            "field of %s", date_field, entity_type);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+/*
  * A widget must name a kind that exists, a record type that exists (even
  * one whose module is off -- the widget outlives the switch), a report
  * that exists, and options that are a JSON object. Run at the save, so
@@ -5378,6 +6160,10 @@ venture_dashboard_validate_widget(
 	options = venture_widget_get_options(widget, error);
 
 	if ((NULL == options) && (NULL != error) && (NULL != *error))
+		return FALSE;
+
+	if (!venture_dashboard_validate_numeric_fields(context, widget, kind,
+	                                                entity_type, options, error))
 		return FALSE;
 
 	/* The grid hints must at least be sane numbers; whether they fit the

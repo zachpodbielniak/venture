@@ -564,6 +564,21 @@ than one that fails.
   and no `locations`. `000695` creates `locations` with its field-table
   columns rather than guarding on it, or the backfill would be recorded as
   done and never run once sales came back.
+- **The aggregate report fetches and buckets; it never GROUPs BY.**
+  Rows come through `VentureQuery` (organisation, access scope, module
+  mask) and a money measure is keyed by currency *before* anything is
+  added, so no code below the key can add across currencies. Which types
+  it reads is derived from `venture_data_class_for_type()` (tenant and
+  reference only), not listed. Past `VENTURE_AGGREGATE_MAX_ROWS` it refuses
+  with the count; it must never total a truncated set. Buckets are UTC,
+  like every period boundary.
+- **A report option is dropped unless every door forwards it.** The web
+  API and the report page (`strings[]`/`integers[]` and the `names[]`
+  that preserve a question across period links), the CLI's allow-list
+  after the period, the MCP `venture_report` catalog and argument list,
+  and the assistant's `venture_report` parameters are five separate
+  lists. An option missing from one is silently absent there -- the
+  report runs and answers a different question.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.
@@ -604,6 +619,12 @@ than one that fails.
   overlap check in the web layer, and do not make the save validator
   refuse a placement that does not fit today's layout: the layout can
   change after the widget was placed.
+- **`sum` and `progress` share the aggregate report's accumulator.**
+  `venture_aggregate_sum()` is the one place a widget adds up a field, so a
+  card and `report aggregate` cannot disagree; do not total money in the
+  kind itself. Their `period` bounds `options.date_field` and a period with
+  none is an error in place, never an all-time figure. The save validator
+  checks their fields only while the type is visible.
 - **Templates are written in the export format.** A template is what an
   export of the dashboard it makes would be, and `test-dashboard` imports
   every one, so a template naming a field that does not exist fails the

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-18]
-#+version: 0.6.0
+#+updated: [2026-09-27]
+#+version: 0.7.0
 
 * Reporting
 
@@ -46,6 +46,7 @@ about it.
 | =money_calendar= | every dated money event with daily and ISO-week nets per currency |
 | =support_rollup= | support cost and ticket volume per customer, or per product; =sort=, =min_tickets=, =company=, =product= |
 | =cash_vs_booked= | revenue booked beside cash received per month or week and per currency, with the gap and its running total |
+| =aggregate= | sum, average, minimum, maximum, count or distinct count of any field of any business type, grouped by up to three fields and bucketed by a date; money per currency |
 
 #+begin_src sh
 venturectl report                       # list them
@@ -119,6 +120,129 @@ figure somebody chases a customer over, so it says debt, not forecast.
 Invoices with no due date are their own bucket rather than overdue: undated
 is unknown, not late. Only =sent= invoices count at all --- a draft is still
 being written, and paid or void ones are settled history.
+
+* The aggregate report
+
+Every other report answers one question about one kind of record. =aggregate= answers the shape of question they all share --- /how much, how many, grouped by what, over which days/ --- for any business record type, a plugin's included, from the field table alone. It is what to reach for before totalling =venturectl list= output by hand, and what the assistant is told to prefer.
+
+It belongs to the =core= module, so no module switch hides it; the record types it reads are hidden by their own modules instead. The implementation is =src/report/venture-aggregate-report.c=, and the same accumulator backs the dashboard's =sum= and =progress= widgets (see [[file:dashboards.org][Dashboards]]), so a card and the report behind it are one computation.
+
+** Options
+
+| Option           | What it does                                                                                           | Default                          |
+|------------------+--------------------------------------------------------------------------------------------------------+----------------------------------|
+| =type=           | the record type to read (=sale=, =ticket=, =expense=, …); required                                     | ---                              |
+| =measure=        | the field to aggregate, a custom field by name, or =count= for the records themselves                  | =count=                          |
+| =aggregate=      | =sum=, =avg=, =min=, =max=, =count=, =count_distinct= (the =VentureAggregate= enum's nicks)            | =sum= for a numeric measure, else =count= |
+| =group_by=       | up to three comma-separated fields; =reference.field= follows one reference                           | none: one row                    |
+| =category_depth= | roll category and location groups up to this level of their tree; =0= is the top                      | leaves                           |
+| =date_field=     | the declared date or time field the period bounds and =bucket= reads                                   | none: the period bounds nothing  |
+| =bucket=         | =day=, =week= (ISO, Monday), =month=, =quarter=, =year=                                               | none                             |
+| =filter=         | a list page's query string: =status=open&priority__in=high,urgent=                                     | none                             |
+| =per=            | =hour= or =day=: add a rate column                                                                     | none                             |
+| =period=         | any period a report takes: =this_month=, =2026-03=, =2026-Q1=, =last_30_days=, =all=                   | =this_month=                     |
+| =organization_id= | the legal entity                                                                                      | the default organization         |
+| =venture_id=     | narrow to one venture, for types that belong to one                                                    | all                              |
+
+The options are described in full by the report's own parameter schema --- =GET /api/v1/reports= lists it, and it is what the assistant's =venture_report= tool and the MCP =venture_report= tool read.
+
+** The rows
+
+One row per bucket × group × currency, sorted by bucket, then by group label, then by currency. The columns are:
+
+- =bucket= (when bucketed): =2026-03-02= for a day, =2026-W09= for an ISO week, =2026-03=, =2026-Q1=, =2026=.
+- one column per =group_by=, keyed by the name as asked (=product_id.category_id=), headed by the field's label. A name that collides with the report's own columns is keyed =group_1= … instead.
+- =currency=, when the measure is money.
+- =records=: how many records the row holds (with a value for the measure, when there is one).
+- =value=: the aggregate. Money for =sum=, =avg=, =min= and =max= of a money field; a number otherwise.
+- =rate=: with =per=, below.
+
+Two headline metrics: =records= (how many records were read) and =rows=.
+
+*Money is never mixed.* A money measure is keyed by currency before anything is added, so gold and dollars are two rows and nothing below the key can add across them. There is no conversion: a total in a single currency is what =exchange_rate= and the ledger are for.
+
+*An average of money is one exact division.* =avg= of a money field is the sum multiplied by 1/n through =venture_money_multiply_rational()=, rounded half to even: 0.01 and 0.04 average to 0.02, not the 0.03 rounding half up gives or whatever a double makes of 0.025. Integers sum exactly, and an overflow is refused rather than wrapped; doubles are doubles.
+
+*A missing value is in no row, and said so.* A record whose money field (or custom field) is unset is not counted --- not as zero, and not in =records= --- and the result carries a note: "3 records had no gross and are in no row." A custom value that no longer parses is counted and noted the same way. =count= with a measure counts the records that have a value; =count_distinct= counts distinct values (for money, per currency).
+
+** Groups
+
+- A plain field groups by its value: a string as written, an integer, a boolean as =yes=/=no=, a date or time by the UTC calendar day it is.
+- An enum groups by its nick and shows its declared label (or the nick made readable: =in_progress= is "In progress").
+- A reference groups by id and shows the target's display name, so two targets that share a name stay apart. Nothing referenced is =(none)=; a target that cannot be read (gone, or outside what the caller may see) shows as =product #42= rather than its name.
+- A reference to =category= or =location= shows the node's path, computed by =venture_category_path()= on every run and never stored, so renaming a parent renames the group. =category_depth=N= rolls each node up to its ancestor at level N (=venture_category_ancestor_at_depth()=): at depth 1 "Materials / Herbs / Rare" and "Materials / Herbs" are both "Materials / Herbs". A node shallower than N is its own group. =category_depth= with no tree group is refused rather than ignored.
+- A custom field groups by the value stored in the record's attributes, under the name it was defined with; a custom reference behaves as a built-in one.
+- =reference.field= follows one reference and groups by a field of the record it points at --- =product_id.category_id= groups sales by their product's category. One hop is the limit; a first part that is not a reference is refused.
+- Long text and JSON fields are refused: every record would be its own group.
+
+** Time: the period, buckets and rates
+
+The period bounds =date_field= and nothing else. Without a =date_field= the period cannot bound anything, and rather than pretend, the report reads every matching record and says so in a note ("No date_field was named, so the period does not bound these records"). =created_at= and =updated_at= are accepted as date fields on every type. A custom date field is refused: it lives in the attributes, where the query cannot bound it.
+
+Buckets are *UTC* calendar buckets, for the reason every period boundary is (see /Periods and calendar dates/ above): a date is stored as midnight UTC, and in a zone west of Greenwich local buckets would put the first of every month in the month before. A record with no date lands in a =(no date)= bucket, last.
+
+*=per=* adds a rate: the row's value divided by the time elapsed in its window, in hours or days. The window is the bucket clipped to the period --- or, unbucketed, the period --- clipped again to now, so this month's rate is over the days gone, not the days it will have. February 2026 has 28 days, so 28.00 of sales is 1.00 a day; per hour it is 28.00 ÷ 672 = 0.0416…, rounded half to even to 0.04 in the currency. A rate of money is computed with =venture_money_multiply_rational()=, never through a double. A window that has not started has no rate (the cell is empty, not zero). =per= applies to =sum= and =count= only, and an all-time period with no bucket is refused: it has no length to divide by.
+
+** Scope and what is refused
+
+Rows are read through the ordinary query, which carries the organisation (=organization_id=, or the default), the caller's access scope (so a member sees only what the access policy lets them read, and an organisation scope set by the web layer, the API or the assistant holds), the module mask and =as_of=. Nothing here writes SQL.
+
+Refused, before a row is read, with a message saying what to change:
+
+- no =type=; a type that does not exist, or whose module is off (the message names the switch);
+- a type that is not business data: users, API tokens, chat, the inbox and watch list are /personal/, forges and webhooks /platform/ machinery. This is derived from the type's declared authority (=venture_data_class_for_type()=: only =tenant= and =reference= types are read), so a plugin's type is covered the day it declares itself;
+- a field that does not exist, and a *sensitive* field anywhere --- as the measure, a group, the date field, or in the filter: a total and a comparison are both ways of reading a value;
+- =sum=, =avg=, =min=, =max= of a field that is not money, an integer or a double; =count_distinct= without a measure; an unknown aggregate;
+- more than three groups; a bad =bucket=; =bucket= without =date_field=; a bad =per=;
+- a =filter= that sets =limit=, =offset=, =page= or =order= (paging would quietly total a page);
+- a question matching more than =VENTURE_AGGREGATE_MAX_ROWS= (20 000) records. The count is taken first and the question is refused, naming the count, rather than answered from a truncated set --- a smaller number presented as the same one. Narrow the period or the filter.
+
+** Worked examples
+
+Sales gross by product category, per month, this year --- one row per month, category and currency:
+
+#+begin_src sh
+venturectl report aggregate 2026 type=sale measure=gross \
+    group_by=product_id.category_id date_field=occurred_at bucket=month
+#+end_src
+
+The same, rolled up to the top of the category tree, with a daily rate:
+
+#+begin_src sh
+venturectl report aggregate 2026-Q1 type=sale measure=gross \
+    group_by=product_id.category_id category_depth=0 \
+    date_field=occurred_at bucket=month per=day
+#+end_src
+
+Tickets by status, all of them (no date field, so no period note matters):
+
+#+begin_src sh
+venturectl report aggregate all type=ticket group_by=status
+#+end_src
+
+Open external tickets by assignee and priority:
+
+#+begin_src sh
+venturectl report aggregate all type=ticket group_by=assignee,priority \
+    'filter=status__not_in=done,cancelled&kind=external'
+#+end_src
+
+The average sale per channel last month, and how many distinct products each sold:
+
+#+begin_src sh
+venturectl report aggregate last_month type=sale measure=gross aggregate=avg \
+    group_by=channel date_field=occurred_at
+venturectl report aggregate last_month type=sale measure=product_id \
+    aggregate=count_distinct group_by=channel date_field=occurred_at
+#+end_src
+
+Over HTTP the options are query parameters, and =format=csv= exports the table:
+
+#+begin_src sh
+curl '.../api/v1/reports/aggregate?period=2026&type=sale&measure=gross&group_by=channel&date_field=occurred_at&bucket=month&format=csv'
+#+end_src
+
+The page at =/reports/aggregate= draws a form for the options; asked with no type it shows the form above the refusal, so a person finishes the question there.
 
 * Design notes
 

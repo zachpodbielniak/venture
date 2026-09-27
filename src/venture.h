@@ -320,6 +320,7 @@
 #include "orgaccess/venture-qr-svg.h"
 #include "orgaccess/venture-mfa-service.h"
 #include "report/venture-cash-vs-booked.h"
+#include "report/venture-aggregate-report.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

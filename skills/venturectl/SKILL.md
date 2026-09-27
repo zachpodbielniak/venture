@@ -100,7 +100,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge settings ID` | encrypted configure/test/disconnect/import operation, JSON from stdin |
 | `forge set-token ID` / `forge set-secret ID` | retired; refuse with encrypted-settings guidance |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width; `report aggregate PERIOD type=… measure=… group_by=…` totals any type (see *Aggregating any record type*) |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -124,7 +124,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
 | `dashboard export SLUG` | its definition as JSON; `dashboard import FILE` (or `-`) creates one from it |
-| `dashboard create TEMPLATE` | `factory`, `reporting`, `work` or `overview`; `dashboard templates` and `dashboard kinds` list what is accepted |
+| `dashboard create TEMPLATE` | `today`, `factory`, `reporting`, `progress`, `work` or `overview`; `dashboard templates` and `dashboard kinds` list what is accepted |
 | `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
 | `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
 | `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs |
@@ -1299,3 +1299,65 @@ venturectl list product search=farmable
   name=shelf kind=reference options='{"target":"category"}'`. Its values are
   record ids, checked like a built-in reference (missing or deleted target
   refused when written, a kept value left alone).
+
+## Aggregating any record type
+
+`report aggregate` sums, averages, counts and takes the minimum or maximum
+of any field of any business record type, grouped and bucketed. Reach for
+it before totalling `list` output yourself: it adds money per currency and
+rounds an average half to even, which a sum in a script does not.
+
+```sh
+venturectl report aggregate PERIOD type=TYPE [measure=FIELD|count] \
+    [aggregate=sum|avg|min|max|count|count_distinct] [group_by=F1,F2,F3] \
+    [category_depth=N] [date_field=FIELD] [bucket=day|week|month|quarter|year] \
+    ['filter=QUERY'] [per=hour|day] [organization_id=ID] [venture_id=ID]
+```
+
+- Options go after the period, as `key=value`; the period comes first
+  (`2026`, `2026-03`, `last_30_days`, `all`). Quote a `filter` that holds
+  `&`: `'filter=status__not_in=done,cancelled&kind=external'`.
+- **Name `date_field` or the period bounds nothing.** Without it every
+  matching record is counted and the result's `notes` say so. It must be a
+  declared date/time field (`describe TYPE`), or `created_at`/`updated_at`.
+- `measure` defaults to `count` (the records). `aggregate` defaults to
+  `sum` for a money/integer/double measure, `count` otherwise.
+  `sum`/`avg`/`min`/`max` of a non-numeric field is refused.
+- **Money comes back one row per currency** (`currency` column), never
+  mixed and never converted. Read `value` as a money object
+  (`amount` in minor units, `currency`, `exponent`, `formatted`).
+- `group_by` takes up to three fields, wire spelling: plain, enum (shown by
+  label), reference (shown by name), custom field by its name, and
+  `reference.field` to follow one reference —
+  `group_by=product_id.category_id`. Category and location groups show the
+  path ("Materials / Herbs"); `category_depth=0` rolls them up to the top.
+- Buckets are UTC calendar buckets (`2026-03`, `2026-Q1`, `2026-W09`).
+  `per=day` adds a `rate` column: the value over the days elapsed in the
+  row's window (bucket or period, clipped to now); only for `sum`/`count`,
+  and refused for `all` without a bucket.
+- Refused before any row is read: an unknown type or field (exit 3 or 2), a
+  type whose module is off, personal or platform types (`user`,
+  `api_token`, chat, webhooks — exit 5), sensitive fields anywhere, more
+  than three groups, a filter with `limit`/`offset`/`page`/`order`, and a
+  question matching more than 20 000 records (narrow it; it is never
+  silently truncated).
+- `-f csv report aggregate …` exports the table. The same options work as
+  query parameters on `GET /api/v1/reports/aggregate` and as arguments to
+  the assistant's and MCP's `venture_report` tool.
+
+```sh
+# Sales gross by product category per month this year
+venturectl report aggregate 2026 type=sale measure=gross \
+    group_by=product_id.category_id date_field=occurred_at bucket=month
+# Tickets by status, all time
+venturectl report aggregate all type=ticket group_by=status
+# Average sale per channel last month, with a daily rate of the total
+venturectl report aggregate last_month type=sale measure=gross \
+    group_by=channel date_field=occurred_at per=day
+```
+
+Dashboards have the same arithmetic as widgets: `sum` (a money/number
+`field` over a `filter`, with `period` bounded by
+`options={"date_field":"occurred_at"}`) and `progress` (`field` against
+`options={"target_field":"budget"}`, of one `record_id` or summed over a
+filter). Their fields are checked when the widget is saved.

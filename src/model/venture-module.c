@@ -482,6 +482,10 @@ static GType (*const venture_module_dashboards_types[]) (void) = {
 };
 
 static const gchar *const venture_module_requires_core[] = { "core", NULL };
+
+/* The aggregate report reads any type, so it belongs to the module that is
+ * always on; the types it reads are hidden by their own modules. */
+static const gchar *const venture_module_reports_core[] = { "aggregate", NULL };
 static const gchar *const venture_module_requires_sales[] = { "sales", NULL };
 static const gchar *const venture_module_requires_invoicing[] = {
 	"finance", "crm", "ledger", NULL
@@ -840,7 +844,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"core", "Core",
 		"Entities, ventures, documents, accounts, the audit log, and the "
 		"links between records. Always on.",
-		NULL, NULL, venture_module_core_types, NULL, NULL, TRUE
+		NULL, NULL, venture_module_core_types, venture_module_reports_core, NULL, TRUE
 	},
 	{
 		"custom_fields", "Custom fields",

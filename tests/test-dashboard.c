@@ -655,6 +655,281 @@ test_dashboard_report_kinds(
 	g_assert_nonnull(strstr(result->error, "moonshine"));
 }
 
+/* --- sum and progress ----------------------------------------------------- */
+
+/* A venture for the sales and campaigns below: references are checked. */
+static gint64
+create_venture(Fixture *fixture)
+{
+	g_autoptr(VentureVenture) venture = NULL;
+
+	venture = venture_venture_new();
+	g_object_set(venture, "name", "Shop", NULL);
+	file_under_default(fixture, venture);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(venture), NULL, NULL));
+
+	return venture_entity_get_id(VENTURE_ENTITY(venture));
+}
+
+static void
+create_sale(
+	Fixture		*fixture,
+	gint64		 venture_id,
+	const gchar	*gross,
+	GDateTime	*when
+){
+	g_autoptr(VentureSale) sale = NULL;
+	g_autoptr(VentureMoney) money = NULL;
+	g_autoptr(GError) error = NULL;
+
+	money = venture_money_from_string(gross, NULL, &error);
+	g_assert_no_error(error);
+	sale = venture_sale_new();
+	g_object_set(sale, "venture-id", venture_id, "gross", money,
+	             "occurred-at", when, "quantity", (gint64)1, NULL);
+	file_under_default(fixture, sale);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(sale), NULL, &error));
+	g_assert_no_error(error);
+}
+
+static gint64
+create_campaign(
+	Fixture			*fixture,
+	const gchar		*name,
+	VentureCampaignStatus	 status,
+	const gchar		*spend,
+	const gchar		*budget
+){
+	g_autoptr(VentureCampaign) campaign = NULL;
+	g_autoptr(VentureMoney) spent = NULL;
+	g_autoptr(VentureMoney) planned = NULL;
+	g_autoptr(GError) error = NULL;
+
+	spent = venture_money_from_string(spend, NULL, NULL);
+	planned = venture_money_from_string(budget, NULL, NULL);
+	campaign = venture_campaign_new();
+	g_object_set(campaign, "name", name, "status", status, "spend", spent,
+	             "budget", planned, NULL);
+	file_under_default(fixture, campaign);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(campaign), NULL, &error));
+	g_assert_no_error(error);
+
+	return venture_entity_get_id(VENTURE_ENTITY(campaign));
+}
+
+/*
+ * A sum is one figure per currency, over the period on its date field,
+ * written from the same loop as JSON and as HTML. What breaks: a card that
+ * adds gold to dollars, or shows a figure the API disagrees with.
+ */
+static void
+test_dashboard_sum(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) sum = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) last_year = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonArray *totals;
+	gint64 venture_id;
+
+	(void)user_data;
+
+	g_assert_true(venture_currency_register("GOLD", 4, NULL, FALSE, NULL, &error));
+	g_assert_no_error(error);
+	venture_id = create_venture(fixture);
+	/* A fixed month, not "this month": a sale stamped now can fall
+	 * either side of a month boundary depending on the zone. */
+	now = g_date_time_new_utc(2026, 3, 10, 12, 0, 0);
+	last_year = g_date_time_add_years(now, -1);
+	create_sale(fixture, venture_id, "10.00 USD", now);
+	create_sale(fixture, venture_id, "2.50 USD", now);
+	create_sale(fixture, venture_id, "7.0000 GOLD", now);
+	create_sale(fixture, venture_id, "500.00 USD", last_year);
+
+	dashboard = create_dashboard(fixture, "Totals");
+	sum = create_widget(fixture, dashboard, "sum", "entity-type", "sale",
+	                    "field", "gross", "period", "2026-03",
+	                    "options", "{\"date_field\": \"occurred_at\"}", NULL);
+	result = venture_dashboard_render_widget(fixture->context, sum, NULL);
+	g_assert_null(result->error);
+	g_assert_cmpstr(result->title, ==, "Gross");
+
+	totals = json_object_get_array_member(json_node_get_object(result->data),
+	                                      "totals");
+	g_assert_cmpuint(json_array_get_length(totals), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(totals, 0), "currency"), ==, "GOLD");
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(totals, 1), "currency"), ==, "USD");
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(
+		json_array_get_object_element(totals, 1), "value"), "amount"), ==, 1250);
+
+	/* The page shows exactly what the JSON says. */
+	g_assert_nonnull(strstr(result->html, json_object_get_string_member(
+		json_array_get_object_element(totals, 1), "display")));
+	g_assert_nonnull(strstr(result->html, json_object_get_string_member(
+		json_array_get_object_element(totals, 0), "display")));
+	g_assert_null(strstr(result->html, "500"));
+
+	/* A number sums to a number, even over nothing. */
+	g_clear_pointer(&result, venture_widget_result_free);
+	g_object_set(sum, "field", "quantity", "filter", "channel=nowhere", NULL);
+	result = venture_dashboard_render_widget(fixture->context, sum, NULL);
+	g_assert_null(result->error);
+	totals = json_object_get_array_member(json_node_get_object(result->data),
+	                                      "totals");
+	g_assert_cmpuint(json_array_get_length(totals), ==, 1);
+	g_assert_cmpfloat(json_object_get_double_member(
+		json_array_get_object_element(totals, 0), "value"), ==, 0.0);
+
+	/* A period with nothing to bound is an error in place, not an
+	 * all-time figure passed off as this month's. */
+	g_clear_pointer(&result, venture_widget_result_free);
+	g_object_set(sum, "field", "gross", "filter", NULL, "options", NULL,
+	             "title", "Mine", NULL);
+	result = venture_dashboard_render_widget(fixture->context, sum, NULL);
+	g_assert_nonnull(result->error);
+	g_assert_nonnull(strstr(result->error, "date_field"));
+	g_assert_cmpstr(result->title, ==, "Mine");
+
+	venture_currency_clear_registered();
+}
+
+/*
+ * Progress is a value against a target: of one record, or summed over a
+ * filter, per currency. What breaks: a budget bar that compares a sum of
+ * every campaign against one campaign's budget.
+ */
+static void
+test_dashboard_progress(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) one = NULL;
+	g_autoptr(VentureDashboardWidget) all = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	JsonArray *lines;
+	gint64 spring;
+
+	(void)user_data;
+
+	spring = create_campaign(fixture, "Spring", VENTURE_CAMPAIGN_STATUS_RUNNING,
+	                         "25.00 USD", "100.00 USD");
+	create_campaign(fixture, "Summer", VENTURE_CAMPAIGN_STATUS_RUNNING,
+	                "75.00 USD", "100.00 USD");
+	create_campaign(fixture, "Old", VENTURE_CAMPAIGN_STATUS_COMPLETED,
+	                "900.00 USD", "100.00 USD");
+
+	dashboard = create_dashboard(fixture, "Targets");
+	one = create_widget(fixture, dashboard, "progress", "entity-type",
+	                    "campaign", "field", "spend", "record-id", spring,
+	                    "options", "{\"target_field\": \"budget\"}", NULL);
+	result = venture_dashboard_render_widget(fixture->context, one, NULL);
+	g_assert_null(result->error);
+	lines = json_object_get_array_member(json_node_get_object(result->data),
+	                                     "lines");
+	g_assert_cmpuint(json_array_get_length(lines), ==, 1);
+	g_assert_cmpfloat(json_object_get_double_member(
+		json_array_get_object_element(lines, 0), "percent"), ==, 25.0);
+	g_assert_nonnull(strstr(result->html, "width:25%"));
+	g_assert_nonnull(strstr(result->html, "(25%)"));
+
+	g_clear_pointer(&result, venture_widget_result_free);
+	all = create_widget(fixture, dashboard, "progress", "entity-type",
+	                    "campaign", "field", "spend", "filter", "status=running",
+	                    "options", "{\"target_field\": \"budget\"}", NULL);
+	result = venture_dashboard_render_widget(fixture->context, all, NULL);
+	g_assert_null(result->error);
+	lines = json_object_get_array_member(json_node_get_object(result->data),
+	                                     "lines");
+	g_assert_cmpfloat(json_object_get_double_member(
+		json_array_get_object_element(lines, 0), "percent"), ==, 50.0);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result->data),
+	                                           "records"), ==, 2);
+
+	/* Past the target, the bar stops at full and the words say how far. */
+	g_clear_pointer(&result, venture_widget_result_free);
+	g_object_set(all, "filter", "status=completed", NULL);
+	result = venture_dashboard_render_widget(fixture->context, all, NULL);
+	g_assert_null(result->error);
+	g_assert_nonnull(strstr(result->html, "width:100%"));
+	g_assert_nonnull(strstr(result->html, "(900%)"));
+}
+
+/*
+ * The fields a sum or a progress widget names are checked at the save,
+ * whichever door wrote it; a type whose module is off is let through and
+ * answers "off" in place.
+ */
+static void
+test_dashboard_numeric_validation(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	static const struct
+	{
+		const gchar	*kind;
+		const gchar	*field;
+		const gchar	*options;
+		const gchar	*fragment;
+	} cases[] = {
+		{ "sum", NULL, NULL, "needs a field" },
+		{ "sum", "moonshine", NULL, "moonshine" },
+		{ "sum", "channel", NULL, "not money or a number" },
+		{ "sum", "gross", "{\"date_field\": \"channel\"}", "not a declared date" },
+		{ "progress", "gross", NULL, "options.target_field" },
+		{ "progress", "gross", "{\"target_field\": \"channel\"}", "not money or a number" }
+	};
+	gsize i;
+
+	(void)user_data;
+
+	dashboard = create_dashboard(fixture, "Checked");
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(VentureDashboardWidget) bad = NULL;
+
+		bad = venture_dashboard_widget_new();
+		file_under_default(fixture, bad);
+		g_object_set(bad, "dashboard-id",
+		             venture_entity_get_id(VENTURE_ENTITY(dashboard)),
+		             "kind", cases[i].kind, "entity-type", "sale",
+		             "field", cases[i].field, "options", cases[i].options, NULL);
+		g_assert_false(venture_database_save(fixture->database,
+		                                     VENTURE_ENTITY(bad), NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+
+		if (NULL == strstr(error->message, cases[i].fragment))
+			g_error("case %" G_GSIZE_FORMAT ": expected \"%s\" in: %s", i,
+			        cases[i].fragment, error->message);
+
+		g_clear_error(&error);
+	}
+
+	/* With sales off the type is hidden -- and the widget still saves,
+	 * then says so where it stands. */
+	venture_config_set_module_enabled(fixture->config, "sales", FALSE);
+	widget = create_widget(fixture, dashboard, "sum", "entity-type", "sale",
+	                       "field", "gross", NULL);
+	result = venture_dashboard_render_widget(fixture->context, widget, NULL);
+	g_assert_nonnull(result->error);
+	g_assert_nonnull(strstr(result->error, "sales"));
+	g_assert_true(JSON_NODE_HOLDS_NULL(result->data));
+}
+
 /*
  * A widget for a module that is off says so in place; an unknown kind
  * too. Neither takes the page down.
@@ -2025,6 +2300,9 @@ main(
 	    test_dashboard_count_list_breakdown);
 	ADD("/dashboard/note-and-actions", test_dashboard_note_and_actions);
 	ADD("/dashboard/report-kinds", test_dashboard_report_kinds);
+	ADD("/dashboard/sum", test_dashboard_sum);
+	ADD("/dashboard/progress", test_dashboard_progress);
+	ADD("/dashboard/numeric-validation", test_dashboard_numeric_validation);
 	ADD("/dashboard/widget-off-and-unknown",
 	    test_dashboard_widget_off_and_unknown);
 	ADD("/dashboard/one-home", test_dashboard_one_home);

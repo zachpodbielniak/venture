@@ -2730,8 +2730,29 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "period", "string",
 		"The period to cover, e.g. this_month", FALSE);
 	ai_tool_add_parameter(report, "group_by", "string",
-		"For the categories report, the product field to group by; "
-		"defaults to genre", FALSE);
+		"For the categories report, the product field to group by "
+		"(defaults to genre); for aggregate, up to 3 comma-separated "
+		"fields, reference.field following one reference", FALSE);
+	/* The aggregate report answers "how much / how many, grouped by
+	 * what" for any type, so it is the report to reach for before
+	 * totalling query results; its options are declared here because a
+	 * tool parameter the model cannot see is one it never sends. */
+	ai_tool_add_parameter(report, "type", "string",
+		"aggregate: the record type to read, e.g. sale, ticket", FALSE);
+	ai_tool_add_parameter(report, "measure", "string",
+		"aggregate: the field to aggregate, or count", FALSE);
+	ai_tool_add_parameter(report, "aggregate", "string",
+		"aggregate: sum, avg, min, max, count or count_distinct", FALSE);
+	ai_tool_add_parameter(report, "category_depth", "integer",
+		"aggregate: roll category and location groups up to this level; 0 is the top", FALSE);
+	ai_tool_add_parameter(report, "date_field", "string",
+		"aggregate: the date field the period bounds, e.g. occurred_at", FALSE);
+	ai_tool_add_parameter(report, "bucket", "string",
+		"Bucket size: aggregate takes day, week, month, quarter or year; cash_vs_booked month or week", FALSE);
+	ai_tool_add_parameter(report, "filter", "string",
+		"aggregate: a list-page query string, e.g. status=open", FALSE);
+	ai_tool_add_parameter(report, "per", "string",
+		"aggregate: hour or day, adding a rate over the elapsed window", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);

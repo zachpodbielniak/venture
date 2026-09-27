@@ -3134,8 +3134,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6449,6 +6449,99 @@ static const gchar *const venture_web_report_periods[] = {
 	NULL
 };
 
+/*
+ * The aggregate report's question, as a form: it has no sensible answer
+ * without a type, so the page offers the options rather than a bare
+ * refusal. Every input is a query parameter the API takes too, so the
+ * address of an answer is the address to share.
+ */
+static void
+venture_web_aggregate_controls(
+	HtmxRequest	*request,
+	VentureReport	*report,
+	GString		*content
+){
+	static const struct
+	{
+		const gchar	*name;
+		const gchar	*label;
+		const gchar	*placeholder;
+	} texts[] = {
+		{ "type", "Record type", "sale" },
+		{ "measure", "Measure", "count, or a field: gross" },
+		{ "group_by", "Group by", "status, product_id.category_id" },
+		{ "category_depth", "Category depth", "0 is the top" },
+		{ "date_field", "Date field", "occurred_at" },
+		{ "filter", "Filter", "status=open" },
+		{ "period", "Period", "this_month" }
+	};
+	static const struct
+	{
+		const gchar		*name;
+		const gchar		*label;
+		const gchar *const	 choices[7];
+	} selects[] = {
+		{ "aggregate", "Aggregate",
+		  { "", "sum", "avg", "min", "max", "count", "count_distinct" } },
+		{ "bucket", "Bucket", { "", "day", "week", "month", "quarter", "year", NULL } },
+		{ "per", "Rate", { "", "hour", "day", NULL, NULL, NULL, NULL } }
+	};
+	const gchar *organization;
+	gsize i;
+	gsize j;
+
+	if (0 != g_strcmp0(venture_report_get_name(report), "aggregate"))
+		return;
+
+	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
+		venture_html_escape_append(content, organization);
+		g_string_append(content, "\">");
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(texts); i++)
+	{
+		const gchar *value;
+
+		value = htmx_request_get_query_param(request, texts[i].name);
+		g_string_append_printf(content, "<label>%s<input name=\"%s\" value=\"",
+		                       texts[i].label, texts[i].name);
+		venture_html_escape_append(content, (NULL != value) ? value : "");
+		g_string_append_printf(content, "\" placeholder=\"%s\"></label>",
+		                       texts[i].placeholder);
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(selects); i++)
+	{
+		const gchar *value;
+
+		value = htmx_request_get_query_param(request, selects[i].name);
+		g_string_append_printf(content, "<label>%s<select name=\"%s\">",
+		                       selects[i].label, selects[i].name);
+
+		for (j = 0; (j < G_N_ELEMENTS(selects[i].choices)) &&
+		            (NULL != selects[i].choices[j]); j++)
+		{
+			const gchar *choice;
+
+			choice = selects[i].choices[j];
+			g_string_append_printf(content, "<option value=\"%s\"%s>%s</option>",
+			                       choice,
+			                       (0 == g_strcmp0(choice, (NULL != value) ? value : ""))
+			                        ? " selected" : "",
+			                       ('\0' == choice[0]) ? "default" : choice);
+		}
+
+		g_string_append(content, "</select></label>");
+	}
+
+	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
 static HtmxResponse *
 venture_web_ui_report(
 	HtmxRequest	*request,
@@ -6507,8 +6600,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6537,16 +6630,22 @@ venture_web_ui_report(
 		/* Escaped: a refusal can quote the request -- a filter names
 		 * the field it was given, which is whatever the URL said. */
 		g_autofree gchar *words = venture_html_escape(error->message);
+		g_autoptr(GString) form = g_string_new(NULL);
 
-		body = g_strdup_printf("<div class=\"notice negative\" role=\"alert\">%s</div>",
-		                       words);
+		/* The aggregate report is refused until it is asked a whole
+		 * question; the form is how a person finishes asking it. */
+		venture_web_aggregate_controls(request, report, form);
+		body = g_strdup_printf("%s<div class=\"notice negative\" role=\"alert\">%s</div>",
+		                       form->str, words);
 		return venture_web_html_response(
-			venture_web_page(self, request, "/reports", "Error", body), 500);
+			venture_web_page(self, request, "/reports", "Error", body),
+			(error->domain == VENTURE_ERROR)
+				? venture_error_to_http_status((VentureError)error->code) : 500);
 	}
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -6610,7 +6709,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -6629,6 +6728,7 @@ venture_web_ui_report(
 	}
 
 	venture_web_customer_health_controls(request, report, content);
+	venture_web_aggregate_controls(request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 
@@ -7136,7 +7236,7 @@ venture_web_append_form_field_scoped(
 						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
 						((NULL != current) &&
 						 (g_ascii_strtoll(current, NULL, 10) == id))
-							? " selected" : "");
+						 ? " selected" : "");
 					if (NULL != parent)
 					{
 						gint64 owner = 0;
