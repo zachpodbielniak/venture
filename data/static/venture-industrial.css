@@ -4313,7 +4313,8 @@ select:hover, textarea:hover { border-color: var(--text-muted); }
 input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):focus,
 select:focus, textarea:focus {
 	border-color: var(--accent);
-	box-shadow: 0 0 0 3px var(--accent-soft);
+	/* A hard second rule, as above: nothing glows. */
+	box-shadow: 0 0 0 1px var(--accent);
 }
 
 textarea { min-height: 96px; }
@@ -4428,7 +4429,12 @@ td.overdue { color: var(--negative); }
 #record-tab-1:checked ~ .tab-list label[for="record-tab-1"],
 #record-tab-2:checked ~ .tab-list label[for="record-tab-2"],
 #record-tab-3:checked ~ .tab-list label[for="record-tab-3"] { color: var(--text); border-bottom-color: var(--accent); }
-.record-tabs .tab-radio:focus-visible + .tab-radio, .record-tabs .tab-list label:focus-visible { outline: 2px solid var(--accent); }
+/* The radio is what takes focus, and it is invisible: its label shows it. */
+#record-tab-0:focus-visible ~ .tab-list label[for="record-tab-0"],
+#record-tab-1:focus-visible ~ .tab-list label[for="record-tab-1"],
+#record-tab-2:focus-visible ~ .tab-list label[for="record-tab-2"],
+#record-tab-3:focus-visible ~ .tab-list label[for="record-tab-3"],
+.record-tabs .tab-list label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .record-aside .record-actions .card-body { flex-direction: column; align-items: stretch; }
 .record-aside .record-actions .btn, .record-aside .record-actions summary.btn { width: 100%; justify-content: flex-start; }
 table.line-items th { white-space: nowrap; }
@@ -4451,7 +4457,8 @@ tr[hidden] { display: none; }
    Life -- the small things that make a page feel made
    ========================================================================== */
 
-/* A record's initials, tinted by its name from the status hues. */
+/* A record's initials, shaded by its name from the neutral grounds: the
+ * status hues mean something, and a name's hash means nothing. */
 .avatar {
 	display: inline-grid;
 	place-items: center;
@@ -4464,10 +4471,10 @@ tr[hidden] { display: none; }
 	border-radius: var(--radius);
 	border: 1px solid currentColor;
 }
-.avatar.tone-accent   { color: var(--accent);   background: var(--accent-soft); }
-.avatar.tone-positive { color: var(--positive); background: var(--positive-soft); }
-.avatar.tone-warning  { color: var(--warning);  background: var(--warning-soft); }
-.avatar.tone-info     { color: var(--text);     background: var(--info-soft); }
+.avatar.tone-sunken { color: var(--text);         background: var(--surface-sunken); }
+.avatar.tone-raised { color: var(--text-muted);   background: var(--surface-raised); }
+.avatar.tone-hover  { color: var(--text);         background: var(--surface-hover); }
+.avatar.tone-ink    { color: var(--ink-contrast); background: var(--ink); border-color: var(--ink); }
 
 /* The one-click "+ New": a button at the top of the sidebar, its menu a
  * floating panel of the things people make every day. */
@@ -4616,8 +4623,9 @@ input[type="checkbox"]:checked, input[type="radio"]:checked {
 input[type="checkbox"]:checked::before { transform: rotate(-45deg) scale(1); }
 input[type="radio"]:checked::before { transform: scale(1); }
 input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
-	outline: none;
-	box-shadow: 0 0 0 3px var(--accent-soft);
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+	box-shadow: none;
 }
 input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.45; cursor: not-allowed; }
 
