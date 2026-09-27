@@ -1762,6 +1762,19 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/price_history"),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Production likewise: its records, its report and its craft action
+	 * all arrive through the generic doors, which must still ask. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/recipe"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/recipe_component"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/recipe_margin"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/recipe_margin"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/recipe/1/actions/craft", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/collections"),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",

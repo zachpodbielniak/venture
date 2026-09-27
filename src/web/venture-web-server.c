@@ -1120,6 +1120,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"sales"
 	},
 	{
+		"/e/recipe", "Recipes",
+		VENTURE_ICON(
+			"<path d=\"M9 3h6\"/><path d=\"M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3\"/>"
+			"<path d=\"M7 15h10\"/>"
+		),
+		NULL,
+		"production"
+	},
+	{
 		"/e/expense", "Expenses",
 		VENTURE_ICON(
 			"<path d=\"M3 7l6 6 4-4 8 8\"/><path d=\"M15 17h6v-6\"/>"
@@ -1688,7 +1697,7 @@ static const gchar *const venture_web_nav_support[] = {
 /* Where things are and how they are grouped: the structure the rest of
  * the pages hang their records from, rather than money or people. */
 static const gchar *const venture_web_nav_operations[] = {
-	"/e/category", "/e/location",
+	"/e/category", "/e/location", "/e/recipe",
 	NULL
 };
 
@@ -3152,8 +3161,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6686,6 +6695,51 @@ venture_web_market_controls(
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
+/*
+ * recipe_margin's questions, as a form: which price source to value at
+ * (only while the market module is on -- the report refuses one without
+ * it) and the date to value and count stock at. Both are query
+ * parameters the API takes too.
+ */
+static void
+venture_web_production_controls(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureReport		*report,
+	GString			*content
+){
+	const gchar *organization;
+	const gchar *source;
+	const gchar *as_of;
+
+	if (0 != g_strcmp0(venture_report_get_name(report), "recipe_margin"))
+		return;
+
+	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
+		venture_html_escape_append(content, organization);
+		g_string_append(content, "\">");
+	}
+
+	if (venture_web_module_enabled(self, "market"))
+	{
+		source = htmx_request_get_query_param(request, "price_source");
+		g_string_append(content, "<label>Price source<input name=\"price_source\" value=\"");
+		venture_html_escape_append(content, (NULL != source) ? source : "");
+		g_string_append(content, "\" placeholder=\"any source\"></label>");
+	}
+
+	as_of = htmx_request_get_query_param(request, "as_of");
+	g_string_append(content, "<label>As of<input name=\"as_of\" value=\"");
+	venture_html_escape_append(content, (NULL != as_of) ? as_of : "");
+	g_string_append(content, "\" placeholder=\"today\"></label>");
+	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
 static HtmxResponse *
 venture_web_ui_report(
 	HtmxRequest	*request,
@@ -6744,8 +6798,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6780,6 +6834,7 @@ venture_web_ui_report(
 		 * question; the form is how a person finishes asking it. */
 		venture_web_aggregate_controls(request, report, form);
 		venture_web_market_controls(self, request, report, form);
+		venture_web_production_controls(self, request, report, form);
 		body = g_strdup_printf("%s<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       form->str, words);
 		return venture_web_html_response(
@@ -6790,7 +6845,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -6854,7 +6909,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -6875,6 +6930,7 @@ venture_web_ui_report(
 	venture_web_customer_health_controls(request, report, content);
 	venture_web_aggregate_controls(request, report, content);
 	venture_web_market_controls(self, request, report, content);
+	venture_web_production_controls(self, request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 

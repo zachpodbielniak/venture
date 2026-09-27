@@ -847,6 +847,17 @@ static GType (*const market_types[]) (void) = {
 };
 static const gchar *const market_reports[] = { "listing_performance", "price_history", NULL };
 
+/* Stock turned into other stock. It requires sales because a recipe names
+ * products and crafting moves inventory, both of which sales owns; it
+ * suggests market, whose observed prices are what recipe_margin reads
+ * when it can, and goods, whose cost layers are what a made unit's cost
+ * comes from. Without goods a craft moves quantities only. */
+static const gchar *const production_suggests[] = { "market", "goods", NULL };
+static GType (*const production_types[]) (void) = {
+	venture_recipe_get_type, venture_recipe_component_get_type, NULL
+};
+static const gchar *const production_reports[] = { "recipe_margin", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1236,6 +1247,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Prices seen from named sources over time, and listings that end sold, "
 		"partly sold, expired or cancelled: sale rate, time to sell and price history.",
 		venture_module_requires_sales, NULL, market_types, market_reports, NULL, FALSE
+	},
+	{
+		"production", "Production",
+		"Recipes -- bills of materials -- and crafting them: components "
+		"consumed and output made in one transaction, carrying FIFO cost, "
+		"with each recipe's margin at a chosen price source.",
+		venture_module_requires_sales, production_suggests, production_types,
+		production_reports, NULL, FALSE
 	}
 };
 

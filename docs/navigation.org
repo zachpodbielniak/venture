@@ -27,7 +27,7 @@ Eight areas after the overview. Money is one area -- the money that comes in, go
 | Customers |                   | Companies, Contacts, My day, Duplicates                                                                                                            |
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
 | Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
-| Operations |                  | Categories, Locations                                                                                                                              |
+| Operations |                  | Categories, Locations, Recipes                                                                                                                     |
 | Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Milestones, Releases, Builds, Environments, Deployments, Incidents |
 | Settings  | Your business, People and access, System | Ventures, Entities, Modules; Your account, API tokens, Users, Assistant; Settings, Automations, Plugins, Webhooks, Federation, Mail outbox, Audit log |
 

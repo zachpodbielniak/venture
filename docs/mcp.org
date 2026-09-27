@@ -57,7 +57,7 @@ Concretely: register a record type in a plugin, restart both, and it is in the =
 | =venture_update=        | change named fields of one                               |
 | =venture_delete=        | soft-delete one                                          |
 | =venture_reports=       | what reports there are                                   |
-| =venture_report=        | run one; the =aggregate= and market reports' options (=product_id=, =source=, =venture_id=) are arguments |
+| =venture_report=        | run one; the =aggregate=, market and production reports' options (=product_id=, =source=, =venture_id=, =price_source=, =category_id=) are arguments |
 | =venture_confirmations= | list, approve or reject anything waiting for a decision   |
 | =venture_modules=       | which modules the server runs, and why any is off        |
 | =venture_links=         | every link touching one record                           |

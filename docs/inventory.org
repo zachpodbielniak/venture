@@ -15,6 +15,24 @@ that would take stock below zero is refused. Transfers move layers
 between two items of the same product (two locations) without hitting
 COGS.
 
+* Production
+
+A craft (see [[file:production.org][Production]]) turns stock into other
+stock through =venture_inventory_service_produce()=, in one transaction:
+each input leaves as a negative =production= transaction, consuming its
+FIFO layers; the output arrives as a positive =production= transaction and
+receives cost layers that carry exactly what was consumed -- split into at
+most two layers (=r= units at one minor unit more, the rest at the floor)
+so they sum to the consumed cost to the minor unit. No journal is posted:
+the value moved from inventory to inventory, so account 1200 and
+=inventory_valuation= are unchanged by a craft, and cost of goods sold is
+booked when the made units are sold.
+
+Units with no cost layer (an adjustment typed in by hand, or stock taken
+below zero on an item that allows it) are consumed at no cost. Inputs whose
+costs are in two currencies are refused. Without the =goods= module there
+are no layers and a craft moves quantities only.
+
 * Where stock is
 
 =inventory_item.location_id= names a =location= record: a place that can

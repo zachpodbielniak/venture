@@ -1,0 +1,347 @@
+#+title: Production
+#+description: Recipes (bills of materials), crafting them through the inventory service, and each recipe's margin
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+#+version: 0.1.0
+
+* Stock that becomes other stock
+
+Some ventures buy things and sell them. Others turn what they bought into
+something else first: a workshop builds a lamp from a shade, a base and a
+cord; a kitchen turns flour, butter and eggs into a dozen pastries; a
+crafting profession in a game turns two herbs and a vial into a potion. The
+=production= module keeps that step, generically, in two record types and
+one action:
+
+- =recipe= :: a bill of materials. One batch makes =output_quantity= units
+  of one product.
+- =recipe_component= :: one line of it: a product, how many one batch
+  takes, and whether it is used up or only has to be there (=reusable=: a
+  tool, a mould, a catalyst).
+- =craft= :: the action on a recipe that does it -- consumes the
+  components, produces the output, in one transaction, through the
+  inventory service. The made units carry what the consumed components
+  cost, so selling them later books the right cost of goods sold.
+
+And one report, =recipe_margin=: what a batch costs and makes at a chosen
+price source, profit and margin, cost per unit, and how many batches the
+stock on hand allows now.
+
+The same records describe:
+
+- *A manufacturer or workshop*: a recipe is a build sheet; =reusable=
+  marks the jig and the mould; the output lands in the finished-goods
+  location.
+- *A kitchen or bakery*: a recipe is a recipe card with a batch size; the
+  margin at the supplier's prices says which items are worth baking.
+- *A crafting profession in a game*: a recipe is a recipe; locations are
+  characters and banks; prices come from the auction house's observed
+  market value (the [[file:market.org][market module]]), and the margin
+  report is the "is this worth crafting" sheet.
+
+The module is =production=. It requires =sales=, which owns products,
+inventory items and inventory transactions; switching =sales= off switches
+=production= off with it. It suggests =market= (observed prices for the
+margin report) and =goods= (the FIFO cost layers a made unit's cost comes
+from). See [[file:modules.org][Modules]].
+
+* Recipes
+
+** Fields
+
+| Field               | Kind      | For                                                              |
+|---------------------+-----------+------------------------------------------------------------------|
+| =name=              | string    | what you call it; required                                       |
+| =venture_id=        | reference | optional: the venture that makes it                              |
+| =output_product_id= | reference | the product one batch makes; required                            |
+| =output_quantity=   | integer   | units one batch makes; at least 1                                |
+| =category_id=       | reference | optional: where it is filed ([[file:taxonomy.org][Taxonomy]]); the category's =applies_to= must be empty or =recipe= |
+| =active=            | boolean   | can be crafted; an inactive recipe keeps its history             |
+| =notes=             | text      |                                                                  |
+
+=active= has no default an API call can supply: a recipe created through
+the API or =venturectl= without =active=true= is inactive, is not offered a
+Craft button, is refused by the action and is left out of =recipe_margin=.
+The form starts the box ticked, as it does for every =active= field.
+
+** What the save refuses
+
+The validator (=src/production/venture-production.c=) runs for every writer
+-- the form, the API, an approved staged change, the assistant:
+
+- no output product (=output_product_id= 0). It is declared =NOT_NULL=,
+  but the generic check covers strings and times only;
+- a batch size below 1;
+- an output product or venture in another organization (only when the
+  reference is being written, the rule every reference follows);
+- an existing recipe changed to make a product it already takes as a
+  component.
+
+* Components
+
+** Fields
+
+| Field        | Kind      | For                                                           |
+|--------------+-----------+---------------------------------------------------------------|
+| =recipe_id=  | reference | the recipe the line belongs to; required                      |
+| =product_id= | reference | what the recipe takes; required                               |
+| =quantity=   | integer   | units one batch needs; at least 1                             |
+| =reusable=   | boolean   | a tool or catalyst: must be on hand, is not used up           |
+| =notes=      | text      |                                                               |
+
+The flag is named for the exception on purpose. A boolean has no default,
+so its zero value must be the safe one: a line whose box nobody ticked is
+*consumed*, and stock goes down. Spelled the other way round (=consumed=,
+false meaning "a tool"), every forgotten tick would be free materials.
+
+** What the save refuses
+
+- no recipe or no product (the =NOT_NULL= integers read 0 unset);
+- a quantity below 1;
+- a line in another organization than its recipe, or a product in
+  another organization;
+- the recipe's own output: a craft would consume what it makes;
+- a second line for a product the recipe already takes. It is refused
+  rather than merged: merging would silently change a quantity somebody
+  typed, and which of two lines' =reusable= flags wins would be a guess.
+  The message names the existing line and says to change its quantity.
+
+Deeper loops (A takes B, B takes A) are allowed: each craft is one level,
+and neither can be made without the other already on the shelf.
+
+The recipe's page lists its components under related records, with New
+to add one; there is no bespoke components block. The Craft form is in
+the page's Actions card, generated from the action's parameters.
+
+* Crafting
+
+** What one craft does
+
+=craft= is a record action on =recipe=. Its parameters:
+
+| Parameter     | Kind                 | Meaning                                                              |
+|---------------+----------------------+----------------------------------------------------------------------|
+| =times=       | integer, 1–1 000 000 | how many batches; 1 when left out                                    |
+| =location_id= | reference (location) | where to take components from and put the output                    |
+| =occurred_at= | datetime             | when it was made; now when left out                                  |
+
+In one database transaction:
+
+1. The recipe must be live and =active=, and must have at least one
+   component (something from nothing is stock arriving; record it as an
+   adjustment).
+2. Every component's inventory item is found (below). A consumed
+   component needs =quantity × times= on hand, unless its item allows
+   negative stock. A reusable one needs its =quantity= on hand -- once,
+   whatever =times= is: one still makes as many batches as the herbs allow
+   -- and *always* has to be there, whatever its item allows:
+   =allow_negative= is for counts that lag behind the shelf, and a tool
+   nobody has is not a tool that has not been counted yet.
+3. The output's inventory item is found the same way. None is refused,
+   naming what to create; the craft does not invent an item (with no
+   SKU, venture or reorder point) on your behalf.
+4. =venture_inventory_service_produce()= writes a negative =production=
+   transaction per consumed component, at its FIFO cost, and one positive
+   =production= transaction for =output_quantity × times= units of the
+   output, then gives the output cost layers carrying exactly what was
+   consumed. Reusable components are not touched.
+
+Every transaction's =reference= is =recipe:<id>=, so "everything recipe 12
+ever made or used" is one filter. A refusal, or a failure at any step --
+the last write included -- rolls every write back: nothing is consumed
+without something being made.
+
+The action returns the output's =inventory_txn=. From the page, a
+successful craft lands on that transaction.
+
+** Which inventory item
+
+=venture_production_find_stock()= picks the one item holding a product in
+the recipe's organization:
+
+- with =location_id=, the item for that product *at exactly that
+  location* -- not its children: "the bank" and "a bag in the bank" are two
+  places;
+- without it, the only item for that product there is.
+
+None is refused ("No stock of Copper Bar is kept at Bank; create an
+inventory item for it there (product_id=… location_id=…)"); more than one
+is refused naming every location and its id, so the fix is one parameter.
+One =location_id= applies to every component and to the output: a craft
+happens in one place. To craft from the bank into a bag, craft at the
+bank and transfer.
+
+** Cost
+
+The made units carry what the consumed components cost, taken FIFO from
+their cost layers:
+
+- *Split exactly.* 10.00 over 6 units is 4 units at 1.67 and 2 at 1.66,
+  two layers that sum to 10.00. A single layer at the rounded average
+  would leave a cent behind (or invent one) every craft, and the cost of
+  goods sold when the potions sell would drift from what went into them.
+  The output transaction shows the rounded average for reading; the layers
+  are what the books count.
+- *No journal.* Stock moved from inventory to inventory; account 1200 is
+  unchanged and =inventory_valuation= is the same before and after.
+- *Units with no layer cost nothing.* Stock typed in by hand as an
+  adjustment has no cost layer; with =allow_negative=, stock below zero has
+  none either. Those units are consumed at no cost, and the output carries
+  only what was recorded. If no consumed unit carried a cost at all, the
+  output still gets a zero-cost layer (in its item's unit-cost currency,
+  else the organization's book currency) -- an issue refuses units with no
+  layer, so without one the made units could never be sold.
+- *One currency.* Inputs whose costs are in two currencies are refused:
+  a made unit's cost is one number and no rate was given to make it one.
+- *Without the goods module* there are no cost layers: a craft moves
+  quantities only, as every other stock movement does on such an install.
+
+** Staging
+
+=craft= is stageable. Unlike the factory's rollback (two writes the queue
+would have to hold as records), a staged action holds only its parameters,
+and approval performs the whole craft afresh in one transaction --
+recounting stock as it stands at approval, not as it stood when proposed.
+A proposal that was affordable when made and is short by the time it is
+approved is refused at approval, and nothing is written.
+
+** Organization
+
+A record action is judged in its record's organization, so the recipe
+places the craft: the access policy checks the recipe, and every item is
+looked up in the recipe's organization. No =organization_id= parameter is
+needed, or accepted.
+
+* Reports
+
+** =recipe_margin=
+
+One row per active recipe: what one batch costs and makes, at a price
+source.
+
+| Option            | Meaning                                                                          |
+|-------------------+----------------------------------------------------------------------------------|
+| =price_source=    | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
+| =as_of=           | prices and stock as they stood at this date; now by default                     |
+| =venture_id=      | only this venture's recipes                                                      |
+| =category_id=     | only recipes filed in this category *or beneath it*                             |
+| =organization_id= | the legal entity; the default organization otherwise                             |
+
+*Pricing.* With the market module on, every figure comes from
+=venture_market_latest_price()= -- the newest observation at or before
+=as_of= from =price_source=. Nothing else: falling back to a recorded cost
+for a product the source never priced would mix two kinds of number in one
+margin without saying which. With the market module off, the recorded
+figures: a component at its first inventory item's =unit_cost=, else the
+product's =cost=; the output at the product's =list_price=. =price_source=
+with the market off is refused rather than ignored. The =priced_by= column
+says which.
+
+| Column          | What                                                                     |
+|-----------------+--------------------------------------------------------------------------|
+| =recipe=        | the recipe's name                                                        |
+| =makes=         | the output product                                                       |
+| =batch=         | =output_quantity=                                                        |
+| =currency=      | the one currency every figure is in                                      |
+| =cost=          | Σ consumed components' unit price × quantity, per batch                  |
+| =value=         | output unit price × batch                                                |
+| =profit=        | value − cost                                                             |
+| =margin=        | profit ÷ value; empty when value is zero                                 |
+| =cost_per_unit= | cost ÷ batch, one division rounded half to even                          |
+| =craftable_now= | the fewest whole batches any consumed component allows, 0 when a tool is missing |
+| =priced_by=     | the source, "prices seen, any source", or "recorded costs"               |
+| =note=          | missing prices, mixed currencies, no components                         |
+
+*A missing price is named, not zero.* A component nobody priced is not
+free and an output nobody priced is not worthless: the note names them and
+the figures that depend on them are blank. What can still be said is --
+the cost when only the output is unpriced, the value when only an input
+is.
+
+*One currency per row.* A recipe whose components and output are priced in
+two currencies gets "priced in GOLD, USD; no margin across currencies" and
+no money figures at all, never a sum of both.
+
+*Reusable components* are not in the cost (they are not used up) but gate
+=craftable_now=. On-hand counts every location; a craft itself takes from
+one, so a recipe whose herbs are split across two characters may read 3
+here and still need a transfer first.
+
+A worked example. Herbs seen at 1.50, a vial at 0.40, a potion at 2.00;
+the recipe takes 2 herbs, a vial and a still (reusable), and makes 3
+potions:
+
+| Figure        | Arithmetic                  | Value  |
+|---------------+-----------------------------+--------|
+| cost          | 2 × 1.50 + 1 × 0.40         | 3.40   |
+| value         | 3 × 2.00                    | 6.00   |
+| profit        | 6.00 − 3.40                 | 2.60   |
+| margin        | 2.60 ÷ 6.00                 | 43.3%  |
+| cost per unit | 3.40 ÷ 3, half to even      | 1.13   |
+| craftable now | min(10 herbs ÷ 2, 4 vials ÷ 1), still on hand | 4 |
+
+** Where it is asked from
+
+=/reports/recipe_margin= (with a form for =price_source= and =as_of=),
+=GET /api/v1/reports/recipe_margin?…=, =venturectl report=, the assistant's
+and MCP's =venture_report= tool. =price_source= and =category_id= were
+added to all five doors in the same change.
+
+It refuses, naming the bound, an organization with more than
+=VENTURE_AGGREGATE_MAX_ROWS= recipes rather than answering for some.
+
+* API and CLI
+
+#+begin_src sh
+venturectl describe recipe
+venturectl describe recipe_component
+
+# The bill of materials
+venturectl create recipe name="Healing Potion" output_product_id=14 \
+    output_quantity=3 active=true
+venturectl create recipe_component recipe_id=3 product_id=11 quantity=2
+venturectl create recipe_component recipe_id=3 product_id=12 quantity=1
+venturectl create recipe_component recipe_id=3 product_id=13 quantity=1 reusable=true
+
+# Crafting: act types each argument from the action's schema
+venturectl act recipe 3 craft times=5
+venturectl act recipe 3 craft times=5 location_id=2 occurred_at=2026-03-14T18:00:00Z
+venturectl --stage act recipe 3 craft times=20     # propose; approval crafts
+curl -X POST .../api/v1/recipe/3/actions/craft -d '{"times":5,"location_id":2}'
+
+# Everything recipe 3 made or used
+venturectl list inventory_txn reference=recipe:3
+
+# The margin sheet
+venturectl report recipe_margin all price_source="market value"
+venturectl report recipe_margin all category_id=4 as_of=2026-03-01
+#+end_src
+
+On the wire the fields use underscores (=output_product_id=,
+=output_quantity=); a POST with dashed keys is silently ignored field by
+field. Action parameters are typed: ={"times":"5"}= is refused, and
+=venturectl act= and the page's form send an integer.
+
+The sidebar files *Recipes* under Operations.
+
+* Traps
+
+- *=reusable=, not =consumed=.* The zero value must be the safe one; a
+  forgotten tick consumes. Do not add a =consumed= alias.
+- *A tool must really be on hand.* =allow_negative= does not apply to a
+  reusable component. And it is needed once, not once per batch.
+- *One line per product.* Duplicates are refused, not merged.
+- *The craft is one transaction, and so is the produce underneath it.*
+  Do not issue components through =venture_inventory_service_issue()=: it
+  posts cost of goods sold for stock that is still on the shelf, as a
+  potion.
+- *The output's layers are split exactly.* Never replace them with one
+  layer at the rounded average.
+- *The craft does not create the output's inventory item.* It refuses and
+  says what to create.
+- *=recipe_margin= never falls back.* Market on means observed prices
+  only; a missing one is named, not replaced by a recorded cost or zero.
+- *An API-created recipe needs =active=true=.* Otherwise it is invisible to
+  the report and refused by the action.

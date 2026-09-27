@@ -497,6 +497,261 @@ venture_inventory_service_transfer_impl(VentureInventoryService *self, gint64 fr
 	return save_owned(self, VENTURE_ENTITY(layer), actor, error);
 }
 
+/*
+ * Takes up to @quantity units from @item_id's FIFO layers and returns what
+ * they cost. Unlike consume_fifo() it does not refuse when the layers run
+ * out before the quantity does: the caller has already checked stock on
+ * hand, and units that arrived without a layer -- an adjustment typed in
+ * by hand -- are real stock with no recorded cost. Refusing them would
+ * make stock the count says is there unusable.
+ */
+static gboolean
+consume_available(VentureInventoryService *self, gint64 item_id, gint64 quantity,
+	const VentureActor *actor, VentureMoney **cost, GError **error)
+{
+	g_autoptr(GPtrArray) layers = NULL;
+	gint64 need = quantity;
+	guint i;
+	*cost = NULL;
+	layers = layers_for(self, item_id, error);
+	if (layers == NULL)
+		return FALSE;
+	for (i = 0; i < layers->len && need > 0; i++)
+	{
+		VentureEntity *layer = g_ptr_array_index(layers, i);
+		g_autoptr(VentureMoney) unit = NULL;
+		g_autoptr(VentureMoney) slice = NULL;
+		gint64 remaining = get_int(layer, "remaining-qty");
+		gint64 take;
+		if (remaining <= 0)
+			continue;
+		take = remaining < need ? remaining : need;
+		g_object_get(layer, "unit-cost", &unit, NULL);
+		if (unit == NULL)
+			return refuse(error, "a cost layer has no unit cost");
+		slice = venture_money_multiply_int(unit, take, error);
+		if (slice == NULL)
+			return FALSE;
+		if (*cost != NULL && 0 != g_strcmp0(venture_money_get_currency(*cost),
+			venture_money_get_currency(slice)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"VentureInventoryService: inventory item #%" G_GINT64_FORMAT " carries costs in %s and %s; "
+				"a made unit's cost cannot add them", item_id,
+				venture_money_get_currency(*cost), venture_money_get_currency(slice));
+			return FALSE;
+		}
+		if (!add_money(cost, slice, error))
+			return FALSE;
+		g_object_set(layer, "remaining-qty", remaining - take, NULL);
+		if (!save_owned(self, layer, actor, error))
+			return FALSE;
+		need -= take;
+	}
+	return TRUE;
+}
+
+/* A new cost layer of @quantity units at @unit on @item_id. */
+static gboolean
+add_layer(VentureInventoryService *self, gint64 item_id, gint64 organization_id, gint64 quantity,
+	const VentureMoney *unit, GDateTime *when, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureInventoryCostLayer) layer = venture_inventory_cost_layer_new();
+	g_object_set(layer, "inventory-item-id", item_id, "received-at", when,
+		"original-qty", quantity, "remaining-qty", quantity, "unit-cost", unit, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(layer), organization_id);
+	return save_owned(self, VENTURE_ENTITY(layer), actor, error);
+}
+
+/*
+ * The currency a made unit with no consumed cost is carried in: the output
+ * item's own unit cost's, else its organization's book currency, else the
+ * install's. It still needs a layer -- consume_fifo() refuses to issue
+ * units that have none -- and a zero in the wrong currency would be a
+ * layer the valuation cannot add.
+ */
+static gchar *
+zero_cost_currency(VentureInventoryService *self, VentureEntity *item)
+{
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	gchar *currency = NULL;
+	g_object_get(item, "unit-cost", &unit, NULL);
+	if (unit != NULL)
+		return g_strdup(venture_money_get_currency(unit));
+	organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION,
+		venture_entity_get_organization_id(item), NULL);
+	if (organization != NULL)
+		g_object_get(organization, "default-currency", &currency, NULL);
+	if (venture_string_is_empty(currency))
+	{
+		g_free(currency);
+		currency = g_strdup(venture_money_get_default_currency());
+	}
+	return currency;
+}
+
+static gboolean
+produce_body(VentureInventoryService *self, const VentureInventoryDraw *draws, guint n_draws,
+	gint64 output_item_id, gint64 output_quantity, GDateTime *when, const gchar *reference,
+	const VentureActor *actor, VentureEntity **out_txn, VentureMoney **out_cost, GError **error)
+{
+	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autoptr(VentureEntity) output = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	gboolean costed;
+	guint i;
+	/* Cost layers belong to the goods module. Without it there is no
+	 * FIFO to consume or to add to, and a craft moves quantities only --
+	 * exactly what every other stock movement does on such an install. */
+	costed = venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"inventory_cost_layer") != G_TYPE_INVALID;
+	output = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, output_item_id, error);
+	if (output == NULL)
+		return FALSE;
+
+	/* --- What goes in --- */
+	for (i = 0; i < n_draws; i++)
+	{
+		g_autoptr(VentureMoney) cost = NULL;
+		g_autoptr(VentureMoney) each = NULL;
+		g_autoptr(VentureEntity) out = NULL;
+		if (!guard_stock(self, draws[i].inventory_item_id, -draws[i].quantity, error))
+			return FALSE;
+		if (costed && !consume_available(self, draws[i].inventory_item_id, draws[i].quantity,
+			actor, &cost, error))
+			return FALSE;
+		if (cost != NULL)
+		{
+			/* Refused rather than converted: a made unit's cost is one
+			 * number, and no rate was given to make it one. */
+			if (total != NULL && 0 != g_strcmp0(venture_money_get_currency(total),
+				venture_money_get_currency(cost)))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+					"VentureInventoryService: the inputs cost %s and %s; a made unit's cost "
+					"cannot add two currencies", venture_money_get_currency(total),
+					venture_money_get_currency(cost));
+				return FALSE;
+			}
+			if (!add_money(&total, cost, error))
+				return FALSE;
+			/* The transaction shows the average it left at, for reading;
+			 * the layers above are what the books count. */
+			each = venture_money_multiply_rational(cost, 1, draws[i].quantity, error);
+			if (each == NULL)
+				return FALSE;
+		}
+		out = write_txn(self, draws[i].inventory_item_id, -draws[i].quantity,
+			VENTURE_INVENTORY_TXN_KIND_PRODUCTION, each, when, reference, 0, actor, error);
+		if (out == NULL)
+			return FALSE;
+	}
+
+	/* --- What comes out --- */
+	if (total != NULL)
+	{
+		unit = venture_money_multiply_rational(total, 1, output_quantity, error);
+		if (unit == NULL)
+			return FALSE;
+	}
+	txn = write_txn(self, output_item_id, output_quantity, VENTURE_INVENTORY_TXN_KIND_PRODUCTION,
+		unit, when, reference, 0, actor, error);
+	if (txn == NULL)
+		return FALSE;
+	if (costed)
+	{
+		gint64 organization_id = venture_entity_get_organization_id(output);
+		if (total == NULL)
+		{
+			g_autofree gchar *currency = zero_cost_currency(self, output);
+			g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+			if (!add_layer(self, output_item_id, organization_id, output_quantity, zero, when, actor, error))
+				return FALSE;
+		}
+		else
+		{
+			/* Split exactly, never rounded: 10.00 over 3 units is one
+			 * layer of 1 at 3.34 and one of 2 at 3.33. A single layer
+			 * at the rounded average would leave a cent of cost behind
+			 * (or invent one) every time, and cost of goods sold would
+			 * drift from what the inputs cost. */
+			gint64 amount = venture_money_get_amount(total);
+			gint64 base = amount / output_quantity;
+			gint64 over = amount % output_quantity;
+			const gchar *currency = venture_money_get_currency(total);
+			guint8 exponent = venture_money_get_exponent(total);
+			if (over > 0)
+			{
+				g_autoptr(VentureMoney) high = venture_money_new(base + 1, currency, exponent);
+				if (!add_layer(self, output_item_id, organization_id, over, high, when, actor, error))
+					return FALSE;
+			}
+			if (output_quantity - over > 0)
+			{
+				g_autoptr(VentureMoney) low = venture_money_new(base, currency, exponent);
+				if (!add_layer(self, output_item_id, organization_id, output_quantity - over, low,
+					when, actor, error))
+					return FALSE;
+			}
+		}
+	}
+	if (out_txn != NULL)
+		*out_txn = g_steal_pointer(&txn);
+	if (out_cost != NULL)
+		*out_cost = g_steal_pointer(&total);
+	return TRUE;
+}
+
+gboolean
+venture_inventory_service_produce(VentureInventoryService *self,
+	const VentureInventoryDraw *draws, guint n_draws, gint64 output_item_id,
+	gint64 output_quantity, GDateTime *date, const gchar *reference,
+	const VentureActor *actor, VentureEntity **out_txn, VentureMoney **out_cost,
+	GError **error)
+{
+	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureMoney) cost = NULL;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	g_return_val_if_fail(n_draws == 0 || draws != NULL, FALSE);
+	if (out_txn != NULL)
+		*out_txn = NULL;
+	if (out_cost != NULL)
+		*out_cost = NULL;
+	if (self->database == NULL)
+		return refuse(error, "the database is unavailable");
+	if (output_quantity <= 0)
+		return refuse(error, "production makes a positive quantity");
+	for (i = 0; i < n_draws; i++)
+	{
+		if (draws[i].quantity <= 0)
+			return refuse(error, "production consumes positive quantities");
+		if (draws[i].inventory_item_id == output_item_id)
+			return refuse(error, "production cannot consume the stock it makes");
+	}
+	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
+	/* Nested inside a caller's transaction this joins it, and a failure
+	 * below abandons the whole of it -- which is the point. */
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	if (!produce_body(self, draws, n_draws, output_item_id, output_quantity, when, reference,
+		actor, &txn, &cost, error))
+	{
+		venture_database_rollback(self->database);
+		return FALSE;
+	}
+	if (!venture_database_commit(self->database, error))
+		return FALSE;
+	if (out_txn != NULL)
+		*out_txn = g_steal_pointer(&txn);
+	if (out_cost != NULL)
+		*out_cost = g_steal_pointer(&cost);
+	return TRUE;
+}
+
 VentureMoney *
 venture_inventory_service_valuation(VentureInventoryService *self, gint64 organization_id,
 	GDateTime *as_of, GError **error)

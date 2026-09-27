@@ -2755,11 +2755,15 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "per", "string",
 		"aggregate: hour or day, adding a rate over the elapsed window", FALSE);
 	ai_tool_add_parameter(report, "venture_id", "integer",
-		"Narrow to one venture, where the report takes one (aggregate, listing_performance)", FALSE);
+		"Narrow to one venture, where the report takes one (aggregate, listing_performance, recipe_margin)", FALSE);
 	ai_tool_add_parameter(report, "product_id", "integer",
 		"price_history: the product whose observed prices to show", FALSE);
 	ai_tool_add_parameter(report, "source", "string",
 		"price_history: only this price source, e.g. market value", FALSE);
+	ai_tool_add_parameter(report, "price_source", "string",
+		"recipe_margin: price components and output at the latest observation from this source", FALSE);
+	ai_tool_add_parameter(report, "category_id", "integer",
+		"recipe_margin: only recipes filed in this category or beneath it", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);

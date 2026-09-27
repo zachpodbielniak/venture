@@ -157,6 +157,10 @@ venture_context_new(
 	 * outcome, a closing time that follows it, one currency per listing. */
 	venture_market_install(self);
 
+	/* Recipes that make a product in their own organization and never
+	 * take it, and the craft action that turns stock into other stock. */
+	venture_production_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

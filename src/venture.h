@@ -129,6 +129,7 @@
 #include "dedupe/venture-dedupe-records.h"
 #include "orgaccess/venture-mfa-records.h"
 #include "market/venture-market-records.h"
+#include "production/venture-production-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -323,6 +324,7 @@
 #include "report/venture-cash-vs-booked.h"
 #include "report/venture-aggregate-report.h"
 #include "market/venture-market.h"
+#include "production/venture-production.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

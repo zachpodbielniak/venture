@@ -48,6 +48,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
 - [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
 - [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS
+- [[file:production.org][Production]] — recipes (bills of materials), crafting them in one transaction at FIFO cost, and each recipe's margin at a chosen price source
 - [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record
 - [[file:sales-orders.org][Sales orders]] — allocate, ship and invoice fulfilled quantity

@@ -599,6 +599,32 @@ than one that fails.
   `observed-at` goes to the higher id so repeated calls agree. Nothing
   observed returns TRUE with a NULL price -- the caller says so, it does
   not read zero.
+- **A craft never issues through `venture_inventory_service_issue()`.**
+  Issue posts cost of goods sold for stock that is still on the shelf, as
+  the thing it was made into. `venture_inventory_service_produce()` writes
+  PRODUCTION transactions, posts no journal, and gives the output cost
+  layers that sum *exactly* to the consumed FIFO cost (split into a
+  one-minor-unit-higher layer and a floor layer); one layer at the rounded
+  average leaves a cent behind every craft. It consumes what layers there
+  are and treats the rest as uncosted, because stock typed in by hand has
+  no layer and must still be usable; and it always gives the output a
+  layer, even a zero one, or `consume_fifo()` would refuse to sell it.
+- **`reusable` is the flag, and a tool must really be there.** A boolean
+  has no default, so the zero value is the safe one: unticked means
+  consumed. A reusable component is needed once per craft, not per batch,
+  and `allow-negative` does not apply to it. Do not add a `consumed`
+  spelling.
+- **A craft is a record action judged in its recipe's organization.** It
+  needs no `organization_id` parameter; every inventory item is looked up
+  in the recipe's organization, at exactly `location_id` (not its
+  children), and none or several are refused with what to create or which
+  location to name. It never creates the output's item. It is stageable
+  because approval re-performs it from parameters, recounting stock then.
+- **`recipe_margin` never falls back.** Market on means observed prices
+  only, from `price_source` exactly; a product never priced is named and
+  its figures blank. Market off means recorded costs, and a
+  `price_source` is refused. A recipe priced in two currencies gets a note
+  and no money figures.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

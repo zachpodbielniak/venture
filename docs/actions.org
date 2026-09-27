@@ -99,6 +99,18 @@ Type-level actions whose input contains a new record declare =subject-parameter=
 
 A plugin type-level action that writes an organization-scoped record must declare its subject parameter. Without it the proposed target retains organization zero and scoped users are refused; the registry never guesses the organization from unrelated parameters or from the current sidebar selection.
 
+* A record action whose service joins the transaction
+
+=craft= on =recipe= (see [[file:production.org][Production]]) is the plain
+case written out: a record action, so the recipe's own organization places
+it and no =organization_id= parameter is needed; registry-owned transaction,
+which =venture_production_craft()= and the inventory service's produce join
+(a nested begin), so a failure anywhere -- the output's write included --
+rolls back the whole craft. It is stageable because a confirmation holds
+only its parameters and approval re-performs it, recounting stock then.
+Its =allowed= callback hides it on an inactive recipe rather than offering
+a button that can only be refused.
+
 * Services that own their transaction
 
 An action may declare =service-transaction=true= only when its service provides atomicity itself, including any whole-operation accounting consent before its first write. The registry retains parameter, role, access and veto checks but delegates the transaction and posting decision to that service. This distinguishes a draft invoice batch from the same batch with =post=true= without creating a second business-policy implementation in the registry. Recurring/batch, setup and cutover actions use this contract; saved batch application includes its result evidence in the service transaction. Existing declarations default to the registry-owned transaction.

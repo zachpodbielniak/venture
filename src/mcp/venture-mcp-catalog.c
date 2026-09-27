@@ -816,6 +816,9 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "venture_id", "Narrow to one venture (aggregate, listing_performance).");
 		venture_mcp_catalog_add_integer_property(builder, "product_id", "price_history: the product whose observed prices to show.");
 		venture_mcp_catalog_add_string_property(builder, "source", "price_history: only this price source, matched exactly.");
+		/* The production report's questions. */
+		venture_mcp_catalog_add_string_property(builder, "price_source", "recipe_margin: price at the latest observation from this source, matched exactly.");
+		venture_mcp_catalog_add_integer_property(builder, "category_id", "recipe_margin: only recipes in this category or beneath it.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

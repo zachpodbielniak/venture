@@ -1411,3 +1411,64 @@ venturectl report listing_performance this_month group_by=channel
 venturectl report listing_performance 2026 group_by=category category_depth=0
 venturectl report price_history last_30_days product_id=12 source="market value" bucket=week
 ```
+
+## Production: recipes and crafting
+
+Module `production` (requires `sales`; suggests `market` and `goods`).
+Check `venturectl describe recipe`, `describe recipe_component` and
+`-f json describe recipe` (for the `craft` action's parameters).
+
+- `recipe`: `name`, `venture_id`, `output_product_id` (required),
+  `output_quantity` (batch size, ≥ 1), `category_id`, `active`, `notes`.
+  **Pass `active=true`**: a boolean has no default through the API, and an
+  inactive recipe has no Craft, refuses the action and is left out of
+  `recipe_margin`.
+- `recipe_component`: `recipe_id`, `product_id`, `quantity` (≥ 1),
+  `reusable`, `notes`. `reusable=true` marks a tool or catalyst: it must be
+  on hand but is not used up. Leaving it out means **consumed**.
+- The save refuses (exit 2): no output product, a batch below 1, a
+  component that is the recipe's own output, a second line for the same
+  product (change the existing line's quantity instead), and any
+  reference into another organization.
+
+Crafting is the `craft` action on a recipe; `act` types each argument from
+the action's schema (`times` and `location_id` are integers):
+
+```sh
+venturectl create recipe name="Healing Potion" output_product_id=14 output_quantity=3 active=true
+venturectl create recipe_component recipe_id=3 product_id=11 quantity=2
+venturectl create recipe_component recipe_id=3 product_id=13 quantity=1 reusable=true
+venturectl act recipe 3 craft times=5
+venturectl act recipe 3 craft times=5 location_id=2 occurred_at=2026-03-14T18:00:00Z
+venturectl --stage act recipe 3 craft times=20    # approval crafts, recounting stock then
+venturectl list inventory_txn reference=recipe:3  # everything the recipe made or used
+```
+
+- One transaction: every consumed component leaves as a `production`
+  inventory transaction (quantity × times), the output arrives as one, and
+  the made units carry the consumed FIFO cost exactly. Any refusal writes
+  nothing. No journal is posted (inventory to inventory).
+- Refusals (exit 2) say what to do: `Short of <product>` (unless its item
+  allows negative stock), a reusable component not on hand (allow-negative
+  does **not** apply to tools), a product kept in several places ("name
+  the location_id to craft from"), no inventory item for the output
+  ("create an inventory item for it there (product_id=… location_id=…)"),
+  an inactive recipe, no components, inputs costed in two currencies.
+- `location_id` means exactly that location for every component and the
+  output, not its children. The craft never creates the output's
+  inventory item.
+- It returns the output's `inventory_txn`.
+
+Report `recipe_margin` — `price_source` (exact; needs the market module,
+refused without it), `as_of`, `venture_id`, `category_id` (and everything
+beneath it), `organization_id`. One row per active recipe: `cost`,
+`value`, `profit`, `margin`, `cost_per_unit`, `craftable_now`,
+`priced_by`, `note`. Market on: latest observed prices only; a product
+never priced is named in `note` and its figures are blank, **not zero**.
+Market off: item unit cost (else product cost) for inputs, list price for
+the output. Two currencies in one recipe: a note and no money figures.
+
+```sh
+venturectl report recipe_margin all price_source="market value"
+venturectl report recipe_margin all category_id=4 as_of=2026-03-01
+```

@@ -105,6 +105,55 @@ gboolean venture_inventory_service_restore(VentureInventoryService *self, gint64
 gboolean venture_inventory_service_transfer(VentureInventoryService *self, gint64 from_item_id,
 	gint64 to_item_id, gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error);
 /**
+ * VentureInventoryDraw:
+ * @inventory_item_id: the stock the units come out of
+ * @quantity: whole units taken; positive
+ *
+ * One input to venture_inventory_service_produce(): so many units out of
+ * one inventory item.
+ */
+typedef struct
+{
+	gint64 inventory_item_id;
+	gint64 quantity;
+} VentureInventoryDraw;
+/**
+ * venture_inventory_service_produce:
+ * @self: the service
+ * @draws: (array length=n_draws): the stock consumed
+ * @n_draws: how many draws
+ * @output_item_id: the inventory item the made units go into
+ * @output_quantity: whole units made; positive
+ * @date: (nullable): effective date; NULL is now
+ * @reference: (nullable): what made them, e.g. "recipe:12"
+ * @actor: (nullable): audit actor; NULL for internal service work
+ * @out_txn: (out) (optional) (transfer full): the output's transaction
+ * @out_cost: (out) (optional) (nullable) (transfer full): the FIFO cost of
+ *   everything consumed, which is the cost the made units carry; NULL when
+ *   nothing consumed carried a cost
+ * @error: (out) (optional): return location for an error
+ *
+ * Turns stock into other stock, in one transaction: each draw leaves as a
+ * negative PRODUCTION transaction at its FIFO cost, the output arrives as a
+ * positive PRODUCTION transaction, and the consumed cost becomes the
+ * output's cost layers -- split exactly, so the layers sum to the minor
+ * unit to what was consumed and the cost of goods sold later is right.
+ * Posts no journal: stock moved from inventory to inventory.
+ *
+ * A draw that would take an item below zero is refused unless the item
+ * allows negative stock. Units with no cost layer (typed in by hand) are
+ * consumed at no cost. Consumed costs in two currencies are refused. With
+ * the goods module off there are no cost layers, and only quantities move.
+ * Any failure rolls every write back.
+ *
+ * Returns: TRUE on success, FALSE on failure
+ */
+gboolean venture_inventory_service_produce(VentureInventoryService *self,
+	const VentureInventoryDraw *draws, guint n_draws, gint64 output_item_id,
+	gint64 output_quantity, GDateTime *date, const gchar *reference,
+	const VentureActor *actor, VentureEntity **out_txn, VentureMoney **out_cost,
+	GError **error);
+/**
  * venture_inventory_product_is_stocked:
  * @database: database owning the records
  * @product_id: product id
