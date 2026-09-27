@@ -635,3 +635,12 @@ Generated actions on the =recurring= records:
 | =/api/v1/financial_batch/:id/actions/apply= | Apply a stored payload |
 
 See [[file:recurring.org][recurring documents]].
+
+** Hosted account identity
+
+=GET /api/v1/account-identity/:id= validates a hosted organization for an
+external provisioning client using existing bearer authentication and current
+organization owner/admin authority. Returns canonical origin, workspace UUID,
+organization ID and active lifecycle state; never grants token access to
+workspace administration. See [[file:lightsite-accounts.org][Lightsite account validation]] for refusals and
+consumer requirements.

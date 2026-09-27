@@ -1104,6 +1104,8 @@ test_auth_pages_refuse_anonymous_requests(
 	 */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account"),
 	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/account-identity/1"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),
 	                 ==, SOUP_STATUS_FOUND);
 
