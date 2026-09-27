@@ -15,6 +15,7 @@
 #include "venture.h"
 
 #include <string.h>
+#include <math.h>
 
 /* ==========================================================================
  * Results
@@ -3195,6 +3196,11 @@ venture_widget_total_text(const VentureAggregateTotal *total)
 {
 	if (NULL != total->money)
 		return venture_money_to_display_string(total->money, TRUE);
+
+	/* Past the range of a gint64 the cast is undefined, not merely
+	 * inexact; a huge sum of a double field reads in exponent form. */
+	if (!isfinite(total->number) || (fabs(total->number) >= 9.0e18))
+		return g_strdup_printf("%g", total->number);
 
 	if (total->number == (gdouble)(gint64)total->number)
 		return g_strdup_printf("%" G_GINT64_FORMAT, (gint64)total->number);
