@@ -67,6 +67,16 @@ first seven columns were empty.
 - **Sensitive fields** (`VENTURE_COLUMN_FLAG_SENSITIVE`) must never reach a
   response, a log line, a form or the AI. A URI carrying a password gets
   `venture_string_redact_uri()` before it is shown anywhere.
+- **An API token acts as "API token #<id>", never under its name.** The
+  name is whatever the owner typed and the actor string reaches the audit
+  log, every record's activity and the inbox, which viewers read. The
+  upgrade rewrote only what it could find exactly: the audit log's `actor`
+  and `approved_by` (000640), the inbox's `actor` and the title it led
+  (000645), and `api_token` audit labels and name diffs (000685). Older
+  fields that copied a token's name as free text -- a comment's author, an
+  assignee, a worklog author, `deployed_by`, the bank-match, enrolment and
+  approval stamps -- keep it, and so do their audit diffs: rewriting those
+  would mean guessing which strings were ever a token.
 - **`VentureActor` is filled field by field at every call site.** It is a
   plain struct declared as a bare local, `-Wmissing-field-initializers` is on
   so nobody writes `= {0}`, and `venture_database_record_audit()` reads every
@@ -758,10 +768,6 @@ than one that fails.
   (`<div class="notice negative">`), not on two words.
 ## Forms and refusals
 
-- **An API token acts as "API token #<id>", never under its name.** The
-  name is whatever the owner typed and the actor string reaches the audit
-  log, every record's activity and the inbox, which viewers read.
-  Migrations 000640/000645 rewrote the names already recorded.
 - **A PDF header is two columns and text keeps to its column.** Use
   `venture_pdf_writer_fit_size()` and `venture_pdf_writer_wrap_aligned()`
   for anything a person typed; a fixed-size `_text()` call is only for
