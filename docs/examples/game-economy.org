@@ -1,0 +1,540 @@
+#+title: Worked example: a game economy
+#+description: Modelling an auction-house trade inside an online game with nothing but generic features: a gold currency with coins, characters as locations, item groups as categories, price feeds, listings, farming sessions and a profession as a goal
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-27]
+#+updated: [2026-09-27]
+#+version: 0.1.0
+
+* What this is
+
+A worked example of VENTURE running something that is not a business in
+the usual sense: a trade inside an online role-playing game. The player
+gathers herbs and ore on one character, crafts potions and flasks on
+another, keeps finished goods in a guild bank, and sells on the game's
+auction house for the game's gold. They want to know what sells, what an
+hour of farming is worth, what a potion costs to make against what it
+fetches, how far their crafting profession is from its cap and what they
+still have to gather to get there.
+
+Every piece of it is a generic feature. There is no game module, no
+"auction house" type and no "gold" code path; the same records describe a
+loyalty-points programme, a market stall or a household's pantry. The
+mapping:
+
+| In the game                         | In VENTURE                                             | Document                                  |
+|-------------------------------------+--------------------------------------------------------+-------------------------------------------|
+| gold, silver and copper             | a =currency= =GOLD=, exponent 4, with denominations    | [[file:../currencies.org][Currencies]]    |
+| what gold is worth in real money    | an =exchange_rate= from =GOLD= to =USD=                | [[file:../currencies.org][Currencies]]    |
+| the whole enterprise                | a second =organization=, book currency =GOLD=          | [[file:../orgaccess.org][Organization access]] |
+| "an auction-house trade"            | a =venture= of type =virtual_economy=                  | [[file:../extending.org][Extending]]      |
+| characters and the guild bank       | =location= records, =kind= character and bank          | [[file:../taxonomy.org][Taxonomy]]        |
+| a trading addon's item groups       | a =category= tree that applies to =product=            | [[file:../taxonomy.org][Taxonomy]]        |
+| items                               | =product= records, with =inventory_item= stock         | [[file:../inventory.org][Inventory]]      |
+| price feeds (market value, region)  | =price_observation= rows from named sources            | [[file:../market.org][Market]]            |
+| auctions posted                     | =listing= records, ending sold, partial, expired or cancelled | [[file:../market.org][Market]]     |
+| gold received from the mailbox      | =sale= records, channel "auction house", the cut as fees | [[file:../data-model.org][Data model]] |
+| a farming route                     | a =session= with goods and money yields, posted to stock | [[file:../sessions.org][Sessions]]      |
+| crafting                            | a =recipe= with components, and the =craft= action     | [[file:../production.org][Production]]    |
+| levelling a profession              | a =goal= with =goal_step= rows naming recipes          | [[file:../goals.org][Goals]]              |
+| the shopping list                   | the =goal_materials= report                            | [[file:../goals.org][Goals]]              |
+| the at-a-glance screen              | a =dashboard= with =sum=, =progress= and report widgets | [[file:../dashboards.org][Dashboards]]   |
+
+=make demo= seeds exactly this, as a second organization called /Evermoor
+Trading/ beside the demo's two businesses (=seed_virtual_economy= in
+=tools/venture-demo.sh=). This page builds the same thing by hand, with
+=venturectl=, one step at a time, and says why each piece is the shape it
+is.
+
+* Before you start
+
+A running server and a token (see [[file:../quickstart.org][the
+quickstart]]), =venturectl= on the path, and these modules on -- they are by
+default: =sales=, =goods=, =market=, =production=, =sessions=, =goals=,
+=dashboards=. =plugins= must be on for the =virtual_economy= venture type to
+be loaded (it is a YAML file in =data/venture-types/=).
+
+Every command below prints the record it made. The examples capture ids
+with a small helper so the page runs top to bottom as written; typing the
+ids by hand works as well.
+
+#+begin_src sh
+export VENTURE_SERVER=http://127.0.0.1:8748 VENTURE_TOKEN=...
+
+# Create a record and print only its id.
+new () {
+    venturectl -f json create "$@" \
+        | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])'
+}
+#+end_src
+
+Check field names and enum values with =venturectl describe TYPE= rather
+than guessing them: most CLI mistakes are a field name read wrong.
+
+* 1. The money: gold, silver and copper
+
+A game's gold is a unit of account like any other, with one quirk: it is
+written in coins. A hundred copper make a silver and a hundred silver make
+a gold, so the smallest unit is a copper and a gold is 10 000 of them --
+four decimal places.
+
+#+begin_src sh
+venturectl create currency code=GOLD name=Gold kind=virtual exponent=4 \
+    symbol_position=suffix \
+    denominations='[{"suffix":"g","units":10000},{"suffix":"s","units":100},{"suffix":"c","units":1}]'
+#+end_src
+
+From here on every money field accepts =12g 34s 56c=, =12g 34s 56c GOLD=,
+=34s= or =12.3456 GOLD=, and every page shows gold in coins. The JSON
+carries the exact minor units (=amount=: 123456) beside a =formatted= text,
+and reports add a =*_formatted= column in coins. Creating a currency needs
+an administrator: it changes how every amount in that code reads,
+everywhere.
+
+What gold is worth in dollars is an exchange rate. Games that sell a token
+for real money give a price; here 20 USD buys 250 000 gold, so one gold is
+8/100 000 of a dollar. A rate is an exact fraction, never a float:
+
+#+begin_src sh
+venturectl create exchange_rate from_currency=GOLD to_currency=USD \
+    rate_numerator=8 rate_denominator=100000 effective_at=2026-06-01 \
+    source=manual reason="Token price: 20 USD buys 250,000 gold"
+#+end_src
+
+Nothing converts gold on its own. A report that sees gold and dollars
+gives two rows; the rate is there for what values one currency in another.
+
+* 2. The enterprise: its own organization
+
+The trade gets an organization of its own, with gold as its book currency.
+That is what keeps it apart: every record filed under it stays out of the
+other entities' reports and books, an amount typed without a currency
+reads as gold, and the sidebar's entity picker switches the whole UI to it.
+
+#+begin_src sh
+ORG=$(new organization name="Evermoor Trading" slug=evermoor kind=personal \
+    default_currency=GOLD fiscal_year_start_month=1 active=true)
+#+end_src
+
+Every create below passes =organization_id=$ORG=. Leaving it off files the
+record under the default organization, where the reports for this one will
+never see it.
+
+* 3. The venture, held to its type
+
+A venture's =venture_type= names a declarative type -- a YAML file, not
+code. =virtual_economy= adds the fields a game trade has to say for itself:
+the world (required), the server or region, the currency code, the faction,
+the account handle and the main marketplace (=auction_house=,
+=player_trade=, =vendor=, =platform_store=, =mixed=). They live in the
+venture's attribute bag, and =attributes.NAME=value= writes them in the same
+request that creates the venture:
+
+#+begin_src sh
+VENTURE=$(new venture organization_id=$ORG name="Silverfen auction house" \
+    slug=silverfen-ah venture_type=virtual_economy status=active \
+    attributes.world="Evermoor Online" attributes.region="Silverfen (EU)" \
+    attributes.currency_code=GOLD attributes.faction=Tidewardens \
+    attributes.handle="Brisk#2211" attributes.marketplace=auction_house)
+#+end_src
+
+The type is enforced at the save, for every writer: leave =world= out and
+the save is refused ("World or title: is required"); name a marketplace
+outside the list and it is refused naming the valid ones; name a type that
+is not registered and it is refused naming the ones that are. A venture
+keeping an attribute that was stored before a rule existed stays editable
+-- only what a save writes is checked. See [[file:../extending.org][Extending]].
+
+* 4. Where things are: characters and the bank
+
+A character's bags and the guild bank are places stock can be, which is
+what a =location= is. =kind= is free text, so "character" and "bank" are
+simply what this operator calls them; locations can nest (a bag on a
+character, a tab in the bank) through =parent_id=.
+
+#+begin_src sh
+BRISK=$(new location organization_id=$ORG name=Brisk kind=character active=true)
+TALLOW=$(new location organization_id=$ORG name=Tallow kind=character active=true)
+BANK=$(new location organization_id=$ORG name="Guild bank" kind=bank active=true)
+#+end_src
+
+* 5. Item groups: a category tree
+
+Trading addons sort items into groups -- herbs, ore, potions, flasks -- and
+price and post by group. That is a category tree. =applies_to=product=
+keeps it for products; a recipe or a session cannot be filed in it by
+mistake (the save refuses, naming the tree's type). The path a person
+reads ("Materials / Herbs") is computed from the parents, never stored, so
+renaming a group renames every path beneath it.
+
+#+begin_src sh
+MATERIALS=$(new category organization_id=$ORG name=Materials applies_to=product position=1)
+HERBS=$(new category organization_id=$ORG name=Herbs parent_id=$MATERIALS applies_to=product position=1)
+ORE=$(new category organization_id=$ORG name=Ore parent_id=$MATERIALS applies_to=product position=2)
+CRAFTED=$(new category organization_id=$ORG name=Crafted applies_to=product position=2)
+POTIONS=$(new category organization_id=$ORG name=Potions parent_id=$CRAFTED applies_to=product position=1)
+FLASKS=$(new category organization_id=$ORG name=Flasks parent_id=$CRAFTED applies_to=product position=2)
+#+end_src
+
+* 6. Items and stock
+
+Each item is a product under the venture, filed in the tree, with an
+inventory item at the place it is kept. Tags are comma separated and
+searchable (=venturectl list product search=farmable=).
+
+#+begin_src sh
+SILVERLEAF=$(new product organization_id=$ORG venture_id=$VENTURE name=Silverleaf \
+    category_id=$HERBS tags=herb,farmable list_price="18s 50c" active=true)
+DUSKROOT=$(new product organization_id=$ORG venture_id=$VENTURE name=Duskroot \
+    category_id=$HERBS tags=herb,farmable list_price="42s" active=true)
+IRONSTONE=$(new product organization_id=$ORG venture_id=$VENTURE name="Ironstone ore" \
+    category_id=$ORE tags=ore,farmable list_price="65s" active=true)
+VIAL=$(new product organization_id=$ORG venture_id=$VENTURE name="Crystal vial" \
+    category_id=$MATERIALS tags=vendor list_price="4s" active=true)
+MORTAR=$(new product organization_id=$ORG venture_id=$VENTURE name="Mortar and pestle" \
+    category_id=$MATERIALS tags=tool active=true)
+POTION=$(new product organization_id=$ORG venture_id=$VENTURE name="Healing potion" \
+    category_id=$POTIONS list_price="95s" active=true)
+FLASK=$(new product organization_id=$ORG venture_id=$VENTURE name="Flask of endurance" \
+    category_id=$FLASKS list_price="6g 80s" active=true)
+
+for pair in "$SILVERLEAF $BRISK" "$DUSKROOT $BRISK" "$IRONSTONE $BRISK" \
+            "$VIAL $TALLOW" "$MORTAR $TALLOW" "$POTION $BANK" "$FLASK $BANK"
+do
+    set -- $pair
+    new inventory_item organization_id=$ORG product_id=$1 venture_id=$VENTURE location_id=$2
+done
+#+end_src
+
+Quantity on hand is always the sum of =inventory_txn= rows, never a stored
+field. The vials bought from a vendor and the one mortar are an opening
+count -- an adjustment:
+
+#+begin_src sh
+item_of () {    # the inventory item holding a product
+    venturectl -f json list inventory_item organization_id=$ORG product_id=$1 \
+        | python3 -c 'import json, sys; print(json.load(sys.stdin)["records"][0]["id"])'
+}
+new inventory_txn organization_id=$ORG inventory_item_id=$(item_of $VIAL) \
+    kind=adjustment quantity=200 reference=opening
+new inventory_txn organization_id=$ORG inventory_item_id=$(item_of $MORTAR) \
+    kind=adjustment quantity=1 reference=opening
+#+end_src
+
+*Why only those two.* A sale of a product that has stock issues its units
+from FIFO cost layers and refuses units that have none, and an adjustment
+carries no layer. Everything that will be sold therefore arrives with a
+layer: herbs from a posted farming session (a zero-cost layer, because
+nobody paid for them), potions and flasks from a craft (layers carrying
+what the inputs cost). The vials and the mortar are only ever consumed or
+needed by a craft, which takes unlayered units at no cost. See
+[[file:../inventory.org][Inventory]].
+
+* 7. Price feeds: observations from named sources
+
+A trading addon reports several prices per item -- the market's smoothed
+value, the region's average, the lowest listing right now. Each is a
+/source/, and each reading is a =price_observation=: a product, a source, a
+price, optionally the volume on offer and the market it was seen in.
+
+#+begin_src sh
+new price_observation organization_id=$ORG product_id=$SILVERLEAF \
+    source="market value" price="18s 12c" volume=340 observed_at=2026-09-20T10:00:00Z
+new price_observation organization_id=$ORG product_id=$SILVERLEAF \
+    source="region average" price="19s 3c" observed_at=2026-09-20T04:00:00Z
+#+end_src
+
+And one current market value for everything else a recipe or the shopping
+list will price:
+
+#+begin_src sh
+for pair in "$DUSKROOT 42s" "$IRONSTONE 65s" "$VIAL 4s" "$POTION 94s" "$FLASK 6g 80s"
+do
+    set -- $pair
+    product=$1; shift
+    new price_observation organization_id=$ORG product_id=$product \
+        source="market value" price="$*" observed_at=2026-09-20T10:00:00Z
+done
+#+end_src
+
+Sources are matched exactly: =market value= and =market value (region)=
+are two sources, and nothing blends them. Import a feed by looping over it
+with =venturectl create=, or through the REST API. Then:
+
+#+begin_src sh
+venturectl report price_history last_90_days product_id=$SILVERLEAF \
+    source="market value" bucket=week organization_id=$ORG
+#+end_src
+
+min, average (half to even) and max per week, source and currency. The
+latest price from a source is also what values goods in the session,
+recipe and shopping-list reports. See [[file:../market.org][Market]].
+
+* 8. Farming: sessions
+
+A farming route is a session: when it started and ended, what kind of run
+it was (=activity=, which is what sessions are compared by), where it
+happened, and what it cost (repairs, a flight). What it produced are
+yields -- goods (a product and a quantity, optionally what one was worth
+at the time) or money (the gold the mobs dropped, sold to a vendor on the
+spot), never both on one yield.
+
+#+begin_src sh
+RUN=$(new session organization_id=$ORG venture_id=$VENTURE name="Herb route, Tuesday" \
+    activity="herb route" location_id=$BRISK started_at=2026-09-15T19:00:00Z \
+    ended_at=2026-09-15T20:15:00Z cost="15s")
+new session_yield organization_id=$ORG session_id=$RUN product_id=$SILVERLEAF quantity=150 unit_value="18s 50c"
+new session_yield organization_id=$ORG session_id=$RUN product_id=$DUSKROOT quantity=16 unit_value="42s"
+new session_yield organization_id=$ORG session_id=$RUN amount="2g 28s" notes="Vendor sales"
+
+venturectl act session $RUN post     # the herbs arrive in Brisk's bags, once
+#+end_src
+
+=minutes= is worked out from the two times. Posting puts every goods yield
+into stock in one transaction, as a =production= movement referenced
+=session:<id>= with a zero-cost layer; a posted yield is never posted
+again, and a posted session cannot be deleted (correct stock with an
+adjustment). An ore route is the same with ore. Then:
+
+#+begin_src sh
+venturectl report session_performance all group_by=activity organization_id=$ORG
+#+end_src
+
+one row per activity and currency: hours, units, goods value, money
+yielded, cost, net, and /yield per hour/ and /net per hour/ -- which route
+makes the most gold an hour. Goods recorded without a =unit_value= are
+valued at the latest price from the source you name
+(=price_source="market value"=); goods with neither are named in the note
+and the figures they would change are left blank rather than read as zero.
+See [[file:../sessions.org][Sessions]].
+
+* 9. Crafting: recipes and the craft action
+
+A recipe makes a batch of one product from components. A component marked
+=reusable= is a tool: it has to be on hand, and it is not used up.
+
+#+begin_src sh
+HEALING=$(new recipe organization_id=$ORG venture_id=$VENTURE name="Healing potion" \
+    output_product_id=$POTION output_quantity=1 active=true)
+new recipe_component organization_id=$ORG recipe_id=$HEALING product_id=$SILVERLEAF quantity=2
+new recipe_component organization_id=$ORG recipe_id=$HEALING product_id=$VIAL quantity=1
+new recipe_component organization_id=$ORG recipe_id=$HEALING product_id=$MORTAR quantity=1 reusable=true
+
+ENDURANCE=$(new recipe organization_id=$ORG venture_id=$VENTURE name="Flask of endurance" \
+    output_product_id=$FLASK output_quantity=1 active=true)
+new recipe_component organization_id=$ORG recipe_id=$ENDURANCE product_id=$DUSKROOT quantity=3
+new recipe_component organization_id=$ORG recipe_id=$ENDURANCE product_id=$IRONSTONE quantity=1
+new recipe_component organization_id=$ORG recipe_id=$ENDURANCE product_id=$VIAL quantity=1
+new recipe_component organization_id=$ORG recipe_id=$ENDURANCE product_id=$MORTAR quantity=1 reusable=true
+#+end_src
+
+Crafting is an action, not a record you write:
+
+#+begin_src sh
+venturectl act recipe $HEALING craft times=30
+#+end_src
+
+In one transaction: 60 Silverleaf and 30 vials leave stock at their FIFO
+cost, 30 potions arrive carrying exactly that cost, and the mortar is
+checked for and left alone. A shortage refuses the whole craft, naming
+what is missing; nothing is consumed without something being made. The
+ore for the flasks comes from an ore route posted the same way as the
+herbs; until it is on the shelf, crafting a flask is refused.
+
+What a batch costs against what it fetches, at a chosen price source:
+
+#+begin_src sh
+venturectl report recipe_margin all price_source="market value" organization_id=$ORG
+#+end_src
+
+cost per batch (the components at the source's latest price), value per
+batch (the output at the same source), profit, margin and how many batches
+the shelf can make now. A component with no price seen is named and the
+cost left blank. See [[file:../production.org][Production]].
+
+* 10. Selling: listings and sales
+
+An auction is a =listing=: what, how many, the asking price per unit, the
+deposit paid to post it, when it opened, and how it ended. The outcome is
+=open= until it ends, then one of:
+
+- =sold= -- every unit sold (marked sold with no count, it is filled to the
+  quantity);
+- =partial= -- some and not all: a stack of 20 of which 12 went;
+- =expired= -- nothing sold and the time ran out; the deposit is lost;
+- =cancelled= -- withdrawn; also counted as unsold.
+
+The gold that arrives is a =sale=: the gross, the house's cut as =fees=,
+channel "auction house". Link it to the listing with =sale_id=.
+
+#+begin_src sh
+SALE=$(new sale organization_id=$ORG venture_id=$VENTURE product_id=$POTION \
+    occurred_at=2026-09-21T09:00:00Z quantity=5 gross="4g 75s" fees="23s 75c" \
+    channel="auction house")
+new listing organization_id=$ORG product_id=$POTION channel="auction house" \
+    quantity=5 unit_price="95s" deposit="7s 13c" fees="23s 75c" \
+    listed_at=2026-09-20T09:00:00Z closed_at=2026-09-21T09:00:00Z \
+    outcome=sold sale_id=$SALE
+
+new listing organization_id=$ORG product_id=$SILVERLEAF channel="auction house" \
+    quantity=20 unit_price="18s 50c" deposit="5s 55c" \
+    listed_at=2026-09-20T09:00:00Z closed_at=2026-09-22T09:00:00Z outcome=expired
+#+end_src
+
+The sale issues the five potions from stock at their FIFO cost, which is
+what books the cost of what sold. A listing does not move stock or post to
+the books by itself -- the sale does. The save refuses an outcome that
+contradicts its count (sold with 2 of 5, partial with none, expired with
+units sold) and a deposit or fee in another currency than the price.
+
+#+begin_src sh
+venturectl report listing_performance last_90_days group_by=product organization_id=$ORG
+venturectl report listing_performance last_90_days group_by=category category_depth=0 organization_id=$ORG
+#+end_src
+
+/Sale rate/ is units sold on closed listings over units on closed
+listings: open listings are left out until they end, a partial counts its
+sold units, a cancelled one counts as unsold, and a group with nothing
+closed has no rate rather than 0%. The report also gives the average days
+to sell, the average sold unit price, the sold value, the deposits lost and
+the fees -- one row per group and currency.
+
+* 11. A profession: a goal with recipe steps
+
+Levelling a crafting skill from 1 to 300 is a goal: a metric, where it
+started, where it is and where it should end. The route to the cap is its
+steps, in order, each covering part of the range and, where it crafts
+something, naming the recipe and how many batches.
+
+#+begin_src sh
+GOAL=$(new goal organization_id=$ORG venture_id=$VENTURE name="Alchemy 1-300" \
+    metric=skill unit=level start_value=1 current_value=140 target_value=300 \
+    due_on=2026-11-30 status=active)
+new goal_step organization_id=$ORG goal_id=$GOAL position=1 name="Healing potions" \
+    from_value=1 to_value=60 recipe_id=$HEALING repetitions=60 done=true
+new goal_step organization_id=$ORG goal_id=$GOAL position=2 name="More healing potions" \
+    from_value=60 to_value=110 recipe_id=$HEALING repetitions=50 done=true
+new goal_step organization_id=$ORG goal_id=$GOAL position=3 name="Flasks of endurance" \
+    from_value=110 to_value=175 recipe_id=$ENDURANCE repetitions=70
+new goal_step organization_id=$ORG goal_id=$GOAL position=4 name="More flasks" \
+    from_value=175 to_value=240 recipe_id=$ENDURANCE repetitions=65
+new goal_step organization_id=$ORG goal_id=$GOAL position=5 name="Trainer quests to the cap" \
+    from_value=240 to_value=300
+#+end_src
+
+As you level, update =current_value= and tick steps =done=; setting the goal
+=achieved= stamps =achieved_at=.
+
+#+begin_src sh
+venturectl report goal_progress all organization_id=$ORG
+venturectl report goal_materials all goal_id=$GOAL price_source="market value" organization_id=$ORG
+#+end_src
+
+=goal_progress= measures from the start ((140 − 1) ÷ (300 − 1) = 46.5%),
+counts steps done and forecasts a finish at the pace so far.
+=goal_materials= is the shopping list: every component the unfinished
+recipe steps still need (repetitions × quantity, a tool once), less what is
+on hand, priced at the source's latest price, with a total per currency --
+what to farm or buy before the next session at the crafting station. The
+list is gross: a later step's needs are not netted against what an earlier
+step will make. See [[file:../goals.org][Goals]].
+
+* 12. The dashboard
+
+A dashboard for the trade, with the organization and the venture it is
+about:
+
+#+begin_src sh
+DASH=$(new dashboard organization_id=$ORG name=Evermoor slug=evermoor \
+    purpose=overview layout=three_columns venture_id=$VENTURE)
+new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=sum span=normal \
+    title="Auction house gross, 30 days" entity_type=sale field=gross \
+    period=last_30_days options='{"date_field": "occurred_at"}'
+new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=progress span=normal \
+    title=Alchemy entity_type=goal record_id=$GOAL field=current_value \
+    options='{"target_field": "target_value", "start_field": "start_value"}'
+new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=sum span=normal \
+    title="Minutes farmed, 30 days" entity_type=session field=minutes \
+    period=last_30_days options='{"date_field": "started_at"}'
+new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=report span=wide \
+    title="Sale rate" report_name=listing_performance period=last_90_days
+#+end_src
+
+A =sum= totals a money or number field per currency ("30g 18s 10c"); a
+=progress= with =start_field= draws the same fraction =goal_progress= does.
+A widget never scopes itself: on the page it answers for the entity picked
+in the sidebar, so pick /Evermoor Trading/ there; over the API pass
+=?organization_id=$ORG=:
+
+#+begin_src sh
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
+    "$VENTURE_SERVER/api/v1/dashboards/evermoor?organization_id=$ORG"
+#+end_src
+
+See [[file:../dashboards.org][Dashboards]].
+
+* 13. Questions the reports do not have
+
+The =aggregate= report sums, averages, counts and takes the minimum or
+maximum of any field of any type, grouped and bucketed, money per
+currency. Most one-off questions are one command:
+
+#+begin_src sh
+# Gold taken per item this quarter
+venturectl report aggregate this_quarter type=sale measure=gross \
+    group_by=product_id date_field=occurred_at organization_id=$ORG
+
+# Gold taken per week
+venturectl report aggregate last_90_days type=sale measure=gross \
+    date_field=occurred_at bucket=week organization_id=$ORG
+
+# The house's cut, per item
+venturectl report aggregate all type=listing measure=fees \
+    group_by=product_id organization_id=$ORG
+
+# Items per group, at the top of the tree
+venturectl report aggregate all type=product group_by=category_id \
+    category_depth=0 organization_id=$ORG
+#+end_src
+
+=date_field= is what the period bounds; without it every matching record
+is counted and the notes say so. See [[file:../reporting.org][Reporting]].
+
+* What does not map, and what to do instead
+
+Honest limits, so nobody builds on a feature that is not there:
+
+- *Bid and buyout.* A listing has one asking price. Keep a bid in the
+  notes or a tag, or list the buyout price only.
+- *A cut that depends on the listing's length.* =fees= is what the channel
+  took, entered or imported; nothing computes it from a rule.
+- *Mail and expiry timers.* A listing's =closed_at= is when it ended; there
+  is no reminder that an auction is about to expire. An automation rule
+  (see [[file:../automation.org][Automation]]) can make one.
+- *Per-character gold.* Money is not stock: gold on hand per character is
+  not tracked. Keep a =location= per character for goods, and treat gold
+  as the organization's.
+- *Importing an addon's export.* There is no parser for any game's
+  files. Convert the export to rows and loop =venturectl create= over them,
+  or post them to the REST API.
+- *Converting gold in a report.* Reports never convert; a report that sees
+  gold and dollars gives two rows. The exchange rate records the value for
+  whatever needs it, and a person reading the two rows.
+
+* Traps
+
+- *File everything under the organization.* A record created without
+  =organization_id= belongs to the default organization, and every report
+  run for the trade will never see it.
+- *A category tree groups one type.* =applies_to=product= refuses a recipe
+  or a session filed in it; leave =applies_to= blank for a tree anything
+  may use.
+- *Stock that will be sold needs a cost layer.* Bring it in through a
+  posted session, a craft or a purchase receipt, not an adjustment, or the
+  sale is refused as negative stock.
+- *The venture type is checked at the save.* Create a =virtual_economy=
+  venture with its =world= in the same command (=attributes.world=...=);
+  creating it bare and patching the attribute on afterwards is refused at
+  the first step.
+- *Sources are exact strings.* Pick the names once -- =market value=,
+  =region average= -- and use them everywhere, including =price_source=.

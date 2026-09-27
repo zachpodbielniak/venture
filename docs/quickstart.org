@@ -111,7 +111,11 @@ What is in there: two ventures, a year of sales and expenses posted
 through to a general ledger, companies and contacts, a sales pipeline,
 invoices issued and one settled, supplier bills, a matched bank
 statement, a fiscal year with its first quarter closed, a support desk,
-a sprint, a release and an incident, and two dashboards. Every record
+a sprint, a release and an incident, and dashboards -- and, beside the
+demo organisation, a second one (/Evermoor Trading/) that runs an
+auction-house trade inside a game world in its own gold, with farming
+sessions, recipes, listings and a profession to level (see
+[[file:examples/game-economy.org][the game-economy walkthrough]]). Every record
 went in through =venturectl= and the REST API, so the script itself
 (=tools/venture-demo.sh=) is the shortest description of what a working
 VENTURE looks like.

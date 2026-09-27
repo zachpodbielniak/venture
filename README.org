@@ -1,9 +1,9 @@
 #+title: VENTURE
-#+description: An ERP/CRM hybrid in C for running a portfolio of business ventures
+#+description: An ERP/CRM hybrid in C for running a portfolio of ventures of any kind -- businesses, households, virtual economies
 #+authors: Zach Podbielniak
 #+categories: projects
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
+#+updated: [2026-09-27]
 #+version: 0.6.0
 
 * VENTURE
@@ -11,6 +11,19 @@
 VENTURE is an ERP and CRM in one, written in C on GLib/GObject, for running a portfolio of small business ventures rather than one company. It tracks ventures and their performance, inventory, contacts and deals, expenses, tax write-offs and P&L across multiple entities — businesses and personal alike — with AI as a first-class participant.
 
 It is built for one operator running several things at once: a book imprint, an Etsy shop, a newsletter, whatever comes next. The design assumption throughout is that adding a new kind of venture should cost a field table, not a project.
+
+A venture does not have to be a business. VENTURE runs ventures of any kind -- businesses, households, hobbies and virtual economies -- because the pieces underneath are generic:
+
+- *Currencies you define.* Loyalty points, grams of silver, a game's gold: a =currency= record with its own exponent and optional coins, so an amount reads =12g 34s 56c= everywhere, converts through an ordinary exchange rate, and is never added to dollars. See [[file:docs/currencies.org][currencies]].
+- *Trees and tags.* Category trees any record type can be filed in, location trees for where stock is (a warehouse bin, a character's bags, a pantry shelf), and searchable tags. See [[file:docs/taxonomy.org][taxonomy]].
+- *A market.* Prices seen from named sources over time, and listings that end sold, partly sold, expired or cancelled, with sale rate and days to sell. See [[file:docs/market.org][market]].
+- *Production.* Recipes with consumed and reusable components, and a craft action that turns stock into other stock at FIFO cost in one transaction. See [[file:docs/production.org][production]].
+- *Sessions.* Time-boxed runs of effort -- a farming route, a market day, a shift -- with what they yielded, posted into stock once, and what an hour of each kind is worth. See [[file:docs/sessions.org][sessions]].
+- *Goals.* Measurable targets with ordered steps, progress from the start, a forecast, and the shopping list for the recipe steps still ahead. See [[file:docs/goals.org][goals]].
+- *Aggregate anything.* Sum, average or count any field of any record type, grouped and bucketed, money per currency; dashboards gain =sum= and =progress= widgets over the same arithmetic. See [[file:docs/reporting.org][reporting]].
+- *Declarative venture types, enforced.* A YAML file adds the fields a kind of venture carries -- =virtual_economy= and =general= ship beside =books=, =etsy= and =newsletter= -- and its =required=, =choices= and bounds are held at the save for every writer. See [[file:docs/extending.org][extending]].
+
+[[file:docs/examples/game-economy.org][The game-economy walkthrough]] models an auction-house trade inside an online game with nothing but these features.
 
 ** Two binaries
 
@@ -140,7 +153,7 @@ personal one is yours alone, and a dashboard exports as JSON that imports
 anywhere -- four ship as templates, the factory among them. See
 [[file:docs/dashboards.org][dashboards]].
 
-=make demo= builds and runs a throwaway instance on 127.0.0.1:8749 seeded with a small complete business — two ventures, a year of trade posted through to a general ledger, receivables and payables with their credits and refunds, a matched bank statement, fixed assets and deferrals, a sales pipeline with leads and quotes and activities, subscriptions and follow-up sequences, a support desk with service levels and a sprint, a release and an incident, and two dashboards. It prints the password when it is ready and stays in the foreground until interrupted; the instance stops when that process does. It rebuilds its database on every run. See [[file:docs/quickstart.org][the quickstart]].
+=make demo= builds and runs a throwaway instance on 127.0.0.1:8749 seeded with a small complete business — two ventures, a year of trade posted through to a general ledger, receivables and payables with their credits and refunds, a matched bank statement, fixed assets and deferrals, a sales pipeline with leads and quotes and activities, subscriptions and follow-up sequences, a support desk with service levels and a sprint, a release and an incident, and dashboards -- plus a second organization, /Evermoor Trading/, that trades inside a game world in its own gold (price feeds, auction listings, farming sessions, crafting and a profession to level). It prints the password when it is ready and stays in the foreground until interrupted; the instance stops when that process does. It rebuilds its database on every run. See [[file:docs/quickstart.org][the quickstart]].
 
 The documentation itself is a site: =make docs-site= renders every =docs/*.org= and this README to =build/docs-site/= (=venturectl docs build= does the same from an installed CLI), refusing to build on a broken link or a document the index does not list, and every running instance serves it read-only at =/docs=. Start with [[file:docs/quickstart.org][the quickstart]], then [[file:docs/index.org][the index]]; see [[file:docs/docs-site.org][the documentation site]] for how it is rendered and served.
 

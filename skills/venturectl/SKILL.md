@@ -93,7 +93,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `describe TYPE` | fields, references, enum choices, help text |
 | `list TYPE [filters]` | records, filtered and paged |
 | `get TYPE ID` | one record |
-| `create TYPE field=value ...` | a new record |
+| `create TYPE field=value ... [attributes.NAME=value ...]` | a new record; `attributes.NAME=value` goes into the record's attribute bag (a venture type's fields) |
 | `update TYPE ID field=value ...` | change a record |
 | `delete TYPE ID` | soft delete — the row stays, stamped |
 | `restore TYPE ID` | clear that stamp |
@@ -1608,3 +1608,46 @@ venturectl report goal_materials all include_on_hand=false
 A dashboard `progress` widget on `goal` should set
 `options.start_field=start_value` beside `target_field=target_value`, or a
 downward goal reads as done before it starts.
+
+## Venture types: typed attributes, enforced at the save
+
+A venture's `venture_type` names a declarative type (a YAML file in
+`data/venture-types/`, or a plugin's): `books`, `etsy`, `newsletter`,
+`virtual_economy`, `general` ship. `GET /api/v1/venture-types` (or
+`/api/v1/venture-types/NAME`) lists each type's fields -- `describe venture`
+does **not**, because they live in the venture's attribute bag, not in
+columns.
+
+- Write them with `attributes.NAME=value`, in the same command as the rest:
+  `venturectl create venture name="Silverfen AH" venture_type=virtual_economy
+  attributes.world="Evermoor Online" attributes.marketplace=auction_house`.
+  Over REST they are the nested `attributes` object; a PATCH merges, `null`
+  removes one. (`fields value record_type=venture record_id=ID name=N
+  value=V` PATCHes one attribute too.)
+- **The type's rules are checked at the save** (exit 8, validation):
+  `required` fields present, `enum` values within `choices`, `integer`/
+  `double` text that parses as a number within `min`/`max`. Creating a
+  `virtual_economy` venture without `attributes.world` is refused -- so do
+  not create it bare and patch the attribute on afterwards.
+- **Only what the save writes is checked.** Creating a venture, or changing
+  its `venture_type`, checks every declared field; otherwise only the
+  attributes whose value changes. A venture stored before a rule existed
+  stays editable.
+- **An unregistered `venture_type` is refused when written**, naming the
+  registered ones -- unless no types are loaded at all (plugins off).
+  Keeping an old, since-removed type is allowed.
+
+`virtual_economy` fields: `world` (required), `region`, `currency_code`,
+`faction`, `handle`, `marketplace` (`auction_house`, `player_trade`,
+`vendor`, `platform_store`, `mixed`). `general` fields: `kind`
+(`household`, `hobby`, `club`, `project`, `personal`, `other`), `purpose`,
+`members` (integer ≥ 0). `docs/examples/game-economy.org` builds a whole
+game economy -- currency, organization, venture, trees, stock, prices,
+sessions, recipes, listings, a goal and a dashboard -- with commands that
+run top to bottom.
+
+`make demo` seeds that example as a **second organization** ("Evermoor
+Trading", book currency `GOLD`); pass `organization_id=ID` to its reports
+(`listing_performance`, `session_performance`, `recipe_margin`,
+`goal_progress`, `goal_materials`, `aggregate`), or they answer for the
+default organization and read nothing.

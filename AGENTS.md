@@ -106,6 +106,22 @@ first seven columns were empty.
   never existed and a second approval could not work either. The refusal says
   which fields moved — from the `original` snapshot the confirmation keeps —
   and says to stage it again.
+- **Declarative venture types are enforced at the save, on what is
+  written.** `venture_venture_type_check_install()`
+  (`src/core/venture-venture-type-check.c`) holds a venture to its YAML
+  type's `required`, `choices`, `min`/`max`: every declared field when the
+  venture is created or changes type, otherwise only the attributes whose
+  value changed -- the reference rule, so a venture stored before a rule
+  existed stays editable. An attribute is text; numeric fields are parsed
+  before the bounds are compared (handing the spec a string made
+  `venture_field_spec_value_as_double()` skip min/max entirely, which is
+  how every shipped bound went unenforced). An unregistered type is
+  refused only when written and only when the registry holds something:
+  plugins off loads nothing, and nothing is not evidence. The registry
+  hangs off the database (the last context over it wins), because the
+  tests build several contexts per database. `venturectl` writes the bag
+  with `attributes.NAME=value` in the same request, which is what lets a
+  type with a required field be created at all.
 - **A save short-circuits on an empty diff.** Anything excluded from the
   audit diff silently refuses to change: the call returns success and the row
   keeps its old value. Only genuine machinery belongs in the identity spine.
@@ -889,8 +905,24 @@ than one that fails.
   guessed.** Four of them were wrong on the first run: a campaign is
   `running` not `active`, an idea is `researching` not `exploring`, a
   build trigger is `webhook`/`rule` not `push`/`schedule`, and
-  `venture_type` is a registered type (`books`, `etsy`, `newsletter`),
-  not free text.
+  `venture_type` is a registered type (`books`, `etsy`, `newsletter`,
+  `virtual_economy`, `general`), not free text -- and since the save
+  validator, a type written that is not registered is refused outright.
+- **The demo has a second organization, and every lookup must say
+  which.** `seed_virtual_economy` files an auction-house trade under
+  "Evermoor Trading" (book currency `GOLD`, a user-defined currency with
+  g/s/c coins). Its sales post to a chart of its own, so an unscoped
+  `list account code=1000` can answer with *its* account: `account_id`,
+  the opening journal and the fiscal-period lookup pass
+  `organization_id=${home_org}` (the `is_default` organization). A new
+  lookup must too, and every record the second organization owns passes
+  `organization_id` or it lands in the default one.
+- **Stock that the demo sells needs a cost layer.** A sale of a product
+  with an inventory item issues FIFO layers and refuses units with none,
+  and an adjustment has none. The game economy's goods arrive through
+  posted sessions (zero-cost layers) and crafts, and the listings and
+  sales are seeded *after* both. Only craft inputs get opening
+  adjustments.
 
 ## The assistant panel
 
