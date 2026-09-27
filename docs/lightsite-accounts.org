@@ -1,0 +1,26 @@
+#+TITLE: Lightsite account validation
+
+* Contract
+
+Prerequisite for [[https://git.mcgoaty.com/lightsite/daemon/issues/20][Lightsite daemon #20]]. Work in progress until the API and tests
+below are delivered.
+
+=GET /api/v1/account-identity/:id= validates one owning organization using an
+ordinary bearer token attached to a current hosted-workspace member. The
+caller must hold organization owner/admin authority under both its current
+membership and token snapshot. This grants no access to tenant administration.
+The response contains =origin=, =workspace_id=, =organization_id= and =state=.
+The workspace must be active; read-only, suspended, unknown or uninitialized
+workspaces refuse provisioning. Authentication and membership are checked on
+each request. Responses are not cached.
+
+Lightsite pins the configured origin and UUID, compares both against this
+response, and never uses caller-supplied destinations for validation.
+Binding is identity evidence, not authorization for later management actions.
+
+* Proof required
+
+Exercise an actual bearer token over HTTP: correct organization succeeds;
+anonymous, revoked token/membership, another organization, malformed ID,
+wrong Host, and non-active workspace fail. Confirm the generic workspace
+administration API continues to reject tokens.
