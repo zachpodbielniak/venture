@@ -303,8 +303,11 @@ first seven columns were empty.
   the one after both leave it at N. MRR and the cancellation credit count
   the start and renewal events that issued an invoice instead
   (`period_discount()` in `venture-billing-service.c`). A cancellation's
-  event must never carry `invoice-id`: the Stripe adapter and `collect`
-  find a subscription by the one event naming an invoice.
+  event must never carry `invoice-id`: that would count its usage as another
+  base period. It carries `final-invoice-id` for any terminal usage charge,
+  which the pages and collection resolve separately. Collection can retain
+  existing consent for that final charge after cancellation, never for new
+  terms or ordinary invoices.
 - **`make DEBUG=1 test` does not relink the server binary.** After editing
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS

@@ -1079,6 +1079,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/automatic-reconcile", Fixture, "reconcile", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-sweep", Fixture, "sweep", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-renewal-collection", Fixture, "renewal-collection", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/final-usage-collection", Fixture, "final-usage-collection", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-expiry-collision", Fixture, "expiry-collision", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-retry", Fixture, "retry", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-cancel", Fixture, "cancel", set_up, test_automatic_authorization, tear_down);

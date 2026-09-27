@@ -272,6 +272,7 @@ static const VentureFieldDecl subscription_event_fields[] = {
 	VENTURE_FIELD("to-seats", "To seats", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("proration-amount", "Part-period difference", NULL),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("final-invoice-id", "Final usage invoice", "Usage charged when the subscription ends", "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("from-status", "From status", NULL, venture_billing_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("to-status", "To status", NULL, venture_billing_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("from-mrr", "Monthly revenue before", NULL),

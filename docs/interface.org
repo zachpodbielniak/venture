@@ -55,6 +55,11 @@ The machine-readable HTML elements are set in the mono automatically: =<code>=, 
 
 ** Geometry
 
+Ticket cards contain their absolutely positioned screen-reader captions.
+They must not rely on a reveal animation's transform to do so: reduced motion
+removes that transform, and off-screen board columns would otherwise widen
+the whole page. The board itself owns horizontal scrolling.
+
 Corners are ninety degrees. There is no =border-radius= anywhere, no gradient, no soft shadow; the =--radius-*= and =--shadow-*= tokens still exist for anything written against them and resolve to zero and none.
 
 Zones are compartments. A card is one rule around a surface with registration marks in its top corners. A grid of cards shares its rules: the cells sit one pixel apart and each carries a one-pixel outline, so neighbours have exactly one line between them and a short last row leaves the ground showing rather than a painted block. The same device draws the stat row, the service-level clocks and a record's definition list.
@@ -149,3 +154,12 @@ contact, deal, ticket and venture forms expose owner and team references.
 An organization viewer's new-record submission becomes a confirmation;
 applying it still requires an authorized approver. See
 [[file:orgaccess.org][Organization access]] for the full role matrix.
+
+* Form submission feedback
+
+Validation refusals stay above the form with its entered values intact. A
+request in flight blocks a second submit; when it completes, controls regain
+their previous disabled state. A lost or unreadable response is an /unknown
+outcome/, since the write may already have committed. The notice asks the
+person to check the record before retrying; it never promises nothing was
+saved based on a network error.

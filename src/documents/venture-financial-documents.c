@@ -139,11 +139,11 @@ draw_party(
 }
 
 /* Column right edges of the line table, and the width descriptions wrap in. */
-static const gdouble column_qty = DOC_MARGIN + 290;
-static const gdouble column_unit = DOC_MARGIN + 370;
-static const gdouble column_tax = DOC_MARGIN + 430;
+static const gdouble column_qty = DOC_MARGIN + 235;
+static const gdouble column_unit = DOC_MARGIN + 320;
+static const gdouble column_tax = DOC_MARGIN + 405;
 static const gdouble column_amount = DOC_RIGHT - 8;
-static const gdouble column_description_width = 260;
+static const gdouble column_description_width = 190;
 
 static gdouble
 draw_line_header(VenturePdfWriter *pdf, gdouble y)
@@ -158,6 +158,16 @@ draw_line_header(VenturePdfWriter *pdf, gdouble y)
 	venture_pdf_writer_set_grey(pdf, INK);
 
 	return y + 22;
+}
+
+/* Amounts keep their column even at the largest supported money value. */
+static void
+draw_number(VenturePdfWriter *pdf, gdouble right, gdouble y, gdouble width,
+	gdouble size, gboolean bold, const gchar *text)
+{
+	gdouble fitted = venture_pdf_writer_fit_size(pdf, size, 6, bold, width, text);
+
+	venture_pdf_writer_text(pdf, right, y, fitted, bold, VENTURE_PDF_ALIGN_RIGHT, text);
 }
 
 /* One total row: label and amount at the right, the last one bold. */
@@ -179,7 +189,7 @@ draw_total(
 	venture_pdf_writer_set_grey(pdf, strong ? INK : LABEL);
 	venture_pdf_writer_text(pdf, column_tax, y, strong ? 12 : 10, strong, VENTURE_PDF_ALIGN_RIGHT, label);
 	venture_pdf_writer_set_grey(pdf, INK);
-	venture_pdf_writer_text(pdf, column_amount, y, strong ? 12 : 10, strong, VENTURE_PDF_ALIGN_RIGHT, text);
+	draw_number(pdf, column_amount, y, column_amount - column_tax - 8, strong ? 12 : 10, strong, text);
 
 	return y + (strong ? 20 : 16);
 }
@@ -217,9 +227,10 @@ venture_financial_documents_invoice_pdf(
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(GDateTime) issued = NULL, due = NULL;
-	g_autoptr(VentureMoney) subtotal = NULL, tax_total = NULL, total = NULL, balance = NULL;
+	g_autoptr(VentureMoney) subtotal = NULL, tax_total = NULL, total = NULL, balance = NULL, shipping = NULL;
 	g_autofree gchar *number = NULL, *terms = NULL, *title = NULL, *issued_text = NULL, *due_text = NULL;
 	gint64 company_id = 0;
+	gint status = VENTURE_INVOICE_STATUS_DRAFT;
 	gdouble y, top;
 	guint i;
 
@@ -228,7 +239,8 @@ venture_financial_documents_invoice_pdf(
 
 	db = venture_context_get_database(context);
 	g_object_get(invoice, "number", &number, "terms", &terms, "issued-at", &issued,
-	             "due-at", &due, "company-id", &company_id, NULL);
+	             "due-at", &due, "company-id", &company_id, "shipping-amount", &shipping,
+	             "status", &status, NULL);
 
 	query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);
 	venture_query_set_limit(query, 0);
@@ -291,12 +303,12 @@ venture_financial_documents_invoice_pdf(
 			y = draw_line_header(pdf, DOC_MARGIN + 18);
 		}
 
-		next = venture_pdf_writer_wrap(pdf, DOC_MARGIN + 8, y, column_description_width, 10, FALSE,
-		                               description);
-		venture_pdf_writer_text(pdf, column_qty, y, 10, FALSE, VENTURE_PDF_ALIGN_RIGHT, quantity);
-		venture_pdf_writer_text(pdf, column_unit, y, 10, FALSE, VENTURE_PDF_ALIGN_RIGHT, unit_text);
-		venture_pdf_writer_text(pdf, column_tax, y, 10, FALSE, VENTURE_PDF_ALIGN_RIGHT, tax_text);
-		venture_pdf_writer_text(pdf, column_amount, y, 10, FALSE, VENTURE_PDF_ALIGN_RIGHT, amount_text);
+		draw_number(pdf, column_qty, y, 35, 10, FALSE, quantity);
+		draw_number(pdf, column_unit, y, 77, 10, FALSE, unit_text);
+		draw_number(pdf, column_tax, y, 77, 10, FALSE, tax_text);
+		draw_number(pdf, column_amount, y, 78, 10, FALSE, amount_text);
+		next = venture_pdf_writer_wrap_pages(pdf, DOC_MARGIN + 8, y, column_description_width,
+			10, FALSE, description, DOC_MARGIN + 18, DOC_BOTTOM);
 		y = next + 4;
 		venture_pdf_writer_set_grey(pdf, 0.85);
 		venture_pdf_writer_rule(pdf, DOC_MARGIN, y - 10, DOC_RIGHT, y - 10, 0.5);
@@ -313,7 +325,8 @@ venture_financial_documents_invoice_pdf(
 		accumulate(&total, amount);
 	}
 
-	if (y > DOC_BOTTOM - 80)
+	accumulate(&total, shipping);
+	if (y > DOC_BOTTOM - 120)
 	{
 		venture_pdf_writer_new_page(pdf);
 		y = DOC_MARGIN + 18;
@@ -325,11 +338,14 @@ venture_financial_documents_invoice_pdf(
 		y = draw_total(pdf, y, "Subtotal", subtotal, FALSE);
 		y = draw_total(pdf, y, "Tax", tax_total, FALSE);
 	}
+	if (NULL != shipping && !venture_money_is_zero(shipping))
+		y = draw_total(pdf, y, "Shipping", shipping, FALSE);
 	y = draw_total(pdf, y, "Total", total, TRUE);
 
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(db),
 		venture_entity_get_id(invoice), NULL, NULL);
-	if (NULL != balance && NULL != total && 0 != venture_money_get_amount(total))
+	if (status != VENTURE_INVOICE_STATUS_DRAFT && status != VENTURE_INVOICE_STATUS_VOID &&
+	    NULL != balance && NULL != total && 0 != venture_money_get_amount(total))
 	{
 		if (0 == venture_money_get_amount(balance))
 		{
@@ -345,11 +361,17 @@ venture_financial_documents_invoice_pdf(
 
 	if (!venture_string_is_empty(terms))
 	{
+		if (y > DOC_BOTTOM - 40)
+		{
+			venture_pdf_writer_new_page(pdf);
+			y = DOC_MARGIN + 18;
+		}
 		y += 16;
 		venture_pdf_writer_set_grey(pdf, LABEL);
 		venture_pdf_writer_text(pdf, DOC_MARGIN, y, 9, TRUE, VENTURE_PDF_ALIGN_LEFT, "TERMS");
 		venture_pdf_writer_set_grey(pdf, INK);
-		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN, y + 14, DOC_RIGHT - DOC_MARGIN, 10, FALSE, terms);
+		y = venture_pdf_writer_wrap_pages(pdf, DOC_MARGIN, y + 14, DOC_RIGHT - DOC_MARGIN,
+			10, FALSE, terms, DOC_MARGIN + 18, DOC_BOTTOM);
 	}
 
 	venture_pdf_writer_set_grey(pdf, LABEL);
@@ -427,7 +449,7 @@ venture_financial_documents_receipt_pdf(
 	venture_pdf_writer_set_grey(pdf, LABEL);
 	venture_pdf_writer_text(pdf, DOC_MARGIN + 12, y + 6, 10, TRUE, VENTURE_PDF_ALIGN_LEFT, "Amount received");
 	venture_pdf_writer_set_grey(pdf, INK);
-	venture_pdf_writer_text(pdf, DOC_RIGHT - 12, y + 8, 18, TRUE, VENTURE_PDF_ALIGN_RIGHT, amount_text);
+	draw_number(pdf, DOC_RIGHT - 12, y + 8, 280, 18, TRUE, amount_text);
 	y += 56;
 
 	if (allocations->len > 0)
@@ -454,9 +476,15 @@ venture_financial_documents_receipt_pdf(
 			g_object_get(invoice, "number", &invoice_number, NULL);
 		label = g_strdup(!venture_string_is_empty(invoice_number) ? invoice_number : "Invoice");
 		part_text = money_text(part);
-		venture_pdf_writer_text(pdf, column_amount, y, 10, FALSE, VENTURE_PDF_ALIGN_RIGHT, part_text);
+		if (y > DOC_BOTTOM)
+		{
+			venture_pdf_writer_new_page(pdf);
+			y = DOC_MARGIN + 18;
+		}
+		draw_number(pdf, column_amount, y, 100, 10, FALSE, part_text);
 		/* The invoice number wraps short of the amount column. */
-		y = venture_pdf_writer_wrap(pdf, DOC_MARGIN + 8, y, column_tax - DOC_MARGIN - 8, 10, FALSE, label) + 2.5;
+		y = venture_pdf_writer_wrap_pages(pdf, DOC_MARGIN + 8, y, column_amount - DOC_MARGIN - 120,
+			10, FALSE, label, DOC_MARGIN + 18, DOC_BOTTOM) + 2.5;
 		accumulate(&applied, part);
 	}
 
@@ -467,6 +495,11 @@ venture_financial_documents_receipt_pdf(
 
 		if (NULL != left && venture_money_get_amount(left) > 0)
 		{
+			if (y > DOC_BOTTOM - 24)
+			{
+				venture_pdf_writer_new_page(pdf);
+				y = DOC_MARGIN + 18;
+			}
 			y += 6;
 			y = draw_total(pdf, y, "Kept as credit", left, FALSE);
 		}
@@ -492,7 +525,12 @@ venture_financial_documents_filename(VentureEntity *record)
 		if (!venture_string_is_empty(number))
 		{
 			/* A file name, so nothing that means a directory. */
-			g_strdelimit(number, "/\\:", '-');
+			gchar *p;
+
+			g_strdelimit(number, "/\\:\"", '-');
+			for (p = number; *p != '\0'; p++)
+				if ((guchar)*p < 32 || (guchar)*p == 127)
+					*p = '-';
 			return g_strdup_printf("Invoice %s.pdf", number);
 		}
 		return g_strdup_printf("Invoice %" G_GINT64_FORMAT ".pdf", venture_entity_get_id(record));

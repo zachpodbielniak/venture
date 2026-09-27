@@ -2881,6 +2881,9 @@ td.row-actions, th.row-actions { text-align: right; white-space: nowrap; }
 }
 
 .ticket-card {
+	/* Hidden screen-reader words must stay inside the scrollable board,
+	 * including when reduced motion removes the reveal transform. */
+	position: relative;
 	padding: var(--space-4);
 	cursor: grab;
 	border-left: 2px solid transparent;

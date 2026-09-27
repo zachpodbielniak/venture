@@ -20,8 +20,8 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	{
 		const gchar *request_text = f->nested_request;
 		f->nested_request = NULL;
-		/* Recorded, never asserted: see test_nested_dispatch for why a route
-		 * that talks to its own server gets no answer while it blocks here. */
+		/* Keep both possible scheduling outcomes for the resource assertions
+		 * in test_nested_dispatch; nested main-context iteration can dispatch. */
 		f->nested_response = probe(f, request_text, 1);
 	}
 	return htmx_response_new_with_content(body && g_bytes_get_size(body) == 3 && !memcmp(g_bytes_get_data(body, NULL), "abc", 3) ? "yes" : "bad");
@@ -294,16 +294,11 @@ static void test_timeout_budget(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	response = exchange(f, request); g_assert_nonnull(strstr(response, " 200 ")); g_assert_cmpuint(f->writes, ==, 1);
 }
-/* libsoup 3 runs a route synchronously on the server's main context, so a route
- * that blocks waiting on this same server gets no answer while it blocks:
- * iterating the context from inside the handler does not get the nested
- * connection served. Nothing in VENTURE issues an in-process request from a
- * handler for exactly that reason. What the limits must guarantee is that the
- * attempt costs them nothing -- whether the abandoned connection is dispatched
- * once the handler returns or dropped when its client gives up, the receive
- * budget is released and the connection slot is reclaimed, so ordinary traffic
- * of the same full size is served immediately afterwards. Which of those two
- * the socket wins is a race, so it is bounded rather than pinned. */
+/* Main-context iteration inside a handler can dispatch the nested connection.
+ * Whether it does so before the bounded client times out is not the receive
+ * limiter's contract. A delivered response must succeed (in particular, not
+ * exhaust the outer body's released credit), and both scheduling outcomes must
+ * leave enough credit and connection slots for the next full-size request. */
 static void test_nested_dispatch(Fixture *f, gconstpointer data)
 {
 	g_autofree gchar *body = g_strnfill(600000, 'x'), *request = NULL, *response = NULL;
@@ -312,11 +307,15 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	f->nested_request = request;
 	response = exchange(f, request);
-	/* The outer request is unharmed by what its route attempted, and the
-	 * blocked route got nothing back inside its own bounded second. */
+	/* Pin resource admission, not libsoup's nested-loop scheduling. */
 	g_assert_nonnull(strstr(response, " 200 "));
 	g_assert_nonnull(f->nested_response);
-	g_assert_cmpstr(f->nested_response, ==, "");
+	if (*f->nested_response)
+	{
+		g_assert_nonnull(strstr(f->nested_response, " 200 "));
+		g_assert_nonnull(strstr(f->nested_response, "\r\n\r\nbad"));
+		g_assert_cmpuint(f->writes, ==, 2);
+	}
 	pump();
 	settled = f->writes;
 	g_assert_cmpuint(settled, >=, 1);

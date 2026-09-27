@@ -46,6 +46,8 @@ struct _VenturePdfWriter
 	GPtrArray *pages;
 	GString *current;
 	gboolean finished;
+	gdouble flow_top;
+	gdouble flow_bottom;
 };
 
 G_DEFINE_FINAL_TYPE(VenturePdfWriter, venture_pdf_writer, G_TYPE_OBJECT)
@@ -268,6 +270,11 @@ venture_pdf_emit_line(VenturePdfWriter *self, gdouble x, gdouble y, gdouble widt
 			if (*next == '\0')
 				break;
 		}
+		if (self->flow_bottom > 0 && y > self->flow_bottom)
+		{
+			venture_pdf_writer_new_page(self);
+			y = self->flow_top;
+		}
 		piece = g_strndup(start, end - start);
 		venture_pdf_writer_text(self, x, y, size, bold, align, piece);
 		y += leading;
@@ -343,6 +350,23 @@ venture_pdf_writer_wrap(
 	const gchar		*text
 ){
 	return venture_pdf_writer_wrap_aligned(self, x, y, width, size, bold, VENTURE_PDF_ALIGN_LEFT, text);
+}
+
+gdouble
+venture_pdf_writer_wrap_pages(
+	VenturePdfWriter *self, gdouble x, gdouble y, gdouble width,
+	gdouble size, gboolean bold, const gchar *text, gdouble top, gdouble bottom
+){
+	gdouble end;
+
+	g_return_val_if_fail(VENTURE_IS_PDF_WRITER(self), y);
+	g_return_val_if_fail(top > 0 && bottom > top, y);
+	self->flow_top = top;
+	self->flow_bottom = bottom;
+	end = venture_pdf_writer_wrap(self, x, y, width, size, bold, text);
+	self->flow_top = 0;
+	self->flow_bottom = 0;
+	return end;
 }
 
 gdouble

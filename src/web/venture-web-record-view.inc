@@ -320,10 +320,14 @@ venture_web_append_value(
 	}
 
 	/* An enumeration declared by a YAML type is a string with choices,
-	 * and a status kept as a string is a word all the same. */
+	 * and a status kept as a string is a word all the same. Qualified
+	 * status names carry the same vocabulary without becoming the record
+	 * headline (for example, marketing-status beside submission details). */
 	if (G_VALUE_HOLDS_STRING(&value) &&
 	    ((VENTURE_FIELD_KIND_ENUM == venture_field_spec_get_kind(spec)) ||
-	     (VENTURE_FIELD_ROLE_STATUS == venture_field_spec_get_role(spec))))
+	     (VENTURE_FIELD_ROLE_STATUS == venture_field_spec_get_role(spec)) ||
+	     g_str_has_suffix(name, "-status") ||
+	     g_str_has_suffix(name, "-state")))
 	{
 		g_autofree gchar *label = NULL;
 
@@ -1150,7 +1154,9 @@ venture_web_append_list_cell(
 		return;
 	}
 
-	if (VENTURE_FIELD_KIND_STRING == kind)
+	if ((VENTURE_FIELD_KIND_STRING == kind) &&
+	    !g_str_has_suffix(venture_field_spec_get_name(spec), "-status") &&
+	    !g_str_has_suffix(venture_field_spec_get_name(spec), "-state"))
 	{
 		g_auto(GValue) value = G_VALUE_INIT;
 		g_autofree gchar *text = NULL;

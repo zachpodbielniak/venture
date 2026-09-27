@@ -309,33 +309,6 @@ remaining_share(const VentureMoney *delta, GDateTime *start, GDateTime *end, GDa
 	return total;
 }
 
-static VentureMoney *
-proration(VentureEntity *old_price, VentureEntity *new_price, gint64 old_seats,
-	gint64 new_seats, GDateTime *start, GDateTime *end, GDateTime *at, GError **error)
-{
-	g_autoptr(VentureMoney) old_amount = price_amount(old_price, old_seats, error);
-	g_autoptr(VentureMoney) new_amount = NULL;
-	g_autoptr(VentureMoney) comparable = NULL;
-	g_autoptr(VentureMoney) normalized_old = NULL;
-	g_autoptr(VentureMoney) delta = NULL;
-	gint period_months;
-	if (old_amount == NULL)
-		return NULL;
-	new_amount = price_amount(new_price, new_seats, error);
-	if (new_amount == NULL)
-		return NULL;
-	period_months = served_months(start, end);
-	normalized_old = over_period(old_price, old_amount, period_months, error);
-	if (normalized_old == NULL)
-		return NULL;
-	comparable = over_period(new_price, new_amount, period_months, error);
-	if (comparable == NULL)
-		return NULL;
-	delta = venture_money_subtract(comparable, normalized_old, error);
-	if (delta == NULL)
-		return NULL;
-	return remaining_share(delta, start, end, at, NULL, error);
-}
 
 /*
  * A discount chosen for a new subscription must be the plan's own, still
@@ -531,6 +504,55 @@ period_discount(VentureBillingService *self, VentureEntity *sub, gint64 issuing,
 	return TRUE;
 }
 
+static VentureMoney *
+proration(VentureBillingService *self, VentureEntity *sub, VentureEntity *old_price, VentureEntity *new_price, gint64 old_seats,
+	gint64 new_seats, GDateTime *start, GDateTime *end, GDateTime *at, GError **error)
+{
+	g_autoptr(VentureMoney) old_amount = price_amount(old_price, old_seats, error);
+	g_autoptr(VentureMoney) new_amount = NULL;
+	g_autoptr(VentureMoney) comparable = NULL;
+	g_autoptr(VentureMoney) normalized_old = NULL;
+	g_autoptr(VentureMoney) delta = NULL;
+	g_autoptr(VentureEntity) discount = NULL;
+	gint period_months;
+	if (old_amount == NULL)
+		return NULL;
+	new_amount = price_amount(new_price, new_seats, error);
+	if (new_amount == NULL)
+		return NULL;
+	/* Prorate what this period actually costs. An expiring discount still
+	 * covers the paid period; changing plans removes it from the new side. */
+	if (!period_discount(self, sub, 0, &discount, error))
+		return NULL;
+	if (discount != NULL)
+	{
+		VentureMoney *reduced = discount_take(discount, old_amount, error);
+		if (reduced == NULL)
+			return NULL;
+		g_clear_pointer(&old_amount, venture_money_free);
+		old_amount = reduced;
+		if (number(old_price, "plan-id") == number(new_price, "plan-id"))
+		{
+			reduced = discount_take(discount, new_amount, error);
+			if (reduced == NULL)
+				return NULL;
+			g_clear_pointer(&new_amount, venture_money_free);
+			new_amount = reduced;
+		}
+	}
+	period_months = served_months(start, end);
+	normalized_old = over_period(old_price, old_amount, period_months, error);
+	if (normalized_old == NULL)
+		return NULL;
+	comparable = over_period(new_price, new_amount, period_months, error);
+	if (comparable == NULL)
+		return NULL;
+	delta = venture_money_subtract(comparable, normalized_old, error);
+	if (delta == NULL)
+		return NULL;
+	return remaining_share(delta, start, end, at, NULL, error);
+}
+
 /*
  * Monthly recurring revenue: what the period being served is billed at,
  * its discount taken off while the discount covers it, divided by the
@@ -651,7 +673,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 		g_autoptr(VentureEntity) credit = new_record(VENTURE_TYPE_CUSTOMER_CREDIT, org);
 		g_autoptr(VentureEntity) allocation = new_record(VENTURE_TYPE_PAYMENT_ALLOCATION, org);
 		g_autoptr(VentureMoney) credit_amount = venture_money_multiply_rational(adjustment, -1, 1, error);
-		g_autoptr(VentureMoney) difference = NULL;
+		g_autoptr(VentureMoney) difference = NULL, balance = NULL;
 		const VentureMoney *applied;
 		if (credit_amount == NULL)
 			return FALSE;
@@ -659,12 +681,17 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 			"amount", credit_amount, "reference", "Subscription proration", NULL);
 		if (!venture_database_save(self->database, credit, actor, error))
 			return FALSE;
-		/* Price versions may use different exponents in the same currency.
-		 * Compare their values, never their unscaled integer coefficients. */
-		difference = venture_money_subtract(credit_amount, amount, error);
+		/* Credit covers the full invoice, including tax and metered usage.
+		 * Price versions may use different exponents in the same currency;
+		 * compare values, never their unscaled integer coefficients. */
+		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(self->database),
+			venture_entity_get_id(invoice), NULL, error);
+		if (balance == NULL)
+			return FALSE;
+		difference = venture_money_subtract(credit_amount, balance, error);
 		if (difference == NULL)
 			return FALSE;
-		applied = venture_money_get_amount(difference) < 0 ? credit_amount : amount;
+		applied = venture_money_get_amount(difference) < 0 ? credit_amount : balance;
 		if (!venture_money_is_zero(applied))
 		{
 			g_object_set(allocation, "credit-id", venture_entity_get_id(credit), "invoice-id", venture_entity_get_id(invoice),
@@ -969,29 +996,47 @@ preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org
 		discounted = charged;
 		g_clear_pointer(&adjustment, venture_money_free);
 	}
-	if (number(price, "tax-code-id") != 0)
 	{
 		g_autoptr(VentureEntity) customer = load(self, VENTURE_TYPE_COMPANY, number(sub, "company-id"), org, error);
-		g_autoptr(VentureEntity) code = NULL;
+		g_autoptr(VentureMoney) tax = NULL;
+		VentureMoney *taxed;
+		gint64 numerator = 0, denominator = 100;
+
 		if (customer == NULL)
 			return NULL;
-		/* An exempt customer's invoice freezes no tax, whatever the price says. */
-		if (!flag(customer, "tax-exempt"))
+		if (!flag(customer, "tax-exempt") && number(price, "tax-code-id") != 0)
 		{
-			g_autoptr(VentureMoney) tax = NULL;
-			VentureMoney *taxed;
-			code = load(self, VENTURE_TYPE_TAX_CODE, number(price, "tax-code-id"), org, error);
-			if (code == NULL)
+			g_autoptr(VentureEntity) code = load(self, VENTURE_TYPE_TAX_CODE, number(price, "tax-code-id"), org, error);
+
+			if (code == NULL || !venture_tax_code_get_rate(VENTURE_TAX_CODE(code),
+				&numerator, &denominator, error))
 				return NULL;
-			tax = venture_tax_code_levy(VENTURE_TAX_CODE(code), discounted, error);
-			if (tax == NULL)
-				return NULL;
-			taxed = venture_money_add(discounted, tax, error);
-			if (taxed == NULL)
-				return NULL;
-			g_clear_pointer(&discounted, venture_money_free);
-			discounted = taxed;
 		}
+		else if (number(price, "tax-code-id") == 0)
+		{
+			g_autoptr(VentureEntity) invoice = g_object_new(VENTURE_TYPE_INVOICE,
+				"company-id", number(sub, "company-id"), NULL);
+			g_autoptr(VentureEntity) line = g_object_new(VENTURE_TYPE_INVOICE_LINE,
+				"product-id", number(price, "product-id"), NULL);
+			g_autoptr(GDateTime) renews = NULL;
+
+			venture_entity_set_organization_id(invoice, org);
+			venture_entity_set_organization_id(line, org);
+			g_object_get(sub, "current-period-end", &renews, NULL);
+			/* Resolve the renewal's address/product tax through settlement's
+			 * existing selector, on detached records: a preview writes nothing. */
+			if (!venture_sales_tax_service_freeze_line(venture_sales_tax_service_get(self->database),
+				invoice, line, renews, flag(customer, "tax-exempt"), &numerator, &denominator, error))
+				return NULL;
+		}
+		tax = venture_money_multiply_rational(discounted, numerator, denominator, error);
+		if (tax == NULL)
+			return NULL;
+		taxed = venture_money_add(discounted, tax, error);
+		if (taxed == NULL)
+			return NULL;
+		g_clear_pointer(&discounted, venture_money_free);
+		discounted = taxed;
 	}
 	if (adjustment != NULL && !venture_money_is_zero(adjustment))
 	{
@@ -1372,7 +1417,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 				return FALSE;
 			if (g_strcmp0(verb, "change-seats") == 0)
 				seats = number(request, "seats");
-			prorated = proration(price, next_price, old_seats, seats, start, end, at, error);
+			prorated = proration(self, sub, price, next_price, old_seats, seats, start, end, at, error);
 			if (prorated == NULL)
 				return FALSE;
 			kind = g_strcmp0(verb, "change-seats") == 0 ? 4 : (venture_money_get_amount(prorated) < 0 ? 3 : 2);
@@ -1545,6 +1590,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	g_object_set(event, "subscription-id", venture_entity_get_id(sub), "kind", kind, "at", at,
 		"from-plan-price-id", old_price, "to-plan-price-id", venture_entity_get_id(price),
 		"from-seats", old_seats, "to-seats", seats, "proration-amount", prorated, "invoice-id", invoice_id,
+		"final-invoice-id", final_usage,
 		"from-status", old_state, "to-status", state, "from-mrr", before, "to-mrr", after,
 		"period-start", start, "period-end", end, NULL);
 	snapshot = g_object_new(VENTURE_TYPE_SUBSCRIPTION_EVENT, NULL);
@@ -1866,6 +1912,35 @@ price_used(VentureDatabase *db, VentureEntity *price, gboolean *used, GError **e
 	return TRUE;
 }
 
+/* Completed requests retain the agreement even when a later plan change
+ * clears the subscription's discount reference. */
+static gboolean
+discount_used(VentureDatabase *db, VentureEntity *discount, gboolean *used, GError **error)
+{
+	GType types[] = { VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, VENTURE_TYPE_BILLING_REQUEST };
+	guint i;
+
+	*used = FALSE;
+	for (i = 0; i < G_N_ELEMENTS(types); i++)
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(types[i]);
+		gint64 count;
+		venture_query_set_organization(q, venture_entity_get_organization_id(discount));
+		venture_query_set_include_deleted(q, TRUE);
+		if (!venture_query_add_filter_int(q, "discount-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(discount), error))
+			return FALSE;
+		count = venture_database_count(db, q, error);
+		if (count < 0)
+			return FALSE;
+		if (count > 0)
+		{
+			*used = TRUE;
+			return TRUE;
+		}
+	}
+	return TRUE;
+}
+
 gboolean
 venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 	const VentureActor *actor, gboolean *handled, GError **error)
@@ -1876,7 +1951,7 @@ venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 	if (type != VENTURE_TYPE_CUSTOMER_SUBSCRIPTION && type != VENTURE_TYPE_SUBSCRIPTION_EVENT &&
 		type != VENTURE_TYPE_BILLING_NOTICE && type != VENTURE_TYPE_BILLING_REQUEST &&
 		type != VENTURE_TYPE_PLAN_PRICE && type != VENTURE_TYPE_PLAN && type != VENTURE_TYPE_DUNNING_STEP &&
-		type != VENTURE_TYPE_USAGE_RECORD)
+		type != VENTURE_TYPE_USAGE_RECORD && type != VENTURE_TYPE_PLAN_DISCOUNT)
 		return TRUE;
 	if (type == VENTURE_TYPE_USAGE_RECORD)
 		return venture_billing_usage_check_save(database, record, error);
@@ -1893,6 +1968,19 @@ venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 	}
 	if (type == VENTURE_TYPE_CUSTOMER_SUBSCRIPTION || type == VENTURE_TYPE_SUBSCRIPTION_EVENT || type == VENTURE_TYPE_BILLING_NOTICE)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "subscription state and history may only be written through the service");
+	if (type == VENTURE_TYPE_PLAN_DISCOUNT && venture_entity_is_persisted(record))
+	{
+		g_autoptr(VentureEntity) previous = venture_database_get(database, type, venture_entity_get_id(record), error);
+		g_autoptr(JsonNode) diff = NULL;
+		gboolean used;
+		if (previous == NULL || !discount_used(database, previous, &used, error))
+			return FALSE;
+		g_object_set(previous, "active", flag(record, "active"), NULL);
+		diff = venture_entity_diff(previous, record);
+		if (used && (json_object_get_size(json_node_get_object(diff)) != 0 ||
+			venture_entity_get_organization_id(previous) != venture_entity_get_organization_id(record)))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "referenced discounts are immutable; create a new offer");
+	}
 	if (type == VENTURE_TYPE_PLAN_PRICE && venture_entity_is_persisted(record))
 	{
 		g_autoptr(VentureEntity) previous = venture_database_get(database, type, venture_entity_get_id(record), error);
@@ -1931,6 +2019,15 @@ venture_billing_check_removal(VentureDatabase *database, VentureEntity *record, 
 	GType type = G_OBJECT_TYPE(record);
 	if (type == VENTURE_TYPE_USAGE_RECORD)
 		return venture_billing_usage_check_removal(database, record, error);
+	if (type == VENTURE_TYPE_PLAN_DISCOUNT)
+	{
+		g_autoptr(VentureEntity) stored = venture_database_get(database, type, venture_entity_get_id(record), error);
+		gboolean used;
+		if (stored == NULL || !discount_used(database, stored, &used, error))
+			return FALSE;
+		if (used)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "referenced discounts cannot be removed; retire the offer instead");
+	}
 	if (type == VENTURE_TYPE_PLAN_PRICE)
 	{
 		gboolean used;

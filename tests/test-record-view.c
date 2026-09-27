@@ -315,6 +315,8 @@ test_submission_page(Fixture *f, gconstpointer data)
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *page = NULL;
 	g_autofree gchar *seen = NULL;
+	g_autofree gchar *list = NULL;
+	g_autofree gchar *source = NULL;
 
 	(void)data;
 
@@ -362,6 +364,21 @@ test_submission_page(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(seen, "Please call me about the spring order."));
 	g_assert_nonnull(strstr(seen, "mailto:form@example.test"));
 	g_assert_nonnull(strstr(seen, ">Existing Customer</a>"));
+
+	/* Permission is a string-backed status; the source snapshot embeds
+	 * the site's UUID, not a human source name. Neither should expose
+	 * internal spellings on the default page or generated list. */
+	g_assert_nonnull(strstr(seen, "<dd>Not requested</dd>"));
+	g_assert_null(strstr(seen, "not_requested"));
+	g_object_get(submission, "first-source", &source, NULL);
+	g_assert_true(g_str_has_prefix(source, "form:"));
+	g_assert_null(strstr(seen, source));
+	g_assert_null(strstr(seen, "First-touch source"));
+	g_assert_null(strstr(seen, "Last-touch source"));
+	g_assert_nonnull(strstr(page, source));
+	list = get(f, "/e/attribution_submission");
+	g_assert_null(strstr(list, source));
+	g_assert_null(strstr(list, ">not_requested<"));
 
 	/* Named as a person would name it, never by its table. */
 	g_assert_nonnull(strstr(seen, "Form submission"));
@@ -805,6 +822,37 @@ test_invoice_sheet_exemption(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(company_number, ==, "EX-12");
 }
 
+/* A refused invoice or schedule must not silently change the customer's tax
+ * treatment. Remembering the exemption and saving the document are one write. */
+static void
+test_invoice_exemption_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) customer = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i;
+	const gchar *suffixes[] = { "", "&repeat=1&repeat-frequency=invalid&repeat-start=2026-01-01" };
+
+	(void)data;
+	customer = g_object_new(VENTURE_TYPE_COMPANY, "name", "Still taxable", NULL);
+	save(f, customer);
+	for (i = 0; i < G_N_ELEMENTS(suffixes); i++)
+	{
+		g_autoptr(VentureEntity) again = NULL;
+		g_autofree gchar *body = g_strdup_printf("compose-form=1&company-id=%" G_GINT64_FORMAT
+			"&tax-exempt=true&exempt-kind=Government&exempt-number=EX-FAIL&exempt-remember=1%s",
+			venture_entity_get_id(customer), suffixes[i]);
+		gboolean exempt = TRUE;
+
+		g_assert_cmpuint(post_form(f, "/invoices/compose", body, NULL), ==, 422);
+		again = venture_database_get(f->database, VENTURE_TYPE_COMPANY,
+			venture_entity_get_id(customer), &error);
+		g_assert_no_error(error);
+		g_object_get(again, "tax-exempt", &exempt, NULL);
+		g_assert_false(exempt);
+		g_assert_cmpint(venture_entity_get_version(again), ==, venture_entity_get_version(customer));
+	}
+}
+
 /*
  * "Attention of" is somebody at the customer: an invoice to one company
  * for the attention of somebody at another is refused at the save, from
@@ -1215,6 +1263,8 @@ main(int argc, char *argv[])
 	           test_quote_sheet_tax, tear_down);
 	g_test_add("/record-view/invoice-sheet-exemption", Fixture, NULL, set_up,
 	           test_invoice_sheet_exemption, tear_down);
+	g_test_add("/record-view/invoice-exemption-rollback", Fixture, NULL, set_up,
+	           test_invoice_exemption_rollback, tear_down);
 	g_test_add("/record-view/attention-of-same-customer", Fixture, NULL, set_up,
 	           test_attention_of_same_customer, tear_down);
 	g_test_add("/record-view/attention-of-deals-and-tickets", Fixture, NULL, set_up,

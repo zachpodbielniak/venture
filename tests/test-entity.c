@@ -1031,6 +1031,49 @@ test_audit_entry_for_change(void)
 	                ==, 3);
 }
 
+/* Token names belong to the owner-only token surface, even when the
+ * readable audit trail describes creating or renaming that token. */
+static void
+test_audit_token_name_private(void)
+{
+	g_autoptr(VentureApiToken) before = venture_api_token_new();
+	g_autoptr(VentureApiToken) after = venture_api_token_new();
+	g_autoptr(VentureAuditEntry) created = NULL;
+	g_autoptr(VentureAuditEntry) renamed = NULL;
+	g_autoptr(JsonNode) diff = NULL;
+	g_autoptr(JsonNode) stored = NULL;
+	g_autofree gchar *label = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *name = NULL;
+	JsonObject *change;
+
+	g_object_set(before, "name", "private deployment target", NULL);
+	g_object_set(after, "name", "private customer integration", NULL);
+	venture_entity_set_id(VENTURE_ENTITY(after), 12);
+	diff = venture_entity_diff(VENTURE_ENTITY(before), VENTURE_ENTITY(after));
+	created = venture_audit_entry_new_for_change(VENTURE_AUDIT_ACTION_CREATE,
+		VENTURE_ACTOR_KIND_USER, "owner", VENTURE_ENTITY(after), NULL);
+	g_object_get(created, "target-label", &label, NULL);
+	g_assert_cmpstr(label, ==, "API token #12");
+	g_clear_pointer(&label, g_free);
+	renamed = venture_audit_entry_new_for_change(VENTURE_AUDIT_ACTION_UPDATE,
+		VENTURE_ACTOR_KIND_USER, "owner", VENTURE_ENTITY(after), diff);
+	g_object_get(renamed, "target-label", &label, "diff", &text, NULL);
+	g_assert_cmpstr(label, ==, "API token #12");
+	g_assert_null(strstr(text, "private"));
+	stored = venture_json_parse(text, NULL);
+	change = json_object_get_object_member(json_node_get_object(stored), "name");
+	g_assert_true(json_object_get_boolean_member(change, "changed"));
+	g_assert_true(json_object_get_boolean_member(change, "redacted"));
+	/* Redacting the audit copy must not make a rename a no-op, alter its
+	 * caller's diff, or remove the owner's editable display name. */
+	change = json_object_get_object_member(json_node_get_object(diff), "name");
+	g_assert_cmpstr(json_object_get_string_member(change, "to"), ==,
+		"private customer integration");
+	g_object_get(after, "name", &name, NULL);
+	g_assert_cmpstr(name, ==, "private customer integration");
+}
+
 /* --- Field specs --------------------------------------------------------- */
 
 static void
@@ -1437,6 +1480,7 @@ main(
 	g_test_add_func("/records/api-token-inactive", test_api_token_inactive);
 
 	g_test_add_func("/records/audit-entry-for-change", test_audit_entry_for_change);
+	g_test_add_func("/entity/audit-token-name-private", test_audit_token_name_private);
 
 	g_test_add_func("/entity/field-specs-derived-from-properties",
 	                test_entity_field_specs_derived_from_properties);

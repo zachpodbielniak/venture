@@ -46,10 +46,21 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 	g_object_set(plan, "name", "Managed plan", "active", TRUE, NULL); save(f, plan);
 	g_object_set(price, "plan-id", venture_entity_get_id(plan), "currency", "USD", "active", TRUE,
 		"product-id", f->product_id, NULL);
+	if (data && !g_strcmp0(data, "final-usage-collection"))
+	{
+		g_object_set(price, "usage-unit", "API calls", NULL);
+		money_field(price, "unit-amount", "0.01 USD");
+	}
 	money_field(price, "amount", "50 USD"); save(f, price);
 	g_object_set(action, "action", "start", "company-id", f->customer_id,
 		"plan-price-id", venture_entity_get_id(price), "seats", (gint64)1, NULL);
-	if (data && !g_strcmp0(data, "renewal-collection"))
+	if (data && !g_strcmp0(data, "final-usage-collection"))
+	{
+		g_autoptr(GDateTime) today = venture_time_now();
+		g_autoptr(GDateTime) began = g_date_time_add_days(today, -20);
+		g_object_set(action, "at", began, NULL);
+	}
+	else if (data && !g_strcmp0(data, "renewal-collection"))
 	{
 		/* One period ended a day ago, so exactly one renewal is due now. */
 		g_autoptr(GDateTime) today = venture_time_now();
@@ -286,6 +297,80 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 			g_test_message("Billing enabled live: provider payment requests=%u; stopping timer", ((FakeTransport *)transport)->payment_calls);
 			venture_stripe_collection_stop(f->context);
 			g_assert_null(g_object_get_data(G_OBJECT(f->context), "stripe-collection-source"));
+		}
+		if (data && !g_strcmp0(data, "final-usage-collection"))
+		{
+			/* Termination must retain its invoice as an immutable source for
+			 * the page and collection, without reviving the subscription. */
+			g_autoptr(GDateTime) now = venture_time_now(), used_at = g_date_time_add_days(now, -10);
+			g_autoptr(GDateTime) ended = g_date_time_add_days(now, -1), later = g_date_time_add_minutes(now, 2);
+			g_autoptr(VentureEntity) usage = record_new(f, "usage_record"), cancel = record_new(f, "billing_request");
+			g_autoptr(VentureEntity) invoice = NULL, subscription = NULL;
+			g_autoptr(VentureMoney) balance = NULL;
+			g_autoptr(GPtrArray) attempts = NULL;
+			g_autoptr(VentureWebServer) server = NULL;
+			g_autofree gchar *directory = NULL, *page = NULL, *number = NULL;
+			g_autofree gchar *path = g_strdup_printf("/e/customer_subscription/%" G_GINT64_FORMAT, subscription_id);
+			gint64 final_invoice = 0, collected = 0;
+			gint final_status = 0;
+			g_object_set(usage, "subscription-id", subscription_id, "quantity", (gint64)240, "occurred-at", used_at, NULL);
+			save(f, usage);
+			g_object_set(cancel, "action", "cancel", "subscription-id", subscription_id, "at", ended, NULL);
+			save(f, cancel);
+			g_object_get(cancel, "invoice-id", &final_invoice, NULL);
+			g_assert_cmpint(final_invoice, >, 0);
+			invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, final_invoice, &error);
+			g_assert_no_error(error);
+			g_object_get(invoice, "number", &number, NULL);
+			server = start_server(f, &directory);
+			g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &page), ==, 200);
+			g_assert_nonnull(strstr(page, number));
+			{
+				g_autoptr(VentureEntity) access = venture_portal_service_invite(
+					venture_portal_service_get(f->database), f->organization_id, f->customer_id,
+					"customer@example.test", NULL, &error);
+				g_autofree gchar *token = NULL, *portal_path = NULL, *portal_page = NULL;
+				g_assert_no_error(error);
+				g_assert_nonnull(access);
+				g_object_get(access, "token", &token, NULL);
+				portal_path = g_strdup_printf("/portal/%s", token);
+				g_assert_cmpuint(http_request(server, "GET", portal_path, NULL, NULL, &portal_page), ==, 200);
+				g_assert_nonnull(strstr(portal_page, "Your subscriptions"));
+				g_assert_nonnull(strstr(strstr(portal_page, "Your subscriptions"), number));
+			}
+			/* The retained consent is not permission to collect ordinary
+			 * invoices after cancellation; only the terminal usage source. */
+			{
+				g_autoptr(VentureStripeCheckout) refused = NULL;
+				gint64 first_invoice = 0;
+				g_object_get(action, "invoice-id", &first_invoice, NULL);
+				refused = venture_stripe_service_collect_invoice(service, first_invoice, NULL, &error);
+				g_assert_null(refused);
+				g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+				g_clear_error(&error);
+				g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 0);
+			}
+			((FakeTransport *)transport)->reservation_database = f->database;
+			g_assert_cmpint(venture_stripe_service_collect_due(service, now, 1, NULL, &error), ==, 1);
+			g_assert_no_error(error);
+			g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);
+			attempts = rows(f, "stripe_checkout");
+			g_assert_cmpuint(attempts->len, ==, 1);
+			g_object_get(g_ptr_array_index(attempts, 0), "invoice-id", &collected, NULL);
+			g_assert_cmpint(collected, ==, final_invoice);
+			g_assert_true(automatic_fixture_event(service, (FakeTransport *)transport, "evt_final_usage_paid", TRUE, &error));
+			g_assert_no_error(error);
+			balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database), final_invoice, NULL, &error);
+			g_assert_no_error(error);
+			g_assert_true(venture_money_is_zero(balance));
+			subscription = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, &error);
+			g_assert_no_error(error);
+			g_object_get(subscription, "status", &final_status, NULL);
+			g_assert_cmpint(final_status, ==, 4);
+			g_assert_cmpint(venture_stripe_service_collect_due(service, later, 1, NULL, &error), ==, 1);
+			g_assert_no_error(error);
+			g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);
+			venture_web_server_stop(server); venture_test_remove_tree(directory);
 		}
 		if (data && !g_strcmp0(data, "renewal-collection"))
 		{

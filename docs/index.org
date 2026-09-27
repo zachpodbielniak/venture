@@ -133,6 +133,7 @@ Two binaries, both statically linked against every vendored dependency: =venture
 - [[file:security.org][Security: the second factor]] — TOTP enrolment with a QR code, verification at sign-in, recovery codes, and the require-MFA-for-admins organization setting
 - [[file:navigation.org][Navigation]] — the sidebar folded into the questions an owner asks: money in, money out, customers, support, growth, the bank and the books
 - [[file:record-view.org][How a record reads]] — the summary view, the list and the grouped form, derived from what each field is for
+- [[file:evidence/ui-review-demonstration.org][UI overhaul review demonstration]] — built-server journeys, screenshots and regression boundaries
 
 - [[file:post-parity.org][Post-parity delivery]] — issue 125 defaults, scope and acceptance evidence
 

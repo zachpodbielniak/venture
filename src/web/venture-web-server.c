@@ -3665,7 +3665,7 @@ venture_web_error_for_browser(VentureWebServer *self, HtmxContext *context)
 	venture_html_escape_append(body, venture_web_error_title(error));
 	g_string_append(body, "</h3>");
 	if (fault)
-		g_string_append(body, "<p class=\"muted\">Nothing was changed. Try again in a moment; "
+		g_string_append(body, "<p class=\"muted\">The request could not be completed. Check the record before trying again; "
 			"if it keeps happening, the detail below is what to send along.</p>"
 			"<details class=\"error-detail\"><summary>Detail</summary><p>");
 	else

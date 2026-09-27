@@ -190,7 +190,7 @@
 			/* not JSON: a proxy's page, or nothing at all */
 		}
 
-		return "That didn’t work. Nothing was saved — please try again.";
+		return "The result could not be confirmed. Check the record before trying again.";
 	}
 
 	function showFormError(form, message) {
@@ -206,7 +206,7 @@
 
 		box.textContent = "";
 		var title = document.createElement("strong");
-		title.textContent = "That didn’t save. ";
+		title.textContent = "Please check this request. ";
 		box.appendChild(title);
 		box.appendChild(document.createTextNode(message));
 		box.hidden = false;
@@ -241,9 +241,19 @@
 			}
 
 			event.preventDefault();
+			if (form.ventureSubmitting) {
+				return;
+			}
+			form.ventureSubmitting = true;
 
 			var data = new FormData(form);
-			var buttons = form.querySelectorAll("button[type=submit], button:not([type])");
+			var buttons = form.querySelectorAll("button[type=submit], button:not([type]), input[type=submit]");
+			var disabled = Array.prototype.map.call(buttons, function (b) { return b.disabled; });
+
+			function finish() {
+				form.ventureSubmitting = false;
+				buttons.forEach(function (b, i) { b.disabled = disabled[i]; });
+			}
 
 			if (event.submitter && event.submitter.name) {
 				data.append(event.submitter.name, event.submitter.value);
@@ -258,8 +268,6 @@
 				headers: { "Accept": "text/html", "X-Venture-Inline": "1" }
 			}).then(function (response) {
 				var type = response.headers.get("Content-Type") || "";
-
-				buttons.forEach(function (b) { b.disabled = false; });
 
 				if (!response.ok) {
 					return response.text().then(function (text) {
@@ -293,10 +301,11 @@
 					document.write(text);
 					document.close();
 				});
-			}).catch(function () {
-				buttons.forEach(function (b) { b.disabled = false; });
-				showFormError(form, "The server could not be reached. "
-					+ "Nothing was saved; check the connection and try again.");
+			}).then(finish, function () {
+				finish();
+				/* The write may have committed before its reply was lost. */
+				showFormError(form, "The result could not be confirmed. "
+					+ "Check the record before trying again.");
 			});
 		});
 

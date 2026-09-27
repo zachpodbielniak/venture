@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #define STR(n,l) VENTURE_FIELD(n,l,NULL,VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_NONE)
+#define TECH_STR(n,l) VENTURE_FIELD(n,l,NULL,VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_TECHNICAL)
 #define INT(n,l) VENTURE_FIELD(n,l,NULL,VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE)
 #define DATE(n,l) VENTURE_FIELD(n,l,NULL,VENTURE_FIELD_KIND_DATETIME,VENTURE_COLUMN_FLAG_INDEXED)
 #define SECRET(n,l) VENTURE_FIELD(n,l,NULL,VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_SENSITIVE)
@@ -9,7 +10,7 @@
 #define RETAIN(n,l,t) VENTURE_FIELD_REF(n,l,"Original attribution evidence; retained through CRM merge",t,VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_RETAIN_REFERENCE)
 #define UNIQUE(n,l) VENTURE_FIELD(n,l,NULL,VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 #define SUBJECTS RETAIN("lead-id","Captured lead","lead"), RETAIN("contact-id","Captured contact","contact"), RETAIN("company-id","Captured company","company")
-#define TOUCHES RETAIN("first-touch-id","First touch","attribution_touch"), RETAIN("last-touch-id","Last touch","attribution_touch"), STR("first-source","First-touch source"), STR("last-source","Last-touch source"), REF("first-campaign-id","First-touch campaign","campaign"), REF("last-campaign-id","Last-touch campaign","campaign"), STR("first-evidence","First-touch evidence"), STR("last-evidence","Last-touch evidence")
+#define TOUCHES RETAIN("first-touch-id","First touch","attribution_touch"), RETAIN("last-touch-id","Last touch","attribution_touch"), TECH_STR("first-source","First-touch source"), TECH_STR("last-source","Last-touch source"), REF("first-campaign-id","First-touch campaign","campaign"), REF("last-campaign-id","Last-touch campaign","campaign"), STR("first-evidence","First-touch evidence"), STR("last-evidence","Last-touch evidence")
 static const VentureFieldDecl site_fields[] = {
 	VENTURE_FIELD_NAME("name","Name",NULL), STR("origin","Allowed HTTPS site origin"),
 	STR("external-site-id","Lightsite site identity"), STR("external-tenant-id","Lightsite tenant identity"),

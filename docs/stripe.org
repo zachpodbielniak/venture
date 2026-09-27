@@ -365,3 +365,14 @@ empty. No live merchant credentials or bank accounts are used by these tests.
 
 The repeatable built-artifact operator transcripts are in
 [[file:stripe-automatic-demonstration.org][the automatic-collection demonstration]].
+
+* Final metered usage
+
+Cancellation can issue one final usage invoice. Its terminating subscription
+event retains =final_invoice_id= separately from a recurring period's
+=invoice_id=. The automatic collection sweep includes that final invoice
+under an existing verified authorization, with the same customer, price,
+seats and per-invoice limit. It does not create fresh consent for a cancelled
+subscription or collect its ordinary invoices after cancellation. Disabling
+or revoking authorization still prevents provider contact. Payment settles
+the final invoice without reactivating the subscription.

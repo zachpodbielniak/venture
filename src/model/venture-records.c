@@ -3387,7 +3387,12 @@ venture_audit_entry_new_for_change(
 	{
 		g_autofree gchar *label = NULL;
 
-		label = venture_entity_get_display_name(target);
+		/* This label is shared with viewers; the token's owner-only
+		 * display name must not escape through its own audit record. */
+		label = VENTURE_IS_API_TOKEN(target)
+			? g_strdup_printf("API token #%" G_GINT64_FORMAT,
+				venture_entity_get_id(target))
+			: venture_entity_get_display_name(target);
 
 		g_object_set(entry,
 		             "target-type", venture_entity_get_entity_name(target),
@@ -3407,6 +3412,20 @@ venture_audit_entry_new_for_change(
 		g_autofree gchar *text = NULL;
 
 		text = venture_json_to_string(diff, FALSE);
+		if (VENTURE_IS_API_TOKEN(target) && JSON_NODE_HOLDS_OBJECT(diff) &&
+			json_object_has_member(json_node_get_object(diff), "name"))
+		{
+			g_autoptr(JsonNode) private_diff = venture_json_parse(text, NULL);
+			JsonObject *marker = json_object_new();
+
+			/* JSON node copies share objects. Round-tripping gives this
+			 * audit entry its own copy without changing the save's diff. */
+			json_object_set_boolean_member(marker, "changed", TRUE);
+			json_object_set_boolean_member(marker, "redacted", TRUE);
+			json_object_set_object_member(json_node_get_object(private_diff), "name", marker);
+			g_clear_pointer(&text, g_free);
+			text = venture_json_to_string(private_diff, FALSE);
+		}
 		g_object_set(entry, "diff", text, NULL);
 	}
 

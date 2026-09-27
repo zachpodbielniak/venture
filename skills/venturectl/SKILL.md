@@ -629,6 +629,14 @@ is left off that invoice; `quote start-subscription ID` on the accepted quote
 starts the subscription once and returns `result_subscription_id`. A second
 start is refused.
 `compose quote JSON` and `compose invoice JSON` create a draft (or send) in one call.
+For invoices, `issued_at` defaults to today at midnight UTC; `due_at` may name an
+explicit due date. Otherwise `due_days` defaults to 30, counted from the invoice
+date (zero or negative leaves no due date). Sending preserves the invoice date;
+configured fiscal-period checks still apply to drafts and issuance.
+To remember an invoice exemption on its customer atomically, include
+`remember_tax_exemption=true`, `tax_exemption_kind` and `tax_exemption_number`
+alongside `tax_exempt=true`. These fields are included in issuance approval;
+a refused or proposed operation does not change the customer.
 For a staged action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'`; obtain the quote's current
 `version` first. `revision` is the separate commercial revision number.

@@ -97,7 +97,7 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 		{
 			g_string_append(html, "<p>Ends on ");
 			venture_html_escape_append(html, day);
-			g_string_append(html, ". Nothing more will be invoiced.</p>");
+			g_string_append(html, ". No further base charges; final usage, if any, is invoiced when it ends.</p>");
 		}
 		if (pending != NULL)
 		{
@@ -119,6 +119,8 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 			g_autofree gchar *number = NULL, *owed = NULL;
 			gint64 invoice_id = 0;
 			g_object_get(g_ptr_array_index(events, j), "invoice-id", &invoice_id, NULL);
+			if (invoice_id == 0)
+				g_object_get(g_ptr_array_index(events, j), "final-invoice-id", &invoice_id, NULL);
 			if (invoice_id == 0)
 				continue;
 			invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, NULL);
@@ -171,7 +173,7 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 		venture_html_escape_append(html, token);
 		g_string_append_printf(html, "/subscriptions/%" G_GINT64_FORMAT "\">"
 			"<input type=\"hidden\" name=\"action\" value=\"cancel\">"
-			"<button>Cancel at renewal</button> You keep it until then; nothing more is invoiced.</form></section>", id);
+			"<button>Cancel at renewal</button> You keep it until then; no further base charges. Final usage, if any, is invoiced when it ends.</form></section>", id);
 	}
 }
 

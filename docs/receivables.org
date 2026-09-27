@@ -230,3 +230,16 @@ described in [[file:reporting.org][reporting]].
 Invoice issue/void, receipt/allocation/refund, full-invoice settlement, write-off and tax-correction commands request second-actor consent for the entire operation before writing business records. A configured post or pay rule applies to the command; generated issue events, credits, sales and journals share its approval. The command arguments, current financial records and service account overrides are bound to that consent. Retry the same command as a different actor; changed inputs or financial state require a new proposal.
 
 Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight of the current UTC day. Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.
+
+** Printable document layout
+
+Invoice descriptions, payment terms and receipt allocation references continue
+onto additional PDF pages when needed; a long item is never clipped at the
+bottom of the sheet. Monetary columns reserve their own width and reduce the
+font size for unusually large amounts. Totals and tax remain separate from
+their labels. Download filenames replace path separators, quotes and control
+characters in invoice numbers, keeping the HTTP filename a single value.
+
+Shipping is shown separately and included in the printable invoice total. Draft
+and void invoices never claim to have been paid merely because they have no
+receivable balance.

@@ -68,7 +68,7 @@ tear_down(Fixture *f, gconstpointer data)
 }
 
 static VentureEntity *
-invoice_new_numbered(Fixture *f, const gchar *number)
+invoice_full(Fixture *f, const gchar *number, const gchar *description, const gchar *terms, const gchar *price)
 {
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(JsonNode) root = NULL;
@@ -81,18 +81,18 @@ invoice_new_numbered(Fixture *f, const gchar *number)
 	json_builder_set_member_name(builder, "number");
 	json_builder_add_string_value(builder, number);
 	json_builder_set_member_name(builder, "terms");
-	json_builder_add_string_value(builder, "Payment within thirty days.");
+	json_builder_add_string_value(builder, terms);
 	json_builder_set_member_name(builder, "send");
 	json_builder_add_boolean_value(builder, TRUE);
 	json_builder_set_member_name(builder, "lines");
 	json_builder_begin_array(builder);
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "description");
-	json_builder_add_string_value(builder, "Paperbacks, 120");
+	json_builder_add_string_value(builder, description);
 	json_builder_set_member_name(builder, "quantity");
 	json_builder_add_double_value(builder, 120);
 	json_builder_set_member_name(builder, "unit_price");
-	json_builder_add_string_value(builder, "9.50 USD");
+	json_builder_add_string_value(builder, price);
 	json_builder_end_object(builder);
 	json_builder_end_array(builder);
 	json_builder_end_object(builder);
@@ -104,6 +104,12 @@ invoice_new_numbered(Fixture *f, const gchar *number)
 	g_assert_nonnull(invoice);
 
 	return invoice;
+}
+
+static VentureEntity *
+invoice_new_numbered(Fixture *f, const gchar *number)
+{
+	return invoice_full(f, number, "Paperbacks, 120", "Payment within thirty days.", "9.50 USD");
 }
 
 static VentureEntity *
@@ -154,6 +160,7 @@ test_invoice_pdf(Fixture *f, gconstpointer data)
 typedef struct
 {
 	gdouble left, right, top, bottom;
+	guint page;
 	gchar *text;
 } Box;
 
@@ -194,6 +201,15 @@ text_boxes(GBytes *pdf)
 			if (*p == '\\' && p[1] != '\0')
 				p++;
 			g_string_append_c(literal, *p);
+		}
+		{
+			const gchar *stream = text;
+			box.page = 0;
+			while ((stream = strstr(stream, "\nstream\n")) != NULL && stream < p)
+			{
+				box.page++;
+				stream++;
+			}
 		}
 		box.left = x;
 		box.right = x + venture_pdf_writer_text_width(measure, size, bold, literal->str);
@@ -244,10 +260,95 @@ test_invoice_pdf_long_names(Fixture *f, gconstpointer data)
 		{
 			Box *b = &g_array_index(boxes, Box, j);
 
-			if (a->left < b->right && b->left < a->right && a->top < b->bottom && b->top < a->bottom)
+			if (a->page == b->page && a->left < b->right && b->left < a->right && a->top < b->bottom && b->top < a->bottom)
 				g_error("\"%s\" overlaps \"%s\"", a->text, b->text);
 		}
 	}
+}
+
+/* Long descriptions and terms must remain printable on continuation
+ * pages, and large amounts must not overwrite another column. */
+static void
+test_invoice_pdf_pages(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GString) prose = g_string_new(NULL);
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GBytes) pdf = NULL;
+	g_autoptr(GArray) boxes = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i, j, pages = 0;
+
+	(void)data;
+	for (i = 0; i < 150; i++)
+		g_string_append(prose, "A long description needs room to remain readable.\n");
+	invoice = invoice_full(f, "LARGE", prose->str, prose->str, "999999999.99 USD");
+	pdf = venture_financial_documents_invoice_pdf(f->context, invoice, &error);
+	g_assert_no_error(error);
+	boxes = text_boxes(pdf);
+	for (i = 0; i < boxes->len; i++)
+	{
+		Box *a = &g_array_index(boxes, Box, i);
+		pages = MAX(pages, a->page);
+		g_assert_cmpfloat(a->top, >=, 40);
+		g_assert_cmpfloat(a->bottom, <=, 810);
+		g_assert_cmpfloat(a->left, >=, 47.5);
+		g_assert_cmpfloat(a->right, <=, 547.5);
+		for (j = i + 1; j < boxes->len; j++)
+		{
+			Box *b = &g_array_index(boxes, Box, j);
+			if (a->page == b->page && a->left < b->right && b->left < a->right &&
+			    a->top < b->bottom && b->top < a->bottom)
+				g_error("%s overlaps %s", a->text, b->text);
+		}
+	}
+	g_assert_cmpuint(pages, >, 3);
+}
+
+/* A printable draft is not paid, and shipping belongs in its total. */
+static void
+test_invoice_pdf_shipping_draft(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(VentureInvoiceLine) line = venture_invoice_line_new();
+	g_autoptr(VentureMoney) shipping = venture_money_new(2500, "USD", 2);
+	g_autoptr(VentureMoney) unit = venture_money_new(10000, "USD", 2);
+	g_autoptr(GBytes) pdf = NULL;
+	g_autofree gchar *text = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	venture_entity_set_organization_id(VENTURE_ENTITY(invoice), f->org);
+	g_object_set(invoice, "number", "DRAFT", "company-id", f->company, "shipping-amount", shipping, NULL);
+	save(f, VENTURE_ENTITY(invoice));
+	venture_entity_set_organization_id(VENTURE_ENTITY(line), f->org);
+	g_object_set(line, "invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)),
+		"description", "Goods", "quantity", 1.0, "unit-price", unit, NULL);
+	save(f, VENTURE_ENTITY(line));
+	pdf = venture_financial_documents_invoice_pdf(f->context, VENTURE_ENTITY(invoice), &error);
+	g_assert_no_error(error);
+	text = bytes_text(pdf);
+	g_assert_nonnull(strstr(text, "(Shipping)"));
+	g_assert_nonnull(strstr(text, "($125.00)"));
+	g_assert_null(strstr(text, "(Paid in full)"));
+}
+
+/* A user-supplied invoice number must remain a single quoted filename,
+ * never become another HTTP header or Content-Disposition parameter. */
+static void
+test_invoice_filename(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autofree gchar *name = NULL;
+
+	(void)f;
+	(void)data;
+	g_object_set(invoice, "number", "INV\"\r\nX-Bad: yes/\\file", NULL);
+	name = venture_financial_documents_filename(VENTURE_ENTITY(invoice));
+	g_assert_null(strchr(name, '\r'));
+	g_assert_null(strchr(name, '\n'));
+	g_assert_null(strchr(name, '\"'));
+	g_assert_null(strchr(name, '\\'));
+	g_assert_null(strchr(name, '/'));
 }
 
 /* Emailing an invoice attaches its PDF. */
@@ -324,6 +425,40 @@ test_receipt_sent_on_payment(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(text, "(INV-0041)"));
 }
 
+/* A receipt must preserve a long allocated invoice reference across
+ * pages rather than clip the customer's evidence of what was paid. */
+static void
+test_receipt_pdf_pages(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *number = g_strnfill(12000, 'W');
+	g_autoptr(VentureEntity) invoice = invoice_new_numbered(f, number);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYMENT);
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(GBytes) pdf = NULL;
+	g_autoptr(GArray) boxes = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	guint i, pages = 0;
+
+	(void)data;
+	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db),
+		venture_entity_get_id(invoice), now, NULL, &error));
+	g_assert_no_error(error);
+	payment = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error);
+	pdf = venture_financial_documents_receipt_pdf(f->context, payment, &error);
+	g_assert_no_error(error);
+	boxes = text_boxes(pdf);
+	for (i = 0; i < boxes->len; i++)
+	{
+		Box *box = &g_array_index(boxes, Box, i);
+		pages = MAX(pages, box->page);
+		g_assert_cmpfloat(box->top, >=, 40);
+		g_assert_cmpfloat(box->bottom, <=, 810);
+	}
+	g_assert_cmpuint(pages, >, 1);
+}
+
 /* An operator who does not want receipts sent gets none. */
 static void
 test_receipts_can_be_switched_off(Fixture *f, gconstpointer data)
@@ -351,6 +486,10 @@ main(int argc, char *argv[])
 {
 	g_test_init(&argc, &argv, NULL);
 
+	g_test_add("/financial-documents/invoice-shipping-draft", Fixture, NULL, set_up, test_invoice_pdf_shipping_draft, tear_down);
+	g_test_add("/financial-documents/receipt-pages", Fixture, NULL, set_up, test_receipt_pdf_pages, tear_down);
+	g_test_add("/financial-documents/invoice-pages", Fixture, NULL, set_up, test_invoice_pdf_pages, tear_down);
+	g_test_add("/financial-documents/invoice-filename", Fixture, NULL, set_up, test_invoice_filename, tear_down);
 	g_test_add("/financial-documents/invoice-pdf", Fixture, NULL, set_up, test_invoice_pdf, tear_down);
 	g_test_add("/financial-documents/invoice-pdf-long-names", Fixture, NULL, set_up, test_invoice_pdf_long_names, tear_down);
 	g_test_add("/financial-documents/invoice-email-attaches-pdf", Fixture, NULL, set_up,

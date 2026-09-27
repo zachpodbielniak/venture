@@ -15,6 +15,24 @@ Every line must be an object with a positive numeric quantity and an exact money
 
 The browser editor is laid out as the document: the customer and "Attention of" at the top, a line table rows are added to, and the totals beside it as you type. API and CLI callers continue to use the same JSON composer.
 
+* Invoice dates
+
+The invoice sheet shows editable invoice and due dates beside the customer.
+The defaults are today and thirty days later, stored as calendar dates at
+midnight UTC. The invoice date is set before saving a draft, so configured
+fiscal periods validate it normally. Sending uses that same date for issuance
+and its journal; it does not silently replace a date the operator chose.
+When issuance needs a second actor, the proposal includes the resolved dates.
+Retrying a relative date on another day cannot reuse consent for yesterday.
+
+The JSON composer accepts optional =issued_at= and =due_at= date strings.
+Without =due_at=, =due_days= remains supported (default 30), counted from the
+invoice date. Zero or negative =due_days= keeps the existing no-due-date behavior.
+An explicit due date takes precedence over =due_days=. Invalid date strings,
+wrong JSON types, overflowing offsets and a due date before the invoice date
+are refused before any rows are saved. Closed or uncovered fiscal periods
+remain refused by the ordinary accounting guard.
+
 * Tax on an invoice
 
 An invoice line is taxed by picking a *tax rate* -- a =tax_code= record --
@@ -48,3 +66,18 @@ declared =VENTURE_COLUMN_FLAG_SAME_PARENT=: the save refuses a contact
 whose company is not the invoice's, from every writer, and the form
 offers only the chosen customer's people. The same holds for a quote.
 See the record view documentation for how the flag finds the parent.
+
+Remembering a customer's tax exemption and saving the invoice or repeating
+schedule is atomic. If the sheet is refused, the customer's previous tax
+treatment and audit history remain unchanged.
+
+Remembering a customer's exemption is part of the invoice transaction, after
+any required second-actor consent. A proposal or a failed save changes neither
+the customer nor the invoice. The JSON composer carries this intent as
+=remember_tax_exemption=true= with =tax_exemption_kind= and
+=tax_exemption_number=; these values are included in issuance consent. Repeating
+schedules keep their customer update and schedule creation in one transaction.
+
+Browser composition strips identity fields from temporary form records before
+building the command. Retrying the same form for approval therefore compares
+its business inputs, not new construction timestamps.

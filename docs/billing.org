@@ -108,8 +108,18 @@ $90 plus the $14.48 pending adjustment: *$104.48*.
 A decrease of one seat on the same day produces *-$14.48*. Renewal issues
 its ordinary $30 invoice, creates a $14.48 customer credit through
 settlement, and applies it, leaving *$15.52* outstanding. Credit beyond an
-invoice's amount remains customer credit. Adjustments accumulate exactly
+invoice's amount remains customer credit. The allocation covers the whole
+invoice balance, including tax and metered usage, rather than only the base
+price. Adjustments accumulate exactly
 until renewal. Trials and scheduled changes add no immediate adjustment.
+
+Changes compare the discounted prices while the discount covers the current
+period, including its last covered invoice. Keeping the same plan retains its
+discount on both sides; moving to another plan compares the old discounted
+price with the new plan's full price. A discount that expires at renewal does
+not retroactively increase the adjustment for days already served. For example,
+with 50% off, the third January seat above adds $7.20, not $14.48; the next
+invoice is $52.20 if the discount continues, or $97.20 if it has ended.
 
 Price versions may use different minor-unit exponents in the same currency; credit allocation compares their monetary values with checked rescaling.
 Changing currency is refused. A change between monthly and yearly terms
@@ -150,7 +160,8 @@ deliberate =refund=.
 
 =venture_billing_service_cancel_credit()= answers the same figure without
 writing anything, which is what the subscription page's button shows.
-Cancelling at renewal credits nothing and bills nothing more.
+Cancelling at renewal credits nothing and starts no further base period.
+Final metered usage is still billed when the subscription ends.
 
 * Renewal and dunning sweeps
 
@@ -199,8 +210,7 @@ does not authorize a Stripe charge; hosted Setup evidence is required.
 The Money sidebar links to the subscriptions list. Subscription pages have
 renew, pause, resume, cancel and change actions. Cancelling is two buttons,
 each saying what it does to money: "Cancel now: $X.XX credited for the N
-days left" (or "nothing is credited") and "Cancel at renewal: nothing more
-is billed". REST uses
+days left" (or "nothing is credited") and "Cancel at renewal: no further base charges". REST uses
 =POST /api/v1/customer_subscriptions/:id/renew|change|cancel|pause|resume=;
 additional service verbs use the same shape. Start and sweeps use
 =POST /api/v1/billing/start|renew-sweep|dunning-sweep=. Bodies use underscores.
@@ -256,8 +266,10 @@ supplied); they never add currencies. Their notes carry these definitions:
   It is a forward-looking queue, not reconstructed historical schedules.
 
 These are contracted revenue metrics, not cash receipts or accounting
-revenue recognition. Usage metering, entitlements, payment integration and
-revenue recognition schedules remain separate follow-ups.
+revenue recognition. Usage metering and automatic payment collection are
+documented below and in [[file:stripe.org][Stripe collection]]. Metered usage
+is not recurring contracted revenue. Entitlements and revenue recognition
+schedules remain separate follow-ups.
 
 * Upgrade and verification
 
@@ -358,8 +370,14 @@ When a subscription ends -- cancelled now, or at renewal -- the usage of
 its last stretch, from the period's start to the moment it ends, is billed
 beyond the included units on an invoice of its own, numbered
 =USAGE-<subscription uuid>-<date>=. The billing request reports it; the
-cancel event never names it, because a subscription is looked up by the one
-event naming an invoice. A trial is not charged.
+cancel event names it separately as =final_invoice_id=, so usage is not
+counted as another recurring period or discount installment. Both subscription
+pages show this invoice. Existing verified collection permission can collect
+this final bill within its unchanged terms and limit; ordinary invoices do
+not gain permission after cancellation. A trial is not charged.
+Usage records remain protected from deletion after either kind of cancellation.
+Migration 000690 recovers an existing final-invoice association only from a
+unique completed billing request, never from an invoice status.
 
 Record usage with =POST /api/v1/usage_records= (or =usage_record=) or
 =venturectl billing usage SUB quantity=N [key=K] [at=DATE]=, which sends the
@@ -369,8 +387,10 @@ far and what it adds up to.
 The next invoice a customer is told about -- in the trial reminder, the
 price-change notice and the customer portal -- is worked out as the
 renewal will issue it: the price, the discount while it covers invoices,
-a carried part-period charge, and the price's tax unless the customer is
-exempt; a carried credit comes off after tax.
+a carried part-period charge, and the explicit price tax rate or the
+customer-address rate effective at renewal, unless the customer is exempt; a carried credit comes off after tax. This is the scheduled base
+charge, not a forecast of usage: metered units can still accrue before
+renewal and add their own line.
 
 * Periods
 
@@ -464,7 +484,13 @@ or with mail off, nothing is queued and nothing fails. See
 the price the subscription switches to at renewal, the discount while it
 still covers invoices, and the part-period difference carried to it; a
 credit larger than the charge makes it zero. Nothing is written to work it
-out. It is the same number the customer portal shows.
+out. It is the same scheduled base charge the customer portal shows;
+metered usage is additional and is calculated when the period closes.
+
+Once a discount is used, its terms are kept with the agreement: it cannot
+be edited or deleted, including after the customer moves to another plan.
+Retire it with =active=false= to stop new claims, or create a new offer.
+Existing subscriptions keep the original discount and can still renew.
 
 * Discount codes
 

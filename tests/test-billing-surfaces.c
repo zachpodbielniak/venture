@@ -326,7 +326,7 @@ test_cancel_buttons(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
 	/* The fixture's January period is long over: nothing is left to credit. */
 	g_assert_nonnull(strstr(page, "Cancel now: nothing is credited"));
-	g_assert_nonnull(strstr(page, "Cancel at renewal: nothing more is billed"));
+	g_assert_nonnull(strstr(page, "Cancel at renewal: no further base charges"));
 
 	sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, f->subscription, NULL);
 	g_object_get(sub, "company-id", &company, "plan-price-id", &price, NULL);

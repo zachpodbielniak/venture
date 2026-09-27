@@ -114,6 +114,13 @@ test_token_actor_names(void)
 		" ('00000000-0000-4000-8000-000000000013', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 'owner', 'company', 1, 'owner');"
 		"INSERT INTO notifications (uuid, organization_id, created_at, updated_at, version, user_id, title, actor) "
 		"VALUES ('00000000-0000-4000-8000-000000000021', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1, 'Changed', 'token:deploy-bot');"
+		"UPDATE audit_entries SET target_type = 'api_token', target_id = 999, "
+		"target_label = 'historical private name', "
+		"diff = '{\"name\":{\"from\":\"old private name\",\"to\":\"historical private name\"},\"active\":{\"from\":true,\"to\":false}}' "
+		"WHERE uuid = '00000000-0000-4000-8000-000000000012';"
+		"UPDATE audit_entries SET target_label = 'Human company', "
+		"diff = '{\"name\":{\"from\":\"Old company\",\"to\":\"Human company\"}}' "
+		"WHERE uuid = '00000000-0000-4000-8000-000000000013';"
 		/* Everything from 640 on, not just the two: an install that had
 		 * not reached 640 had not applied any later script either, and the
 		 * migrator refuses an older script once a newer one is recorded. */
@@ -140,6 +147,28 @@ test_token_actor_names(void)
 	approving_person = query_text(database, "SELECT approved_by FROM audit_entries WHERE uuid = '00000000-0000-4000-8000-000000000013'");
 	g_assert_cmpstr(approver, ==, "API token");
 	g_assert_cmpstr(approving_person, ==, "owner");
+	{
+		g_autofree gchar *label = query_text(database,
+			"SELECT target_label FROM audit_entries WHERE target_type = 'api_token'");
+		g_autofree gchar *text = query_text(database,
+			"SELECT diff FROM audit_entries WHERE target_type = 'api_token'");
+		g_autofree gchar *unchanged = query_text(database,
+			"SELECT diff FROM audit_entries WHERE target_label = 'Human company'");
+		g_autoptr(JsonNode) diff = venture_json_parse(text, NULL);
+		JsonObject *change = json_object_get_object_member(json_node_get_object(diff), "name");
+
+		/* The token need not still exist. Preserve the change and other
+		 * fields, while removing both historical names from its diff. */
+		g_assert_cmpstr(label, ==, "API token #999");
+		g_assert_null(strstr(text, "private name"));
+		g_assert_true(json_object_get_boolean_member(change, "redacted"));
+		g_assert_true(json_object_get_boolean_member(change, "changed"));
+		g_assert_nonnull(json_object_get_member(json_node_get_object(diff), "active"));
+		g_assert_nonnull(strstr(unchanged, "Human company"));
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+	}
+
 	g_clear_object(&database);
 	venture_test_remove_tree(directory);
 }
@@ -349,7 +378,20 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database,
 		"INSERT INTO users (id, uuid, username, role, active) VALUES (17, 'pg-owner', 'pg-owner', 'owner', TRUE);"
-		"INSERT INTO organizations (id, uuid, name, slug, active) VALUES (31, 'pg-org', 'Legacy organization', 'pg-org', TRUE)", NULL, &error));
+		"INSERT INTO organizations (id, uuid, name, slug, active) VALUES (31, 'pg-org', 'Legacy organization', 'pg-org', TRUE);"
+		/* Token targets can outlive the token itself. Shared history must
+		 * retain the event without retaining either of its private names. */
+		"INSERT INTO audit_entries (uuid, organization_id, action, actor, target_type, target_id, target_label, diff) VALUES "
+		"('pg-token-audit', 31, 'update', 'owner', 'api_token', 999, 'Private token name', "
+		"'{\"name\":{\"from\":\"Old private name\",\"to\":\"Private token name\"},\"active\":{\"from\":true,\"to\":false}}'),"
+		"('pg-company-audit', 31, 'update', 'owner', 'company', 888, 'Public company name', "
+		"'{\"name\":{\"from\":\"Old public name\",\"to\":\"Public company name\"}}');"
+		"INSERT INTO subscription_events (uuid, organization_id, subscription_id, kind, to_status, invoice_id, final_invoice_id) VALUES "
+		"('pg-recurring-event', 31, 77, 'renewed', 'active', 701, 0),"
+		"('pg-final-event', 31, 77, 'cancelled', 'cancelled', 0, 0);"
+		"INSERT INTO billing_requests (uuid, organization_id, subscription_id, action, processed, invoice_id, at) VALUES "
+		"('pg-recurring-request', 31, 77, 'renew', 1, 701, '2026-01-01T00:00:00Z'),"
+		"('pg-final-request', 31, 77, 'cancel', 1, 702, '2026-01-15T00:00:00Z')", NULL, &error));
 	g_assert_no_error(error);
 	runner = venture_migrations_new(venture_database_get_connection(database), VENTURE_DATABASE_BACKEND_POSTGRES, &error);
 	g_assert_no_error(error);
@@ -357,6 +399,35 @@ test_postgresql(void)
 	g_assert_no_error(error);
 	g_assert_true(orm_migrator_up(runner, 0, &error));
 	g_assert_no_error(error);
+	{
+		g_autofree gchar *label = query_text(database,
+			"SELECT target_label FROM audit_entries WHERE uuid = 'pg-token-audit'");
+		g_autofree gchar *text = query_text(database,
+			"SELECT diff FROM audit_entries WHERE uuid = 'pg-token-audit'");
+		g_autofree gchar *company = query_text(database,
+			"SELECT diff FROM audit_entries WHERE uuid = 'pg-company-audit'");
+		g_autoptr(JsonNode) diff = venture_json_parse(text, NULL);
+		JsonObject *change = json_object_get_object_member(json_node_get_object(diff), "name");
+
+		g_assert_cmpstr(label, ==, "API token #999");
+		g_assert_null(strstr(text, "private"));
+		g_assert_null(strstr(text, "Private"));
+		g_assert_true(json_object_get_boolean_member(change, "redacted"));
+		g_assert_true(json_object_get_boolean_member(change, "changed"));
+		g_assert_nonnull(json_object_get_member(json_node_get_object(diff), "active"));
+		g_assert_nonnull(strstr(company, "Public company name"));
+	}
+	{
+		g_autofree gchar *final_invoice = query_text(database,
+			"SELECT CAST(final_invoice_id AS TEXT) FROM subscription_events WHERE uuid = 'pg-final-event'");
+		g_autofree gchar *recurring_invoice = query_text(database,
+			"SELECT CAST(final_invoice_id AS TEXT) FROM subscription_events WHERE uuid = 'pg-recurring-event'");
+
+		/* A completed cancellation names its final usage invoice, not
+		 * the recurring invoice already owned by a renewal event. */
+		g_assert_cmpstr(final_invoice, ==, "702");
+		g_assert_cmpstr(recurring_invoice, ==, "0");
+	}
 	result = venture_database_query_raw(database,
 		"SELECT CAST(COUNT(*) AS BIGINT) FROM organization_memberships WHERE user_id = 17 AND organization_id = 31 AND role = 'owner' AND active", NULL, &error);
 	g_assert_no_error(error);

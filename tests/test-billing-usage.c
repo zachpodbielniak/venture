@@ -429,6 +429,72 @@ test_final_usage_on_cancel(Fixture *f, gconstpointer data)
 		g_assert_true(g_str_has_suffix(number, "2026-02-01"));
 	}
 	g_assert_cmpint(owed(f, invoice), ==, 100);
+	/* Reconstruct an upgrade from the old representation: only the durable
+	 * billing request named the final invoice. Replaying migration preserves
+	 * the exact association and must not turn it into a base-period bill. */
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_SUBSCRIPTION_EVENT);
+		g_autoptr(GPtrArray) events = NULL;
+		guint i, matched = 0;
+		g_assert_true(venture_database_execute(f->db,
+			"UPDATE subscription_events SET final_invoice_id = 0", NULL, &error));
+		g_assert_true(venture_database_execute(f->db,
+			"DELETE FROM schema_migrations WHERE version >= 690", NULL, &error));
+		g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_assert_true(venture_query_add_filter_int(q, "to-status", VENTURE_FILTER_OP_EQ, 4, &error));
+		venture_query_set_limit(q, 0);
+		events = venture_database_find(f->db, q, &error);
+		g_assert_no_error(error);
+		for (i = 0; i < events->len; i++)
+		{
+			VentureEntity *event = g_ptr_array_index(events, i);
+			g_assert_cmpint(integer(event, "invoice-id"), ==, 0);
+			g_assert_cmpint(integer(event, "final-invoice-id"), >, 0);
+			if (integer(event, "subscription-id") == scheduled)
+			{
+				g_assert_cmpint(integer(event, "final-invoice-id"), ==, invoice);
+				matched++;
+			}
+		}
+		g_assert_cmpuint(matched, ==, 1);
+		g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+	}
+}
+
+/* Cancellation closes the last usage period without advancing its start.
+ * Deleting its reports would erase the evidence for the final invoice. */
+static void
+test_cancelled_usage_kept(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) usage = record(f, "usage_record");
+	g_autoptr(VentureEntity) cancel = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean scheduled = GPOINTER_TO_INT(data);
+	gint64 id;
+
+	id = start(f, f->metered, "2026-01-01");
+	g_object_set(usage, "subscription-id", id, "quantity", (gint64)1300, NULL);
+	field(usage, "occurred-at", "2026-01-10");
+	save(f, usage);
+	cancel = request(f, "cancel", id, "2026-01-15");
+	g_object_set(cancel, "at-period-end", scheduled, NULL);
+	save(f, cancel);
+	if (scheduled)
+		g_assert_cmpint(owed(f, renew(f, id, "2026-02-01")), ==, 300);
+	else
+		g_assert_cmpint(owed(f, integer(cancel, "invoice-id")), ==, 300);
+	g_assert_false(venture_database_delete(f->db, usage, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	stored = venture_database_get(f->db, VENTURE_TYPE_USAGE_RECORD, venture_entity_get_id(usage), &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(stored);
+	g_assert_false(venture_entity_is_deleted(stored));
+	g_assert_cmpint(integer(stored, "quantity"), ==, 1300);
 }
 
 int
@@ -443,5 +509,7 @@ main(int argc, char *argv[])
 	g_test_add("/billing-usage/trial-not-charged", Fixture, NULL, setup, test_trial_not_charged, teardown);
 	g_test_add("/billing-usage/rate-of-the-period", Fixture, NULL, setup, test_rate_of_the_period, teardown);
 	g_test_add("/billing-usage/final-usage-on-cancel", Fixture, NULL, setup, test_final_usage_on_cancel, teardown);
+	g_test_add("/billing-usage/cancelled-usage-kept", Fixture, GINT_TO_POINTER(FALSE), setup, test_cancelled_usage_kept, teardown);
+	g_test_add("/billing-usage/scheduled-cancelled-usage-kept", Fixture, GINT_TO_POINTER(TRUE), setup, test_cancelled_usage_kept, teardown);
 	return g_test_run();
 }

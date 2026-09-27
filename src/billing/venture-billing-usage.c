@@ -374,6 +374,7 @@ venture_billing_usage_check_removal(VentureDatabase *database, VentureEntity *re
 	g_autoptr(VentureEntity) stored = NULL;
 	g_autoptr(VentureEntity) sub = NULL;
 	g_autoptr(GDateTime) at = NULL;
+	gint status = 0;
 
 	stored = venture_database_get(database, VENTURE_TYPE_USAGE_RECORD, venture_entity_get_id(record), error);
 	if (stored == NULL)
@@ -382,7 +383,10 @@ venture_billing_usage_check_removal(VentureDatabase *database, VentureEntity *re
 	if (sub == NULL)
 		return TRUE;
 	g_object_get(stored, "occurred-at", &at, NULL);
-	if (usage_billed(sub, at))
+	g_object_get(sub, "status", &status, NULL);
+	/* Cancellation invoices the final stretch without advancing period-start.
+	 * Retain its evidence just as for a period closed by renewal. */
+	if (status >= 4 || usage_billed(sub, at))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "billed usage is kept as it was invoiced");
 	return TRUE;
 }

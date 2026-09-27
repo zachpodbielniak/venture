@@ -51,6 +51,23 @@ Migration integration uses =VENTURE_TEST_MIGRATION_POSTGRES_URI= with
 
 The whole tree builds with =-Werror= and a wide warning set in =gnu89=. A warning is a latent bug; there are none.
 
+The suite also needs Node.js, included in =make list-deps=. =test-ui-script=
+runs the shipped form-submission JavaScript with a small in-process DOM and
+transport fixture; it needs no npm packages or browser download. It checks
+duplicate-submit prevention, preserved disabled controls, inline validation,
+and a lost response after a successful write. A network failure must not tell
+the operator that nothing was saved. Browser layout and interaction still
+need a separate walkthrough of the built server.
+
+The opt-in =tools/venture-test-ui-browser.py= checks the populated ticket board
+at 390 and 1440 pixels in both looks, with and without reduced motion. It
+asserts that columns scroll inside the board rather than widening the page.
+Install Python Playwright and its Chromium browser in a temporary environment;
+set =VENTURE_TEST_UI_URL=, =VENTURE_TEST_UI_USERNAME= and
+=VENTURE_TEST_UI_PASSWORD= privately for a disposable DEBUG demo, then run the
+script with that environment's Python. It only signs in and reads pages.
+This browser dependency is not required by the normal GTest suite.
+
 * What the suite pins down
 
 ** =test-money=

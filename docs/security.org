@@ -176,3 +176,16 @@ action registry and =venturectl=, the organization setting, and the HTTP
 gate, sign-in and REST/CSV/audit redaction. Every clock-dependent check
 uses the service's =fixed-time= property. The migration guard is run
 against half-present schemas and refuses each.
+
+* API token names in shared history
+
+The token's name stays editable and visible on the owner-only token page.
+Shared audit entries use =API token #<id>= for both token actors and token
+targets. Renaming a token records that its name changed, with
+=changed: true, redacted: true=, without either name value. This keeps a
+name-only edit persistent without disclosing it to viewers of the audit
+trail. Other changed fields retain their normal audit representation.
+
+Upgrade migrations anonymize existing token actor/approver names, token
+target labels and name diffs, including entries whose token was deleted.
+The migration preserves unrelated records and other fields in the diff.

@@ -176,7 +176,8 @@ stripe_json_integer(JsonObject *object, const gchar *field, gint64 expected)
 }
 
 static gboolean
-stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization, GError **error)
+stripe_authorized_terms_for_collection(VentureStripeService *self, VentureEntity *authorization,
+	gboolean final_usage, GError **error)
 {
 	g_autoptr(VentureEntity) subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
 		stripe_number(authorization, "subscription-id"), error);
@@ -189,12 +190,20 @@ stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization
 	/* Referenced prices are commercially immutable in the billing validator.
 	 * Their permitted catalog-active edit must not cancel existing consent;
 	 * the captured GObject version remains provenance, not permission state. */
-	if (!stripe_flag(authorization, "enabled") || state > 2 ||
+	if (!stripe_flag(authorization, "enabled") || (state > 2 && !(final_usage && state == 4)) ||
 		stripe_number(subscription, "company-id") != stripe_number(authorization, "company-id") ||
 		stripe_number(subscription, "plan-price-id") != stripe_number(authorization, "plan-price-id") ||
 		stripe_number(subscription, "seats") != stripe_number(authorization, "seats"))
 		return refuse(error, "Authorization is disabled or subscription terms changed; new hosted permission is required");
 	return TRUE;
+}
+
+/* Ending a subscription keeps permission only for its already incurred
+ * final usage. New hosted setup and ordinary invoices remain live-only. */
+static gboolean
+stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization, GError **error)
+{
+	return stripe_authorized_terms_for_collection(self, authorization, FALSE, error);
 }
 
 /*

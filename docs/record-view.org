@@ -88,6 +88,14 @@ message with the source. Submissions from before the change have no stored
 message -- it went to the lead's notes, which may have been edited since,
 and nothing trustworthy can be copied back.
 
+Email permission reads as words ("Not requested", for example), including
+when its stored status is a string. String fields named =*-status= or
+=*-state= use the same readable captions as enumeration fields without
+becoming the record's headline badge. Attribution's first/last source
+snapshots can contain =form:<site UUID>=; they are technical fields, folded
+under All fields on both submissions and attribution bindings. The named
+site, campaign and observed-touch links remain available in Details.
+
 * The list
 
 The columns are what somebody scans a list for: the name, then the status,

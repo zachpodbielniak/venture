@@ -161,6 +161,27 @@ venture_pdf_writer_wrap_aligned(
 );
 
 /**
+ * venture_pdf_writer_wrap_pages:
+ * @self: a #VenturePdfWriter
+ * @x: left edge in points
+ * @y: first baseline from the top
+ * @width: available width
+ * @size: font size
+ * @bold: whether to use bold
+ * @text: (nullable): UTF-8 text
+ * @top: first baseline on continuation pages
+ * @bottom: last permitted baseline
+ *
+ * Wraps text, creating continuation pages before a baseline would exceed
+ * @bottom. Long unbroken words are split using the same width calculation.
+ *
+ * Returns: the next baseline on the final page
+ */
+gdouble venture_pdf_writer_wrap_pages(VenturePdfWriter *self, gdouble x,
+	gdouble y, gdouble width, gdouble size, gboolean bold, const gchar *text,
+	gdouble top, gdouble bottom);
+
+/**
  * venture_pdf_writer_fit_size:
  * @self: a #VenturePdfWriter
  * @size: the size wanted

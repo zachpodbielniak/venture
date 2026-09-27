@@ -4,7 +4,7 @@
 #define VENTURE_DOCUMENT_MAX_LINES 200
 
 static const gchar *const document_header_fields[] = { "number", "company-id", "contact-id", "terms", "notes", NULL };
-static const gchar *const document_invoice_fields[] = { "tax-exempt", NULL };
+static const gchar *const document_invoice_fields[] = { "tax-exempt", "issued-at", "due-at", NULL };
 static const gchar *const document_line_fields[] = { "description", "quantity", "unit-price", "product-id", "discount-percent", "tax-percent", NULL };
 /* Both kinds of line are taxed by a rate record, so a quote asks for
  * exactly what the invoice it becomes will. */
@@ -46,6 +46,18 @@ document_exemption_reason(HtmxRequest *request)
 	return g_strdup(kind);
 }
 
+/* These records only type the form's fields. Their construction times
+ * are not user input, and would make an identical approval retry differ. */
+static void
+document_remove_identity(JsonObject *object)
+{
+	static const gchar *const spine[] = { "id", "uuid", "created_at", "updated_at", "version", NULL };
+	guint i;
+
+	for (i = 0; spine[i] != NULL; i++)
+		json_object_remove_member(object, spine[i]);
+}
+
 static JsonObject *
 document_spec_from_request(HtmxRequest *request, GError **error)
 {
@@ -74,6 +86,16 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 		}
 		node = venture_serializable_to_json(VENTURE_SERIALIZABLE(header), FALSE);
 		spec = json_object_ref(json_node_get_object(node));
+		document_remove_identity(spec);
+		if (!quote && htmx_request_get_form_value(request, "tax-exempt") != NULL &&
+		    htmx_request_get_form_value(request, "exempt-remember") != NULL)
+		{
+			const gchar *kind = htmx_request_get_form_value(request, "exempt-kind");
+			const gchar *certificate = htmx_request_get_form_value(request, "exempt-number");
+			json_object_set_boolean_member(spec, "remember_tax_exemption", TRUE);
+			json_object_set_string_member(spec, "tax_exemption_kind", kind != NULL ? kind : "");
+			json_object_set_string_member(spec, "tax_exemption_number", certificate != NULL ? certificate : "");
+		}
 		json_object_set_array_member(spec, "lines", lines);
 		json_object_set_boolean_member(spec, "send", htmx_request_get_form_value(request, "send") != NULL);
 		/* Rows are numbered by the page, which adds and removes them;
@@ -97,6 +119,7 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 				return NULL;
 			}
 			line_node = venture_serializable_to_json(VENTURE_SERIALIZABLE(line), FALSE);
+			document_remove_identity(json_node_get_object(line_node));
 			/* Record JSON represents money as an object; the compose contract
 			 * accepts the exact textual amount shared with the CLI. */
 			g_object_get(line, "unit-price", &price, NULL);
@@ -341,7 +364,7 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 		g_string_append_printf(html, "<nav class=\"how-often\" aria-label=\"How often\">"
 			"<span class=\"how-often-label\">How often?</span>"
 			"<a class=\"how-often-choice%s\" href=\"/invoices/compose\"%s>"
-			"<strong>Just once</strong><span>One invoice, sent now.</span></a>",
+			"<strong>Just once</strong><span>One invoice, with no schedule.</span></a>",
 			repeat ? "" : " active", repeat ? "" : " aria-current=\"page\"");
 		if (venture_web_module_enabled(self, "recurring"))
 			g_string_append_printf(html, "<a class=\"how-often-choice%s\" href=\"/invoices/compose?repeat=1\"%s>",
@@ -364,6 +387,23 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
 			"<input type=\"text\" name=\"number\" placeholder=\"%s\"></label>",
 			quote ? "Q-2026-001" : "INV-2026-001");
+	if (!quote && !repeat)
+	{
+		g_autoptr(VentureInvoice) dates = venture_invoice_new();
+		g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+		g_autoptr(GDateTime) due = g_date_time_add_days(today, 30);
+		g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(VENTURE_ENTITY(dates));
+		guint i;
+
+		g_object_set(dates, "issued-at", today, "due-at", due, NULL);
+		for (i = 0; i < specs->len; i++)
+		{
+			VentureFieldSpec *field = g_ptr_array_index(specs, i);
+			const gchar *name = venture_field_spec_get_name(field);
+			if (g_str_equal(name, "issued-at") || g_str_equal(name, "due-at"))
+				venture_web_append_form_field_scoped(self, html, field, VENTURE_ENTITY(dates), organization);
+		}
+	}
 	g_string_append(html, "</div>");
 
 	g_string_append_printf(html, "<table class=\"line-items\"><thead><tr>"
@@ -644,6 +684,8 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
 	HtmxResponse *gate;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	gboolean transaction = FALSE;
 	gboolean quote = strstr(htmx_request_get_path(request), "quote") != NULL;
 	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
 	(void)params;
@@ -668,13 +710,34 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		return gate;
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
-	if (!quote && !api && !document_remember_exemption(self, request, &actor, &error))
-		return venture_web_error_response(error);
+	/* A schedule has no issuance approval. Immediate invoices instead carry
+	 * the remembered exemption into the core transaction, after consent. */
 	if (!quote && !api && htmx_request_get_form_value(request, "repeat") != NULL)
-		return document_save_schedule(self, request, &actor);
+	{
+		HtmxResponse *response;
+
+		if (!venture_database_begin(database, &error))
+			return venture_web_error_response(error);
+		transaction = TRUE;
+		if (!document_remember_exemption(self, request, &actor, &error))
+			goto failed;
+		response = document_save_schedule(self, request, &actor);
+
+		if (htmx_response_get_status(response) >= 400)
+		{
+			venture_database_rollback(database);
+			return response;
+		}
+		if (!venture_database_commit(database, &error))
+		{
+			g_object_unref(response);
+			goto failed;
+		}
+		return response;
+	}
 	spec = document_spec_from_request(request, &error);
 	if (spec == NULL)
-		return venture_web_error_response(error);
+		goto failed;
 	if (quote)
 		result = venture_document_service_compose_quote(venture_document_service_get(venture_context_get_database(self->context)),
 			venture_web_active_organization(self, request), spec, &actor, &error);
@@ -682,7 +745,7 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		result = venture_document_service_compose_invoice(venture_document_service_get(venture_context_get_database(self->context)),
 			venture_web_active_organization(self, request), spec, &actor, &error);
 	if (result == NULL)
-		return venture_web_error_response(error);
+		goto failed;
 	if (!api)
 	{
 		g_autofree gchar *path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, quote ? "quote" : "invoice",
@@ -690,6 +753,11 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		return venture_web_redirect_to(path);
 	}
 	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE), 200);
+
+failed:
+	if (transaction)
+		venture_database_rollback(database);
+	return venture_web_error_response(error);
 }
 
 static void

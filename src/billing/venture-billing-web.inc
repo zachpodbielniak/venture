@@ -251,6 +251,8 @@ venture_billing_web_invoices(VentureWebServer *self, GString *html, VentureEntit
 
 		g_object_get(g_ptr_array_index(events, i), "invoice-id", &invoice_id, NULL);
 		if (invoice_id == 0)
+			g_object_get(g_ptr_array_index(events, i), "final-invoice-id", &invoice_id, NULL);
+		if (invoice_id == 0)
 			continue;
 		invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, NULL);
 		if (invoice == NULL)
@@ -316,8 +318,8 @@ venture_billing_web_cancel(VentureWebServer *self, GString *html, VentureEntity 
 		g_string_append_printf(html, "<form method=\"post\" action=\"/billing/subscriptions/%" G_GINT64_FORMAT "/action\">"
 			"<input type=\"hidden\" name=\"billing_action\" value=\"cancel\">"
 			"<input type=\"hidden\" name=\"at-period-end\" value=\"true\">"
-			"<button class=\"btn\" type=\"submit\">Cancel at renewal: nothing more is billed</button></form>", id);
-	g_string_append(html, "</div></section>");
+			"<button class=\"btn\" type=\"submit\">Cancel at renewal: no further base charges</button></form>", id);
+	g_string_append(html, "<p>Any final metered usage is billed when the subscription ends.</p></div></section>");
 }
 
 /*

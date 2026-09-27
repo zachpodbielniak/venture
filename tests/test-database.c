@@ -1421,6 +1421,52 @@ test_database_audit_records_diff(
 	g_assert_nonnull(g_strstr_len(diff, -1, "paused"));
 }
 
+/* A rename must still save, but neither creation nor rename may publish
+ * the owner's token name through the shared audit table. */
+static void
+test_database_token_name_audit(Fixture *fixture, gconstpointer user_data)
+{
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autoptr(VentureEntity) loaded = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *secret = venture_api_token_generate(token);
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *expected = NULL;
+	guint i;
+
+	(void)user_data;
+	g_object_set(token, "name", "private old token name", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(token), fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(token), NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(token, "name", "private new token name", NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(token), NULL, &error));
+	g_assert_no_error(error);
+	loaded = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN,
+		venture_entity_get_id(VENTURE_ENTITY(token)), &error);
+	g_assert_no_error(error);
+	g_object_get(loaded, "name", &name, NULL);
+	g_assert_cmpstr(name, ==, "private new token name");
+	query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_assert_true(venture_query_add_filter_string(query, "target-type", VENTURE_FILTER_OP_EQ, "api_token", &error));
+	entries = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(entries->len, ==, 2);
+	expected = g_strdup_printf("API token #%" G_GINT64_FORMAT,
+		venture_entity_get_id(VENTURE_ENTITY(token)));
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autofree gchar *label = NULL;
+		g_autofree gchar *diff = NULL;
+		g_object_get(g_ptr_array_index(entries, i), "target-label", &label, "diff", &diff, NULL);
+		g_assert_cmpstr(label, ==, expected);
+		if (diff != NULL)
+			g_assert_null(strstr(diff, "private"));
+	}
+}
+
 /* --- Ledger -------------------------------------------------------------- */
 
 static VentureLedgerEntry *
@@ -2196,6 +2242,7 @@ main(
 
 	ADD("/database/writes-audit-entries", test_database_writes_audit_entries);
 	ADD("/database/audit-records-diff", test_database_audit_records_diff);
+	ADD("/database/token-name-audit", test_database_token_name_audit);
 
 	ADD("/database/ledger-balanced-transaction",
 	    test_database_ledger_balanced_transaction);
