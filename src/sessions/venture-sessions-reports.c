@@ -909,7 +909,7 @@ venture_sessions_performance(
 
 	query = venture_query_new(VENTURE_TYPE_SESSION);
 	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
 
 	if ((NULL != period) &&
 	    !venture_query_set_date_range(query, "started-at", period, error))
@@ -930,11 +930,11 @@ venture_sessions_performance(
 
 	/* Refused rather than truncated: fewer sessions presented as all of
 	 * them is the failure this avoids. */
-	if (sessions->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (sessions->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "More than %d sessions match; narrow the period or the venture",
-		            VENTURE_AGGREGATE_MAX_ROWS);
+		            venture_aggregate_get_max_rows());
 		return NULL;
 	}
 

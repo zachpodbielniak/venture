@@ -1351,6 +1351,118 @@ test_margin_market_off(
 	g_assert_cmpstr(cell_text(filtered, 0, "recipe"), ==, "Healing Potion");
 }
 
+/* recipe_margin narrowed by venture and category, as the options say. */
+static VentureReportResult *
+margin_narrowed(
+	Fixture		 *fixture,
+	gint64		  venture_id,
+	gint64		  category_id,
+	GError		**error
+){
+	g_autoptr(JsonObject) options = NULL;
+	VentureReport *report;
+
+	options = json_object_new();
+
+	if (0 != venture_id)
+		json_object_set_int_member(options, "venture_id", venture_id);
+
+	if (0 != category_id)
+		json_object_set_int_member(options, "category_id", category_id);
+
+	report = venture_report_registry_lookup(
+		venture_context_get_report_registry(fixture->context), "recipe_margin");
+	g_assert_nonnull(report);
+
+	return venture_report_generate(report, fixture->context, NULL, options, error);
+}
+
+/*
+ * The row bound counts the recipes asked about. venture_id, category_id
+ * and "active only" are part of the query, so an organization past the
+ * bound is refused only when the question itself is: narrowed under it,
+ * the report answers. What breaks: the three filters run in C after a
+ * capped fetch, so every question in a large organization is refused --
+ * by a message that tells the operator to narrow the question they just
+ * narrowed. The bound is lowered to two rather than seeding twenty
+ * thousand recipes.
+ */
+static void
+test_margin_bound(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) everything = NULL;
+	g_autoptr(VentureReportResult) by_venture = NULL;
+	g_autoptr(VentureReportResult) by_category = NULL;
+	g_autoptr(VentureReportResult) active_only = NULL;
+	g_autoptr(VentureVenture) other = NULL;
+	g_autoptr(VentureEntity) alchemy = NULL;
+	g_autoptr(VentureEntity) healing = NULL;
+	g_autoptr(VentureEntity) filed = NULL;
+	g_autoptr(VentureEntity) elsewhere = NULL;
+	g_autoptr(VentureEntity) retired = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 potions;
+
+	(void)user_data;
+
+	other = venture_venture_new();
+	g_object_set(other, "name", "Elsewhere", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(other), fixture->organization_id);
+	save(fixture, other);
+
+	alchemy = VENTURE_ENTITY(venture_category_new());
+	g_object_set(alchemy, "name", "Alchemy", "applies-to", "recipe", NULL);
+	venture_entity_set_organization_id(alchemy, fixture->organization_id);
+	save(fixture, alchemy);
+	healing = VENTURE_ENTITY(venture_category_new());
+	g_object_set(healing, "name", "Healing", "applies-to", "recipe",
+	             "parent-id", ID(alchemy), NULL);
+	venture_entity_set_organization_id(healing, fixture->organization_id);
+	save(fixture, healing);
+
+	/* Two active recipes in the workshop, one filed beneath Alchemy;
+	 * one active in another venture; one retired in the workshop. */
+	potions = recipe(fixture, "Healing Potion", product(fixture, "Healing Potion"), 1);
+	filed = venture_database_get(fixture->database, VENTURE_TYPE_RECIPE, potions, NULL);
+	g_object_set(filed, "category-id", ID(healing), NULL);
+	save(fixture, filed);
+	recipe(fixture, "Plain", product(fixture, "Plain thing"), 1);
+	elsewhere = recipe_new_in(fixture, 0, "Elsewhere", product(fixture, "Far thing"), 1);
+	g_object_set(elsewhere, "venture-id", ID(other), NULL);
+	save(fixture, elsewhere);
+	retired = recipe_new_in(fixture, 0, "Retired", product(fixture, "Old thing"), 1);
+	g_object_set(retired, "venture-id", fixture->venture_id, "active", FALSE, NULL);
+	save(fixture, retired);
+
+	/* Three active of four: the retired one is not counted. */
+	venture_aggregate_set_max_rows(3);
+	active_only = margin_narrowed(fixture, 0, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(active_only), ==, 3);
+
+	/* Past two, the whole organization is refused... */
+	venture_aggregate_set_max_rows(2);
+	everything = margin_narrowed(fixture, 0, 0, &error);
+	g_assert_null(everything);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* ...and the workshop's two, or Alchemy's one, are answered. */
+	by_venture = margin_narrowed(fixture, fixture->venture_id, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(by_venture), ==, 2);
+
+	by_category = margin_narrowed(fixture, 0, ID(alchemy), &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(by_category), ==, 1);
+	g_assert_cmpstr(cell_text(by_category, 0, "recipe"), ==, "Healing Potion");
+
+	venture_aggregate_set_max_rows(0);
+	g_assert_cmpint(venture_aggregate_get_max_rows(), ==, VENTURE_AGGREGATE_MAX_ROWS);
+}
+
 /* ==========================================================================
  * The module
  * ========================================================================== */
@@ -1767,6 +1879,7 @@ main(
 	ADD("/production/margin/market", test_margin_market);
 	ADD("/production/margin/currencies-and-tools", test_margin_currencies_and_tools);
 	ADD("/production/margin/market-off", test_margin_market_off);
+	ADD("/production/margin/bound", test_margin_bound);
 	ADD("/production/module-off", test_module_off);
 	g_test_add("/production/http", ServerFixture, NULL, server_fixture_set_up,
 	           test_http, server_fixture_tear_down);

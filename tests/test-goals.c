@@ -1168,6 +1168,83 @@ test_materials_quantities(
 }
 
 /*
+ * The row bound counts what the question is about. goal_progress's
+ * category and status, and goal_materials' goal, open-goal and
+ * open-step narrowing, are all part of the queries, so an organisation
+ * past the bound is refused only when the question is. What breaks:
+ * filters applied in C after a capped fetch, so every question in a large
+ * organisation is refused by a message that says to narrow the question
+ * just narrowed. The bound is lowered rather than seeding twenty
+ * thousand goals.
+ */
+static void
+test_bound_counts_the_question(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonObject) options = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	Apothecary shop;
+	gint64 professions;
+	gint64 alchemy_category;
+
+	(void)user_data;
+
+	/* Three goals and a closed one; five recipe steps, two still open
+	 * on open goals. */
+	apothecary(fixture, &shop);
+	professions = category(fixture, "Professions", 0);
+	alchemy_category = category(fixture, "Alchemy", professions);
+	record = reread(fixture, VENTURE_TYPE_GOAL, shop.sub);
+	g_object_set(record, "category-id", alchemy_category, NULL);
+	save(fixture, record);
+	g_clear_object(&record);
+	record = goal_new(fixture, "Save 5000", 0, 1000, 5000);
+	g_object_set(record, "status", VENTURE_GOAL_STATUS_PAUSED, NULL);
+	save(fixture, record);
+
+	venture_aggregate_set_max_rows(1);
+
+	run_refused(fixture, "goal_progress", NULL, "narrow by");
+
+	options = json_object_new();
+	json_object_set_int_member(options, "category_id", professions);
+	result = run_ok(fixture, "goal_progress", options);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+
+	g_clear_pointer(&options, json_object_unref);
+	options = json_object_new();
+	json_object_set_string_member(options, "status", "paused");
+	g_clear_pointer(&result, g_object_unref);
+	result = run_ok(fixture, "goal_progress", options);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+	g_assert_true(has_row(result, "goal", "Save 5000"));
+
+	/* The sub-goal alone is one goal and one open step. */
+	g_clear_pointer(&options, json_object_unref);
+	options = json_object_new();
+	json_object_set_int_member(options, "goal_id", shop.sub);
+	g_clear_pointer(&result, g_object_unref);
+	result = run_ok(fixture, "goal_materials", options);
+	g_assert_cmpfloat(cell_number(result, row_of(result, "product", "Peacebloom", NULL),
+	                              "needed"), ==, 15.0);
+
+	/* Three open goals: past one, refused. */
+	run_refused(fixture, "goal_materials", NULL, "narrow by");
+
+	/* Three open goals and two open steps -- the achieved goal, the
+	 * done step and the empty one are not counted against three. */
+	venture_aggregate_set_max_rows(3);
+	g_clear_pointer(&result, g_object_unref);
+	result = run_ok(fixture, "goal_materials", NULL);
+	g_assert_cmpfloat(cell_number(result, row_of(result, "product", "Peacebloom", NULL),
+	                              "needed"), ==, 35.0);
+
+	venture_aggregate_set_max_rows(0);
+}
+
+/*
  * A product one recipe uses up and another only borrows: each half of
  * its need is bounded, and their sum is checked too. What breaks: a sum
  * that wraps negative and a shopping list that asks for nothing -- or
@@ -1852,6 +1929,7 @@ main(
 	ADD("/goals/materials/pricing", test_materials_pricing);
 	ADD("/goals/materials/sum-overflow", test_materials_sum_overflow);
 	ADD("/goals/materials/production-off", test_materials_production_off);
+	ADD("/goals/bound", test_bound_counts_the_question);
 	ADD("/goals/module-off", test_module_off);
 	ADD("/goals/dashboard/start-field", test_dashboard_start_field);
 	g_test_add("/goals/http", ServerFixture, NULL, server_fixture_set_up,

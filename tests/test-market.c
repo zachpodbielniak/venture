@@ -1028,6 +1028,74 @@ test_listing_performance_category(
 }
 
 /*
+ * The row bound counts the listings asked about: venture_id is part of the
+ * query, through the venture's products, so a venture's listings are
+ * answered when the organization's are past the bound, and a venture that
+ * sells nothing has none. What breaks: the venture filter applied to the
+ * rows after a capped fetch, so narrowing never gets a large organization
+ * under the bound the refusal tells it to narrow for. The bound is
+ * lowered rather than seeding twenty thousand listings.
+ */
+static void
+test_listing_performance_bound(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) narrowed = NULL;
+	g_autoptr(VentureReportResult) empty = NULL;
+	g_autoptr(VentureReportResult) refused = NULL;
+	g_autoptr(VentureVenture) second = NULL;
+	g_autoptr(VentureVenture) idle = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *workshop = NULL;
+	g_autofree gchar *nothing = NULL;
+	guint i;
+
+	(void)user_data;
+
+	second = venture_venture_new();
+	g_object_set(second, "name", "Other stall", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(second), fixture->organization_id);
+	save(fixture, second);
+	idle = venture_venture_new();
+	g_object_set(idle, "name", "Idle stall", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(idle), fixture->organization_id);
+	save(fixture, idle);
+
+	/* Two of this venture's listings, three of the other's. */
+	for (i = 0; i < 2; i++)
+		listing(fixture, product(fixture, "Peacebloom", 0), "auction", 1, "1.00 USD",
+		        "2026-03-01T00:00:00Z", VENTURE_LISTING_OUTCOME_SOLD, 0,
+		        "2026-03-02T00:00:00Z", NULL, NULL);
+
+	for (i = 0; i < 3; i++)
+		listing(fixture, product_in(fixture, 0, ID(second), "Silverleaf", 0), "auction",
+		        1, "1.00 USD", "2026-03-01T00:00:00Z", VENTURE_LISTING_OUTCOME_SOLD, 0,
+		        "2026-03-02T00:00:00Z", NULL, NULL);
+
+	venture_aggregate_set_max_rows(2);
+
+	refused = run(fixture, "listing_performance", "2026-03", &error,
+	              "group_by", "channel", NULL);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	workshop = g_strdup_printf("%" G_GINT64_FORMAT, fixture->venture_id);
+	narrowed = RUN(fixture, "listing_performance", "2026-03", "group_by", "channel",
+	               "venture_id", workshop);
+	g_assert_cmpfloat(number(narrowed, row_where(narrowed, "group", "auction"),
+	                         "units_listed"), ==, 2);
+
+	nothing = g_strdup_printf("%" G_GINT64_FORMAT, ID(idle));
+	empty = RUN(fixture, "listing_performance", "2026-03", "group_by", "channel",
+	            "venture_id", nothing);
+	g_assert_cmpuint(venture_report_result_get_row_count(empty), ==, 0);
+
+	venture_aggregate_set_max_rows(0);
+}
+
+/*
  * Another organization's listings are not this one's. What breaks: two
  * businesses on one install reading each other's sale rate.
  */
@@ -1646,6 +1714,7 @@ main(
 	ADD("/market/listing-performance/currencies", test_listing_performance_currencies);
 	ADD("/market/listing-performance/category", test_listing_performance_category);
 	ADD("/market/listing-performance/organization", test_listing_performance_organization);
+	ADD("/market/listing-performance/bound", test_listing_performance_bound);
 	ADD("/market/cross-organization-references", test_cross_organization_references);
 	ADD("/market/price-history/buckets", test_price_history_buckets);
 	ADD("/market/price-history/refusals", test_price_history_refusals);

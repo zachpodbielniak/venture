@@ -255,6 +255,14 @@ first seven columns were empty.
   thinks stale ones are current and re-archives them: the link fails on a
   symbol in neither version, or worse, succeeds against half-stale objects.
   `clean-all` now removes every dep build tree for this reason.
+- **A report's narrowing belongs in the query its row bound counts.**
+  Reports that total in C fetch at most `venture_aggregate_get_max_rows()`
+  rows and refuse past it. A filter applied to the rows *after* that
+  fetch -- venture, category, status, active -- leaves an organization
+  past the bound refused however narrowly it asks, by a message telling
+  it to narrow. Push it into the `VentureQuery` (an `IN` over
+  `venture_category_descendants()` for "this category and beneath"), and
+  test with `venture_aggregate_set_max_rows()` rather than 20 000 rows.
 - **SQL that aggregates must say what type it wants.** SQLite returns
   `SUM(integer)` as an integer; PostgreSQL widens it to numeric, and the
   typed accessor asserts. Cast aggregates explicitly — `CAST(SUM(x) AS

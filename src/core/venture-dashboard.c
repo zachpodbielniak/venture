@@ -3174,12 +3174,12 @@ venture_widget_numeric_rows(
 	if (matched < 0)
 		return NULL;
 
-	if (matched > VENTURE_AGGREGATE_MAX_ROWS)
+	if (matched > venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "%" G_GINT64_FORMAT " records match; a total reads at "
 		            "most %d. Narrow the filter or the period", matched,
-		            VENTURE_AGGREGATE_MAX_ROWS);
+		            venture_aggregate_get_max_rows());
 		return NULL;
 	}
 

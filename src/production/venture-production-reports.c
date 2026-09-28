@@ -557,9 +557,39 @@ venture_production_recipe_margin(
 
 	/* --- The recipes --- */
 
+	/*
+	 * Every narrowing is part of the query, so the bound below counts the
+	 * recipes the question is about. Filtering in C after the fetch
+	 * counted every recipe in the organization instead: past the bound a
+	 * narrowed question was refused, and told to narrow.
+	 */
 	query = venture_query_new(VENTURE_TYPE_RECIPE);
 	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
+
+	if (!venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
+	                                     "true", error))
+		return NULL;
+
+	if ((0 != venture_id) &&
+	    !venture_query_add_filter_int(query, "venture-id", VENTURE_FILTER_OP_EQ,
+	                                  venture_id, error))
+		return NULL;
+
+	if (NULL != categories)
+	{
+		g_autoptr(GPtrArray) filed = NULL;
+
+		filed = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < categories->len; i++)
+			g_ptr_array_add(filed, g_strdup_printf("%" G_GINT64_FORMAT,
+				g_array_index(categories, gint64, i)));
+
+		if (!venture_query_add_filter(query, "category-id", VENTURE_FILTER_OP_IN,
+		                              filed, error))
+			return NULL;
+	}
 
 	if (!venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, error) ||
 	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
@@ -572,11 +602,11 @@ venture_production_recipe_margin(
 
 	/* Refused rather than truncated: fewer rows presented as all of them
 	 * is the failure this avoids. */
-	if (recipes->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (recipes->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "More than %d recipes match; narrow by venture_id or category_id",
-		            VENTURE_AGGREGATE_MAX_ROWS);
+		            "More than %d active recipes match; narrow by venture_id "
+		            "or category_id", venture_aggregate_get_max_rows());
 		return NULL;
 	}
 
@@ -597,33 +627,8 @@ venture_production_recipe_margin(
 	for (i = 0; i < recipes->len; i++)
 	{
 		VentureEntity *recipe;
-		gboolean active;
-		gint64 owner;
-		gint64 filed;
 
 		recipe = g_ptr_array_index(recipes, i);
-		g_object_get(recipe, "active", &active, "venture-id", &owner,
-		             "category-id", &filed, NULL);
-
-		if (!active)
-			continue;
-
-		if ((0 != venture_id) && (owner != venture_id))
-			continue;
-
-		if (NULL != categories)
-		{
-			gboolean inside;
-			guint j;
-
-			inside = FALSE;
-
-			for (j = 0; (j < categories->len) && !inside; j++)
-				inside = (g_array_index(categories, gint64, j) == filed);
-
-			if (!inside)
-				continue;
-		}
 
 		if (!production_margin_row(database, result, recipe, organization_id,
 		                           market, source, as_of, error))

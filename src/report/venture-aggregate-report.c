@@ -131,6 +131,25 @@ typedef struct
 } AggregateCell;
 
 /* ==========================================================================
+ * The bound
+ * ========================================================================== */
+
+/* Zero is the macro's bound; only a test ever sets anything else. */
+static gint aggregate_max_rows = 0;
+
+gint
+venture_aggregate_get_max_rows(void)
+{
+	return (aggregate_max_rows > 0) ? aggregate_max_rows : VENTURE_AGGREGATE_MAX_ROWS;
+}
+
+void
+venture_aggregate_set_max_rows(gint max_rows)
+{
+	aggregate_max_rows = MAX(max_rows, 0);
+}
+
+/* ==========================================================================
  * Housekeeping
  * ========================================================================== */
 
@@ -1958,13 +1977,13 @@ venture_aggregate_report(
 	if (matched < 0)
 		return NULL;
 
-	if (matched > VENTURE_AGGREGATE_MAX_ROWS)
+	if (matched > venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "%" G_GINT64_FORMAT " %s records match; the aggregate "
 		            "report reads at most %d. Narrow the period or the "
 		            "filter", matched, plan->entity_name,
-		            VENTURE_AGGREGATE_MAX_ROWS);
+		            venture_aggregate_get_max_rows());
 		return NULL;
 	}
 

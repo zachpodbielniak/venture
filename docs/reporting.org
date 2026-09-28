@@ -203,6 +203,8 @@ Refused, before a row is read, with a message saying what to change:
 - a =filter= that sets =limit=, =offset=, =page= or =order= (paging would quietly total a page);
 - a question matching more than =VENTURE_AGGREGATE_MAX_ROWS= (20 000) records. The count is taken first and the question is refused, naming the count, rather than answered from a truncated set --- a smaller number presented as the same one. Narrow the period or the filter.
 
+Every report that totals fetched rows shares this bound, and reads it with =venture_aggregate_get_max_rows()= rather than the macro so a test can lower it (=venture_aggregate_set_max_rows()=, process-wide, restored with 0) instead of seeding twenty thousand rows. Whatever narrows the question must be a filter in the query the bound counts: a filter applied to the rows after a capped fetch leaves a large organization refused however narrowly it asks, by a refusal that tells it to narrow.
+
 ** Worked examples
 
 Sales gross by product category, per month, this year --- one row per month, category and currency:

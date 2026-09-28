@@ -58,28 +58,31 @@ market_organization(
 /*
  * Runs @query, refusing a set larger than the aggregate report's bound
  * rather than totalling a truncated one: a smaller number presented as
- * the same one is the failure this avoids.
+ * the same one is the failure this avoids. @advice says how to get under
+ * it, and every narrowing it names must already be in @query -- a filter
+ * applied after this has not made the set any smaller.
  */
 static GPtrArray *
 market_fetch(
 	VentureDatabase	 *database,
 	VentureQuery	 *query,
 	const gchar	 *what,
+	const gchar	 *advice,
 	GError		**error
 ){
 	g_autoptr(GPtrArray) rows = NULL;
 
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
 	rows = venture_database_find(database, query, error);
 
 	if (NULL == rows)
 		return NULL;
 
-	if (rows->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (rows->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "More than %d %s match; narrow the period",
-		            VENTURE_AGGREGATE_MAX_ROWS, what);
+		            "More than %d %s match; %s",
+		            venture_aggregate_get_max_rows(), what, advice);
 		return NULL;
 	}
 
@@ -564,10 +567,55 @@ venture_market_listing_performance(
 	    !venture_query_set_date_range(query, "listed-at", period, error))
 		return NULL;
 
+	/*
+	 * A venture is the product's: a listing belongs to whatever venture
+	 * sells the thing it offers. The venture's products are read first
+	 * and the listings narrowed to them in the query, so the bound counts
+	 * the listings asked about -- filtered after the fetch, a narrowed
+	 * question was refused whenever the whole organization was past it.
+	 */
+	if (0 != venture_id)
+	{
+		g_autoptr(VentureQuery) owned = NULL;
+		g_autoptr(GPtrArray) products_sold = NULL;
+		g_autoptr(GPtrArray) ids = NULL;
+
+		owned = venture_query_new(VENTURE_TYPE_PRODUCT);
+		venture_query_set_organization(owned, organization_id);
+
+		if (!venture_query_add_filter_int(owned, "venture-id", VENTURE_FILTER_OP_EQ,
+		                                  venture_id, error) ||
+		    !venture_query_add_order(owned, "id", VENTURE_SORT_ASCENDING, error))
+			return NULL;
+
+		products_sold = market_fetch(database, owned, "products of the venture",
+		                             "read the listings by period without venture_id",
+		                             error);
+
+		if (NULL == products_sold)
+			return NULL;
+
+		ids = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < products_sold->len; i++)
+			g_ptr_array_add(ids, g_strdup_printf("%" G_GINT64_FORMAT,
+				venture_entity_get_id(g_ptr_array_index(products_sold, i))));
+
+		/* IN needs a value; a venture that sells nothing has no
+		 * listings, and none can match product 0. */
+		if (0 == ids->len)
+			g_ptr_array_add(ids, g_strdup("0"));
+
+		if (!venture_query_add_filter(query, "product-id", VENTURE_FILTER_OP_IN,
+		                              ids, error))
+			return NULL;
+	}
+
 	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 
-	listings = market_fetch(database, query, "listings", error);
+	listings = market_fetch(database, query, "listings",
+	                        "narrow the period or the venture", error);
 
 	if (NULL == listings)
 		return NULL;
@@ -594,21 +642,6 @@ venture_market_listing_performance(
 		g_object_get(listing, "product-id", &product_id,
 		             "unit-price", &unit_price, NULL);
 		product = market_product(database, products, product_id);
-
-		/* A venture is the product's: a listing belongs to whatever
-		 * venture sells the thing it offers. */
-		if (0 != venture_id)
-		{
-			gint64 owner;
-
-			owner = 0;
-
-			if (NULL != product)
-				g_object_get(product, "venture-id", &owner, NULL);
-
-			if (owner != venture_id)
-				continue;
-		}
 
 		if (!listing_group_of(database, group, category_depth, listing, product,
 		                      paths, &group_key, &label, error))
@@ -890,7 +923,8 @@ venture_market_price_history(
 	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 
-	observations = market_fetch(database, query, "price observations", error);
+	observations = market_fetch(database, query, "price observations",
+	                            "narrow the period or the source", error);
 
 	if (NULL == observations)
 		return NULL;

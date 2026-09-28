@@ -289,8 +289,15 @@ potions:
 and MCP's =venture_report= tool. =price_source= and =category_id= were
 added to all five doors in the same change.
 
-It refuses, naming the bound, an organization with more than
-=VENTURE_AGGREGATE_MAX_ROWS= recipes rather than answering for some.
+It refuses, naming the bound, more than =VENTURE_AGGREGATE_MAX_ROWS=
+active recipes rather than answering for some. The bound counts the
+question, not the organization: =active=, =venture_id= and =category_id=
+(as an =IN= over =venture_category_descendants()=) are filters in the
+query, so an organization with more recipes than the bound is answered
+once it is narrowed under it. They once ran in C over a capped fetch of
+every recipe, and a large organization was refused whatever it asked --
+told to narrow what it had narrowed. =/production/margin/bound= pins this
+with the bound lowered through =venture_aggregate_set_max_rows()=.
 
 * API and CLI
 

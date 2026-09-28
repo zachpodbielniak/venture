@@ -303,6 +303,12 @@ on both), =GET /api/v1/reports/goal_progress?…=, =venturectl report=, and
 the assistant's and MCP's =venture_report= tool. Each report carries its
 parameter schema. Both refuse, naming the bound, more than
 =VENTURE_AGGREGATE_MAX_ROWS= goals or steps rather than answering for some.
+The bound counts the question: =goal_progress='s =venture_id=,
+=category_id= and =status=, and =goal_materials='s goal subtree, open
+statuses and not-done recipe steps (read in batches of goal ids) are all
+filters in the query, never applied to the rows afterwards, so narrowing
+gets a large organization under the bound. =/goals/bound= pins this with
+the bound lowered through =venture_aggregate_set_max_rows()=.
 
 ** On the goal's page
 
