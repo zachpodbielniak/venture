@@ -1,80 +1,33 @@
 /*
- * venture-forms.c - Forms: validators, the renderer and the public intake
+ * venture-forms.c - Forms: validators, versions and the public intake
  *
  * Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * A form is the one place VENTURE takes writes from strangers with no
- * session at all. Two rules shape this file:
+ * session at all. The server is the authority: every answer is checked
+ * here against the question's kind whatever the browser did, and an
+ * unknown name is refused, never dropped, because a dropped field is a
+ * silent data loss the person who filled the form in never hears about.
  *
- *  - One renderer. The builder's preview, the snippet a site pastes, the
- *    fragment the script loader fetches and the hosted page are all
- *    venture_forms_render(). A second renderer would be a second contract,
- *    and the vf-* class names are a contract other people's stylesheets are
- *    written against.
- *
- *  - The server is the authority. Every answer is checked here against the
- *    question's kind whatever the browser did; an unknown name is refused,
- *    never dropped, because a dropped field is a silent data loss the
- *    person who filled the form in never hears about.
+ * What a live form asks is its published version, frozen when it was
+ * published; editing the questions changes the draft and nothing public
+ * until the next publish. A response is checked against, and stored
+ * with, the version its sender was given.
  */
 
-#include "venture.h"
+#include "venture-forms-private.h"
 
 #include <math.h>
 #include <string.h>
 
 #define VENTURE_FORMS_STATE_KEY "venture-forms-installed"
-
-/* Set on a response by venture_forms_submit() and nowhere else: the
- * validator refuses a new response without it, which is what makes the
- * public door the only way one is created. */
-#define VENTURE_FORMS_ACCEPTING_KEY "venture-forms-accepting"
-
 #define VENTURE_FORMS_DEFAULT_FILL_SECONDS 3
-#define VENTURE_FORMS_KEY_MAX 63
 
-/* ==========================================================================
- * Small readers
- * ========================================================================== */
+static gboolean forms_check_published(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, GError **error);
 
-static gchar *
-forms_string(VentureEntity *entity, const gchar *property)
-{
-	gchar *value = NULL;
-
-	g_object_get(entity, property, &value, NULL);
-	return value;
-}
-
-static gint64
-forms_int(VentureEntity *entity, const gchar *property)
-{
-	gint64 value = 0;
-
-	if (NULL != entity)
-		g_object_get(entity, property, &value, NULL);
-	return value;
-}
-
-static gdouble
-forms_double(VentureEntity *entity, const gchar *property)
-{
-	gdouble value = 0;
-
-	g_object_get(entity, property, &value, NULL);
-	return value;
-}
-
-static gboolean
-forms_bool(VentureEntity *entity, const gchar *property)
-{
-	gboolean value = FALSE;
-
-	g_object_get(entity, property, &value, NULL);
-	return value;
-}
-
+/* A form field record's kind. */
 static VentureFormFieldKind
 forms_kind(VentureEntity *field)
 {
@@ -82,223 +35,6 @@ forms_kind(VentureEntity *field)
 
 	g_object_get(field, "kind", &kind, NULL);
 	return kind;
-}
-
-/* The kind's public name, "short_text"; the class uses dashes. */
-static const gchar *
-forms_kind_nick(VentureFormFieldKind kind)
-{
-	GEnumClass *klass;
-	GEnumValue *value;
-
-	klass = g_type_class_peek(VENTURE_TYPE_FORM_FIELD_KIND);
-	if (NULL == klass)
-		klass = g_type_class_ref(VENTURE_TYPE_FORM_FIELD_KIND);
-	value = g_enum_get_value(klass, (gint)kind);
-	return (NULL != value) ? value->value_nick : "short_text";
-}
-
-static gboolean
-forms_kind_has_choices(VentureFormFieldKind kind)
-{
-	return (VENTURE_FORM_FIELD_SINGLE_CHOICE == kind) ||
-	       (VENTURE_FORM_FIELD_MULTIPLE_CHOICE == kind);
-}
-
-/* ==========================================================================
- * Choices
- *
- * Stored as lines of "id | Label". Parsed here into pairs; the save
- * validator is what writes ids onto lines that lack one.
- * ========================================================================== */
-
-typedef struct
-{
-	gchar	*id;
-	gchar	*label;
-} FormsChoice;
-
-static void
-forms_choice_free(gpointer data)
-{
-	FormsChoice *choice = data;
-
-	g_free(choice->id);
-	g_free(choice->label);
-	g_free(choice);
-}
-
-/* A choice id: what a label becomes when it has no id of its own. */
-static gchar *
-forms_choice_slug(const gchar *label)
-{
-	GString *id;
-	const gchar *cursor;
-	gboolean gap = FALSE;
-
-	id = g_string_new(NULL);
-	for (cursor = label; *cursor != '\0'; cursor++)
-	{
-		if (g_ascii_isalnum(*cursor))
-		{
-			if (gap && id->len > 0)
-				g_string_append_c(id, '_');
-			g_string_append_c(id, g_ascii_tolower(*cursor));
-			gap = FALSE;
-		}
-		else
-			gap = TRUE;
-
-		if (id->len >= VENTURE_FORMS_KEY_MAX - 4)
-			break;
-	}
-	if (0 == id->len || !g_ascii_isalpha(id->str[0]))
-		g_string_prepend(id, "choice_");
-	return g_string_free(id, FALSE);
-}
-
-static gboolean
-forms_choice_id_valid(const gchar *id)
-{
-	const gchar *cursor;
-
-	if (venture_string_is_empty(id) || strlen(id) > VENTURE_FORMS_KEY_MAX)
-		return FALSE;
-	for (cursor = id; *cursor != '\0'; cursor++)
-		if (!(g_ascii_islower(*cursor) || g_ascii_isdigit(*cursor) ||
-		      '_' == *cursor || '-' == *cursor))
-			return FALSE;
-	return TRUE;
-}
-
-/*
- * Parses @text into choices. With @assign, a line with no id gets one made
- * from its label, made unique against the ids before it; without, such a
- * line uses the made id without the uniqueness suffix (only a stored,
- * already-assigned list is parsed that way, so it never arises).
- */
-static GPtrArray *
-forms_choices_parse(const gchar *text, gboolean assign, GError **error)
-{
-	g_autoptr(GPtrArray) choices = NULL;
-	g_auto(GStrv) lines = NULL;
-	guint i;
-
-	choices = g_ptr_array_new_with_free_func(forms_choice_free);
-	if (venture_string_is_empty(text))
-		return g_steal_pointer(&choices);
-
-	lines = g_strsplit(text, "\n", -1);
-	for (i = 0; NULL != lines[i]; i++)
-	{
-		g_autofree gchar *line = g_strstrip(g_strdup(lines[i]));
-		FormsChoice *choice;
-		gchar *bar;
-		guint j;
-
-		if ('\0' == line[0])
-			continue;
-
-		choice = g_new0(FormsChoice, 1);
-		bar = strchr(line, '|');
-		if (NULL != bar)
-		{
-			*bar = '\0';
-			choice->id = g_strstrip(g_strdup(line));
-			choice->label = g_strstrip(g_strdup(bar + 1));
-		}
-		else
-		{
-			choice->label = g_strdup(line);
-			choice->id = forms_choice_slug(line);
-			if (assign)
-			{
-				g_autofree gchar *base = g_strdup(choice->id);
-				guint n = 2;
-
-				for (j = 0; j < choices->len; j++)
-				{
-					FormsChoice *before = g_ptr_array_index(choices, j);
-
-					if (0 == g_strcmp0(before->id, choice->id))
-					{
-						g_free(choice->id);
-						choice->id = g_strdup_printf("%s_%u", base, n++);
-						j = (guint)-1;
-					}
-				}
-			}
-		}
-		g_ptr_array_add(choices, choice);
-
-		if (!forms_choice_id_valid(choice->id))
-		{
-			venture_set_error_validation(error, "Choices",
-				"\"%s\" is not a usable id: lowercase letters, digits, _ and - only",
-				choice->id);
-			return NULL;
-		}
-		if ('\0' == choice->label[0])
-		{
-			venture_set_error_validation(error, "Choices",
-				"the choice \"%s\" has no label", choice->id);
-			return NULL;
-		}
-		for (j = 0; j + 1 < choices->len; j++)
-		{
-			FormsChoice *before = g_ptr_array_index(choices, j);
-
-			if (0 == g_strcmp0(before->id, choice->id))
-			{
-				venture_set_error_validation(error, "Choices",
-					"the id \"%s\" is used twice", choice->id);
-				return NULL;
-			}
-		}
-	}
-	return g_steal_pointer(&choices);
-}
-
-static GPtrArray *
-forms_field_choices(VentureEntity *field)
-{
-	g_autofree gchar *text = forms_string(field, "choices");
-	GPtrArray *choices;
-
-	choices = forms_choices_parse(text, FALSE, NULL);
-	return (NULL != choices) ? choices : g_ptr_array_new_with_free_func(forms_choice_free);
-}
-
-static const gchar *
-forms_choice_label(GPtrArray *choices, const gchar *id)
-{
-	guint i;
-
-	for (i = 0; i < choices->len; i++)
-	{
-		FormsChoice *choice = g_ptr_array_index(choices, i);
-
-		if (0 == g_strcmp0(choice->id, id))
-			return choice->label;
-	}
-	return NULL;
-}
-
-/* The scale a rating question offers: its bounds, or 1 to 5. */
-static void
-forms_rating_bounds(VentureEntity *field, gint64 *low, gint64 *high)
-{
-	gdouble min = forms_double(field, "min-value");
-	gdouble max = forms_double(field, "max-value");
-
-	if (0 == min && 0 == max)
-	{
-		*low = 1;
-		*high = 5;
-		return;
-	}
-	*low = (gint64)ceil(min);
-	*high = (gint64)floor(max);
 }
 
 /* ==========================================================================
@@ -330,7 +66,7 @@ forms_origin_valid(const gchar *origin)
 static GStrv
 forms_origins(VentureEntity *form)
 {
-	g_autofree gchar *text = forms_string(form, "allowed-origins");
+	g_autofree gchar *text = venture_forms_get_string(form, "allowed-origins");
 	g_autoptr(GStrvBuilder) builder = g_strv_builder_new();
 	g_auto(GStrv) parts = NULL;
 	guint i;
@@ -367,16 +103,15 @@ forms_validate_form(
 	gpointer	  user_data,
 	GError		**error
 ){
-	g_autofree gchar *token = forms_string(entity, "public-token");
-	g_autofree gchar *key = forms_string(entity, "ticket-key");
-	g_autofree gchar *slug = forms_string(entity, "slug");
-	g_autofree gchar *redirect = forms_string(entity, "redirect-url");
-	g_autofree gchar *policy = forms_string(entity, "on-duplicate");
-	g_autofree gchar *confirm = forms_string(entity, "confirmation-field");
+	g_autofree gchar *token = venture_forms_get_string(entity, "public-token");
+	g_autofree gchar *key = venture_forms_get_string(entity, "ticket-key");
+	g_autofree gchar *slug = venture_forms_get_string(entity, "slug");
+	g_autofree gchar *redirect = venture_forms_get_string(entity, "redirect-url");
+	g_autofree gchar *policy = venture_forms_get_string(entity, "on-duplicate");
+	g_autofree gchar *confirm = venture_forms_get_string(entity, "confirmation-field");
 	g_auto(GStrv) origins = NULL;
 	guint i;
 
-	(void)previous;
 	(void)user_data;
 
 	if (!venture_string_is_empty(redirect) && !forms_redirect_valid(redirect))
@@ -398,17 +133,17 @@ forms_validate_form(
 		}
 	}
 
-	if (forms_int(entity, "response-limit") < 0)
+	if (venture_forms_get_int(entity, "response-limit") < 0)
 	{
 		venture_set_error_validation(error, "Response limit", "cannot be negative");
 		return FALSE;
 	}
-	if (forms_int(entity, "hourly-limit") < 0)
+	if (venture_forms_get_int(entity, "hourly-limit") < 0)
 	{
 		venture_set_error_validation(error, "Responses per hour", "cannot be negative");
 		return FALSE;
 	}
-	if (forms_int(entity, "min-fill-seconds") < 0 || forms_int(entity, "min-fill-seconds") > 3600)
+	if (venture_forms_get_int(entity, "min-fill-seconds") < 0 || venture_forms_get_int(entity, "min-fill-seconds") > 3600)
 	{
 		venture_set_error_validation(error, "Minimum fill time",
 			"must be between 0 and 3600 seconds");
@@ -421,7 +156,7 @@ forms_validate_form(
 			"must be merge, create or reject, not \"%s\" (duplicate handling)", policy);
 		return FALSE;
 	}
-	if (!venture_string_is_empty(confirm) && !forms_choice_id_valid(confirm))
+	if (!venture_string_is_empty(confirm) && !venture_forms_choice_id_valid(confirm))
 	{
 		venture_set_error_validation(error, "Confirm to", "must be a question's key");
 		return FALSE;
@@ -482,7 +217,7 @@ forms_validate_form(
 
 		if (made)
 		{
-			g_autofree gchar *name = forms_string(entity, "name");
+			g_autofree gchar *name = venture_forms_get_string(entity, "name");
 
 			g_free(slug);
 			slug = venture_slugify(name);
@@ -523,7 +258,7 @@ forms_validate_form(
 			g_object_set(entity, "slug", slug, NULL);
 	}
 
-	return TRUE;
+	return forms_check_published(database, entity, previous, error);
 }
 
 static const gchar *const forms_lead_targets[] = {
@@ -539,22 +274,22 @@ forms_validate_field(
 	GError		**error
 ){
 	g_autoptr(VentureEntity) form = NULL;
-	g_autofree gchar *key = forms_string(entity, "key");
-	g_autofree gchar *pattern = forms_string(entity, "pattern");
-	g_autofree gchar *maps = forms_string(entity, "maps-to");
-	g_autofree gchar *choices_text = forms_string(entity, "choices");
+	g_autofree gchar *key = venture_forms_get_string(entity, "key");
+	g_autofree gchar *pattern = venture_forms_get_string(entity, "pattern");
+	g_autofree gchar *maps = venture_forms_get_string(entity, "maps-to");
+	g_autofree gchar *choices_text = venture_forms_get_string(entity, "choices");
 	VentureFormFieldKind kind = forms_kind(entity);
-	gint64 form_id = forms_int(entity, "form-id");
-	gdouble min = forms_double(entity, "min-value");
-	gdouble max = forms_double(entity, "max-value");
-	gint64 min_length = forms_int(entity, "min-length");
-	gint64 max_length = forms_int(entity, "max-length");
+	gint64 form_id = venture_forms_get_int(entity, "form-id");
+	gdouble min = venture_forms_get_double(entity, "min-value");
+	gdouble max = venture_forms_get_double(entity, "max-value");
+	gint64 min_length = venture_forms_get_int(entity, "min-length");
+	gint64 max_length = venture_forms_get_int(entity, "max-length");
 
 	(void)user_data;
 
 	/* --- The form it belongs to, which never changes --- */
 
-	if (NULL != previous && forms_int(previous, "form-id") != form_id)
+	if (NULL != previous && venture_forms_get_int(previous, "form-id") != form_id)
 	{
 		venture_set_error_validation(error, "Form",
 			"cannot be changed; answers already filed under this question would "
@@ -573,7 +308,7 @@ forms_validate_field(
 
 	if (NULL != previous)
 	{
-		g_autofree gchar *before = forms_string(previous, "key");
+		g_autofree gchar *before = venture_forms_get_string(previous, "key");
 
 		if (0 != g_strcmp0(before, key))
 		{
@@ -637,9 +372,13 @@ forms_validate_field(
 	}
 	if (VENTURE_FORM_FIELD_RATING == kind)
 	{
-		gint64 low, high;
+		gint64 low = 1, high = 5;
 
-		forms_rating_bounds(entity, &low, &high);
+		if (0 != min || 0 != max)
+		{
+			low = (gint64)ceil(min);
+			high = (gint64)floor(max);
+		}
 		if (high <= low || high - low > 100)
 		{
 			venture_set_error_validation(error, "Maximum",
@@ -671,15 +410,15 @@ forms_validate_field(
 
 	/* --- Choices: ids written once, kept through relabelling --- */
 
-	if (forms_kind_has_choices(kind) || !venture_string_is_empty(choices_text))
+	if (venture_forms_kind_has_choices(kind) || !venture_string_is_empty(choices_text))
 	{
-		g_autoptr(GPtrArray) choices = forms_choices_parse(choices_text, TRUE, error);
+		g_autoptr(GPtrArray) choices = venture_forms_choices_parse(choices_text, TRUE, error);
 		g_autoptr(GString) normal = NULL;
 		guint i;
 
 		if (NULL == choices)
 			return FALSE;
-		if (forms_kind_has_choices(kind) && 0 == choices->len)
+		if (venture_forms_kind_has_choices(kind) && 0 == choices->len)
 		{
 			venture_set_error_validation(error, "Choices",
 				"a choice question needs at least one choice, one per line");
@@ -688,7 +427,7 @@ forms_validate_field(
 		normal = g_string_new(NULL);
 		for (i = 0; i < choices->len; i++)
 		{
-			FormsChoice *choice = g_ptr_array_index(choices, i);
+			VentureFormsChoice *choice = g_ptr_array_index(choices, i);
 
 			if (i > 0)
 				g_string_append_c(normal, '\n');
@@ -726,19 +465,21 @@ forms_validate_submission(
 	/* What was sent is evidence. The team may mark it reviewed and add
 	 * notes; they may not rewrite it. */
 	{
-		g_autofree gchar *before = forms_string(previous, "answers");
-		g_autofree gchar *after = forms_string(entity, "answers");
-		g_autofree gchar *summary_before = forms_string(previous, "summary");
-		g_autofree gchar *summary_after = forms_string(entity, "summary");
-		g_autofree gchar *origin_before = forms_string(previous, "origin");
-		g_autofree gchar *origin_after = forms_string(entity, "origin");
+		g_autofree gchar *before = venture_forms_get_string(previous, "answers");
+		g_autofree gchar *after = venture_forms_get_string(entity, "answers");
+		g_autofree gchar *summary_before = venture_forms_get_string(previous, "summary");
+		g_autofree gchar *summary_after = venture_forms_get_string(entity, "summary");
+		g_autofree gchar *origin_before = venture_forms_get_string(previous, "origin");
+		g_autofree gchar *origin_after = venture_forms_get_string(entity, "origin");
 		g_autoptr(GDateTime) at_before = NULL;
 		g_autoptr(GDateTime) at_after = NULL;
 
 		g_object_get(previous, "submitted-at", &at_before, NULL);
 		g_object_get(entity, "submitted-at", &at_after, NULL);
 		if (0 != g_strcmp0(before, after) ||
-		    forms_int(previous, "form-id") != forms_int(entity, "form-id") ||
+		    venture_forms_get_int(previous, "form-id") != venture_forms_get_int(entity, "form-id") ||
+		    venture_forms_get_int(previous, "version-id") != venture_forms_get_int(entity, "version-id") ||
+		    venture_forms_get_int(previous, "version-number") != venture_forms_get_int(entity, "version-number") ||
 		    0 != g_strcmp0(summary_before, summary_after) ||
 		    0 != g_strcmp0(origin_before, origin_after) ||
 		    ((NULL == at_before) != (NULL == at_after)) ||
@@ -750,6 +491,115 @@ forms_validate_submission(
 		}
 	}
 	return TRUE;
+}
+
+/* A version is what a form asked, frozen: only publishing makes one and
+ * nothing changes one, because responses are read against it. */
+static gboolean
+forms_validate_version(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	(void)database;
+	(void)user_data;
+
+	if (NULL == previous && NULL == g_object_get_data(G_OBJECT(entity), VENTURE_FORMS_ACCEPTING_KEY))
+	{
+		venture_set_error_validation(error, "Form",
+			"versions are made by publishing the form");
+		return FALSE;
+	}
+	if (NULL != previous)
+	{
+		venture_set_error_validation(error, "Questions",
+			"a published version cannot be changed; edit the questions and publish again");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* The published version a form points at must be one of its own; its
+ * number is copied from it, so the two can never disagree. Pointing back
+ * at an earlier version is how a publish is undone. */
+static gboolean
+forms_check_published(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous,
+	GError **error)
+{
+	g_autoptr(VentureEntity) version = NULL;
+	gint64 id = venture_forms_get_int(entity, "published-version-id");
+
+	if (id <= 0)
+	{
+		g_object_set(entity, "published-number", (gint64)0, NULL);
+		return TRUE;
+	}
+	if (NULL != previous && venture_forms_get_int(previous, "published-version-id") == id)
+	{
+		g_object_set(entity, "published-number", venture_forms_get_int(previous, "published-number"), NULL);
+		return TRUE;
+	}
+	version = venture_database_get(database, VENTURE_TYPE_FORM_VERSION, id, NULL);
+	if (NULL == version || venture_forms_get_int(version, "form-id") != venture_entity_get_id(entity))
+	{
+		venture_set_error_validation(error, "Published version",
+			"#%" G_GINT64_FORMAT " is not a version of this form", id);
+		return FALSE;
+	}
+	g_object_set(entity, "published-number", venture_forms_get_int(version, "number"), NULL);
+	return TRUE;
+}
+
+/* ==========================================================================
+ * The publish action: the API, the CLI, MCP and the assistant
+ * ========================================================================== */
+
+static gboolean
+forms_publish_allowed(VentureAction *action, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	(void)action;
+	(void)actor;
+
+	if (G_TYPE_INVALID == venture_entity_registry_lookup(venture_entity_registry_get_default(), "form"))
+	{
+		venture_set_error_validation(error, "module", "The forms module is off");
+		return FALSE;
+	}
+	if (!VENTURE_IS_FORM(entity))
+	{
+		venture_set_error_validation(error, "form", "Only a form can be published");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static VentureEntity *
+forms_publish_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	(void)params;
+
+	return venture_forms_publish(venture_action_get_data(action), entity, actor, error);
+}
+
+static void
+forms_register_actions(VentureDatabase *database)
+{
+	g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(GError) error = NULL;
+
+	/* The database owns the registry that holds this pointer, so it is
+	 * borrowed, not referenced: a reference would be a cycle. */
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "publish", "label", "Publish",
+		"description", "Freeze the form's current questions as its next version and show that version to the public",
+		"parameters", parameters, "stageable", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed, forms_publish_invoke, database, NULL, &error))
+		g_error("Form publish action registration: %s", error->message);
 }
 
 void
@@ -773,44 +623,14 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_field, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_SUBMISSION,
 	                                    forms_validate_submission, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_VERSION,
+	                                    forms_validate_version, NULL, NULL);
+	forms_register_actions(database);
 }
 
 /* ==========================================================================
  * Finding forms and their questions
  * ========================================================================== */
-
-static gint
-forms_field_order(gconstpointer a, gconstpointer b)
-{
-	VentureEntity *left = *(VentureEntity *const *)a;
-	VentureEntity *right = *(VentureEntity *const *)b;
-	gint64 lp = forms_int(left, "position"), rp = forms_int(right, "position");
-
-	if (lp != rp)
-		return lp < rp ? -1 : 1;
-	return venture_entity_get_id(left) < venture_entity_get_id(right) ? -1 :
-	       venture_entity_get_id(left) > venture_entity_get_id(right) ? 1 : 0;
-}
-
-GPtrArray *
-venture_forms_fields(VentureDatabase *database, VentureEntity *form, GError **error)
-{
-	g_autoptr(VentureQuery) query = NULL;
-	GPtrArray *rows;
-
-	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
-	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
-
-	query = venture_query_new(VENTURE_TYPE_FORM_FIELD);
-	venture_query_set_organization(query, venture_entity_get_organization_id(form));
-	venture_query_set_limit(query, 500);
-	venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ,
-	                             venture_entity_get_id(form), NULL);
-	rows = venture_database_find(database, query, error);
-	if (NULL != rows)
-		g_ptr_array_sort(rows, forms_field_order);
-	return rows;
-}
 
 static gint64
 forms_response_count(VentureDatabase *database, VentureEntity *form)
@@ -830,12 +650,15 @@ forms_is_open(VentureDatabase *database, VentureEntity *form, GDateTime *now)
 {
 	g_autoptr(GDateTime) closes = NULL;
 	VentureFormState state = VENTURE_FORM_DRAFT;
-	gint64 limit = forms_int(form, "response-limit");
+	gint64 limit = venture_forms_get_int(form, "response-limit");
 
 	if (venture_entity_is_deleted(form))
 		return FALSE;
 	g_object_get(form, "state", &state, "closes-at", &closes, NULL);
 	if (VENTURE_FORM_LIVE != state)
+		return FALSE;
+	/* Live and never published has nothing to show a stranger. */
+	if (venture_forms_get_int(form, "published-version-id") <= 0)
 		return FALSE;
 	if (NULL != closes && g_date_time_compare(now, closes) >= 0)
 		return FALSE;
@@ -897,20 +720,27 @@ venture_forms_origin_allowed(VentureEntity *form, const gchar *origin)
 /* ==========================================================================
  * Tickets
  *
- * "<issued unix seconds>.<hex HMAC-SHA256 of token:seconds>", keyed by the
- * form's private ticket key. A robot can post one back, but not one older
+ * "<issued unix seconds>.<version number>.<hex HMAC-SHA256 of
+ * token:seconds:version>", keyed by the form's private ticket key. The
+ * time says how long the person took, and a robot cannot forge one older
  * than the form it fetched, so the minimum fill time is a real delay for
  * anything that fetches the form fresh. A snippet pasted into a static
  * page carries the ticket it was generated with, which is always old; the
  * honeypot is what guards that way in, and the docs say so.
+ *
+ * The version says which questions the person was given. Whoever started
+ * on version 1 finishes on version 1, even if version 2 is published
+ * while they type: their answers are checked against, and stored with,
+ * the questions they could see.
  * ========================================================================== */
 
 static gchar *
-forms_ticket_mac(VentureEntity *form, gint64 issued)
+forms_ticket_mac(VentureEntity *form, gint64 issued, gint64 version)
 {
-	g_autofree gchar *key = forms_string(form, "ticket-key");
-	g_autofree gchar *token = forms_string(form, "public-token");
-	g_autofree gchar *payload = g_strdup_printf("%s:%" G_GINT64_FORMAT, token != NULL ? token : "", issued);
+	g_autofree gchar *key = venture_forms_get_string(form, "ticket-key");
+	g_autofree gchar *token = venture_forms_get_string(form, "public-token");
+	g_autofree gchar *payload = g_strdup_printf("%s:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
+		token != NULL ? token : "", issued, version);
 
 	if (venture_string_is_empty(key))
 		return NULL;
@@ -918,7 +748,7 @@ forms_ticket_mac(VentureEntity *form, gint64 issued)
 }
 
 gchar *
-venture_forms_ticket_new(VentureEntity *form, GDateTime *issued)
+venture_forms_ticket_new_for_version(VentureEntity *form, gint64 version, GDateTime *issued)
 {
 	g_autofree gchar *mac = NULL;
 	gint64 seconds;
@@ -927,8 +757,35 @@ venture_forms_ticket_new(VentureEntity *form, GDateTime *issued)
 	g_return_val_if_fail(issued != NULL, NULL);
 
 	seconds = g_date_time_to_unix(issued);
-	mac = forms_ticket_mac(form, seconds);
-	return g_strdup_printf("%" G_GINT64_FORMAT ".%s", seconds, mac != NULL ? mac : "");
+	mac = forms_ticket_mac(form, seconds, version);
+	return g_strdup_printf("%" G_GINT64_FORMAT ".%" G_GINT64_FORMAT ".%s", seconds, version,
+	                       mac != NULL ? mac : "");
+}
+
+gchar *
+venture_forms_ticket_new(VentureEntity *form, GDateTime *issued)
+{
+	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
+
+	return venture_forms_ticket_new_for_version(form,
+		venture_forms_get_int(form, "published-number"), issued);
+}
+
+gboolean
+venture_forms_ticket_parse(VentureEntity *form, const gchar *ticket, gint64 *issued, gint64 *version)
+{
+	g_auto(GStrv) parts = NULL;
+	g_autofree gchar *expected = NULL;
+
+	if (venture_string_is_empty(ticket) || strlen(ticket) > 120)
+		return FALSE;
+	parts = g_strsplit(ticket, ".", 4);
+	if (3 != g_strv_length(parts) ||
+	    !g_ascii_string_to_signed(parts[0], 10, 0, G_MAXINT64, issued, NULL) ||
+	    !g_ascii_string_to_signed(parts[1], 10, 0, G_MAXINT64, version, NULL))
+		return FALSE;
+	expected = forms_ticket_mac(form, *issued, *version);
+	return NULL != expected && venture_constant_time_equal(expected, parts[2]);
 }
 
 static const gchar *
@@ -942,38 +799,19 @@ forms_first(GHashTable *answers, const gchar *name)
 gboolean
 venture_forms_screen(VentureEntity *form, GHashTable *answers, GDateTime *now)
 {
-	const gchar *honeypot, *ticket, *dot;
-	g_autofree gchar *expected = NULL;
-	gint64 issued, fill, age;
+	gint64 issued = 0, version = 0, fill;
 
 	g_return_val_if_fail(VENTURE_IS_FORM(form), FALSE);
 	g_return_val_if_fail(answers != NULL, FALSE);
 
-	honeypot = forms_first(answers, VENTURE_FORMS_HONEYPOT);
-	if (!venture_string_is_empty(honeypot))
+	if (!venture_string_is_empty(forms_first(answers, VENTURE_FORMS_HONEYPOT)))
 		return FALSE;
-
-	ticket = forms_first(answers, VENTURE_FORMS_TICKET);
-	if (venture_string_is_empty(ticket) || strlen(ticket) > 100)
+	if (!venture_forms_ticket_parse(form, forms_first(answers, VENTURE_FORMS_TICKET), &issued, &version))
 		return FALSE;
-	dot = strchr(ticket, '.');
-	if (NULL == dot)
-		return FALSE;
-	{
-		g_autofree gchar *number = g_strndup(ticket, (gsize)(dot - ticket));
-
-		if (!g_ascii_string_to_signed(number, 10, 0, G_MAXINT64, &issued, NULL))
-			return FALSE;
-	}
-	expected = forms_ticket_mac(form, issued);
-	if (NULL == expected || !venture_constant_time_equal(expected, dot + 1))
-		return FALSE;
-
-	fill = forms_int(form, "min-fill-seconds");
+	fill = venture_forms_get_int(form, "min-fill-seconds");
 	if (fill <= 0)
 		fill = VENTURE_FORMS_DEFAULT_FILL_SECONDS;
-	age = g_date_time_to_unix(now) - issued;
-	return age >= fill;
+	return g_date_time_to_unix(now) - issued >= fill;
 }
 
 /* ==========================================================================
@@ -1174,678 +1012,6 @@ venture_forms_answers_to_json(GHashTable *answers)
 }
 
 /* ==========================================================================
- * The renderer
- * ========================================================================== */
-
-/* The minimal opt-in stylesheet for the hosted page: layout only, no
- * colours or fonts, so a page that embeds the iframe still decides how it
- * looks everywhere the frame does not. */
-static const gchar forms_basic_css[] =
-	".vf-page{max-width:40rem;margin:2rem auto;padding:0 1rem}"
-	".vf-field{margin:0 0 1rem;border:0;padding:0}"
-	".vf-label{display:block;font-weight:600;margin-bottom:.25rem}"
-	".vf-input{box-sizing:border-box;max-width:100%}"
-	"input.vf-input:not([type=radio]):not([type=checkbox]),textarea.vf-input{width:100%}"
-	".vf-choice{display:block}"
-	".vf-help,.vf-error{margin:.25rem 0}"
-	".vf-error[hidden]{display:none}";
-
-static void
-forms_escape(GString *html, const gchar *text)
-{
-	venture_html_escape_append(html, text != NULL ? text : "");
-}
-
-/* Paragraphs from plain text: blank lines separate them, single newlines
- * are line breaks. Escaped; no markup of the author's passes through. */
-static void
-forms_paragraphs(GString *html, const gchar *text)
-{
-	g_auto(GStrv) blocks = NULL;
-	guint i;
-
-	if (venture_string_is_empty(text))
-		return;
-	blocks = g_strsplit(text, "\n\n", -1);
-	for (i = 0; NULL != blocks[i]; i++)
-	{
-		g_auto(GStrv) lines = NULL;
-		g_autofree gchar *block = g_strstrip(g_strdup(blocks[i]));
-		guint j;
-
-		if ('\0' == block[0])
-			continue;
-		lines = g_strsplit(block, "\n", -1);
-		g_string_append(html, "<p>");
-		for (j = 0; NULL != lines[j]; j++)
-		{
-			if (j > 0)
-				g_string_append(html, "<br>");
-			forms_escape(html, lines[j]);
-		}
-		g_string_append(html, "</p>");
-	}
-}
-
-/* The refill value for a single-valued question. */
-static const gchar *
-forms_value(const VentureFormsRender *options, const gchar *key)
-{
-	JsonNode *node;
-
-	if (NULL == options->values || !json_object_has_member(options->values, key))
-		return NULL;
-	node = json_object_get_member(options->values, key);
-	if (JSON_NODE_HOLDS_VALUE(node) && G_TYPE_STRING == json_node_get_value_type(node))
-		return json_node_get_string(node);
-	if (JSON_NODE_HOLDS_ARRAY(node) && json_array_get_length(json_node_get_array(node)) > 0)
-		return json_array_get_string_element(json_node_get_array(node), 0);
-	return NULL;
-}
-
-static gboolean
-forms_value_contains(const VentureFormsRender *options, const gchar *key, const gchar *wanted)
-{
-	JsonNode *node;
-
-	if (NULL == options->values || !json_object_has_member(options->values, key))
-		return FALSE;
-	node = json_object_get_member(options->values, key);
-	if (JSON_NODE_HOLDS_VALUE(node) && G_TYPE_STRING == json_node_get_value_type(node))
-		return 0 == g_strcmp0(json_node_get_string(node), wanted);
-	if (JSON_NODE_HOLDS_ARRAY(node))
-	{
-		JsonArray *array = json_node_get_array(node);
-		guint i;
-
-		for (i = 0; i < json_array_get_length(array); i++)
-			if (0 == g_strcmp0(json_array_get_string_element(array, i), wanted))
-				return TRUE;
-	}
-	return FALSE;
-}
-
-static const gchar *
-forms_error(const VentureFormsRender *options, const gchar *key)
-{
-	if (NULL == options->errors || !json_object_has_member(options->errors, key))
-		return NULL;
-	return json_object_get_string_member(options->errors, key);
-}
-
-/* The attributes every input of a question shares: its describedby list
- * and, when refused, aria-invalid. */
-static void
-forms_described(GString *html, const gchar *id, gboolean has_help, gboolean invalid)
-{
-	g_string_append(html, " aria-describedby=\"");
-	if (has_help)
-		g_string_append_printf(html, "%s-help ", id);
-	g_string_append_printf(html, "%s-error\"", id);
-	if (invalid)
-		g_string_append(html, " aria-invalid=\"true\"");
-}
-
-static void
-forms_render_label_text(GString *html, const gchar *label, gboolean required)
-{
-	forms_escape(html, label);
-	if (required)
-		g_string_append(html, "<span class=\"vf-required\" aria-hidden=\"true\">*</span>");
-}
-
-static void
-forms_render_help_and_error(GString *html, const gchar *id, const gchar *help, const gchar *message)
-{
-	if (!venture_string_is_empty(help))
-	{
-		g_string_append_printf(html, "<p class=\"vf-help\" id=\"%s-help\">", id);
-		forms_escape(html, help);
-		g_string_append(html, "</p>");
-	}
-	g_string_append_printf(html, "<p class=\"vf-error\" id=\"%s-error\"%s>", id,
-	                       NULL != message ? "" : " hidden");
-	forms_escape(html, message);
-	g_string_append(html, "</p>");
-}
-
-static void
-forms_render_field(GString *html, const gchar *prefix, VentureEntity *field,
-	const VentureFormsRender *options)
-{
-	g_autofree gchar *key = forms_string(field, "key");
-	g_autofree gchar *label = forms_string(field, "label");
-	g_autofree gchar *help = forms_string(field, "help");
-	g_autofree gchar *placeholder = forms_string(field, "placeholder");
-	g_autofree gchar *pattern = forms_string(field, "pattern");
-	g_autofree gchar *fallback = forms_string(field, "default-value");
-	g_autofree gchar *id = g_strdup_printf("%s-%s", prefix, key);
-	g_autofree gchar *kind_class = NULL;
-	VentureFormFieldKind kind = forms_kind(field);
-	const gchar *nick = forms_kind_nick(kind);
-	const gchar *message = forms_error(options, key);
-	const gchar *value = forms_value(options, key);
-	gboolean required = forms_bool(field, "required");
-	gboolean has_help = !venture_string_is_empty(help);
-	gint64 min_length = forms_int(field, "min-length");
-	gint64 max_length = forms_int(field, "max-length");
-	gdouble min = forms_double(field, "min-value");
-	gdouble max = forms_double(field, "max-value");
-
-	if (NULL == value && NULL == options->values)
-		value = fallback;
-
-	kind_class = g_strdup(nick);
-	g_strdelimit(kind_class, "_", '-');
-
-	if (VENTURE_FORM_FIELD_HIDDEN == kind)
-	{
-		g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" data-vf-field=\"%s\" "
-		                       "data-vf-kind=\"hidden\" value=\"", key, key);
-		forms_escape(html, value);
-		g_string_append(html, "\">");
-		return;
-	}
-
-	if (forms_kind_has_choices(kind) || VENTURE_FORM_FIELD_RATING == kind)
-	{
-		g_autoptr(GPtrArray) choices = forms_field_choices(field);
-		const gchar *type = (VENTURE_FORM_FIELD_MULTIPLE_CHOICE == kind) ? "checkbox" : "radio";
-		guint i;
-
-		if (VENTURE_FORM_FIELD_RATING == kind)
-		{
-			gint64 low, high, step;
-
-			forms_rating_bounds(field, &low, &high);
-			g_ptr_array_set_size(choices, 0);
-			for (step = low; step <= high && step - low <= 100; step++)
-			{
-				FormsChoice *choice = g_new0(FormsChoice, 1);
-
-				choice->id = g_strdup_printf("%" G_GINT64_FORMAT, step);
-				choice->label = g_strdup(choice->id);
-				g_ptr_array_add(choices, choice);
-			}
-		}
-
-		g_string_append_printf(html, "<fieldset class=\"vf-field vf-field--%s%s\" data-vf-field=\"%s\" "
-		                       "data-vf-kind=\"%s\" id=\"%s\"", kind_class,
-		                       NULL != message ? " vf-field--invalid" : "", key, nick, id);
-		forms_described(html, id, has_help, NULL != message);
-		g_string_append(html, "><legend class=\"vf-label\">");
-		forms_render_label_text(html, label, required);
-		g_string_append(html, "</legend><div class=\"vf-choices\">");
-		for (i = 0; i < choices->len; i++)
-		{
-			FormsChoice *choice = g_ptr_array_index(choices, i);
-
-			g_string_append_printf(html, "<label class=\"vf-choice\"><input class=\"vf-input\" "
-			                       "type=\"%s\" name=\"%s\" value=\"", type, key);
-			forms_escape(html, choice->id);
-			g_string_append_c(html, '"');
-			/* A required radio group is satisfied by any one box; a
-			 * required checkbox group cannot say "at least one" in
-			 * HTML, so the server alone judges it. */
-			if (required && VENTURE_FORM_FIELD_MULTIPLE_CHOICE != kind)
-				g_string_append(html, " required");
-			if (forms_value_contains(options, key, choice->id))
-				g_string_append(html, " checked");
-			g_string_append(html, "> <span>");
-			forms_escape(html, choice->label);
-			g_string_append(html, "</span></label>");
-		}
-		g_string_append(html, "</div>");
-		forms_render_help_and_error(html, id, help, message);
-		g_string_append(html, "</fieldset>");
-		return;
-	}
-
-	g_string_append_printf(html, "<div class=\"vf-field vf-field--%s%s\" data-vf-field=\"%s\" "
-	                       "data-vf-kind=\"%s\">", kind_class,
-	                       NULL != message ? " vf-field--invalid" : "", key, nick);
-
-	if (VENTURE_FORM_FIELD_CHECKBOX == kind)
-	{
-		g_string_append_printf(html, "<label class=\"vf-label\" for=\"%s\"><input class=\"vf-input\" "
-		                       "type=\"checkbox\" id=\"%s\" name=\"%s\" value=\"on\"", id, id, key);
-		if (required)
-			g_string_append(html, " required aria-required=\"true\"");
-		if (NULL != value && (0 == g_strcmp0(value, "on") || 0 == g_strcmp0(value, "true")))
-			g_string_append(html, " checked");
-		forms_described(html, id, has_help, NULL != message);
-		g_string_append(html, "> ");
-		forms_render_label_text(html, label, required);
-		g_string_append(html, "</label>");
-		forms_render_help_and_error(html, id, help, message);
-		g_string_append(html, "</div>");
-		return;
-	}
-
-	g_string_append_printf(html, "<label class=\"vf-label\" for=\"%s\">", id);
-	forms_render_label_text(html, label, required);
-	g_string_append(html, "</label>");
-
-	if (VENTURE_FORM_FIELD_LONG_TEXT == kind)
-		g_string_append_printf(html, "<textarea class=\"vf-input\" id=\"%s\" name=\"%s\" rows=\"5\"", id, key);
-	else
-	{
-		const gchar *type = "text", *complete = NULL;
-
-		switch (kind)
-		{
-		case VENTURE_FORM_FIELD_EMAIL: type = "email"; complete = "email"; break;
-		case VENTURE_FORM_FIELD_PHONE: type = "tel"; complete = "tel"; break;
-		case VENTURE_FORM_FIELD_URL: type = "url"; complete = "url"; break;
-		case VENTURE_FORM_FIELD_NUMBER: type = "number"; break;
-		case VENTURE_FORM_FIELD_DATE: type = "date"; break;
-		case VENTURE_FORM_FIELD_SHORT_TEXT:
-		case VENTURE_FORM_FIELD_LONG_TEXT:
-		case VENTURE_FORM_FIELD_SINGLE_CHOICE:
-		case VENTURE_FORM_FIELD_MULTIPLE_CHOICE:
-		case VENTURE_FORM_FIELD_CHECKBOX:
-		case VENTURE_FORM_FIELD_RATING:
-		case VENTURE_FORM_FIELD_HIDDEN:
-		default:
-			break;
-		}
-		g_string_append_printf(html, "<input class=\"vf-input\" id=\"%s\" name=\"%s\" type=\"%s\"", id, key, type);
-		if (NULL != complete)
-			g_string_append_printf(html, " autocomplete=\"%s\"", complete);
-		if (VENTURE_FORM_FIELD_NUMBER == kind)
-		{
-			gchar number[G_ASCII_DTOSTR_BUF_SIZE];
-
-			g_string_append(html, " step=\"any\"");
-			if (min != 0 || max != 0)
-				g_string_append_printf(html, " min=\"%s\"", g_ascii_dtostr(number, sizeof number, min));
-			if (max != 0)
-				g_string_append_printf(html, " max=\"%s\"", g_ascii_dtostr(number, sizeof number, max));
-		}
-		if (!venture_string_is_empty(pattern))
-		{
-			g_string_append(html, " pattern=\"");
-			forms_escape(html, pattern);
-			g_string_append_c(html, '"');
-		}
-		if (NULL != value)
-		{
-			g_string_append(html, " value=\"");
-			forms_escape(html, value);
-			g_string_append_c(html, '"');
-		}
-	}
-	if (required)
-		g_string_append(html, " required aria-required=\"true\"");
-	if (min_length > 0)
-		g_string_append_printf(html, " minlength=\"%" G_GINT64_FORMAT "\"", min_length);
-	if (max_length > 0)
-		g_string_append_printf(html, " maxlength=\"%" G_GINT64_FORMAT "\"", max_length);
-	if (!venture_string_is_empty(placeholder))
-	{
-		g_string_append(html, " placeholder=\"");
-		forms_escape(html, placeholder);
-		g_string_append_c(html, '"');
-	}
-	forms_described(html, id, has_help, NULL != message);
-	g_string_append_c(html, '>');
-	if (VENTURE_FORM_FIELD_LONG_TEXT == kind)
-	{
-		forms_escape(html, value);
-		g_string_append(html, "</textarea>");
-	}
-	forms_render_help_and_error(html, id, help, message);
-	g_string_append(html, "</div>");
-}
-
-static void
-forms_document_open(GString *html, VentureEntity *form, gboolean basic)
-{
-	g_autofree gchar *title = forms_string(form, "title");
-
-	g_string_append(html, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-	                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-	                "<meta name=\"robots\" content=\"noindex\"><title>");
-	forms_escape(html, venture_string_is_empty(title) ? "Form" : title);
-	g_string_append(html, "</title>");
-	if (basic)
-		g_string_append_printf(html, "<style>%s</style>", forms_basic_css);
-	g_string_append(html, "</head><body><main class=\"vf-page\">");
-}
-
-static void
-forms_document_close(GString *html)
-{
-	g_string_append(html, "</main></body></html>");
-}
-
-gchar *
-venture_forms_render(VentureDatabase *database, VentureEntity *form,
-	const VentureFormsRender *options, GError **error)
-{
-	g_autoptr(GPtrArray) fields = NULL;
-	g_autoptr(GString) html = NULL;
-	g_autofree gchar *token = NULL, *title = NULL, *description = NULL, *submit = NULL;
-	g_autofree gchar *prefix = NULL, *action = NULL;
-	gboolean hosted, preview;
-	const gchar *form_message;
-	guint i;
-
-	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
-	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
-	g_return_val_if_fail(options != NULL, NULL);
-
-	fields = venture_forms_fields(database, form, error);
-	if (NULL == fields)
-		return NULL;
-
-	token = forms_string(form, "public-token");
-	title = forms_string(form, "title");
-	description = forms_string(form, "description");
-	submit = forms_string(form, "submit-label");
-	prefix = g_strdup_printf("vf-%s", token != NULL ? token : "form");
-	action = (NULL != options->action) ? g_strdup(options->action) :
-	         g_strdup_printf("/pub/form/%s", token != NULL ? token : "");
-	hosted = (VENTURE_FORMS_RENDER_HOSTED == options->mode) ||
-	         (VENTURE_FORMS_RENDER_HOSTED_BASIC == options->mode);
-	preview = (VENTURE_FORMS_RENDER_PREVIEW == options->mode);
-	form_message = forms_error(options, "_form");
-
-	html = g_string_new(NULL);
-	if (hosted)
-		forms_document_open(html, form, VENTURE_FORMS_RENDER_HOSTED_BASIC == options->mode);
-
-	g_string_append_printf(html, "<form class=\"vf-form\" id=\"%s\" data-vf-form=\"%s\" "
-	                       "method=\"post\" accept-charset=\"utf-8\"", prefix, token != NULL ? token : "");
-	if (!preview)
-	{
-		g_string_append(html, " action=\"");
-		forms_escape(html, action);
-		g_string_append_c(html, '"');
-	}
-	g_string_append_c(html, '>');
-
-	if (!venture_string_is_empty(title))
-	{
-		g_string_append_printf(html, "<%s class=\"vf-title\">", hosted ? "h1" : "h2");
-		forms_escape(html, title);
-		g_string_append_printf(html, "</%s>", hosted ? "h1" : "h2");
-	}
-	if (!venture_string_is_empty(description))
-	{
-		g_string_append(html, "<div class=\"vf-description\">");
-		forms_paragraphs(html, description);
-		g_string_append(html, "</div>");
-	}
-
-	g_string_append_printf(html, "<div class=\"vf-errors\" id=\"%s-errors\" role=\"alert\"%s>",
-	                       prefix, (NULL != options->errors && json_object_get_size(options->errors) > 0) ? "" : " hidden");
-	if (NULL != form_message)
-		forms_escape(html, form_message);
-	else if (NULL != options->errors && json_object_get_size(options->errors) > 0)
-		g_string_append(html, "Please correct the answers marked below.");
-	g_string_append(html, "</div>");
-
-	for (i = 0; i < fields->len; i++)
-		forms_render_field(html, prefix, g_ptr_array_index(fields, i), options);
-
-	/* Hidden with the attribute, which every browser honours with no
-	 * stylesheet at all; a page that overrides [hidden] must hide .vf-hp. */
-	g_string_append_printf(html, "<div class=\"vf-hp\" hidden aria-hidden=\"true\">"
-	                       "<label for=\"%s-hp\">Leave this empty</label>"
-	                       "<input id=\"%s-hp\" type=\"text\" name=\"" VENTURE_FORMS_HONEYPOT "\" "
-	                       "tabindex=\"-1\" autocomplete=\"off\" value=\"\"></div>", prefix, prefix);
-	if (NULL != options->ticket)
-	{
-		g_string_append(html, "<input type=\"hidden\" name=\"" VENTURE_FORMS_TICKET "\" value=\"");
-		forms_escape(html, options->ticket);
-		g_string_append(html, "\">");
-	}
-
-	g_string_append(html, "<div class=\"vf-actions\"><button class=\"vf-submit\" type=\"submit\"");
-	if (preview)
-		g_string_append(html, " disabled");
-	g_string_append_c(html, '>');
-	forms_escape(html, venture_string_is_empty(submit) ? "Send" : submit);
-	g_string_append(html, "</button></div></form>");
-
-	if (hosted)
-		forms_document_close(html);
-
-	return g_string_free(g_steal_pointer(&html), FALSE);
-}
-
-gchar *
-venture_forms_render_success(VentureEntity *form, gboolean hosted)
-{
-	g_autofree gchar *message = NULL;
-	GString *html;
-
-	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
-
-	message = forms_string(form, "success-message");
-	html = g_string_new(NULL);
-	if (hosted)
-		forms_document_open(html, form, FALSE);
-	g_string_append(html, "<div class=\"vf-success\" role=\"status\">");
-	forms_paragraphs(html, venture_string_is_empty(message) ?
-		"Thank you. Your response has been received." : message);
-	g_string_append(html, "</div>");
-	if (hosted)
-		forms_document_close(html);
-	return g_string_free(html, FALSE);
-}
-
-/* ==========================================================================
- * The schema
- * ========================================================================== */
-
-JsonNode *
-venture_forms_schema(VentureDatabase *database, VentureEntity *form,
-	const gchar *action, GDateTime *now, GError **error)
-{
-	g_autoptr(JsonBuilder) builder = json_builder_new();
-	g_autoptr(GPtrArray) fields = NULL;
-	g_autofree gchar *token = NULL, *title = NULL, *description = NULL, *submit = NULL, *ticket = NULL;
-	g_autofree gchar *success = NULL;
-	guint i;
-
-	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
-	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
-
-	fields = venture_forms_fields(database, form, error);
-	if (NULL == fields)
-		return NULL;
-
-	token = forms_string(form, "public-token");
-	title = forms_string(form, "title");
-	description = forms_string(form, "description");
-	submit = forms_string(form, "submit-label");
-	success = forms_string(form, "success-message");
-	ticket = venture_forms_ticket_new(form, now);
-
-	json_builder_begin_object(builder);
-	json_builder_set_member_name(builder, "version");
-	json_builder_add_int_value(builder, 1);
-	json_builder_set_member_name(builder, "form");
-	json_builder_add_string_value(builder, token != NULL ? token : "");
-	json_builder_set_member_name(builder, "title");
-	json_builder_add_string_value(builder, title != NULL ? title : "");
-	json_builder_set_member_name(builder, "description");
-	json_builder_add_string_value(builder, description != NULL ? description : "");
-	json_builder_set_member_name(builder, "submit_label");
-	json_builder_add_string_value(builder, venture_string_is_empty(submit) ? "Send" : submit);
-	json_builder_set_member_name(builder, "success_message");
-	json_builder_add_string_value(builder, venture_string_is_empty(success) ?
-		"Thank you. Your response has been received." : success);
-	json_builder_set_member_name(builder, "action");
-	json_builder_add_string_value(builder, action != NULL ? action : "");
-	json_builder_set_member_name(builder, "honeypot");
-	json_builder_add_string_value(builder, VENTURE_FORMS_HONEYPOT);
-	json_builder_set_member_name(builder, "ticket_field");
-	json_builder_add_string_value(builder, VENTURE_FORMS_TICKET);
-	json_builder_set_member_name(builder, "ticket");
-	json_builder_add_string_value(builder, ticket);
-	json_builder_set_member_name(builder, "fields");
-	json_builder_begin_array(builder);
-	for (i = 0; i < fields->len; i++)
-	{
-		VentureEntity *field = g_ptr_array_index(fields, i);
-		g_autofree gchar *key = forms_string(field, "key");
-		g_autofree gchar *label = forms_string(field, "label");
-		g_autofree gchar *help = forms_string(field, "help");
-		g_autofree gchar *placeholder = forms_string(field, "placeholder");
-		g_autofree gchar *pattern = forms_string(field, "pattern");
-		g_autofree gchar *fallback = forms_string(field, "default-value");
-		VentureFormFieldKind kind = forms_kind(field);
-		gdouble min = forms_double(field, "min-value"), max = forms_double(field, "max-value");
-
-		json_builder_begin_object(builder);
-		json_builder_set_member_name(builder, "key");
-		json_builder_add_string_value(builder, key);
-		json_builder_set_member_name(builder, "label");
-		json_builder_add_string_value(builder, label != NULL ? label : "");
-		json_builder_set_member_name(builder, "kind");
-		json_builder_add_string_value(builder, forms_kind_nick(kind));
-		json_builder_set_member_name(builder, "required");
-		json_builder_add_boolean_value(builder, forms_bool(field, "required"));
-		json_builder_set_member_name(builder, "help");
-		json_builder_add_string_value(builder, help != NULL ? help : "");
-		json_builder_set_member_name(builder, "placeholder");
-		json_builder_add_string_value(builder, placeholder != NULL ? placeholder : "");
-		json_builder_set_member_name(builder, "default");
-		json_builder_add_string_value(builder, fallback != NULL ? fallback : "");
-		if (forms_kind_has_choices(kind))
-		{
-			g_autoptr(GPtrArray) choices = forms_field_choices(field);
-			guint j;
-
-			json_builder_set_member_name(builder, "choices");
-			json_builder_begin_array(builder);
-			for (j = 0; j < choices->len; j++)
-			{
-				FormsChoice *choice = g_ptr_array_index(choices, j);
-
-				json_builder_begin_object(builder);
-				json_builder_set_member_name(builder, "id");
-				json_builder_add_string_value(builder, choice->id);
-				json_builder_set_member_name(builder, "label");
-				json_builder_add_string_value(builder, choice->label);
-				json_builder_end_object(builder);
-			}
-			json_builder_end_array(builder);
-		}
-		if (VENTURE_FORM_FIELD_RATING == kind)
-		{
-			gint64 low, high;
-
-			forms_rating_bounds(field, &low, &high);
-			json_builder_set_member_name(builder, "min");
-			json_builder_add_int_value(builder, low);
-			json_builder_set_member_name(builder, "max");
-			json_builder_add_int_value(builder, high);
-		}
-		else if (VENTURE_FORM_FIELD_NUMBER == kind && (min != 0 || max != 0))
-		{
-			json_builder_set_member_name(builder, "min");
-			json_builder_add_double_value(builder, min);
-			if (max != 0)
-			{
-				json_builder_set_member_name(builder, "max");
-				json_builder_add_double_value(builder, max);
-			}
-		}
-		if (forms_int(field, "min-length") > 0)
-		{
-			json_builder_set_member_name(builder, "min_length");
-			json_builder_add_int_value(builder, forms_int(field, "min-length"));
-		}
-		if (forms_int(field, "max-length") > 0)
-		{
-			json_builder_set_member_name(builder, "max_length");
-			json_builder_add_int_value(builder, forms_int(field, "max-length"));
-		}
-		if (!venture_string_is_empty(pattern))
-		{
-			json_builder_set_member_name(builder, "pattern");
-			json_builder_add_string_value(builder, pattern);
-		}
-		json_builder_end_object(builder);
-	}
-	json_builder_end_array(builder);
-	json_builder_end_object(builder);
-	return json_builder_get_root(builder);
-}
-
-/* ==========================================================================
- * Embed codes
- * ========================================================================== */
-
-gchar *
-venture_forms_embed_code(VentureDatabase *database, VentureEntity *form,
-	const gchar *base_url, VentureFormsEmbed kind, GError **error)
-{
-	g_autofree gchar *token = NULL, *public_path = NULL, *base = NULL, *title = NULL;
-	GString *code;
-
-	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
-	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
-
-	base = g_strdup(base_url != NULL ? base_url : "");
-	while (g_str_has_suffix(base, "/"))
-		base[strlen(base) - 1] = '\0';
-	token = forms_string(form, "public-token");
-	title = forms_string(form, "title");
-	public_path = g_strdup_printf("%s/pub/form/%s", base, token != NULL ? token : "");
-	code = g_string_new(NULL);
-
-	switch (kind)
-	{
-	case VENTURE_FORMS_EMBED_HTML:
-		{
-			VentureFormsRender options;
-			g_autoptr(GDateTime) now = venture_time_now();
-			g_autofree gchar *ticket = venture_forms_ticket_new(form, now);
-			g_autofree gchar *html = NULL;
-
-			options.mode = VENTURE_FORMS_RENDER_SNIPPET;
-			options.action = public_path;
-			options.ticket = ticket;
-			options.values = NULL;
-			options.errors = NULL;
-			html = venture_forms_render(database, form, &options, error);
-			if (NULL == html)
-			{
-				g_string_free(code, TRUE);
-				return NULL;
-			}
-			g_string_append(code, html);
-		}
-		break;
-	case VENTURE_FORMS_EMBED_SCRIPT:
-		g_string_append(code, "<div data-venture-form=\"");
-		forms_escape(code, public_path);
-		g_string_append(code, "/fragment\"></div>\n<script src=\"");
-		forms_escape(code, base);
-		g_string_append(code, "/pub/forms.js\" defer></script>");
-		break;
-	case VENTURE_FORMS_EMBED_IFRAME:
-		g_string_append(code, "<iframe src=\"");
-		forms_escape(code, public_path);
-		g_string_append(code, "\" title=\"");
-		forms_escape(code, venture_string_is_empty(title) ? "Form" : title);
-		g_string_append(code, "\" width=\"100%\" height=\"640\" loading=\"lazy\"></iframe>");
-		break;
-	case VENTURE_FORMS_EMBED_SCHEMA:
-	default:
-		g_string_append(code, public_path);
-		g_string_append(code, "/schema");
-		break;
-	}
-	return g_string_free(code, FALSE);
-}
-
-/* ==========================================================================
  * Validation
  * ========================================================================== */
 
@@ -1976,20 +1142,20 @@ forms_refuse(JsonObject *errors, const gchar *key, const gchar *message)
  * for the person filling the form in, so they say what to do.
  */
 static void
-forms_check_field(VentureEntity *field, GPtrArray *values, JsonObject *answers,
+forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject *answers,
 	JsonObject *errors, GString *summary)
 {
-	g_autofree gchar *key = forms_string(field, "key");
-	g_autofree gchar *label = forms_string(field, "label");
-	g_autofree gchar *pattern = forms_string(field, "pattern");
-	g_autofree gchar *fallback = forms_string(field, "default-value");
+	const gchar *key = field->key;
+	const gchar *label = field->label;
+	const gchar *pattern = field->pattern;
+	const gchar *fallback = field->default_value;
 	g_autofree gchar *text = NULL;
-	VentureFormFieldKind kind = forms_kind(field);
-	gboolean required = forms_bool(field, "required");
-	gint64 min_length = forms_int(field, "min-length");
-	gint64 max_length = forms_int(field, "max-length");
-	gdouble min = forms_double(field, "min-value");
-	gdouble max = forms_double(field, "max-value");
+	VentureFormFieldKind kind = field->kind;
+	gboolean required = field->required;
+	gint64 min_length = field->min_length;
+	gint64 max_length = field->max_length;
+	gdouble min = field->min_value;
+	gdouble max = field->max_value;
 	glong length;
 	guint i;
 
@@ -1998,14 +1164,14 @@ forms_check_field(VentureEntity *field, GPtrArray *values, JsonObject *answers,
 
 	if (VENTURE_FORM_FIELD_MULTIPLE_CHOICE == kind)
 	{
-		g_autoptr(GPtrArray) choices = forms_field_choices(field);
+		GPtrArray *choices = field->choices;
 		JsonArray *picked = json_array_new();
 		g_autoptr(GString) labels = g_string_new(NULL);
 
 		for (i = 0; NULL != values && i < values->len; i++)
 		{
 			const gchar *id = g_ptr_array_index(values, i);
-			const gchar *choice = forms_choice_label(choices, id);
+			const gchar *choice = venture_forms_choice_label(choices, id);
 			guint j;
 			gboolean seen = FALSE;
 
@@ -2166,7 +1332,7 @@ forms_check_field(VentureEntity *field, GPtrArray *values, JsonObject *answers,
 		{
 			gint64 low, high, rating;
 
-			forms_rating_bounds(field, &low, &high);
+			venture_forms_rating_bounds(field, &low, &high);
 			if (!g_ascii_string_to_signed(text, 10, low, high, &rating, NULL))
 			{
 				g_autofree gchar *message = g_strdup_printf("Choose a whole number from %" G_GINT64_FORMAT
@@ -2181,8 +1347,7 @@ forms_check_field(VentureEntity *field, GPtrArray *values, JsonObject *answers,
 		}
 	case VENTURE_FORM_FIELD_SINGLE_CHOICE:
 		{
-			g_autoptr(GPtrArray) choices = forms_field_choices(field);
-			const gchar *choice = forms_choice_label(choices, text);
+			const gchar *choice = venture_forms_choice_label(field->choices, text);
 
 			if (NULL == choice)
 			{
@@ -2228,30 +1393,28 @@ forms_response_name(VentureEntity *form, GPtrArray *fields, JsonObject *answers)
 	{
 		for (i = 0; i < fields->len; i++)
 		{
-			VentureEntity *field = g_ptr_array_index(fields, i);
-			g_autofree gchar *key = forms_string(field, "key");
-			g_autofree gchar *maps = forms_string(field, "maps-to");
+			const VentureFormsField *field = g_ptr_array_index(fields, i);
 			JsonNode *node;
 
-			if (!json_object_has_member(answers, key))
+			if (!json_object_has_member(answers, field->key))
 				continue;
-			node = json_object_get_member(answers, key);
+			node = json_object_get_member(answers, field->key);
 			if (!JSON_NODE_HOLDS_VALUE(node) || G_TYPE_STRING != json_node_get_value_type(node))
 				continue;
-			if ((0 == pass && 0 == g_strcmp0(maps, "name")) ||
-			    (1 == pass && 0 == g_strcmp0(key, "name")))
+			if ((0 == pass && 0 == g_strcmp0(field->maps_to, "name")) ||
+			    (1 == pass && 0 == g_strcmp0(field->key, "name")))
 				return venture_truncate(json_node_get_string(node), 200);
-			if (NULL == email && VENTURE_FORM_FIELD_EMAIL == forms_kind(field))
+			if (NULL == email && VENTURE_FORM_FIELD_EMAIL == field->kind)
 				email = json_node_get_string(node);
 		}
 	}
 	if (NULL != email)
 		return g_strdup(email);
-	title = forms_string(form, "title");
+	title = venture_forms_get_string(form, "title");
 	if (venture_string_is_empty(title))
 	{
 		g_free(title);
-		title = forms_string(form, "name");
+		title = venture_forms_get_string(form, "name");
 	}
 	return g_strdup_printf("Response to %s", title != NULL ? title : "a form");
 }
@@ -2266,39 +1429,32 @@ forms_lead_values(GPtrArray *fields, JsonObject *answers)
 	guint mapped_notes = 0, i;
 
 	for (i = 0; i < fields->len; i++)
-	{
-		g_autofree gchar *maps = forms_string(g_ptr_array_index(fields, i), "maps-to");
-
-		if (0 == g_strcmp0(maps, "notes"))
+		if (0 == g_strcmp0(((const VentureFormsField *)g_ptr_array_index(fields, i))->maps_to, "notes"))
 			mapped_notes++;
-	}
 	for (i = 0; i < fields->len; i++)
 	{
-		VentureEntity *field = g_ptr_array_index(fields, i);
-		g_autofree gchar *key = forms_string(field, "key");
-		g_autofree gchar *maps = forms_string(field, "maps-to");
-		g_autofree gchar *label = forms_string(field, "label");
+		const VentureFormsField *field = g_ptr_array_index(fields, i);
 		JsonNode *node;
 		g_autofree gchar *text = NULL;
 
-		if (venture_string_is_empty(maps) || !json_object_has_member(answers, key))
+		if (venture_string_is_empty(field->maps_to) || !json_object_has_member(answers, field->key))
 			continue;
-		node = json_object_get_member(answers, key);
+		node = json_object_get_member(answers, field->key);
 		if (JSON_NODE_HOLDS_VALUE(node) && G_TYPE_STRING == json_node_get_value_type(node))
 			text = g_strdup(json_node_get_string(node));
 		else
 			text = json_to_string(node, FALSE);
-		if (0 == g_strcmp0(maps, "notes"))
+		if (0 == g_strcmp0(field->maps_to, "notes"))
 		{
 			if (notes->len > 0)
 				g_string_append(notes, "\n");
 			if (mapped_notes > 1)
-				g_string_append_printf(notes, "%s: %s", label, text);
+				g_string_append_printf(notes, "%s: %s", field->label, text);
 			else
 				g_string_append(notes, text);
 		}
 		else
-			json_object_set_string_member(values, maps, text);
+			json_object_set_string_member(values, field->maps_to, text);
 	}
 	if (notes->len > 0)
 		json_object_set_string_member(values, "notes", notes->str);
@@ -2310,10 +1466,10 @@ static gboolean
 forms_queue_confirmation(VentureDatabase *database, VentureEntity *form, VentureEntity *submission,
 	JsonObject *answers, gchar **note, GError **error)
 {
-	g_autofree gchar *field = forms_string(form, "confirmation-field");
-	g_autofree gchar *subject = forms_string(form, "confirmation-subject");
-	g_autofree gchar *body = forms_string(form, "confirmation-message");
-	g_autofree gchar *success = forms_string(form, "success-message");
+	g_autofree gchar *field = venture_forms_get_string(form, "confirmation-field");
+	g_autofree gchar *subject = venture_forms_get_string(form, "confirmation-subject");
+	g_autofree gchar *body = venture_forms_get_string(form, "confirmation-message");
+	g_autofree gchar *success = venture_forms_get_string(form, "success-message");
 	g_autofree gchar *key = NULL;
 	g_autoptr(VentureMailMessage) message = NULL;
 	g_autoptr(VentureMailMessage) queued = NULL;
@@ -2354,35 +1510,40 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 	if (!venture_database_begin(database, error))
 		return FALSE;
 
-	/* Under the lock, the cap and the state are what they are: two
-	 * people posting the last place at once get one response between
-	 * them, not two. */
-	if (!forms_is_open(database, form, now))
+	/* Under the lock, re-read: the cap and the state are what they are
+	 * now, so two people posting the last place at once get one response
+	 * between them, not two, and a form closed a moment ago is closed. */
 	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
-		goto fail;
+		g_autoptr(VentureEntity) fresh = venture_database_get(database, VENTURE_TYPE_FORM,
+			venture_entity_get_id(form), NULL);
+
+		if (NULL == fresh || !forms_is_open(database, fresh, now))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
+			goto fail;
+		}
 	}
 
-	if (follow_up && forms_bool(form, "create-lead"))
+	if (follow_up && venture_forms_get_bool(form, "create-lead"))
 	{
 		g_autoptr(JsonObject) values = forms_lead_values(fields, answers);
 		g_autoptr(VentureEntity) lead = NULL;
-		g_autofree gchar *source = forms_string(form, "lead-source");
-		g_autofree gchar *policy = forms_string(form, "on-duplicate");
+		g_autofree gchar *source = venture_forms_get_string(form, "lead-source");
+		g_autofree gchar *policy = venture_forms_get_string(form, "on-duplicate");
 
 		if (venture_string_is_empty(source))
 		{
 			g_free(source);
-			source = forms_string(form, "title");
+			source = venture_forms_get_string(form, "title");
 		}
 		if (venture_string_is_empty(source))
 		{
 			g_free(source);
-			source = forms_string(form, "name");
+			source = venture_forms_get_string(form, "name");
 		}
 		lead = venture_lead_service_capture_values(venture_database_get_lead_service(database),
-			venture_entity_get_organization_id(form), forms_int(form, "venture-id"), source,
-			forms_int(form, "campaign-id"), values, policy, error);
+			venture_entity_get_organization_id(form), venture_forms_get_int(form, "venture-id"), source,
+			venture_forms_get_int(form, "campaign-id"), values, policy, error);
 		if (NULL == lead)
 			goto fail;
 		g_object_set(submission, "lead-id", venture_entity_get_id(lead), NULL);
@@ -2404,17 +1565,35 @@ fail:
 /* A new, unsaved response. Built afresh for a retry, because a save that
  * was rolled back has already stamped the object it was given. */
 static VentureEntity *
-forms_new_response(VentureEntity *form, const gchar *name, GDateTime *now, const gchar *answers,
-	const gchar *summary, const gchar *origin)
+forms_new_response(VentureEntity *form, VentureEntity *version, const gchar *name, GDateTime *now,
+	const gchar *answers, const gchar *summary, const gchar *origin)
 {
 	VentureEntity *response = VENTURE_ENTITY(venture_form_submission_new());
 
 	venture_entity_set_organization_id(response, venture_entity_get_organization_id(form));
 	g_object_set(response, "name", name, "form-id", venture_entity_get_id(form),
+		"version-id", venture_entity_get_id(version),
+		"version-number", venture_forms_get_int(version, "number"),
 		"submitted-at", now, "answers", answers, "summary", summary,
 		"origin", venture_string_is_empty(origin) ? NULL : origin, NULL);
 	g_object_set_data(G_OBJECT(response), VENTURE_FORMS_ACCEPTING_KEY, GINT_TO_POINTER(1));
 	return response;
+}
+
+VentureEntity *
+venture_forms_version_for_answers(VentureDatabase *database, VentureEntity *form, GHashTable *answers)
+{
+	gint64 issued = 0, number = 0;
+
+	if (venture_forms_ticket_parse(form, forms_first(answers, VENTURE_FORMS_TICKET), &issued, &number) &&
+	    number > 0)
+	{
+		VentureEntity *version = venture_forms_version_by_number(database, form, number, NULL);
+
+		if (NULL != version)
+			return version;
+	}
+	return venture_forms_published_version(database, form, NULL);
 }
 
 gboolean
@@ -2422,6 +1601,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	const gchar *origin, GDateTime *now, VentureFormsOutcome *outcome,
 	VentureEntity **submission, JsonObject **errors, GError **error)
 {
+	g_autoptr(VentureEntity) version = NULL;
 	g_autoptr(GPtrArray) fields = NULL;
 	g_autoptr(JsonObject) stored = json_object_new();
 	g_autoptr(JsonObject) refused = json_object_new();
@@ -2446,34 +1626,33 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		*errors = NULL;
 	*outcome = VENTURE_FORMS_INVALID;
 
-	fields = venture_forms_fields(database, form, error);
+	version = venture_forms_version_for_answers(database, form, answers);
+	if (NULL == version)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
+		return FALSE;
+	}
+	fields = venture_forms_definition_for(database, form, version, error);
 	if (NULL == fields)
 		return FALSE;
 
-	/* A name that is no question on this form is refused, not dropped:
-	 * the sender believes it was received. The door's own names pass. */
+	/* A name that is no question on this version is refused, not
+	 * dropped: the sender believes it was received. The door's own
+	 * names pass. */
 	g_hash_table_iter_init(&iter, answers);
 	while (g_hash_table_iter_next(&iter, &key, NULL))
 	{
-		gboolean known = (0 == g_strcmp0(key, VENTURE_FORMS_HONEYPOT)) ||
-		                 (0 == g_strcmp0(key, VENTURE_FORMS_TICKET));
-
-		for (i = 0; !known && i < fields->len; i++)
-		{
-			g_autofree gchar *field_key = forms_string(g_ptr_array_index(fields, i), "key");
-
-			known = (0 == g_strcmp0(field_key, key));
-		}
-		if (!known)
+		if (0 == g_strcmp0(key, VENTURE_FORMS_HONEYPOT) || 0 == g_strcmp0(key, VENTURE_FORMS_TICKET))
+			continue;
+		if (NULL == venture_forms_definition_find(fields, key))
 			forms_refuse(refused, key, "This form has no such question.");
 	}
 
 	for (i = 0; i < fields->len; i++)
 	{
-		VentureEntity *field = g_ptr_array_index(fields, i);
-		g_autofree gchar *field_key = forms_string(field, "key");
+		const VentureFormsField *field = g_ptr_array_index(fields, i);
 
-		forms_check_field(field, g_hash_table_lookup(answers, field_key), stored, refused, summary);
+		forms_check_field(field, g_hash_table_lookup(answers, field->key), stored, refused, summary);
 	}
 
 	if (json_object_get_size(refused) > 0)
@@ -2491,8 +1670,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	if (summary->len > 0 && '\n' == summary->str[summary->len - 1])
 		g_string_truncate(summary, summary->len - 1);
 
-	response = forms_new_response(form, name, now, answers_text, summary->str, origin);
-
+	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
 	if (!forms_write(database, form, response, fields, stored, TRUE, now, &follow_error))
 	{
 		g_autofree gchar *note = NULL;
@@ -2509,7 +1687,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		note = g_strdup_printf("Follow-up not done: %s", follow_error->message);
 		g_clear_error(&follow_error);
 		g_clear_object(&response);
-		response = forms_new_response(form, name, now, answers_text, summary->str, origin);
+		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
 		g_object_set(response, "mapping-note", note, NULL);
 		if (!forms_write(database, form, response, fields, stored, FALSE, now, error))
 			return FALSE;
@@ -2519,4 +1697,128 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	if (NULL != submission)
 		*submission = g_steal_pointer(&response);
 	return TRUE;
+}
+
+/* ==========================================================================
+ * Publishing
+ * ========================================================================== */
+
+VentureEntity *
+venture_forms_publish(VentureDatabase *database, VentureEntity *form, const VentureActor *actor,
+	GError **error)
+{
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureEntity) latest = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autofree gchar *definition = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *name = NULL;
+	g_autoptr(GDateTime) published = venture_time_now();
+	VentureEntity *version;
+	gint64 number;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
+
+	if (!venture_database_begin(database, error))
+		return NULL;
+
+	/* Read the form under the lock: a publish from a stale page must not
+	 * point the form back at an older version. */
+	stored = venture_database_get(database, VENTURE_TYPE_FORM, venture_entity_get_id(form), error);
+	if (NULL == stored)
+		goto fail;
+	fields = venture_forms_definition_from_records(database, stored, error);
+	if (NULL == fields)
+		goto fail;
+	if (0 == fields->len)
+	{
+		venture_set_error_validation(error, "Questions",
+			"add at least one question before publishing");
+		goto fail;
+	}
+	definition = venture_forms_definition_to_json(fields);
+
+	/* Publishing what is already published changes nothing and makes no
+	 * version: a second click is not a second version. */
+	current = venture_forms_published_version(database, stored, NULL);
+	if (NULL != current)
+	{
+		g_autofree gchar *frozen = venture_forms_get_string(current, "definition");
+
+		if (0 == g_strcmp0(frozen, definition))
+		{
+			if (!venture_database_commit(database, error))
+				return NULL;
+			return g_steal_pointer(&current);
+		}
+	}
+
+	query = venture_query_new(VENTURE_TYPE_FORM_VERSION);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_organization(query, venture_entity_get_organization_id(stored));
+	venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(stored), NULL);
+	venture_query_add_order(query, "number", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 1);
+	latest = venture_database_find_one(database, query, NULL);
+	number = venture_forms_get_int(latest, "number") + 1;
+
+	title = venture_forms_get_string(stored, "title");
+	if (venture_string_is_empty(title))
+	{
+		g_free(title);
+		title = venture_forms_get_string(stored, "name");
+	}
+	name = g_strdup_printf("%s, version %" G_GINT64_FORMAT, title, number);
+	version = VENTURE_ENTITY(venture_form_version_new());
+	venture_entity_set_organization_id(version, venture_entity_get_organization_id(stored));
+	g_object_set(version, "name", name, "form-id", venture_entity_get_id(stored), "number", number,
+		"definition", definition, "published-at", published,
+		"published-by", (NULL != actor && NULL != actor->name) ? actor->name : NULL, NULL);
+	g_object_set_data(G_OBJECT(version), VENTURE_FORMS_ACCEPTING_KEY, GINT_TO_POINTER(1));
+	if (!venture_database_save(database, version, actor, error))
+	{
+		g_object_unref(version);
+		goto fail;
+	}
+	g_object_set(stored, "published-version-id", venture_entity_get_id(version), NULL);
+	if (!venture_database_save(database, stored, actor, error))
+	{
+		g_object_unref(version);
+		goto fail;
+	}
+	if (!venture_database_commit(database, error))
+	{
+		g_object_unref(version);
+		return NULL;
+	}
+	return version;
+
+fail:
+	venture_database_rollback(database);
+	return NULL;
+}
+
+gboolean
+venture_forms_has_unpublished_changes(VentureDatabase *database, VentureEntity *form)
+{
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(VentureEntity) version = NULL;
+	g_autofree gchar *draft = NULL;
+	g_autofree gchar *frozen = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_FORM(form), FALSE);
+
+	fields = venture_forms_definition_from_records(database, form, NULL);
+	if (NULL == fields)
+		return FALSE;
+	version = venture_forms_published_version(database, form, NULL);
+	if (NULL == version)
+		return fields->len > 0;
+	draft = venture_forms_definition_to_json(fields);
+	frozen = venture_forms_get_string(version, "definition");
+	return 0 != g_strcmp0(draft, frozen);
 }

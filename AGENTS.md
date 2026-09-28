@@ -1255,6 +1255,17 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   is undone and the response alone is saved with `mapping_note`. Build the
   retry's response afresh: a rolled-back save has already stamped the
   object it was given.
+- **The public sees a published version, never the questions.** The
+  renderer, the validator, the schema and the summary take a
+  `VentureFormsField` definition, read either from the form_field records
+  (the draft, for the builder's preview only) or from a `form_version`'s
+  frozen JSON. Code that reads form_field records to answer a stranger is
+  the bug versions exist to prevent. A `VentureFormsRender` has a
+  `version` member: NULL means the draft.
+- **A ticket names its version,** and a submission is checked against
+  that version even after a newer one is published. Tests that build a
+  ticket from a form object must have that object's `published-number`
+  current, or the ticket names no version.
 - **The forms epic's migrations start at 000710.** 000700 was taken by
   product categories before the epic started; each child takes the next
   multiple of ten in delivery order (the table is on the epic issue).

@@ -224,6 +224,7 @@ venture_web_forms_fragment(HtmxRequest *request, GHashTable *params, gpointer da
 	VentureWebServer *self = data;
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(VentureEntity) form = forms_web_live(self, params, now);
+	g_autoptr(VentureEntity) version = NULL;
 	g_autofree gchar *ticket = NULL, *action = NULL;
 	const gchar *origin = forms_web_origin(request);
 	VentureFormsRender options;
@@ -233,6 +234,7 @@ venture_web_forms_fragment(HtmxRequest *request, GHashTable *params, gpointer da
 		return forms_web_missing();
 	if (!forms_web_origin_allowed(request, form, origin))
 		return forms_web_status(403, "This site may not use this form.");
+	version = venture_forms_published_version(venture_context_get_database(self->context), form, NULL);
 	ticket = venture_forms_ticket_new(form, now);
 	action = forms_web_action(self, form, TRUE);
 	options.mode = VENTURE_FORMS_RENDER_FRAGMENT;
@@ -240,6 +242,7 @@ venture_web_forms_fragment(HtmxRequest *request, GHashTable *params, gpointer da
 	options.ticket = ticket;
 	options.values = NULL;
 	options.errors = NULL;
+	options.version = version;
 	html = venture_forms_render(venture_context_get_database(self->context), form, &options, NULL);
 	if (NULL == html)
 		return forms_web_missing();
@@ -434,6 +437,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	if (HTMX_METHOD_POST != htmx_request_get_method(request))
 	{
 		g_autofree gchar *ticket = NULL;
+		g_autoptr(VentureEntity) version = NULL;
 		const gchar *style = htmx_request_get_query_param(request, "style");
 		VentureFormsRender options;
 		gchar *html;
@@ -441,12 +445,14 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		form = forms_web_live(self, params, now);
 		if (NULL == form)
 			return forms_web_missing();
+		version = venture_forms_published_version(database, form, NULL);
 		ticket = venture_forms_ticket_new(form, now);
 		options.mode = (0 == g_strcmp0(style, "basic")) ? VENTURE_FORMS_RENDER_HOSTED_BASIC : VENTURE_FORMS_RENDER_HOSTED;
 		options.action = NULL;
 		options.ticket = ticket;
 		options.values = NULL;
 		options.errors = NULL;
+		options.version = version;
 		html = venture_forms_render(database, form, &options, NULL);
 		if (NULL == html)
 			return forms_web_missing();
@@ -508,15 +514,19 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	 * and the answers still in the boxes, under the ticket it came with. */
 	{
 		g_autoptr(JsonObject) values = venture_forms_answers_to_json(answers);
+		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
 		GPtrArray *posted = g_hash_table_lookup(answers, VENTURE_FORMS_TICKET);
 		VentureFormsRender options;
 		gchar *html;
 
+		/* The questions the person was answering, which after a publish
+		 * mid-way are not necessarily today's. */
 		options.mode = VENTURE_FORMS_RENDER_HOSTED;
 		options.action = NULL;
 		options.ticket = (NULL != posted && posted->len > 0) ? g_ptr_array_index(posted, 0) : NULL;
 		options.values = values;
 		options.errors = errors;
+		options.version = version;
 		html = venture_forms_render(database, form, &options, NULL);
 		if (NULL == html)
 			return forms_web_missing();
@@ -545,6 +555,21 @@ forms_web_copy_block(GString *content, const gchar *id, const gchar *title, cons
 	g_string_append(content, "\">Copy</button></div>");
 }
 
+/* A response's answers, labelled by the version of the questions it
+ * answered, on its own page. */
+static void
+venture_web_append_form_answers(VentureWebServer *self, GString *content, VentureEntity *record)
+{
+	g_autofree gchar *answers = venture_forms_render_answers(venture_context_get_database(self->context),
+		record, NULL);
+
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\"><h2>Answers</h2></div>"
+	                         "<div class=\"card-body\">");
+	if (NULL != answers)
+		g_string_append(content, answers);
+	g_string_append(content, "</div></div>");
+}
+
 static void
 venture_web_append_form_block(VentureWebServer *self, GString *content, VentureEntity *record)
 {
@@ -567,6 +592,38 @@ venture_web_append_form_block(VentureWebServer *self, GString *content, VentureE
 	venture_query_set_organization(responses, venture_entity_get_organization_id(record));
 	venture_query_add_filter_int(responses, "form-id", VENTURE_FILTER_OP_EQ, id, NULL);
 	count = venture_database_count(database, responses, NULL);
+
+	/* --- What the public sees --- */
+
+	{
+		g_autoptr(VentureEntity) published = venture_forms_published_version(database, record, NULL);
+		gboolean changed = venture_forms_has_unpublished_changes(database, record);
+
+		g_string_append(content, "<div class=\"card\"><div class=\"card-head\"><h2>Publishing</h2></div>"
+		                         "<div class=\"card-body\">");
+		if (NULL == published)
+			g_string_append(content, "<p>Not published yet. Nothing is public until you publish.</p>");
+		else
+		{
+			g_autoptr(GDateTime) at = NULL;
+			g_autofree gchar *when = NULL;
+			gint64 number = 0;
+
+			g_object_get(published, "number", &number, "published-at", &at, NULL);
+			when = (NULL != at) ? g_date_time_format(at, "%Y-%m-%d %H:%M") : g_strdup("");
+			g_string_append_printf(content, "<p>The public sees <a href=\"/e/form_version/%" G_GINT64_FORMAT
+			                       "\">version %" G_GINT64_FORMAT "</a>, published ", venture_entity_get_id(published), number);
+			venture_html_escape_append(content, when);
+			g_string_append(content, " UTC.</p>");
+		}
+		if (changed)
+			g_string_append(content, "<p class=\"notice\">The questions have changed since then. "
+			                         "Answers already received keep the questions they were given.</p>");
+		g_string_append_printf(content, "<form method=\"post\" action=\"/forms/%" G_GINT64_FORMAT "/publish\">"
+		                       "<button class=\"btn btn-primary\" type=\"submit\"%s>Publish</button> "
+		                       "<a href=\"/e/form_version?form_id=%" G_GINT64_FORMAT "\">All versions</a></form>"
+		                       "</div></div>", id, changed ? "" : " disabled", id);
+	}
 
 	/* --- Questions, in the order asked --- */
 
@@ -617,6 +674,7 @@ venture_web_append_form_block(VentureWebServer *self, GString *content, VentureE
 	options.ticket = NULL;
 	options.values = NULL;
 	options.errors = NULL;
+	options.version = NULL;
 	preview = venture_forms_render(database, record, &options, NULL);
 	g_string_append(content, "<div class=\"card\"><div class=\"card-head\"><h2>Preview</h2></div>"
 	                         "<div class=\"card-body\"><p class=\"field-help\">Unstyled here, as it arrives on "
@@ -655,4 +713,43 @@ venture_web_append_form_block(VentureWebServer *self, GString *content, VentureE
 	forms_web_copy_block(content, "form-embed-schema", "JSON schema",
 		"For a site that renders the form itself and posts the answers.", schema != NULL ? schema : "");
 	g_string_append(content, "</div></div>");
+}
+
+/* POST /forms/:id/publish -- the builder's Publish button. The same work
+ * as the publish action, which the API, the CLI and the assistant use. */
+static HtmxResponse *
+venture_web_forms_publish(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) form = NULL;
+	g_autoptr(VentureEntity) version = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gint64 id;
+
+	gate = venture_web_ui_require_session(self, request);
+	if (NULL != gate)
+		return gate;
+	gate = venture_web_require_module_ui(self, request, "forms");
+	if (NULL != gate)
+		return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	form = venture_database_get(database, VENTURE_TYPE_FORM, id, &error);
+	if (NULL == form)
+		return venture_web_error_response(error);
+	venture_auth_to_actor(principal, &actor);
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(database), form, "write", &error))
+		return venture_web_error_response(error);
+	version = venture_forms_publish(database, form, &actor, &error);
+	if (NULL == version)
+		return venture_web_error_response(error);
+	path = g_strdup_printf("/e/form/%" G_GINT64_FORMAT, id);
+	return venture_web_redirect_to(path);
 }

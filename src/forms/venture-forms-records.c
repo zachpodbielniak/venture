@@ -101,6 +101,11 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("response-limit", "Response limit",
 	              "Optional: stop after this many responses; 0 for no limit",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("published-version-id", "Published version",
+	                  "What the public sees; set by Publish, or pick an earlier version to go back to it",
+	                  "form_version", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("published-number", "Version", "The published version's number",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("slug", "Slug", "A short name for links and the CLI; made from the name",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
@@ -206,6 +211,33 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormField, venture_form_field, venture_fo
 	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)
 
 /* ==========================================================================
+ * Form versions
+ *
+ * What a form asked when it was published, frozen. `definition` is the
+ * questions as JSON text -- keys, labels, kinds, choices and limits --
+ * which the public door renders and validates against, and which every
+ * response answered on it is read against forever after. Publishing makes
+ * one; nothing edits one; a response pointing at one keeps it.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_form_version_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD_REF("form-id", "Form", "The form this is a version of", "form",
+	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("number", "Number", "1 for the first publish, then counting up",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("published-at", "Published", NULL,
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("published-by", "Published by", NULL,
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("definition", "Questions", "The questions as published",
+	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormVersion, venture_form_version, venture_form_version_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form version", NULL);)
+
+/* ==========================================================================
  * Form responses
  *
  * One person's answers. Labelled "Form response" because the attribution
@@ -226,6 +258,10 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	VENTURE_FIELD_NAME("name", "From", "Who it is from, as they gave it"),
 	VENTURE_FIELD_REF("form-id", "Form", "The form it answers", "form",
 	                  VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("version-id", "Form version", "The version of the questions it answered",
+	                  "form_version", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("version-number", "Version", NULL,
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("submitted-at", "Received", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("summary", "Answers", "The answers as a person reads them",

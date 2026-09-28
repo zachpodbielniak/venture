@@ -71,6 +71,8 @@ typedef enum
  * @ticket: (nullable): a fill-time ticket to embed, or %NULL for none
  * @values: (nullable): answers to put back in the boxes, by key
  * @errors: (nullable): messages to show, by key; "_form" for the form
+ * @version: (nullable): the published version to render; %NULL renders the
+ *   draft questions, which only the builder's preview shows
  *
  * What one rendering needs besides the form. A plain struct, filled
  * member by member at every call site.
@@ -82,6 +84,7 @@ typedef struct
 	const gchar		*ticket;
 	JsonObject		*values;
 	JsonObject		*errors;
+	VentureEntity		*version;
 } VentureFormsRender;
 
 /**
@@ -180,13 +183,92 @@ gboolean venture_forms_origin_allowed(VentureEntity *form, const gchar *origin);
  * @form: a saved form
  * @issued: when the form is being handed out
  *
- * Signs the time a form was handed out with the form's private key. Posted
- * back, it says how long the person took; it cannot be forged to say
- * longer.
+ * Signs the time a form was handed out, and the published version it was
+ * handed out at, with the form's private key. Posted back, it says how
+ * long the person took and which questions they were given; it cannot be
+ * forged to say either differently.
  *
  * Returns: (transfer full): the ticket
  */
 gchar *venture_forms_ticket_new(VentureEntity *form, GDateTime *issued);
+
+/**
+ * venture_forms_ticket_new_for_version:
+ * @form: a saved form
+ * @version: the version number the person is given
+ * @issued: when the form is being handed out
+ *
+ * As venture_forms_ticket_new(), for a named version.
+ *
+ * Returns: (transfer full): the ticket
+ */
+gchar *venture_forms_ticket_new_for_version(VentureEntity *form, gint64 version, GDateTime *issued);
+
+/**
+ * venture_forms_published_version:
+ * @database: a #VentureDatabase
+ * @form: a saved form
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer full) (nullable): what the public sees, or %NULL
+ *   before the first publish
+ */
+VentureEntity *venture_forms_published_version(VentureDatabase *database, VentureEntity *form,
+	GError **error);
+
+/**
+ * venture_forms_version_for_answers:
+ * @database: a #VentureDatabase
+ * @form: a saved form
+ * @answers: posted answers, carrying a ticket
+ *
+ * The version posted answers are checked against: the one the ticket was
+ * issued for when that is a real version of @form, else the published
+ * one. Whoever started on a version finishes on it.
+ *
+ * Returns: (transfer full) (nullable): the version
+ */
+VentureEntity *venture_forms_version_for_answers(VentureDatabase *database, VentureEntity *form,
+	GHashTable *answers);
+
+/**
+ * venture_forms_publish:
+ * @database: a #VentureDatabase
+ * @form: a saved form
+ * @actor: (nullable): who is publishing
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Freezes the form's current questions as its next version and makes it
+ * the one the public sees. Publishing what is already published returns
+ * that version and makes no new one. A form with no questions is refused.
+ *
+ * Returns: (transfer full) (nullable): the published version
+ */
+VentureEntity *venture_forms_publish(VentureDatabase *database, VentureEntity *form,
+	const VentureActor *actor, GError **error);
+
+/**
+ * venture_forms_has_unpublished_changes:
+ * @database: a #VentureDatabase
+ * @form: a saved form
+ *
+ * Returns: %TRUE when the questions differ from what the public sees
+ */
+gboolean venture_forms_has_unpublished_changes(VentureDatabase *database, VentureEntity *form);
+
+/**
+ * venture_forms_render_answers:
+ * @database: a #VentureDatabase
+ * @submission: a saved response
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The response's answers as a definition list, labelled by the version of
+ * the questions it answered, not by today's.
+ *
+ * Returns: (transfer full) (nullable): the markup
+ */
+gchar *venture_forms_render_answers(VentureDatabase *database, VentureEntity *submission,
+	GError **error);
 
 /**
  * venture_forms_render:

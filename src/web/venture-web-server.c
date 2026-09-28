@@ -161,6 +161,7 @@ G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
 
 static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
 static void venture_web_append_form_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_append_form_answers(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_connector_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
@@ -775,6 +776,16 @@ venture_web_type_accepts_writes(
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
 			"Use federation replica operations to edit or synchronize a working copy");
+		return FALSE;
+	}
+
+	/* A form version is what a form asked when it was published. Answers
+	 * are read against it, so nothing edits or deletes one; publishing
+	 * makes it. */
+	if (VENTURE_TYPE_FORM_VERSION == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Form versions are made by publishing the form and cannot be edited or deleted");
 		return FALSE;
 	}
 
@@ -10795,6 +10806,9 @@ venture_web_ui_detail(
 	if ((VENTURE_TYPE_FORM == entity_type) &&
 	    venture_web_module_enabled(self, "forms"))
 		venture_web_append_form_block(self, content, record);
+	if ((VENTURE_TYPE_FORM_SUBMISSION == entity_type) &&
+	    venture_web_module_enabled(self, "forms"))
+		venture_web_append_form_answers(self, content, record);
 
 	/* A goal's progress and its steps, in order. */
 	if ((VENTURE_TYPE_GOAL == entity_type) &&
@@ -31461,6 +31475,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/fragment", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_fragment, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_schema, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forms/:id/publish", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_publish, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/customers/duplicates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_duplicates, self);

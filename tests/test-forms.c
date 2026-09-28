@@ -119,6 +119,25 @@ add_field(Fixture *f, VentureEntity *form, const gchar *key, const gchar *label,
 	save(f, field);
 }
 
+/* Freezes the form's questions as its next version. */
+static VentureEntity *
+publish(Fixture *f, VentureEntity *form)
+{
+	g_autoptr(GError) error = NULL;
+	VentureEntity *version = venture_forms_publish(f->db, form, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(version);
+	/* The form object the test holds is a version behind the publish. */
+	{
+		g_autoptr(VentureEntity) fresh = reread(f, form);
+		gint64 published = 0, number = 0;
+		g_object_get(fresh, "published-version-id", &published, "published-number", &number, NULL);
+		g_object_set(form, "published-version-id", published, "published-number", number,
+			"version", venture_entity_get_version(fresh), NULL);
+	}
+	return version;
+}
+
 /* The contact form most tests submit to: a name, an email, a message, a
  * choice, a rating and a consent box, in that order. */
 static VentureEntity *
@@ -135,6 +154,7 @@ contact_form(Fixture *f, const gchar *token)
 	g_object_set(score, "min-value", 1.0, "max-value", 5.0, NULL);
 	save(f, score);
 	add_field(f, form, "consent", "You may contact me", VENTURE_FORM_FIELD_CHECKBOX, FALSE, 60);
+	g_object_unref(publish(f, form));
 	return form;
 }
 
@@ -312,6 +332,7 @@ render(Fixture *f, VentureEntity *form, VentureFormsRenderMode mode)
 	options.ticket = NULL;
 	options.values = NULL;
 	options.errors = NULL;
+	options.version = NULL;
 	html = venture_forms_render(f->db, form, &options, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(html);
@@ -483,6 +504,7 @@ test_kind_validation(Fixture *f, gconstpointer data)
 	g_object_set(code, "pattern", "[A-Z]{3}-[0-9]{2}", "max-length", (gint64)6, NULL);
 	save(f, code);
 	save(f, phone);
+	g_object_unref(publish(f, form));
 	{
 		const gchar *const missing[] = { "email", "a@example.com", "topic", "sales", NULL };
 		const gchar *const email[] = { "name", "A", "email", "not-an-email", "topic", "sales", NULL };
@@ -924,6 +946,8 @@ test_builder_page(Fixture *f, gconstpointer data)
 	request(f, path, NULL, NULL, NULL, "text/html", &reply);
 	g_assert_cmpuint(reply.status, ==, 200);
 	g_assert_nonnull(strstr(reply.body, "Questions"));
+	g_assert_nonnull(strstr(reply.body, "action=\"/forms/"));
+	g_assert_nonnull(strstr(reply.body, "Publish</button>"));
 	g_assert_nonnull(strstr(reply.body, "/e/form_field/new?form_id="));
 	g_assert_nonnull(strstr(reply.body, "class=\"form-preview\""));
 	g_assert_nonnull(strstr(reply.body, "data-vf-form=\"builder-form\""));
@@ -935,6 +959,283 @@ test_builder_page(Fixture *f, gconstpointer data)
 	/* The preview posts nowhere and cannot be sent. */
 	g_assert_nonnull(strstr(reply.body, "<button class=\"vf-submit\" type=\"submit\" disabled>"));
 	reply_clear(&reply);
+}
+
+/* ==========================================================================
+ * Versions
+ * ========================================================================== */
+
+static gdouble summary_value(JsonNode *json, const gchar *answer, const gchar *column);
+
+/* Whether the summary has a row for @question on @versions whose @answer
+ * row averages @average. */
+static gboolean
+summary_has(JsonNode *json, const gchar *question, const gchar *versions, const gchar *answer, gdouble average)
+{
+	JsonArray *rows = json_object_get_array_member(json_node_get_object(json), "rows");
+	guint i;
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		if (g_strcmp0(json_object_get_string_member_with_default(row, "question", ""), question) == 0 &&
+		    g_strcmp0(json_object_get_string_member_with_default(row, "versions", ""), versions) == 0 &&
+		    g_strcmp0(json_object_get_string_member_with_default(row, "answer", ""), answer) == 0)
+			return json_object_get_double_member(row, "average") == average;
+	}
+	return FALSE;
+}
+
+/* The field whose key is @key on @form. */
+static VentureEntity *
+field_by_key(Fixture *f, VentureEntity *form, const gchar *key)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_FIELD);
+	venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(form), NULL);
+	venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, key, NULL);
+	return venture_database_find_one(f->db, query, NULL);
+}
+
+static gchar *
+public_fragment(Fixture *f, const gchar *token)
+{
+	g_autofree gchar *path = g_strdup_printf("/pub/form/%s/fragment", token);
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	gchar *body;
+	request(f, path, NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	body = g_steal_pointer(&reply.body);
+	reply_clear(&reply);
+	return body;
+}
+
+/* Editing a live form's questions changes the draft, not what strangers
+ * see; publishing is what makes it public. */
+static void
+test_versions_freeze(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "freeze-form");
+	g_autoptr(VentureEntity) name = field_by_key(f, form, "name");
+	g_autoptr(VentureEntity) v2 = NULL;
+	g_autofree gchar *before = NULL, *after = NULL;
+	gint64 number = 0;
+	(void)data;
+	start_http(f);
+	g_object_set(name, "label", "Full legal name", NULL);
+	save(f, name);
+	add_field(f, form, "company", "Company", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 70);
+	g_assert_true(venture_forms_has_unpublished_changes(f->db, form));
+	before = public_fragment(f, "freeze-form");
+	g_assert_nonnull(strstr(before, "Your name"));
+	g_assert_null(strstr(before, "Full legal name"));
+	g_assert_null(strstr(before, "data-vf-field=\"company\""));
+	v2 = publish(f, form);
+	g_object_get(v2, "number", &number, NULL);
+	g_assert_cmpint(number, ==, 2);
+	g_assert_false(venture_forms_has_unpublished_changes(f->db, form));
+	after = public_fragment(f, "freeze-form");
+	g_assert_nonnull(strstr(after, "Full legal name"));
+	g_assert_nonnull(strstr(after, "data-vf-field=\"company\""));
+}
+
+/* A second publish with nothing changed is not a second version, and a
+ * form with no questions has nothing to publish. A live form never
+ * published is not available at all. */
+static void
+test_versions_publish_rules(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "rules-form");
+	g_autoptr(VentureEntity) empty = make_form(f, "empty-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 number = 0;
+	(void)data;
+	again = publish(f, form);
+	g_object_get(again, "number", &number, NULL);
+	g_assert_cmpint(number, ==, 1);
+	g_assert_null(venture_forms_publish(f->db, empty, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_null(venture_forms_find_live(f->db, "empty-form", NULL, &error));
+}
+
+/* A version is what the form asked: nothing creates one but publishing and
+ * nothing edits one, from any door. */
+static void
+test_versions_read_only(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "readonly-form");
+	g_autoptr(VentureEntity) version = venture_forms_published_version(f->db, form, NULL);
+	g_autoptr(VentureEntity) forged = VENTURE_ENTITY(venture_form_version_new());
+	g_autoptr(VentureEntity) other = contact_form(f, "other-form");
+	g_autoptr(VentureEntity) foreign = venture_forms_published_version(f->db, other, NULL);
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	g_autofree gchar *path = NULL;
+	(void)data;
+	g_assert_nonnull(version);
+	g_object_set(version, "definition", "{\"fields\":[]}", NULL);
+	refuse(f, version, "cannot be changed");
+	venture_entity_set_organization_id(forged, f->org);
+	g_object_set(forged, "name", "Forged", "form-id", venture_entity_get_id(form), "number", (gint64)9,
+		"definition", "{\"fields\":[]}", NULL);
+	refuse(f, forged, "publishing");
+	/* Pointing a form at another form's version is refused. */
+	g_object_set(form, "published-version-id", venture_entity_get_id(foreign), NULL);
+	refuse(f, form, "not a version of this form");
+	f->open = TRUE;
+	start_http(f);
+	path = g_strdup_printf("/api/v1/form_version/%" G_GINT64_FORMAT, venture_entity_get_id(version));
+	request(f, "/api/v1/form_version", "application/json", "{\"name\":\"x\"}", NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 403);
+	reply_clear(&reply);
+}
+
+/* Going back: point the form at an earlier version and the public sees
+ * it again, with its number, and its tickets name it. */
+static void
+test_versions_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "rollback-form");
+	g_autoptr(VentureEntity) v1 = venture_forms_published_version(f->db, form, NULL);
+	g_autoptr(VentureEntity) v2 = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	gint64 number = 0;
+	(void)data;
+	add_field(f, form, "company", "Company", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 70);
+	v2 = publish(f, form);
+	g_object_set(form, "published-version-id", venture_entity_get_id(v1), NULL);
+	save(f, form);
+	stored = reread(f, form);
+	g_object_get(stored, "published-number", &number, NULL);
+	g_assert_cmpint(number, ==, 1);
+}
+
+/* Whoever started on version 1 finishes on version 1: a ticket issued
+ * before version 2 was published checks the answers against the questions
+ * the person could see, and files them under version 1. */
+static void
+test_versions_mid_draft(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "draft-mid-form");
+	g_autoptr(VentureEntity) message = field_by_key(f, form, "message");
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) then = g_date_time_add_seconds(now, -60);
+	g_autofree gchar *v1_ticket = venture_forms_ticket_new(form, then);
+	g_autofree gchar *escaped = g_uri_escape_string(v1_ticket, NULL, TRUE);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	g_autoptr(VentureEntity) response = NULL;
+	gint64 number = 0;
+	(void)data;
+	/* Version 2 drops the message and asks for a company. */
+	g_assert_true(venture_database_delete(f->db, message, NULL, &error));
+	g_assert_no_error(error);
+	add_field(f, form, "company", "Company", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 70);
+	g_object_unref(publish(f, form));
+	start_http(f);
+	{
+		g_autofree gchar *old = g_strdup_printf("_vf_t=%s&name=A&email=a%%40example.com&topic=sales&message=Hi", escaped);
+		g_autofree gchar *mixed = g_strdup_printf("_vf_t=%s&name=A&email=a%%40example.com&topic=sales&company=Acme", escaped);
+		Reply reply = { 0, NULL, NULL, NULL, NULL };
+
+		request(f, "/pub/form/draft-mid-form", "application/x-www-form-urlencoded", old, NULL, "application/json", &reply);
+		g_assert_cmpuint(reply.status, ==, 200);
+		reply_clear(&reply);
+		/* Version 1 never asked for a company. */
+		request(f, "/pub/form/draft-mid-form", "application/x-www-form-urlencoded", mixed, NULL, "application/json", &reply);
+		g_assert_cmpuint(reply.status, ==, 422);
+		g_assert_nonnull(strstr(reply.body, "\"company\""));
+		reply_clear(&reply);
+	}
+	response = venture_database_find_one(f->db, query, NULL);
+	g_object_get(response, "version-number", &number, NULL);
+	g_assert_cmpint(number, ==, 1);
+}
+
+/* Two responses, one on each version, read side by side: each with the
+ * labels it was answered under. The summary counts a relabelled choice as
+ * one row and splits a scale whose meaning changed. */
+static void
+test_versions_side_by_side(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "side-form");
+	g_autoptr(VentureEntity) score = field_by_key(f, form, "score");
+	g_autoptr(VentureEntity) topic = field_by_key(f, form, "topic");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	g_autoptr(GPtrArray) rows = NULL;
+	const gchar *const first[] = { "name", "A", "email", "a@example.com", "topic", "sales", "score", "5", NULL };
+	const gchar *const second[] = { "name", "B", "email", "b@example.com", "topic", "sales", "score", "9", NULL };
+	VentureReportRegistry *registry = venture_context_get_report_registry(f->context);
+	g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(JsonNode) json = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	guint i;
+	(void)data;
+	g_assert_cmpint(submit_pairs(f, form, first, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_object_set(score, "label", "How likely are you to recommend us?", "min-value", 0.0, "max-value", 10.0, NULL);
+	save(f, score);
+	g_object_set(topic, "choices", "sales | Buying something\nsupport | Support\nsomething_else | Something else", NULL);
+	save(f, topic);
+	g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, second, NULL), ==, VENTURE_FORMS_ACCEPTED);
+
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(f->db, query, NULL);
+	g_assert_cmpuint(rows->len, ==, 2);
+	for (i = 0; i < 2; i++)
+	{
+		g_autofree gchar *html = venture_forms_render_answers(f->db, g_ptr_array_index(rows, i), &error);
+		g_assert_no_error(error);
+		if (0 == i)
+		{
+			g_assert_nonnull(strstr(html, "How did we do?"));
+			g_assert_nonnull(strstr(html, "<dd><p>Sales</p></dd>"));
+			g_assert_nonnull(strstr(html, "version 1"));
+		}
+		else
+		{
+			g_assert_nonnull(strstr(html, "How likely are you to recommend us?"));
+			g_assert_nonnull(strstr(html, "<dd><p>Buying something</p></dd>"));
+			g_assert_nonnull(strstr(html, "version 2"));
+		}
+	}
+
+	json_object_set_int_member(options, "form_id", venture_entity_get_id(form));
+	result = venture_report_generate(venture_report_registry_lookup(registry, "form_summary"),
+		f->context, period, options, &error);
+	g_assert_no_error(error);
+	json = venture_report_result_to_json(result);
+	text = json_to_string(json, FALSE);
+	/* The relabelled choice: one row, both responses, the newer label. */
+	g_assert_cmpfloat(summary_value(json, "Buying something", "count"), ==, 2);
+	g_assert_null(strstr(text, "\"answer\":\"Sales\""));
+	/* The changed scale: two questions, each averaging its own answers. */
+	g_assert_true(summary_has(json, "How did we do?", "1", "Average", 5));
+	g_assert_true(summary_has(json, "How likely are you to recommend us?", "2", "Average", 9));
+}
+
+/* The publish action is the builder's button for every other door. */
+static void
+test_versions_action(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "action-form");
+	g_autofree gchar *path = g_strdup_printf("/api/v1/form/%" G_GINT64_FORMAT "/actions/publish",
+		venture_entity_get_id(form));
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	g_autoptr(VentureEntity) stored = NULL;
+	gint64 number = 0;
+	(void)data;
+	add_field(f, form, "company", "Company", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 70);
+	f->open = TRUE;
+	start_http(f);
+	request(f, path, "application/json", "{}", NULL, "application/json", &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	reply_clear(&reply);
+	stored = reread(f, form);
+	g_object_get(stored, "published-number", &number, NULL);
+	g_assert_cmpint(number, ==, 2);
 }
 
 /* ==========================================================================
@@ -975,6 +1276,7 @@ test_lead_mapping(Fixture *f, gconstpointer data)
 			save(f, field);
 		}
 	}
+	g_object_unref(publish(f, form));
 	g_assert_cmpint(submit_pairs(f, form, first, NULL), ==, VENTURE_FORMS_ACCEPTED);
 	g_assert_cmpint(submit_pairs(f, form, again, NULL), ==, VENTURE_FORMS_ACCEPTED);
 	/* Merged, not duplicated: the lead service's rule, not ours. */
@@ -1109,6 +1411,13 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-ways-in", Fixture, NULL, setup, test_http_ways_in, teardown);
 	g_test_add("/forms/embed-codes", Fixture, NULL, setup, test_embed_codes, teardown);
 	g_test_add("/forms/builder-page", Fixture, NULL, setup, test_builder_page, teardown);
+	g_test_add("/forms/versions-freeze", Fixture, NULL, setup, test_versions_freeze, teardown);
+	g_test_add("/forms/versions-publish-rules", Fixture, NULL, setup, test_versions_publish_rules, teardown);
+	g_test_add("/forms/versions-read-only", Fixture, NULL, setup, test_versions_read_only, teardown);
+	g_test_add("/forms/versions-rollback", Fixture, NULL, setup, test_versions_rollback, teardown);
+	g_test_add("/forms/versions-mid-draft", Fixture, NULL, setup, test_versions_mid_draft, teardown);
+	g_test_add("/forms/versions-side-by-side", Fixture, NULL, setup, test_versions_side_by_side, teardown);
+	g_test_add("/forms/versions-action", Fixture, NULL, setup, test_versions_action, teardown);
 	g_test_add("/forms/lead-mapping", Fixture, NULL, setup, test_lead_mapping, teardown);
 	g_test_add("/forms/audited", Fixture, NULL, setup, test_audited, teardown);
 	g_test_add("/forms/summary-report", Fixture, NULL, setup, test_summary_report, teardown);

@@ -95,6 +95,9 @@ VENTURE_DECLARE_ENTITY(VentureForm, venture_form, FORM)
 #define VENTURE_TYPE_FORM_FIELD (venture_form_field_get_type())
 VENTURE_DECLARE_ENTITY(VentureFormField, venture_form_field, FORM_FIELD)
 
+#define VENTURE_TYPE_FORM_VERSION (venture_form_version_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormVersion, venture_form_version, FORM_VERSION)
+
 #define VENTURE_TYPE_FORM_SUBMISSION (venture_form_submission_get_type())
 VENTURE_DECLARE_ENTITY(VentureFormSubmission, venture_form_submission, FORM_SUBMISSION)
 
@@ -107,6 +110,12 @@ VENTURE_DECLARE_ENTITY(VentureFormSubmission, venture_form_submission, FORM_SUBM
  * venture_form_field_new:
  *
  * Returns: (transfer full): an unsaved form question
+ */
+/**
+ * venture_form_version_new:
+ *
+ * Returns: (transfer full): an unsaved form version; only publishing may
+ *   save one
  */
 /**
  * venture_form_submission_new:

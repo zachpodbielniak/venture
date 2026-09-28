@@ -928,7 +928,7 @@ applied(VentureDatabase *database, gint64 version)
 }
 
 /*
- * 000710 pins what the forms module relies on: a question's key unique per
+ * 000710 and 000720 pin what the forms module relies on: a question's key unique per
  * form, deleted questions included, and the columns the public door reads.
  * With forms switched off the tables are absent and the script passes and
  * is recorded; switched on later, reconciliation makes the tables with the
@@ -955,7 +955,9 @@ test_forms_schema(void)
 	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	g_assert_false(table_exists(database, "form_fields"));
+	g_assert_false(table_exists(database, "form_versions"));
 	g_assert_cmpint(applied(database, 710), ==, 1);
+	g_assert_cmpint(applied(database, 720), ==, 1);
 	g_clear_object(&context);
 	g_clear_object(&database);
 
@@ -969,7 +971,9 @@ test_forms_schema(void)
 		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
 		g_assert_no_error(error);
 		g_assert_true(table_exists(database, "form_fields"));
+		g_assert_true(table_exists(database, "form_versions"));
 		g_assert_cmpint(applied(database, 710), ==, 1);
+		g_assert_cmpint(applied(database, 720), ==, 1);
 		{
 			g_autofree gchar *index = query_text(database,
 				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "
@@ -990,6 +994,20 @@ test_forms_schema(void)
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database,
 		"DROP INDEX uq_form_fields_organization_form_id_key", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(database, script, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_clear_pointer(&script, g_free);
+
+	/* 000720 likewise refuses responses that cannot say their version. */
+	g_assert_true(g_file_get_contents("migrations/sqlite/000720_form_versions.sql", &script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database, script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP INDEX IF EXISTS idx_form_submissions_version_id;"
+		"ALTER TABLE form_submissions DROP COLUMN version_id", NULL, &error));
 	g_assert_no_error(error);
 	g_assert_false(venture_database_execute(database, script, NULL, &error));
 	g_assert_nonnull(error);

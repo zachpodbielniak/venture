@@ -1636,6 +1636,11 @@ Module `forms` (requires only `core`; suggests `leads` and `mail`). Check
 - **`choices` are lines; each gets a stable id on save** (`Dark blue` →
   `dark_blue | Dark blue`). Answers store the id: relabel freely, but keep
   the id unless you mean a new choice.
+- **Nothing is public until published.** `venturectl act form ID publish`
+  freezes the questions as the next `form_version`; the public door serves
+  that version. Editing questions afterwards changes only the draft until
+  you publish again. Versions are read-only. Roll back by setting the
+  form's `published_version_id` to an earlier version of the same form.
 - `form_submission` ("Form response") **cannot be created with `create`** —
   only the form's public address makes one. Its answers are fixed; you may
   update `reviewed` and `notes`. `answers` is JSON text keyed by question
@@ -1649,13 +1654,16 @@ venturectl create form_field form_id=3 key=topic label=Topic kind=single_choice 
     choices="Sales
 Support" position=20
 venturectl update form 3 state=live create_lead=true
+venturectl act form 3 publish
 venturectl list form_submission form_id=3
 venturectl report form_summary all form_id=3
 ```
 
 Public addresses (no session): `/pub/form/TOKEN` (hosted page and where
 answers are posted), `/pub/form/TOKEN/fragment`, `/pub/form/TOKEN/schema`,
-`/pub/forms.js`. A draft, closed, full or unknown form is the same 404.
+`/pub/forms.js`. A draft, closed, full, never-published or unknown form is
+the same 404. `form_summary` rows carry a `versions` column; a question
+whose kind or scale changed between versions is split.
 
 ## Venture types: typed attributes, enforced at the save
 

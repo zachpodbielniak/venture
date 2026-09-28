@@ -22,6 +22,9 @@ types and one report:
 - =form_field= :: one question: a =key=, a =label=, a =kind=, =required=,
   =help=, =placeholder=, =position= and the per-kind settings below.
   Labelled "Form question".
+- =form_version= :: what a form asked when it was published, frozen.
+  The public sees the published version; editing questions changes the
+  draft until the next publish.
 - =form_submission= :: one person's answers, labelled "Form response"
   (the attribution module already owns "Form submission" for its site
   captures). Searchable, exportable and audited like any record.
@@ -74,6 +77,50 @@ id is given one from its label when the question is saved
 line is rewritten as =id | Label=. From then on the label can be corrected
 freely: answers store the id, so they follow the relabel rather than
 splitting from it. Change an id only if you mean a new choice.
+
+* Versions
+
+Editing a live form must not change what past answers meant. Answers to
+"How satisfied were you (1-5)?" must not be read as answers to "How likely
+are you to recommend us (0-10)?". So a form has versions.
+
+- *Publishing freezes the questions.* =venturectl act form ID publish=, the
+  Publish button on the form's page, or =POST
+  /api/v1/form/ID/actions/publish= make the next =form_version= from the
+  current questions --- keys, labels, kinds, choices and limits, as JSON
+  in its =definition= --- and point the form's =published_version_id= at
+  it. A second publish with nothing changed returns the same version; a
+  form with no questions is refused.
+- *The public sees the published version.* The hosted page, the fragment,
+  the schema and the snippet render it, and answers are validated against
+  it. Editing a question, adding one or removing one changes the draft,
+  which only the builder's preview shows; the form's page says when the
+  draft differs from what is public. A live form never published is not
+  available, like a draft.
+- *Every response records its version* (=version_id=, =version_number=)
+  and is read back against that version: its page lists the answers under
+  the questions as they were asked, so a response to version 1 and one to
+  version 2 read correctly side by side. Its =summary= was written with
+  the labels of its version, too.
+- *A relabel is a new version, but not a new question.* Answers store
+  question keys and choice ids, so the summary counts a relabelled choice
+  as one row under its newest label. A question whose meaning changed ---
+  a new kind, or a rating on a new scale --- is split: one row group per
+  run of versions in which it meant the same, with the versions in the
+  =versions= column.
+- *Whoever started on a version finishes on it.* The ticket in every
+  rendering names the version it was handed out at. A person who opened
+  version 1 and submits after version 2 is published is checked against
+  version 1's questions and filed under version 1: nothing they could not
+  see is required of them, and nothing they typed is refused as unknown.
+  Save-and-resume and multi-page drafts follow the same rule.
+- *Versions are read-only.* Only publishing makes one; nothing edits or
+  deletes one, from any door (the generic API refuses writes to
+  =form_version=). To go back, set the form's =published_version_id= to an
+  earlier version of the same form; its number is copied from the version,
+  and a version of another form is refused.
+- The form's own texts --- title, introduction, button, thank-you --- are
+  not versioned: they change what a page says, not what an answer means.
 
 * Putting it on a site
 
@@ -144,7 +191,8 @@ records, the report --- is behind the ordinary roles.
 
 - *Only a live form answers.* A draft, a closed form, one past =closes_at=,
   one at its =response_limit=, an unknown token and the module switched
-  off all return the same 404 page, byte for byte, so the door says
+  off --- and a live form that has never been published --- all return
+  the same 404 page, byte for byte, so the door says
   nothing about which. The limit and the state are checked again under the
   database lock at the save, so two people posting for the last place get
   one response between them.
@@ -249,8 +297,9 @@ lost because its follow-up failed.
 =form_summary= takes =form_id= (required) and the period, on the
 responses' =submitted_at=. One row per choice of every choice question,
 =Yes= and =No= for a box, one row per step of a scale and an =Average=
-row for scales and numbers, and =Answered= for text. =share= is the
-percentage of all responses in the period. It reads at most 50,000
+row for scales and numbers, and =Answered= for text, each with the
+=versions= it covers (see Versions). =share= is the percentage of the
+responses in the period that were asked that question. It reads at most 50,000
 responses and asks for a shorter period beyond that.
 
 #+begin_src sh
@@ -279,6 +328,7 @@ venturectl create form_field form_id=3 key=topic label="Topic" kind=single_choic
     choices="Sales
 Support" position=20
 venturectl update form 3 state=live
+venturectl act form 3 publish
 venturectl list form_submission form_id=3
 #+end_src
 
@@ -286,5 +336,8 @@ venturectl list form_submission form_id=3
 
 Migration =000710_forms= pins the schema the module relies on --- the
 per-form key index and the columns the door reads --- on SQLite and
-PostgreSQL. With forms switched off the tables are absent and it passes;
-switched on later, reconciliation makes them with the index.
+PostgreSQL. =000720_form_versions= pins the version table and the columns
+that tie a form and a response to a version. With forms switched off the
+tables are absent and both pass; switched on later, reconciliation makes
+them. Forms and versions ship in one release, so no released install
+holds a response without a version; one would be read against the first.

@@ -1824,6 +1824,14 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_submission"),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_version"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_version"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forms/1/publish", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/form/1/actions/publish", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/collections"),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -4564,6 +4572,14 @@ test_forms_public_door(ServerFixture *fixture, gconstpointer unused)
 		"key", "name", "label", "Name", "required", TRUE, NULL);
 	g_assert_true(venture_database_save(fixture->database, field, NULL, &error));
 	g_assert_no_error(error);
+	g_object_unref(venture_forms_publish(fixture->database, form, NULL, &error));
+	g_assert_no_error(error);
+	{
+		/* Publishing saved the form; read the version the door will see. */
+		gint64 id = venture_entity_get_id(form);
+		g_clear_object(&form);
+		form = venture_database_get(fixture->database, VENTURE_TYPE_FORM, id, NULL);
+	}
 	server_fixture_create_user(fixture, "door-outsider", "password", VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "door-outsider", "password");
 	for (i = 0; gets[i] != NULL; i++)
