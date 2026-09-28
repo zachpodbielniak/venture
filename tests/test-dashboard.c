@@ -2026,6 +2026,153 @@ test_dashboard_http_round_trip(
 	                 ==, SOUP_STATUS_NOT_FOUND);
 }
 
+/* A company named @name in @organization_id, for the scope test. */
+static void
+scope_company(
+	ServerFixture	*fixture,
+	gint64		 organization_id,
+	const gchar	*name
+){
+	g_autoptr(VentureEntity) company = NULL;
+
+	company = VENTURE_ENTITY(venture_company_new());
+	g_object_set(company, "name", name, NULL);
+	venture_entity_set_organization_id(company, organization_id);
+	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
+}
+
+/* A dashboard filed under @organization_id with one list of companies;
+ * returns the widget's id. */
+static gint64
+scope_dashboard(
+	ServerFixture	*fixture,
+	gint64		 organization_id,
+	const gchar	*slug
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+
+	dashboard = venture_dashboard_new();
+	g_object_set(dashboard, "name", slug, "slug", slug, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(dashboard), organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(dashboard), NULL, NULL));
+
+	widget = venture_dashboard_widget_new();
+	g_object_set(widget, "dashboard-id", venture_entity_get_id(VENTURE_ENTITY(dashboard)),
+	             "kind", "list", "entity-type", "company", "columns", "name",
+	             "limit", (gint64)20, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(widget), organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(widget), NULL, NULL));
+
+	return venture_entity_get_id(VENTURE_ENTITY(widget));
+}
+
+/* GETs @path as the fixture's owner, with @entity as the sidebar pick
+ * (NULL for none made), and returns the body. */
+static gchar *
+scope_get(
+	ServerFixture	*fixture,
+	const gchar	*path,
+	const gchar	*entity
+){
+	g_autofree gchar *session = NULL;
+	gchar *body = NULL;
+
+	session = fixture->cookie;
+
+	if (NULL != entity)
+		fixture->cookie = g_strdup_printf("%s; venture_entity=%s", session, entity);
+	else
+		fixture->cookie = g_strdup(session);
+
+	g_assert_cmpuint(server_get(fixture, path, &body), ==, SOUP_STATUS_OK);
+	g_free(fixture->cookie);
+	fixture->cookie = g_steal_pointer(&session);
+
+	return body;
+}
+
+/*
+ * A dashboard filed under an organization shows that organization until
+ * the viewer picks one in the sidebar; a pick, "all" included, is
+ * authoritative. The page chooses the scope per request -- the widgets
+ * still never scope themselves, and the API still scopes by
+ * ?organization_id= alone. What breaks: a second business's dashboard
+ * that is empty until somebody knows to switch the sidebar to it, or a
+ * pick the dashboard overrides, which would show one business's rows
+ * under another's name in the sidebar.
+ */
+static void
+test_dashboard_http_filed_scope(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) other = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *pick = NULL;
+	gint64 home;
+	gint64 trading;
+	gint64 widget;
+
+	(void)user_data;
+
+	home = venture_context_get_default_organization_id(fixture->context);
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Trading Arm", "slug", "trading", NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, NULL));
+	trading = venture_entity_get_id(other);
+
+	scope_company(fixture, home, "HomeScopeMarker");
+	scope_company(fixture, trading, "TradingScopeMarker");
+	widget = scope_dashboard(fixture, trading, "trade");
+	scope_dashboard(fixture, home, "house");
+
+	/* Nothing picked: the trading dashboard shows the trading arm, and
+	 * says whose it is showing. */
+	page = scope_get(fixture, "/dashboards/trade", NULL);
+	g_assert_nonnull(strstr(page, "TradingScopeMarker"));
+	g_assert_null(strstr(page, "HomeScopeMarker"));
+	g_assert_nonnull(strstr(page, "Showing Trading Arm, the organization this dashboard"));
+	g_clear_pointer(&page, g_free);
+
+	/* The refresh fragment answers under the same scope as the page. */
+	path = g_strdup_printf("/dashboards/trade/widgets/%" G_GINT64_FORMAT, widget);
+	page = scope_get(fixture, path, NULL);
+	g_assert_nonnull(strstr(page, "TradingScopeMarker"));
+	g_assert_null(strstr(page, "HomeScopeMarker"));
+	g_clear_pointer(&page, g_free);
+
+	/* A dashboard filed under the default entity is as it was. */
+	page = scope_get(fixture, "/dashboards/house", NULL);
+	g_assert_nonnull(strstr(page, "HomeScopeMarker"));
+	g_assert_null(strstr(page, "TradingScopeMarker"));
+	g_assert_null(strstr(page, "dashboard is filed under"));
+	g_clear_pointer(&page, g_free);
+
+	/* A pick is authoritative: the default entity... */
+	pick = g_strdup_printf("%" G_GINT64_FORMAT, home);
+	page = scope_get(fixture, "/dashboards/trade", pick);
+	g_assert_nonnull(strstr(page, "HomeScopeMarker"));
+	g_assert_null(strstr(page, "TradingScopeMarker"));
+	g_assert_null(strstr(page, "dashboard is filed under"));
+	g_clear_pointer(&page, g_free);
+
+	/* ...and everything. */
+	page = scope_get(fixture, "/dashboards/trade", "all");
+	g_assert_nonnull(strstr(page, "HomeScopeMarker"));
+	g_assert_nonnull(strstr(page, "TradingScopeMarker"));
+	g_clear_pointer(&page, g_free);
+
+	/* The API never read the sidebar and still does not: every entity
+	 * unless ?organization_id= names one. */
+	page = scope_get(fixture, "/api/v1/dashboards/trade", NULL);
+	g_assert_nonnull(strstr(page, "HomeScopeMarker"));
+	g_assert_nonnull(strstr(page, "TradingScopeMarker"));
+}
+
 /*
  * Somebody else's personal dashboard does not exist, as far as the
  * viewer can tell: NOT_FOUND on the page, the API and the fragment.
@@ -2324,6 +2471,7 @@ main(
 	    test_dashboard_http_personal_is_private);
 	ADD("/dashboard/http/module-off", test_dashboard_http_module_off);
 	ADD("/dashboard/http/today-home", test_dashboard_http_today_home);
+	ADD("/dashboard/http/filed-scope", test_dashboard_http_filed_scope);
 
 	return g_test_run();
 }

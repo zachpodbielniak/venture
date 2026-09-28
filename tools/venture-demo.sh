@@ -1967,7 +1967,7 @@ ${flask} 68000"
 
     dashboard="$(make_record dashboard organization_id="${org}" name="Evermoor" slug=evermoor \
         purpose=overview layout=three_columns venture_id="${venture}" position=20 \
-        description="The auction-house trade: what sold, what it cost, how far the profession has to go. Pick Evermoor Trading in the sidebar to see it.")"
+        description="The auction-house trade: what sold, what it cost, how far the profession has to go.")"
 
     add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
         title="Auction house gross, 30 days" entity_type=sale field=gross \
@@ -2034,7 +2034,7 @@ except Exception:
     say "${counts} tickets on a desk with service levels, a sprint, a release"
     say "and an incident. Money, sales and the books are all seeded."
     say "A second organization, Evermoor Trading, runs an auction-house"
-    say "trade in a game world's gold: pick it in the sidebar.${OFF}"
+    say "trade in a game world's gold; its dashboard opens in it.${OFF}"
     say ""
     say "  Today             ${base_url}/            ${DIM}(the home dashboard)${OFF}"
     say "  The desk          ${base_url}/dashboards/desk"
@@ -2044,7 +2044,7 @@ except Exception:
     say "  Sprints           ${base_url}/sprints"
     say "  Factory           ${base_url}/factory"
     say "  Reports           ${base_url}/reports"
-    say "  The gold trade    ${base_url}/dashboards/evermoor  ${DIM}(pick Evermoor Trading first)${OFF}"
+    say "  The gold trade    ${base_url}/dashboards/evermoor"
     say "  Every record type ${base_url}/entities        ${DIM}(leads, quotes, bills, journals…)${OFF}"
     say ""
     say "${DIM}From the command line:"

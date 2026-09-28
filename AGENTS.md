@@ -736,6 +736,13 @@ than one that fails.
   from the caller -- the sidebar picker on a page, `?organization_id=` on
   the API, nothing for the assistant -- so one widget answers about the
   same rows through every door. `{me}` is the scope's username.
+- **Before a sidebar pick, a dashboard page opens in the organization the
+  dashboard is filed under.** `venture_web_dashboard_unpicked_organization()`
+  is the page choosing the scope per request, not the widget scoping
+  itself; a pick (the `venture_entity` cookie, `all` included) is always
+  authoritative, and the API still scopes by `?organization_id=` alone.
+  File a business's dashboard under that business's organization rather
+  than telling people to switch the sidebar first.
 - **Dashboards and widgets are checked at the save, like everything.**
   Slug uniqueness and the single home page live in the dashboard's save
   validator, which writes the other dashboards from inside the lock (it is

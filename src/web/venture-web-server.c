@@ -8362,6 +8362,21 @@ venture_web_active_organization(
 }
 
 /*
+ * Whether the viewer has picked an entity in the sidebar at all -- "all"
+ * included. Before a pick, a page that belongs to one business may choose
+ * the scope it opens in; after one, the pick is what every page shows.
+ */
+static gboolean
+venture_web_entity_picked(HtmxRequest *request)
+{
+	g_autofree gchar *selected = NULL;
+
+	selected = venture_web_read_cookie(request, VENTURE_WEB_ENTITY_COOKIE);
+
+	return (NULL != selected);
+}
+
+/*
  * Collects @root and every entity beneath it, to any depth.
  *
  * Returns: (transfer full): the identifiers, @root first
@@ -24385,9 +24400,39 @@ venture_web_dashboard_load(
 }
 
 /*
+ * The entity a dashboard page opens in when the viewer has picked none in
+ * the sidebar: the organization the dashboard is filed under, or the
+ * default entity for one filed under none. 0 once a pick has been made,
+ * which is then authoritative.
+ *
+ * The page decides this per request, never the widget: a widget still
+ * answers for whatever scope it is handed, and the API, which has no
+ * sidebar, still scopes by ?organization_id= alone. Without it a second
+ * business's dashboard opened empty until somebody knew to switch the
+ * sidebar to that business first.
+ */
+static gint64
+venture_web_dashboard_unpicked_organization(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureDashboard	*dashboard
+){
+	gint64 filed;
+
+	if (venture_web_entity_picked(request))
+		return 0;
+
+	filed = venture_entity_get_organization_id(VENTURE_ENTITY(dashboard));
+
+	return (filed > 0) ? filed
+	                   : venture_context_get_default_organization_id(self->context);
+}
+
+/*
  * Fills the scope a page renders under: the viewer, and the entity they
- * have picked in the sidebar, with everything beneath it. @tree is owned
- * by the caller and must outlive @scope.
+ * have picked in the sidebar -- or, before any pick, the one the dashboard
+ * is filed under -- with everything beneath it. @tree is owned by the
+ * caller and must outlive @scope.
  */
 static void
 venture_web_dashboard_scope(
@@ -24407,7 +24452,11 @@ venture_web_dashboard_scope(
 	scope->venture_id = 0;
 	g_object_get(dashboard, "venture-id", &scope->venture_id, NULL);
 
-	active = venture_web_active_organization(self, request);
+	active = venture_web_dashboard_unpicked_organization(self, request, dashboard);
+
+	if (0 == active)
+		active = venture_web_active_organization(self, request);
+
 	*tree = NULL;
 
 	if (0 != active)
@@ -24590,6 +24639,39 @@ venture_web_append_dashboard_grid(
 	columns = venture_dashboard_layout_get_columns(layout);
 	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
 	                            &tree);
+
+	/*
+	 * The sidebar names the default entity until something is picked, so
+	 * a page that opened in another says which one, and how to change it
+	 * -- otherwise the figures sit under a name that is not theirs.
+	 */
+	{
+		gint64 unpicked;
+
+		unpicked = venture_web_dashboard_unpicked_organization(self, request,
+		                                                       dashboard);
+
+		if ((0 != unpicked) &&
+		    (unpicked != venture_context_get_default_organization_id(self->context)))
+		{
+			g_autoptr(VentureEntity) organization = NULL;
+			g_autofree gchar *label = NULL;
+
+			organization = venture_database_get(
+				venture_context_get_database(self->context),
+				VENTURE_TYPE_ORGANIZATION, unpicked, NULL);
+
+			if (NULL != organization)
+			{
+				label = venture_entity_get_display_name(organization);
+				g_string_append(content, "<p class=\"muted small dash-scope\">Showing ");
+				venture_html_escape_append(content, label);
+				g_string_append(content, ", the organization this dashboard is "
+				                         "filed under. Pick an entity in the sidebar "
+				                         "to see another.</p>");
+			}
+		}
+	}
 
 	placements = venture_dashboard_layout(
 		venture_context_get_database(self->context), dashboard, NULL);

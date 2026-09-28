@@ -463,8 +463,9 @@ new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=report span=wi
 A =sum= totals a money or number field per currency ("30g 18s 10c"); a
 =progress= with =start_field= draws the same fraction =goal_progress= does.
 A widget never scopes itself: on the page it answers for the entity picked
-in the sidebar, so pick /Evermoor Trading/ there; over the API pass
-=?organization_id=$ORG=:
+in the sidebar, and until something is picked the page opens in the
+organization the dashboard is filed under -- Evermoor Trading, since it was
+made with =organization_id=$ORG=. Over the API pass =?organization_id=$ORG=:
 
 #+begin_src sh
 curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
