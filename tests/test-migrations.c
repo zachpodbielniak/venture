@@ -1055,6 +1055,65 @@ test_account_holdings_without_accounts(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * A fresh install that never had finance on: accounts and tax_categories
+ * are finance's, and reconciliation never creates a hidden type's table,
+ * so the seeds after the migrations must skip what is not there instead
+ * of counting rows in a table that does not exist. Then the same database
+ * with finance switched on: reconciliation creates the tables whole and
+ * the next start seeds the chart of accounts and the tax categories, as a
+ * fresh install with finance on would have had them. If this regresses, a
+ * server configured without the books refuses to start at all -- or,
+ * with the seed skipped for good, the books arrive empty.
+ */
+static void
+test_fresh_without_finance(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean migrated;
+
+	venture_config_set_module_enabled(config, "finance", FALSE);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	/* Everything built on finance goes with it, and resolving says so. */
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*requires \"finance\"*");
+	context = venture_context_new(config, database);
+	g_test_assert_expected_messages();
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"account"), ==, G_TYPE_INVALID);
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	g_assert_false(table_exists(database, "accounts"));
+	g_assert_false(table_exists(database, "tax_categories"));
+	/* A restart with finance still off is the same start. */
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+
+	venture_config_set_module_enabled(config, "finance", TRUE);
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	{
+		g_autofree gchar *accounts = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM accounts WHERE code IN ('1000', '4000', '7600')");
+		g_autofree gchar *categories = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM tax_categories WHERE code = 'MEALS'");
+
+		g_assert_cmpstr(accounts, ==, "3");
+		g_assert_cmpstr(categories, ==, "1");
+	}
+	g_clear_object(&context);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1072,6 +1131,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
 	g_test_add_func("/migrations/account-holdings-without-accounts",
 	                test_account_holdings_without_accounts);
+	g_test_add_func("/migrations/fresh-without-finance", test_fresh_without_finance);
 	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);

@@ -2428,15 +2428,33 @@ venture_database_seed_default_organization(
 }
 
 /*
+ * Whether a seed may write @type_name's rows. A seed belongs to a module's
+ * type, and a hidden type's table is never created by reconciliation: on
+ * an install that never had the module on, counting its rows is a query
+ * against a table that does not exist and startup refuses. Skipping is
+ * what makes the seed happen later rather than never -- the start that
+ * finds the module on has just created the table empty, and the seed's own
+ * empty-table test fills it then.
+ */
+static gboolean
+venture_database_seed_wanted(
+	VentureEntityRegistry	*registry,
+	const gchar		*type_name
+){
+	return venture_entity_registry_is_type_enabled(registry, type_name);
+}
+
+/*
  * A minimal chart of accounts. Enough to post a sale and an expense without
  * the operator having to invent an accounting structure before recording
  * anything, and conventional enough that an accountant will recognise it.
  */
 static gboolean
 venture_database_seed_accounts(
-	VentureDatabase	 *self,
-	gint64		  organization_id,
-	GError		**error
+	VentureDatabase		 *self,
+	VentureEntityRegistry	 *registry,
+	gint64			  organization_id,
+	GError			**error
 ){
 	static const struct
 	{
@@ -2473,6 +2491,9 @@ venture_database_seed_accounts(
 	g_autoptr(VentureQuery) query = NULL;
 	gint64 existing;
 	gsize i;
+
+	if (!venture_database_seed_wanted(registry, "account"))
+		return TRUE;
 
 	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	existing = venture_database_count(self, query, error);
@@ -2517,9 +2538,10 @@ venture_database_seed_accounts(
  */
 static gboolean
 venture_database_seed_tax_categories(
-	VentureDatabase	 *self,
-	gint64		  organization_id,
-	GError		**error
+	VentureDatabase		 *self,
+	VentureEntityRegistry	 *registry,
+	gint64			  organization_id,
+	GError			**error
 ){
 	static const struct
 	{
@@ -2558,6 +2580,9 @@ venture_database_seed_tax_categories(
 	g_autoptr(VentureQuery) query = NULL;
 	gint64 existing;
 	gsize i;
+
+	if (!venture_database_seed_wanted(registry, "tax_category"))
+		return TRUE;
 
 	query = venture_query_new(VENTURE_TYPE_TAX_CATEGORY);
 	existing = venture_database_count(self, query, error);
@@ -2620,8 +2645,9 @@ venture_database_migrate(
 		return FALSE;
 
 	organization_id = venture_database_seed_default_organization(self, error);
-	if (organization_id == 0 || !venture_database_seed_accounts(self, organization_id, error) ||
-		!venture_database_seed_tax_categories(self, organization_id, error) ||
+	if (organization_id == 0 ||
+		!venture_database_seed_accounts(self, registry, organization_id, error) ||
+		!venture_database_seed_tax_categories(self, registry, organization_id, error) ||
 		!venture_setup_seed_defaults(self, organization_id, NULL, error) ||
 		!venture_pipelines_migrate(self, error))
 		return FALSE;
