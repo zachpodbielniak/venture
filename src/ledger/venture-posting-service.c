@@ -1153,6 +1153,39 @@ venture_posting_service_route_currency(VenturePostingService *self, gint64 organ
 	return TRUE;
 }
 
+gchar *
+venture_posting_service_book_label(VenturePostingService *self, gint64 organization_id,
+	const gchar *currency, GDateTime *when, GError **error)
+{
+	g_autofree gchar *book = NULL;
+	VentureBookRoute route;
+
+	g_return_val_if_fail(VENTURE_IS_POSTING_SERVICE(self), NULL);
+	if (!venture_posting_service_route_currency(self, organization_id, currency, when,
+		&route, &book, error))
+		return NULL;
+	/* A statement reads journals that were posted by the rule as it
+	 * stood then; the label says why a section exists today, so a
+	 * section whose currency would now be converted says it predates the
+	 * rate rather than pretending to be the book. */
+	switch (route)
+	{
+	case VENTURE_BOOK_ROUTE_BOOK:
+		return g_strdup_printf("Book currency: %s", currency);
+	case VENTURE_BOOK_ROUTE_CONVERTED:
+		return g_strdup_printf("Own book: %s (posted before a rate to %s)", currency, book);
+	case VENTURE_BOOK_ROUTE_MEMO:
+		return g_strdup_printf("Memo: %s (posted before it was memo)", currency);
+	case VENTURE_BOOK_ROUTE_SEPARATE:
+	default:
+		break;
+	}
+	if (VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == venture_currency_get_book_treatment(currency) ||
+		VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == venture_currency_get_book_treatment(book))
+		return g_strdup_printf("Separate book: %s", currency);
+	return g_strdup_printf("Own book: %s (no rate to %s)", currency, book);
+}
+
 typedef struct
 {
 	gchar *currency;

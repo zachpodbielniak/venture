@@ -302,6 +302,50 @@ scheduled_in_period(VentureDatabase *db, GType type, VentureEntity *period, GErr
 	return FALSE;
 }
 
+/* The organization's other books -- journals posted in a currency that is
+ * not the close's -- named by the posting service's label, for the task's
+ * note: a close ties out one book, and says which it did not rather than
+ * refusing over a separate TICKET book it was never asked to close.
+ * Returns NULL when there are none. */
+static gchar *
+other_books(VentureDatabase *db, gint64 org, const gchar *currency, GDateTime *as_of)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GHashTable) codes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(GList) sorted = NULL;
+	g_autoptr(GString) text = NULL;
+	GList *node;
+	guint i;
+	if (!type_on("journal"))
+		return NULL;
+	query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	venture_query_set_organization(query, org);
+	venture_query_set_limit(query, 0);
+	journals = venture_database_find(db, query, NULL);
+	if (journals == NULL)
+		return NULL;
+	for (i = 0; i < journals->len; i++)
+	{
+		g_autofree gchar *code = NULL;
+		g_object_get(g_ptr_array_index(journals, i), "currency", &code, NULL);
+		if (code != NULL && g_strcmp0(code, currency) != 0)
+			g_hash_table_add(codes, g_steal_pointer(&code));
+	}
+	if (g_hash_table_size(codes) == 0)
+		return NULL;
+	text = g_string_new("Not tied out by this close: ");
+	sorted = g_list_sort(g_hash_table_get_keys(codes), (GCompareFunc)g_strcmp0);
+	for (node = sorted; node != NULL; node = node->next)
+	{
+		g_autofree gchar *label = venture_posting_service_book_label(
+			venture_database_get_posting_service(db), org, node->data, as_of, NULL);
+		g_string_append_printf(text, "%s%s", node == sorted ? "" : "; ",
+			label != NULL ? label : (const gchar *)node->data);
+	}
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
 static gboolean
 run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context,
 	VentureEntity *workspace, VentureEntity *period, const gchar *kind,
@@ -327,7 +371,9 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BANK_TRANSACTION);
 		g_autoptr(GPtrArray) rows = NULL;
+		g_autoptr(GHashTable) apart = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 		guint i;
+		guint counted = 0;
 		gint64 amount = 0;
 		venture_query_set_organization(query, org);
 		venture_query_set_date_range(query, "date", range, NULL);
@@ -342,16 +388,48 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 			if (value != NULL)
 			{
 				gint64 minor = venture_money_get_amount(value);
-				/* A close cannot label foreign minor units as book currency. */
-				if (g_strcmp0(venture_money_get_currency(value), currency) != 0)
-					return refuse(error, VENTURE_ERROR_VALIDATION, "Unmatched bank transactions in another currency remain");
+				const gchar *code = venture_money_get_currency(value);
+				/* A close cannot label foreign minor units as book currency.
+				 * A currency the ledger keeps in books of its own (a
+				 * separate book, or a valued one with no rate) or never
+				 * posts (memo) is not this close's to tie out: it is left
+				 * out and named, where it used to refuse the whole close.
+				 * One the ledger converts is in these books, so an
+				 * unmatched one still stops the close. */
+				if (g_strcmp0(code, currency) != 0)
+				{
+					VentureBookRoute route = VENTURE_BOOK_ROUTE_CONVERTED;
+					if (!venture_posting_service_route_currency(venture_database_get_posting_service(db),
+						org, code, as_of, &route, NULL, error))
+						return FALSE;
+					if (route != VENTURE_BOOK_ROUTE_SEPARATE && route != VENTURE_BOOK_ROUTE_MEMO)
+						return refuse(error, VENTURE_ERROR_VALIDATION, "Unmatched bank transactions in another currency remain");
+					g_hash_table_replace(apart, g_strdup(code),
+						GUINT_TO_POINTER(GPOINTER_TO_UINT(g_hash_table_lookup(apart, code)) + 1));
+					continue;
+				}
 				if (minor == G_MININT64 || __builtin_add_overflow(amount, ABS(minor), &amount))
 					return refuse(error, VENTURE_ERROR_VALIDATION, "Unmatched bank total overflows minor units");
 			}
 		}
 		g_clear_pointer(&difference, venture_money_free);
 		difference = venture_money_new_for_currency(amount, currency);
-		notes = g_strdup_printf("%u unmatched bank transaction(s)", rows->len);
+		counted = rows->len;
+		{
+			g_autoptr(GString) text = g_string_new(NULL);
+			g_autoptr(GList) codes = g_list_sort(g_hash_table_get_keys(apart), (GCompareFunc)g_strcmp0);
+			GList *node;
+			for (node = codes; node != NULL; node = node->next)
+			{
+				guint n = GPOINTER_TO_UINT(g_hash_table_lookup(apart, node->data));
+				g_autofree gchar *label = venture_posting_service_book_label(
+					venture_database_get_posting_service(db), org, node->data, as_of, NULL);
+				counted -= n;
+				g_string_append_printf(text, "; left out %u unmatched %s transaction(s), %s",
+					n, (const gchar *)node->data, label != NULL ? label : (const gchar *)node->data);
+			}
+			notes = g_strdup_printf("%u unmatched bank transaction(s)%s", counted, text->str);
+		}
 	}
 	else if (g_strcmp0(kind, "ar_control") == 0)
 	{
@@ -473,7 +551,11 @@ run_kind(VentureCloseService *self, VentureDatabase *db, VentureContext *context
 			notes = g_strdup(local->message);
 		}
 		else
-			notes = g_strdup("Trial balance is in balance");
+		{
+			g_autofree gchar *others = other_books(db, org, currency, as_of);
+			notes = others != NULL ? g_strdup_printf("Trial balance is in balance. %s", others)
+				: g_strdup("Trial balance is in balance");
+		}
 	}
 	else if (g_strcmp0(kind, "subledger_tieout") == 0)
 	{
@@ -545,10 +627,10 @@ venture_close_service_open(VentureCloseService *self, gint64 period_id,
 	workspace = VENTURE_ENTITY(venture_close_workspace_new());
 	if (use_currency == NULL || use_currency[0] == '\0')
 	{
-		g_autoptr(VentureEntity) organization = venture_database_get(db, VENTURE_TYPE_ORGANIZATION,
+		/* The organization's book currency, by the same answer every
+		 * journal is anchored on -- not "USD" when it names none. */
+		book = venture_posting_service_book_currency(venture_database_get_posting_service(db),
 			venture_entity_get_organization_id(period), NULL);
-		if (organization != NULL)
-			g_object_get(organization, "default-currency", &book, NULL);
 		use_currency = book;
 	}
 	if (use_currency != NULL && *use_currency && !venture_currency_is_valid(use_currency)) {
@@ -556,7 +638,7 @@ venture_close_service_open(VentureCloseService *self, gint64 period_id,
 		goto fail;
 	}
 	g_object_set(workspace, "name", name, "fiscal-period-id", period_id, "status", "preparing",
-		"currency", use_currency != NULL && use_currency[0] != '\0' ? use_currency : "USD", NULL);
+		"currency", use_currency != NULL && use_currency[0] != '\0' ? use_currency : venture_money_get_default_currency(), NULL);
 	venture_entity_set_organization_id(workspace, venture_entity_get_organization_id(period));
 	if (!save_internal(self, db, workspace, actor, error))
 		goto fail;

@@ -30,6 +30,26 @@ Differences become =close_discrepancy= rows. An unexplained difference
 refuses the run. Explain it, or link =correction_type= and =correction_id=
 to the journal, bill or receipt that fixes it.
 
+** One book per close
+
+A workspace ties out one currency: the one it was opened in, else the
+organization's book currency (never a literal USD). Other currencies are
+decided by the posting rule (see [[file:ledger.org][Currencies in the books]]):
+
+- An unmatched bank line in a currency the ledger keeps in books of its
+  own -- a =separate_book= currency, a =valued= one with no rate on the
+  period's last day -- or never posts (=memo=) is *left out* of the bank
+  reconciliation and named in the task's notes, e.g. "0 unmatched bank
+  transaction(s); left out 1 unmatched TICKET transaction(s), Separate
+  book: TICKET". It used to refuse the whole close with "Unmatched bank
+  transactions in another currency remain".
+- An unmatched line in a =valued= currency that has a rate is in these
+  books (converted), so it still refuses the run, as before.
+- The trial-balance task, when it passes, names the other books the close
+  did not tie out: "Trial balance is in balance. Not tied out by this
+  close: Separate book: TICKET". Close each of those in its own workspace
+  opened in that currency if it needs a close at all.
+
 * Signoff, pack, complete, reopen
 
 Every task must be done or waived. The preparer signs first, the reviewer

@@ -47,7 +47,7 @@ Remainder minor units go to the largest ratios first, deterministically, because
 
 ** Mixed currencies fail loudly
 
-There is no exchange rate in the type. =venture_money_add()= on USD and EUR returns =NULL= with an error rather than guessing. Reports that aggregate across records group by currency and report the majority one, with a note, rather than folding them together.
+There is no exchange rate in the type. =venture_money_add()= on USD and EUR returns =NULL= with an error rather than guessing. Reports that aggregate across records keep a figure per currency (the organization's book currency first), or carry one figure in the book currency and say in a note what they left out, rather than folding them together.
 
 The ledger is where currencies meet, and it does so by one rule: each currency's book treatment (=valued=, =separate_book= or =memo=) and the organization's exchange-rate table decide whether an amount is converted into the book currency, posted in books of its own, or not posted at all. See [[file:currencies.org][Currencies]] for the treatment and [[file:ledger.org][the general journal]] for the rule and the currency clearing account.
 

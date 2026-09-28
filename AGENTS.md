@@ -582,6 +582,32 @@ than one that fails.
   document cannot move to a currency its lines are not in. An automatic
   sale's cost-of-goods pair is the exception by design: it balances by
   itself in the product cost's currency.
+- **Operational reports anchor on the book currency and keep one figure
+  per currency.** `pnl`, `ventures` and `monthly` total with
+  `venture_money_totals_*` and show a block/row per currency, the book
+  currency (`venture_posting_service_book_currency()`) always and first;
+  its metrics keep the plain key (`revenue`) and every other currency's
+  adds `_<CODE>` (`revenue_TICKET`) -- the headline and dashboard widgets
+  read the plain key, so never put a non-book figure under it. Do not
+  bring back "the currency most records use": it dropped a gold sale
+  among ticket ones, and an empty total made in `NULL`/USD blanked a gold
+  organization's profit. A report that still shows one figure per column
+  anchors it on the book currency and says in a note what it left out.
+- **Statements label a section, they never re-decide it.** The `books`
+  column and the section order (book first) come from
+  `venture_posting_service_book_label()` and the book currency; a
+  converted amount is already in the book section. The close leaves an
+  unmatched bank line in a kept-apart currency out with a note, and a
+  consolidation leaves out a memo, separate-book or rate-less member book
+  with a note -- both used to refuse. Ask the route; do not compare codes
+  against the organization's currency and refuse.
+- **A market price answers only in its own currency.**
+  `venture_market_latest_price()` takes a `currency` (NULL: whatever was
+  seen last). The valuing reports read their `currency` option through
+  `venture_market_valuing_currency()` and price with
+  `venture_market_price_preferring()` (book currency wherever seen, else
+  any) or strictly in the named one. The query cannot filter on a money
+  field's currency, so the lookup pages newest-first; keep it paged.
 - **A word beside a number is a code only if it is three letters or
   registered.** Widening the parser to every short word would read
   `100.00 CR` as a hundred of "CR"; `venture_money_word_is_code()` is the

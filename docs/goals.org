@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * A number, where it started, and where it should end
@@ -239,6 +239,7 @@ of anybody), and multiplies them out.
 | =price_source=     | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
 | =include_on_hand=  | =true= (default) takes stock on hand off what is needed; =false= does not. Accepts true/false, yes/no, on/off, 1/0; anything else is refused |
 | =as_of=            | count stock and read prices at this date instead of now                 |
+| =currency=         | only prices observed in this currency count; left out, the book currency's price wins wherever the product was seen in it, else the newest in any |
 | =organization_id=  | the legal entity; the default organization otherwise                    |
 
 The arithmetic, per product, summed across the steps:
@@ -271,8 +272,9 @@ The arithmetic, per product, summed across the steps:
 | =note=       | a product with no price                                           |
 
 *Prices.* With the market module on, the latest observation from
-=price_source= at or before =as_of= through =venture_market_latest_price()=,
-and nothing else -- falling back to a recorded cost would mix two kinds of
+=price_source= at or before =as_of= through =venture_market_latest_price()=
+-- in the =currency= option's currency when named, else the book
+currency's wherever the product was seen in it -- and nothing else -- falling back to a recorded cost would mix two kinds of
 number in one bill without saying which, the rule =recipe_margin= keeps.
 With market off, the recorded cost: the first stock item's =unit_cost=,
 else the product's =cost=. =price_source= with market off is refused.

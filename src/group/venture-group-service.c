@@ -134,16 +134,6 @@ members(VentureGroupService *self, gint64 parent_id, GError **error)
 	return orgs;
 }
 
-static const gchar *
-org_currency(VentureDatabase *database, gint64 org_id)
-{
-	g_autoptr(VentureEntity) org = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, org_id, NULL);
-	g_autofree gchar *currency = NULL;
-	if (org == NULL)
-		return "USD";
-	g_object_get(org, "default-currency", &currency, NULL);
-	return g_intern_string(currency != NULL && currency[0] != '\0' ? currency : "USD");
-}
 
 static VentureMoney *
 convert(VentureGroupService *self, gint64 parent_id, const VentureMoney *amount,
@@ -156,6 +146,74 @@ convert(VentureGroupService *self, gint64 parent_id, const VentureMoney *amount,
 		return venture_money_copy(amount);
 	policy = venture_rate_table_policy_new(self->database, parent_id);
 	return venture_exchange_policy_convert(policy, amount, currency, when, error);
+}
+
+/*
+ * Whether one member's book in @code joins a consolidation in @currency.
+ * The group's own currency always does. A memo currency never reached the
+ * ledger and a separate-book one is kept apart by its treatment, so
+ * neither is converted -- a rate on file does not change that. A valued
+ * currency joins at the parent's rate on @when; with no rate it is left
+ * out rather than refusing the whole consolidation, because a rate is
+ * never invented and one member's ticket book must not hide everyone
+ * else's figures. Every exclusion is named in @left_out, once.
+ *
+ * Returns 1 to include, 0 to leave out, -1 with @error set on a storage
+ * error.
+ */
+static gint
+book_joins(VentureGroupService *self, gint64 parent_id, gint64 org, const gchar *code,
+	const gchar *currency, GDateTime *when, GHashTable *decided, GString *left_out, GError **error)
+{
+	g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, code);
+	g_autoptr(VentureExchangePolicy) policy = NULL;
+	g_autoptr(VentureMoney) zero = NULL;
+	g_autoptr(VentureMoney) trial = NULL;
+	g_autoptr(GError) missing = NULL;
+	VentureBookTreatment treatment;
+	const gchar *why = NULL;
+	gpointer known;
+	gint answer;
+	if (g_hash_table_lookup_extended(decided, key, NULL, &known))
+		return GPOINTER_TO_INT(known);
+	treatment = venture_currency_get_book_treatment(code);
+	if (g_strcmp0(code, currency) == 0)
+		answer = 1;
+	else if (treatment == VENTURE_BOOK_TREATMENT_MEMO)
+	{
+		answer = 0;
+		why = "a memo currency";
+	}
+	else if (treatment == VENTURE_BOOK_TREATMENT_SEPARATE_BOOK)
+	{
+		answer = 0;
+		why = "a separate book";
+	}
+	else
+	{
+		policy = venture_rate_table_policy_new(self->database, parent_id);
+		zero = venture_money_new_zero(code);
+		trial = venture_exchange_policy_convert(policy, zero, currency, when, &missing);
+		if (trial != NULL)
+			answer = 1;
+		else if (g_error_matches(missing, VENTURE_ERROR, VENTURE_ERROR_VALIDATION))
+		{
+			answer = 0;
+			why = "no rate";
+		}
+		else
+		{
+			g_propagate_error(error, g_steal_pointer(&missing));
+			return -1;
+		}
+	}
+	if (answer == 0)
+		g_string_append_printf(left_out, "%sorganization %" G_GINT64_FORMAT "'s %s book (%s%s%s)",
+			left_out->len > 0 ? "; " : "", org, code, why,
+			g_strcmp0(why, "no rate") == 0 ? " to " : "",
+			g_strcmp0(why, "no rate") == 0 ? currency : "");
+	g_hash_table_insert(decided, g_steal_pointer(&key), GINT_TO_POINTER(answer));
+	return answer;
 }
 
 static gint64
@@ -216,6 +274,8 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 	g_autoptr(VentureMoney) expenses = NULL;
 	g_autoptr(VentureLedgerBalances) books = NULL;
 	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(GHashTable) decided = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(GString) left_out = g_string_new(NULL);
 	gboolean trial = g_strcmp0(report_name, "consolidated_trial_balance") == 0;
 	gboolean sheet = g_strcmp0(report_name, "consolidated_balance_sheet") == 0;
 	guint o;
@@ -252,8 +312,11 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 		g_autoptr(VentureReportResult) balances = NULL;
 		g_autofree gchar *org_label = g_strdup_printf("%" G_GINT64_FORMAT, org);
 		guint i;
-		balances = venture_ledger_balances_query(books, org, org_currency(self->database, org),
-			period, NULL, FALSE, error);
+		/* Every book the member keeps, not only its book currency's: a
+		 * EUR book it kept apart for want of its own rate joins at the
+		 * parent's, and what cannot join is named rather than silently
+		 * absent. */
+		balances = venture_ledger_balances_query(books, org, NULL, period, NULL, FALSE, error);
 		if (balances == NULL)
 			return NULL;
 		for (i = 0; i < venture_report_result_get_row_count(balances); i++)
@@ -262,8 +325,10 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			g_autoptr(VentureEntity) account = NULL;
 			g_autoptr(VentureMoney) native = NULL;
 			g_autoptr(VentureMoney) converted = NULL;
+			const gchar *code = text_cell(balances, i, "currency");
 			gint kind;
 			gint64 amount;
+			gint joins;
 			if (account_id <= 0)
 				continue;
 			account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, account_id, error);
@@ -283,7 +348,12 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 				continue;
 			if (amount == 0)
 				continue;
-			native = venture_money_new_for_currency(amount, org_currency(self->database, org));
+			joins = book_joins(self, parent_id, org, code, currency, when, decided, left_out, error);
+			if (joins < 0)
+				return NULL;
+			if (joins == 0)
+				continue;
+			native = venture_money_new_for_currency(amount, code);
 			converted = convert(self, parent_id, native, currency, when, error);
 			if (converted == NULL)
 				return NULL;
@@ -459,6 +529,13 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 			venture_report_result_set_money(result, "current", expenses);
 		}
 	}
+	if (left_out->len > 0)
+	{
+		g_autofree gchar *note = g_strdup_printf("Left out of this consolidation in %s: %s. "
+			"Nothing is converted without a rate, and a memo or separate-book currency is "
+			"never converted.", currency, left_out->str);
+		venture_report_result_append_note(result, note);
+	}
 	return g_steal_pointer(&result);
 }
 
@@ -466,9 +543,20 @@ static VentureReportResult *
 report_named(const gchar *name, VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
 	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
-	const gchar *currency = options != NULL ? venture_json_object_get_string(options, "currency", "USD") : "USD";
+	const gchar *currency = options != NULL ? venture_json_object_get_string(options, "currency", NULL) : NULL;
+	g_autofree gchar *book = NULL;
 	if (org == 0)
 		org = venture_context_get_default_organization_id(context);
+	/* The parent's book currency unless the caller names another, not
+	 * USD for a group whose books are kept in something else. */
+	if (currency == NULL || currency[0] == '\0')
+	{
+		book = venture_posting_service_book_currency(
+			venture_database_get_posting_service(venture_context_get_database(context)), org, error);
+		if (book == NULL)
+			return NULL;
+		currency = book;
+	}
 	return venture_group_service_consolidated(venture_group_service_get(venture_context_get_database(context)),
 		org, name, period, currency, error);
 }

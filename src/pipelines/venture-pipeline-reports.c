@@ -116,6 +116,7 @@ generate(VentureContext *context, VentureDateRange *period, JsonObject *options,
 	g_autoptr(GHashTable) groups = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, free_group);
 	g_autoptr(VentureReportResult) result = venture_report_result_new("Sales pipeline analysis", period);
 	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autofree gchar *book = NULL;
 	GDateTime *end = venture_date_range_get_end(period);
 	guint i;
 	GHashTableIter iter;
@@ -137,6 +138,11 @@ generate(VentureContext *context, VentureDateRange *period, JsonObject *options,
 	reasons = fetch(db, VENTURE_TYPE_LOSS_REASON, org, error);
 	if (NULL == deals || NULL == stages || NULL == pipelines || NULL == entries || NULL == reasons)
 		return NULL;
+	/* A deal with no value is grouped under the organization's book
+	 * currency, not under USD in a gold organization. */
+	book = venture_posting_service_book_currency(venture_database_get_posting_service(db), org, NULL);
+	if (NULL == book)
+		book = g_strdup(venture_money_get_default_currency());
 	if (NULL == end || g_date_time_compare(end, now) > 0)
 		end = now;
 	for (i = 0; i < deals->len; i++)
@@ -232,7 +238,7 @@ generate(VentureContext *context, VentureDateRange *period, JsonObject *options,
 		{
 			g_autofree gchar *key = NULL;
 			g_autofree gchar *label = NULL;
-			const gchar *currency = NULL != value ? venture_money_get_currency(value) : "USD";
+			const gchar *currency = NULL != value ? venture_money_get_currency(value) : book;
 			Group *group;
 			if (mode == 3)
 			{

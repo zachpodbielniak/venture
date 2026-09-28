@@ -21,6 +21,7 @@
 #endif
 
 #include <glib-object.h>
+#include <json-glib/json-glib.h>
 
 G_BEGIN_DECLS
 
@@ -53,6 +54,8 @@ venture_market_listing_outcome_is_closed(VentureListingOutcome outcome);
  * @product_id: the product priced
  * @source: (nullable): only observations from this source (matched
  *   exactly); %NULL or empty for any source
+ * @currency: (nullable): only observations priced in this currency;
+ *   %NULL or empty for any currency
  * @at: (nullable): the moment to value at; the newest observation at or
  *   before it wins. %NULL means now, with no bound
  * @out_price: (out) (optional) (nullable) (transfer full): the price, or
@@ -63,7 +66,10 @@ venture_market_listing_outcome_is_closed(VentureListingOutcome outcome);
  *
  * The price of one unit of @product_id as last seen at or before @at.
  * Soft-deleted observations and other organizations' observations are
- * never read. Ties on the observation time go to the higher id -- the one
+ * never read. With no @currency the newest observation wins whatever it
+ * is priced in, so a product seen in TICKET yesterday and GOLD last week
+ * is worth tickets; a report comparing in GOLD asks for GOLD, or uses
+ * venture_market_price_preferring(). Ties on the observation time go to the higher id -- the one
  * recorded last -- so the answer is the same on every call.
  *
  * Nothing observed is not an error: the call succeeds with @out_price set
@@ -77,9 +83,78 @@ venture_market_latest_price(
 	gint64		  organization_id,
 	gint64		  product_id,
 	const gchar	 *source,
+	const gchar	 *currency,
 	GDateTime	 *at,
 	VentureMoney	**out_price,
 	VentureEntity	**out_observation,
+	GError		**error
+);
+
+/**
+ * venture_market_price_preferring:
+ * @database: the database to read
+ * @organization_id: the organization whose observations count
+ * @product_id: the product priced
+ * @source: (nullable): only observations from this source; %NULL or empty
+ *   for any
+ * @prefer: (nullable): the currency to value in when the product has
+ *   been seen priced in it, usually the organization's book currency
+ * @at: (nullable): the moment to value at; %NULL means now
+ * @out_price: (out) (optional) (nullable) (transfer full): the price, or
+ *   %NULL when nothing was observed
+ * @out_observation: (out) (optional) (nullable) (transfer full): the
+ *   observation the price came from
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The newest price in @prefer at or before @at, and only when the
+ * product was never seen priced in @prefer, the newest in any currency.
+ * What the valuing reports (recipe_margin, session_performance,
+ * goal_materials) use when no =currency= option names one: a margin
+ * whose inputs were seen in gold and in tickets is computed in gold
+ * wherever gold was seen, instead of in whichever currency happened to
+ * be observed last. It never converts.
+ *
+ * Returns: %TRUE on success, %FALSE with @error set when the read failed
+ */
+gboolean
+venture_market_price_preferring(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	gint64		  product_id,
+	const gchar	 *source,
+	const gchar	 *prefer,
+	GDateTime	 *at,
+	VentureMoney	**out_price,
+	VentureEntity	**out_observation,
+	GError		**error
+);
+
+/**
+ * venture_market_valuing_currency:
+ * @database: the database to read
+ * @organization_id: the organization the report is about
+ * @options: (nullable): the report's options
+ * @out_currency: (out) (transfer full): the currency to value in
+ * @out_strict: (out): %TRUE when only prices in @out_currency count
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The one reading of a valuing report's =currency= option, shared by
+ * recipe_margin, session_performance and goal_materials so the three
+ * cannot disagree: named, only observations in that currency count
+ * (venture_market_latest_price()); absent, the organization's book
+ * currency is preferred and any other is the fallback
+ * (venture_market_price_preferring()). A name that is not a currency code
+ * is refused rather than matching nothing.
+ *
+ * Returns: %TRUE on success, %FALSE with @error set
+ */
+gboolean
+venture_market_valuing_currency(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	JsonObject	 *options,
+	gchar		**out_currency,
+	gboolean	 *out_strict,
 	GError		**error
 );
 

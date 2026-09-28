@@ -2773,7 +2773,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"goal_materials: take stock on hand off what is needed; true by default", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
-	ai_tool_add_parameter(report, "currency", "string", "Book currency to report", FALSE);
+	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);
 	ai_tool_add_parameter(report, "model", "string", "Attribution model: first or last", FALSE);
 	ai_tool_add_parameter(report, "details", "boolean", "List attribution source records instead of grouped rows", FALSE);
 	ai_tool_add_parameter(report, "as_of", "string",

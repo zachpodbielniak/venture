@@ -738,7 +738,7 @@ test_latest_price(
 	g_clear_pointer(&price, venture_money_free); \
 	g_clear_pointer(&shown, g_free); \
 	g_assert_true(venture_market_latest_price(fixture->database, \
-		fixture->organization_id, herb, source, at, &price, NULL, &error)); \
+		fixture->organization_id, herb, source, NULL, at, &price, NULL, &error)); \
 	g_assert_no_error(error); \
 	g_assert_nonnull(price); \
 	shown = venture_money_to_string(price); \
@@ -755,7 +755,7 @@ test_latest_price(
 	early = time_of("2026-02-01T00:00:00Z");
 	g_clear_pointer(&price, venture_money_free);
 	g_assert_true(venture_market_latest_price(fixture->database,
-		fixture->organization_id, herb, NULL, early, &price, &observation, &error));
+		fixture->organization_id, herb, NULL, NULL, early, &price, &observation, &error));
 	g_assert_no_error(error);
 	g_assert_null(price);
 	g_assert_null(observation);
@@ -784,12 +784,85 @@ test_latest_price(
 	tied = observe(fixture, herb, "market value", "4.00 USD", "2026-03-10T00:00:00Z", 0);
 	LATEST("market value", march, "4.00 USD");
 	g_assert_true(venture_market_latest_price(fixture->database,
-		fixture->organization_id, herb, "market value", march, NULL,
+		fixture->organization_id, herb, "market value", NULL, march, NULL,
 		&observation, &error));
 	g_assert_nonnull(observation);
 	g_assert_cmpint(venture_entity_get_id(observation), ==, tied);
 
 #undef LATEST
+}
+
+/*
+ * The same product and source seen in two currencies. With no currency the
+ * newest wins whatever it is in -- the old behaviour, still what an
+ * unqualified question gets; asked for one, only prices in it count, and
+ * one never seen in it is unpriced, not priced in another; preferring one
+ * falls back to any only when the product was never seen in it. The
+ * currency is matched by reading rows newest first a page at a time, so a
+ * USD price behind more than a page of EUR ones must still be found. What
+ * breaks: a GOLD valuation reading last night's TICKET price as gold.
+ */
+static void
+test_latest_price_currency(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) price = NULL;
+	g_autofree gchar *shown = NULL;
+	gint64 herb;
+	guint i;
+
+	(void)user_data;
+
+	herb = product(fixture, "Herb", 0);
+	observe(fixture, herb, "market value", "2.00 USD", "2026-03-01T00:00:00Z", 0);
+	observe(fixture, herb, "market value", "5.00 EUR", "2026-03-10T00:00:00Z", 0);
+
+#define PRICED(currency, expected) G_STMT_START { \
+	g_clear_pointer(&price, venture_money_free); \
+	g_clear_pointer(&shown, g_free); \
+	g_assert_true(venture_market_latest_price(fixture->database, \
+		fixture->organization_id, herb, "market value", currency, NULL, &price, \
+		NULL, &error)); \
+	g_assert_no_error(error); \
+	shown = (NULL != price) ? venture_money_to_string(price) : NULL; \
+	g_assert_cmpstr(shown, ==, expected); \
+} G_STMT_END
+
+#define PREFERRING(currency, expected) G_STMT_START { \
+	g_clear_pointer(&price, venture_money_free); \
+	g_clear_pointer(&shown, g_free); \
+	g_assert_true(venture_market_price_preferring(fixture->database, \
+		fixture->organization_id, herb, "market value", currency, NULL, &price, \
+		NULL, &error)); \
+	g_assert_no_error(error); \
+	shown = (NULL != price) ? venture_money_to_string(price) : NULL; \
+	g_assert_cmpstr(shown, ==, expected); \
+} G_STMT_END
+
+	PRICED(NULL, "5.00 EUR");
+	PRICED("", "5.00 EUR");
+	PRICED("USD", "2.00 USD");
+	PRICED("EUR", "5.00 EUR");
+	PRICED("GBP", NULL);
+	PREFERRING("USD", "2.00 USD");
+	PREFERRING("GBP", "5.00 EUR");
+	PREFERRING(NULL, "5.00 EUR");
+
+	/* More than a page of newer EUR prices in front of the USD one. */
+	for (i = 0; i < 205; i++)
+	{
+		g_autofree gchar *when = g_strdup_printf("2026-04-01T00:%02u:%02uZ", i / 60, i % 60);
+
+		observe(fixture, herb, "market value", "6.00 EUR", when, 0);
+	}
+
+	PRICED("USD", "2.00 USD");
+	PRICED(NULL, "6.00 EUR");
+
+#undef PRICED
+#undef PREFERRING
 }
 
 /* ==========================================================================
@@ -1767,6 +1840,7 @@ main(
 	ADD("/market/listing/closed-at", test_listing_closed_at);
 	ADD("/market/listing/one-currency", test_listing_one_currency);
 	ADD("/market/latest-price", test_latest_price);
+	ADD("/market/latest-price-currency", test_latest_price_currency);
 	ADD("/market/listing-performance/sale-rate", test_listing_performance_sale_rate);
 	ADD("/market/listing-performance/rounding-and-empty-rate",
 	    test_listing_performance_rounding_and_empty_rate);

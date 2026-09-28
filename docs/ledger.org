@@ -344,6 +344,48 @@ where it used to post a separate EUR journal. That is functional-currency
 accounting, and it is what receivables already did for invoices. Without a
 rate nothing changes. Journals posted before the change stay as they were.
 
+** In the statements, the close and the group
+
+Everything that reads the books asks the same rule rather than restating
+it:
+
+- *Statements* (=trial_balance=, =balance_sheet=, =income_statement=,
+  =cash_flow=, =general_ledger=, =account_balances=, =pnl_reconciliation=)
+  keep one section per currency, the book currency's first and the rest by
+  code, and every row carries a =books= column naming its section by
+  =venture_posting_service_book_label()=:
+
+  | Section                                        | Label                                     |
+  |------------------------------------------------+-------------------------------------------|
+  | the book currency                              | =Book currency: GOLD=                     |
+  | a =separate_book= currency (or /B/ is one)     | =Separate book: TICKET=                   |
+  | a =valued= currency with no rate at the period end | =Own book: EUR (no rate to GOLD)=     |
+  | a =valued= currency that has a rate now, holding journals posted before it | =Own book: EUR (posted before a rate to GOLD)= |
+  | a =memo= currency (only journals older than the treatment) | =Memo: X (posted before it was memo)= |
+
+  Converted amounts are already in the book currency's section, so no
+  section says "valued into GOLD", and a memo currency never has one of its
+  own because it never posts. A statement with more than one section adds a
+  note listing them. An empty ledger is zero in the book currency, not the
+  install's.
+- The *close* ties out the workspace's currency (the book currency by
+  default, by =venture_posting_service_book_currency()=, not USD). An
+  unmatched bank line in a currency the rule keeps apart -- a separate
+  book, a valued currency with no rate, or memo -- is left out of the bank
+  reconciliation and named in the task's notes ("left out 1 unmatched
+  TICKET transaction(s), Separate book: TICKET") instead of refusing the
+  close. One in a currency the rule converts is in these books, so it still
+  stops the close. The trial-balance task names the other books the close
+  did not tie out. See [[file:close.org][Close]].
+- *Consolidation* reads every book each member keeps, not only its book
+  currency's. The group's currency joins as it is; a =valued= currency joins
+  at the parent's rate on the period end; a =memo= or =separate_book=
+  currency never joins, rate or not; a =valued= one with no rate is left
+  out. What is left out is named in a note ("organization 4's GOLD book (no
+  rate to USD)") where a missing rate used to refuse the whole report and a
+  member's non-book sections were silently absent. The consolidated
+  reports default to the parent's book currency. See [[file:group.org][Group]].
+
 * Reading the books
 
 =venture_posting_service_find_source()= returns all matching journals for

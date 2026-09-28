@@ -139,6 +139,8 @@ production_unit_price(
 	gint64		  product_id,
 	gboolean	  market,
 	const gchar	 *source,
+	const gchar	 *currency,
+	gboolean	  strict,
 	GDateTime	 *as_of,
 	gboolean	  as_output,
 	VentureMoney	**out_price,
@@ -148,9 +150,17 @@ production_unit_price(
 
 	*out_price = NULL;
 
-	if (market)
+	/* Asked for a currency, only prices seen in it count; otherwise the
+	 * book currency's price wins wherever there is one, so a margin is
+	 * not computed in whichever currency was observed last. */
+	if (market && strict)
 		return venture_market_latest_price(database, organization_id, product_id,
-		                                   source, as_of, out_price, NULL, error);
+		                                   source, currency, as_of, out_price, NULL, error);
+
+	if (market)
+		return venture_market_price_preferring(database, organization_id, product_id,
+		                                       source, currency, as_of, out_price, NULL,
+		                                       error);
 
 	if (!as_output)
 	{
@@ -229,6 +239,8 @@ production_margin_row(
 	gint64			  organization_id,
 	gboolean		  market,
 	const gchar		 *source,
+	const gchar		 *value_in,
+	gboolean		  strict,
 	GDateTime		 *as_of,
 	GError			**error
 ){
@@ -326,7 +338,8 @@ production_margin_row(
 		}
 
 		if (!production_unit_price(database, organization_id, product_id, market,
-		                           source, as_of, FALSE, &price, error))
+		                           source, value_in, strict, as_of, FALSE, &price,
+		                           error))
 			return FALSE;
 
 		if (NULL == price)
@@ -369,7 +382,8 @@ production_margin_row(
 	/* --- The output: valued the same way --- */
 
 	if (!production_unit_price(database, organization_id, output_id, market,
-	                           source, as_of, TRUE, &output_price, error))
+	                           source, value_in, strict, as_of, TRUE, &output_price,
+	                           error))
 		return FALSE;
 
 	if (NULL == output_price)
@@ -499,12 +513,14 @@ venture_production_recipe_margin(
 	g_autoptr(GArray) categories = NULL;
 	g_autoptr(GDateTime) as_of = NULL;
 	g_autoptr(GError) as_of_error = NULL;
+	g_autofree gchar *currency = NULL;
 	VentureDatabase *database;
 	const gchar *source;
 	gint64 organization_id;
 	gint64 venture_id;
 	gint64 category_id;
 	gboolean market;
+	gboolean strict;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -538,6 +554,10 @@ venture_production_recipe_margin(
 		g_propagate_error(error, g_steal_pointer(&as_of_error));
 		return NULL;
 	}
+
+	if (!venture_market_valuing_currency(database, organization_id, options,
+	                                     &currency, &strict, error))
+		return NULL;
 
 	venture_id = (NULL != options)
 		? venture_json_object_get_int(options, "venture_id", 0) : 0;
@@ -631,7 +651,7 @@ venture_production_recipe_margin(
 		recipe = g_ptr_array_index(recipes, i);
 
 		if (!production_margin_row(database, result, recipe, organization_id,
-		                           market, source, as_of, error))
+		                           market, source, currency, strict, as_of, error))
 			return NULL;
 	}
 
@@ -639,7 +659,9 @@ venture_production_recipe_margin(
 		venture_report_result_append_note(result,
 			"Components and output are priced at the latest price seen at or "
 			"before the cutoff, from the named source (any source when none is "
-			"named). A product never seen priced is named in the note and its "
+			"named), in the currency option's currency when one is given and "
+			"otherwise in the book currency wherever the product was seen priced "
+			"in it. A product never seen priced is named in the note and its "
 			"figures are left blank, not read as zero.");
 	else
 		venture_report_result_append_note(result,
@@ -734,6 +756,9 @@ venture_production_register_reports(VentureReportRegistry *registry)
 		"value; any source by default. Needs the market module\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Prices and stock as "
 		"they stood at this date; now by default\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Only prices "
+		"observed in this currency count; by default the book currency's price "
+		"wins wherever the product was seen in it, else the latest in any\"},"
 		"\"venture_id\":{\"type\":\"integer\",\"description\":\"Only this "
 		"venture's recipes\"},"
 		"\"category_id\":{\"type\":\"integer\",\"description\":\"Only recipes "

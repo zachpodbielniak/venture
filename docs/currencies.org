@@ -186,6 +186,15 @@ Code that needs the answer asks =venture_currency_get_book_treatment()= for
 the treatment alone, or =venture_posting_service_route_currency()= for what
 an organization would do with an amount on a date.
 
+In the reports the treatment shows as follows. =pnl=, =ventures= and
+=monthly= read sales and expenses, not the ledger, so every currency --
+memo included -- appears as figures of its own beside the book currency's,
+never added to them (see [[file:reporting.org][Reporting]]). The ledger
+statements have one section per currency that posted, labelled "Separate
+book: TICKET" and the like, and a memo currency has none. A close and a
+consolidation leave a separate, memo or rate-less book out and say so,
+rather than refusing.
+
 * Symbols
 
 A registered currency with a symbol shows it where =symbol_position= says:

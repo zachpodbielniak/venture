@@ -799,7 +799,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "customer_id", "Customer for a statement.");
 		venture_mcp_catalog_add_integer_property(builder, "vendor_id", "Supplier for a vendor statement.");
 		venture_mcp_catalog_add_integer_property(builder, "organization_id", "Legal entity to report.");
-		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report.");
+		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report. recipe_margin, session_performance, goal_materials: only prices observed in this currency count; the book currency is preferred when omitted.");
 		venture_mcp_catalog_add_string_property(builder, "as_of", "Inclusive historical cutoff.");
 		/* The aggregate report's question; the report's own schema in
 		 * venture_reports describes each in full. */

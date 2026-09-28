@@ -16,6 +16,7 @@
 #include "report/venture-headline-private.h"
 #include "report/venture-pnl-cuts-private.h"
 
+#include <stdarg.h>
 #include <string.h>
 
 /*
@@ -137,17 +138,68 @@ venture_report_flag_skipped(
 }
 
 /*
- * Picks the currency a total should be carried in: the one most of the
- * amounts are denominated in, with ties broken toward the process default
- * and then the alphabetically first code. Anchoring on "the first record"
- * instead would hand the choice to the sort order, and a stray EUR row
- * sorted first must not decide the currency of a USD ledger's total.
+ * The organization a report reads: the one named in the options, else the
+ * context's default -- the same choice venture_report_scoped_query() makes.
+ */
+static gint64
+venture_report_organization(
+	VentureContext	*context,
+	JsonObject	*options
+){
+	gint64 organization_id;
+
+	organization_id = (NULL != options)
+		? venture_json_object_get_int(options, "organization_id", 0) : 0;
+
+	if (0 == organization_id)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	return organization_id;
+}
+
+/*
+ * The currency a report's totals are anchored on: the organization's book
+ * currency (venture_posting_service_book_currency()), else the install's
+ * default. Anchoring on the organization rather than on whichever
+ * currency most records happen to use is what keeps a gold organization's
+ * figures in gold when it sold more for tickets than for gold, and makes
+ * an empty total 0 GOLD rather than $0.00.
+ */
+static gchar *
+venture_report_book_currency(
+	VentureContext	*context,
+	JsonObject	*options
+){
+	gchar *book;
+
+	book = venture_posting_service_book_currency(
+		venture_database_get_posting_service(venture_context_get_database(context)),
+		venture_report_organization(context, options), NULL);
+
+	if (venture_string_is_empty(book))
+	{
+		g_free(book);
+		book = g_strdup(venture_money_get_default_currency());
+	}
+
+	return book;
+}
+
+/*
+ * Picks the currency a single total should be carried in, for the reports
+ * that still show one figure per column: the book currency whenever any
+ * amount is in it, else the one most of the amounts are in, with ties
+ * broken toward the alphabetically first code. Anchoring on "the first record" instead would hand the choice to
+ * the sort order, and a stray EUR row sorted first must not decide the
+ * currency of a USD ledger's total.
  *
  * Returns NULL when nothing carries an amount at all.
  */
 static gchar *
-venture_report_majority_currency(GPtrArray *amounts)
-{
+venture_report_majority_currency(
+	GPtrArray	*amounts,
+	const gchar	*book
+){
 	g_autoptr(GHashTable) counts = NULL;
 	GHashTableIter iter;
 	gpointer key;
@@ -170,6 +222,10 @@ venture_report_majority_currency(GPtrArray *amounts)
 			continue;
 
 		currency = g_ascii_strup(venture_money_get_currency(amount), -1);
+
+		if ((NULL != book) && (0 == g_strcmp0(currency, book)))
+			return currency;
+
 		count = GPOINTER_TO_UINT(g_hash_table_lookup(counts, currency)) + 1;
 		g_hash_table_replace(counts, currency, GUINT_TO_POINTER(count));
 	}
@@ -187,30 +243,11 @@ venture_report_majority_currency(GPtrArray *amounts)
 		currency = key;
 		count = GPOINTER_TO_UINT(value);
 
-		if ((NULL == best) || (count > best_count))
+		if ((NULL == best) || (count > best_count) ||
+		    ((count == best_count) && (g_strcmp0(currency, best) < 0)))
 		{
 			best = currency;
 			best_count = count;
-			continue;
-		}
-
-		if (count == best_count)
-		{
-			const gchar *fallback;
-			gboolean best_is_default;
-			gboolean this_is_default;
-
-			fallback = venture_money_get_default_currency();
-			best_is_default =
-				(0 == g_ascii_strcasecmp(best, fallback));
-			this_is_default =
-				(0 == g_ascii_strcasecmp(currency, fallback));
-
-			if (this_is_default && !best_is_default)
-				best = currency;
-			else if ((this_is_default == best_is_default) &&
-			         (g_strcmp0(currency, best) < 0))
-				best = currency;
 		}
 	}
 
@@ -218,23 +255,25 @@ venture_report_majority_currency(GPtrArray *amounts)
 }
 
 /*
- * Sums a collected array of amounts in their majority currency, counting
- * whatever cannot join into @inout_skipped, which accumulates across calls
- * so one counter can watch every total a report builds.
+ * Sums a collected array of amounts in one currency (see
+ * venture_report_majority_currency()), counting whatever cannot join into
+ * @inout_skipped, which accumulates across calls so one counter can watch
+ * every total a report builds. Nothing at all is zero in @book.
  */
 static VentureMoney *
 venture_report_sum_amounts(
 	GPtrArray	 *amounts,
+	const gchar	 *book,
 	guint		 *inout_skipped
 ){
 	g_autoptr(VentureMoney) total = NULL;
 	g_autofree gchar *currency = NULL;
 	guint i;
 
-	currency = venture_report_majority_currency(amounts);
+	currency = venture_report_majority_currency(amounts, book);
 
 	if (NULL == currency)
-		return venture_money_new_zero(NULL);
+		return venture_money_new_zero(book);
 
 	total = venture_money_new_zero(currency);
 
@@ -246,16 +285,15 @@ venture_report_sum_amounts(
 }
 
 /*
- * Totals a money property across a set of records, in the currency most of
- * them are kept in.
+ * Collects a money property across a set of records, leaving out the
+ * records that have none.
  */
-static VentureMoney *
-venture_report_total(
-	GPtrArray	 *records,
-	const gchar	 *property,
-	guint		 *inout_skipped
+static GPtrArray *
+venture_report_collect(
+	GPtrArray	*records,
+	const gchar	*property
 ){
-	g_autoptr(GPtrArray) amounts = NULL;
+	GPtrArray *amounts;
 	guint i;
 
 	amounts = g_ptr_array_new_with_free_func(
@@ -271,25 +309,21 @@ venture_report_total(
 			g_ptr_array_add(amounts, amount);
 	}
 
-	return venture_report_sum_amounts(amounts, inout_skipped);
+	return amounts;
 }
 
 /*
- * Totals the net proceeds of a set of sales, which is what the P&L counts as
- * revenue -- not the gross, which includes money that was never yours.
- *
- * Totalling in the sales' own majority currency rather than the process
- * default matters here: a portfolio kept entirely in EUR must total in EUR,
- * not report zero because every sale failed to add into a USD zero. A sale
- * whose own fields disagree about currency yields no net at all, and that
- * is counted too.
+ * The net proceeds of a set of sales, which is what the P&L counts as
+ * revenue -- not the gross, which includes money that was never yours. A
+ * sale whose own fields disagree about currency yields no net at all, and
+ * is counted in @inout_skipped.
  */
-static VentureMoney *
-venture_report_total_net(
+static GPtrArray *
+venture_report_collect_net(
 	GPtrArray	 *sales,
 	guint		 *inout_skipped
 ){
-	g_autoptr(GPtrArray) nets = NULL;
+	GPtrArray *nets;
 	guint i;
 
 	nets = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
@@ -310,7 +344,280 @@ venture_report_total_net(
 		g_ptr_array_add(nets, net);
 	}
 
-	return venture_report_sum_amounts(nets, inout_skipped);
+	return nets;
+}
+
+/*
+ * Totals a money property across a set of records in one currency, the
+ * book currency when any record is kept in it.
+ */
+static VentureMoney *
+venture_report_total(
+	GPtrArray	 *records,
+	const gchar	 *property,
+	const gchar	 *book,
+	guint		 *inout_skipped
+){
+	g_autoptr(GPtrArray) amounts = NULL;
+
+	amounts = venture_report_collect(records, property);
+
+	return venture_report_sum_amounts(amounts, book, inout_skipped);
+}
+
+/* Net revenue of a set of sales in one currency, as venture_report_total(). */
+static VentureMoney *
+venture_report_total_net(
+	GPtrArray	 *sales,
+	const gchar	 *book,
+	guint		 *inout_skipped
+){
+	g_autoptr(GPtrArray) nets = NULL;
+
+	nets = venture_report_collect_net(sales, inout_skipped);
+
+	return venture_report_sum_amounts(nets, book, inout_skipped);
+}
+
+/* --- Figures per currency -----------------------------------------------
+ *
+ * pnl, ventures and monthly keep one figure per currency rather than one
+ * figure that leaves some out: a gold organization that also earns tickets
+ * shows its gold and its tickets, each exact, and adds neither into the
+ * other. The book currency is always present (zero when nothing is in it)
+ * and always first; every other currency appears when some record is in
+ * it. Nothing here converts: a total in one currency is what the ledger
+ * and exchange_rate are for.
+ */
+
+/* Adds every amount into its currency's total; an overflow is skipped. */
+static GPtrArray *
+venture_report_totals_of(
+	GPtrArray	 *amounts,
+	guint		 *inout_skipped
+){
+	GPtrArray *totals;
+	guint i;
+
+	totals = venture_money_totals_new();
+
+	for (i = 0; i < amounts->len; i++)
+	{
+		if (!venture_money_totals_add(totals, g_ptr_array_index(amounts, i), NULL) &&
+		    (NULL != inout_skipped))
+			(*inout_skipped)++;
+	}
+
+	return totals;
+}
+
+/* A money property's totals per currency across a set of records. */
+static GPtrArray *
+venture_report_totals(
+	GPtrArray	 *records,
+	const gchar	 *property,
+	guint		 *inout_skipped
+){
+	g_autoptr(GPtrArray) amounts = NULL;
+
+	amounts = venture_report_collect(records, property);
+
+	return venture_report_totals_of(amounts, inout_skipped);
+}
+
+/* Net revenue's totals per currency across a set of sales. */
+static GPtrArray *
+venture_report_net_totals(
+	GPtrArray	 *sales,
+	guint		 *inout_skipped
+){
+	g_autoptr(GPtrArray) nets = NULL;
+
+	nets = venture_report_collect_net(sales, inout_skipped);
+
+	return venture_report_totals_of(nets, inout_skipped);
+}
+
+/* Adds @currency to @codes unless it is there already. */
+static void
+venture_report_add_code(
+	GPtrArray	*codes,
+	const gchar	*currency
+){
+	guint i;
+
+	for (i = 0; i < codes->len; i++)
+	{
+		if (0 == g_strcmp0(g_ptr_array_index(codes, i), currency))
+			return;
+	}
+
+	g_ptr_array_add(codes, g_strdup(currency));
+}
+
+/* Book currency first, then the others by code. */
+static gint
+venture_report_compare_code(
+	gconstpointer	a,
+	gconstpointer	b,
+	gpointer	book
+){
+	const gchar *left = *(const gchar * const *)a;
+	const gchar *right = *(const gchar * const *)b;
+	gboolean left_book = (0 == g_strcmp0(left, book));
+	gboolean right_book = (0 == g_strcmp0(right, book));
+
+	if (left_book != right_book)
+		return left_book ? -1 : 1;
+
+	return g_strcmp0(left, right);
+}
+
+/*
+ * Every currency any of the NULL-terminated sets of totals holds, with
+ * @book always present and first: the rows or figures a per-currency
+ * report shows, in the order it shows them.
+ */
+static GPtrArray *
+venture_report_currencies(
+	const gchar	*book,
+	GPtrArray	*first,
+	...
+){
+	GPtrArray *codes;
+	GPtrArray *totals;
+	va_list args;
+
+	codes = g_ptr_array_new_with_free_func(g_free);
+	venture_report_add_code(codes, book);
+
+	va_start(args, first);
+
+	for (totals = first; NULL != totals; totals = va_arg(args, GPtrArray *))
+	{
+		guint i;
+
+		for (i = 0; i < totals->len; i++)
+			venture_report_add_code(codes,
+				venture_money_get_currency(g_ptr_array_index(totals, i)));
+	}
+
+	va_end(args);
+
+	g_ptr_array_sort_with_data(codes, venture_report_compare_code, (gpointer)book);
+
+	return codes;
+}
+
+/* The total in @currency, or zero in it: always an amount to show. */
+static VentureMoney *
+venture_report_amount_in(
+	GPtrArray	*totals,
+	const gchar	*currency
+){
+	const VentureMoney *total;
+
+	total = venture_money_totals_lookup(totals, currency);
+
+	return (NULL != total) ? venture_money_copy(total)
+	                       : venture_money_new_zero(currency);
+}
+
+/*
+ * A per-currency metric: "@key" and "@label" in the book currency, else
+ * "@key_CODE" and "@label (CODE)" -- the convention inventory_valuation
+ * set, so a dashboard widget reading "revenue" keeps reading the book
+ * currency's figure however many other currencies appear beside it.
+ */
+static VentureMetric *
+venture_report_currency_metric(
+	const gchar		*key,
+	const gchar		*label,
+	const gchar		*book,
+	const VentureMoney	*amount
+){
+	g_autofree gchar *full_key = NULL;
+	g_autofree gchar *full_label = NULL;
+	const gchar *currency;
+
+	currency = venture_money_get_currency(amount);
+
+	if (0 == g_strcmp0(currency, book))
+		return venture_metric_new_money(key, label, amount);
+
+	full_key = g_strdup_printf("%s_%s", key, currency);
+	full_label = g_strdup_printf("%s (%s)", label, currency);
+
+	return venture_metric_new_money(full_key, full_label, amount);
+}
+
+/*
+ * Counts the sales whose gross is in @currency; a sale with no gross is
+ * the book currency's, as its posting would be.
+ */
+static gint64
+venture_report_count_sales_in(
+	GPtrArray	*sales,
+	const gchar	*currency,
+	const gchar	*book
+){
+	gint64 count;
+	guint i;
+
+	count = 0;
+
+	for (i = 0; i < sales->len; i++)
+	{
+		g_autoptr(VentureMoney) gross = NULL;
+		const gchar *code;
+
+		g_object_get(g_ptr_array_index(sales, i), "gross", &gross, NULL);
+		code = (NULL != gross) ? venture_money_get_currency(gross) : book;
+
+		if (0 == g_strcmp0(code, currency))
+			count++;
+	}
+
+	return count;
+}
+
+/*
+ * Says, once, that a report with more than one currency kept them apart,
+ * which is the book and which are not.
+ */
+static void
+venture_report_note_currencies(
+	VentureReportResult	*result,
+	GPtrArray		*codes,
+	const gchar		*book
+){
+	g_autoptr(GString) others = NULL;
+	g_autofree gchar *note = NULL;
+	guint i;
+
+	if (codes->len < 2)
+		return;
+
+	others = g_string_new(NULL);
+
+	for (i = 0; i < codes->len; i++)
+	{
+		if (0 == g_strcmp0(g_ptr_array_index(codes, i), book))
+			continue;
+
+		g_string_append_printf(others, "%s%s", (others->len > 0) ? ", " : "",
+		                       (const gchar *)g_ptr_array_index(codes, i));
+	}
+
+	note = g_strdup_printf(
+		"Figures are kept per currency and never converted or added across: "
+		"%s is the book currency and comes first; %s %s shown on %s own. "
+		"Metrics for another currency carry its code, e.g. revenue_%s.",
+		book, others->str, (codes->len > 2) ? "are each" : "is",
+		(codes->len > 2) ? "their" : "its",
+		(const gchar *)g_ptr_array_index(codes, 1));
+
+	venture_report_result_append_note(result, note);
 }
 
 /*
@@ -352,15 +659,16 @@ venture_report_pnl(
 	g_autoptr(VentureQuery) expenses_query = NULL;
 	g_autoptr(GPtrArray) sales = NULL;
 	g_autoptr(GPtrArray) expenses = NULL;
-	g_autoptr(VentureMoney) revenue = NULL;
-	g_autoptr(VentureMoney) gross = NULL;
-	g_autoptr(VentureMoney) fees = NULL;
-	g_autoptr(VentureMoney) shipping = NULL;
-	g_autoptr(VentureMoney) refunds = NULL;
-	g_autoptr(VentureMoney) expense_total = NULL;
-	g_autoptr(VentureMoney) deductible = NULL;
-	g_autoptr(VentureMoney) profit = NULL;
-	g_autofree gchar *title = NULL;
+	g_autoptr(GPtrArray) revenue = NULL;
+	g_autoptr(GPtrArray) gross = NULL;
+	g_autoptr(GPtrArray) fees = NULL;
+	g_autoptr(GPtrArray) shipping = NULL;
+	g_autoptr(GPtrArray) refunds = NULL;
+	g_autoptr(GPtrArray) spent = NULL;
+	g_autoptr(GPtrArray) deductible = NULL;
+	g_autoptr(GPtrArray) codes = NULL;
+	g_autofree gchar *book = NULL;
+	gboolean deductible_differs;
 	guint skipped;
 	guint i;
 
@@ -388,19 +696,19 @@ venture_report_pnl(
 	if (NULL == expenses)
 		return NULL;
 
+	book = venture_report_book_currency(context, options);
 	skipped = 0;
-	revenue = venture_report_total_net(sales, &skipped);
-	gross = venture_report_total(sales, "gross", &skipped);
-	fees = venture_report_total(sales, "fees", &skipped);
-	shipping = venture_report_total(sales, "shipping-cost", &skipped);
-	refunds = venture_report_total(sales, "refunded", &skipped);
-	expense_total = venture_report_total(expenses, "amount", &skipped);
+	revenue = venture_report_net_totals(sales, &skipped);
+	gross = venture_report_totals(sales, "gross", &skipped);
+	fees = venture_report_totals(sales, "fees", &skipped);
+	shipping = venture_report_totals(sales, "shipping-cost", &skipped);
+	refunds = venture_report_totals(sales, "refunded", &skipped);
+	spent = venture_report_totals(expenses, "amount", &skipped);
 
 	/* The deductible total is tracked separately from the cash total,
 	 * because they are different questions: what left the account, and
 	 * what may be claimed. */
-	deductible = venture_money_new_zero(
-		venture_money_get_currency(expense_total));
+	deductible = venture_money_totals_new();
 
 	for (i = 0; i < expenses->len; i++)
 	{
@@ -409,62 +717,98 @@ venture_report_pnl(
 		amount = venture_expense_get_deductible_amount(
 			g_ptr_array_index(expenses, i), NULL);
 
-		venture_report_accumulate(&deductible, amount, &skipped);
+		if ((NULL != amount) && !venture_money_totals_add(deductible, amount, NULL))
+			skipped++;
 	}
 
-	profit = venture_money_subtract(revenue, expense_total, NULL);
+	/* One block of lines per currency, the book currency's first and
+	 * always there: a gold organization with no expenses still shows its
+	 * profit in gold, and its tickets are a block of their own rather
+	 * than a figure dropped for being the minority. */
+	codes = venture_report_currencies(book, revenue, gross, fees, shipping,
+	                                  refunds, spent, deductible, NULL);
 
-	title = g_strdup_printf("Profit and loss");
-	result = venture_report_result_new(title, period);
-
-	venture_report_result_add_metric(result,
-		venture_metric_new_money("revenue", "Net revenue", revenue));
-	venture_report_result_add_metric(result,
-		venture_metric_new_money("expenses", "Expenses", expense_total));
-	venture_report_result_add_metric(result,
-		venture_metric_new_money("profit", "Profit", profit));
-	venture_report_result_add_metric(result,
-		venture_metric_new_count("sales", "Sales", (gint64)sales->len));
+	result = venture_report_result_new("Profit and loss", period);
 
 	venture_report_result_add_column(result, "line", "Line",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "currency", "Currency",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "amount", "Amount",
 	                                 VENTURE_REPORT_COLUMN_MONEY);
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Gross sales");
-	venture_report_result_set_money(result, "amount", gross);
+	deductible_differs = FALSE;
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Less refunds");
-	venture_report_result_set_money(result, "amount", refunds);
+	for (i = 0; i < codes->len; i++)
+	{
+		const gchar *code;
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) expense_total = NULL;
+		g_autoptr(VentureMoney) claimable = NULL;
+		g_autoptr(VentureMoney) profit = NULL;
+		struct
+		{
+			const gchar	*label;
+			VentureMoney	*amount;
+		} lines[8];
+		guint j;
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Less platform fees");
-	venture_report_result_set_money(result, "amount", fees);
+		code = g_ptr_array_index(codes, i);
+		net = venture_report_amount_in(revenue, code);
+		expense_total = venture_report_amount_in(spent, code);
+		claimable = venture_report_amount_in(deductible, code);
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Less shipping cost");
-	venture_report_result_set_money(result, "amount", shipping);
+		/* Both sides are in one currency by construction, so the only
+		 * way this fails is overflow, which is counted. */
+		profit = venture_money_subtract(net, expense_total, NULL);
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Net revenue");
-	venture_report_result_set_money(result, "amount", revenue);
+		if (NULL == profit)
+		{
+			skipped++;
+			profit = venture_money_new_zero(code);
+		}
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Expenses");
-	venture_report_result_set_money(result, "amount", expense_total);
+		if (!venture_money_equal(expense_total, claimable))
+			deductible_differs = TRUE;
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line",
-	                               "Of which deductible");
-	venture_report_result_set_money(result, "amount", deductible);
+		lines[0].label = "Gross sales";
+		lines[0].amount = venture_report_amount_in(gross, code);
+		lines[1].label = "Less refunds";
+		lines[1].amount = venture_report_amount_in(refunds, code);
+		lines[2].label = "Less platform fees";
+		lines[2].amount = venture_report_amount_in(fees, code);
+		lines[3].label = "Less shipping cost";
+		lines[3].amount = venture_report_amount_in(shipping, code);
+		lines[4].label = "Net revenue";
+		lines[4].amount = venture_money_copy(net);
+		lines[5].label = "Expenses";
+		lines[5].amount = venture_money_copy(expense_total);
+		lines[6].label = "Of which deductible";
+		lines[6].amount = venture_money_copy(claimable);
+		lines[7].label = "Profit";
+		lines[7].amount = venture_money_copy(profit);
 
-	venture_report_result_begin_row(result);
-	venture_report_result_set_text(result, "line", "Profit");
-	venture_report_result_set_money(result, "amount", profit);
+		for (j = 0; j < G_N_ELEMENTS(lines); j++)
+		{
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "line", lines[j].label);
+			venture_report_result_set_text(result, "currency", code);
+			venture_report_result_set_money(result, "amount", lines[j].amount);
+			venture_money_free(lines[j].amount);
+		}
 
-	if (!venture_money_equal(expense_total, deductible))
+		venture_report_result_add_metric(result,
+			venture_report_currency_metric("revenue", "Net revenue", book, net));
+		venture_report_result_add_metric(result,
+			venture_report_currency_metric("expenses", "Expenses", book, expense_total));
+		venture_report_result_add_metric(result,
+			venture_report_currency_metric("profit", "Profit", book, profit));
+	}
+
+	venture_report_result_add_metric(result,
+		venture_metric_new_count("sales", "Sales", (gint64)sales->len));
+
+	if (deductible_differs)
 	{
 		venture_report_result_set_note(result,
 			"The deductible total excludes capitalised costs and anything "
@@ -472,18 +816,7 @@ venture_report_pnl(
 			"for tax.");
 	}
 
-	/* Revenue in one currency and expenses in another has no profit line
-	 * at all, and the metric machinery renders an absent amount as zero.
-	 * A zero that means "no answer" must not be left looking like an
-	 * answer of zero. */
-	if (NULL == profit)
-	{
-		venture_report_result_append_note(result,
-			"Revenue and expenses are in different currencies, so no "
-			"profit could be computed; the profit line's zero is an "
-			"absence, not a result.");
-	}
-
+	venture_report_note_currencies(result, codes, book);
 	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);
@@ -503,7 +836,9 @@ venture_report_ventures(
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureQuery) ventures_query = NULL;
 	g_autoptr(GPtrArray) ventures = NULL;
-	g_autoptr(VentureMoney) portfolio_revenue = NULL;
+	g_autoptr(GPtrArray) portfolio_revenue = NULL;
+	g_autoptr(GPtrArray) portfolio_codes = NULL;
+	g_autofree gchar *book = NULL;
 	guint skipped;
 	guint i;
 
@@ -517,6 +852,8 @@ venture_report_ventures(
 		return NULL;
 
 	result = venture_report_result_new("Venture performance", period);
+	book = venture_report_book_currency(context, options);
+	portfolio_revenue = venture_money_totals_new();
 	skipped = 0;
 
 	venture_report_result_add_column(result, "venture", "Venture",
@@ -524,6 +861,8 @@ venture_report_ventures(
 	venture_report_result_add_column(result, "type", "Type",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "status", "Status",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "currency", "Currency",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "sales", "Sales",
 	                                 VENTURE_REPORT_COLUMN_NUMBER);
@@ -540,14 +879,15 @@ venture_report_ventures(
 		g_autoptr(VentureQuery) expenses_query = NULL;
 		g_autoptr(GPtrArray) sales = NULL;
 		g_autoptr(GPtrArray) expenses = NULL;
-		g_autoptr(VentureMoney) revenue = NULL;
-		g_autoptr(VentureMoney) spent = NULL;
-		g_autoptr(VentureMoney) profit = NULL;
+		g_autoptr(GPtrArray) revenue = NULL;
+		g_autoptr(GPtrArray) spent = NULL;
+		g_autoptr(GPtrArray) codes = NULL;
 		g_autofree gchar *name = NULL;
 		g_autofree gchar *type = NULL;
 		VentureEntity *venture;
 		VentureVentureStatus status;
 		gint64 venture_id;
+		guint c;
 
 		venture = g_ptr_array_index(ventures, i);
 		venture_id = venture_entity_get_id(venture);
@@ -583,30 +923,66 @@ venture_report_ventures(
 		if ((NULL == sales) || (NULL == expenses))
 			return NULL;
 
-		revenue = venture_report_total_net(sales, &skipped);
-		spent = venture_report_total(expenses, "amount", &skipped);
-		profit = venture_money_subtract(revenue, spent, NULL);
+		revenue = venture_report_net_totals(sales, &skipped);
+		spent = venture_report_totals(expenses, "amount", &skipped);
 
-		venture_report_accumulate(&portfolio_revenue, revenue, &skipped);
+		/* One row per currency the venture dealt in, the book
+		 * currency's always and first: a venture that sold for gold
+		 * and for tickets has two rows, each exact. */
+		codes = venture_report_currencies(book, revenue, spent, NULL);
 
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "venture", name);
-		venture_report_result_set_text(result, "type", type);
-		venture_report_result_set_text(result, "status",
-			venture_enum_to_nick(VENTURE_TYPE_VENTURE_STATUS, (gint)status));
-		venture_report_result_set_number(result, "sales", (gdouble)sales->len);
-		venture_report_result_set_money(result, "revenue", revenue);
-		venture_report_result_set_money(result, "expenses", spent);
-		venture_report_result_set_money(result, "profit", profit);
+		for (c = 0; c < codes->len; c++)
+		{
+			const gchar *code;
+			g_autoptr(VentureMoney) net = NULL;
+			g_autoptr(VentureMoney) cost = NULL;
+			g_autoptr(VentureMoney) profit = NULL;
+
+			code = g_ptr_array_index(codes, c);
+			net = venture_report_amount_in(revenue, code);
+			cost = venture_report_amount_in(spent, code);
+			profit = venture_money_subtract(net, cost, NULL);
+
+			if (NULL == profit)
+				skipped++;
+
+			if (!venture_money_totals_add(portfolio_revenue, net, NULL))
+				skipped++;
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "venture", name);
+			venture_report_result_set_text(result, "type", type);
+			venture_report_result_set_text(result, "status",
+				venture_enum_to_nick(VENTURE_TYPE_VENTURE_STATUS, (gint)status));
+			venture_report_result_set_text(result, "currency", code);
+			venture_report_result_set_number(result, "sales",
+				(gdouble)venture_report_count_sales_in(sales, code, book));
+			venture_report_result_set_money(result, "revenue", net);
+			venture_report_result_set_money(result, "expenses", cost);
+			venture_report_result_set_money(result, "profit", profit);
+		}
 	}
 
 	venture_report_result_add_metric(result,
 		venture_metric_new_count("ventures", "Ventures",
 		                         (gint64)ventures->len));
-	venture_report_result_add_metric(result,
-		venture_metric_new_money("revenue", "Portfolio revenue",
-		                         portfolio_revenue));
 
+	/* "revenue" is the book currency's portfolio revenue, zero when
+	 * nothing sold in it; every other currency is "revenue_<CODE>". */
+	portfolio_codes = venture_report_currencies(book, portfolio_revenue, NULL);
+
+	for (i = 0; i < portfolio_codes->len; i++)
+	{
+		g_autoptr(VentureMoney) total = NULL;
+
+		total = venture_report_amount_in(portfolio_revenue,
+		                                 g_ptr_array_index(portfolio_codes, i));
+		venture_report_result_add_metric(result,
+			venture_report_currency_metric("revenue", "Portfolio revenue",
+			                               book, total));
+	}
+
+	venture_report_note_currencies(result, portfolio_codes, book);
 	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);
@@ -630,6 +1006,7 @@ venture_report_categories(
 	JsonObject		 *options,
 	GError			**error
 ){
+	g_autofree gchar *book = venture_report_book_currency(context, options);
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureQuery) sales_query = NULL;
 	g_autoptr(GPtrArray) sales = NULL;
@@ -759,7 +1136,7 @@ venture_report_categories(
 		guint j;
 
 		bucket = g_hash_table_lookup(groups, iter->data);
-		revenue = venture_report_total_net(bucket, &skipped);
+		revenue = venture_report_total_net(bucket, book, &skipped);
 		units = 0;
 
 		for (j = 0; j < bucket->len; j++)
@@ -1123,6 +1500,7 @@ venture_report_tax(
 	JsonObject		 *options,
 	GError			**error
 ){
+	g_autofree gchar *book = venture_report_book_currency(context, options);
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureQuery) expenses_query = NULL;
 	g_autoptr(GPtrArray) expenses = NULL;
@@ -1210,7 +1588,7 @@ venture_report_tax(
 		guint j;
 
 		bucket = g_hash_table_lookup(buckets, iter->data);
-		spent = venture_report_total(bucket, "amount", &skipped);
+		spent = venture_report_total(bucket, "amount", book, &skipped);
 		deductible = venture_money_new_zero(venture_money_get_currency(spent));
 
 		for (j = 0; j < bucket->len; j++)
@@ -1261,7 +1639,7 @@ venture_report_tax(
 		g_autofree gchar *note = NULL;
 
 		if (NULL == review_total)
-			review_total = venture_money_new_zero(NULL);
+			review_total = venture_money_new_zero(book);
 
 		amount_text = venture_money_to_display_string(review_total, TRUE);
 		note = g_strdup_printf(
@@ -1288,6 +1666,7 @@ venture_report_campaigns(
 	JsonObject		 *options,
 	GError			**error
 ){
+	g_autofree gchar *book = venture_report_book_currency(context, options);
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) campaigns = NULL;
@@ -1309,8 +1688,8 @@ venture_report_campaigns(
 
 	result = venture_report_result_new("Campaign performance", period);
 	skipped = 0;
-	total_spend = venture_report_total(campaigns, "spend", &skipped);
-	total_revenue = venture_report_total(campaigns, "revenue", &skipped);
+	total_spend = venture_report_total(campaigns, "spend", book, &skipped);
+	total_revenue = venture_report_total(campaigns, "revenue", book, &skipped);
 
 	venture_report_result_add_column(result, "campaign", "Campaign",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
@@ -1368,6 +1747,7 @@ venture_report_pipeline(
 	JsonObject		 *options,
 	GError			**error
 ){
+	g_autofree gchar *book = venture_report_book_currency(context, options);
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) deals = NULL;
@@ -1452,10 +1832,10 @@ venture_report_pipeline(
 		/* An empty stage still shows a zero rather than a blank, which
 		 * is what keeps the funnel readable as a funnel. */
 		if (NULL == stage_value)
-			stage_value = venture_money_new_zero(NULL);
+			stage_value = venture_money_new_zero(book);
 
 		if (NULL == stage_weighted)
-			stage_weighted = venture_money_new_zero(NULL);
+			stage_weighted = venture_money_new_zero(book);
 
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "stage", stages[s]);
@@ -1488,13 +1868,20 @@ venture_report_monthly(
 ){
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GPtrArray) months = NULL;
+	g_autoptr(GPtrArray) seen = NULL;
+	g_autofree gchar *book = NULL;
 	guint skipped;
 	guint i;
 
 	skipped = 0;
 	result = venture_report_result_new("Monthly revenue and expenses", period);
+	book = venture_report_book_currency(context, options);
+	seen = g_ptr_array_new_with_free_func(g_free);
+	venture_report_add_code(seen, book);
 
 	venture_report_result_add_column(result, "month", "Month",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "currency", "Currency",
 	                                 VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "sales", "Sales",
 	                                 VENTURE_REPORT_COLUMN_NUMBER);
@@ -1516,10 +1903,11 @@ venture_report_monthly(
 		g_autoptr(VentureQuery) expenses_query = NULL;
 		g_autoptr(GPtrArray) sales = NULL;
 		g_autoptr(GPtrArray) expenses = NULL;
-		g_autoptr(VentureMoney) revenue = NULL;
-		g_autoptr(VentureMoney) spent = NULL;
-		g_autoptr(VentureMoney) profit = NULL;
+		g_autoptr(GPtrArray) revenue = NULL;
+		g_autoptr(GPtrArray) spent = NULL;
+		g_autoptr(GPtrArray) codes = NULL;
 		VentureDateRange *month;
+		guint c;
 
 		month = g_ptr_array_index(months, i);
 
@@ -1542,19 +1930,44 @@ venture_report_monthly(
 		if ((NULL == sales) || (NULL == expenses))
 			return NULL;
 
-		revenue = venture_report_total_net(sales, &skipped);
-		spent = venture_report_total(expenses, "amount", &skipped);
-		profit = venture_money_subtract(revenue, spent, NULL);
+		revenue = venture_report_net_totals(sales, &skipped);
+		spent = venture_report_totals(expenses, "amount", &skipped);
 
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "month",
-		                               venture_date_range_get_label(month));
-		venture_report_result_set_number(result, "sales", (gdouble)sales->len);
-		venture_report_result_set_money(result, "revenue", revenue);
-		venture_report_result_set_money(result, "expenses", spent);
-		venture_report_result_set_money(result, "profit", profit);
+		/* A row per month per currency: the book currency's every
+		 * month, so the series has no holes, and another currency's
+		 * only in a month that has something in it. */
+		codes = venture_report_currencies(book, revenue, spent, NULL);
+
+		for (c = 0; c < codes->len; c++)
+		{
+			const gchar *code;
+			g_autoptr(VentureMoney) net = NULL;
+			g_autoptr(VentureMoney) cost = NULL;
+			g_autoptr(VentureMoney) profit = NULL;
+
+			code = g_ptr_array_index(codes, c);
+			venture_report_add_code(seen, code);
+			net = venture_report_amount_in(revenue, code);
+			cost = venture_report_amount_in(spent, code);
+			profit = venture_money_subtract(net, cost, NULL);
+
+			if (NULL == profit)
+				skipped++;
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "month",
+			                               venture_date_range_get_label(month));
+			venture_report_result_set_text(result, "currency", code);
+			venture_report_result_set_number(result, "sales",
+				(gdouble)venture_report_count_sales_in(sales, code, book));
+			venture_report_result_set_money(result, "revenue", net);
+			venture_report_result_set_money(result, "expenses", cost);
+			venture_report_result_set_money(result, "profit", profit);
+		}
 	}
 
+	g_ptr_array_sort_with_data(seen, venture_report_compare_code, book);
+	venture_report_note_currencies(result, seen, book);
 	venture_report_flag_skipped(result, skipped);
 
 	return g_steal_pointer(&result);

@@ -17,6 +17,18 @@ accumulate(VentureMoney **sum, const VentureMoney *amount, GError **error)
 	return TRUE;
 }
 
+/* The book currency first, then the rest by code. */
+static gint
+book_first(gconstpointer a, gconstpointer b, gpointer book)
+{
+	gboolean left = g_strcmp0(a, book) == 0;
+	gboolean right = g_strcmp0(b, book) == 0;
+
+	if (left != right)
+		return left ? -1 : 1;
+	return g_strcmp0(a, b);
+}
+
 static VentureReportResult *
 trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
@@ -29,6 +41,8 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GDateTime) as_of = NULL;
 	g_autoptr(GList) names = NULL;
+	g_autoptr(GString) sections = g_string_new(NULL);
+	g_autofree gchar *book = NULL;
 	GList *currency_node;
 	const gchar *requested_currency;
 	gint64 org;
@@ -96,12 +110,19 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 	venture_report_result_add_column(result, "code", "Account", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "name", "Name", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "currency", "Currency", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "books", "Books", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "debit", "Debit", VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "credit", "Credit", VENTURE_REPORT_COLUMN_MONEY);
-	names = g_list_sort(g_hash_table_get_keys(currencies), (GCompareFunc)g_strcmp0);
+	book = venture_posting_service_book_currency(service, org, error);
+	if (NULL == book)
+		goto fail;
+	names = g_list_sort_with_data(g_hash_table_get_keys(currencies), book_first, book);
 	for (currency_node = names; currency_node != NULL; currency_node = currency_node->next)
 	{
 		const gchar *currency = currency_node->data;
+		/* Each currency balances on its own; the label says why it has a
+		 * section at all, by the posting service's rule. */
+		g_autofree gchar *label = venture_posting_service_book_label(service, org, currency, as_of, error);
 		g_autoptr(VentureMoney) debits = venture_money_new_zero(currency);
 		g_autoptr(VentureMoney) credits = venture_money_new_zero(currency);
 		g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
@@ -109,6 +130,10 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 		g_autofree gchar *debit_key = g_strdup_printf("debits_%s", currency);
 		g_autofree gchar *credit_key = g_strdup_printf("credits_%s", currency);
 		g_autofree gchar *difference_key = g_strdup_printf("difference_%s", currency);
+
+		if (NULL == label)
+			goto fail;
+		g_string_append_printf(sections, "%s%s", sections->len > 0 ? "; " : "", label);
 
 		for (i = 0; i < accounts->len; i++)
 		{
@@ -138,6 +163,7 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 			venture_report_result_set_text(result, "code", code);
 			venture_report_result_set_text(result, "name", name);
 			venture_report_result_set_text(result, "currency", currency);
+			venture_report_result_set_text(result, "books", label);
 			venture_report_result_set_money(result, "debit", debit ? magnitude : zero);
 			venture_report_result_set_money(result, "credit", debit ? zero : magnitude);
 		}
@@ -152,6 +178,13 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 		venture_report_result_add_metric(result, venture_metric_new_money(debit_key, "Debits", debits));
 		venture_report_result_add_metric(result, venture_metric_new_money(credit_key, "Credits", credits));
 		venture_report_result_add_metric(result, venture_metric_new_money(difference_key, "Difference", difference));
+	}
+	if (g_list_length(names) > 1)
+	{
+		g_autofree gchar *note = g_strdup_printf("Each currency is its own set of books, balanced "
+			"on its own and never added to another: %s. Amounts converted into the book "
+			"currency are in its section already.", sections->str);
+		venture_report_result_append_note(result, note);
 	}
 	if (!venture_database_commit(db, error))
 		return NULL;

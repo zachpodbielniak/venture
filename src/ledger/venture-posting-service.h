@@ -121,6 +121,29 @@ gboolean venture_posting_service_route_currency(VenturePostingService *self,
 	gint64 organization_id, const gchar *currency, GDateTime *when,
 	VentureBookRoute *route, gchar **book_currency, GError **error);
 /**
+ * venture_posting_service_book_label:
+ * @self: posting service
+ * @organization_id: legal entity whose books are being read
+ * @currency: the currency of one section of those books
+ * @when: (nullable): the date the section is read at, now when %NULL
+ * @error: (out) (optional): storage error, or an invalid code
+ *
+ * How a statement names a section of an organization's books, from the
+ * same rule venture_posting_service_route_currency() applies: "Book
+ * currency: GOLD" for the book currency, "Separate book: TICKET" for a
+ * currency kept apart by its treatment, "Own book: EUR (no rate to GOLD)"
+ * for a valued currency that had no rate, and "Own book: EUR (posted
+ * before a rate to GOLD)" when a rate exists now but the section holds
+ * journals posted without one. A memo currency posts nothing, so its
+ * label ("Memo: X (posted before it was memo)") is only ever read for
+ * journals older than the treatment. Converted amounts are already in the
+ * book-currency section and never get a section of their own.
+ *
+ * Returns: (transfer full) (nullable): the label, or %NULL on error
+ */
+gchar *venture_posting_service_book_label(VenturePostingService *self,
+	gint64 organization_id, const gchar *currency, GDateTime *when, GError **error);
+/**
  * venture_posting_service_post_by_currency:
  * @self: posting service
  * @header: unsaved header: organization, date, source, memo, rule name and

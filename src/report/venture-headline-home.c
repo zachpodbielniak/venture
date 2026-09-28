@@ -498,8 +498,11 @@ headline_add_card(
 
 /*
  * Cash in the bank: the last statement balance of every bank account, in
- * the first account's currency. Beside the booked P&L because "what is
- * actually in the account" is the question the P&L does not answer.
+ * the book currency when any account is kept in it, else in the first
+ * account's currency. Beside the booked P&L because "what is actually in
+ * the account" is the question the P&L does not answer. Anchoring on the
+ * first account let a TICKET wallet listed first turn a gold
+ * organization's cash into tickets and set its gold aside.
  */
 VentureMetric *
 venture_headline_bank_cash(
@@ -509,6 +512,7 @@ venture_headline_bank_cash(
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) accounts = NULL;
 	g_autoptr(VentureMoney) total = NULL;
+	g_autofree gchar *book = NULL;
 	VentureMetric *metric;
 	guint skipped;
 	guint i;
@@ -528,6 +532,24 @@ venture_headline_bank_cash(
 		return venture_metric_new_text("cash", "Bank cash", "n/a");
 
 	skipped = 0;
+	book = venture_posting_service_book_currency(
+		venture_database_get_posting_service(venture_context_get_database(context)),
+		organization_id, NULL);
+
+	for (i = 0; (i < accounts->len) && (NULL != book); i++)
+	{
+		g_autoptr(VentureMoney) balance = NULL;
+
+		g_object_get(g_ptr_array_index(accounts, i), "last-statement-balance",
+		             &balance, NULL);
+
+		if ((NULL != balance) &&
+		    (0 == g_strcmp0(venture_money_get_currency(balance), book)))
+		{
+			total = venture_money_new_zero(book);
+			break;
+		}
+	}
 
 	for (i = 0; i < accounts->len; i++)
 	{

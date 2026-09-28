@@ -10,7 +10,23 @@ true (or =VENTURE_MODULE_GROUP=). It owns =intercompany_link= and
 An intercompany link names a subsidiary of the parent organization. Consolidated
 trial balance, income statement and balance sheet combine those legal entities,
 convert through the existing =exchange_rate= table (no invented inverse) and
-tag each row with the organization dimension.
+tag each row with the organization dimension. The consolidation currency is
+the =currency= option, else the parent's book currency.
+
+Every book a member keeps is read, not only its book currency's, and each is
+decided once by its currency's book treatment (see [[file:ledger.org][Currencies in the books]]):
+
+| The member's book is in                     | In the consolidation                 |
+|---------------------------------------------+--------------------------------------|
+| the consolidation currency                  | as it is                             |
+| a =valued= currency with a parent rate on the period end | converted at that rate  |
+| a =valued= currency with no rate            | left out, and named in the note      |
+| a =separate_book= or =memo= currency        | left out, and named -- never converted, even with a rate |
+
+The note reads "Left out of this consolidation in USD: organization 4's GOLD
+book (no rate to USD); organization 1's TICKET book (a separate book)". A
+missing rate used to refuse the whole report, and a member's other books
+were silently absent.
 
 Elimination rows use ordinary debit and credit signs: a debit reduces income and increases expense; a credit does the reverse. Trial balance shows both legs and populated debit/credit columns for source balances. Eliminations use the same currency conversion as source balances.
 Balance sheet shows only asset, liability and equity legs; P&L legs

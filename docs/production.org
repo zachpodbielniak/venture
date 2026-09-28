@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * Stock that becomes other stock
@@ -234,13 +234,17 @@ source.
 |-------------------+----------------------------------------------------------------------------------|
 | =price_source=    | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
 | =as_of=           | prices and stock as they stood at this date; now by default                     |
+| =currency=        | only prices observed in this currency count; left out, the book currency's price wins wherever the product was seen in it, else the newest in any. See [[file:market.org][Market]] |
 | =venture_id=      | only this venture's recipes                                                      |
 | =category_id=     | only recipes filed in this category *or beneath it*                             |
 | =organization_id= | the legal entity; the default organization otherwise                             |
 
 *Pricing.* With the market module on, every figure comes from
 =venture_market_latest_price()= -- the newest observation at or before
-=as_of= from =price_source=. Nothing else: falling back to a recorded cost
+=as_of= from =price_source=, in the =currency= option's currency when one
+is named and otherwise in the book currency wherever the product was seen
+priced in it (=venture_market_price_preferring()=), so a gold organization's
+margin is not worked out in tickets because tickets were seen last. Nothing else: falling back to a recorded cost
 for a product the source never priced would mix two kinds of number in one
 margin without saying which. With the market module off, the recorded
 figures: a component at its first inventory item's =unit_cost=, else the

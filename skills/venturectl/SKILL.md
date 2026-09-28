@@ -319,8 +319,20 @@ an organization. Correcting financial values creates reversal and replacement
 journals. Deleting a source record does not erase its journal.
 
 Use **report trial_balance PERIOD** for posted account balances at the period's
-end. It reports book currencies separately. The existing P&L still reads
+end. It reports book currencies separately, the organization's book currency
+first, each row labelled in `books` (`Book currency: GOLD`, `Separate book:
+TICKET`, `Own book: EUR (no rate to GOLD)`). The existing P&L still reads
 operational sales and expenses; it is not the authoritative journal balance.
+
+**`pnl`, `ventures` and `monthly` keep one figure per currency, never a
+converted total.** The book currency always comes first (zero when nothing
+is in it) and keeps the plain metric keys (`revenue`, `expenses`,
+`profit`); any other currency adds its code: `revenue_TICKET`,
+`profit_EUR`. Rows carry a `currency` column — `pnl` repeats its eight
+lines per currency, `ventures` is a row per venture per currency, `monthly`
+a row per month per currency. Read `revenue_<CODE>` for another currency's
+figure; do not add a TICKET row to a GOLD one. A bare date is one day:
+`report pnl 2026-03-14` is the fourteenth only.
 
 **`venturectl mcp` stages writes rather than applying them**, unless started
 with `--apply-writes`. A staged write sends the request with `?stage=1`, and
@@ -859,7 +871,9 @@ the `customer_health` and `activities` modules. See `docs/reporting.org`.
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
 `account_balances` and `pnl_reconciliation` read posted evidence per exact
-organization and currency. Pass `compare_to=2026-07` after the selected period
+organization and currency, book currency first, with a `books` label per row
+(a separate book or a currency with no rate is its own section; memo never
+appears). Pass `compare_to=2026-07` after the selected period
 for prior/delta columns; general ledger also accepts `account_id=ID`.
 For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 currency=USD compare_to=2026-07`.
 Synthetic totals have no single account ID; actual account/journal IDs link
@@ -1197,6 +1211,14 @@ account. These transactional actions cannot be staged. Organization finance,
 owner or administrator membership is required; signed/closed task evidence
 must be reopened before completion or waiver can change it.
 
+A close ties out one currency (the workspace's; the book currency when
+omitted). An unmatched bank line in a separate-book, rate-less or memo
+currency is left out and named in the `bank_recon` task's notes rather than
+refusing; one in a currency with a rate still refuses. Consolidated reports
+(`consolidated_*`, group module) default to the parent's book currency and
+leave out — naming in a note — a member book with no rate or in a
+separate-book/memo currency, instead of refusing.
+
 ### Customer retainer actions
 
 `act company ID collect_retainer 'amount=250 USD' liability_account_id=N`
@@ -1490,8 +1512,10 @@ venturectl list inventory_txn reference=recipe:3  # everything the recipe made o
 - It returns the output's `inventory_txn`.
 
 Report `recipe_margin` — `price_source` (exact; needs the market module,
-refused without it), `as_of`, `venture_id`, `category_id` (and everything
-beneath it), `organization_id`. One row per active recipe: `cost`,
+refused without it), `currency` (only prices observed in it count; left
+out, the book currency's price wins wherever the product was seen in it,
+else the newest in any; not a code is refused), `as_of`, `venture_id`,
+`category_id` (and everything beneath it), `organization_id`. One row per active recipe: `cost`,
 `value`, `profit`, `margin`, `cost_per_unit`, `craftable_now`,
 `priced_by`, `note`. Market on: latest observed prices only; a product
 never priced is named in `note` and its figures are blank, **not zero**.
@@ -1501,6 +1525,7 @@ the output. Two currencies in one recipe: a note and no money figures.
 ```sh
 venturectl report recipe_margin all price_source="market value"
 venturectl report recipe_margin all category_id=4 as_of=2026-03-01
+venturectl report recipe_margin all currency=TICKET
 ```
 
 ## Sessions: runs of effort and what they yielded
@@ -1556,6 +1581,7 @@ venturectl list inventory_txn reference=session:8
 Report `session_performance` — `group_by` (`activity` default, `category`,
 `location`, `venture`), `category_depth` (category/location only),
 `price_source` (exact; needs the market module, refused without it),
+`currency` (as recipe_margin: which observations count),
 `as_of` (value every yield at that date instead of its session's end),
 `venture_id`, `organization_id`; the period bounds `started_at`. One row
 per group **and currency**: `sessions`, `open`, `hours` (finished
@@ -1619,7 +1645,7 @@ overdue), `forecast` (straight line from `start_value` at creation to
 
 Report `goal_materials` — `goal_id` (with its sub-goals; every active or
 paused goal by default), `venture_id`, `price_source` (market module
-only), `include_on_hand` (`true` default / `false`), `as_of`,
+only), `currency` (as recipe_margin), `include_on_hand` (`true` default / `false`), `as_of`,
 `organization_id`. Reads steps **not done** with a recipe and
 `repetitions` > 0: consumed components × repetitions summed per product;
 **reusable components once, at the largest single step's need** (never

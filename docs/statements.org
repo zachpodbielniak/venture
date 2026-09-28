@@ -34,7 +34,17 @@ balanced journal. No posting, journal or trial-balance behavior is changed.
 default organization. Selecting a parent company does not consolidate its
 children. =currency= selects one uppercase book currency. Without it, each
 currency has separate rows and totals; no exchange conversion or cross-currency
-netting occurs. An empty ledger reports zero in the configured default currency.
+netting occurs. An empty ledger reports zero in the organization's book
+currency.
+
+Each currency's section comes in a fixed order -- the organization's book
+currency first, then the rest by code -- and every row names its section in
+a =books= column, from the posting rule (see [[file:ledger.org][Currencies in the books]]):
+=Book currency: GOLD=, =Separate book: TICKET=, =Own book: EUR (no rate to
+GOLD)=, or =Own book: EUR (posted before a rate to GOLD)= for older journals
+of a currency that is converted now. A memo currency never posts, so it has
+no section. With more than one section the statement carries a note naming
+them, so a separate TICKET book is never read as part of the GOLD figures.
 
 * Dates and comparisons
 

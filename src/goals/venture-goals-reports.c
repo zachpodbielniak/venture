@@ -980,6 +980,8 @@ goals_materials_price(
 	GPtrArray	 *items,
 	gboolean	  market,
 	const gchar	 *source,
+	const gchar	 *currency,
+	gboolean	  strict,
 	GDateTime	 *as_of,
 	VentureMoney	**out_price,
 	GError		**error
@@ -988,10 +990,18 @@ goals_materials_price(
 
 	*out_price = NULL;
 
-	if (market)
+	/* Only prices in the currency option's currency when one is named;
+	 * otherwise the book currency's wherever the product was seen in it,
+	 * so the list is not priced in whichever currency was seen last. */
+	if (market && strict)
 		return venture_market_latest_price(database, organization_id,
 		                                   venture_entity_get_id(product), source,
-		                                   as_of, out_price, NULL, error);
+		                                   currency, as_of, out_price, NULL, error);
+
+	if (market)
+		return venture_market_price_preferring(database, organization_id,
+		                                       venture_entity_get_id(product), source,
+		                                       currency, as_of, out_price, NULL, error);
 
 	for (i = 0; (i < items->len) && (NULL == *out_price); i++)
 		g_object_get(g_ptr_array_index(items, i), "unit-cost", out_price, NULL);
@@ -1113,6 +1123,8 @@ goals_materials_line(
 	gboolean		  include_on_hand,
 	gboolean		  market,
 	const gchar		 *source,
+	const gchar		 *currency,
+	gboolean		  strict,
 	GDateTime		 *as_of,
 	GHashTable		 *totals,
 	GString			 *unpriced,
@@ -1167,7 +1179,7 @@ goals_materials_line(
 
 	if ((NULL != product) &&
 	    !goals_materials_price(database, organization_id, product, items, market,
-	                           source, as_of, &price, error))
+	                           source, currency, strict, as_of, &price, error))
 		return FALSE;
 
 	if (NULL == price)
@@ -1317,10 +1329,12 @@ venture_goals_materials(
 	g_autoptr(GString) unpriced = NULL;
 	g_autoptr(GString) skipped = NULL;
 	g_autoptr(GList) currencies = NULL;
+	g_autofree gchar *currency = NULL;
 	VentureDatabase *database;
 	const gchar *source;
 	gboolean include_on_hand;
 	gboolean market;
+	gboolean strict;
 	gint64 organization_id;
 	gint64 goal_id;
 	gint64 venture_id;
@@ -1371,6 +1385,10 @@ venture_goals_materials(
 		g_propagate_error(error, g_steal_pointer(&as_of_error));
 		return NULL;
 	}
+
+	if (!venture_market_valuing_currency(database, organization_id, options,
+	                                     &currency, &strict, error))
+		return NULL;
 
 	goal_id = (NULL != options) ? venture_json_object_get_int(options, "goal_id", 0) : 0;
 	venture_id = (NULL != options) ? venture_json_object_get_int(options, "venture_id", 0) : 0;
@@ -1521,7 +1539,7 @@ venture_goals_materials(
 	{
 		if (!goals_materials_line(context, result, g_ptr_array_index(ordered, i),
 		                          organization_id, include_on_hand, market, source,
-		                          as_of, totals, unpriced, error))
+		                          currency, strict, as_of, totals, unpriced, error))
 			return NULL;
 	}
 
@@ -1714,6 +1732,9 @@ venture_goals_register_reports(VentureReportRegistry *registry)
 		"stock on hand in every location off what is needed; true by default\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Count stock and "
 		"read prices at this date instead of now\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Only prices "
+		"observed in this currency count; by default the book currency's price "
+		"wins wherever the product was seen in it, else the latest in any\"},"
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal "
 		"entity; defaults to the default organization\"}}}");
 }

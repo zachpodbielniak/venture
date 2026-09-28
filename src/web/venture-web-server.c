@@ -6752,6 +6752,10 @@ venture_web_production_controls(
 		g_string_append(content, "<div class=\"field\"><label>Price source<input name=\"price_source\" value=\"");
 		venture_html_escape_append(content, (NULL != source) ? source : "");
 		g_string_append(content, "\" placeholder=\"any source\"></label></div>");
+		source = htmx_request_get_query_param(request, "currency");
+		g_string_append(content, "<div class=\"field\"><label>Priced in<input name=\"currency\" value=\"");
+		venture_html_escape_append(content, (NULL != source) ? source : "");
+		g_string_append(content, "\" placeholder=\"book currency first\"></label></div>");
 	}
 
 	as_of = htmx_request_get_query_param(request, "as_of");
@@ -6816,6 +6820,10 @@ venture_web_sessions_controls(
 		g_string_append(content, "<div class=\"field\"><label>Price source<input name=\"price_source\" value=\"");
 		venture_html_escape_append(content, (NULL != value) ? value : "");
 		g_string_append(content, "\" placeholder=\"any source\"></label></div>");
+		value = htmx_request_get_query_param(request, "currency");
+		g_string_append(content, "<div class=\"field\"><label>Priced in<input name=\"currency\" value=\"");
+		venture_html_escape_append(content, (NULL != value) ? value : "");
+		g_string_append(content, "\" placeholder=\"book currency first\"></label></div>");
 	}
 
 	value = htmx_request_get_query_param(request, "as_of");
@@ -6946,8 +6954,12 @@ venture_web_goals_controls(
 		g_string_append(content, "</select></label></div>");
 
 		if (venture_web_module_enabled(self, "market"))
+		{
 			venture_web_goals_input(request, content, "Price source", "price_source",
 			                        "any source");
+			venture_web_goals_input(request, content, "Priced in", "currency",
+			                        "book currency first");
+		}
 
 		include = htmx_request_get_query_param(request, "include_on_hand");
 		g_string_append_printf(content,

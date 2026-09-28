@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * Effort measured by what it yielded
@@ -317,6 +317,7 @@ that *started* in the period.
 | =category_depth=  | with =group_by= =category= or =location=: roll up to this level of the tree, 0 being the top |
 | =price_source=    | value goods with no =unit_value= at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
 | =as_of=           | value every goods yield at this date instead of at the end of its session        |
+| =currency=        | only prices observed in this currency count; left out, the book currency's price wins wherever the product was seen in it, else the newest in any |
 | =venture_id=      | only this venture's sessions                                                     |
 | =organization_id= | the legal entity; the default organization otherwise                             |
 
@@ -361,7 +362,9 @@ even, like every money figure here.
 1. the yield's own =unit_value=;
 2. with the market module on, the latest price observed from
    =price_source= at the session's end (or at =as_of=), through
-   =venture_market_latest_price()=; nothing else -- falling back to a list
+   =venture_market_latest_price()= -- in the =currency= option's currency
+   when named, else the book currency's wherever the product was seen in
+   it; nothing else -- falling back to a list
    price would mix two kinds of number in one total without saying which;
 3. with the market module off, the product's =list_price=.
 
