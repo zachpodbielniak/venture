@@ -1010,6 +1010,51 @@ test_account_holdings(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * 000710 where the accounts table is absent: accounts belong to the
+ * finance module, and reconciliation never creates a hidden type's table.
+ * The script declares the one table it backfills, so the runner records it
+ * as done instead of failing on UPDATE accounts -- an absent table held no
+ * rows to backfill -- and a table that arrives later gets the column's
+ * FALSE default from its field table. Run through the migrator itself:
+ * startup's seeds after it are a separate matter. If this regresses, the
+ * upgrade refuses on a database whose books were never kept.
+ */
+static void
+test_account_holdings_without_accounts(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *recorded = NULL;
+	gboolean migrated;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE accounts;"
+		"DELETE FROM schema_migrations WHERE version >= 710", NULL, &error));
+	g_assert_no_error(error);
+
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	migrated = orm_migrator_up(runner, 0, &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	g_assert_false(table_exists(database, "accounts"));
+	recorded = query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 710");
+	g_assert_cmpstr(recorded, ==, "1");
+	g_clear_object(&runner);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1025,6 +1070,8 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
+	g_test_add_func("/migrations/account-holdings-without-accounts",
+	                test_account_holdings_without_accounts);
 	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);

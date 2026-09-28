@@ -1,3 +1,4 @@
+-- requires-table: accounts
 -- An account with a location is a holding, and a holding may not go below
 -- zero unless allow_negative says so. Every account written before the
 -- column existed carries no location, so the floor never judges it; say
