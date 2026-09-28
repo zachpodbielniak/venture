@@ -1603,8 +1603,29 @@ venture_database_save(VentureDatabase *self, VentureEntity *entity,
 		if (operation == NULL)
 			return FALSE;
 	}
-	ok = database_save_dispatch(self, entity, actor, error);
-	return ok && (operation == NULL || venture_accounting_operation_finish(operation, error));
+	{
+		GError *local = NULL;
+
+		ok = database_save_dispatch(self, entity, actor, &local) &&
+			(operation == NULL || venture_accounting_operation_finish(operation, &local));
+		/* Every refusal must say why. A check that returns FALSE without
+		 * an error is a bug in that check; it used to reach a person as
+		 * "Unknown error". Name the record, and warn so a test catches the
+		 * check that did it. */
+		if (!ok && NULL == local)
+		{
+			g_warning("Saving %s #%" G_GINT64_FORMAT " failed without saying why",
+			          venture_entity_get_entity_name(entity), venture_entity_get_id(entity));
+			g_set_error(&local, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+			            "Saving the %s failed without saying why; this is a bug, and the record was not saved",
+			            venture_entity_get_entity_name(entity));
+		}
+		if (ok)
+			g_clear_error(&local);
+		else
+			g_propagate_error(error, local);
+		return ok;
+	}
 }
 
 static gboolean

@@ -1338,6 +1338,53 @@ test_tax_rate_page(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(post_form(f, "/tax-rates/new", "name=Bad&rate=eight", NULL), ==, 422);
 }
 
+/* A save check that says no without saying why: the bug being guarded. */
+static gboolean
+refuse_silently(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous,
+	gpointer user_data, GError **error)
+{
+	(void)database;
+	(void)entity;
+	(void)previous;
+	(void)user_data;
+	(void)error;
+	return FALSE;
+}
+
+/*
+ * A refused save always says why. An invoice line posted through the form
+ * with no invoice was refused by a check that found no invoice and set no
+ * error, and the person saw a 500 reading "Unknown error". It is a 422
+ * naming the field now. And a save that fails without a reason from any
+ * other check becomes an internal error that says so -- with a warning in
+ * the log -- rather than the same "Unknown error".
+ */
+static void
+test_save_refusal_says_why(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *reply = NULL;
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autoptr(GError) error = NULL;
+	guint status;
+
+	(void)data;
+	status = post_form_full(f, "/e/invoice_line", "description=Hours&quantity=1&unit-price=12.50",
+		"application/json", FALSE, NULL, &reply);
+	g_assert_cmpuint(status, ==, 422);
+	g_assert_nonnull(reply);
+	g_assert_null(strstr(reply, "Unknown error"));
+	g_assert_nonnull(strstr(reply, "invoice"));
+
+	venture_database_add_save_validator(f->database, VENTURE_TYPE_CONTACT, refuse_silently, NULL, NULL);
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->organization_id,
+		"name", "Silent", NULL);
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*failed without saying why*");
+	g_assert_false(venture_database_save(f->database, contact, NULL, &error));
+	g_test_assert_expected_messages();
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED);
+	g_assert_nonnull(strstr(error->message, "contact"));
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1371,6 +1418,8 @@ main(int argc, char *argv[])
 	           test_list_refusal_is_escaped, tear_down);
 	g_test_add("/record-view/errors-for-people", Fixture, NULL, set_up,
 	           test_errors_for_people, tear_down);
+	g_test_add("/record-view/save-refusal-says-why", Fixture, NULL, set_up,
+	           test_save_refusal_says_why, tear_down);
 	g_test_add("/record-view/accessible-shell", Fixture, NULL, set_up,
 	           test_accessible_shell, tear_down);
 	g_test_add("/record-view/ticket-board", Fixture, NULL, set_up,

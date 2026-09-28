@@ -2050,10 +2050,25 @@ static gboolean
 check_line(VentureSettlementService *self, VentureEntity *record, VentureEntity *previous, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
+	gint64 invoice_id = get_id(record, "invoice-id");
 	gint status;
 
-	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, get_id(record, "invoice-id"), error);
-	if (invoice == NULL || !same_owner(record, invoice, error))
+	/* venture_database_get() answers a missing row with NULL and no error,
+	 * so both cases are said here -- a bare FALSE reached a person as a 500
+	 * reading "Unknown error". */
+	if (invoice_id <= 0)
+	{
+		venture_set_error_validation(error, "invoice_id", "An invoice line needs the invoice it belongs to");
+		return FALSE;
+	}
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (invoice == NULL)
+	{
+		if (error != NULL && *error == NULL)
+			venture_set_error_validation(error, "invoice_id", "Invoice #%" G_GINT64_FORMAT " does not exist", invoice_id);
+		return FALSE;
+	}
+	if (!same_owner(record, invoice, error))
 		return FALSE;
 	g_object_get(invoice, "status", &status, NULL);
 	if (status != VENTURE_INVOICE_STATUS_DRAFT)

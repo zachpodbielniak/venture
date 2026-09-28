@@ -1155,6 +1155,14 @@ than one that fails.
   `X-Venture-Inline` and shows the refusal above the form. Do not add a
   per-route HTML error path; `tests/test-record-view.c` pins all three
   answers.
+- **A refused save always says why.** `venture_database_get()` answers a
+  missing row with NULL and *no* error, so a check that does
+  `x = get(...); if (!x) return FALSE;` refuses without a reason, and the
+  person saw a 500 "Unknown error" (an invoice line with no invoice did
+  this). Name the field with `venture_set_error_validation()`.
+  `venture_database_save()` now turns a FALSE with no error into
+  `VENTURE_ERROR_FAILED` naming the record, plus a `g_warning` -- fatal in
+  tests, so the check that did it is found; `/record-view/save-refusal-says-why`.
 - **"Attention of" is a flag, not a check in a handler.**
   `VENTURE_COLUMN_FLAG_SAME_PARENT` on a reference makes the save refuse a
   target under another parent and the form narrow its options; the parent
