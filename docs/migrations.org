@@ -127,3 +127,30 @@ wrapper runs the Python checks in the ordinary =make DEBUG=1 test= suite;
 [[file:evidence/postgres-upgrade-demonstration.org][PostgreSQL artifact transcript]] records the actual populated 46→62 migration
 checkpoint. It does not qualify a later combined head or unreleased lane
 histories that are not a prefix of that head.
+
+* Troubleshooting
+
+** "Migration history/checksum mismatch at version N" on a development database
+
+A development database that ran a migration from a branch which was then
+edited -- a comment reworded, a statement fixed, the file renumbered before
+merge -- holds the old checksum (or a version the new tree does not have)
+in =schema_migrations=. Startup validates the whole history before it
+touches anything else, so it refuses with this error (an unknown version
+is refused the same way), and it keeps refusing: the check is the point,
+because a released script that changed after it ran would mean two
+installs with the same history and different data.
+
+Do not edit the history row or the checksum to get past it. An unreleased
+migration is only immutable once it ships; until then the database that
+ran the old text is the thing that is wrong. Rebuild it: stop the server,
+move the state directory aside (=just reset= does it for the =just start=
+instance, whose state is =build/run=; otherwise =trash= whatever
+=--state-dir= and =database.url= point at) and start again, which applies the current scripts
+to a fresh database. Re-seed with =make demo= or your own fixtures. If the
+data matters, export it through the API first rather than repairing the
+history by hand.
+
+A *released* script must never be edited in the first place (see
+"Authoring a database feature"); this refusal on a production database is a
+defect in the release, not a local problem to rebuild away.
