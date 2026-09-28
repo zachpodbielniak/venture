@@ -735,6 +735,81 @@ test_derived_frozen(Fixture *f, gconstpointer data)
 	}
 }
 
+/* Whether any note on @result contains @fragment. */
+static gboolean
+has_note(VentureReportResult *result, const gchar *fragment)
+{
+	g_autoptr(JsonNode) node = venture_report_result_to_json(result);
+	g_autofree gchar *text = venture_json_to_string(node, FALSE);
+
+	return NULL != strstr(text, fragment);
+}
+
+/*
+ * Deleting a document keeps what it moved, the rule a posted sale's
+ * journal has always followed: deletion is not a financial correction. A
+ * memo sale into Aria's purse, deleted, still counts in her tickets, and
+ * so does a separate-book sale's journal -- and the holdings report says
+ * which deleted documents it is counting, so a reader looking for them
+ * does not take the balance for wrong. The movement's own refusal no
+ * longer claims deleting the document removes it. If this regresses, the
+ * report shows a balance nobody can trace, or the refusal sends a person
+ * to delete the sale expecting the tickets to go.
+ */
+static void
+test_deleted_document(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(VentureEntity) tokens = NULL;
+	g_autoptr(VentureEntity) movement = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sale_label = NULL;
+	g_autofree gchar *tokens_label = NULL;
+
+	(void)data;
+	sale = sale_into(f, f->aria, "2 TICKET");
+	save(f, sale);
+	tokens = sale_into(f, f->aria, "3 BREWFEST");
+	save(f, tokens);
+	g_assert_cmpint(held(f, f->aria, "TICKET"), ==, 2);
+	g_assert_cmpint(held(f, f->aria, "BREWFEST"), ==, 3);
+
+	result = run_holdings(f, f->org, 0, NULL);
+	g_assert_false(has_note(result, "deleted"));
+	g_clear_object(&result);
+
+	g_assert_true(venture_database_delete(f->db, sale, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_delete(f->db, tokens, NULL, &error));
+	g_assert_no_error(error);
+
+	/* Kept, as the journal is. */
+	g_assert_cmpint(held(f, f->aria, "TICKET"), ==, 2);
+	g_assert_cmpint(held(f, f->aria, "BREWFEST"), ==, 3);
+
+	result = run_holdings(f, f->org, 0, NULL);
+	sale_label = g_strdup_printf("sale #%" G_GINT64_FORMAT, venture_entity_get_id(sale));
+	tokens_label = g_strdup_printf("sale #%" G_GINT64_FORMAT, venture_entity_get_id(tokens));
+	g_assert_true(has_note(result, "2 deleted documents still count here"));
+	g_assert_true(has_note(result, sale_label));
+	g_assert_true(has_note(result, tokens_label));
+
+	/* The movement is still the sale's, and says how to take it back. */
+	query = venture_query_new(VENTURE_TYPE_HOLDING_TXN);
+	venture_query_add_filter_string(query, "source-type", VENTURE_FILTER_OP_EQ, "sale", NULL);
+	rows = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	movement = g_object_ref(g_ptr_array_index(rows, 0));
+	g_assert_false(venture_database_delete(f->db, movement, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_null(strstr(error->message, "the ledger removes it"));
+	g_assert_nonnull(strstr(error->message, "adjustment"));
+}
+
 /*
  * A transfer moves a memo currency as a pair of transfer movements and a
  * posted one as one journal under the transfer rule; the report counts
@@ -1242,6 +1317,8 @@ main(int argc, char **argv)
 	g_test_add("/holdings/floor-back-dated", Fixture, NULL, setup, test_floor_back_dated,
 	           teardown);
 	g_test_add("/holdings/derived-frozen", Fixture, NULL, setup, test_derived_frozen, teardown);
+	g_test_add("/holdings/deleted-document", Fixture, NULL, setup, test_deleted_document,
+	           teardown);
 	g_test_add("/holdings/transfer", Fixture, NULL, setup, test_transfer, teardown);
 	g_test_add("/holdings/organization-scope", Fixture, NULL, setup, test_organization_scope, teardown);
 	g_test_add("/holdings/module-off", Fixture, NULL, setup, test_module_off, teardown);

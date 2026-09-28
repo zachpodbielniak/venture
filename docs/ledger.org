@@ -199,7 +199,9 @@ date. Metadata-only changes that produce the same accounts, sides, amounts
 and date do not post again. Financial changes reverse the earlier journal
 and post its replacement atomically. Clearing an existing amount is refused.
 Deleting a source leaves its posted journal intact; deleting is not a
-financial correction.
+financial correction. The same holds for the holding movements a memo
+line wrote (below): the movement stays, still counts in the holding, and
+the holdings report names the deleted documents it is counting.
 
 The native example plugin registers =subscription-renewal= through the same
 interface. Its rule reuses the installation's expense account policy while
@@ -437,7 +439,11 @@ It belongs to the =ledger= module. Its save validator
 
 - the source fields are the ledger's. A row the ledger derived from a
   document is frozen but for its notes ("came from session #12; change that
-  record and the ledger rewrites this") and cannot be deleted by hand;
+  record and the ledger rewrites this") and cannot be deleted by hand.
+  Deleting the document does not remove it either -- a posted journal is
+  not reversed by a deletion, and a movement is treated the same, so a
+  holding never counts a sale's gold but forgets its tickets. To take one
+  back, record an adjustment (memo) or a journal (posted currency);
 - a person writes adjustments (and =earn=/=spend=, signed to match) in a
   *memo* currency only. A posted currency's holding is its journal lines,
   and a movement beside them would be a second truth ("is in GOLD, which
@@ -577,6 +583,15 @@ Metrics carry the totals per currency: =held= in the book currency and
 A reversal takes back what it reverses instead of counting on the other
 side: a sale corrected from 10 to 12 gold shows 12 earned, not 22 earned
 and 10 spent. A reversed transfer is still a transfer.
+
+A deleted document still counts -- its journal and its movements are
+evidence, and deletion is not a correction -- so the report says which it
+is counting rather than leaving a reader hunting for a sale that is no
+longer listed: "2 deleted documents still count here (sale #12, expense
+#4): deleting a document keeps what it moved, as it keeps its journal. To
+take it back, record an adjustment for a memo currency or a journal for a
+posted one." Transfers name a location, not a document, and are never
+listed. =/holdings/deleted-document= pins it.
 
 Options, forwarded by every door (API, report page, =venturectl report=,
 MCP and the assistant's =venture_report=): =organization_id= (the default

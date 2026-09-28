@@ -618,6 +618,11 @@ than one that fails.
   adds none for a document an earlier treatment already journaled. Re-saves
   *replace* a document's movements (unchanged ones kept), session yields and
   transfers *append* -- pick the right one or an edited expense spends twice.
+- **Deleting a document keeps its holding movements, as it keeps its
+  journal.** Deletion is not a financial correction (`docs/ledger.org`);
+  the holdings report notes the deleted documents it still counts. Do not
+  make a delete remove or reverse a memo movement unless deleting a posted
+  sale reverses its journal too -- one rule for both halves of a holding.
 - **The holding floor lives in two places, both before any write.** A memo
   movement is judged by the `holding_txn` save validator, a journal by the
   posting service's `posting` signal (`holdings_posting_guard()`), per

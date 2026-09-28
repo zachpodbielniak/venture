@@ -49,6 +49,8 @@ typedef struct
 	VentureMoney	*amount;
 	GDateTime	*when;
 	HoldingsFlow	 flow;
+	gchar		*source_type;
+	gint64		 source_id;
 } HoldingsMovement;
 
 static void
@@ -59,6 +61,7 @@ holdings_movement_free(gpointer data)
 	movement = data;
 	venture_money_free(movement->amount);
 	g_clear_pointer(&movement->when, g_date_time_unref);
+	g_free(movement->source_type);
 	g_free(movement);
 }
 
@@ -341,6 +344,8 @@ holdings_collect_ledger(
 		movement = g_new0(HoldingsMovement, 1);
 		movement->account_id = account_id;
 		movement->when = g_date_time_ref(when);
+		g_object_get(journal, "source-type", &movement->source_type,
+		             "source-id", &movement->source_id, NULL);
 		movement->amount = (VENTURE_LEDGER_SIDE_DEBIT == side)
 			? venture_money_copy(amount) : venture_money_negate(amount);
 
@@ -420,6 +425,8 @@ holdings_collect_memo(
 		movement = g_new0(HoldingsMovement, 1);
 		movement->account_id = account_id;
 		movement->amount = g_steal_pointer(&amount);
+		g_object_get(row, "source-type", &movement->source_type,
+		             "source-id", &movement->source_id, NULL);
 		movement->when = (NULL != when) ? g_date_time_ref(when)
 		                                : g_date_time_ref(venture_entity_get_created_at(row));
 
@@ -763,7 +770,8 @@ venture_holdings_validate_txn(
 			{
 				venture_set_error_validation(error, "Holding movement",
 					"came from %s #%" G_GINT64_FORMAT "; change that record and "
-					"the ledger rewrites this. Only the notes are yours to edit",
+					"the ledger rewrites this, or correct the holding with an "
+					"adjustment. Only the notes are yours to edit",
 					was_source, holdings_int(previous, "source-id"));
 				return FALSE;
 			}
@@ -940,8 +948,10 @@ venture_holdings_check_write(
 	if (!venture_string_is_empty(source_type))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		            "This movement came from %s #%" G_GINT64_FORMAT "; change or "
-		            "delete that record instead, and the ledger removes it",
+		            "This movement came from %s #%" G_GINT64_FORMAT "; change that "
+		            "record and the ledger rewrites it. Deleting the record keeps "
+		            "this movement, as it keeps a posted journal: to take it back, "
+		            "record an adjustment",
 		            source_type, holdings_int(stored, "source-id"));
 		return FALSE;
 	}
@@ -1879,6 +1889,50 @@ holdings_books_label(
 	return venture_posting_service_book_label(posting, organization_id, currency, when, error);
 }
 
+/*
+ * Whether the document a movement came from has been deleted. Deleting a
+ * document keeps its journal and its movements -- deletion is not a
+ * financial correction -- so the report counts them and says which.
+ * Transfers name the location, which is not a document. Cached per
+ * source in @seen.
+ */
+static gboolean
+holdings_source_deleted(
+	VentureDatabase		*database,
+	const HoldingsMovement	*movement,
+	GHashTable		*seen,
+	gboolean		*out_first
+){
+	g_autoptr(VentureEntity) source = NULL;
+	gchar *key;
+	gpointer known;
+	GType type;
+	gboolean deleted;
+
+	*out_first = FALSE;
+
+	if (venture_string_is_empty(movement->source_type) || (movement->source_id <= 0) ||
+	    (0 == g_strcmp0(movement->source_type, "location")))
+		return FALSE;
+
+	key = g_strdup_printf("%s:%" G_GINT64_FORMAT, movement->source_type, movement->source_id);
+
+	if (g_hash_table_lookup_extended(seen, key, NULL, &known))
+	{
+		g_free(key);
+		return GPOINTER_TO_INT(known);
+	}
+
+	type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(),
+	                                          movement->source_type);
+	source = (G_TYPE_INVALID != type) ? holdings_read(database, type, movement->source_id) : NULL;
+	deleted = (NULL != source) && venture_entity_is_deleted(source);
+	g_hash_table_insert(seen, key, GINT_TO_POINTER(deleted));
+	*out_first = deleted;
+
+	return deleted;
+}
+
 VentureReportResult *
 venture_holdings_report(
 	VentureContext		 *context,
@@ -1898,6 +1952,8 @@ venture_holdings_report(
 	g_autoptr(GHashTable) paths = NULL;
 	g_autoptr(GHashTable) within = NULL;
 	g_autoptr(GHashTable) labels = NULL;
+	g_autoptr(GHashTable) sources = NULL;
+	g_autoptr(GPtrArray) deleted = NULL;
 	g_autoptr(GDateTime) cutoff = NULL;
 	g_autofree gchar *book = NULL;
 	GDateTime *start;
@@ -2027,6 +2083,8 @@ venture_holdings_report(
 
 	rows = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, holdings_row_free);
 	paths = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	sources = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	deleted = g_ptr_array_new_with_free_func(g_free);
 
 	for (i = 0; i < accounts->len; i++)
 	{
@@ -2072,6 +2130,14 @@ venture_holdings_report(
 
 			if (g_date_time_compare(movement->when, cutoff) > 0)
 				continue;
+
+			{
+				gboolean first;
+
+				if (holdings_source_deleted(database, movement, sources, &first) && first)
+					g_ptr_array_add(deleted, g_strdup_printf("%s #%" G_GINT64_FORMAT,
+						movement->source_type, movement->source_id));
+			}
 
 			/* Keyed by location and currency before anything is added:
 			 * nothing below the key adds across currencies. */
@@ -2239,6 +2305,32 @@ venture_holdings_report(
 		"Earned, spent and transferred are counted within the period; the "
 		"balance is everything up to its end (or as_of). A reversal takes back "
 		"what it reverses rather than counting on the other side.");
+
+	/* Said rather than hidden: a balance that still counts a deleted sale
+	 * is the truth of the books, but a reader looking for that sale would
+	 * not find it and would take the figure for wrong. */
+	if (deleted->len > 0)
+	{
+		g_autoptr(GString) note = NULL;
+
+		note = g_string_new(NULL);
+		g_string_append_printf(note, "%u deleted document%s still count%s here (",
+		                       deleted->len, (1 == deleted->len) ? "" : "s",
+		                       (1 == deleted->len) ? "s" : "");
+
+		for (i = 0; (i < deleted->len) && (i < 5); i++)
+			g_string_append_printf(note, "%s%s", (i > 0) ? ", " : "",
+			                       (const gchar *)g_ptr_array_index(deleted, i));
+
+		if (deleted->len > 5)
+			g_string_append_printf(note, " and %u more", deleted->len - 5);
+
+		g_string_append(note, "): deleting a document keeps what it moved, as "
+		                      "it keeps its journal. To take it back, record an "
+		                      "adjustment for a memo currency or a journal for a "
+		                      "posted one.");
+		venture_report_result_append_note(result, note->str);
+	}
 
 	return g_steal_pointer(&result);
 }
