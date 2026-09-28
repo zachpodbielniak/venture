@@ -814,6 +814,49 @@ venture_report_categories(
  * Inventory
  * ========================================================================== */
 
+/*
+ * Where an item is, for a reader: the location's path ("Bank / Vault")
+ * when the item names one, else the older free text.
+ */
+static gchar *
+venture_report_item_location(
+	VentureDatabase	*database,
+	VentureEntity	*item
+){
+	g_autofree gchar *text = NULL;
+	gint64 location_id;
+
+	location_id = 0;
+	g_object_get(item, "location-id", &location_id, "location", &text, NULL);
+
+	if (location_id > 0)
+	{
+		gchar *path;
+
+		path = venture_category_path(database, VENTURE_TYPE_LOCATION,
+		                             location_id, NULL);
+
+		if (NULL != path)
+			return path;
+	}
+
+	return g_steal_pointer(&text);
+}
+
+/*
+ * Adds @value into the report's per-currency totals, counting an overflow
+ * as a skipped amount rather than failing the report.
+ */
+static void
+venture_report_accumulate_totals(
+	GPtrArray		 *totals,
+	const VentureMoney	 *value,
+	guint			 *inout_skipped
+){
+	if ((NULL != value) && !venture_money_totals_add(totals, value, NULL))
+		(*inout_skipped)++;
+}
+
 static VentureReportResult *
 venture_report_inventory(
 	VentureContext		 *context,
@@ -824,14 +867,39 @@ venture_report_inventory(
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(VentureQuery) items_query = NULL;
 	g_autoptr(GPtrArray) items = NULL;
-	g_autoptr(VentureMoney) total_value = NULL;
+	g_autoptr(GPtrArray) totals = NULL;
+	g_autofree gchar *book = NULL;
+	VentureDatabase *database;
+	VentureInventoryService *inventory;
+	GDateTime *as_of;
+	gint64 organization_id;
 	gint64 below_reorder;
 	guint skipped;
 	guint i;
 
+	database = venture_context_get_database(context);
+	inventory = venture_inventory_service_get(database);
+	as_of = (NULL != period) ? venture_date_range_get_end(period) : NULL;
+
+	organization_id = (NULL != options)
+		? venture_json_object_get_int(options, "organization_id", 0) : 0;
+
+	if (0 == organization_id)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	/* Totals are in the organization's own currency, not a guess: an
+	 * empty GOLD organization shows 0 GOLD, never $0.00. */
+	book = venture_posting_service_book_currency(
+		venture_database_get_posting_service(database), organization_id, NULL);
+
+	if (venture_string_is_empty(book))
+	{
+		g_free(book);
+		book = g_strdup(venture_money_get_default_currency());
+	}
+
 	items_query = venture_query_new(VENTURE_TYPE_INVENTORY_ITEM);
-	venture_query_set_organization(items_query,
-		venture_context_get_default_organization_id(context));
+	venture_query_set_organization(items_query, organization_id);
 
 	items = venture_report_fetch_all(context, items_query, options, error);
 
@@ -839,6 +907,7 @@ venture_report_inventory(
 		return NULL;
 
 	result = venture_report_result_new("Inventory", period);
+	totals = venture_money_totals_new();
 	skipped = 0;
 	below_reorder = 0;
 
@@ -850,6 +919,8 @@ venture_report_inventory(
 	                                 VENTURE_REPORT_COLUMN_NUMBER);
 	venture_report_result_add_column(result, "reorder_point", "Reorder at",
 	                                 VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "currency", "Currency",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "unit_cost", "Unit cost",
 	                                 VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "value", "Value",
@@ -859,8 +930,9 @@ venture_report_inventory(
 	{
 		g_autoptr(VentureQuery) txn_query = NULL;
 		g_autoptr(GPtrArray) transactions = NULL;
-		g_autoptr(VentureMoney) unit_cost = NULL;
-		g_autoptr(VentureMoney) value = NULL;
+		g_autoptr(GPtrArray) values = NULL;
+		g_autoptr(GPtrArray) unit_costs = NULL;
+		g_autoptr(VentureMoney) typed_cost = NULL;
 		g_autofree gchar *sku = NULL;
 		g_autofree gchar *location = NULL;
 		VentureEntity *item;
@@ -869,9 +941,9 @@ venture_report_inventory(
 		guint j;
 
 		item = g_ptr_array_index(items, i);
-		g_object_get(item, "sku", &sku, "location", &location,
-		             "unit-cost", &unit_cost, "reorder-point", &reorder_point,
-		             NULL);
+		g_object_get(item, "sku", &sku, "unit-cost", &typed_cost,
+		             "reorder-point", &reorder_point, NULL);
+		location = venture_report_item_location(database, item);
 
 		/*
 		 * Quantity on hand is the sum of the signed transactions, never
@@ -887,11 +959,11 @@ venture_report_inventory(
 
 		/* Bounded by the period's end but not its start: stock on hand
 		 * is a running balance, not a movement within the window. */
-		if ((NULL != period) && (NULL != venture_date_range_get_end(period)))
+		if (NULL != as_of)
 		{
 			g_autofree gchar *text = NULL;
 
-			text = venture_time_to_string(venture_date_range_get_end(period));
+			text = venture_time_to_string(as_of);
 
 			if (!venture_query_add_filter_string(txn_query, "occurred-at",
 			                                     VENTURE_FILTER_OP_LT, text,
@@ -915,36 +987,114 @@ venture_report_inventory(
 			on_hand += quantity;
 		}
 
-		if (NULL != unit_cost)
-		{
-			value = venture_money_multiply_int(unit_cost, on_hand, NULL);
-
-			/* A costed item whose value could not be computed is an
-			 * exclusion too, not merely an empty cell. */
-			if (NULL == value)
-				skipped++;
-		}
-
-		venture_report_accumulate(&total_value, value, &skipped);
-
 		if ((reorder_point > 0) && (on_hand <= reorder_point))
 			below_reorder++;
 
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "sku", sku);
-		venture_report_result_set_text(result, "location", location);
-		venture_report_result_set_number(result, "on_hand", (gdouble)on_hand);
-		venture_report_result_set_number(result, "reorder_point",
-		                                 (gdouble)reorder_point);
-		venture_report_result_set_money(result, "unit_cost", unit_cost);
-		venture_report_result_set_money(result, "value", value);
+		/*
+		 * What the stock cost: the FIFO layers still on hand, one row
+		 * per currency they were bought (or made) in, each with the
+		 * average cost of the units carrying it. Stock with no layer --
+		 * typed in by hand, or the goods module off -- falls back to the
+		 * item's typed unit cost times the count, as it always did. Like
+		 * inventory_valuation, a past period leaves out layers received
+		 * since but cannot undo what was consumed since.
+		 */
+		values = venture_inventory_service_item_value(inventory,
+			venture_entity_get_id(item), as_of, &unit_costs, error);
+
+		if (NULL == values)
+			return NULL;
+
+		if (0 == values->len)
+		{
+			g_autoptr(VentureMoney) value = NULL;
+
+			if (NULL != typed_cost)
+			{
+				value = venture_money_multiply_int(typed_cost, on_hand, NULL);
+
+				/* A costed item whose value could not be computed is
+				 * an exclusion too, not merely an empty cell. */
+				if (NULL == value)
+					skipped++;
+			}
+
+			venture_report_accumulate_totals(totals, value, &skipped);
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "sku", sku);
+			venture_report_result_set_text(result, "location", location);
+			venture_report_result_set_number(result, "on_hand", (gdouble)on_hand);
+			venture_report_result_set_number(result, "reorder_point",
+			                                 (gdouble)reorder_point);
+			venture_report_result_set_text(result, "currency",
+				(NULL != typed_cost) ? venture_money_get_currency(typed_cost) : NULL);
+			venture_report_result_set_money(result, "unit_cost", typed_cost);
+			venture_report_result_set_money(result, "value", value);
+			continue;
+		}
+
+		for (j = 0; j < values->len; j++)
+		{
+			const VentureMoney *value;
+
+			value = g_ptr_array_index(values, j);
+			venture_report_accumulate_totals(totals, value, &skipped);
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "sku", sku);
+			venture_report_result_set_text(result, "location", location);
+			venture_report_result_set_number(result, "on_hand", (gdouble)on_hand);
+			venture_report_result_set_number(result, "reorder_point",
+			                                 (gdouble)reorder_point);
+			venture_report_result_set_text(result, "currency",
+			                               venture_money_get_currency(value));
+			venture_report_result_set_money(result, "unit_cost",
+			                                g_ptr_array_index(unit_costs, j));
+			venture_report_result_set_money(result, "value", value);
+		}
 	}
 
 	venture_report_result_add_metric(result,
 		venture_metric_new_count("items", "Tracked items",
 		                         (gint64)items->len));
-	venture_report_result_add_metric(result,
-		venture_metric_new_money("value", "Inventory value", total_value));
+
+	/* One figure per currency, never added across: "value" is the book
+	 * currency's (zero when nothing is in it), each other currency is
+	 * "value_<CODE>". */
+	if (NULL == venture_money_totals_lookup(totals, book))
+	{
+		g_autoptr(VentureMoney) zero = NULL;
+
+		zero = venture_money_new_zero(book);
+		venture_money_totals_add(totals, zero, NULL);
+	}
+
+	venture_money_totals_sort(totals, book);
+
+	for (i = 0; i < totals->len; i++)
+	{
+		const VentureMoney *total;
+		g_autofree gchar *key = NULL;
+		g_autofree gchar *label = NULL;
+
+		total = g_ptr_array_index(totals, i);
+
+		if (0 == g_strcmp0(venture_money_get_currency(total), book))
+		{
+			key = g_strdup("value");
+			label = g_strdup("Inventory value");
+		}
+		else
+		{
+			key = g_strdup_printf("value_%s", venture_money_get_currency(total));
+			label = g_strdup_printf("Inventory value (%s)",
+			                        venture_money_get_currency(total));
+		}
+
+		venture_report_result_add_metric(result,
+			venture_metric_new_money(key, label, total));
+	}
 
 	{
 		VentureMetric *metric;

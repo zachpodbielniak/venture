@@ -1019,6 +1019,125 @@ venture_money_sum_dominant(
 	return venture_money_sum(chosen, currency, NULL);
 }
 
+/* --- Totals per currency ------------------------------------------------- */
+
+GPtrArray *
+venture_money_totals_new(void)
+{
+	return g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+}
+
+gboolean
+venture_money_totals_add(
+	GPtrArray		 *totals,
+	const VentureMoney	 *amount,
+	GError			**error
+){
+	guint i;
+
+	g_return_val_if_fail(NULL != totals, FALSE);
+
+	if (NULL == amount)
+		return TRUE;
+
+	/* Like to like only: the index is the currency, so no code below
+	 * this point can be asked to add two of them. */
+	for (i = 0; i < totals->len; i++)
+	{
+		VentureMoney *total;
+		VentureMoney *next;
+
+		total = g_ptr_array_index(totals, i);
+
+		if (0 != g_strcmp0(venture_money_get_currency(total),
+		                   venture_money_get_currency(amount)))
+			continue;
+
+		next = venture_money_add(total, amount, error);
+
+		if (NULL == next)
+			return FALSE;
+
+		venture_money_free(total);
+		g_ptr_array_index(totals, i) = next;
+		return TRUE;
+	}
+
+	g_ptr_array_add(totals, venture_money_copy(amount));
+	return TRUE;
+}
+
+const VentureMoney *
+venture_money_totals_lookup(
+	GPtrArray	*totals,
+	const gchar	*currency
+){
+	guint i;
+
+	if (NULL == totals)
+		return NULL;
+
+	for (i = 0; i < totals->len; i++)
+	{
+		if (0 == g_strcmp0(venture_money_get_currency(g_ptr_array_index(totals, i)),
+		                   currency))
+			return g_ptr_array_index(totals, i);
+	}
+
+	return NULL;
+}
+
+static gint
+venture_money_totals_compare(
+	gconstpointer	a,
+	gconstpointer	b,
+	gpointer	user_data
+){
+	const gchar *first;
+	const gchar *left;
+	const gchar *right;
+
+	first = user_data;
+	left = venture_money_get_currency(*(VentureMoney *const *)a);
+	right = venture_money_get_currency(*(VentureMoney *const *)b);
+
+	if ((NULL != first) && (0 == g_strcmp0(left, first)))
+		return (0 == g_strcmp0(right, first)) ? 0 : -1;
+
+	if ((NULL != first) && (0 == g_strcmp0(right, first)))
+		return 1;
+
+	return g_strcmp0(left, right);
+}
+
+void
+venture_money_totals_sort(
+	GPtrArray	*totals,
+	const gchar	*first
+){
+	g_return_if_fail(NULL != totals);
+
+	g_ptr_array_sort_with_data(totals, venture_money_totals_compare,
+	                           (gpointer)first);
+}
+
+gboolean
+venture_money_totals_has_value(GPtrArray *totals)
+{
+	guint i;
+
+	if (NULL == totals)
+		return FALSE;
+
+	for (i = 0; i < totals->len; i++)
+	{
+		if (!venture_money_is_zero(g_ptr_array_index(totals, i)))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
 /* --- Comparison ---------------------------------------------------------- */
 
 gint

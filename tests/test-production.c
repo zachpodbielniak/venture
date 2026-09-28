@@ -595,15 +595,16 @@ workshop(
 static gint64
 inventory_balance(Fixture *fixture)
 {
-	g_autoptr(VentureMoney) value = NULL;
+	g_autoptr(GPtrArray) value = NULL;
 	g_autoptr(GError) error = NULL;
 
 	value = venture_inventory_service_valuation(
 		venture_inventory_service_get(fixture->database), fixture->organization_id,
 		NULL, &error);
 	g_assert_no_error(error);
+	g_assert_cmpuint(value->len, ==, 1);
 
-	return venture_money_get_amount(value);
+	return venture_money_get_amount(g_ptr_array_index(value, 0));
 }
 
 /*
@@ -624,7 +625,7 @@ test_craft_success(
 	g_autoptr(VentureEntity) txn = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) txns = NULL;
-	g_autoptr(VentureMoney) cogs = NULL;
+	g_autoptr(GPtrArray) cogs = NULL;
 	g_autoptr(VentureMoney) unit = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *reference = NULL;
@@ -686,7 +687,8 @@ test_craft_success(
 		venture_inventory_service_get(fixture->database), shop.potion_item, 6, NULL,
 		"test", 0, NULL, &cogs, &error));
 	g_assert_no_error(error);
-	cogs_text = venture_money_to_string(cogs);
+	g_assert_cmpuint(cogs->len, ==, 1);
+	cogs_text = venture_money_to_string(g_ptr_array_index(cogs, 0));
 	g_assert_cmpstr(cogs_text, ==, "10.00 USD");
 }
 
@@ -898,8 +900,10 @@ test_craft_rollback(
 }
 
 /*
- * Inputs whose FIFO costs are in two currencies cannot be one made
- * unit's cost; the craft is refused and nothing moves. What breaks: a
+ * Inputs whose FIFO costs are in two currencies make a unit that costs
+ * both: the output gets sibling layers, one per currency, sharing its
+ * lot, and selling it later gives up both at once. What breaks: the old
+ * refusal (a gold-and-dollar craft could not be made at all), or a
  * potion whose cost is gold and dollars added as though they were one.
  */
 static void
@@ -908,7 +912,11 @@ test_craft_mixed_currency(
 	gconstpointer	 user_data
 ){
 	Workshop shop;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(GPtrArray) cogs = NULL;
+	g_autoptr(GError) error = NULL;
 	gint64 gold_item;
+	gint64 alloy_item;
 	gint64 gold;
 	gint64 alloy;
 	gint64 mix;
@@ -919,16 +927,26 @@ test_craft_mixed_currency(
 	gold = product(fixture, "Gold Dust");
 	alloy = product(fixture, "Alloy");
 	gold_item = item(fixture, gold);
-	item(fixture, alloy);
+	alloy_item = item(fixture, alloy);
 	receive(fixture, gold_item, 3, "1.0000 GOLD");
 
 	mix = recipe(fixture, "Alloy", alloy, 1);
 	component(fixture, mix, shop.herb, 1, FALSE);
 	component(fixture, mix, gold, 1, FALSE);
 
-	craft_refused(fixture, mix, 1, 0, "two currencies");
-	g_assert_cmpint(on_hand(fixture, shop.herb_item), ==, 10);
-	g_assert_cmpint(on_hand(fixture, gold_item), ==, 3);
+	txn = craft(fixture, mix, 1, 0);
+	g_assert_nonnull(txn);
+	g_assert_cmpint(on_hand(fixture, shop.herb_item), ==, 9);
+	g_assert_cmpint(on_hand(fixture, gold_item), ==, 2);
+	g_assert_cmpint(on_hand(fixture, alloy_item), ==, 1);
+
+	g_assert_true(venture_inventory_service_issue(
+		venture_inventory_service_get(fixture->database), alloy_item, 1, NULL,
+		"test", 0, NULL, &cogs, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(cogs->len, ==, 2);
+	g_assert_cmpint(venture_money_get_amount(venture_money_totals_lookup(cogs, "USD")), ==, 100);
+	g_assert_cmpint(venture_money_get_amount(venture_money_totals_lookup(cogs, "GOLD")), ==, 10000);
 }
 
 /*

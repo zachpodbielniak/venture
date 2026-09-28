@@ -193,8 +193,17 @@ their cost layers:
   output still gets a zero-cost layer (in its item's unit-cost currency,
   else the organization's book currency) -- an issue refuses units with no
   layer, so without one the made units could never be sold.
-- *One currency.* Inputs whose costs are in two currencies are refused:
-  a made unit's cost is one number and no rate was given to make it one.
+- *Every currency the inputs cost.* Inputs costing GOLD and TICKET make
+  units that cost both, never one number added across them (no rate was
+  given to make it one). The output gets *sibling layers*, the exact split
+  of each currency, all naming the craft's output transaction as their
+  lot; selling a made unit later takes its share of every currency at
+  once, so 3 charms from 1 GOLD and 50 TICKET sell for 0.3334 GOLD + 17
+  TICKET, then 0.6666 GOLD + 33 TICKET. Zero-cost inputs (a posted
+  session's goods) add no layer beside costed ones. The output transaction
+  shows no unit cost when it cost several currencies; its notes say what
+  each came to. See [[file:inventory.org][Inventory]], "Costing in several
+  currencies". (Before lots, such a craft was refused.)
 - *Without the goods module* there are no cost layers: a craft moves
   quantities only, as every other stock movement does on such an install.
 
@@ -345,7 +354,9 @@ The sidebar files *Recipes* under Operations.
   posts cost of goods sold for stock that is still on the shelf, as a
   potion.
 - *The output's layers are split exactly.* Never replace them with one
-  layer at the rounded average.
+  layer at the rounded average, and never add two currencies into one
+  layer: a two-currency craft's layers share =lot_txn_id=, and FIFO takes
+  a lot's units out of every currency together.
 - *The craft does not create the output's inventory item.* It refuses and
   says what to create.
 - *=recipe_margin= never falls back.* Market on means observed prices

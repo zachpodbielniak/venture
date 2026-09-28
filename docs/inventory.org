@@ -30,8 +30,9 @@ booked when the made units are sold.
 
 Units with no cost layer (an adjustment typed in by hand, or stock taken
 below zero on an item that allows it) are consumed at no cost. Inputs whose
-costs are in two currencies are refused. Without the =goods= module there
-are no layers and a craft moves quantities only.
+costs are in two currencies give the output sibling layers, one set per
+currency (see "Costing in several currencies" below). Without the =goods=
+module there are no layers and a craft moves quantities only.
 
 * Session yields
 
@@ -60,19 +61,101 @@ kept, labelled "Location (text)"; upgrading made one location per distinct
 value and linked each item to it (migration =000695=). Items also carry
 comma-separated, searchable =tags=. See [[file:taxonomy.org][Taxonomy]].
 
-* Currencies
+* Costing in several currencies
 
-Receipt, issue and return journals go through
-=venture_posting_service_post_by_currency()=, so a cost in a currency other
-than the book currency follows the ledger's rule (see [[file:ledger.org][the
-general journal]], "Currencies in the books"): converted into the book
-journal when the currency is valued and has a rate, a pair of its own when
-it is a separate book or has no rate, nothing when it is memo. That call
-takes lines in several currencies at once and returns one journal per book,
-each balanced by itself, which is the hook for an issue whose FIFO layers
-were bought in two currencies. Layers themselves still carry one currency
-each, and consuming a mixture in one issue is still refused; that is later
-work.
+One organization may buy stock in more than one currency: a game's gold
+and its fair tickets, or dollars and euros. A cost layer holds one
+currency; everything that adds layers up keeps *one total per currency* and
+never adds across them, so nothing about stock is ever refused for mixing
+currencies and nothing is silently dropped.
+
+** Totals per currency
+
+=venture_money_totals_new()= and =venture_money_totals_add()= (in
+=src/boxed/venture-money.h=) are the set every inventory sum uses: an array
+of =VentureMoney=, one per currency, into which an amount is added like to
+like. A zero amount starts a zero total; it never clashes with anything, so
+a zero-cost layer (a posted session's goods) consumed beside a TICKET layer
+is simply "0 GOLD and 3 TICKET". =venture_money_totals_lookup()= finds a
+currency's total and =venture_money_totals_sort()= puts the book currency
+first.
+
+The public surface that returns money about stock returns such a set:
+
+| Call                                        | Returns                                                      |
+|---------------------------------------------+--------------------------------------------------------------|
+| =venture_inventory_service_issue()=         | =costs=: what the issued units cost, per currency              |
+| =venture_inventory_service_produce()=       | =out_costs=: what the inputs cost, per currency (NULL: no layer consumed) |
+| =venture_inventory_service_valuation()=     | the remaining layers' cost, per currency, book currency first; one zero in the book currency when nothing is on hand |
+| =venture_inventory_service_item_value()=    | one item's remaining layers per currency, with the average unit cost of the units carrying each |
+
+** Posting an issue
+
+An issue (a sale, a fulfilment, a write-off) posts one cost of goods sold
+/ inventory pair per currency its layers cost, all in *one* call to
+=venture_posting_service_post_by_currency()=. The ledger's rule (see
+[[file:ledger.org][the general journal]], "Currencies in the books") then
+decides each: a book-currency cost, or a valued currency with a rate on the
+date, lands in the book journal; a separate-book currency, or a valued one
+with no rate, posts a balanced journal of its own; a memo currency posts
+nothing. Every pair balances in its own currency, so no clearing is
+needed. Zero amounts post nothing.
+
+A gold sale of a unit bought with tickets therefore posts GOLD cash and
+sales (the sale's own journal) and TICKET cost of goods sold against TICKET
+inventory (the issue's) -- or, once a TICKET-to-GOLD =exchange_rate= is on
+file, the cost valued into a GOLD journal whose lines keep the 50 TICKET as
+their original amount. Neither is refused, and the cost is never missing.
+
+** Lots: a unit that cost two currencies
+
+A craft whose inputs cost 1 GOLD of dust and 50 TICKET of tokens makes
+units that cost both. The output receives *sibling layers*: for each
+currency that cost anything, the exact split (a layer one minor unit higher
+and a floor layer), all naming the output transaction in =lot_txn_id=.
+Three charms from those inputs get GOLD layers of 1 x 0.3334 and 2 x 0.3333
+and TICKET layers of 2 x 17 and 1 x 16.
+
+FIFO walks *lots*, not layers. A lot's layers in one currency add up to the
+lot's units; taking a unit out of a lot takes it out of every currency of
+the lot, each from its own layers in order. Selling one charm gives up
+0.3334 GOLD and 17 TICKET; selling the other two gives up 0.6666 GOLD and
+33 TICKET -- exactly what went in, in each currency. A layer with no lot
+(every layer written before lots existed) is a lot of its own, which is the
+old behaviour exactly. Receipts and transfers name their movement as the
+lot too; a transfer re-splits every currency exactly at the destination
+instead of writing one layer at a rounded average.
+
+Zero totals make no layers when anything else cost something: a craft
+drawing a zero-cost herb and three TICKET herbs gives its potion TICKET
+layers only. When nothing cost anything the output still gets one zero
+layer -- in the first zero's currency, else the item's unit-cost currency,
+else the organization's book currency -- because an issue refuses units
+with no layer.
+
+A movement's transaction shows a unit cost only for reading: the average
+when it moved one currency. A movement that moved several leaves
+=unit_cost= empty and says in =notes= what each currency came to ("Cost
+1.0000 GOLD + 50 TICKET for 3 units"); the layers are what the books count.
+
+** Memo currencies
+
+A memo currency's cost is *tracked on the layer and posts nothing*: a
+receipt at 5 TICKET writes a TICKET layer and no journal, an issue reports
+that it cost 5 TICKET and posts nothing, and the valuation counts the
+TICKET still on hand. That keeps a memo token's stock costed (a margin or a
+holdings view can still read it) without putting a unit that is not money
+into any book.
+
+** Recorded costs in other reports
+
+=recipe_margin=, =goal_materials= and =session_performance= price with
+market observations or, with the market module off, the typed
+=inventory_item.unit_cost= (else the product's =cost=). Those are single
+amounts, so a component "costed in two currencies" there is two components
+in two currencies: =recipe_margin= notes it and gives no money figures,
+=goal_materials= totals each currency on its own row. They do not read the
+FIFO layers.
 
 * Autojournal
 
@@ -85,6 +168,28 @@ so a sale cannot double-post inventory and COGS.
 
 * Reports
 
-=inventory_valuation= as-of is remaining FIFO layers. It is the figure
-that must reconcile to the GL inventory account. =reorder_worklist=
-lists items at or below their reorder point.
+=inventory_valuation= as-of is remaining FIFO layers received at or before
+the period's end, *one row per currency*: =currency=, =valuation= and
+=books=, which says how that currency reaches the ledger on that date --
+"book currency", "valued into the book currency", "separate book" or "memo,
+not posted" -- because only the first reconciles directly to the inventory
+account in the book currency. A separate book reconciles to the inventory
+account's balance in that currency; a converted one was posted at the rate
+on each receipt's date, so its book value is the history of those rates,
+not today's. The book currency's figure is the =valuation= metric (the key
+every dashboard reads); each other currency is =valuation_<CODE>=. Layers
+in several currencies, of one product or of many, never fail the report.
+
+=inventory= lists each item with its on-hand count (signed transactions up
+to the period's end), its location -- the =location= record's path, "Bank /
+Vault", else the older free text -- and its carrying cost. The cost is the
+FIFO layers still on hand, *one row per currency* they cost, with
+=currency=, =unit_cost= (the average cost of the units carrying that
+currency) and =value=. An item with no costed layer left (stock typed in by
+hand, or the goods module off) falls back to its typed =unit_cost= times
+the count, on one row. Totals are per currency: =value= is the book
+currency's (0 GOLD in an empty GOLD organization, never $0.00), each other
+currency =value_<CODE>=. Like =inventory_valuation=, a past period leaves
+out layers received since but cannot put back what was consumed since.
+
+=reorder_worklist= lists items at or below their reorder point.

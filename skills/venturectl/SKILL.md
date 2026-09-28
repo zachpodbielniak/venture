@@ -1272,6 +1272,15 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
   `EUR`→`USD` rate is recorded, a EUR expense in a USD organization posts a
   USD journal whose lines keep the EUR amount. `report trial_balance`
   still shows each separate book as its own balanced section.
+- Stock bought in several currencies keeps them apart: an issue posts one
+  cost-of-goods-sold pair per currency its FIFO layers cost (each by its
+  treatment; memo posts nothing), and `report inventory_valuation` and
+  `report inventory` give one row per currency (`currency`, and on the
+  valuation `books`: book currency / valued into the book currency /
+  separate book / memo, not posted). Their metrics are `valuation` /
+  `value` for the book currency and `valuation_<CODE>` / `value_<CODE>`
+  for the others. `report inventory` shows the location's path and the
+  average unit cost of the units carrying each currency.
 - A manual journal may mix currencies through `act journal 0
   create_and_post 'journal={...}'`: kept-apart currencies each get a
   journal balanced through the "Currency clearing" equity account.
@@ -1464,12 +1473,17 @@ venturectl list inventory_txn reference=recipe:3  # everything the recipe made o
   inventory transaction (quantity × times), the output arrives as one, and
   the made units carry the consumed FIFO cost exactly. Any refusal writes
   nothing. No journal is posted (inventory to inventory).
+- Inputs costed in two currencies (GOLD dust, TICKET tokens) are **not**
+  refused: the output gets one set of cost layers per currency sharing a
+  lot (`lot_txn_id`), and a later sale of a made unit gives up its share of
+  each. Such a transaction has no `unit_cost`; its `notes` say what each
+  currency came to.
 - Refusals (exit 2) say what to do: `Short of <product>` (unless its item
   allows negative stock), a reusable component not on hand (allow-negative
   does **not** apply to tools), a product kept in several places ("name
   the location_id to use"), no inventory item for the output
   ("create an inventory item for it there (product_id=… location_id=…)"),
-  an inactive recipe, no components, inputs costed in two currencies.
+  an inactive recipe, no components.
 - `location_id` means exactly that location for every component and the
   output, not its children. The craft never creates the output's
   inventory item.

@@ -273,6 +273,13 @@ books record revenue. The layer is still needed -- the sale path refuses
 to issue units that have no layer -- so it is written, at zero, in the
 item's unit-cost currency or else the organization's book currency.
 
+The zero's currency never gets in the way. Layers are totalled per
+currency, so gathered herbs (a zero GOLD layer) sold or crafted together
+with herbs bought for tickets cost "0 GOLD and 3 TICKET": the TICKET part
+posts by its own treatment, the zero posts nothing, and a potion made from
+them carries TICKET layers only. (It used to be refused as mixing GOLD and
+TICKET, though the gold part was zero.)
+
 The session's own =cost= is not spread over the units either. It is the
 run's expense, and the performance report nets it off; putting it into
 the layers as well would count it twice. If the run's consumables should

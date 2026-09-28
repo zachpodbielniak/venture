@@ -428,6 +428,80 @@ venture_money_sum(
 	GError			**error
 );
 
+/* --- Totals per currency ------------------------------------------------- */
+
+/**
+ * venture_money_totals_new:
+ *
+ * An empty set of totals, one #VentureMoney per currency. Where
+ * venture_money_sum() refuses a second currency and
+ * venture_money_sum_dominant() drops it, a set of totals keeps every
+ * currency apart and loses nothing: what FIFO cost layers bought in two
+ * currencies cost is two amounts, not one.
+ *
+ * Returns: (transfer full) (element-type VentureMoney): an empty array that
+ *   owns its amounts
+ */
+GPtrArray *
+venture_money_totals_new(void);
+
+/**
+ * venture_money_totals_add:
+ * @totals: (element-type VentureMoney): totals from venture_money_totals_new()
+ * @amount: (nullable): the amount to add; %NULL adds nothing
+ * @error: (out) (optional): overflow
+ *
+ * Adds @amount into its currency's total, starting one when @amount is the
+ * first in that currency. A zero amount starts a zero total too, so a
+ * caller can tell "nothing consumed" from "consumed at no cost"; it never
+ * clashes with another currency, because nothing here adds across two.
+ *
+ * Returns: %TRUE on success, %FALSE on overflow
+ */
+gboolean
+venture_money_totals_add(
+	GPtrArray		 *totals,
+	const VentureMoney	 *amount,
+	GError			**error
+);
+
+/**
+ * venture_money_totals_lookup:
+ * @totals: (element-type VentureMoney): a set of totals
+ * @currency: the code wanted
+ *
+ * Returns: (transfer none) (nullable): the total in @currency, or %NULL
+ *   when nothing in that currency was added
+ */
+const VentureMoney *
+venture_money_totals_lookup(
+	GPtrArray	*totals,
+	const gchar	*currency
+);
+
+/**
+ * venture_money_totals_sort:
+ * @totals: (element-type VentureMoney): a set of totals
+ * @first: (nullable): a code to put first, usually the book currency
+ *
+ * Orders the totals by currency code, with @first (when present) ahead of
+ * the rest, so reports and tests read them in a stable order.
+ */
+void
+venture_money_totals_sort(
+	GPtrArray	*totals,
+	const gchar	*first
+);
+
+/**
+ * venture_money_totals_has_value:
+ * @totals: (element-type VentureMoney) (nullable): a set of totals
+ *
+ * Returns: %TRUE when any total is not zero
+ */
+gboolean
+venture_money_totals_has_value(GPtrArray *totals);
+
 /* --- Comparison ---------------------------------------------------------- */
 
 /**

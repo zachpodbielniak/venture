@@ -663,6 +663,20 @@ than one that fails.
   are and treats the rest as uncosted, because stock typed in by hand has
   no layer and must still be usable; and it always gives the output a
   layer, even a zero one, or `consume_fifo()` would refuse to sell it.
+- **Stock cost is a total per currency, never one `VentureMoney`.** A cost
+  layer holds one currency; an issue, a craft, a transfer, the valuation
+  and the `inventory` report sum layers with `venture_money_totals_add()`
+  and hand every currency on (issue: one pair each, in *one*
+  `post_by_currency()` call; memo layers post nothing). Summing into one
+  amount is what refused a GOLD+TICKET issue and failed the valuation for
+  the whole organization. A zero total is a zero, not a clash.
+- **Sibling layers are one lot; FIFO walks lots.** A unit made from GOLD
+  and TICKET inputs gets one exact split per currency, all with the same
+  `lot_txn_id` (the arrival movement). `consume_layers()` takes a lot's
+  units out of every currency together; treat siblings as separate layers
+  and the first sale takes only the gold. `lot_txn_id` 0 (every older
+  layer) is a lot of its own, so no migration was needed. A transfer
+  re-splits each currency exactly at the destination.
 - **`reusable` is the flag, and a tool must really be there.** A boolean
   has no default, so the zero value is the safe one: unticked means
   consumed. A reusable component is needed once per craft, not per batch,

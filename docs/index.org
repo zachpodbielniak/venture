@@ -49,7 +49,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
 - [[file:payables.org][Vendor payables]] — supplier bills, payments and dated liability evidence
 - [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
-- [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS
+- [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS, costed per currency
 - [[file:production.org][Production]] — recipes (bills of materials), crafting them in one transaction at FIFO cost, and each recipe's margin at a chosen price source
 - [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost, and what an hour of each kind is worth
 - [[file:goals.org][Goals]] — measurable targets (a skill to level, a sum to save, a weight to lose) with ordered steps, progress measured from the start, a straight-line forecast, and the shopping list for recipe steps still ahead
