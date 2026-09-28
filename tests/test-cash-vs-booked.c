@@ -803,6 +803,12 @@ test_surfaces(Fixture *f, gconstpointer data)
 		"2026-07-01..2026-07-14", "bucket=week", NULL };
 	const gchar *bad[] = { NULL, "--server", NULL, "report", "cash_vs_booked",
 		"2026-07", "bucket=day", NULL };
+	/* No period at all: options straight after the name are options, and
+	 * the period is the report's default. It used to be refused as "not
+	 * a period I recognise", which is how `report holdings
+	 * organization_id=2` read. */
+	const gchar *no_period[] = { NULL, "--server", NULL, "-f", "json", "report",
+		"cash_vs_booked", "bucket=week", NULL };
 
 	invoice = invoice_new(f, "API", "2026-07-02", "10 USD");
 	payment = payment_new(f, venture_entity_get_id(invoice), "10 USD", "2026-07-08");
@@ -844,6 +850,13 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_clear_pointer(&response, g_free);
 	response = run_cli(bad, FALSE);
 	g_assert_nonnull(strstr(response, "month"));
+
+	no_period[0] = cli;
+	no_period[2] = venture_web_server_get_base_url(server);
+	g_clear_pointer(&response, g_free);
+	response = run_cli(no_period, TRUE);
+	g_assert_nonnull(strstr(response, "\"title\""));
+	g_assert_null(strstr(response, "period I recognise"));
 
 	venture_web_server_stop(server);
 	g_clear_object(&server);

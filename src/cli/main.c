@@ -1172,6 +1172,7 @@ venture_cli_command_report(
 ){
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GString) path = NULL;
+	gboolean omitted;
 
 	/* "packs" is a business action on scheduled packs, not a report name. */
 	if ((NULL != args) && (NULL != args[1]) && (0 == g_strcmp0(args[1], "packs")))
@@ -1209,16 +1210,21 @@ venture_cli_command_report(
 	path = g_string_new("/api/v1/reports/");
 	g_string_append_uri_escaped(path, args[1], NULL, FALSE);
 
-	if (NULL != args[2])
-	{
-		g_string_append(path, "?period=");
+	/* A period never contains "=", so "report holdings organization_id=2"
+	 * is options with the report's default period, not a period nobody
+	 * recognises. The first option then opens the query string. */
+	omitted = (NULL != args[2]) && (NULL != strchr(args[2], '='));
+	g_string_append(path, "?period=");
+
+	if ((NULL != args[2]) && !omitted)
 		g_string_append_uri_escaped(path, args[2], NULL, FALSE);
-	}
+	else
+		g_string_append(path, "this_month");
 
 	if (NULL != args[2])
 	{
 		guint i;
-		for (i = 3; NULL != args[i]; i++)
+		for (i = omitted ? 2 : 3; NULL != args[i]; i++)
 		{
 			g_auto(GStrv) parts = g_strsplit(args[i], "=", 2);
 			if ((NULL == parts[1]) ||
@@ -1274,8 +1280,7 @@ venture_cli_command_report(
 	{
 		g_autofree gchar *text = NULL;
 
-		g_string_append(path, (NULL != args[2]) ? "&" : "?");
-		g_string_append(path, "format=csv");
+		g_string_append(path, "&format=csv");
 
 		text = venture_cli_request_text(cli, path->str, error);
 
@@ -3825,7 +3830,7 @@ main(
 		"  forge settings ID            encrypted settings operation (JSON stdin)\n"
 		"  forge set-token|set-secret    retired; use encrypted settings\n"
 		"  forge verify ID              record which account the token is\n"
-		"  report [NAME] [PERIOD]       run; options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks, band, sort, bucket;\n"
+		"  report [NAME] [PERIOD]       run (PERIOD may be left out before options: this_month); options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks, band, sort, bucket;\n"
 		"                               aggregate takes type, measure, aggregate, date_field, filter, per, category_depth\n"
 		"                               price_history takes product_id, source, bucket;\n"
 		"                               listing_performance takes group_by, category_depth;\n"
