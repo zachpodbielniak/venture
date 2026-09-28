@@ -171,7 +171,7 @@ post_pair(VentureInventoryService *self, gint64 org, VentureEntity *source, gint
 	g_autoptr(VentureJournalLine) debit = venture_journal_line_new();
 	g_autoptr(VentureJournalLine) credit = venture_journal_line_new();
 	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
-	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) posted = NULL;
 	if (amount == NULL || venture_money_is_zero(amount))
 		return TRUE;
 	g_object_set(journal, "source-type", venture_entity_get_entity_name(source),
@@ -183,8 +183,12 @@ post_pair(VentureInventoryService *self, gint64 org, VentureEntity *source, gint
 		"organization-id", org, NULL);
 	g_ptr_array_add(lines, g_object_ref(debit));
 	g_ptr_array_add(lines, g_object_ref(credit));
-	posted = venture_posting_service_post(venture_database_get_posting_service(self->database),
-		journal, lines, NULL, actor, error);
+	/* By the currency rule, like every document: a cost in a valued
+	 * currency with a rate is valued into the book journal, one kept apart
+	 * posts its own pair, and a memo cost posts nothing. An issue whose
+	 * layers cost two currencies can hand every pair to one call. */
+	posted = venture_posting_service_post_by_currency(venture_database_get_posting_service(self->database),
+		journal, lines, actor, error);
 	return posted != NULL;
 }
 
@@ -922,7 +926,16 @@ line_parent_is_draft(VentureDatabase *database, VentureEntity *line,
 		get_id(line, parent_field), error);
 	g_autofree gchar *status = NULL;
 	if (parent == NULL)
+	{
+		/* A missing row is NULL with no error set; unnamed, it reached the
+		 * caller as "Unknown error" for a line saved with order id 0. */
+		if (error != NULL && *error == NULL)
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"An order line needs the %s it belongs to; %s %" G_GINT64_FORMAT " does not exist",
+				parent_type == VENTURE_TYPE_SALES_ORDER ? "sales order" : "purchase order",
+				parent_field, get_id(line, parent_field));
 		return FALSE;
+	}
 	g_object_get(parent, "status", &status, NULL);
 	return g_strcmp0(status, "draft") == 0 || refuse(error, "only draft order lines can be edited");
 }

@@ -590,6 +590,22 @@ book_currency(VentureSettlementService *self, gint64 organization_id, GError **e
 	return currency;
 }
 
+/* Whether the ledger's currency rule values @amount into the book currency
+ * on @date: a valued currency with a stored rate. Anything else keeps the
+ * document's currency. */
+static gboolean
+converts(VentureSettlementService *self, gint64 organization_id, const VentureMoney *amount, GDateTime *date)
+{
+	VentureBookRoute route = VENTURE_BOOK_ROUTE_BOOK;
+
+	if (amount == NULL)
+		return FALSE;
+	if (!venture_posting_service_route_currency(venture_database_get_posting_service(self->database),
+		organization_id, venture_money_get_currency(amount), date, &route, NULL, NULL))
+		return FALSE;
+	return route == VENTURE_BOOK_ROUTE_CONVERTED;
+}
+
 /* These are source-document legs, not a second posting engine. Unapplied
  * cash is a credit balance in AR. Allocation transfers between the unused
  * credit and the invoice within that control account, with zero net GL. */
@@ -696,15 +712,11 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 		return FALSE;
 	if (debit_ar != NULL && g_strcmp0(venture_money_get_currency(debit_ar), book) != 0)
 	{
-		g_autoptr(VentureMoney) trial = NULL;
-		g_autoptr(GError) missing = NULL;
-		policy = venture_rate_table_policy_new(self->database, org);
-		trial = venture_exchange_policy_convert(policy, debit_ar, book, date, &missing);
-		if (trial == NULL)
-		{
-			/* Keep document currency rather than inventing a rate. */
-			g_clear_object(&policy);
-		}
+		/* Keep document currency rather than inventing a rate -- and
+		 * rather than converting a separate-book currency that has one.
+		 * The posting service's rule decides, not a trial conversion. */
+		if (converts(self, org, debit_ar, date))
+			policy = venture_rate_table_policy_new(self->database, org);
 	}
 	if (credit_deferred != NULL && !venture_money_is_zero(credit_deferred) &&
 		!resolve_code(self, "2200", org, &deferred, error))
@@ -772,12 +784,8 @@ post_opening(VentureSettlementService *self, VentureEntity *source, GDateTime *d
 		return FALSE;
 	if (g_strcmp0(venture_money_get_currency(amount), book) != 0)
 	{
-		g_autoptr(VentureMoney) trial = NULL;
-		g_autoptr(GError) missing = NULL;
-		policy = venture_rate_table_policy_new(self->database, org);
-		trial = venture_exchange_policy_convert(policy, amount, book, date, &missing);
-		if (trial == NULL)
-			g_clear_object(&policy);
+		if (converts(self, org, amount, date))
+			policy = venture_rate_table_policy_new(self->database, org);
 	}
 	transaction = g_strdup_printf("receivables:%s:%s:opening", venture_entity_get_entity_name(source),
 		venture_entity_get_uuid(source));

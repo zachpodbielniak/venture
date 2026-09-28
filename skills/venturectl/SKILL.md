@@ -1240,7 +1240,7 @@ business execution. See `docs/configuration.org` for gateway responsibilities.
 - `currency` is a record type: `code`, `name`, `kind`
   (`virtual|points|commodity|other`), `exponent` (0–6), `symbol`,
   `symbol_position` (`prefix|suffix`), `denominations` (a JSON **string**),
-  `description`. Check with `venturectl describe currency`.
+  `book_treatment` (`valued|separate_book|memo`), `description`. Check with `venturectl describe currency`.
 - Creating, editing or deleting one needs the `admin` or `owner` role;
   reading is open. An editor's write is refused with 403.
 - `code` and `exponent` cannot change once saved, and a built-in ISO code
@@ -1263,6 +1263,22 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
   refuse a user-defined currency (even a registered three-letter code).
 - Value one in another with an ordinary `exchange_rate`
   (`from_currency=GOLD to_currency=USD rate_numerator=15 rate_denominator=1000`).
+- `book_treatment` says what the ledger does with it: `valued` (default;
+  converted into the organization's book currency when an `exchange_rate`
+  to it exists on the date, else posted as its own balanced journal),
+  `separate_book` (always its own journal, never converted) or `memo`
+  (never posted). It may change; only later postings follow it.
+- Posting follows the rule for every currency, ISO included: once a
+  `EUR`→`USD` rate is recorded, a EUR expense in a USD organization posts a
+  USD journal whose lines keep the EUR amount. `report trial_balance`
+  still shows each separate book as its own balanced section.
+- A manual journal may mix currencies through `act journal 0
+  create_and_post 'journal={...}'`: kept-apart currencies each get a
+  journal balanced through the "Currency clearing" equity account.
+  `act journal ID post` on a saved draft cannot split, and refuses a line
+  the rule keeps apart, saying why. A memo-currency line is refused.
+- A purchase order line and a vendor bill line must be in their order's or
+  bill's `currency`; the save is refused otherwise.
 
 ## Categories, locations and tags
 

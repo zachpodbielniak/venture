@@ -60,10 +60,27 @@ kept, labelled "Location (text)"; upgrading made one location per distinct
 value and linked each item to it (migration =000695=). Items also carry
 comma-separated, searchable =tags=. See [[file:taxonomy.org][Taxonomy]].
 
+* Currencies
+
+Receipt, issue and return journals go through
+=venture_posting_service_post_by_currency()=, so a cost in a currency other
+than the book currency follows the ledger's rule (see [[file:ledger.org][the
+general journal]], "Currencies in the books"): converted into the book
+journal when the currency is valued and has a rate, a pair of its own when
+it is a separate book or has no rate, nothing when it is memo. That call
+takes lines in several currencies at once and returns one journal per book,
+each balanced by itself, which is the hook for an issue whose FIFO layers
+were bought in two currencies. Layers themselves still carry one currency
+each, and consuming a mixture in one issue is still refused; that is later
+work.
+
 * Autojournal
 
 When a product has an =inventory_item=, automatic sale journals skip
-the product-cost COGS legs. The inventory service owns those journals
+the product-cost COGS legs. For a product without one, the COGS pair is in
+the currency of the product's recorded =cost=, which need not be the
+sale's: a gold sale of an item that cost tickets posts gold cash and sales
+and ticket cost of goods sold, each by its currency's treatment. The inventory service owns those journals
 so a sale cannot double-post inventory and COGS.
 
 * Reports

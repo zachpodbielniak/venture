@@ -772,3 +772,139 @@ venture_purchasing_service_return_line(VenturePurchasingService *self, gint64 pu
 		return FALSE;
 	return result;
 }
+
+/* --- A line is in its document's currency ------------------------------------
+ *
+ * An order or a bill states one currency and totals its lines in it. A line
+ * in another currency used to be accepted on a purchase order all the way to
+ * receipt, where its cost became an inventory layer in a currency the order
+ * never named. A vendor bill caught it only when issued. Both are save
+ * validators, so the form, the API, an approved staged change and the
+ * assistant are held to it alike.
+ */
+
+typedef struct
+{
+	GType		(*line_type)(void);
+	GType		(*parent_type)(void);
+	const gchar	*parent_field;
+	const gchar	*noun;
+	const gchar	*money[3];
+} LineCurrencyRule;
+
+static const LineCurrencyRule line_currency_rules[] = {
+	{ venture_purchase_order_line_get_type, venture_purchase_order_get_type,
+	  "purchase-order-id", "purchase order", { "unit-price", NULL, NULL } },
+	{ venture_vendor_bill_line_get_type, venture_vendor_bill_get_type,
+	  "bill-id", "vendor bill", { "unit-price", "tax-amount", NULL } }
+};
+
+/* The first of @line's money fields that is not in @currency, or NULL. */
+static const gchar *
+line_currency_mismatch(const LineCurrencyRule *rule, VentureEntity *line, const gchar *currency,
+	gchar **found)
+{
+	guint i;
+
+	for (i = 0; rule->money[i] != NULL; i++)
+	{
+		g_autoptr(VentureMoney) value = NULL;
+
+		g_object_get(line, rule->money[i], &value, NULL);
+		if (value != NULL && g_strcmp0(venture_money_get_currency(value), currency) != 0)
+		{
+			*found = g_strdup(venture_money_get_currency(value));
+			return rule->money[i];
+		}
+	}
+	return NULL;
+}
+
+static gboolean
+validate_line_currency(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous,
+	gpointer user_data, GError **error)
+{
+	const LineCurrencyRule *rule = user_data;
+	g_autoptr(VentureEntity) parent = NULL;
+	g_autofree gchar *currency = NULL;
+	g_autofree gchar *found = NULL;
+	const gchar *field;
+
+	(void)previous;
+	/* A missing parent is the reference check's and the owning service's
+	 * refusal, with their own words; this rule has nothing to compare. */
+	parent = venture_database_get(database, rule->parent_type(), get_id(entity, rule->parent_field), NULL);
+	if (parent == NULL)
+		return TRUE;
+	g_object_get(parent, "currency", &currency, NULL);
+	if (currency == NULL || *currency == '\0')
+		return TRUE;
+	field = line_currency_mismatch(rule, entity, currency, &found);
+	if (field == NULL)
+		return TRUE;
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		"This line's %s is in %s, but its %s is in %s; a line takes its %s's currency",
+		field, found, rule->noun, currency, rule->noun);
+	return FALSE;
+}
+
+static gboolean
+validate_parent_currency(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous,
+	gpointer user_data, GError **error)
+{
+	const LineCurrencyRule *rule = user_data;
+	g_autofree gchar *currency = NULL;
+	g_autofree gchar *before = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	guint i;
+
+	/* Only a change can strand lines: a new document has none yet. */
+	if (previous == NULL)
+		return TRUE;
+	g_object_get(entity, "currency", &currency, NULL);
+	g_object_get(previous, "currency", &before, NULL);
+	if (currency == NULL || *currency == '\0' || g_strcmp0(currency, before) == 0)
+		return TRUE;
+	query = venture_query_new(rule->line_type());
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, rule->parent_field, VENTURE_FILTER_OP_EQ,
+		venture_entity_get_id(entity), error))
+		return FALSE;
+	lines = venture_database_find(database, query, error);
+	if (lines == NULL)
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		g_autofree gchar *found = NULL;
+
+		if (line_currency_mismatch(rule, g_ptr_array_index(lines, i), currency, &found) != NULL)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"This %s has lines in %s; change them before moving it to %s",
+				rule->noun, found, currency);
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+void
+venture_purchasing_install_validators(VentureDatabase *database)
+{
+	guint i;
+
+	g_return_if_fail(VENTURE_IS_DATABASE(database));
+	/* Validators are per database, and the tests build several contexts
+	 * over one; the second must add nothing. */
+	if (g_object_get_data(G_OBJECT(database), "venture-line-currency-validators") != NULL)
+		return;
+	g_object_set_data(G_OBJECT(database), "venture-line-currency-validators", GINT_TO_POINTER(1));
+	for (i = 0; i < G_N_ELEMENTS(line_currency_rules); i++)
+	{
+		venture_database_add_save_validator(database, line_currency_rules[i].line_type(),
+			validate_line_currency, (gpointer)&line_currency_rules[i], NULL);
+		venture_database_add_save_validator(database, line_currency_rules[i].parent_type(),
+			validate_parent_currency, (gpointer)&line_currency_rules[i], NULL);
+	}
+}

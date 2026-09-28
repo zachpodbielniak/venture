@@ -148,6 +148,9 @@ venture_context_new(
 	/* The currencies this install defined, into the registry every
 	 * formatter reads, and kept there as the table changes. */
 	venture_currency_install(self);
+	/* A purchase order's and a vendor bill's lines are in their
+	 * document's currency. */
+	venture_purchasing_install_validators(self->database);
 
 	/* Category and location trees: no loops, no parent in another
 	 * organization, and a category used only by the records it groups. */

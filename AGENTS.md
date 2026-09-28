@@ -552,6 +552,36 @@ than one that fails.
   currency back out), and after `venture_database_migrate()` -- the context
   is built before the schema exists. A scratch database with no context
   leaves the registry alone. Tests that register a currency clear it.
+- **Which book a currency posts to is decided once, in the posting
+  service.** `venture_posting_service_route_currency()` reads the
+  currency's `book-treatment` (`valued`=0, `separate_book`, `memo`) and
+  the organization's rate table: memo never posts, the book currency and a
+  valued currency *with a rate on the date* go to one book-currency
+  journal (the line keeps `amount`, `book-amount` is the valuation), a
+  separate-book currency or a valued one with no rate gets a journal of
+  its own. `venture_posting_service_post_by_currency()` applies it and
+  balances a document spanning journals through currency clearing
+  (`currency_clearing` control map, else `<org>:3900`, made on first
+  use). Every automatic journal -- sale, expense, refund, inventory pair,
+  `create_and_post` -- goes through it; do not post a document with
+  `venture_posting_service_post()` and a NULL policy, and do not repeat
+  the rule in a report or module: ask the route. The core `post` refuses
+  a memo line and any conversion into or out of a separate book whatever
+  policy it is handed; reversals are exempt.
+- **Recording a rate converts fiat too.** A EUR expense in a USD
+  organization with a EUR-to-USD `exchange_rate` now posts one USD journal
+  valued at that rate (functional-currency accounting), not a EUR
+  journal. Only new postings: a re-save with the same original amounts is
+  not reposted because a rate or a treatment changed since
+  (`same_posting()` compares original amounts, not valuations) -- keep it
+  that way, or recording one rate rewrites every past period the next
+  time a note is edited.
+- **A document line is in its document's currency.** Purchase order lines
+  and vendor bill lines are held to their order's or bill's `currency` by
+  save validators (`venture_purchasing_install_validators()`), and the
+  document cannot move to a currency its lines are not in. An automatic
+  sale's cost-of-goods pair is the exception by design: it balances by
+  itself in the product cost's currency.
 - **A word beside a number is a code only if it is three letters or
   registered.** Widening the parser to every short word would read
   `100.00 CR` as a hundred of "CR"; `venture_money_word_is_code()` is the

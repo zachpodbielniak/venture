@@ -135,7 +135,8 @@ kind_for(const gchar *classification)
 	if (g_str_equal(classification, "payables") || g_str_equal(classification, "tax") ||
 		g_str_equal(classification, "deferred") || g_str_equal(classification, "loans"))
 		return VENTURE_ACCOUNT_KIND_LIABILITY;
-	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws"))
+	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws") ||
+		g_str_equal(classification, "currency_clearing"))
 		return VENTURE_ACCOUNT_KIND_EQUITY;
 	if (g_str_equal(classification, "income"))
 		return VENTURE_ACCOUNT_KIND_INCOME;
@@ -161,6 +162,8 @@ label_for(const gchar *classification)
 		return "clearing";
 	if (g_str_equal(classification, "inventory"))
 		return "inventory";
+	if (g_str_equal(classification, "currency_clearing"))
+		return "currency clearing";
 	if (g_str_equal(classification, "income"))
 		return "income";
 	if (g_str_equal(classification, "expense"))

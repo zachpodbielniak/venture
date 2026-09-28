@@ -83,6 +83,69 @@ gboolean venture_posting_service_post_entries(VenturePostingService *self,
 VentureJournal *venture_posting_service_post_document(VenturePostingService *self,
 	const gchar *rule_name, VentureEntity *source, const VentureActor *actor, GError **error);
 /**
+ * venture_posting_service_book_currency:
+ * @self: posting service
+ * @organization_id: legal entity
+ * @error: (out) (optional): the organization does not exist
+ *
+ * The organization's book currency: its default currency, or the install's
+ * when it names none. Every automatic journal is anchored on it.
+ *
+ * Returns: (transfer full) (nullable): the currency code
+ */
+gchar *venture_posting_service_book_currency(VenturePostingService *self,
+	gint64 organization_id, GError **error);
+/**
+ * venture_posting_service_route_currency:
+ * @self: posting service
+ * @organization_id: legal entity posting the amount
+ * @currency: the amount's currency
+ * @when: (nullable): accounting date, now when %NULL
+ * @route: (out) (optional): where the amount goes
+ * @book_currency: (out) (optional) (transfer full): the organization's book currency
+ * @error: (out) (optional): storage error, or an invalid code
+ *
+ * The one place the ledger decides what an amount in @currency does when
+ * @organization_id posts it on @when. Memo currencies are never posted; the
+ * book currency is posted as it is; a separate-book currency (or any
+ * currency when the book currency itself is kept separate) goes to a
+ * journal of its own; a valued currency is converted into the book
+ * currency when the organization's exchange-rate table has a rate on
+ * @when, and otherwise also keeps a journal of its own -- a rate is never
+ * invented. Reports, holdings and inventory ask this rather than repeating
+ * the rule.
+ *
+ * Returns: %TRUE if @route was answered
+ */
+gboolean venture_posting_service_route_currency(VenturePostingService *self,
+	gint64 organization_id, const gchar *currency, GDateTime *when,
+	VentureBookRoute *route, gchar **book_currency, GError **error);
+/**
+ * venture_posting_service_post_by_currency:
+ * @self: posting service
+ * @header: unsaved header: organization, date, source, memo, rule name and
+ *   an optional posting key; its currency is ignored
+ * @lines: (element-type VentureJournalLine): unsaved lines, in any currencies
+ * @actor: (nullable): audit attribution
+ * @error: (out) (optional): refusal or storage error
+ *
+ * Posts @lines by the rule venture_posting_service_route_currency()
+ * decides, in one transaction: book-currency and converted lines in one
+ * journal valued by the organization's exchange-rate table, each
+ * separate-book (or rate-less) currency in a balanced journal of its own,
+ * memo lines not at all. When the lines land in more than one journal,
+ * each is balanced through the currency clearing account in its own
+ * currency; a single journal must balance by itself. Every journal shares
+ * the header's source; the first keeps the posting key and the others add
+ * ":CODE" to it. A caller with lines in several currencies -- an issue that
+ * consumed cost in two -- passes them all in one call.
+ *
+ * Returns: (transfer full) (element-type VentureJournal) (nullable): the
+ *   posted journals, book journal first; empty when every line was memo
+ */
+GPtrArray *venture_posting_service_post_by_currency(VenturePostingService *self,
+	VentureJournal *header, GPtrArray *lines, const VentureActor *actor, GError **error);
+/**
  * venture_posting_service_find_source:
  * @self: posting service
  * @source_type: registered source record type

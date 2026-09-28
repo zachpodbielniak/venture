@@ -43,7 +43,10 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 	if (org == 0)
 		org = venture_context_get_default_organization_id(context);
 	requested_currency = options != NULL ? venture_json_object_get_string(options, "currency", NULL) : NULL;
-	as_of = period != NULL ? g_date_time_add(venture_date_range_get_end(period), -1) : venture_time_now();
+	/* "all" has no end: the balance as of now, not a NULL cutoff that the
+	 * balance query refuses for every account. */
+	as_of = period != NULL && venture_date_range_get_end(period) != NULL ?
+		g_date_time_add(venture_date_range_get_end(period), -1) : venture_time_now();
 	if (options != NULL && json_object_has_member(options, "as_of"))
 	{
 		g_autoptr(GDateTime) requested = venture_period_report_as_of(options, error);

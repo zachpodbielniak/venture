@@ -130,6 +130,17 @@ leg(GPtrArray *rows, VenturePostingProfile *profile, const gchar *field, Venture
 	g_ptr_array_add(rows, row);
 	return TRUE;
 }
+/* What an absent amount on @source is zero of: its organization's book
+ * currency. A literal "USD" here made a gold organization's sale with no
+ * gross carry a dollar zero, which then refused to add to its gold fees. */
+static gchar *
+book_currency(VentureDatabase *db, VentureEntity *source)
+{
+	gchar *currency = venture_posting_service_book_currency(venture_database_get_posting_service(db),
+		venture_entity_get_organization_id(source), NULL);
+
+	return currency != NULL ? currency : g_strdup(venture_money_get_default_currency());
+}
 static VentureMoney *
 amount(VentureEntity *source, const gchar *field, const gchar *currency)
 {
@@ -150,13 +161,14 @@ refund_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *sourc
 	g_autoptr(VenturePostingProfile) profile = NULL;
 	g_autoptr(VentureMoney) refund = NULL;
 	g_autoptr(GPtrArray) rows = g_ptr_array_new_with_free_func(g_object_unref);
-	(void)db;
+	g_autofree gchar *book = NULL;
 	if (!VENTURE_IS_SALE(source)) {
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Refund posting requires a sale"); return NULL;
 	}
 	profile = venture_autojournal_service_profile(VENTURE_AUTOJOURNAL_SERVICE(rule), venture_entity_get_organization_id(source), error);
 	if (profile == NULL) return NULL;
-	refund = amount(source, "refunded", "USD");
+	book = book_currency(db, source);
+	refund = amount(source, "refunded", book);
 	if (!leg(rows, profile, "refunds-account-id", VENTURE_LEDGER_SIDE_DEBIT, refund, error) ||
 		!leg(rows, profile, "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, refund, error)) return NULL;
 	return g_steal_pointer(&rows);
@@ -188,9 +200,10 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 			{ "shipping-collected", "shipping-income-account-id", FALSE }
 		};
 		g_autoptr(VentureMoney) remitted = NULL;
+		g_autofree gchar *book = book_currency(db, source);
 		gint64 product_id, quantity;
 		guint i;
-		base = amount(source, "gross", "USD");
+		base = amount(source, "gross", book);
 		cash = venture_money_new_zero(base->currency);
 		for (i = 0; i < G_N_ELEMENTS(fields); i++) {
 			g_autoptr(VentureMoney) term = amount(source, fields[i].source, base->currency);
@@ -220,8 +233,14 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 			}
 			g_object_get(product, "cost", &cost, NULL);
 			if (cost != NULL) {
+				/* The cost pair balances by itself, so it is not held to
+				 * the sale's currency: a product bought for tickets and
+				 * sold for gold posts gold cash and sales, and ticket
+				 * cost of goods, each by its currency's treatment. Adding
+				 * it to the gold cash only to check the currency refused
+				 * the whole sale. */
 				total = venture_money_multiply_rational(cost, quantity, 1, error);
-				if (total == NULL || !add(&cash, total, FALSE, error) ||
+				if (total == NULL ||
 					!leg(rows, profile, "cogs-account-id", VENTURE_LEDGER_SIDE_DEBIT, total, error) ||
 					!leg(rows, profile, "inventory-account-id", VENTURE_LEDGER_SIDE_CREDIT, total, error)) return NULL;
 			}
@@ -261,7 +280,10 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 		if (tax_code != NULL && json_object_has_member(map, tax_code)) debit = venture_json_object_get_int(map, tax_code, 0);
 		if (debit == 0 && category != NULL && json_object_has_member(map, category)) debit = venture_json_object_get_int(map, category, 0);
 		if (debit != 0) g_object_set(profile, "default-expense-account-id", debit, NULL);
-		base = amount(source, "amount", "USD");
+		{
+			g_autofree gchar *book = book_currency(db, source);
+			base = amount(source, "amount", book);
+		}
 		if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "cash-account-id") != NULL)
 		{
 			gint64 cash_id = 0;
@@ -341,10 +363,12 @@ post_refund(VentureAutojournalService *self, VentureEntity *source, const Ventur
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	VenturePostingService *posting = venture_database_get_posting_service(db);
-	g_autoptr(VentureMoney) refund = amount(source, "refunded", "USD");
+	g_autofree gchar *book = book_currency(db, source);
+	g_autoptr(VentureMoney) refund = amount(source, "refunded", book);
 	g_autoptr(GPtrArray) history = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
-	g_autoptr(VentureJournal) header = NULL, posted = NULL;
+	g_autoptr(GPtrArray) posted = NULL;
+	g_autoptr(VentureJournal) header = NULL;
 	g_autofree gchar *posting_key = NULL;
 	g_autoptr(GDateTime) when = NULL;
 	VentureEntity *last = NULL;
@@ -406,7 +430,7 @@ post_refund(VentureAutojournalService *self, VentureEntity *source, const Ventur
 	g_object_set(header, "posting-key", posting_key, "organization-id", venture_entity_get_organization_id(source), "source-type", "sale",
 		"source-id", venture_entity_get_id(source), "source-version", venture_entity_get_version(source),
 		"rule-name", "sale_refund", "occurred-at", when, "currency", refund->currency, NULL);
-	posted = venture_posting_service_post(posting, header, rows, NULL, actor, error);
+	posted = venture_posting_service_post_by_currency(posting, header, rows, actor, error);
 	return posted != NULL;
 }
 
@@ -494,6 +518,14 @@ venture_autojournal_service_unposted(VentureAutojournalService *self, gint64 org
 			if (VENTURE_IS_EXPENSE(source) && !venture_payables_check_expense(db, source, &projection)) {
 				if (g_error_matches(projection, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED)) continue;
 				g_propagate_error(error, g_steal_pointer(&projection)); return NULL;
+			}
+			{
+				g_autoptr(VentureMoney) value = NULL;
+				g_object_get(source, VENTURE_IS_SALE(source) ? "gross" : "amount", &value, NULL);
+				/* A memo currency is never posted, so a source in one
+				 * is never waiting for a journal. */
+				if (value != NULL && venture_currency_get_book_treatment(value->currency) == VENTURE_BOOK_TREATMENT_MEMO)
+					continue;
 			}
 			journals = venture_posting_service_find_source(posting, venture_entity_get_entity_name(source), venture_entity_get_id(source), org, error);
 			if (journals == NULL) return NULL;

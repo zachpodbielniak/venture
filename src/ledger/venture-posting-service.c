@@ -528,6 +528,8 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 	g_autofree gchar *currency = NULL;
 	g_autoptr(GDateTime) when = NULL;
 	gint64 org = venture_entity_get_organization_id(VENTURE_ENTITY(journal));
+	VentureBookTreatment book_treatment;
+	gboolean converted = FALSE;
 	guint i;
 
 	if (rows->len < 2)
@@ -536,6 +538,15 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 		return FALSE;
 	}
 	g_object_get(journal, "currency", &currency, "occurred-at", &when, NULL);
+	book_treatment = venture_currency_get_book_treatment(currency);
+	/* A reversal copies what was posted, whatever the currency is now:
+	 * changing a treatment never makes history unreversible. */
+	if (!reversing && VENTURE_BOOK_TREATMENT_MEMO == book_treatment)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"%s is a memo currency: it is tracked as quantities and never posted to the ledger", currency);
+		return FALSE;
+	}
 	debits = venture_money_new_zero(currency);
 	credits = venture_money_new_zero(currency);
 	for (i = 0; i < rows->len; i++)
@@ -576,12 +587,35 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 				"The account must be active and belong to the journal's legal entity");
 			return FALSE;
 		}
+		if (!reversing && VENTURE_BOOK_TREATMENT_MEMO == venture_currency_get_book_treatment(amount->currency))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"%s is a memo currency: it is tracked as quantities and never posted to the ledger",
+				amount->currency);
+			return FALSE;
+		}
 		if (reversing)
 			g_object_get(row, "book-amount", &valued, NULL);
 		else if (0 == g_strcmp0(currency, amount->currency))
 			valued = venture_money_copy(amount);
+		/* Refused here rather than left to the policy: a rate recorded for
+		 * a separate-book currency must still never value it, whoever calls. */
+		else if (VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == venture_currency_get_book_treatment(amount->currency) ||
+			VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == book_treatment)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"%s and %s cannot share a journal: %s is kept in a separate book and never converted. "
+				"Post each currency's lines on their own, or with create_and_post, which balances "
+				"each currency through currency clearing",
+				amount->currency, currency,
+				VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == book_treatment ? currency : amount->currency);
+			return FALSE;
+		}
 		else if (NULL != policy)
+		{
 			valued = venture_exchange_policy_convert(policy, amount, currency, when, error);
+			converted = TRUE;
+		}
 		else
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
@@ -614,7 +648,10 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 			"The journal's valued debits and credits do not balance");
 		return FALSE;
 	}
-	if (NULL != policy)
+	/* Only a policy that valued something is evidence: the rate-table
+	 * policy is now offered to every document posting, and a journal whose
+	 * lines were all in its own currency was not valued by it. */
+	if (NULL != policy && converted)
 	{
 		const gchar *name = venture_exchange_policy_get_name(policy);
 
@@ -1012,6 +1049,420 @@ fail:
 	return NULL;
 }
 
+/* --- One rule for every currency ---------------------------------------------
+ *
+ * Every journal a document, the inventory service or create_and_post makes
+ * goes through the plan below, so the rule is written once:
+ *
+ *   - an amount in the book currency goes to the book-currency journal;
+ *   - a valued currency with a rate on the accounting date goes there too,
+ *     keeping its original amount and valued by the organization's
+ *     exchange-rate table;
+ *   - a separate-book currency, or a valued one with no rate, gets a
+ *     balanced journal of its own currency (a rate is never invented);
+ *   - a memo currency is never posted.
+ *
+ * A document whose lines land in more than one journal balances each one
+ * through the currency clearing account, in that journal's currency.
+ */
+
+gchar *
+venture_posting_service_book_currency(VenturePostingService *self,
+	gint64 organization_id, GError **error)
+{
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	gchar *currency = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_POSTING_SERVICE(self), NULL);
+	db = g_weak_ref_get(&self->database);
+	if (NULL == db)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "The database has been closed");
+		return NULL;
+	}
+	organization = required_record(db, VENTURE_TYPE_ORGANIZATION, organization_id, error);
+	if (NULL == organization)
+		return NULL;
+	g_object_get(organization, "default-currency", &currency, NULL);
+	if (NULL == currency || '\0' == *currency)
+	{
+		g_free(currency);
+		currency = g_strdup(venture_money_get_default_currency());
+	}
+	return currency;
+}
+
+gboolean
+venture_posting_service_route_currency(VenturePostingService *self, gint64 organization_id,
+	const gchar *currency, GDateTime *when, VentureBookRoute *route,
+	gchar **book_currency, GError **error)
+{
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autofree gchar *book = NULL;
+	VentureBookTreatment treatment;
+	VentureBookRoute answer;
+
+	g_return_val_if_fail(VENTURE_IS_POSTING_SERVICE(self), FALSE);
+	if (!venture_currency_is_valid(currency))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"\"%s\" is not a currency code", NULL != currency ? currency : "");
+		return FALSE;
+	}
+	db = g_weak_ref_get(&self->database);
+	book = venture_posting_service_book_currency(self, organization_id, error);
+	if (NULL == db || NULL == book)
+		return FALSE;
+	treatment = venture_currency_get_book_treatment(currency);
+	if (VENTURE_BOOK_TREATMENT_MEMO == treatment)
+		answer = VENTURE_BOOK_ROUTE_MEMO;
+	else if (0 == g_strcmp0(currency, book))
+		answer = VENTURE_BOOK_ROUTE_BOOK;
+	else if (VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == treatment ||
+		VENTURE_BOOK_TREATMENT_SEPARATE_BOOK == venture_currency_get_book_treatment(book))
+		answer = VENTURE_BOOK_ROUTE_SEPARATE;
+	else
+	{
+		g_autoptr(VentureExchangePolicy) policy = venture_rate_table_policy_new(db, organization_id);
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) trial = NULL;
+		g_autoptr(GError) missing = NULL;
+
+		if (NULL == when)
+			when = now = venture_time_now();
+		/* Asked with nothing, so the only refusal is "no rate": a rate is
+		 * never invented, and without one the currency keeps its own books
+		 * exactly as it always did. */
+		trial = venture_exchange_policy_convert(policy, zero, book, when, &missing);
+		if (NULL != trial)
+			answer = VENTURE_BOOK_ROUTE_CONVERTED;
+		else if (g_error_matches(missing, VENTURE_ERROR, VENTURE_ERROR_VALIDATION))
+			answer = VENTURE_BOOK_ROUTE_SEPARATE;
+		else
+		{
+			g_propagate_error(error, g_steal_pointer(&missing));
+			return FALSE;
+		}
+	}
+	if (NULL != route)
+		*route = answer;
+	if (NULL != book_currency)
+		*book_currency = g_steal_pointer(&book);
+	return TRUE;
+}
+
+typedef struct
+{
+	gchar *currency;
+	/* The book currency's journal: the only one the policy values. */
+	gboolean book;
+	GPtrArray *lines;
+} PostingGroup;
+
+static void
+posting_group_free(gpointer data)
+{
+	PostingGroup *group = data;
+
+	g_free(group->currency);
+	g_ptr_array_unref(group->lines);
+	g_free(group);
+}
+
+static gint
+posting_group_order(gconstpointer a, gconstpointer b)
+{
+	const PostingGroup *left = *(PostingGroup *const *)a;
+	const PostingGroup *right = *(PostingGroup *const *)b;
+
+	/* The book journal first, then the others by code: the same document
+	 * always produces the same journals in the same order, which is what
+	 * lets a re-save recognise that nothing changed. */
+	if (left->book != right->book)
+		return left->book ? -1 : 1;
+	return g_strcmp0(left->currency, right->currency);
+}
+
+/* The account a spanning document balances each journal through. A
+ * control-map entry wins; otherwise one equity account per organization,
+ * made on first use under a scoped code so it can never be mistaken for an
+ * account a chart already gives 3900 to. Its balance is kept per book
+ * currency like every account's, so it is one clearing account per
+ * currency in effect. */
+static gint64
+clearing_account(VentureDatabase *db, gint64 org, GDateTime *when, GError **error)
+{
+	g_autoptr(GError) local = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) found = NULL;
+	g_autoptr(VentureAccount) created = NULL;
+	g_autofree gchar *code = g_strdup_printf("%" G_GINT64_FORMAT ":3900", org);
+	gint64 id;
+
+	id = venture_setup_resolve_account(db, org, "currency_clearing", "organization", 0, when, &local);
+	if (NULL != local)
+	{
+		g_propagate_error(error, g_steal_pointer(&local));
+		return 0;
+	}
+	if (id > 0)
+		return id;
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+	found = venture_database_find_one(db, query, error);
+	if (NULL != found)
+		return venture_entity_get_id(found);
+	if (NULL != error && NULL != *error)
+		return 0;
+	created = venture_account_new();
+	g_object_set(created, "organization-id", org, "code", code, "name", "Currency clearing",
+		"kind", VENTURE_ACCOUNT_KIND_EQUITY, "active", TRUE, NULL);
+	if (!venture_database_save(db, VENTURE_ENTITY(created), NULL, error))
+		return 0;
+	return venture_entity_get_id(VENTURE_ENTITY(created));
+}
+
+/* Debits minus credits of @group, valued in its journal's currency. */
+static VentureMoney *
+group_net(PostingGroup *group, VentureExchangePolicy *policy, GDateTime *when, GError **error)
+{
+	g_autoptr(VentureMoney) net = venture_money_new_zero(group->currency);
+	guint i;
+
+	for (i = 0; i < group->lines->len; i++)
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(VentureMoney) valued = NULL;
+		g_autoptr(VentureMoney) next = NULL;
+		VentureLedgerSide side;
+
+		g_object_get(g_ptr_array_index(group->lines, i), "amount", &amount, "side", &side, NULL);
+		valued = 0 == g_strcmp0(amount->currency, group->currency) ? venture_money_copy(amount) :
+			venture_exchange_policy_convert(policy, amount, group->currency, when, error);
+		if (NULL == valued)
+			return NULL;
+		next = VENTURE_LEDGER_SIDE_DEBIT == side ? venture_money_add(net, valued, error) :
+			venture_money_subtract(net, valued, error);
+		if (NULL == next)
+			return NULL;
+		g_clear_pointer(&net, venture_money_free);
+		net = g_steal_pointer(&next);
+	}
+	return g_steal_pointer(&net);
+}
+
+/* Sorts @lines into the journals the rule above makes. Nothing is written
+ * except, when a document spans journals, the clearing account on first
+ * use. An empty result means every line was in a memo currency. */
+static GPtrArray *
+plan_by_currency(VenturePostingService *self, VentureDatabase *db, VentureJournal *header,
+	GPtrArray *lines, VentureExchangePolicy *policy, GError **error)
+{
+	g_autoptr(GPtrArray) groups = g_ptr_array_new_with_free_func(posting_group_free);
+	g_autoptr(GHashTable) routes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(GDateTime) when = NULL;
+	g_autofree gchar *book = NULL;
+	g_autofree gchar *memo = NULL;
+	gint64 org = venture_entity_get_organization_id(VENTURE_ENTITY(header));
+	gint64 clearing = 0;
+	guint i;
+	guint j;
+
+	g_object_get(header, "occurred-at", &when, NULL);
+	if (NULL == when)
+		when = venture_time_now();
+	if (NULL == lines)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A journal needs at least two lines");
+		return NULL;
+	}
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(lines, i);
+		g_autoptr(VentureMoney) amount = NULL;
+		PostingGroup *group = NULL;
+		const gchar *target;
+		gpointer cached;
+		VentureBookRoute route;
+
+		if (!VENTURE_IS_JOURNAL_LINE(row))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Expected journal lines");
+			return NULL;
+		}
+		g_object_get(row, "amount", &amount, NULL);
+		if (NULL == amount)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Lines require nonnegative money, a debit/credit side and the journal's legal entity");
+			return NULL;
+		}
+		if (g_hash_table_lookup_extended(routes, amount->currency, NULL, &cached))
+			route = (VentureBookRoute)GPOINTER_TO_INT(cached);
+		else
+		{
+			g_autofree gchar *answer_book = NULL;
+
+			if (!venture_posting_service_route_currency(self, org, amount->currency, when,
+				&route, &answer_book, error))
+				return NULL;
+			g_hash_table_insert(routes, g_strdup(amount->currency), GINT_TO_POINTER(route));
+			if (NULL == book)
+				book = g_steal_pointer(&answer_book);
+		}
+		if (VENTURE_BOOK_ROUTE_MEMO == route)
+		{
+			if (NULL == memo)
+				memo = g_strdup(amount->currency);
+			continue;
+		}
+		target = VENTURE_BOOK_ROUTE_SEPARATE == route ? amount->currency : book;
+		for (j = 0; j < groups->len && NULL == group; j++)
+			if (0 == g_strcmp0(((PostingGroup *)g_ptr_array_index(groups, j))->currency, target))
+				group = g_ptr_array_index(groups, j);
+		if (NULL == group)
+		{
+			group = g_new0(PostingGroup, 1);
+			group->currency = g_strdup(target);
+			group->book = VENTURE_BOOK_ROUTE_SEPARATE != route;
+			group->lines = g_ptr_array_new_with_free_func(g_object_unref);
+			g_ptr_array_add(groups, group);
+		}
+		g_ptr_array_add(group->lines, copy_record(row));
+	}
+	g_ptr_array_sort(groups, posting_group_order);
+	for (i = 0; i < groups->len; i++)
+	{
+		PostingGroup *group = g_ptr_array_index(groups, i);
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) magnitude = NULL;
+		VentureJournalLine *line;
+
+		/* One journal balances on its own or not at all: only a document
+		 * that spans journals has anything to clear against. */
+		if (groups->len < 2 && NULL == memo)
+			break;
+		net = group_net(group, policy, when, error);
+		if (NULL == net)
+			return NULL;
+		if (venture_money_is_zero(net))
+			continue;
+		if (groups->len < 2)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE,
+				"%s is a memo currency and is never posted; the %s lines left do not balance on their own",
+				memo, group->currency);
+			return NULL;
+		}
+		if (net->amount == G_MININT64)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Amount magnitude overflows");
+			return NULL;
+		}
+		if (0 == clearing)
+		{
+			clearing = clearing_account(db, org, when, error);
+			if (0 == clearing)
+				return NULL;
+		}
+		magnitude = venture_money_abs(net);
+		line = venture_journal_line_new();
+		g_object_set(line, "account-id", clearing, "amount", magnitude, "organization-id", org,
+			"side", venture_money_is_negative(net) ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
+			"memo", "Currency clearing", NULL);
+		g_ptr_array_add(group->lines, line);
+	}
+	return g_steal_pointer(&groups);
+}
+
+/* Posts a plan's journals in order. The caller holds the transaction. */
+static GPtrArray *
+post_plan(VenturePostingService *self, VentureJournal *header, GPtrArray *groups,
+	VentureExchangePolicy *policy, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) posted = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autofree gchar *key = NULL;
+	guint i;
+
+	g_object_get(header, "posting-key", &key, NULL);
+	for (i = 0; i < groups->len; i++)
+	{
+		PostingGroup *group = g_ptr_array_index(groups, i);
+		/* The first journal is the header itself; each other one is a new
+		 * record with the same source and an identity of its own. */
+		g_autoptr(VentureJournal) journal = VENTURE_JOURNAL(i == 0 ?
+			copy_record(VENTURE_ENTITY(header)) : venture_entity_duplicate(VENTURE_ENTITY(header)));
+		VentureJournal *result;
+
+		g_object_set(journal, "currency", group->currency, NULL);
+		/* The key is unique; the first journal keeps it so a retry of the
+		 * whole document is still refused by it. */
+		if (i > 0 && NULL != key && '\0' != *key)
+		{
+			g_autofree gchar *scoped = g_strdup_printf("%s:%s", key, group->currency);
+
+			g_object_set(journal, "posting-key", scoped, NULL);
+		}
+		result = venture_posting_service_post(self, journal, group->lines,
+			group->book ? policy : NULL, actor, error);
+		if (NULL == result)
+			return NULL;
+		g_ptr_array_add(posted, result);
+	}
+	return g_steal_pointer(&posted);
+}
+
+GPtrArray *
+venture_posting_service_post_by_currency(VenturePostingService *self, VentureJournal *header,
+	GPtrArray *lines, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureExchangePolicy) policy = NULL;
+	g_autoptr(GPtrArray) groups = NULL;
+	g_autoptr(GPtrArray) posted = NULL;
+	gint64 org;
+
+	g_return_val_if_fail(VENTURE_IS_POSTING_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_JOURNAL(header), NULL);
+	db = g_weak_ref_get(&self->database);
+	if (!ledger_enabled(error) || NULL == db)
+		return NULL;
+	if (venture_entity_is_persisted(VENTURE_ENTITY(header)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"New journals take unsaved lines; saved drafts post all their saved lines");
+		return NULL;
+	}
+	org = venture_entity_get_organization_id(VENTURE_ENTITY(header));
+	if (org <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"A journal requires a legal entity and accounting date");
+		return NULL;
+	}
+	policy = venture_rate_table_policy_new(db, org);
+	operation = venture_accounting_operation_begin(db, "ledger.post_by_currency", VENTURE_ENTITY(header),
+		lines, exchange_arguments(policy), org, actor, error);
+	if (NULL == operation || !venture_database_begin(db, error))
+		return NULL;
+	groups = plan_by_currency(self, db, header, lines, policy, error);
+	if (NULL == groups)
+		goto fail;
+	posted = post_plan(self, header, groups, policy, actor, error);
+	if (NULL == posted)
+		goto fail;
+	if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&posted);
+fail:
+	venture_database_rollback(db);
+	return NULL;
+}
+
 static VentureJournal *
 document_header(VentureEntity *source, const gchar *rule_name, GPtrArray *rows, GError **error)
 {
@@ -1119,9 +1570,28 @@ venture_posting_service_post_document(VenturePostingService *self, const gchar *
 			goto fail;
 		}
 	}
-	posted = venture_posting_service_post(self, journal, rows, NULL, actor, error);
-	if (NULL == posted)
-		goto fail;
+	{
+		g_autoptr(VentureExchangePolicy) policy = venture_rate_table_policy_new(db,
+			venture_entity_get_organization_id(VENTURE_ENTITY(journal)));
+		g_autoptr(GPtrArray) groups = plan_by_currency(self, db, journal, rows, policy, error);
+		g_autoptr(GPtrArray) journals = NULL;
+
+		if (NULL == groups)
+			goto fail;
+		if (0 == groups->len)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"Nothing to post: every amount on this %s is in a memo currency, which is never posted to the ledger",
+				venture_entity_get_entity_name(current));
+			goto fail;
+		}
+		journals = post_plan(self, journal, groups, policy, actor, error);
+		if (NULL == journals)
+			goto fail;
+		/* The book journal, or the first separate one: callers that want
+		 * every journal of the document ask find_source. */
+		posted = g_object_ref(g_ptr_array_index(journals, 0));
+	}
 	if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error))
 		return NULL;
 	return g_steal_pointer(&posted);
@@ -1188,7 +1658,10 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	g_autoptr(GPtrArray) existing = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureJournal) draft = NULL;
-	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) posted = NULL;
+	g_autoptr(GPtrArray) groups = NULL;
+	g_autoptr(GPtrArray) current = NULL;
+	g_autoptr(VentureExchangePolicy) policy = NULL;
 	const gchar *name = venture_entity_get_entity_name(entity);
 	g_autofree gchar *source_uuid = g_strdup(venture_entity_get_uuid(entity));
 	guint i;
@@ -1239,29 +1712,59 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	draft = document_header(copy, name, rows, error);
 	if (NULL == draft)
 		goto fail;
+	policy = venture_rate_table_policy_new(db, venture_entity_get_organization_id(VENTURE_ENTITY(draft)));
+	groups = plan_by_currency(self, db, draft, rows, policy, error);
+	if (NULL == groups)
+		goto fail;
+	/* Every amount in a memo currency: nothing is posted, and whatever an
+	 * earlier treatment posted is left as it is rather than reversed by a
+	 * save that may only have changed the notes. */
+	if (0 == groups->len)
+		goto commit;
 	existing = venture_posting_service_find_source(self, name, venture_entity_get_id(copy),
 		NULL != previous ? venture_entity_get_organization_id(previous) :
 			venture_entity_get_organization_id(copy), error);
 	if (NULL == existing)
 		goto fail;
+	current = g_ptr_array_new_with_free_func(g_object_unref);
 	for (i = 0; i < existing->len; i++)
 	{
 		VentureEntity *old = g_ptr_array_index(existing, i);
 		g_autofree gchar *old_rule = NULL;
 		VentureJournalState state;
-		g_autoptr(GPtrArray) old_rows = NULL;
+
+		g_object_get(old, "state", &state, "rule-name", &old_rule, NULL);
+		if (state == VENTURE_JOURNAL_POSTED && g_strcmp0(old_rule, name) == 0)
+			g_ptr_array_add(current, g_object_ref(old));
+	}
+	/* Unchanged when the journals already posted are the plan's, one for
+	 * one. The original amounts are compared, not the valuations, so a rate
+	 * recorded since -- or a treatment changed since -- does not by itself
+	 * reverse and repost a document: history is not rewritten by a save. */
+	if (current->len == groups->len && current->len > 0)
+	{
+		gboolean same = TRUE;
+
+		for (i = 0; i < current->len && same; i++)
+		{
+			g_autoptr(GPtrArray) old_rows = journal_lines(db,
+				venture_entity_get_id(g_ptr_array_index(current, i)), error);
+
+			if (NULL == old_rows)
+				goto fail;
+			same = same_posting(draft, ((PostingGroup *)g_ptr_array_index(groups, i))->lines,
+				g_ptr_array_index(current, i), old_rows);
+		}
+		if (same)
+			goto commit;
+	}
+	for (i = 0; i < current->len; i++)
+	{
+		VentureEntity *old = g_ptr_array_index(current, i);
 		g_autoptr(GDateTime) when = NULL;
 		g_autoptr(GDateTime) old_when = NULL;
 		g_autoptr(VentureJournal) reversed = NULL;
 
-		g_object_get(old, "state", &state, "rule-name", &old_rule, NULL);
-		if (state != VENTURE_JOURNAL_POSTED || g_strcmp0(old_rule, name) != 0)
-			continue;
-		old_rows = journal_lines(db, venture_entity_get_id(old), error);
-		if (NULL == old_rows)
-			goto fail;
-		if (same_posting(draft, rows, old, old_rows))
-			goto commit;
 		g_object_get(draft, "occurred-at", &when, NULL);
 		g_object_get(old, "occurred-at", &old_when, NULL);
 		/* Correcting an earlier accounting date cannot place the reversal
@@ -1272,7 +1775,7 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		if (NULL == reversed)
 			goto fail;
 	}
-	posted = venture_posting_service_post(self, draft, rows, NULL, actor, error);
+	posted = post_plan(self, draft, groups, policy, actor, error);
 	if (NULL == posted)
 		goto fail;
 commit:

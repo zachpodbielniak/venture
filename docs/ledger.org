@@ -64,8 +64,8 @@ draft, pass that header and NULL for =lines=: the service posts all its saved,
 live lines. Its version must still match. Do not pass replacement lines for a
 saved header. Generic CRUD remains the editor for drafts.
 
-The header needs =organization-id=, =occurred-at=, an uppercase three-letter
-=currency=, =source-type= and =source-id=. An original source must exist, be
+The header needs =organization-id=, =occurred-at=, a valid =currency= code
+(see [[file:currencies.org][Currencies]]), =source-type= and =source-id=. An original source must exist, be
 live and belong to the same organization. Lines need a live account from that
 organization and a nonnegative amount; zero is allowed. At least two lines
 are required. A zero line organization inherits the header's organization;
@@ -207,8 +207,8 @@ retaining the subscription source link. It is invoked explicitly when a
 renewal is recorded, never when merely saving the standing commitment.
 =test-plugin= loads its real shared object and posts through that rule.
 
-Mixed original currencies are refused unless the caller passes a
-=VentureExchangePolicy= object. That GInterface identifies the rate set and
+Mixed original currencies in one journal are refused unless the caller
+passes a =VentureExchangePolicy= object. That GInterface identifies the rate set and
 converts amounts into the header's book currency with exact money. The service
 still requires balanced valued debits and credits, and checks that every
 valuation has the requested currency and is nonnegative. The policy cannot
@@ -221,6 +221,128 @@ looks up the latest rate on or before the accounting date for that pair.
 Missing pairs, including the inverse of a stored pair, are refused. When a
 policy is supplied, the journal's book currency is the organization's
 =default-currency=.
+
+* Currencies in the books
+
+One organization may deal in several currencies: dollars and euros, or a
+game's gold, its fair tickets and its festival tokens. What each one does
+in the ledger is decided in one place, the posting service, from the
+currency's *book treatment* (a field on the =currency= record, see
+[[file:currencies.org][Currencies]]) and the organization's exchange-rate
+table. Every built-in ISO code, and any code nobody defined, is =valued=.
+
+** The rule
+
+For an amount in currency /C/, posted by an organization whose book
+currency (its =default-currency=, else the install's) is /B/, on
+accounting date /D/:
+
+| /C/ is                                  | Route       | Where the line goes                                                   |
+|-----------------------------------------+-------------+-----------------------------------------------------------------------|
+| =memo=                                  | =memo=      | nowhere: never posted to the ledger                                   |
+| /B/ itself                              | =book=      | the book-currency journal, as it is                                   |
+| =separate_book= (or /B/ is)             | =separate=  | a balanced journal in /C/ of its own; never converted, even with a rate |
+| =valued=, with a /C/ to /B/ rate on /D/ | =converted= | the book-currency journal; =amount= stays /C/, =book-amount= is /B/   |
+| =valued=, with no rate on /D/           | =separate=  | a balanced journal in /C/ of its own -- a rate is never invented       |
+
+=venture_posting_service_route_currency()= answers this for one
+organization, currency and date, and returns the book currency with it.
+=venture_posting_service_book_currency()= answers the book currency alone.
+Both are the hooks reports, holdings and inventory call rather than
+repeating the rule.
+
+A rate is the latest =exchange_rate= row of that organization from /C/ to /B/
+effective on or before /D/ (=venture_rate_table_policy_new()=). A converted
+line keeps its original amount in =amount=, its valuation in
+=book-amount=, and the journal records =exchange-policy= =exchange_rate=.
+The policy's name is recorded only when it actually valued a line.
+
+** One call for every automatic journal
+
+=venture_posting_service_post_by_currency()= takes an unsaved header
+(organization, date, source, memo, rule name and an optional posting key;
+its currency is ignored) and unsaved lines in any currencies, and posts, in
+one transaction:
+
+- the book-currency and converted lines as one journal in /B/, valued by the
+  organization's rate table;
+- each separate currency's lines as a journal in that currency;
+- nothing for memo lines.
+
+It returns the posted journals, the book journal first and the others by
+code; an empty array means every line was memo. Every journal names the
+same source. The first keeps the posting key; each other one adds =:CODE= to
+it, because the key is unique.
+
+The document rules (=sale=, =expense=, =sale_refund=), a source save and a
+backfill, the inventory service's journal pairs and the =create_and_post=
+action all go through it. A saved draft is one journal record and posts as
+one journal (see below).
+
+** Clearing a document that spans journals
+
+A document whose lines land in two or more journals need not balance in
+each: a manual journal paying 10 GOLD for 50 TICKET, with no TICKET rate,
+has a GOLD credit and a TICKET debit and nothing else. Each journal is then
+balanced by a line to the *currency clearing* account in its own currency:
+
+| Journal | Debit                    | Credit                   |
+|---------+--------------------------+--------------------------|
+| GOLD    | Currency clearing 10 GOLD | Gold purse 10 GOLD       |
+| TICKET  | Ticket holdings 50 TICKET | Currency clearing 50 TICKET |
+
+The clearing account is the control map's =currency_clearing= account when
+one is mapped, otherwise an equity account named "Currency clearing" with
+the scoped code =<organization>:3900=, made on first use. Its balance is kept
+per book currency like any account's, so it is one clearing account per
+currency in effect: its GOLD balance is the gold given for tickets, its
+TICKET balance the tickets received for gold. A trial balance shows each
+currency's section balanced.
+
+A single journal must still balance by itself: clearing never absorbs a
+one-currency imbalance. When memo lines were dropped and the one journal
+left does not balance, the refusal names the memo currency.
+
+A document whose lines each balance within their currency -- a gold sale of
+an item whose cost was paid in tickets -- needs no clearing: it posts GOLD
+cash and sales, and TICKET cost of goods sold against TICKET inventory.
+
+** Manual journals
+
+- =create_and_post= applies the rule: a journal mixing GOLD and a valued
+  TICKET with a rate is one GOLD journal; with no rate, or with TICKET kept
+  as a separate book, it is a GOLD and a TICKET journal balanced through
+  currency clearing. A line in a memo currency is refused. The action
+  answers with the first journal; =find_source= lists them all.
+- =post= on a saved draft passes the organization's rate table, so a draft
+  whose lines are valued currencies with rates posts converted into the
+  draft's currency. A line the rule keeps apart is refused with the reason
+  -- no rate on that date, or a separate book -- and the pointer to
+  =create_and_post=. A memo line is refused.
+- The core service refuses any memo line or memo journal currency, and
+  refuses to convert into or out of a separate-book currency whatever
+  policy the caller passes. A reversal copies the original's valuations and
+  is exempt, so changing a treatment never makes history unreversible.
+
+** History is not rewritten
+
+Only new postings follow the rule. A source re-saved with the same
+accounts, sides, original amounts and date is not re-posted, even if a rate
+was recorded or a treatment changed since: the journal already posted
+stays the evidence. A financial change reverses every journal the document
+posted under that rule and posts the plan again, under today's rule. A
+source whose amounts are all in a memo currency posts nothing and leaves
+any earlier journal alone. The autojournal backlog never lists a source
+whose amount is memo.
+
+** A behaviour change for fiat books
+
+A foreign-currency document in an ordinary install is valued the same way:
+a EUR expense in a USD organization with a EUR-to-USD =exchange_rate= on
+file now posts one USD journal whose lines keep 80 EUR and carry 88 USD,
+where it used to post a separate EUR journal. That is functional-currency
+accounting, and it is what receivables already did for invoices. Without a
+rate nothing changes. Journals posted before the change stay as they were.
 
 * Reading the books
 
@@ -275,6 +397,13 @@ currency policy, overflow, duplicates, atomic failures and outer rollback,
 posting and date vetoes, plugin rules, immutable projections, and re-entrant
 callback attacks. The native plugin test exercises an actual loaded rule;
 the HTTP auth test refuses both direct and staged generic ledger writes.
+=test-currency-books= pins the currency rule: the treatment registry and
+the route helper, a valued currency without and with a rate, a separate
+book that never converts, memo that never posts, a gold sale of a
+ticket-bought product, book-currency zeros, a ticket expense taking its
+cash negative, a re-save that does not rewrite history, purchase-order and
+bill line currencies, manual journals through clearing and as drafts, the
+inventory pairs call, and the fiat behaviour change.
 
 Build and run with =make DEBUG=1 -j8 test=. On a sandbox with a read-only
 =/run/user/.../dconf=, set =GSETTINGS_BACKEND=memory= in the environment first;
