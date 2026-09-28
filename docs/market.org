@@ -294,10 +294,13 @@ fetched rows: the bound counts what was fetched, so a filter applied
 afterwards let an organization past the bound be refused even when the
 question was narrowed -- by a refusal that said to narrow it.
 =listing_performance='s =venture_id= belongs to the product, not the
-listing, so the venture's products are read first (under the same bound)
-and the listings narrowed to them with an =IN=; a venture that sells
-nothing has no listings. =/market/listing-performance/bound= pins this
-with the bound lowered through =venture_aggregate_set_max_rows()=.
+listing, so the venture's products are paged through by id, 500 at a
+time, and each batch's listings read with an =IN=; only the listings,
+summed across the batches, are held to the bound, so a venture with more
+products than the bound and a few listings is answered. A venture that
+sells nothing has no listings. =/market/listing-performance/bound= and
+=/market/listing-performance/large-venture= pin this with the bound
+lowered through =venture_aggregate_set_max_rows()=.
 
 * API and CLI
 
