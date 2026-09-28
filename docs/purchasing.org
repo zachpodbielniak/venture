@@ -56,6 +56,20 @@ venturectl purchase send 7
 venturectl purchase receive 7 line_id=12 quantity=2
 #+end_src
 
+* Committed spend
+
+The =committed_spend= report lists every approved, sent or partly
+received order with what it still commits -- ordered less received, at
+the line's price -- in the order's own currency. Totals are per
+currency: =committed= in the organization's book currency (zero when it
+has none), =committed_<CODE>= for each other, the rule every per-currency
+report follows. It used to start from zero dollars, so any order in
+another currency failed the whole report.
+
+#+begin_src sh
+venturectl report committed_spend all organization_id=2
+#+end_src
+
 * Three-way match
 
 =match= links a draft =vendor_bill= to the purchase order and compares

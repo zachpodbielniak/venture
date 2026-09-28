@@ -330,6 +330,70 @@ test_committed_spend(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(venture_report_result_get_row_count(result), >=, 1);
 }
 
+/* The metric under @key, or NULL. */
+static VentureMetric *
+metric_of(VentureReportResult *result, const gchar *key)
+{
+	GPtrArray *metrics = venture_report_result_get_metrics(result);
+	guint i;
+	for (i = 0; i < metrics->len; i++)
+		if (g_strcmp0(venture_metric_get_key(g_ptr_array_index(metrics, i)), key) == 0)
+			return g_ptr_array_index(metrics, i);
+	return NULL;
+}
+
+/*
+ * Orders in two currencies are two commitments. The report started from
+ * zero dollars and refused the first order in anything else, so a GOLD
+ * order -- or one dollar order beside one gold one -- failed the whole
+ * report. Now each row keeps its order's currency and the totals are per
+ * currency: the organization's under "committed", the other beside it.
+ */
+static void
+test_committed_spend_currencies(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) dollars = purchase_order(f, "PO-6", 8);
+	g_autoptr(VentureEntity) currency = record(f, "currency");
+	g_autoptr(VentureEntity) gold = record(f, "purchase_order");
+	g_autoptr(VentureEntity) line = record(f, "purchase_order_line");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-03-02", NULL);
+	g_autoptr(VentureReportResult) result = NULL;
+	VentureMetric *in_gold;
+	VentureReport *report;
+	VenturePurchasingService *purchasing = venture_purchasing_service_get(f->db);
+	(void)unused;
+
+	venture_currency_clear_registered();
+	g_object_set(currency, "code", "GOLD", "name", "Gold", "exponent", (gint64)4, NULL);
+	save(f, currency);
+	g_object_set(gold, "number", "PO-7", "vendor-id", f->vendor, "currency", "GOLD",
+		"status", "draft", "match-tolerance-percent", (gint64)2, NULL);
+	field(gold, "ordered-at", "2026-03-01");
+	save(f, gold);
+	g_object_set(line, "purchase-order-id", venture_entity_get_id(gold), "product-id", f->product,
+		"inventory-item-id", f->item, "description", "Widget", "quantity", (gint64)2,
+		"position", (gint64)1, NULL);
+	field(line, "unit-price", "3 GOLD");
+	save(f, line);
+	g_assert_true(venture_purchasing_service_approve(purchasing, venture_entity_get_id(dollars), date, NULL, &error));
+	g_assert_true(venture_purchasing_service_approve(purchasing, venture_entity_get_id(gold), date, NULL, &error));
+	g_assert_no_error(error);
+
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "committed_spend");
+	result = venture_report_generate(report, f->context, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 2);
+	g_assert_nonnull(metric_of(result, "committed"));
+	g_assert_cmpstr(venture_money_get_currency(venture_metric_get_money(metric_of(result, "committed"))), ==, "USD");
+	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(metric_of(result, "committed"))), ==, 3200);
+	in_gold = metric_of(result, "committed_GOLD");
+	g_assert_nonnull(in_gold);
+	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(in_gold)), ==, 60000);
+	venture_currency_clear_registered();
+}
+
 static void
 test_owned_rows(Fixture *f, gconstpointer unused)
 {
@@ -423,6 +487,8 @@ main(int argc, char **argv)
 	g_test_add("/purchasing/mismatch-exception", Fixture, NULL, setup, test_mismatch_refuses_bill, teardown);
 	g_test_add("/purchasing/cancel-return", Fixture, NULL, setup, test_cancel_and_return, teardown);
 	g_test_add("/purchasing/committed-spend", Fixture, NULL, setup, test_committed_spend, teardown);
+	g_test_add("/purchasing/committed-spend-currencies", Fixture, NULL, setup,
+		test_committed_spend_currencies, teardown);
 	g_test_add("/purchasing/owned-rows", Fixture, NULL, setup, test_owned_rows, teardown);
 	g_test_add("/purchasing/unmatched-bill", Fixture, NULL, setup, test_unmatched_bill_refused, teardown);
 	g_test_add("/purchasing/decimal-qty", Fixture, NULL, setup, test_decimal_billed_qty_mismatch, teardown);

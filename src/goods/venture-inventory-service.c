@@ -1297,16 +1297,29 @@ received_qty(VentureDatabase *db, gint64 po_line_id)
 	return sum;
 }
 
+/*
+ * What approved orders still commit, per order in its own currency. The
+ * totals are per currency too -- the book currency under "committed", any
+ * other under "committed_<CODE>" -- because an organization that buys in
+ * gold and in tickets has two commitments, not one number in neither. It
+ * used to start from zero dollars and refuse the first order in anything
+ * else.
+ */
 static VentureReportResult *
 committed_spend_report(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PURCHASE_ORDER);
 	g_autoptr(GPtrArray) orders = NULL;
+	g_autoptr(GPtrArray) totals = venture_money_totals_new();
 	g_autoptr(VentureReportResult) result = venture_report_result_new("Committed spend", period);
-	g_autoptr(VentureMoney) total = venture_money_new_zero("USD");
+	g_autofree gchar *book = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
+	gint64 org = report_org(context, options);
 	guint i;
-	venture_query_set_organization(query, report_org(context, options));
+	book = venture_posting_service_book_currency(venture_database_get_posting_service(db), org, error);
+	if (book == NULL)
+		return NULL;
+	venture_query_set_organization(query, org);
 	venture_query_set_limit(query, 0);
 	orders = venture_database_find(db, query, error);
 	if (orders == NULL)
@@ -1318,13 +1331,16 @@ committed_spend_report(VentureContext *context, VentureDateRange *period, JsonOb
 	{
 		g_autoptr(VentureQuery) lines_q = venture_query_new(VENTURE_TYPE_PURCHASE_ORDER_LINE);
 		g_autoptr(GPtrArray) lines = NULL;
-		g_autoptr(VentureMoney) committed = venture_money_new_zero("USD");
+		g_autoptr(VentureMoney) committed = NULL;
 		g_autofree gchar *number = NULL;
 		g_autofree gchar *status = NULL;
+		g_autofree gchar *currency = NULL;
 		guint j;
-		g_object_get(g_ptr_array_index(orders, i), "number", &number, "status", &status, NULL);
+		g_object_get(g_ptr_array_index(orders, i), "number", &number, "status", &status,
+			"currency", &currency, NULL);
 		if (g_strcmp0(status, "draft") == 0 || g_strcmp0(status, "cancelled") == 0)
 			continue;
+		committed = venture_money_new_zero(currency != NULL && *currency != '\0' ? currency : book);
 		venture_query_set_limit(lines_q, 0);
 		if (!venture_query_add_filter_int(lines_q, "purchase-order-id", VENTURE_FILTER_OP_EQ,
 			venture_entity_get_id(g_ptr_array_index(orders, i)), error))
@@ -1358,15 +1374,27 @@ committed_spend_report(VentureContext *context, VentureDateRange *period, JsonOb
 		venture_report_result_set_text(result, "number", number);
 		venture_report_result_set_text(result, "status", status);
 		venture_report_result_set_money(result, "committed", committed);
-		{
-			VentureMoney *next = venture_money_add(total, committed, error);
-			if (next == NULL)
-				return NULL;
-			venture_money_free(total);
-			total = next;
-		}
+		if (!venture_money_totals_add(totals, committed, error))
+			return NULL;
 	}
-	venture_report_result_add_metric(result, venture_metric_new_money("committed", "Committed spend", total));
+	venture_money_totals_sort(totals, book);
+	{
+		const VentureMoney *in_book = venture_money_totals_lookup(totals, book);
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(book);
+		venture_report_result_add_metric(result, venture_metric_new_money("committed", "Committed spend",
+			in_book != NULL ? in_book : zero));
+	}
+	for (i = 0; i < totals->len; i++)
+	{
+		const VentureMoney *total = g_ptr_array_index(totals, i);
+		g_autofree gchar *key = NULL;
+		g_autofree gchar *label = NULL;
+		if (g_strcmp0(total->currency, book) == 0)
+			continue;
+		key = g_strdup_printf("committed_%s", total->currency);
+		label = g_strdup_printf("Committed spend (%s)", total->currency);
+		venture_report_result_add_metric(result, venture_metric_new_money(key, label, total));
+	}
 	return g_steal_pointer(&result);
 }
 
