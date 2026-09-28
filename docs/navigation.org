@@ -25,7 +25,7 @@ Eight areas after the overview. Money is one area -- the money that comes in, go
 |           | Bank              | Bank feeds, Money calendar                                                                                                                         |
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
 | Customers |                   | Companies, Contacts, My day, Duplicates                                                                                                            |
-| Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
+| Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts, Forms                                                                                           |
 | Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |
 | Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Milestones, Releases, Builds, Environments, Deployments, Incidents |

@@ -1,0 +1,290 @@
+#+title: Forms
+#+description: Contact forms, surveys, signups and intake, built in VENTURE and embedded on any site in that site's own styles
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-28]
+#+updated: [2026-09-28]
+#+version: 0.1.0
+
+* What a form is
+
+The =forms= module builds forms --- contact forms, surveys, signups,
+intake, feedback --- and puts them on any site. VENTURE supplies the
+structure and the handling; the host site supplies the look. Three record
+types and one report:
+
+- =form= :: what a site embeds. Its =name= and =notes= are internal; its
+  =title=, =description=, =submit_label= and =success_message= are what a
+  visitor reads. It has a =state= (=draft=, =live=, =closed=; draft is the
+  zero value), an optional =closes_at= and =response_limit=, a
+  =redirect_url=, the sites allowed to use it, a per-hour limit, a minimum
+  fill time, and what a response turns into.
+- =form_field= :: one question: a =key=, a =label=, a =kind=, =required=,
+  =help=, =placeholder=, =position= and the per-kind settings below.
+  Labelled "Form question".
+- =form_submission= :: one person's answers, labelled "Form response"
+  (the attribution module already owns "Form submission" for its site
+  captures). Searchable, exportable and audited like any record.
+- =form_summary= :: every choice counted, including the ones nobody picked,
+  and every scale averaged, for one form in a period.
+
+The module requires only =core=. It suggests =leads= (a form may turn each
+response into a lead) and =mail= (a form may send a confirmation); with
+either off, the response is kept and says what was not done.
+
+* Questions
+
+A question's =key= is its identity. Answers are stored under it, the
+schema names it, the input is posted under it. It must start with a
+lowercase letter and use only lowercase letters, digits and =_=; it is
+unique within its form and fixed once saved. A deleted question's key is
+retired rather than freed, because its old answers are still filed under
+it: reusing it for a different question would make them read as answers
+to the new one. The database enforces the same rule
+(=uq_form_fields_organization_form_id_key=, deleted rows included), and
+the save says so in words before the index has to.
+
+| Kind              | Input                  | Stored as                   | Checked                                                  |
+|-------------------+------------------------+-----------------------------+----------------------------------------------------------|
+| =short_text=      | text                   | string                      | one line, length, =pattern=                              |
+| =long_text=       | textarea               | string                      | length (10,000 by default), =pattern=                    |
+| =email=           | email                  | string                      | one =@=, a dotted domain, no spaces, 254 at most         |
+| =phone=           | tel                    | string                      | digits and =+ - ( ) .= and spaces; 4 to 20 digits        |
+| =url=             | url                    | string                      | =http://= or =https://= with a host                      |
+| =number=          | number                 | number                      | a finite number, within =min_value= / =max_value=        |
+| =date=            | date                   | string =YYYY-MM-DD=         | a real calendar date                                     |
+| =single_choice=   | radio buttons          | the choice's id             | one of the choices                                       |
+| =multiple_choice= | checkboxes             | an array of choice ids      | each one of the choices; duplicates dropped              |
+| =checkbox=        | one checkbox           | true or false               | required means it must be ticked                         |
+| =rating=          | radio buttons          | a whole number              | on the scale (=min_value= to =max_value=, or 1 to 5)     |
+| =hidden=          | hidden input           | string                      | length; =default_value= when the page sends nothing      |
+
+=min_value= applies when either bound is set; =max_value= of 0 means no
+maximum. =min_length= and =max_length= of 0 mean the kind's default. A
+=pattern= must match the whole answer. Settings that cannot mean anything
+--- a maximum below the minimum, a pattern that does not compile, a choice
+question with no choices, a rating scale of more than 100 steps --- are
+refused when the question is saved.
+
+** Choices keep their ids
+
+=choices= is one choice per line, optionally =id | Label=. A line with no
+id is given one from its label when the question is saved
+(=Dark blue= becomes =dark_blue=, a second =Red= becomes =red_2=) and the
+line is rewritten as =id | Label=. From then on the label can be corrected
+freely: answers store the id, so they follow the relabel rather than
+splitting from it. Change an id only if you mean a new choice.
+
+* Putting it on a site
+
+Every way in is the one renderer, =venture_forms_render()=, so the preview,
+the snippet, the script loader's fragment and the hosted page are the same
+markup.
+
+1. *HTML snippet.* Markup that posts straight to VENTURE. Paste it into any
+   page; it works with JavaScript off. The page's CSS styles it.
+2. *Script tag.* =<div data-venture-form="…/pub/form/TOKEN/fragment"></div>=
+   and =<script src="…/pub/forms.js" defer></script>=. The loader fetches
+   the form into the element --- in the page's own DOM, no shadow root, so
+   the page's CSS applies --- submits it without leaving the page and shows
+   the server's messages beside the questions.
+3. *Hosted page.* =/pub/form/TOKEN= is a whole page with nothing but the
+   form, for a link or an iframe. It carries no stylesheet; add
+   =?style=basic= for a minimal layout-only one.
+4. *JSON schema.* =/pub/form/TOKEN/schema= describes the form for a site
+   that renders it in its own framework and posts the answers back.
+
+A form's page in VENTURE shows its questions, how many responses it has,
+a live preview and a copy button for each of these. Set =server.base_url=
+so the codes carry this install's full address.
+
+** The class-name contract
+
+The markup is unstyled semantic HTML: =<form>=, =<fieldset>= and
+=<legend>= for choice groups, =<label for>=, native inputs,
+=aria-describedby= linking help and error text, =aria-invalid= on a
+refused answer, =role="alert"= on the error summary and =role="status"= on
+the thank-you. No inline styles, no stylesheet (except the opt-in hosted
+one), and none of VENTURE's own class names or theme tokens.
+
+These names are a public contract. Stylesheets on other people's sites
+are written against them; they are documented here, tested in
+=tests/test-forms.c= (=/forms/class-contract=) and never renamed. Later
+features add names; none is removed.
+
+| Name                          | On                                                                  |
+|-------------------------------+---------------------------------------------------------------------|
+| =vf-form=                     | the =<form>=; also =data-vf-form="TOKEN"=                           |
+| =vf-title=, =vf-description=  | the heading (=h2=, =h1= on the hosted page) and the introduction    |
+| =vf-errors=                   | the error summary, =role="alert"=, =hidden= when there are none     |
+| =vf-field=                    | each question; also =vf-field--KIND= (=vf-field--short-text=, …), =data-vf-field="KEY"=, =data-vf-kind="KIND"= |
+| =vf-field--invalid=           | a question whose answer was refused                                 |
+| =vf-label=                    | the =<label>= or =<legend>=                                         |
+| =vf-required=                 | the required marker inside the label                                |
+| =vf-input=                    | every input, textarea and choice input                              |
+| =vf-choices=, =vf-choice=     | the list of choices and each choice's label                         |
+| =vf-help=                     | a question's help text (=id= =…-help=)                              |
+| =vf-error=                    | a question's error text (=id= =…-error=), =hidden= when none        |
+| =vf-hp=                       | the honeypot's container, =hidden=; a page that overrides =[hidden]= must hide it |
+| =vf-actions=, =vf-submit=     | the button's container and the button                               |
+| =vf-success=                  | the thank-you, =role="status"=                                      |
+| =vf-page=                     | the hosted page's =<main>=                                          |
+
+Element ids are =vf-TOKEN-KEY= for an input, with =-help= and =-error=
+for its texts.
+
+* The public door
+
+=/pub/form/TOKEN= (GET and POST), =/pub/form/TOKEN/fragment= and
+=/pub/form/TOKEN/schema= (GET) and =/pub/forms.js= take no session: a
+stranger's browser is the caller, and the token is the capability. A
+signed-in user gets exactly what a guest gets. =tests/test-auth.c= pins
+this (=/auth/forms-public-door=). Everything else about forms --- the
+records, the report --- is behind the ordinary roles.
+
+- *Only a live form answers.* A draft, a closed form, one past =closes_at=,
+  one at its =response_limit=, an unknown token and the module switched
+  off all return the same 404 page, byte for byte, so the door says
+  nothing about which. The limit and the state are checked again under the
+  database lock at the save, so two people posting for the last place get
+  one response between them.
+- *Size before parsing.* A body over 64 KiB is refused with 413 before it
+  is read.
+- *Rates.* Each client address may post 20 responses a minute across all
+  forms; each form accepts =hourly_limit= an hour (600 when 0). Over
+  either is 429 with =Retry-After=.
+- *Robots.* Every rendering carries a honeypot (=_vf_hp=) and a ticket
+  (=_vf_t=): the time the form was handed out, signed with the form's
+  private =ticket_key=. A filled honeypot, a missing or forged ticket, or
+  a response faster than =min_fill_seconds= (3 when 0) is told it
+  succeeded and nothing is saved --- telling a robot why teaches it. The
+  ticket guards the script loader, the hosted page and the schema, which
+  are fetched fresh; a copied HTML snippet carries the ticket it was
+  generated with, so on a static page the honeypot is the guard. A captcha
+  provider is later work.
+- *Origins.* =allowed_origins= lists the only sites (=https://host= or
+  =https://host:port=, one per line) whose pages may use the form. A
+  browser on any other gets 403. The hosted page posting to this server is
+  always allowed. Empty allows any site. Allowed requests get
+  =Access-Control-Allow-Origin= so a script can read the answer; the
+  hosted page's =frame-ancestors= follows the same list.
+- *No preflight.* This server answers no =OPTIONS= request, so everything
+  public is a CORS "simple" request: the loader posts form-encoded with only
+  an =Accept= header, and a site posting JSON from another origin sends it
+  as =text/plain= (the body is still JSON). =application/json= works from
+  a server or the same origin.
+- *Validated here.* Every answer is checked against its question whatever
+  the browser did. A name that is no question on the form is refused with
+  its own message, never silently dropped: the sender believes it was
+  received. A question answered twice is refused.
+- *Nothing internal leaks.* The renderer and the schema write out only the
+  public half of a form: no =name=, =notes=, organization, mappings,
+  allowed sites, lead settings or ticket key. =tests/test-forms.c=
+  (=/forms/no-internal-config=) checks every rendering and the schema.
+
+** What comes back
+
+A form post (no script) gets a page: the thank-you, a 303 to
+=redirect_url=, or the form again with each message beside its question,
+the answers still in the boxes and =aria-invalid= set (422). A request
+with =Accept: application/json= or a JSON body gets JSON:
+
+#+begin_src json
+{"ok":true,"message":"Thank you. Your response has been received.","redirect":"https://example.com/thanks"}
+{"ok":false,"message":"Please correct the answers marked below.","errors":{"email":"Enter an email address, like name@example.com."}}
+#+end_src
+
+** Without JavaScript
+
+The snippet and the hosted page need no script at all: native inputs,
+native =required=, =pattern=, =min= and =max= for a quick check in the
+browser, and the server's messages on a re-rendered page. The loader is
+an improvement on that, not a requirement. One place degrades: a required
+multiple-choice question cannot say "at least one" in HTML, so only the
+server refuses it.
+
+* After a response
+
+A response is saved through the ordinary path, so it is audited and
+automation rules, outbound webhooks and inbox notifications hear about it
+with no form code. Its =name= is the answer mapped to a lead's name, else
+a question keyed =name=, else the first email, else "Response to TITLE".
+Its =summary= is every answer as "Question: answer", which is what search
+reads.
+
+Only the forms service creates a response. A generic create --- the API,
+the CLI, an import --- is refused and pointed at the public address. The
+answers, the summary, the form and the time are fixed once written; staff
+may mark it =reviewed= and add =notes=.
+
+** A lead from each response
+
+With =create_lead= on, each response becomes a lead through the lead
+service's own capture: the same inputs, the same campaign check and the
+same duplicate rules as a lead form (=on_duplicate= =merge=, =create= or
+=reject=). A question's =maps_to= names the lead input it fills: =name=,
+=email=, =phone=, =company_name=, =website= or =notes=. Several questions
+mapped to =notes= are kept one per line under their question. The lead's
+source is =lead_source=, else the title, else the name; =campaign_id=
+places it in a campaign of the same organization. The response's
+=lead_id= points at the lead made or merged into.
+
+** A confirmation email
+
+With =confirmation_field= naming an email question, a response queues
+=confirmation_subject= and =confirmation_message= (the thank-you when
+empty) to that address through the mail outbox, once per response.
+
+** When a follow-up cannot be done
+
+The lead, the confirmation and the response are written in one
+transaction. If the lead or the email cannot be made --- leads off, a
+=reject= policy meeting a known lead, a campaign from another
+organization --- the transaction is undone and the response alone is
+saved, with =mapping_note= saying what was not done. A response is never
+lost because its follow-up failed.
+
+* The summary
+
+=form_summary= takes =form_id= (required) and the period, on the
+responses' =submitted_at=. One row per choice of every choice question,
+=Yes= and =No= for a box, one row per step of a scale and an =Average=
+row for scales and numbers, and =Answered= for text. =share= is the
+percentage of all responses in the period. It reads at most 50,000
+responses and asks for a shorter period beyond that.
+
+#+begin_src sh
+venturectl report form_summary all form_id=3
+#+end_src
+
+* Lead forms
+
+=lead_form= (see [[file:leads.org][Leads]]) is kept as the lead-specific
+shortcut: a fixed set of lead inputs posted to =/f/TOKEN=, which the
+attribution capture and existing sites already use. It is not a second,
+unrelated intake: a form's lead mapping goes through the same
+=capture_lead()= in the lead service, so both apply the same inputs, campaign
+check and duplicate rules. A new form should be a =form= with
+=create_lead=; a lead form stays for what already posts to it.
+
+* From the command line
+
+The records are generic, so =venturectl= needs nothing form-specific:
+
+#+begin_src sh
+venturectl describe form_field
+venturectl create form name="Website contact" title="Contact us" state=draft
+venturectl create form_field form_id=3 key=email label="Email" kind=email required=true position=10
+venturectl create form_field form_id=3 key=topic label="Topic" kind=single_choice \
+    choices="Sales
+Support" position=20
+venturectl update form 3 state=live
+venturectl list form_submission form_id=3
+#+end_src
+
+* Upgrading
+
+Migration =000710_forms= pins the schema the module relies on --- the
+per-form key index and the columns the door reads --- on SQLite and
+PostgreSQL. With forms switched off the tables are absent and it passes;
+switched on later, reconciliation makes them with the index.

@@ -144,6 +144,10 @@ struct _VentureWebServer
 	GHashTable	*chat_turns;
 	HtmxRateLimiter *quote_limiter;
 	HtmxRateLimiter *lead_limiter;
+	/* The forms door's buckets: one per client address, and one per form
+	 * keyed by its public token, sized by that form's hourly limit. */
+	HtmxRateLimiter *form_client_limiter;
+	GHashTable	*form_limiters;
 	/* One bucket belongs to the pinned workspace, never a caller-supplied ID.
 	 * Nested provider main loops can reenter this server on the same thread. */
 	HtmxRateLimiter *workspace_limiter;
@@ -156,6 +160,7 @@ G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
 #include "ai/venture-ai-organization-web.inc"
 
 static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
+static void venture_web_append_form_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_connector_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
@@ -182,6 +187,8 @@ venture_web_server_finalize(GObject *object)
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 	g_clear_object(&self->lead_limiter);
+	g_clear_object(&self->form_client_limiter);
+	g_clear_pointer(&self->form_limiters, g_hash_table_unref);
 	g_clear_object(&self->workspace_limiter);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
@@ -1148,6 +1155,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"goals"
 	},
 	{
+		"/e/form", "Forms",
+		VENTURE_ICON(
+			"<rect x=\"4\" y=\"3\" width=\"16\" height=\"18\" rx=\"1\"/>"
+			"<path d=\"M8 8h8M8 12h8M8 16h4\"/>"
+		),
+		NULL,
+		"forms"
+	},
+	{
 		"/e/expense", "Expenses",
 		VENTURE_ICON(
 			"<path d=\"M3 7l6 6 4-4 8 8\"/><path d=\"M15 17h6v-6\"/>"
@@ -1704,7 +1720,7 @@ static const gchar *const venture_web_nav_customers[] = {
 };
 
 static const gchar *const venture_web_nav_growth[] = {
-	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post", "/e/form",
 	NULL
 };
 
@@ -3181,7 +3197,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "form_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7019,7 +7035,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "form_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7067,7 +7083,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "form_id", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -7131,7 +7147,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "form_id", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -10774,6 +10790,11 @@ venture_web_ui_detail(
 		if (VENTURE_TYPE_BUILD == entity_type)
 			venture_web_append_build_block(self, content, record);
 	}
+
+	/* A form's questions, responses, preview and embed codes. */
+	if ((VENTURE_TYPE_FORM == entity_type) &&
+	    venture_web_module_enabled(self, "forms"))
+		venture_web_append_form_block(self, content, record);
 
 	/* A goal's progress and its steps, in order. */
 	if ((VENTURE_TYPE_GOAL == entity_type) &&
@@ -31103,6 +31124,7 @@ venture_web_api_ticket_draft(
 #include "pipelines/venture-pipeline-web.inc"
 
 #include "leads/venture-lead-web.inc"
+#include "forms/venture-forms-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
 #include "tax/venture-tax-rate-web.inc"
@@ -31432,6 +31454,13 @@ venture_web_server_new(
 	/* API */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);
+	/* The forms door: no session, a capability token, and the form's own
+	 * origin list. See src/forms/venture-forms-web.inc. */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/forms.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_script, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/fragment", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_fragment, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_schema, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/customers/duplicates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_duplicates, self);

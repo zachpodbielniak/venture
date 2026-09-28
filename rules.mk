@@ -214,7 +214,8 @@ ASSET_FILES := data/static/venture-classic.css \
                data/static/venture-industrial.css \
                data/static/venture-hx.js \
                data/static/venture.js \
-               data/static/attribution.js
+               data/static/attribution.js \
+               data/static/forms.js
 
 $(OUTDIR)/venture-assets.h: $(ASSET_FILES) | $(OUTDIR)
 	@echo "  GEN     $@"

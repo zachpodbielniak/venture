@@ -916,6 +916,87 @@ test_taxonomy_sales_off(void)
 	venture_test_remove_tree(directory);
 }
 
+/* How many times @version is recorded as applied. */
+static gint64
+applied(VentureDatabase *database, gint64 version)
+{
+	g_autofree gchar *sql = g_strdup_printf(
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = %" G_GINT64_FORMAT, version);
+	g_autofree gchar *text = query_text(database, sql);
+
+	return g_ascii_strtoll(text, NULL, 10);
+}
+
+/*
+ * 000710 pins what the forms module relies on: a question's key unique per
+ * form, deleted questions included, and the columns the public door reads.
+ * With forms switched off the tables are absent and the script passes and
+ * is recorded; switched on later, reconciliation makes the tables with the
+ * index, which is why the script need not. A schema missing the index --
+ * a restore from somewhere else, a hand edit -- is refused, not trusted.
+ */
+static void
+test_forms_schema(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autofree gchar *script = NULL;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	/* Forms off: nothing to check, and it is recorded as done. */
+	venture_config_set_module_enabled(config, "forms", FALSE);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_false(table_exists(database, "form_fields"));
+	g_assert_cmpint(applied(database, 710), ==, 1);
+	g_clear_object(&context);
+	g_clear_object(&database);
+
+	/* On, twice: the tables and the index arrive, nothing runs again. */
+	venture_config_set_module_enabled(config, "forms", TRUE);
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, database);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_assert_true(table_exists(database, "form_fields"));
+		g_assert_cmpint(applied(database, 710), ==, 1);
+		{
+			g_autofree gchar *index = query_text(database,
+				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "
+				"AND name = 'uq_form_fields_organization_form_id_key'");
+
+			g_assert_cmpstr(index, ==, "1");
+		}
+		g_clear_object(&context);
+		g_clear_object(&database);
+	}
+
+	/* The script itself refuses a schema without the index. */
+	g_assert_true(g_file_get_contents("migrations/sqlite/000710_forms.sql", &script, NULL, &error));
+	g_assert_no_error(error);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database, script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP INDEX uq_form_fields_organization_form_id_key", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(database, script, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -930,6 +1011,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
+	g_test_add_func("/migrations/forms-schema", test_forms_schema);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);

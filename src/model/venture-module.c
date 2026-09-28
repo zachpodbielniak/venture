@@ -880,6 +880,17 @@ static GType (*const goals_types[]) (void) = {
 };
 static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", NULL };
 
+/* Embeddable forms and their responses. It requires only core: a survey
+ * or a signup names nothing else. It suggests leads, which a form may turn
+ * each response into (the mapping notes and skips it while leads is off),
+ * and mail, which sends the optional confirmation the same way. */
+static const gchar *const forms_suggests[] = { "leads", "mail", NULL };
+static GType (*const forms_types[]) (void) = {
+	venture_form_get_type, venture_form_field_get_type,
+	venture_form_submission_get_type, NULL
+};
+static const gchar *const forms_reports[] = { "form_summary", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1293,6 +1304,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"forecast, and the shopping list for recipe steps still ahead.",
 		venture_module_requires_core, goals_suggests, goals_types,
 		goals_reports, NULL, FALSE
+	},
+	{
+		"forms", "Forms",
+		"Contact forms, surveys, signups and intake, built here and embedded "
+		"on any site in that site's own styles, with every response a "
+		"searchable, audited record.",
+		venture_module_requires_core, forms_suggests, forms_types,
+		forms_reports, NULL, FALSE
 	}
 };
 

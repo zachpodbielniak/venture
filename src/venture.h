@@ -132,6 +132,7 @@
 #include "production/venture-production-records.h"
 #include "sessions/venture-sessions-records.h"
 #include "goals/venture-goals-records.h"
+#include "forms/venture-forms-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -330,6 +331,7 @@
 #include "production/venture-production.h"
 #include "sessions/venture-sessions.h"
 #include "goals/venture-goals.h"
+#include "forms/venture-forms.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

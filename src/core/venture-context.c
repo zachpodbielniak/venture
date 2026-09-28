@@ -174,6 +174,10 @@ venture_context_new(
 	 * loop, and achieved and done times that follow the status. */
 	venture_goals_install(self);
 
+	/* Forms whose tokens are unique capabilities, questions whose keys
+	 * never move, and responses only the public door creates. */
+	venture_forms_install(self);
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding

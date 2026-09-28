@@ -77,6 +77,15 @@ accepted captures return 200; form submissions redirect with 302 when the
 form has an HTTP(S) or local-path =redirect_url=. JSON submissions stay 200.
 Inactive, missing or disabled forms answer 404; rate exhaustion answers 429.
 
+A lead form is the lead-specific shortcut and stays for what already posts
+to it, the attribution capture included. For anything else --- more than
+the fixed lead inputs, a survey, a choice, a form styled by its site ---
+build a =form= with =create_lead= on (see [[file:forms.org][Forms]]). Its
+mapping captures through the same code as a lead form, so the inputs, the
+campaign check and the duplicate rules are the same. The =fields= list is
+JSON stored as text: a list of the input names the form may set, refused
+at the save when it is anything else.
+
 * Duplicate handling and assignment
 
 =VentureLeadService= normalizes email to lowercase and removes the local

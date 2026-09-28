@@ -1807,6 +1807,23 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/goal_step"),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Forms: everything but the public door is behind a session. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_field"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_submission"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/form_summary"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/form_summary"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_field"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_submission"),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/collections"),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -4520,6 +4537,51 @@ test_orgaccess_public_capabilities(ServerFixture *fixture, gconstpointer unused)
 	}
 }
 
+/* The forms door is the one set of routes a stranger reaches with no
+ * session: the hosted page, the fragment, the schema, the loader and the
+ * post. A signed-in user with no membership gets exactly what a guest
+ * gets; the capability is the token, never the cookie. Anything past the
+ * documented shapes is not public. */
+static void
+test_forms_public_door(ServerFixture *fixture, gconstpointer unused)
+{
+	gint64 org = venture_context_get_default_organization_id(fixture->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org,
+		"name", "Door", "public-token", "door-form", "state", VENTURE_FORM_LIVE, NULL);
+	g_autoptr(VentureEntity) field = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) then = g_date_time_add_seconds(now, -60);
+	g_autofree gchar *cookie = NULL, *ticket = NULL, *escaped = NULL, *body = NULL;
+	static const gchar *const gets[] = {
+		"/pub/form/door-form", "/pub/form/door-form/fragment", "/pub/form/door-form/schema", "/pub/forms.js", NULL
+	};
+	guint i;
+	(void)unused;
+	g_assert_true(venture_database_save(fixture->database, form, NULL, &error));
+	g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form),
+		"key", "name", "label", "Name", "required", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, field, NULL, &error));
+	g_assert_no_error(error);
+	server_fixture_create_user(fixture, "door-outsider", "password", VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "door-outsider", "password");
+	for (i = 0; gets[i] != NULL; i++)
+	{
+		g_assert_cmpuint(server_fixture_get_anonymous(fixture, gets[i]), ==, 200);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", gets[i], cookie, NULL, NULL, NULL), ==, 200);
+	}
+	ticket = venture_forms_ticket_new(form, then);
+	escaped = g_uri_escape_string(ticket, NULL, TRUE);
+	body = g_strdup_printf("_vf_t=%s&name=Guest", escaped);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form", NULL, body, NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form", cookie, body, NULL, NULL), ==, 200);
+	/* Only the documented shapes are public. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/door-form/anything"), !=, 200);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form/schema", NULL, body, NULL, NULL), !=, 200);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/no-such-form"), ==, 404);
+}
+
 static void
 test_orgaccess_create_action(ServerFixture *fixture, gconstpointer user_data)
 {
@@ -5446,6 +5508,7 @@ main(
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
+	g_test_add("/auth/forms-public-door", ServerFixture, NULL, server_fixture_set_up, test_forms_public_door, server_fixture_tear_down);
 	g_test_add("/auth/health-sweep-is-judged-in-its-organization", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_health_sweep_is_judged_in_its_organization,
 	           server_fixture_tear_down);

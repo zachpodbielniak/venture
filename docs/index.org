@@ -51,6 +51,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS
 - [[file:production.org][Production]] — recipes (bills of materials), crafting them in one transaction at FIFO cost, and each recipe's margin at a chosen price source
 - [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost, and what an hour of each kind is worth
+- [[file:forms.org][Forms]] — contact forms, surveys, signups and intake built here and embedded on any site in its own styles: an HTML snippet that works with JavaScript off, a script loader, a hosted page and a JSON schema, every response an audited record
 - [[file:goals.org][Goals]] — measurable targets (a skill to level, a sum to save, a weight to lose) with ordered steps, progress measured from the start, a straight-line forecast, and the shopping list for recipe steps still ahead
 - [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record

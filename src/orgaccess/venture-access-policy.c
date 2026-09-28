@@ -800,6 +800,15 @@ public_capability_request(HtmxRequest *request)
 	}
 	if (g_str_has_prefix(path, "/f/") && path[3] != '\0')
 		return method == HTMX_METHOD_POST && strchr(path + 3, '/') == NULL;
+	/* The forms door: /pub/form/<token> takes GET and POST; its /fragment
+	 * and /schema only GET. Nothing deeper and nothing else. */
+	if (g_str_has_prefix(path, "/pub/form/") && path[10] != '\0' && path[10] != '/')
+	{
+		suffix = strchr(path + 10, '/');
+		if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+		return method == HTMX_METHOD_GET && (!g_strcmp0(suffix, "/fragment") || !g_strcmp0(suffix, "/schema"));
+	}
+	if (!g_strcmp0(path, "/pub/forms.js")) return method == HTMX_METHOD_GET;
 	if (!g_str_has_prefix(path, "/q/") || path[3] == '\0' || path[3] == '/') return FALSE;
 	suffix = strchr(path + 3, '/');
 	if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;

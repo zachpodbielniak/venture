@@ -1220,7 +1220,7 @@ test_web_navigation_groups_by_question(
 		NULL
 	};
 	static const gchar *const growth[] = {
-		"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+		"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post", "/e/form",
 		NULL
 	};
 	static const gchar *const support[] = {

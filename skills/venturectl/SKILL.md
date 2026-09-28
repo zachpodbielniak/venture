@@ -1609,6 +1609,54 @@ A dashboard `progress` widget on `goal` should set
 `options.start_field=start_value` beside `target_field=target_value`, or a
 downward goal reads as done before it starts.
 
+## Forms: questions, responses and the summary
+
+Module `forms` (requires only `core`; suggests `leads` and `mail`). Check
+`venturectl describe form`, `describe form_field`, `describe form_submission`.
+
+- `form`: `name` (internal), `title`/`description`/`submit_label`/
+  `success_message` (public), `state` (`draft` default, `live`, `closed`),
+  `closes_at`, `response_limit`, `redirect_url` (http/https only),
+  `allowed_origins` (one `https://host[:port]` per line; empty = any),
+  `hourly_limit`, `min_fill_seconds`, `create_lead`, `lead_source`,
+  `campaign_id`, `on_duplicate` (`merge`/`create`/`reject`),
+  `confirmation_field` (an email question's key), `confirmation_subject`,
+  `confirmation_message`. `public_token` and `slug` are made on the first
+  save; clearing `public_token` issues a new one (old embeds stop working).
+- `form_field` ("Form question"): `form_id`, `key`, `label`, `kind`
+  (`short_text` default, `long_text`, `email`, `phone`, `url`, `number`,
+  `date`, `single_choice`, `multiple_choice`, `checkbox`, `rating`,
+  `hidden`), `required`, `position`, `help`, `placeholder`, `choices`,
+  `min_value`/`max_value`, `min_length`/`max_length`, `pattern`,
+  `default_value`, `maps_to` (`name`, `email`, `phone`, `company_name`,
+  `website`, `notes`).
+- **`key` is fixed once saved and never reused on that form, even after
+  the question is deleted** (its answers keep it). Lowercase letters,
+  digits and `_`, starting with a letter.
+- **`choices` are lines; each gets a stable id on save** (`Dark blue` →
+  `dark_blue | Dark blue`). Answers store the id: relabel freely, but keep
+  the id unless you mean a new choice.
+- `form_submission` ("Form response") **cannot be created with `create`** —
+  only the form's public address makes one. Its answers are fixed; you may
+  update `reviewed` and `notes`. `answers` is JSON text keyed by question
+  key; `summary` is the readable version; `mapping_note` says why a lead or
+  confirmation was not made.
+
+```sh
+venturectl create form name="Website contact" title="Contact us"
+venturectl create form_field form_id=3 key=email label=Email kind=email required=true position=10
+venturectl create form_field form_id=3 key=topic label=Topic kind=single_choice \
+    choices="Sales
+Support" position=20
+venturectl update form 3 state=live create_lead=true
+venturectl list form_submission form_id=3
+venturectl report form_summary all form_id=3
+```
+
+Public addresses (no session): `/pub/form/TOKEN` (hosted page and where
+answers are posted), `/pub/form/TOKEN/fragment`, `/pub/form/TOKEN/schema`,
+`/pub/forms.js`. A draft, closed, full or unknown form is the same 404.
+
 ## Venture types: typed attributes, enforced at the save
 
 A venture's `venture_type` names a declarative type (a YAML file in

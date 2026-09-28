@@ -56,6 +56,27 @@ gboolean venture_lead_service_capture_result(VentureLeadService *self, const gch
 	JsonObject *fields, const gchar *source, gint64 campaign_id, VentureEntity **captured,
 	gchar **redirect_url, GError **error);
 /**
+ * venture_lead_service_capture_values:
+ * @self: the canonical service
+ * @organization_id: the organization the lead belongs to
+ * @venture_id: the venture, or 0
+ * @source: (nullable): the lead's source
+ * @campaign_id: a campaign in the same organization, or 0
+ * @fields: capture inputs by name: name, company_name, email, phone,
+ *   website, source and notes, each a string
+ * @policy: (nullable): merge (the default), create or reject a known lead
+ * @error: (out) (optional): error
+ *
+ * Captures a lead from values another intake has already validated, under
+ * exactly the rules a lead form's capture follows. Joins the caller's
+ * transaction when one is open.
+ *
+ * Returns: (transfer full) (nullable): the new or merged lead
+ */
+VentureEntity *venture_lead_service_capture_values(VentureLeadService *self, gint64 organization_id,
+	gint64 venture_id, const gchar *source, gint64 campaign_id, JsonObject *fields,
+	const gchar *policy, GError **error);
+/**
  * venture_lead_service_convert:
  * @self: the canonical service
  * @lead: saved lead, carrying the expected version

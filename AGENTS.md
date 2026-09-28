@@ -1218,3 +1218,43 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   Share the save fixture with a socket-free rendering test so a sandbox's
   TCP refusal cannot hide missing required fields. Assert the `GError` before
   asserting a save's boolean result, or GTest hides the validator's reason.
+
+## Forms
+
+- **A JSON field is a string property.** `VENTURE_FIELD_KIND_JSON` installs
+  `g_param_spec_string`; `g_object_get()` into a `JsonNode *` hands back a
+  `gchar *` wearing the wrong type, which `JSON_NODE_HOLDS_*` reads as
+  garbage and `json_node_unref()` frees as a node. A lead form with a
+  `fields` list crashed its capture this way. Read the text and parse it.
+- **One renderer.** `venture_forms_render()` is the preview, the snippet,
+  the loader's fragment and the hosted page. The `vf-*` class names and
+  `data-vf-*` hooks are a public contract other sites' stylesheets are
+  written against: add names, never rename or remove one.
+  `/forms/class-contract` is the alarm. No inline style, no stylesheet
+  (the hosted `?style=basic` is the one opt-in), no shadow DOM.
+- **The public door answers every refusal the same.** Draft, closed, past
+  `closes_at`, at `response_limit`, unknown token and module off are one
+  byte-identical 404. The state and the cap are checked again under the
+  lock at the save.
+- **Nothing public may need a preflight.** The server answers no
+  `OPTIONS`. The loader posts form-encoded with only `Accept`; a site
+  posting JSON cross-origin sends it as `text/plain`, which the door
+  parses as JSON. Do not add a custom request header to forms.js.
+- **A robot is told it succeeded.** A filled `_vf_hp`, a missing, forged
+  or too-young `_vf_t` ticket is a 200 that saves nothing. Tests that post
+  must carry a ticket from `venture_forms_ticket_new()` dated a minute
+  back, or they are silently treated as robots.
+- **Only the service creates a response.** `venture_forms_submit()` marks
+  the object; the validator refuses an unmarked insert and any change to
+  the answers. A new writer of responses goes through `submit`.
+- **A question's key is retired, never reused.** The unique index
+  includes deleted rows because answers stay filed under the key; the
+  validator looks up deleted rows for the same reason.
+- **A follow-up never costs the response.** The lead, the confirmation and
+  the response are one transaction; if a follow-up fails the transaction
+  is undone and the response alone is saved with `mapping_note`. Build the
+  retry's response afresh: a rolled-back save has already stamped the
+  object it was given.
+- **The forms epic's migrations start at 000710.** 000700 was taken by
+  product categories before the epic started; each child takes the next
+  multiple of ten in delivery order (the table is on the epic issue).
