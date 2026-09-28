@@ -166,6 +166,34 @@ venture_holdings_record_memo(
 );
 
 /**
+ * venture_holdings_source_has_memo:
+ * @database: the database
+ * @organization_id: the organization
+ * @source_type: the document's type
+ * @source_id: the document's id
+ * @rule_name: the rule whose movements to look for
+ * @out_has: (out): whether any live movement came from them
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Whether a document's rule has written holding movements -- the memo
+ * half of "is this document already in the books", which the posting
+ * service asks before leaving an unchanged document alone. %FALSE, with
+ * no error, while the ledger module is off.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_holdings_source_has_memo(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	const gchar	 *source_type,
+	gint64		  source_id,
+	const gchar	 *rule_name,
+	gboolean	 *out_has,
+	GError		**error
+);
+
+/**
  * venture_holdings_clear_memo:
  * @database: the database, inside the caller's transaction
  * @organization_id: the organization

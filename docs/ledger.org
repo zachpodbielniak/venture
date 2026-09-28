@@ -196,8 +196,15 @@ from the service registry at the database save boundary. Records whose amount
 has not yet been supplied remain operational records without a journal.
 If a source date is missing, its creation time supplies the stable accounting
 date. Metadata-only changes that produce the same accounts, sides, amounts
-and date do not post again. Financial changes reverse the earlier journal
-and post its replacement atomically. Clearing an existing amount is refused.
+and date do not post again. "The same" is decided between the previous
+version of the document and this one, both built under today's rule, so
+a rate recorded, a treatment changed or a product cost edited since the
+first posting does not by itself repost a document whose own figures did
+not move -- whether it posted one journal or split into several. A
+document that left no trace yet (saved while the ledger was off) posts on
+its next save. Financial changes reverse the earlier journals and post
+their replacement atomically, including a change into a memo currency,
+which leaves nothing posted but the reversal. Clearing an existing amount is refused.
 Deleting a source leaves its posted journal intact; deleting is not a
 financial correction. The same holds for the holding movements a memo
 line wrote (below): the movement stays, still counts in the holding, and
@@ -464,8 +471,12 @@ on holding accounts and hands them back. Callers choose append or replace:
   before; unchanged ones are left exactly as they were, so editing a note
   does not churn history, and an edited amount moves the holding once. A
   refund taken back to zero removes its movement. A document an earlier
-  treatment already posted keeps its journal as its only truth: no movement
-  is added beside it.
+  treatment already posted keeps its journal as its only truth while it is
+  unchanged: no movement is added beside it. Once its amounts change it is
+  reversed and written under today's treatment -- a sale moved from 40 GOLD
+  to 40 TICKET (memo) reverses its GOLD journal and earns 40 TICKET in the
+  purse, and a document that posts a journal and a memo movement keeps
+  both in step on every edit.
 
 The doors that move a holding:
 

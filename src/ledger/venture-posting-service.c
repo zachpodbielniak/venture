@@ -1710,6 +1710,7 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	g_autoptr(VentureExchangePolicy) policy = NULL;
 	const gchar *name = venture_entity_get_entity_name(entity);
 	g_autofree gchar *source_uuid = g_strdup(venture_entity_get_uuid(entity));
+	gboolean changed;
 	guint i;
 
 	if (g_hash_table_contains(self->active_sources, source_uuid))
@@ -1758,6 +1759,37 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	draft = document_header(copy, name, rows, error);
 	if (NULL == draft)
 		goto fail;
+	/*
+	 * Whether the document changed financially: its lines as the previous
+	 * version would build them today against its lines now -- accounts,
+	 * sides, original amounts, date. Both are built under today's rule, so
+	 * a rate recorded since, a treatment changed since, or a plan that now
+	 * splits into a different number of journals is not by itself a
+	 * change. A version that cannot be built (no amount yet, a reference
+	 * since removed) is one.
+	 */
+	{
+		gboolean unchanged = FALSE;
+
+		if (NULL != previous)
+		{
+			g_autoptr(VentureMoney) old_amount = NULL;
+
+			g_object_get(previous, VENTURE_IS_SALE(previous) ? "gross" : "amount", &old_amount, NULL);
+			if (NULL != old_amount)
+			{
+				g_autoptr(GError) local = NULL;
+				g_autoptr(GPtrArray) old_rows = build_document_lines(self, db, name, previous, &local);
+				g_autoptr(VentureJournal) old_draft = NULL;
+
+				if (NULL != old_rows)
+					old_draft = document_header(previous, name, old_rows, &local);
+				unchanged = NULL != old_draft &&
+					same_posting(draft, rows, VENTURE_ENTITY(old_draft), old_rows);
+			}
+		}
+		changed = !unchanged;
+	}
 	policy = venture_rate_table_policy_new(db, venture_entity_get_organization_id(VENTURE_ENTITY(draft)));
 	groups = plan_by_currency(self, db, draft, rows, policy, error);
 	if (NULL == groups)
@@ -1767,30 +1799,6 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 			venture_entity_get_organization_id(copy), error);
 	if (NULL == existing)
 		goto fail;
-	/* Memo lines on a holding become its movements, replacing what an
-	 * earlier save of this document wrote, so an edited amount moves the
-	 * holding once. A document an earlier treatment already posted keeps
-	 * its journal as its only truth: adding a movement beside it would
-	 * count the same takings twice. */
-	{
-		gboolean journaled = FALSE;
-
-		for (i = 0; i < existing->len && !journaled; i++)
-		{
-			g_autofree gchar *old_rule = NULL;
-			VentureJournalState state;
-
-			g_object_get(g_ptr_array_index(existing, i), "state", &state, "rule-name", &old_rule, NULL);
-			journaled = state == VENTURE_JOURNAL_POSTED && g_strcmp0(old_rule, name) == 0;
-		}
-		if (!journaled && !venture_holdings_record_memo(db, draft, rows, TRUE, actor, NULL, error))
-			goto fail;
-	}
-	/* Every amount in a memo currency: nothing is posted, and whatever an
-	 * earlier treatment posted is left as it is rather than reversed by a
-	 * save that may only have changed the notes. */
-	if (0 == groups->len)
-		goto commit;
 	current = g_ptr_array_new_with_free_func(g_object_unref);
 	for (i = 0; i < existing->len; i++)
 	{
@@ -1802,11 +1810,32 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		if (state == VENTURE_JOURNAL_POSTED && g_strcmp0(old_rule, name) == 0)
 			g_ptr_array_add(current, g_object_ref(old));
 	}
-	/* Unchanged when the journals already posted are the plan's, one for
-	 * one. The original amounts are compared, not the valuations, so a rate
-	 * recorded since -- or a treatment changed since -- does not by itself
-	 * reverse and repost a document: history is not rewritten by a save. */
-	if (current->len == groups->len && current->len > 0)
+	/* Unchanged and already in the books -- as journals or as holding
+	 * movements -- is left exactly as it is: history is not rewritten by
+	 * a save that only changed the notes, whatever rate or treatment was
+	 * recorded since. A document that left no trace (the ledger was off
+	 * when it was saved) posts now. */
+	if (!changed)
+	{
+		gboolean memo_written = FALSE;
+
+		if (!venture_holdings_source_has_memo(db,
+			venture_entity_get_organization_id(VENTURE_ENTITY(draft)), name,
+			venture_entity_get_id(copy), name, &memo_written, error))
+			goto fail;
+		if (current->len > 0 || memo_written)
+			goto commit;
+	}
+	/* Memo lines on a holding become its movements, replacing what an
+	 * earlier save of this document wrote, so an edited amount moves the
+	 * holding once. A document an earlier treatment journaled is reversed
+	 * below like any changed one, so its memo lines are only ever counted
+	 * once. */
+	if (!venture_holdings_record_memo(db, draft, rows, TRUE, actor, NULL, error))
+		goto fail;
+	/* The journals already posted are the plan's, one for one: only the
+	 * memo part changed, and the journals stand. */
+	if (current->len == groups->len)
 	{
 		gboolean same = TRUE;
 
@@ -1840,6 +1869,10 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		if (NULL == reversed)
 			goto fail;
 	}
+	/* Every amount now in a memo currency: the old journals are reversed
+	 * and the movements above are the whole of it. */
+	if (0 == groups->len)
+		goto commit;
 	posted = post_plan(self, draft, groups, policy, actor, error);
 	if (NULL == posted)
 		goto fail;

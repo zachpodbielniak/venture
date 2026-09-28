@@ -1263,6 +1263,37 @@ holdings_source_movements(
 }
 
 gboolean
+venture_holdings_source_has_memo(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	const gchar	 *source_type,
+	gint64		  source_id,
+	const gchar	 *rule_name,
+	gboolean	 *out_has,
+	GError		**error
+){
+	g_autoptr(GPtrArray) existing = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(NULL != out_has, FALSE);
+
+	*out_has = FALSE;
+
+	if (!holdings_ledger_enabled() || (organization_id <= 0))
+		return TRUE;
+
+	existing = holdings_source_movements(database, organization_id, source_type,
+	                                     source_id, rule_name, error);
+
+	if (NULL == existing)
+		return FALSE;
+
+	*out_has = existing->len > 0;
+
+	return TRUE;
+}
+
+gboolean
 venture_holdings_clear_memo(
 	VentureDatabase		 *database,
 	gint64			  organization_id,

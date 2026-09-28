@@ -694,6 +694,156 @@ test_resave_keeps_history(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(last, ==, "GOLD");
 }
 
+/* A holding account at a new location, made the way a session makes one. */
+static gint64
+purse(Fixture *f, const gchar *name)
+{
+	g_autoptr(VentureEntity) place = record(f, "location");
+	g_autoptr(GError) error = NULL;
+	gint64 account = 0;
+
+	g_object_set(place, "name", name, NULL);
+	save(f, place);
+	g_assert_true(venture_holdings_account_for_location(f->db, f->org,
+		venture_entity_get_id(place), TRUE, NULL, &account, &error));
+	g_assert_no_error(error);
+	return account;
+}
+
+static gint64
+held_in(Fixture *f, gint64 account, const gchar *currency)
+{
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GError) error = NULL;
+
+	balance = venture_holdings_balance(f->db, account, currency, 0, &error);
+	g_assert_no_error(error);
+	return venture_money_get_amount(balance);
+}
+
+/* How many of @journals are in @state. */
+static guint
+count_state(GPtrArray *journals, VentureJournalState state)
+{
+	guint count = 0;
+	guint i;
+
+	for (i = 0; i < journals->len; i++)
+	{
+		VentureJournalState each;
+
+		g_object_get(g_ptr_array_index(journals, i), "state", &each, NULL);
+		if (each == state)
+			count++;
+	}
+	return count;
+}
+
+/*
+ * A document whose every amount moves into a memo currency is a financial
+ * change like any other: the journal it posted before is reversed and its
+ * memo movement written. It used to jump straight to the commit when the
+ * plan was empty, leaving 40 GOLD of revenue that no longer existed and a
+ * purse that never received the tickets.
+ */
+static void
+test_resave_into_memo(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	gint64 wallet;
+
+	(void)data;
+	define_currency(f, "TICKET", 0, "memo");
+	wallet = purse(f, "Aria");
+	sale = ticket_sale(f, "40 GOLD");
+	g_object_set(sale, "cash-account-id", wallet, NULL);
+	save(f, sale);
+	g_assert_cmpint(held_in(f, wallet, "GOLD"), ==, 400000);
+
+	field(sale, "gross", "40 TICKET");
+	save(f, sale);
+	journals = journals_for(f, "sale", venture_entity_get_id(sale));
+	/* The GOLD original, now reversed, and its reversal: nothing posted. */
+	g_assert_cmpuint(journals->len, ==, 2);
+	g_assert_cmpuint(count_state(journals, VENTURE_JOURNAL_REVERSED), ==, 1);
+	g_assert_cmpint(held_in(f, wallet, "GOLD"), ==, 0);
+	g_assert_cmpint(held_in(f, wallet, "TICKET"), ==, 40);
+}
+
+/*
+ * A document that posts a journal *and* memo movements keeps both in step:
+ * editing its memo amount replaces the movement, and the journal whose
+ * lines did not change stands. The movements used to be written on the
+ * first save only, because any posted journal of the rule was read as "an
+ * earlier treatment journaled this".
+ */
+static void
+test_mixed_memo_follows_edits(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) product = NULL;
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	gint64 wallet;
+
+	(void)data;
+	define_currency(f, "TICKET", 0, "memo");
+	wallet = purse(f, "Aria");
+	product = record(f, "product");
+	g_object_set(product, "name", "Lantern", "venture-id", f->venture, NULL);
+	field(product, "cost", "5 GOLD");
+	save(f, product);
+	sale = ticket_sale(f, "40 TICKET");
+	g_object_set(sale, "cash-account-id", wallet, "product-id", venture_entity_get_id(product),
+		"quantity", (gint64)1, NULL);
+	save(f, sale);
+	g_assert_cmpint(held_in(f, wallet, "TICKET"), ==, 40);
+	journals = journals_for(f, "sale", venture_entity_get_id(sale));
+	g_assert_cmpuint(journals->len, ==, 1);
+	g_clear_pointer(&journals, g_ptr_array_unref);
+
+	field(sale, "gross", "50 TICKET");
+	save(f, sale);
+	g_assert_cmpint(held_in(f, wallet, "TICKET"), ==, 50);
+	journals = journals_for(f, "sale", venture_entity_get_id(sale));
+	g_assert_cmpuint(journals->len, ==, 1);
+	g_assert_cmpuint(count_state(journals, VENTURE_JOURNAL_POSTED), ==, 1);
+}
+
+/*
+ * A document that split into two journals -- a GOLD sale of a prize that
+ * cost TICKET, with no rate -- is not reversed and reposted as one GOLD
+ * journal because a rate was recorded and a note edited. The unchanged
+ * check used to run only when the journal count matched today's plan.
+ */
+static void
+test_resave_split_keeps_history(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) product = NULL;
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+
+	(void)data;
+	define_currency(f, "TICKET", 0, "valued");
+	product = record(f, "product");
+	g_object_set(product, "name", "Darkmoon prize", "venture-id", f->venture, NULL);
+	field(product, "cost", "5 TICKET");
+	save(f, product);
+	sale = ticket_sale(f, "15 GOLD");
+	g_object_set(sale, "product-id", venture_entity_get_id(product), "quantity", (gint64)2, NULL);
+	save(f, sale);
+	journals = journals_for(f, "sale", venture_entity_get_id(sale));
+	g_assert_cmpuint(journals->len, ==, 2);
+	g_clear_pointer(&journals, g_ptr_array_unref);
+
+	rate(f, "TICKET", "GOLD", 1, 2);
+	g_object_set(sale, "notes", "Metadata only", NULL);
+	save(f, sale);
+	journals = journals_for(f, "sale", venture_entity_get_id(sale));
+	g_assert_cmpuint(journals->len, ==, 2);
+	g_assert_cmpuint(count_state(journals, VENTURE_JOURNAL_POSTED), ==, 2);
+}
+
 /*
  * Finding 3b: a line takes its document's currency. A TICKET line on a
  * GOLD purchase order was accepted end to end; a vendor bill caught it only
@@ -1035,6 +1185,11 @@ main(int argc, char **argv)
 	g_test_add("/currency-books/missing-amount-is-book-currency", Fixture, NULL, setup_gold, test_missing_amount_is_book_currency, teardown);
 	g_test_add("/currency-books/ticket-expense", Fixture, NULL, setup_gold, test_ticket_expense, teardown);
 	g_test_add("/currency-books/resave-keeps-history", Fixture, NULL, setup_gold, test_resave_keeps_history, teardown);
+	g_test_add("/currency-books/resave-into-memo", Fixture, NULL, setup_gold, test_resave_into_memo, teardown);
+	g_test_add("/currency-books/mixed-memo-follows-edits", Fixture, NULL, setup_gold,
+		test_mixed_memo_follows_edits, teardown);
+	g_test_add("/currency-books/resave-split-keeps-history", Fixture, NULL, setup_gold,
+		test_resave_split_keeps_history, teardown);
 	g_test_add("/currency-books/line-currency", Fixture, NULL, setup_gold, test_line_currency, teardown);
 	g_test_add("/currency-books/manual-mixing", Fixture, NULL, setup_gold, test_manual_mixing, teardown);
 	g_test_add("/currency-books/pairs-per-currency", Fixture, NULL, setup_gold, test_pairs_per_currency, teardown);

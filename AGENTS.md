@@ -572,10 +572,15 @@ than one that fails.
   organization with a EUR-to-USD `exchange_rate` now posts one USD journal
   valued at that rate (functional-currency accounting), not a EUR
   journal. Only new postings: a re-save with the same original amounts is
-  not reposted because a rate or a treatment changed since
-  (`same_posting()` compares original amounts, not valuations) -- keep it
+  not reposted because a rate or a treatment changed since -- keep it
   that way, or recording one rate rewrites every past period the next
-  time a note is edited.
+  time a note is edited. `venture_ledger_save_source()` decides "changed"
+  by building the *previous* version's lines under today's rule and
+  comparing them (`same_posting()`: accounts, sides, original amounts,
+  date) with the new version's, never by comparing the new plan with the
+  posted journals: a plan can split into a different number of journals
+  after a rate or treatment change, and a plan with no journals at all
+  (every amount memo) is still a change to reverse.
 - **A document line is in its document's currency.** Purchase order lines
   and vendor bill lines are held to their order's or bill's `currency` by
   save validators (`venture_purchasing_install_validators()`), and the
@@ -615,7 +620,9 @@ than one that fails.
   memo lines `post_by_currency_full()` would have dropped. Never write a
   movement beside a journal line for the same money: the validator refuses
   a hand movement in a posted currency, and `venture_ledger_save_source()`
-  adds none for a document an earlier treatment already journaled. Re-saves
+  leaves an *unchanged* document an earlier treatment journaled alone
+  (no movement beside its journal); a changed one is reversed and written
+  under today's treatment, journals and movements together. Re-saves
   *replace* a document's movements (unchanged ones kept), session yields and
   transfers *append* -- pick the right one or an edited expense spends twice.
 - **Deleting a document keeps its holding movements, as it keeps its
