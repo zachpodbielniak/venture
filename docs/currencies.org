@@ -163,6 +163,15 @@ afterwards.
 treated as valued. An upgraded install sets =valued= on every existing
 currency (migration =000705=), which is what they all behaved as.
 
+*A book currency is never memo.* An organization's =default_currency= is
+the currency its books are kept in, and it is always posted: a currency
+record is refused =memo= while any organization keeps its books in it
+("GOLD is the book currency of Evermoor Trading, and a book currency is
+always posted ..."), and an organization is refused a =default_currency=
+whose treatment is =memo=. Without the rule one edit to the currency
+record made every sale and expense save with no journal and no error.
+=separate_book= is allowed for a book currency -- it is still a book.
+
 A game economy is the worked case. Its book currency is =GOLD=. Fair
 tickets are only ever counted -- how many each character holds -- and have
 no price in gold: =memo= keeps them out of the ledger entirely, a sale for

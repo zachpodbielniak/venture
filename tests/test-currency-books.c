@@ -845,6 +845,44 @@ test_resave_split_keeps_history(Fixture *f, gconstpointer data)
 }
 
 /*
+ * A book currency is always posted. Making the organization's own currency
+ * memo -- or keeping the books in a memo currency -- used to be accepted,
+ * and every sale and expense then saved with no journal and no error. If
+ * this regresses, one click on a currency record silently stops the books.
+ */
+static void
+test_book_currency_never_memo(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CURRENCY);
+	g_autoptr(VentureEntity) gold = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "GOLD", NULL);
+	gold = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error);
+	field(gold, "book-treatment", "memo");
+	g_assert_false(venture_database_save(f->db, gold, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "book currency"));
+	g_clear_error(&error);
+	g_assert_cmpint(venture_currency_get_book_treatment("GOLD"), ==, VENTURE_BOOK_TREATMENT_VALUED);
+
+	/* separate_book is fine: a book of its own is still a book. */
+	field(gold, "book-treatment", "separate_book");
+	save(f, gold);
+
+	define_currency(f, "TICKET", 0, "memo");
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->org, &error);
+	g_assert_no_error(error);
+	g_object_set(organization, "default-currency", "TICKET", NULL);
+	g_assert_false(venture_database_save(f->db, organization, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "memo currency"));
+}
+
+/*
  * Finding 3b: a line takes its document's currency. A TICKET line on a
  * GOLD purchase order was accepted end to end; a vendor bill caught it only
  * at issue. And a document cannot be moved to a currency its lines are
@@ -1185,6 +1223,8 @@ main(int argc, char **argv)
 	g_test_add("/currency-books/missing-amount-is-book-currency", Fixture, NULL, setup_gold, test_missing_amount_is_book_currency, teardown);
 	g_test_add("/currency-books/ticket-expense", Fixture, NULL, setup_gold, test_ticket_expense, teardown);
 	g_test_add("/currency-books/resave-keeps-history", Fixture, NULL, setup_gold, test_resave_keeps_history, teardown);
+	g_test_add("/currency-books/book-currency-never-memo", Fixture, NULL, setup_gold,
+		test_book_currency_never_memo, teardown);
 	g_test_add("/currency-books/resave-into-memo", Fixture, NULL, setup_gold, test_resave_into_memo, teardown);
 	g_test_add("/currency-books/mixed-memo-follows-edits", Fixture, NULL, setup_gold,
 		test_mixed_memo_follows_edits, teardown);

@@ -1289,7 +1289,9 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
   converted into the organization's book currency when an `exchange_rate`
   to it exists on the date, else posted as its own balanced journal),
   `separate_book` (always its own journal, never converted) or `memo`
-  (never posted). It may change; only later postings follow it.
+  (never posted). It may change; only later postings follow it. An
+  organization's `default_currency` can never be `memo` (refused both
+  ways: on the currency record and on the organization).
 - Posting follows the rule for every currency, ISO included: once a
   `EUR`→`USD` rate is recorded, a EUR expense in a USD organization posts a
   USD journal whose lines keep the EUR amount. `report trial_balance`
