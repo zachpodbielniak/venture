@@ -422,6 +422,14 @@ forms_validate_field(
 			"family-name, street-address or postal-code", autocomplete);
 		return FALSE;
 	}
+	/* A sensitive answer copied into a lead would leave the one column
+	 * that keeps it in. */
+	if (venture_forms_get_bool(entity, "sensitive") && !venture_string_is_empty(maps))
+	{
+		venture_set_error_validation(error, "Maps to",
+			"a sensitive question cannot fill a lead; its answer stays on the response");
+		return FALSE;
+	}
 	if (!venture_string_is_empty(maps) && !g_strv_contains(forms_lead_targets, maps))
 	{
 		venture_set_error_validation(error, "Maps to",
@@ -488,6 +496,8 @@ forms_validate_submission(
 	{
 		g_autofree gchar *before = venture_forms_get_string(previous, "answers");
 		g_autofree gchar *after = venture_forms_get_string(entity, "answers");
+		g_autofree gchar *secret_before = venture_forms_get_string(previous, "sensitive-answers");
+		g_autofree gchar *secret_after = venture_forms_get_string(entity, "sensitive-answers");
 		g_autofree gchar *summary_before = venture_forms_get_string(previous, "summary");
 		g_autofree gchar *summary_after = venture_forms_get_string(entity, "summary");
 		g_autofree gchar *origin_before = venture_forms_get_string(previous, "origin");
@@ -497,7 +507,7 @@ forms_validate_submission(
 
 		g_object_get(previous, "submitted-at", &at_before, NULL);
 		g_object_get(entity, "submitted-at", &at_after, NULL);
-		if (0 != g_strcmp0(before, after) ||
+		if (0 != g_strcmp0(before, after) || 0 != g_strcmp0(secret_before, secret_after) ||
 		    venture_forms_get_int(previous, "form-id") != venture_forms_get_int(entity, "form-id") ||
 		    venture_forms_get_int(previous, "version-id") != venture_forms_get_int(entity, "version-id") ||
 		    venture_forms_get_int(previous, "version-number") != venture_forms_get_int(entity, "version-number") ||
@@ -1231,7 +1241,7 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 		return;
 	}
 
-	if (VENTURE_FORM_FIELD_CHECKBOX == kind)
+	if (VENTURE_FORM_FIELD_CHECKBOX == kind || VENTURE_FORM_FIELD_CONSENT == kind)
 	{
 		const gchar *value = (NULL != values) ? g_ptr_array_index(values, 0) : "";
 		gboolean ticked;
@@ -1248,6 +1258,24 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 		if (required && !ticked)
 		{
 			forms_refuse(errors, key, "This box must be ticked.");
+			return;
+		}
+		/* A permission is the words it was given to, not a tick: keep
+		 * them. An unticked box records nothing, so consent is never
+		 * invented from a default. */
+		if (VENTURE_FORM_FIELD_CONSENT == kind)
+		{
+			JsonObject *consent;
+
+			if (!ticked)
+				return;
+			consent = json_object_new();
+			json_object_set_boolean_member(consent, "given", TRUE);
+			json_object_set_string_member(consent, "wording", label);
+			if (!venture_string_is_empty(field->help))
+				json_object_set_string_member(consent, "detail", field->help);
+			json_object_set_object_member(answers, key, consent);
+			g_string_append_printf(summary, "%s: Given\n", label);
 			return;
 		}
 		json_object_set_boolean_member(answers, key, ticked);
@@ -1626,6 +1654,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autoptr(GPtrArray) fields = NULL;
 	g_autoptr(JsonObject) stored = json_object_new();
 	g_autoptr(JsonObject) refused = json_object_new();
+	g_autoptr(JsonObject) secret = json_object_new();
+	g_autofree gchar *secret_text = NULL;
 	g_autoptr(GString) summary = g_string_new(NULL);
 	g_autoptr(VentureEntity) response = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -1669,10 +1699,22 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 			forms_refuse(refused, key, "This form has no such question.");
 	}
 
+	/* A sensitive answer is checked like any other, then kept apart: in
+	 * a column that never leaves the record, with only its question named
+	 * in the summary that search, webhooks and the assistant read. */
 	for (i = 0; i < fields->len; i++)
 	{
 		const VentureFormsField *field = g_ptr_array_index(fields, i);
 
+		if (field->sensitive)
+		{
+			g_autoptr(GString) hidden = g_string_new(NULL);
+
+			forms_check_field(field, g_hash_table_lookup(answers, field->key), secret, refused, hidden);
+			if (hidden->len > 0)
+				g_string_append_printf(summary, "%s: (sensitive)\n", field->label);
+			continue;
+		}
 		forms_check_field(field, g_hash_table_lookup(answers, field->key), stored, refused, summary);
 	}
 
@@ -1688,10 +1730,18 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	json_node_set_object(node, stored);
 	/* JSON fields are stored as their text; written once, in one form. */
 	answers_text = json_to_string(node, FALSE);
+	if (json_object_get_size(secret) > 0)
+	{
+		g_autoptr(JsonNode) hidden = json_node_new(JSON_NODE_OBJECT);
+
+		json_node_set_object(hidden, secret);
+		secret_text = json_to_string(hidden, FALSE);
+	}
 	if (summary->len > 0 && '\n' == summary->str[summary->len - 1])
 		g_string_truncate(summary, summary->len - 1);
 
 	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+	g_object_set(response, "sensitive-answers", secret_text, NULL);
 	if (!forms_write(database, form, response, fields, stored, TRUE, now, &follow_error))
 	{
 		g_autofree gchar *note = NULL;
@@ -1709,7 +1759,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_clear_error(&follow_error);
 		g_clear_object(&response);
 		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
-		g_object_set(response, "mapping-note", note, NULL);
+		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, NULL);
 		if (!forms_write(database, form, response, fields, stored, FALSE, now, error))
 			return FALSE;
 	}

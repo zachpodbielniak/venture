@@ -1627,6 +1627,94 @@ test_versions_action(Fixture *f, gconstpointer data)
 }
 
 /* ==========================================================================
+ * Privacy
+ * ========================================================================== */
+
+/* Consent is the words it was given to; an unticked box records nothing,
+ * so consent is never made up from a default. */
+static void
+test_consent_recorded(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "consent-form");
+	g_autoptr(VentureEntity) consent = make_field(f, form, "news", "Send me the monthly newsletter",
+		VENTURE_FORM_FIELD_CONSENT, FALSE, 70);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	g_autoptr(GPtrArray) rows = NULL;
+	const gchar *const yes[] = { "name", "A", "email", "a@example.com", "topic", "sales", "news", "on", NULL };
+	const gchar *const no[] = { "name", "B", "email", "b@example.com", "topic", "sales", NULL };
+	g_autofree gchar *first = NULL, *second = NULL;
+	(void)data;
+	g_object_set(consent, "help", "Unsubscribe any time.", NULL);
+	save(f, consent);
+	g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, yes, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(submit_pairs(f, form, no, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(f->db, query, NULL);
+	g_object_get(g_ptr_array_index(rows, 0), "answers", &first, NULL);
+	g_object_get(g_ptr_array_index(rows, 1), "answers", &second, NULL);
+	g_assert_nonnull(strstr(first, "\"news\":{\"given\":true,\"wording\":\"Send me the monthly newsletter\",\"detail\":\"Unsubscribe any time.\"}"));
+	g_assert_null(strstr(second, "news"));
+}
+
+/* A sensitive answer stays on its record: not in the summary search and
+ * webhooks read, not in the record's JSON (the API, the assistant), not
+ * in the audit log, and it cannot be copied into a lead. The response's
+ * own page shows it. */
+static void
+test_sensitive_kept_apart(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "sensitive-form");
+	g_autoptr(VentureEntity) health = make_field(f, form, "health", "Anything we should know?",
+		VENTURE_FORM_FIELD_LONG_TEXT, FALSE, 70);
+	g_autoptr(VentureEntity) submission = NULL;
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(JsonNode) json = NULL;
+	g_autoptr(VentureQuery) audits = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autofree gchar *summary = NULL, *text = NULL, *page = NULL;
+	VentureFormsOutcome outcome;
+	guint i;
+	(void)data;
+	g_object_set(health, "sensitive", TRUE, NULL);
+	save(f, health);
+	g_object_unref(publish(f, form));
+	venture_forms_answers_add(answers, "name", "Alice Private");
+	venture_forms_answers_add(answers, "email", "alice@example.com");
+	venture_forms_answers_add(answers, "topic", "sales");
+	venture_forms_answers_add(answers, "health", "SECRET-CONDITION");
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &submission, &errors, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	g_object_get(submission, "summary", &summary, NULL);
+	g_assert_null(strstr(summary, "SECRET-CONDITION"));
+	g_assert_nonnull(strstr(summary, "Anything we should know?: (sensitive)"));
+	json = venture_serializable_to_json(VENTURE_SERIALIZABLE(submission), FALSE);
+	text = json_to_string(json, FALSE);
+	g_assert_null(strstr(text, "SECRET-CONDITION"));
+	page = venture_forms_render_answers(f->db, submission, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(strstr(page, "SECRET-CONDITION"));
+	/* The audit log names it by number and holds none of what was sent. */
+	venture_query_set_limit(audits, 0);
+	entries = venture_database_find(f->db, audits, NULL);
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autofree gchar *type = NULL, *label = NULL, *diff = NULL;
+		g_object_get(g_ptr_array_index(entries, i), "target-type", &type, "target-label", &label, "diff", &diff, NULL);
+		if (g_strcmp0(type, "form_submission") != 0)
+			continue;
+		g_assert_true(g_str_has_prefix(label, "Form response #"));
+		g_assert_true(diff == NULL || strstr(diff, "Alice") == NULL);
+	}
+	g_object_set(health, "maps-to", "notes", NULL);
+	refuse(f, health, "sensitive");
+}
+
+/* ==========================================================================
  * After a submission
  * ========================================================================== */
 
@@ -1800,6 +1888,8 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-ways-in", Fixture, NULL, setup, test_http_ways_in, teardown);
 	g_test_add("/forms/embed-codes", Fixture, NULL, setup, test_embed_codes, teardown);
 	g_test_add("/forms/builder-page", Fixture, NULL, setup, test_builder_page, teardown);
+	g_test_add("/forms/consent-recorded", Fixture, NULL, setup, test_consent_recorded, teardown);
+	g_test_add("/forms/sensitive-kept-apart", Fixture, NULL, setup, test_sensitive_kept_apart, teardown);
 	g_test_add("/forms/a11y-contract", Fixture, NULL, setup, test_a11y_contract, teardown);
 	g_test_add("/forms/versions-freeze", Fixture, NULL, setup, test_versions_freeze, teardown);
 	g_test_add("/forms/versions-publish-rules", Fixture, NULL, setup, test_versions_publish_rules, teardown);

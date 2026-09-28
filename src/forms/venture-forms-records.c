@@ -50,6 +50,7 @@ venture_form_field_kind_get_type(void)
 			{ VENTURE_FORM_FIELD_CHECKBOX, "VENTURE_FORM_FIELD_CHECKBOX", "checkbox" },
 			{ VENTURE_FORM_FIELD_RATING, "VENTURE_FORM_FIELD_RATING", "rating" },
 			{ VENTURE_FORM_FIELD_HIDDEN, "VENTURE_FORM_FIELD_HIDDEN", "hidden" },
+			{ VENTURE_FORM_FIELD_CONSENT, "VENTURE_FORM_FIELD_CONSENT", "consent" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureFormFieldKind", values);
@@ -141,6 +142,17 @@ static const VentureFieldDecl venture_form_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("confirmation-message", "Confirmation message", NULL,
 	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("privacy-url", "Privacy notice",
+	              "Optional: an https:// page explaining what you do with answers; linked on the form",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("retention-days", "Keep responses for",
+	              "Days a response is kept before the retention sweep removes it; 0 keeps them",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("retention-action", "After that",
+	              "anonymise (the default: keep the counts, drop the answers) or purge (delete)",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("result", "Result", "What a form action just did; never stored",
+	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_TRANSIENT | VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD("ticket-key", "Ticket key", "Signs fill-time tickets; never shown",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_TECHNICAL),
@@ -201,6 +213,10 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	VENTURE_FIELD("maps-to", "Maps to",
 	              "With Create a lead: name, email, phone, company_name, website or notes",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("sensitive", "Sensitive",
+	              "Kept out of the AI, webhooks, notifications, search and the audit log; "
+	              "shown only on the response's own page",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("autocomplete", "Autofill",
 	              "Optional: what the browser may fill in, e.g. given-name, postal-code; "
 	              "email, phone and web address questions set their own",
@@ -272,6 +288,11 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("answers", "Answer data", "The answers by question key, as stored",
 	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("sensitive-answers", "Sensitive answers",
+	              "Answers to sensitive questions, kept apart so they never leave the record",
+	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("anonymised-at", "Anonymised", "When the retention sweep removed its answers",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("lead-id", "Lead", "The lead this response became", "lead",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("mapping-note", "Follow-up note",
@@ -284,6 +305,14 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", "Your team's notes on it")
 };
 
+/* Everything a stranger typed, and what staff wrote about it, stays off
+ * the shared audit log: an erased response must leave nothing behind but
+ * the fact that it existed. */
+static const gchar *const venture_form_submission_private[] = {
+	"name", "summary", "answers", "sensitive-answers", "notes", "origin", "mapping-note", NULL
+};
+
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormSubmission, venture_form_submission,
 	venture_form_submission_fields,
-	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form response", NULL);)
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form response", NULL);
+	venture_entity_class_set_audit_private(VENTURE_ENTITY_CLASS(klass), venture_form_submission_private);)

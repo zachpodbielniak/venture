@@ -415,6 +415,40 @@ venture_entity_class_set_labels(
 	                 venture_entity_labels_quark(), labels);
 }
 
+static GQuark
+venture_entity_audit_private_quark(void)
+{
+	return g_quark_from_static_string("venture-entity-audit-private");
+}
+
+void
+venture_entity_class_set_audit_private(
+	VentureEntityClass	*klass,
+	const gchar *const	*properties
+){
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != properties);
+
+	/* Type data, kept for the life of the process like the labels. */
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass), venture_entity_audit_private_quark(),
+	                 g_strdupv((gchar **)properties));
+}
+
+const gchar *const *
+venture_entity_type_get_audit_private(GType type)
+{
+	GType walk;
+
+	for (walk = type; G_TYPE_INVALID != walk && VENTURE_TYPE_ENTITY != walk; walk = g_type_parent(walk))
+	{
+		gpointer data = g_type_get_qdata(walk, venture_entity_audit_private_quark());
+
+		if (NULL != data)
+			return data;
+	}
+	return NULL;
+}
+
 /*
  * "attribution_submission" or "VentureAttributionSubmission" to
  * "Attribution submission". ASCII only, as every type name is.

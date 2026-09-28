@@ -3515,11 +3515,20 @@ venture_audit_entry_new_for_change(
 		g_autofree gchar *label = NULL;
 
 		/* This label is shared with viewers; the token's owner-only
-		 * display name must not escape through its own audit record. */
-		label = VENTURE_IS_API_TOKEN(target)
-			? g_strdup_printf("API token #%" G_GINT64_FORMAT,
-				venture_entity_get_id(target))
-			: venture_entity_get_display_name(target);
+		 * display name must not escape through its own audit record,
+		 * nor may a record whose name is somebody's personal data. */
+		if (VENTURE_IS_API_TOKEN(target))
+			label = g_strdup_printf("API token #%" G_GINT64_FORMAT,
+				venture_entity_get_id(target));
+		else if (NULL != venture_entity_type_get_audit_private(G_OBJECT_TYPE(target)))
+		{
+			g_autofree gchar *type_label = venture_entity_type_dup_label(G_OBJECT_TYPE(target), FALSE);
+
+			label = g_strdup_printf("%s #%" G_GINT64_FORMAT, type_label,
+				venture_entity_get_id(target));
+		}
+		else
+			label = venture_entity_get_display_name(target);
 
 		g_object_set(entry,
 		             "target-type", venture_entity_get_entity_name(target),
@@ -3552,6 +3561,33 @@ venture_audit_entry_new_for_change(
 			json_object_set_object_member(json_node_get_object(private_diff), "name", marker);
 			g_clear_pointer(&text, g_free);
 			text = venture_json_to_string(private_diff, FALSE);
+		}
+		/* A private record's personal fields: that they changed, never
+		 * what they were or became. */
+		if (NULL != target && JSON_NODE_HOLDS_OBJECT(diff) &&
+		    NULL != venture_entity_type_get_audit_private(G_OBJECT_TYPE(target)))
+		{
+			const gchar *const *private = venture_entity_type_get_audit_private(G_OBJECT_TYPE(target));
+			g_autoptr(JsonNode) private_diff = venture_json_parse(text, NULL);
+			guint i;
+
+			for (i = 0; NULL != private_diff && NULL != private[i]; i++)
+			{
+				g_autofree gchar *member = venture_entity_property_to_column(private[i]);
+				JsonObject *marker;
+
+				if (!json_object_has_member(json_node_get_object(private_diff), member))
+					continue;
+				marker = json_object_new();
+				json_object_set_boolean_member(marker, "changed", TRUE);
+				json_object_set_boolean_member(marker, "redacted", TRUE);
+				json_object_set_object_member(json_node_get_object(private_diff), member, marker);
+			}
+			if (NULL != private_diff)
+			{
+				g_clear_pointer(&text, g_free);
+				text = venture_json_to_string(private_diff, FALSE);
+			}
 		}
 		g_object_set(entry, "diff", text, NULL);
 	}

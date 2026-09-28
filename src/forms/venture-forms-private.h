@@ -38,6 +38,7 @@ typedef struct
 	gchar			*label;
 	VentureFormFieldKind	 kind;
 	gboolean		 required;
+	gboolean		 sensitive;
 	gint64			 position;
 	gchar			*help;
 	gchar			*placeholder;

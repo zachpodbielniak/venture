@@ -59,6 +59,9 @@ GType venture_form_state_get_type(void) G_GNUC_CONST;
  * @VENTURE_FORM_FIELD_CHECKBOX: one yes-or-no box
  * @VENTURE_FORM_FIELD_RATING: a whole number on a scale
  * @VENTURE_FORM_FIELD_HIDDEN: a value the page supplies, not the person
+ * @VENTURE_FORM_FIELD_CONSENT: one box that records a permission: the
+ *   exact wording shown, the version and the time, and nothing when it is
+ *   left unticked
  *
  * What a question asks for, which decides its input and its validation.
  * Short text is the zero value: a field saved without a kind is the
@@ -78,7 +81,8 @@ typedef enum
 	VENTURE_FORM_FIELD_MULTIPLE_CHOICE,
 	VENTURE_FORM_FIELD_CHECKBOX,
 	VENTURE_FORM_FIELD_RATING,
-	VENTURE_FORM_FIELD_HIDDEN
+	VENTURE_FORM_FIELD_HIDDEN,
+	VENTURE_FORM_FIELD_CONSENT
 } VentureFormFieldKind;
 
 /**

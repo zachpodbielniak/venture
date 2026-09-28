@@ -571,6 +571,36 @@ const gchar *
 venture_entity_type_get_create_path(GType type);
 
 /**
+ * venture_entity_class_set_audit_private:
+ * @klass: a #VentureEntityClass
+ * @properties: (array zero-terminated=1): the properties whose values are
+ *   personal data
+ *
+ * Keeps a record's personal data out of the shared audit log. Its audit
+ * entries are labelled by type and number ("Form response #12") rather
+ * than by the display name, and a change to any of @properties is recorded
+ * as changed and redacted, never with its old or new value. The audit log
+ * is readable by every viewer and outlives an erasure; what somebody sent
+ * belongs on the record, where erasing the record erases it.
+ */
+void
+venture_entity_class_set_audit_private(
+	VentureEntityClass	*klass,
+	const gchar *const	*properties
+);
+
+/**
+ * venture_entity_type_get_audit_private:
+ * @type: a #VentureEntity subtype
+ *
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): the
+ *   properties redacted in @type's audit diffs, or %NULL when @type's audit
+ *   entries may carry its display name and values
+ */
+const gchar *const *
+venture_entity_type_get_audit_private(GType type);
+
+/**
  * venture_entity_type_dup_label:
  * @type: a #VentureEntity subtype
  * @plural: whether to name several records rather than one
