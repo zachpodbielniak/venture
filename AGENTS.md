@@ -1070,6 +1070,17 @@ than one that fails.
   returns, `wait` returns 127 at once, and the EXIT trap then kills the
   instance. `make demo` would print a port and leave nothing listening.
   `tests/demo-foreground.sh` is the check.
+- **Relative dates count from one anchor, never from the clock each time.**
+  `at_hour` and `at_minute` used to read the wall clock and round their
+  own answers, so a spend at "26 hours ago, on the hour" fell before the
+  session "1610 minutes ago" that funded it in the last ten minutes of
+  every hour, and the purse refused to go below zero. They now count from
+  `set_economy_clock`'s anchor (the current UTC hour, or
+  `VENTURE_DEMO_ECONOMY_NOW`), so the order of two dates is the order of
+  their offsets. `tests/demo-clock.sh` replays the economy at awkward
+  clock times and checks every purse is funded before it is spent. The
+  same class of bug hid in the bank feed: a statement ending five days ago
+  refused a row dated the first of the month on the 1st to 5th.
 - **The enum values are checked against `venturectl describe`, not
   guessed.** Four of them were wrong on the first run: a campaign is
   `running` not `active`, an idea is `researching` not `exploring`, a

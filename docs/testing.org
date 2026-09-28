@@ -361,6 +361,18 @@ Fakes the tests talk *to* -- an SMTP or IMAP stub, an OIDC provider, a receipt p
 
 =test-ports= starts a port-0 server and requires =get_port()= and the base URL to name the bound port and =/api/v1/health= to answer there; starts two port-0 servers in one process and requires two ports; occupies a port and requires a server told that port to fail with "Cannot listen on" (the phrase the subprocess retry keys on) while a port-0 server beside it starts; requires =venture_test_free_port()= never to return a held port and always to return a bindable one; and reads every file under =tests/= for a line that calls =getpid()= and mentions a port, so a fixture copied from an old one cannot bring the arithmetic back.
 
+** The demo's clock
+:PROPERTIES:
+:CUSTOM_ID: demo-clock
+:END:
+
+=tools/venture-demo.sh= seeds through the API and dates much of what it makes relative to the present, and the server refuses a holding spent below zero, a bank line outside its statement and anything dated in the future. A relative date that is rounded independently of its neighbours can therefore fail the seed at some times of day and pass at others; test-docs' quickstart runs the whole seed, so it inherits the flake.
+
+- The game economy (=seed_virtual_economy=) dates everything with =at_hour= and =at_minute=, which count from one anchor fixed per seed by =set_economy_clock= -- the start of the current UTC hour, or =VENTURE_DEMO_ECONOMY_NOW= when set (it is refused if it is in the future). They used to read the wall clock and round each answer separately, and in the last ten minutes of every hour the six-token Brewfest spend at "26 hours ago, on the hour" fell before the session ending 1610 minutes ago that earned the tokens.
+- The bank feed's statement ends today. It ended five days ago, and on the 1st to the 5th of a month the hosting line dated the first of the month fell outside it.
+
+=tests/demo-clock.sh=, run by =make test= after the binaries, sources the demo with the server calls replaced by recorders and runs the economy's seed with the clock pinned on the hour, five minutes past, five minutes to, a second to, just before midnight at a month's end, on a leap day, a second before a new year, and at the real present. Each run must date nothing in the future, place every timestamp at the same offset from the anchor as every other run, and -- replaying the TICKET and BREWFEST movements in date order -- never spend a purse before it was funded, a spend at the same instant as its income counting as too early; the transfers between characters must stay undated. With the old helpers it fails at 12:05 (the offsets moved) and, run alone at 12:55, with the exact refusal the server gave: "BREWFEST is spent at ... before it was earned".
+
 * Standalone CLI dependency boundary
 
 The CLI must build without the mail server's GMime development package. Run =make DEBUG=1 -W src/cli/main.c venturectl= without any temporary server dependency prefix to compile and relink the CLI. Server-only pkg-config queries are deferred until a server or test recipe expands its flags; a successful CLI build that still emits missing server-package diagnostics fails this boundary.

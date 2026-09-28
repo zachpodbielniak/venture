@@ -101,6 +101,9 @@ Options:
 Environment:
   PORT                Same as --port
   VENTURE_DEMO_STATE  Same as --state
+  VENTURE_DEMO_ECONOMY_NOW
+                      Pin the game economy's clock to this instant (not in
+                      the future); its records are dated back from it
   BUILD_TYPE          debug (default) or release -- which build tree to run
 
 Examples:
@@ -901,6 +904,12 @@ seed_banking () {
     # days, exactly one candidate each. The bank charge matches nothing,
     # which is the interesting row -- a demo should show the one that
     # still needs a person.
+    #
+    # The statement ends today, not five days ago. The hosting row is
+    # dated the first of this month, like the expense it matches, and on
+    # the first five days of any month that is after "five days ago": the
+    # import refused it as outside the statement and the demo died on
+    # those days only.
     feed="${state}/bank-feed.json"
 
     python3 -c 'import json, sys
@@ -915,7 +924,7 @@ print(json.dumps({
     "format": "csv", "data": data,
     "period_start": sys.argv[4], "period_end": sys.argv[5],
     "opening_balance": "1000.00", "closing_balance": "2125.00",
-}))' "$(day -19)" "$(month_start 0)" "$(day -8)" "$(day -35)" "$(day -5)" \
+}))' "$(day -19)" "$(month_start 0)" "$(day -8)" "$(day -35)" "$(day 0)" \
         > "${feed}" || die "could not write the bank feed"
 
     statement="$(ctl --format json bank import "${bank}" "@${feed}" 2>/dev/null \
@@ -1636,19 +1645,65 @@ gold () {
     printf '%sGOLD' "${text}"
 }
 
-# A timestamp N hours from now (negative is the past), for the records a
-# game economy dates to the hour: listings, sales, price checks.
-at_hour () {
-    date -u -d "$1 hours" +%Y-%m-%dT%H:00:00Z
+# The economy's clock: one instant, fixed once per seed, that every
+# at_hour and at_minute below counts from.
+#
+# Each helper used to read the wall clock and round its own answer --
+# at_hour to the hour, at_minute to the minute -- so two offsets 50
+# minutes apart swapped places whenever the seed ran in the last ten
+# minutes of an hour. A festival-token spend dated "26 hours ago, on the
+# hour" then landed before the session that earned the tokens ended, and
+# the holding refused to go below zero. Counting every offset from one
+# anchor, rounded once, makes the order of any two timestamps the order
+# of their offsets, whatever the time of day.
+#
+# The anchor is the start of the current UTC hour, so it is never in the
+# future and every negative offset is in the past. VENTURE_DEMO_ECONOMY_NOW
+# pins it instead -- any instant `date -d` reads, not in the future --
+# which is how tests/demo-clock.sh replays the seed at awkward times.
+economy_anchor=""
+
+set_economy_clock () {
+    local now
+    local present
+
+    present="$(date -u +%s)"
+
+    if [[ -n "${VENTURE_DEMO_ECONOMY_NOW:-}" ]]
+    then
+        now="$(date -u -d "${VENTURE_DEMO_ECONOMY_NOW}" +%s 2>/dev/null)" \
+            || die "VENTURE_DEMO_ECONOMY_NOW=\"${VENTURE_DEMO_ECONOMY_NOW}\" is not a time date can read"
+        (( now <= present )) \
+            || die "VENTURE_DEMO_ECONOMY_NOW is in the future, and the server refuses records dated there"
+    else
+        now="${present}"
+    fi
+
+    economy_anchor=$(( now / 3600 * 3600 ))
 }
 
-# The same to the minute, for a session's start and end.
+# Seconds from the anchor as a timestamp, failing loudly without one:
+# a silent fallback to the wall clock is exactly the bug above.
+economy_time () {
+    [[ -n "${economy_anchor}" ]] || die "the economy's clock is not set; call set_economy_clock"
+    date -u -d "@$(( economy_anchor + $1 ))" "${2:-+%Y-%m-%dT%H:%M:%SZ}"
+}
+
+# A timestamp N hours from the anchor (negative is the past), for the
+# records a game economy dates to the hour: listings, sales, price checks.
+at_hour () {
+    economy_time $(( $1 * 3600 ))
+}
+
+# The same in minutes, for a session's start and end.
 at_minute () {
-    date -u -d "$1 minutes" +%Y-%m-%dT%H:%M:00Z
+    economy_time $(( $1 * 60 ))
 }
 
 seed_virtual_economy () {
     step "A second organization: an auction-house trade kept in gold"
+
+    set_economy_clock
 
     local org
     local venture
@@ -1795,7 +1850,7 @@ ${flask} ${bank} 0"
     do
         n=$(( n + 1 ))
         session="$(make_record session organization_id="${org}" venture_id="${venture}" \
-            name="${route//_/ } $(date -u -d "${start} hours" +%m-%d)" activity="${route//_/ }" \
+            name="${route//_/ } $(economy_time $(( start * 3600 )) +%m-%d)" activity="${route//_/ }" \
             location_id="${brisk}" started_at="$(at_minute $(( start * 60 )))" \
             ended_at="$(at_minute $(( start * 60 + minutes )))" \
             cost="$(gold 1500)" notes="Repairs and a flight")"
