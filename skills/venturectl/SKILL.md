@@ -1310,6 +1310,24 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
   the rule keeps apart, saying why. A memo-currency line is refused.
 - A purchase order line and a vendor bill line must be in their order's or
   bill's `currency`; the save is refused otherwise.
+- **Stock priced in another currency comes in through a purchase order**,
+  which is not a record action but its own command (`POST
+  /api/v1/purchase_order/:id/:action`). Create the `purchase_order`
+  (`status=draft`, `currency=TICKET`, `vendor_id` a supplier company) and
+  its `purchase_order_line` (`inventory_item_id`, `quantity`,
+  `unit_price="4 TICKET"`) with `create`, then:
+
+  ```sh
+  venturectl purchase approve 7
+  venturectl purchase send 7
+  venturectl purchase receive 7 line_id=12 quantity=2 date=2026-03-02T10:00:00Z
+  ```
+
+  The receipt is a FIFO cost layer in the order's currency, journalled
+  Inventory against GRNI by its treatment (memo: none). Selling the item
+  for gold posts GOLD revenue and a TICKET cost of goods. A purchase order
+  is not a payment: a memo currency paid out of a purse is a `holding_txn`
+  `kind=spend` (negative), a posted one is the vendor bill.
 
 ## Holdings: what each wallet, till or character holds
 

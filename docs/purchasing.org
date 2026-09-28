@@ -26,6 +26,36 @@ Inventory 1200 against Goods received not invoiced 2010 through
 =VenturePostingService=. Quantity on hand remains the sum of
 =inventory_txn= rows. Over-receipt is refused.
 
+* Receiving in another currency
+
+A purchase order is in one currency, and its lines must be in it (a save
+validator refuses a line that is not). Receiving costs the stock in that
+currency: the FIFO layer carries it, and the Inventory/GRNI pair posts
+by the currency's book treatment (see [[file:currencies.org][Currencies]]) -- converted into the
+book currency when a =valued= currency has a rate, a journal of its own
+for =separate_book=, nothing at all for =memo=. Selling the unit later
+posts the revenue in the sale's currency and the cost of goods in the
+layer's, so a lantern bought for tickets and sold for gold is GOLD
+revenue and TICKET cost (see [[file:inventory.org][Inventory]]).
+
+The whole flow is reachable without the workbench: the REST route below
+is what =venturectl purchase= drives, and it takes every value as the
+CLI sends it, a string (="quantity": "2"=). =/inventory-currencies/http-ticket-purchase=
+receives a TICKET order through it and sells the unit for gold.
+
+A purchase order is not a payment. For a memo currency paid out of a
+character's purse, record the spend as a =holding_txn= (=kind=spend=,
+negative); for a posted currency the vendor bill carries it.
+
+#+begin_src sh
+venturectl create purchase_order number=FAIRE-1 vendor_id=3 currency=TICKET status=draft
+venturectl create purchase_order_line purchase_order_id=7 inventory_item_id=9 \
+    description=Lantern quantity=2 position=1 unit_price="4 TICKET"
+venturectl purchase approve 7
+venturectl purchase send 7
+venturectl purchase receive 7 line_id=12 quantity=2
+#+end_src
+
 * Three-way match
 
 =match= links a draft =vendor_bill= to the purchase order and compares
@@ -45,7 +75,7 @@ and quantity) and =match= (bill id, optional exception).
 #+begin_src sh
 venturectl purchase approve 1
 venturectl purchase send 1
-venturectl purchase receive LINE quantity=4
+venturectl purchase receive 1 line_id=LINE quantity=4
 venturectl purchase match 1 vendor_bill_id=2
 venturectl bill approve 2
 #+end_src

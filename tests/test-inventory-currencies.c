@@ -15,7 +15,11 @@
 
 #include <venture.h>
 
+#include <libsoup/soup.h>
 #include <string.h>
+#include <unistd.h>
+
+#include "venture-test-util.h"
 
 typedef struct
 {
@@ -79,16 +83,15 @@ rate(Fixture *f, const gchar *from, const gchar *to, gint64 numerator, gint64 de
 	save(f, row);
 }
 
+/* The organization, its venture and its currencies, over @f->config. */
 static void
-setup(Fixture *f, gconstpointer data)
+seed(Fixture *f, const gchar *ticket)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureVenture) venture = venture_venture_new();
 	g_autoptr(VentureEntity) organization = NULL;
-	const gchar *ticket = data;
 
 	venture_currency_clear_registered();
-	f->config = venture_config_new();
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -104,6 +107,13 @@ setup(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_object_set(organization, "default-currency", "GOLD", NULL);
 	save(f, organization);
+}
+
+static void
+setup(Fixture *f, gconstpointer data)
+{
+	f->config = venture_config_new();
+	seed(f, data);
 }
 
 static void
@@ -833,6 +843,245 @@ test_inventory_report(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(metric(result, "value_TICKET"))), ==, 20);
 }
 
+/* ==========================================================================
+ * Through the REST API, as venturectl sends it
+ * ========================================================================== */
+
+typedef struct
+{
+	Fixture		 base;
+	VentureWebServer	*server;
+	SoupSession	*session;
+	gchar		*state_dir;
+	gchar		*cookie;
+	guint16		 port;
+} ServerFixture;
+
+typedef struct
+{
+	gboolean	 done;
+	GBytes		*body;
+	GError		*error;
+} RequestResult;
+
+static void
+request_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	RequestResult *outcome = user_data;
+
+	outcome->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result,
+		&outcome->error);
+	outcome->done = TRUE;
+}
+
+/* Sends @body with @content_type; returns the status. */
+static guint
+server_request(ServerFixture *sf, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out_body)
+{
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u%s", sf->port, path);
+	message = soup_message_new(method, url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (sf->cookie != NULL)
+		soup_message_headers_append(soup_message_get_request_headers(message), "Cookie",
+			sf->cookie);
+	if (body != NULL)
+	{
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+
+		soup_message_set_request_body_from_bytes(message, content_type, bytes);
+	}
+	soup_session_send_and_read_async(sf->session, message, G_PRIORITY_DEFAULT, NULL,
+		request_done, &outcome);
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+	if (outcome.error != NULL)
+		g_error("%s %s: %s", method, path, outcome.error->message);
+	if (out_body != NULL)
+		*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL), g_bytes_get_size(outcome.body));
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	return soup_message_get_status(message);
+}
+
+static void
+server_setup(ServerFixture *sf, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureUser) user = NULL;
+	g_autofree gchar *set_cookie = NULL;
+	gchar *semicolon;
+
+	g_setenv("VENTURE_TEST_SESSION_SECRET", "inventory-currencies-secret", TRUE);
+	sf->state_dir = g_dir_make_tmp("venture-inventory-currencies-XXXXXX", NULL);
+	sf->port = (guint16)(20000 + ((getpid() + 17377) % 20000));
+	sf->base.config = venture_config_new();
+	g_object_set(sf->base.config, "state-dir", sf->state_dir,
+		"server-bind-address", "127.0.0.1", "server-port", (gint64)sf->port,
+		"security-session-secret-env", "VENTURE_TEST_SESSION_SECRET",
+		"security-password-iterations", (gint64)100000, NULL);
+	seed(&sf->base, data);
+	sf->server = venture_web_server_new(sf->base.context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(sf->server, &error));
+	g_assert_no_error(error);
+	sf->session = soup_session_new();
+
+	user = venture_user_new();
+	g_object_set(user, "username", "owner", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	g_assert_true(venture_user_set_password(user, "owner-password-1", 100000, NULL));
+	save(&sf->base, user);
+	{
+		g_autoptr(SoupMessage) message = NULL;
+		g_autofree gchar *url = g_strdup_printf("http://127.0.0.1:%u/login", sf->port);
+		g_autoptr(GBytes) bytes = g_bytes_new_static("username=owner&password=owner-password-1",
+			strlen("username=owner&password=owner-password-1"));
+		RequestResult outcome = { FALSE, NULL, NULL };
+
+		message = soup_message_new("POST", url);
+		soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+		soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
+		soup_session_send_and_read_async(sf->session, message, G_PRIORITY_DEFAULT, NULL,
+			request_done, &outcome);
+		while (!outcome.done)
+			g_main_context_iteration(NULL, TRUE);
+		g_clear_pointer(&outcome.body, g_bytes_unref);
+		g_clear_error(&outcome.error);
+		set_cookie = g_strdup(soup_message_headers_get_one(
+			soup_message_get_response_headers(message), "Set-Cookie"));
+	}
+	g_assert_nonnull(set_cookie);
+	semicolon = strchr(set_cookie, ';');
+	if (semicolon != NULL)
+		*semicolon = '\0';
+	sf->cookie = g_steal_pointer(&set_cookie);
+}
+
+static void
+server_teardown(ServerFixture *sf, gconstpointer data)
+{
+	if (sf->server != NULL)
+		venture_web_server_stop(sf->server);
+	g_clear_pointer(&sf->cookie, g_free);
+	g_clear_object(&sf->session);
+	g_clear_object(&sf->server);
+	teardown(&sf->base, data);
+	if (sf->state_dir != NULL)
+	{
+		venture_test_remove_tree(sf->state_dir);
+		g_clear_pointer(&sf->state_dir, g_free);
+	}
+	g_unsetenv("VENTURE_TEST_SESSION_SECRET");
+}
+
+/* POSTs a goods action, asserting it answers 200. */
+static void
+goods_action(ServerFixture *sf, gint64 id, const gchar *action, const gchar *body)
+{
+	g_autofree gchar *path = g_strdup_printf("/api/v1/purchase_order/%" G_GINT64_FORMAT "/%s",
+		id, action);
+	g_autofree gchar *answer = NULL;
+	guint status;
+
+	status = server_request(sf, "POST", path, "application/json", body != NULL ? body : "{}",
+		&answer);
+	if (status != SOUP_STATUS_OK)
+		g_error("%s: %u %s", path, status, answer);
+}
+
+/*
+ * Stock bought with tickets arrives without the web page: a purchase order
+ * in TICKET is approved, sent and received through the REST route that
+ * `venturectl purchase` drives -- quantity sent as a string, the way the
+ * CLI sends every value -- and lands as a TICKET cost layer. Sold for gold,
+ * the revenue posts in GOLD and the cost of goods in TICKET, each in its
+ * own book. If this regresses, a demo or an agent has no way to bring in
+ * ticket-priced stock, or the sale folds the ticket cost into gold.
+ */
+static void
+test_http_ticket_purchase(ServerFixture *sf, gconstpointer data)
+{
+	Fixture *f = &sf->base;
+	g_autoptr(VentureEntity) vendor = NULL;
+	g_autoptr(VentureEntity) po = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(GPtrArray) layers = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GPtrArray) values = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *revenue_currency = NULL;
+	g_autofree gchar *cost_currency = NULL;
+	gint64 prize_product;
+	gint64 prize;
+	gint64 po_id;
+
+	(void)data;
+	prize_product = product(f, "Whistle of the Faire");
+	prize = item(f, prize_product, "FAIRE-WHISTLE");
+	vendor = record(f, "company");
+	g_object_set(vendor, "name", "Faire prize booth", NULL);
+	field(vendor, "kind", "supplier");
+	save(f, vendor);
+
+	po = record(f, "purchase_order");
+	g_object_set(po, "number", "FAIRE-1", "vendor-id", venture_entity_get_id(vendor),
+		"currency", "TICKET", "status", "draft", NULL);
+	field(po, "ordered-at", "2026-03-01");
+	save(f, po);
+	po_id = venture_entity_get_id(po);
+	line = record(f, "purchase_order_line");
+	g_object_set(line, "purchase-order-id", po_id, "product-id", prize_product,
+		"inventory-item-id", prize, "description", "Whistle", "quantity", (gint64)2,
+		"position", (gint64)1, NULL);
+	field(line, "unit-price", "20 TICKET");
+	save(f, line);
+
+	goods_action(sf, po_id, "approve", NULL);
+	goods_action(sf, po_id, "send", NULL);
+	body = g_strdup_printf("{\"line_id\": \"%" G_GINT64_FORMAT "\", \"quantity\": \"2\"}",
+		venture_entity_get_id(line));
+	goods_action(sf, po_id, "receive", body);
+
+	layers = layers_of(f, prize);
+	g_assert_cmpuint(layers->len, ==, 1);
+	{
+		g_autoptr(VentureMoney) unit = NULL;
+
+		g_object_get(g_ptr_array_index(layers, 0), "unit-cost", &unit, NULL);
+		g_assert_cmpstr(venture_money_get_currency(unit), ==, "TICKET");
+		g_assert_cmpint(venture_money_get_amount(unit), ==, 20);
+	}
+
+	sale = record(f, "sale");
+	g_object_set(sale, "venture-id", f->venture, "product-id", prize_product,
+		"quantity", (gint64)1, NULL);
+	field(sale, "occurred-at", "2026-03-05");
+	field(sale, "gross", "45 GOLD");
+	save(f, sale);
+
+	journals = journals_for(f, "sale", venture_entity_get_id(sale));
+	g_assert_cmpuint(journals->len, ==, 1);
+	revenue_currency = currency_of(g_ptr_array_index(journals, 0));
+	g_assert_cmpstr(revenue_currency, ==, "GOLD");
+	g_clear_pointer(&journals, g_ptr_array_unref);
+	journals = journals_for(f, "inventory_txn", last_txn(f, prize));
+	g_assert_cmpuint(journals->len, ==, 1);
+	cost_currency = currency_of(g_ptr_array_index(journals, 0));
+	g_assert_cmpstr(cost_currency, ==, "TICKET");
+	g_assert_cmpint(debits_of(f, g_ptr_array_index(journals, 0)), ==, 20);
+	assert_books_balance(f);
+
+	/* One whistle left, valued in tickets. */
+	values = venture_inventory_service_valuation(inventory(f), f->org, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(amount_in(values, "TICKET"), ==, 20);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -855,5 +1104,7 @@ main(int argc, char **argv)
 		test_valuation_per_currency, teardown);
 	g_test_add("/inventory-currencies/inventory-report", Fixture, "valued", setup,
 		test_inventory_report, teardown);
+	g_test_add("/inventory-currencies/http-ticket-purchase", ServerFixture, "separate_book",
+		server_setup, test_http_ticket_purchase, server_teardown);
 	return g_test_run();
 }

@@ -1867,6 +1867,43 @@ herb_route -48 80"
         amount="6 BREWFEST" cash_account_id="${brisk_purse}" occurred_at="$(at_hour -26)" \
         category=SUPPLIES
 
+    # Stock bought with tickets, the way any stock is bought: a purchase
+    # order in TICKET, approved, sent and received with `venturectl
+    # purchase`, which lands two lanterns on the guild bank's shelf as a
+    # TICKET cost layer. Receiving writes no journal (memo never posts),
+    # and paying the booth is the tickets leaving Tallow's purse -- a memo
+    # spend typed by hand, since a purchase order is not a payment. One
+    # lantern is sold for gold: revenue in GOLD, its cost of goods in
+    # TICKET. The other stays, and is the TICKET row of the
+    # inventory_valuation report.
+    local booth lantern lantern_item faire_po faire_line
+    booth="$(make_record company organization_id="${org}" name="Faire prize booth" \
+        kind=supplier)"
+    lantern="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Darkmoon lantern" sku=FAIRE-LANTERN category_id="${crafted}" \
+        tags=prize,faire list_price="$(gold 380000)" active=true)"
+    lantern_item="$(make_record inventory_item organization_id="${org}" \
+        product_id="${lantern}" venture_id="${venture}" location_id="${bank}")"
+    faire_po="$(make_record purchase_order organization_id="${org}" number=FAIRE-1 \
+        vendor_id="${booth}" currency=TICKET status=draft ordered_at="$(at_hour -29)")"
+    faire_line="$(make_record purchase_order_line organization_id="${org}" \
+        purchase_order_id="${faire_po}" product_id="${lantern}" \
+        inventory_item_id="${lantern_item}" description="Darkmoon lantern" \
+        quantity=2 position=1 unit_price="4 TICKET")"
+    ctl purchase approve "${faire_po}" date="$(at_hour -29)" > /dev/null \
+        || die "could not approve the faire purchase order"
+    ctl purchase send "${faire_po}" date="$(at_hour -29)" > /dev/null \
+        || die "could not send the faire purchase order"
+    ctl purchase receive "${faire_po}" line_id="${faire_line}" quantity=2 \
+        date="$(at_hour -28)" > /dev/null \
+        || die "could not receive the lanterns"
+    add holding_txn organization_id="${org}" account_id="${tallow_purse}" kind=spend \
+        amount="-8 TICKET" occurred_at="$(at_hour -28)" \
+        notes="Paid the prize booth for two lanterns (FAIRE-1)"
+    add sale organization_id="${org}" venture_id="${venture}" product_id="${lantern}" \
+        quantity=1 gross="$(gold 380000)" occurred_at="$(at_hour -18)" \
+        channel="auction house" buyer_name="Auction house" cash_account_id="${tallow_purse}"
+
     # Moves between characters: the transfer action, one currency at a time.
     ctl act location "${tallow}" transfer to_location_id="${brisk}" amount="5 TICKET" \
         notes="Tickets for Brisk's turn at the games" > /dev/null \
