@@ -101,15 +101,10 @@ static gchar *probe(Fixture *f, const gchar *request, guint seconds)
 static void setup(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocket) reserve = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_STREAM, G_SOCKET_PROTOCOL_TCP, &error);
-	g_autoptr(GInetAddress) address = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
-	g_autoptr(GSocketAddress) requested = g_inet_socket_address_new(address, 0), actual = NULL;
 	(void)data;
-	g_assert_no_error(error);
-	g_assert_true(g_socket_bind(reserve, requested, FALSE, &error));
-	actual = g_socket_get_local_address(reserve, &error); g_assert_no_error(error);
-	f->port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(actual));
-	g_assert_true(g_socket_close(reserve, &error));
+	/* Port 0: the kernel picks, read back after the start. A reserved and
+	 * closed socket's port can be taken before the server binds it. */
+	f->port = 0;
 	f->owner = g_main_context_ref_thread_default();
 	f->state = g_dir_make_tmp("venture-http-limits-XXXXXX", &error); g_assert_no_error(error);
 	f->config = venture_config_new();
@@ -130,6 +125,7 @@ static void setup(Fixture *f, gconstpointer data)
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_POST, "/fixture/write", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, write_handler, f);
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_GET, "/fixture/error", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, error_handler, f);
 	g_assert_true(venture_web_server_start(f->server, &error)); g_assert_no_error(error);
+	f->port = venture_web_server_get_port(f->server);
 }
 static void teardown(Fixture *f, gconstpointer data)
 {

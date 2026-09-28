@@ -766,23 +766,21 @@ test_http(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) current = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(SoupSession) session = soup_session_new();
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *dir = g_dir_make_tmp("venture-quotes-http-XXXXXX", NULL);
 	g_autofree gchar *base = NULL;
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *body = NULL;
 	g_autofree gchar *token = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
-	g_assert_no_error(error);
-	g_clear_object(&probe);
-	base = g_strdup_printf("http://127.0.0.1:%u", port);
+	guint port = 0;
 	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)port,
 		"security-require-auth", FALSE, "state-dir", dir, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
+	base = g_strdup_printf("http://127.0.0.1:%u", port);
 	/* An invalid staging flag must never publish a draft immediately. */
 	path = g_strdup_printf("/api/v1/quotes/%" G_GINT64_FORMAT "/send?stage=typo", venture_entity_get_id(q));
 	g_assert_cmpuint(http(session, base, "POST", path, "{}", &body), ==, 400);
@@ -843,6 +841,9 @@ test_http(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	/* A restart on port 0 is a new port; the old base points at nothing. */
+	g_clear_pointer(&base, g_free);
+	base = g_strdup(venture_web_server_get_base_url(server));
 	g_clear_pointer(&body, g_free);
 	g_clear_pointer(&path, g_free);
 	path = g_strconcat("/q/", token, NULL);

@@ -689,22 +689,21 @@ test_surfaces(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) entity = asset(f, "SURFACES");
 	g_autofree gchar *directory = g_dir_make_tmp("venture-assets-XXXXXX", NULL);
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(entity));
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *body = NULL;
 	g_autoptr(JsonNode) json = NULL;
-	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	guint16 port = 0;
 	gint kind = GPOINTER_TO_INT(data);
 	g_assert_no_error(error);
-	g_socket_listener_close(listener);
 	g_object_set(f->config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
 	if (kind == 0)
 		run_cli(server, "asset", "place", id);
 	else if (kind == 1)

@@ -182,13 +182,8 @@ start_http(Fixture *f)
 {
 	g_autoptr(GError) error = NULL;
 	gboolean started;
-	g_autoptr(GSocketListener) reservation = g_socket_listener_new();
 	f->state_dir = g_dir_make_tmp("venture-leads-XXXXXX", NULL);
-	/* Random ports collided with sockets left by preceding HTTP tests.
-	 * Ask the kernel for an available port before constructing the server. */
-	f->port = g_socket_listener_add_any_inet_port(reservation, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(reservation);
+	f->port = 0;
 	g_object_set(f->config, "state-dir", f->state_dir, "server-port", (gint64)f->port,
 		"server-bind-address", "127.0.0.1", "security-require-auth", f->require_auth, NULL);
 	f->server = venture_web_server_new(f->context, &error);
@@ -196,6 +191,7 @@ start_http(Fixture *f)
 	started = venture_web_server_start(f->server, &error);
 	g_assert_no_error(error);
 	g_assert_true(started);
+	f->port = venture_web_server_get_port(f->server);
 	f->session = soup_session_new();
 }
 

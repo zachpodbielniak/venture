@@ -917,7 +917,8 @@ server_setup(ServerFixture *sf, gconstpointer data)
 
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "inventory-currencies-secret", TRUE);
 	sf->state_dir = g_dir_make_tmp("venture-inventory-currencies-XXXXXX", NULL);
-	sf->port = (guint16)(20000 + ((getpid() + 17377) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	sf->port = 0;
 	sf->base.config = venture_config_new();
 	g_object_set(sf->base.config, "state-dir", sf->state_dir,
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)sf->port,
@@ -928,6 +929,7 @@ server_setup(ServerFixture *sf, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(sf->server, &error));
 	g_assert_no_error(error);
+	sf->port = venture_web_server_get_port(sf->server);
 	sf->session = soup_session_new();
 
 	user = venture_user_new();

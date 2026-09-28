@@ -546,7 +546,6 @@ http_get(SoupSession *session, const gchar *base, const gchar *path, guint expec
 static void
 test_surfaces(Fixture *f, gconstpointer data)
 {
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(SoupSession) session = soup_session_new();
 	g_autoptr(GSubprocessLauncher) launcher = NULL;
@@ -557,10 +556,9 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_autofree gchar *body = NULL;
 	const gchar *args[14];
 	Response response = { FALSE, NULL, NULL, NULL, NULL };
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
+	guint port = 0;
 	(void)data;
 	g_assert_no_error(error);
-	g_clear_object(&probe);
 	g_object_set(f->config, "state-dir", dir, "security-require-auth", FALSE,
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)port, NULL);
 	post(f, "2026-07-10T00:00:00Z", "USD", "1000", "4000", 10000);
@@ -569,6 +567,7 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
 	base = g_strdup_printf("http://127.0.0.1:%u", port);
 	body = http_get(session, base, "/reports", 200);
 	g_assert_nonnull(strstr(body, "<h2>Statements</h2>"));

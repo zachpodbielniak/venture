@@ -409,6 +409,21 @@ fails a **green** run that left one, comparing the run against itself — a
 *failing* run's directories are evidence and must stay, which is also why the
 teardown never runs on that path: `g_assert` aborts the process.
 
+**Never derive a test port from the pid, and never probe one and close
+it.** A test server is configured with `server-port` 0 and reads the
+kernel's choice back with `venture_web_server_get_port()` (or the base
+URL) after `venture_web_server_start()`. `20000 + (getpid() + K) % 20000`
+collided with suites in other worktrees and PID namespaces, with every
+other listener, with TIME_WAIT and with a second server in the same
+process; a probed-and-closed port can be taken before the bind. Both
+failed a fixture now and then and passed on a rerun. Only a subprocess
+that must be told `--port` picks one in advance, through
+`venture_test_free_port()`, and retries on "Cannot listen on" with a
+fresh port, bounded by `VENTURE_TEST_PORT_ATTEMPTS`. A hosted origin is
+not a listening port: fix it and send its authority as `Host`.
+`test-ports` greps the tests for the pid arithmetic. See
+`docs/testing.org` "Server ports".
+
 It found a second thing worth knowing: **a test that starts a coding run must
 drain it before returning.** `venture_work_service`'s worker was still creating
 the run's workspace while the teardown removed the directory above it.

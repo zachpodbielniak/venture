@@ -23,19 +23,12 @@ fixture_set_up(Fixture *fixture, gconstpointer data)
 
 
 
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 
 	gboolean started;
 	guint port;
-	/* Find an available port: concurrent PID namespaces have equal PIDs,
-	 * and GTest resets its random stream before each case. */
-	port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
-	g_assert_no_error(error);
-	g_assert_cmpuint(port, >, 0);
-	g_clear_object(&probe);
+	port = 0;
 
 	fixture->state_dir = g_dir_make_tmp("venture-action-surfaces-XXXXXX", NULL);
-	fixture->url = g_strdup_printf("http://127.0.0.1:%u", port);
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config, "state-dir", fixture->state_dir,
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)port,
@@ -50,6 +43,8 @@ fixture_set_up(Fixture *fixture, gconstpointer data)
 	started = venture_web_server_start(fixture->server, &error);
 	g_assert_no_error(error);
 	g_assert_true(started);
+	port = venture_web_server_get_port(fixture->server);
+	fixture->url = g_strdup_printf("http://127.0.0.1:%u", port);
 	fixture->session = soup_session_new();
 }
 

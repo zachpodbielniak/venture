@@ -523,7 +523,6 @@ static guint attribution_http(SoupSession *session, const gchar *base, const gch
 }
 static void test_http(Fixture *f, gconstpointer data)
 {
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureConfig) config = venture_config_new();
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
@@ -532,36 +531,46 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autofree gchar *directory = g_dir_make_tmp("venture-attribution-web-XXXXXX", NULL), *base = NULL, *text = NULL, *path = NULL, *cors = NULL, *body = NULL, *token = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error); g_assert_no_error(error); g_clear_object(&probe);
-	base = g_strdup_printf("http://127.0.0.1:%u", port);
-	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)port,
-		"security-require-auth", TRUE, "server-base-url", base, NULL);
+	/*
+	 * The server binds port 0 -- the kernel's choice, read back after the
+	 * start -- because a port chosen in advance can be taken first. A hosted
+	 * workspace pins its public origin before the server exists, so that
+	 * origin is a fixed name the requests present as their Host, the way a
+	 * TLS terminator in front would; it never has to be the listening port.
+	 */
+	const gchar *public_origin = "http://127.0.0.1:8443";
+	const gchar *public_host = data ? "127.0.0.1:8443" : NULL;
+	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
+		"security-require-auth", TRUE, NULL);
 	if (data) {
-		g_object_set(config, "hosted-enabled", TRUE,
-			"hosted-workspace-id", "24af2d1e-cb78-48f3-9c22-cfdc8ecdc7c1", "hosted-origin", base, NULL);
+		g_object_set(config, "server-base-url", public_origin, "hosted-enabled", TRUE,
+			"hosted-workspace-id", "24af2d1e-cb78-48f3-9c22-cfdc8ecdc7c1", "hosted-origin", public_origin, NULL);
 		g_assert_true(venture_tenant_service_configure(venture_tenant_service_get(f->db), config, &error));
 		g_assert_true(venture_tenant_service_initialize(venture_tenant_service_get(f->db), &error));
 		g_assert_no_error(error);
 	}
 	context = venture_context_new(config, f->db); server = venture_web_server_new(context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
-	g_assert_cmpuint(attribution_http(session, base, "GET", "/attribution.js", NULL, NULL, &text, NULL), ==, 200);
+	base = g_strdup(venture_web_server_get_base_url(server));
+	/* Read per request, so setting it after the start is setting it. */
+	if (!data) g_object_set(config, "server-base-url", base, NULL);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "GET", "/attribution.js", NULL, NULL, &text, NULL, public_host), ==, 200);
 	g_assert_nonnull(strstr(text, "VentureAttribution")); g_clear_pointer(&text, g_free);
 	path = g_strdup_printf("/attribution/%s/grant", venture_entity_get_uuid(f->site));
-	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://evil.example.test", "{\"policy\":\"analytics-v1\"}", &text, &cors), ==, 404);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://evil.example.test", "{\"policy\":\"analytics-v1\"}", &text, &cors, public_host), ==, 404);
 	g_assert_null(cors); g_clear_pointer(&text, g_free);
-	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test", "{\"policy\":\"analytics-v1\"}", &text, &cors), ==, 200);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://site.example.test", "{\"policy\":\"analytics-v1\"}", &text, &cors, public_host), ==, 200);
 	g_assert_cmpstr(cors, ==, "https://site.example.test"); g_clear_pointer(&cors, g_free);
 	node = json_from_string(text, &error); g_assert_no_error(error); token = g_strdup(json_object_get_string_member(json_node_get_object(node), "token")); g_clear_pointer(&text, g_free);
 	g_clear_pointer(&path, g_free); path = g_strdup_printf("/attribution/%s/observe", venture_entity_get_uuid(f->site));
 	body = g_strdup_printf("{\"token\":\"%s\",\"event_id\":\"http-event\",\"fields\":{\"page\":\"https://site.example.test/offer?private=discard\",\"utm_source\":\"newsletter\"}}", token);
-	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test", body, &text, NULL), ==, 200); g_clear_pointer(&text, g_free);
-	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test", body, &text, NULL), ==, 200); g_clear_pointer(&text, g_free);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://site.example.test", body, &text, NULL, public_host), ==, 200); g_clear_pointer(&text, g_free);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://site.example.test", body, &text, NULL, public_host), ==, 200); g_clear_pointer(&text, g_free);
 	rows = all_rows(f, VENTURE_TYPE_ATTRIBUTION_TOUCH); g_assert_cmpuint(rows->len, ==, 1);
 	g_clear_pointer(&path, g_free); path = g_strdup_printf("/attribution/%s/withdraw", venture_entity_get_uuid(f->site));
 	g_clear_pointer(&body, g_free); body = g_strdup_printf("{\"token\":\"%s\"}", token);
-	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test", body, &text, NULL), ==, 200); g_clear_pointer(&text, g_free);
-	g_assert_cmpuint(attribution_http(session, base, "POST", "/hooks/lightsite/nope/1", NULL, "{}", &text, NULL), ==, 404);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://site.example.test", body, &text, NULL, public_host), ==, 200); g_clear_pointer(&text, g_free);
+	g_assert_cmpuint(attribution_http_with_host(session, base, "POST", "/hooks/lightsite/nope/1", NULL, "{}", &text, NULL, public_host), ==, 404);
 	if (data) {
 		VentureTenantService *tenant = venture_tenant_service_get(f->db);
 		const gchar *states[] = { "read_only", "suspended" };
@@ -573,18 +582,18 @@ static void test_http(Fixture *f, gconstpointer data)
 		g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path,
 			"https://site.example.test", "{\"policy\":\"analytics-v1\"}", &text, NULL,
 			"neighbor.example.test"), ==, 403); g_clear_pointer(&text, g_free);
-		g_assert_cmpuint(attribution_http(session, base, "POST", "/api/v1/company",
-			"https://site.example.test", "{}", &text, NULL), ==, 403); g_clear_pointer(&text, g_free);
+		g_assert_cmpuint(attribution_http_with_host(session, base, "POST", "/api/v1/company",
+			"https://site.example.test", "{}", &text, NULL, public_host), ==, 403); g_clear_pointer(&text, g_free);
 		for (i = 0; i < G_N_ELEMENTS(states); i++) {
 			g_assert_true(venture_tenant_service_set_state_operator(tenant, states[i], "Pause public intake", &error));
 			g_assert_no_error(error);
-			g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test",
-				"{\"policy\":\"analytics-v1\"}", &text, NULL), ==, 403); g_clear_pointer(&text, g_free);
+			g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://site.example.test",
+				"{\"policy\":\"analytics-v1\"}", &text, NULL, public_host), ==, 403); g_clear_pointer(&text, g_free);
 		}
 		g_assert_true(venture_tenant_service_set_state_operator(tenant, "active", "Resume public intake", &error));
 		g_assert_no_error(error);
-		g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test",
-			"{\"policy\":\"analytics-v1\"}", &text, NULL), ==, 200); g_clear_pointer(&text, g_free);
+		g_assert_cmpuint(attribution_http_with_host(session, base, "POST", path, "https://site.example.test",
+			"{\"policy\":\"analytics-v1\"}", &text, NULL, public_host), ==, 200); g_clear_pointer(&text, g_free);
 	}
 	venture_web_server_stop(server); g_clear_object(&server); g_clear_object(&context); venture_test_remove_tree(directory);
 }
@@ -601,7 +610,6 @@ static gboolean attribution_cli_timeout(gpointer data)
 /* CLI, JSON, CSV and page links must retain the same attribution question. */
 static void test_report_surfaces(Fixture *f, gconstpointer data)
 {
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureConfig) config = venture_config_new();
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
@@ -616,18 +624,21 @@ static void test_report_surfaces(Fixture *f, gconstpointer data)
 	g_autoptr(VentureAttributionSubmission) captured = NULL;
 	AttributionCli reply = { FALSE, NULL, NULL, NULL };
 	const gchar *argv[] = { "build/debug/venturectl", "--server", NULL, "--format", "json", "report", "attribution", "all", "model=last", "details=true", "organization_id=1", NULL };
-	guint timeout, port = g_socket_listener_add_any_inet_port(probe, NULL, &error); g_assert_no_error(error); g_clear_object(&probe);
-	base = g_strdup_printf("http://127.0.0.1:%u", port); argv[2] = base;
+	guint timeout;
 	touch = venture_attribution_service_observe(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", token, "surface-first", fields, f->now, &error); g_assert_no_error(error);
 	g_clear_object(&touch); json_object_set_string_member(fields, "utm_source", "partner");
 	touch = venture_attribution_service_observe(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", token, "surface-last", fields, f->now, &error); g_assert_no_error(error);
 	captured = venture_attribution_service_capture(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", payload, f->now, &error); g_assert_no_error(error);
 	/* Authentication has its own real-server suite; this disposable loopback
 	 * instance tests option transport without manufacturing a session. */
-	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)port,
-		"security-require-auth", FALSE, "server-base-url", base, NULL);
+	/* Port 0: the kernel picks, and the base URL -- read per request --
+	 * follows it once the server has started. */
+	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
+		"security-require-auth", FALSE, NULL);
 	context = venture_context_new(config, f->db); server = venture_web_server_new(context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	base = g_strdup(venture_web_server_get_base_url(server)); argv[2] = base;
+	g_object_set(config, "server-base-url", base, NULL);
 	g_assert_cmpuint(attribution_http(session, base, "GET", "/api/v1/reports/attribution?period=all&model=last&details=true&organization_id=1", NULL, NULL, &text, NULL), ==, 200);
 	g_assert_nonnull(strstr(text, "partner")); g_assert_nonnull(strstr(text, "last")); g_clear_pointer(&text, g_free);
 	g_assert_cmpuint(attribution_http(session, base, "GET", "/reports/attribution?period=all&model=last&details=true&organization_id=1", NULL, NULL, &text, NULL), ==, 200);

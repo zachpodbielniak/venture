@@ -571,11 +571,8 @@ static void
 web_setup(WebFixture *w, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autoptr(VentureEntity) pack = NULL;
-	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	guint16 port = 0;
 	w->state_dir = g_dir_make_tmp("venture-report-delivery-XXXXXX", &error);
 	g_assert_no_error(error);
 	setup(&w->base, data);
@@ -585,6 +582,7 @@ web_setup(WebFixture *w, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(w->server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(w->server);
 	w->session = soup_session_new();
 	pack = make_pack(&w->base, "Board pack", "email", "board@example.test");
 	w->pack_id = venture_entity_get_id(pack);

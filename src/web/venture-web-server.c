@@ -31836,6 +31836,49 @@ venture_document_web_register(router, self);
 	return g_steal_pointer(&self);
 }
 
+/*
+ * Reads back the port the kernel actually bound and rebuilds the base URL
+ * around it.
+ *
+ * A configured port of 0 asks the kernel for any free one. That is how the
+ * test suite starts its servers: a port chosen in advance -- from the pid,
+ * or by probing and closing a socket -- can be taken by somebody else before
+ * the listen, and the fixture then fails to start for a reason that has
+ * nothing to do with the test. Asking for 0 has no such window, but only if
+ * the answer is read back from the socket rather than from the
+ * configuration, which still says 0.
+ *
+ * Every listener shares the one port (libsoup binds the IPv6 loopback to
+ * the port the IPv4 one was given), so the first is the answer.
+ */
+static void
+venture_web_server_adopt_bound_port(
+	VentureWebServer	*self,
+	const gchar			*scheme,
+	const gchar			*host
+){
+	GSList *listeners;
+	g_autoptr(GSocketAddress) local = NULL;
+	guint16 bound;
+
+	listeners = soup_server_get_listeners(htmx_server_get_soup_server(self->server));
+	if (NULL == listeners)
+		return;
+
+	local = g_socket_get_local_address((GSocket *)listeners->data, NULL);
+	g_slist_free(listeners);
+	if (NULL == local || !G_IS_INET_SOCKET_ADDRESS(local))
+		return;
+
+	bound = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(local));
+	if (0 == bound || bound == self->port)
+		return;
+
+	self->port = bound;
+	g_free(self->base_url);
+	self->base_url = g_strdup_printf("%s://%s:%u", scheme, host, (guint)bound);
+}
+
 gboolean
 venture_web_server_start(
 	VentureWebServer	 *self,
@@ -31878,6 +31921,7 @@ venture_web_server_start(
 			uris = soup_server_get_uris(server);
 			g_free(self->base_url);
 			self->base_url = g_uri_to_string((GUri *)uris->data);
+			self->port = (guint16)g_uri_get_port((GUri *)uris->data);
 			g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
 			venture_federation_sync_start(self->context);
 			venture_stripe_collection_start(self->context);
@@ -31892,6 +31936,14 @@ venture_web_server_start(
 		            (NULL != local_error) ? local_error->message
 		                                  : "unknown failure");
 		return FALSE;
+	}
+
+	{
+		g_autofree gchar *bind = NULL;
+
+		g_object_get(venture_context_get_config(self->context),
+			"server-bind-address", &bind, NULL);
+		venture_web_server_adopt_bound_port(self, "http", bind);
 	}
 
 	venture_federation_sync_start(self->context);
@@ -31916,4 +31968,12 @@ venture_web_server_get_base_url(VentureWebServer *self)
 	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
 
 	return self->base_url;
+}
+
+guint16
+venture_web_server_get_port(VentureWebServer *self)
+{
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), 0);
+
+	return self->port;
 }

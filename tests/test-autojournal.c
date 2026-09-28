@@ -462,18 +462,15 @@ cli_surface(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureSale) record = sale(f);
 	g_autoptr(VentureWebServer) server = NULL;
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(GSubprocess) cli = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonParser) parser = json_parser_new();
 	g_autoptr(GPtrArray) journals = NULL;
 	g_autofree gchar *directory = g_dir_make_tmp("venture-autojournal-XXXXXX", NULL);
 	g_autofree gchar *url = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
+	guint port = 0;
 	CliResult result;
 	(void)data;
-	g_assert_no_error(error); g_clear_object(&probe);
-	url = g_strdup_printf("http://127.0.0.1:%u", port);
 	g_object_set(f->config, "security-require-auth", FALSE, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "state-dir", directory, NULL);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(record), NULL, &error));
@@ -482,6 +479,8 @@ cli_surface(Fixture *f, gconstpointer data)
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error); g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
+	url = g_strdup_printf("http://127.0.0.1:%u", port);
 	result.done = FALSE; result.out = NULL; result.err = NULL; result.error = NULL;
 	cli = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
 		"build/debug/venturectl", "--server", url, "-f", "json", "post", "backfill", "--dry-run", NULL);

@@ -441,7 +441,6 @@ http(SoupSession *session, const gchar *base, const gchar *path, gchar **text, g
 static void
 test_surfaces(Fixture *f, gconstpointer unused)
 {
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(SoupSession) session = soup_session_new();
 	g_autoptr(VentureEntity) delivery = NULL;
@@ -459,19 +458,18 @@ test_surfaces(Fixture *f, gconstpointer unused)
 	g_autofree gchar *location = NULL;
 	g_autofree gchar *type = NULL;
 	g_autofree gchar *absolute = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
 	(void)unused;
-	g_assert_no_error(error);
-	g_clear_object(&probe);
-	base = g_strdup_printf("http://127.0.0.1:%u", port);
+	/* Port 0: the kernel picks; the base URL is known once it has. */
 	g_object_set(f->config, "state-dir", state, "server-bind-address", "127.0.0.1",
-		"server-port", (gint64)port, "security-require-auth", FALSE, "server-base-url", base, NULL);
-	/* The context reads the base URL once; hand it to the live service too. */
-	g_object_set(venture_sequence_service_get(f->db), "base-url", base, NULL);
+		"server-port", (gint64)0, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	base = g_strdup(venture_web_server_get_base_url(server));
+	g_object_set(f->config, "server-base-url", base, NULL);
+	/* The context reads the base URL once; hand it to the live service too. */
+	g_object_set(venture_sequence_service_get(f->db), "base-url", base, NULL);
 	delivery = tracked_delivery(f);
 	token = token_of(delivery);
 	g_object_get(delivery, "body", &body, NULL);

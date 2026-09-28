@@ -561,7 +561,7 @@ test_web(void)
 	g_autofree gchar			*path = NULL;
 	g_autofree gchar			*page = NULL;
 	g_autofree gchar			*response = NULL;
-	guint16						port = (guint16)(40000 + getpid() % 10000);
+	guint16						port = 0;	/* the kernel picks; read back after the start */
 	guint16						printer_port;
 	gint64						org;
 	gint64						id;
@@ -602,6 +602,7 @@ test_web(void)
 	success = venture_web_server_start(server, &error);
 	g_assert_no_error(error);
 	g_assert_true(success);
+	port = venture_web_server_get_port(server);
 	path = g_strdup_printf("/e/payment/%" G_GINT64_FORMAT, id);
 	g_assert_cmpuint(http_request(session, port, "GET", path, NULL, &page), ==, 200);
 	g_assert_null(strstr(page, "Print receipt"));

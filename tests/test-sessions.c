@@ -1717,7 +1717,8 @@ server_fixture_set_up(
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "sessions-test-secret", TRUE);
 
 	fixture->state_dir = g_dir_make_tmp("venture-sessions-XXXXXX", NULL);
-	fixture->port = (guint16)(20000 + ((getpid() + 9241) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	fixture->port = 0;
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config,
@@ -1740,6 +1741,7 @@ server_fixture_set_up(
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new();
 

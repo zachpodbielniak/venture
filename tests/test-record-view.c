@@ -184,7 +184,6 @@ save(Fixture *f, VentureEntity *record)
 static void
 set_up(Fixture *f, gconstpointer data)
 {
-	g_autoptr(GSocketListener) listener = NULL;
 	g_autoptr(GError) error = NULL;
 	guint16 port;
 
@@ -201,10 +200,7 @@ set_up(Fixture *f, gconstpointer data)
 
 	f->state_dir = g_dir_make_tmp("venture-record-view-XXXXXX", &error);
 	g_assert_no_error(error);
-	listener = g_socket_listener_new();
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", f->state_dir,
 	             "server-bind-address", "127.0.0.1",
 	             "server-port", (gint64)port,
@@ -213,6 +209,7 @@ set_up(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(f->server);
 }
 
 static void

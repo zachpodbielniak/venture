@@ -1056,7 +1056,6 @@ test_surfaces(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autofree gchar *dir = g_dir_make_tmp("venture-crm-import-XXXXXX", NULL);
 	g_autofree gchar *body = NULL;
 	g_autofree gchar *payload = NULL;
@@ -1067,14 +1066,13 @@ test_surfaces(Fixture *f, gconstpointer data)
 	guint port;
 	guint i;
 	(void)data;
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	{
 		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 		json_node_set_object(node, json_object_ref(object));

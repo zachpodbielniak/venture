@@ -682,10 +682,12 @@ server_fixture_set_up(
 	fixture->state_dir = g_dir_make_tmp("venture-routes-XXXXXX", NULL);
 
 	/*
-	 * A port in the ephemeral range, derived from the pid so that two
-	 * suites running at once do not collide.
+	 * Port 0: the kernel picks a free one and the fixture reads it back
+	 * after the start. A port derived from the pid collided with other
+	 * suites, other listeners and sockets in TIME_WAIT, and the fixture
+	 * then failed to start for no reason of the test's.
 	 */
-	fixture->port = (guint16)(20000 + (getpid() % 20000));
+	fixture->port = 0;
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config,
@@ -710,6 +712,8 @@ server_fixture_set_up(
 
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new();
 }

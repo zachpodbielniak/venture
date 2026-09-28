@@ -774,18 +774,18 @@ static void
 test_http_start(Fixture *fixture, TestHttp *http)
 {
 	g_autoptr(GError) error = NULL;
-	guint port = 20000 + getpid() % 20000;
 	http->directory = g_dir_make_tmp("venture-period-http-XXXXXX", &error);
 	g_assert_no_error(error);
 	g_object_set(fixture->config, "state-dir", http->directory,
-		"server-bind-address", "127.0.0.1", "server-port", (gint64)port,
+		"server-bind-address", "127.0.0.1", "server-port", (gint64)0,
 		"security-require-auth", FALSE, NULL);
+	/* Port 0: the kernel picks a free one; the base URL carries it back. */
 	http->server = venture_web_server_new(fixture->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(http->server, &error));
 	g_assert_no_error(error);
 	http->session = soup_session_new();
-	http->url = g_strdup_printf("http://127.0.0.1:%u", port);
+	http->url = g_strdup(venture_web_server_get_base_url(http->server));
 }
 
 typedef struct

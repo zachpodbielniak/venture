@@ -115,6 +115,20 @@ const gchar *
 venture_web_server_get_base_url(VentureWebServer *self);
 
 /**
+ * venture_web_server_get_port:
+ * @self: a #VentureWebServer
+ *
+ * The port the server listens on. Before venture_web_server_start() this is
+ * the configured port; after it, the port actually bound -- which differs
+ * when the configuration asked for port 0 and the kernel chose one. The
+ * base URL follows the same rule.
+ *
+ * Returns: the listening port, or 0 before a port-0 server has started
+ */
+guint16
+venture_web_server_get_port(VentureWebServer *self);
+
+/**
  * VentureWebNavSection:
  * @heading: the section's name, as the sidebar heads it
  * @group: (nullable): the area it is part of. Consecutive sections naming

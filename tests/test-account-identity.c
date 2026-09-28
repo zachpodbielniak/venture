@@ -12,10 +12,10 @@ static void received(GObject *source, GAsyncResult *result, gpointer data)
 	reply->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &reply->error);
 	reply->done = TRUE;
 }
-static JsonNode *request(SoupSession *session, const gchar *origin, const gchar *path,
+static JsonNode *request(SoupSession *session, const gchar *base, const gchar *path,
 	const gchar *token, const gchar *host, guint expected)
 {
-	g_autofree gchar *url = g_strconcat(origin, path, NULL);
+	g_autofree gchar *url = g_strconcat(base, path, NULL);
 	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
 	g_autoptr(JsonParser) parser = json_parser_new();
 	Reply reply = { FALSE, NULL, NULL };
@@ -61,14 +61,22 @@ static void identity_http(void)
 	g_autoptr(JsonNode) result = NULL;
 	g_autofree gchar *directory = g_dir_make_tmp("venture-account-XXXXXX", &error);
 	g_autofree gchar *secret = NULL, *path = NULL, *other_path = NULL;
-	guint port = 40000 + (getpid() % 10000);
-	g_autofree gchar *origin = g_strdup_printf("http://127.0.0.1:%u", port);
+	/*
+	 * The public origin is what a proxy in front would answer on, not the
+	 * port the server binds: the server listens on port 0 -- whatever the
+	 * kernel picks -- and every request carries the origin's authority as
+	 * its Host, exactly as it would behind a TLS terminator. A listening
+	 * port chosen in advance (it used to come from the pid) is a port
+	 * somebody else can already hold.
+	 */
+	const gchar *origin = "http://127.0.0.1:8443";
+	const gchar *authority = "127.0.0.1:8443";
 	VentureTenantService *service;
 	gboolean ok;
 	g_assert_no_error(error);
 	g_object_set(config, "hosted-enabled", TRUE, "hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
 		"hosted-origin", origin, "security-password-iterations", (gint64)2000,
-		"state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)port, NULL);
+		"state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0, NULL);
 	ok = venture_database_migrate(db, venture_entity_registry_get_default(), &error);
 	g_assert_no_error(error); g_assert_true(ok);
 	service = venture_tenant_service_get(db);
@@ -89,7 +97,7 @@ static void identity_http(void)
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
 	path = g_strdup_printf("/api/v1/account-identity/%" G_GINT64_FORMAT, venture_entity_get_id(org));
 	other_path = g_strdup_printf("/api/v1/account-identity/%" G_GINT64_FORMAT, venture_entity_get_id(other));
-#define CHECK(p, t, h, s) G_STMT_START { g_clear_pointer(&result, json_node_unref); result = request(session, origin, p, t, h, s); } G_STMT_END
+#define CHECK(p, t, h, s) G_STMT_START { g_clear_pointer(&result, json_node_unref); result = request(session, venture_web_server_get_base_url(server), p, t, (h) ? (h) : authority, s); } G_STMT_END
 	CHECK(path, secret, NULL, 200);
 	g_assert_cmpuint(json_object_get_size(json_node_get_object(result)), ==, 4);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(result), "origin"), ==, origin);

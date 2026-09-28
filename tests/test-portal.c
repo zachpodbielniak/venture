@@ -192,7 +192,6 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *body = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	guint16 port;
 	VentureActor actor;
 	(void)data;
@@ -202,12 +201,12 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	access = venture_portal_service_invite(venture_portal_service_get(f->db),
 		f->org, f->company, "a@b.c", &actor, &error);
 	g_object_get(access, "token", &token, NULL);
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	g_assert_cmpuint(http_request(server, "GET", "/portal/deadbeef", NULL, NULL), ==, 404);
 	path = g_strdup_printf("/portal/%s", token);
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, &body), ==, 200);
@@ -304,7 +303,6 @@ test_subscriptions(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) sub = NULL;
 	g_autoptr(VentureEntity) theirs = NULL;
 	g_autoptr(GPtrArray) offered = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autofree gchar *dir = g_dir_make_tmp("venture-portal-XXXXXX", NULL);
 	g_autofree gchar *token = NULL, *page = NULL, *path = NULL, *mine = NULL, *other = NULL, *form = NULL, *body = NULL;
 	gint64 starter, pro, retired, euro, own_id, their_id, pending = 0, their_version;
@@ -337,12 +335,12 @@ test_subscriptions(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 	g_clear_error(&error);
 
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 
 	path = g_strdup_printf("/portal/%s", token);
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, &page), ==, 200);
