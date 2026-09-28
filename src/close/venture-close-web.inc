@@ -36,11 +36,13 @@ close_api(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (g_strcmp0(action, "open") == 0)
 	{
 		gint64 period_id = 0;
-		const gchar *currency = "USD";
+		/* No currency is the service's to decide: the period's
+		 * organization's book currency, not "USD". */
+		const gchar *currency = NULL;
 		if (body != NULL && JSON_NODE_HOLDS_OBJECT(body))
 		{
 			period_id = venture_json_object_get_int(json_node_get_object(body), "fiscal_period_id", 0);
-			currency = venture_json_object_get_string(json_node_get_object(body), "currency", "USD");
+			currency = venture_json_object_get_string(json_node_get_object(body), "currency", NULL);
 		}
 		workspace = venture_close_service_open(service, period_id, currency, &actor, &error);
 		if (workspace == NULL)

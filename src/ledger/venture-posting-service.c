@@ -1093,6 +1093,26 @@ venture_posting_service_book_currency(VenturePostingService *self,
 	return currency;
 }
 
+gchar *
+venture_database_get_book_currency(VentureDatabase *database, gint64 organization_id)
+{
+	gchar *currency = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), g_strdup(venture_money_get_default_currency()));
+	/* No organization is the install's own answer, not an error to report:
+	 * the callers are defaults, and a default that failed would refuse a
+	 * write that named nothing wrong. */
+	if (organization_id > 0)
+		currency = venture_posting_service_book_currency(
+			venture_database_get_posting_service(database), organization_id, NULL);
+	if (venture_string_is_empty(currency))
+	{
+		g_free(currency);
+		currency = g_strdup(venture_money_get_default_currency());
+	}
+	return currency;
+}
+
 gboolean
 venture_posting_service_route_currency(VenturePostingService *self, gint64 organization_id,
 	const gchar *currency, GDateTime *when, VentureBookRoute *route,

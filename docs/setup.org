@@ -38,4 +38,4 @@ The Setup nav item opens =/setup=, which redirects to the legal entity's
 venturectl action accounting_setup complete 1
 #+end_src
 
-Completion restores the caller's setup state and version when any final write fails, so the same preview can be retried safely. Bare opening-cash amounts inherit the chosen book currency; unknown currency codes are refused.
+Completion restores the caller's setup state and version when any final write fails, so the same preview can be retried safely. Bare opening-cash amounts inherit the chosen book currency; unknown currency codes are refused. A setup that names no =book_currency= keeps the organization's current one (never USD), and the form offers that one as its default: completing writes it onto the organization, so a guessed default would re-denominate the books.

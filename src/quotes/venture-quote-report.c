@@ -10,7 +10,8 @@ quote_report(VentureContext *context, VentureDateRange *period, JsonObject *opti
 	g_autoptr(GPtrArray) quotes = NULL;
 	g_autoptr(GPtrArray) totals = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
 	g_autoptr(VentureReportResult) result = venture_report_result_new("Quotes", period);
-	const gchar *currency = options != NULL ? venture_json_object_get_string(options, "currency", "USD") : "USD";
+	const gchar *currency = options != NULL ? venture_json_object_get_string(options, "currency", NULL) : NULL;
+	g_autofree gchar *book = NULL;
 	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
 	gint64 counts[4] = { 0, 0, 0, 0 };
 	gint64 duration = 0;
@@ -18,6 +19,13 @@ quote_report(VentureContext *context, VentureDateRange *period, JsonObject *opti
 	gint64 denominator = 0;
 	guint i;
 	if (org == 0) org = venture_context_get_default_organization_id(context);
+	/* Unless the caller names one, the cohort is the organization's book
+	 * currency: "USD" reported a euro organization's quotes as none. */
+	if (venture_string_is_empty(currency))
+	{
+		book = venture_database_get_book_currency(venture_context_get_database(context), org);
+		currency = book;
+	}
 	venture_query_set_organization(query, org);
 	venture_query_set_limit(query, 0);
 	if (period != NULL)

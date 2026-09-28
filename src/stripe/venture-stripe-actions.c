@@ -89,7 +89,11 @@ stripe_action_invoke(VentureAction *action, VentureEntity *entity, GHashTable *p
 	}
 	if (!g_strcmp0(name, "authorize_payment"))
 	{
-		g_autoptr(VentureMoney) limit = venture_money_from_json(g_hash_table_lookup(params, "limit"), NULL, error);
+		/* A bare limit is in the organization's book currency, like every
+		 * other amount that names none. */
+		g_autofree gchar *book = venture_database_get_book_currency(database,
+			venture_entity_get_organization_id(entity));
+		g_autoptr(VentureMoney) limit = venture_money_from_json(g_hash_table_lookup(params, "limit"), book, error);
 		if (!limit) return NULL;
 		return VENTURE_ENTITY(venture_stripe_service_authorize_subscription(service, venture_entity_get_id(entity), limit, actor, error));
 	}

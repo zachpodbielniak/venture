@@ -96,6 +96,22 @@ VentureJournal *venture_posting_service_post_document(VenturePostingService *sel
 gchar *venture_posting_service_book_currency(VenturePostingService *self,
 	gint64 organization_id, GError **error);
 /**
+ * venture_database_get_book_currency:
+ * @database: owning database
+ * @organization_id: legal entity, or 0 when there is none
+ *
+ * The currency an amount that names none is in, for every writer and
+ * report that has to pick one: @organization_id's book currency
+ * (venture_posting_service_book_currency()), or the install's default
+ * (venture_money_get_default_currency()) when there is no organization or
+ * it cannot be read. Never a literal "USD": that turned a gold or euro
+ * organization's missing currency into dollars.
+ *
+ * Returns: (transfer full): the currency code, never %NULL
+ */
+gchar *venture_database_get_book_currency(VentureDatabase *database,
+	gint64 organization_id);
+/**
  * venture_posting_service_route_currency:
  * @self: posting service
  * @organization_id: legal entity posting the amount

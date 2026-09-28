@@ -210,6 +210,34 @@ test_us_sales_tax_pack(Fixture *f, gconstpointer unused)
 	g_assert_null(strstr(json, "production"));
 }
 
+/*
+ * A US return is filed in dollars, so an organization keeping its books in
+ * euros gets a refusal that names both currencies -- not a pack of euro
+ * totals labelled USD, which is what it used to get, because euro amounts
+ * add up among themselves without complaint.
+ */
+static void
+test_us_pack_refuses_other_currency(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) code = tax_code(f, "NY-EUR", "US-NY");
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(VentureEntity) filing = NULL;
+	VentureActor actor = actor_named("clerk");
+	(void)unused;
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->org, &error);
+	g_assert_no_error(error);
+	g_object_set(organization, "default-currency", "EUR", NULL);
+	save(f, organization);
+	issue_taxed_invoice(f, code, "TAX-EUR", "80 EUR");
+	filing = venture_tax_filing_service_prepare(venture_tax_filing_service_get(f->db),
+		f->org, "US", "US-NY", f->period, NULL, NULL, &actor, &error);
+	g_assert_null(filing);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "USD"));
+	g_assert_nonnull(strstr(error->message, "EUR"));
+}
+
 static void
 test_missing_country_refuses_named_jurisdiction(Fixture *f, gconstpointer unused)
 {
@@ -400,6 +428,8 @@ main(gint argc, gchar **argv)
 	g_test_add("/tax-filing/registry", Fixture, NULL, setup, test_registry_and_fake_adapter, teardown);
 	g_test_add("/tax-filing/fake-adapter", Fixture, NULL, setup, test_fake_adapter_prepare, teardown);
 	g_test_add("/tax-filing/us-pack", Fixture, NULL, setup, test_us_sales_tax_pack, teardown);
+	g_test_add("/tax-filing/us-pack-other-currency", Fixture, NULL, setup,
+		test_us_pack_refuses_other_currency, teardown);
 	g_test_add("/tax-filing/missing-country", Fixture, NULL, setup,
 		test_missing_country_refuses_named_jurisdiction, teardown);
 	g_test_add("/tax-filing/unknown-country", Fixture, NULL, setup,

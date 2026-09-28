@@ -11,7 +11,8 @@ An intercompany link names a subsidiary of the parent organization. Consolidated
 trial balance, income statement and balance sheet combine those legal entities,
 convert through the existing =exchange_rate= table (no invented inverse) and
 tag each row with the organization dimension. The consolidation currency is
-the =currency= option, else the parent's book currency.
+the =currency= option, else the parent's book currency. The same holds for
+=/group= and =GET /api/v1/group/reports?report=...&currency=...=.
 
 Every book a member keeps is read, not only its book currency's, and each is
 decided once by its currency's book treatment (see [[file:ledger.org][Currencies in the books]]):

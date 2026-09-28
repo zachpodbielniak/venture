@@ -10991,7 +10991,7 @@ venture_web_ui_detail(
 		venture_web_append_record_actions(self, actions, record, principal);
 		venture_bank_append_actions(actions, record);
 		venture_cutover_append_actions(actions, record);
-		venture_setup_append_actions(actions, record);
+		venture_setup_append_actions(actions, record, venture_context_get_database(self->context));
 		if (venture_context_module_enabled(self->context, "backup"))
 			venture_backup_append_actions(actions, record);
 
@@ -17581,7 +17581,7 @@ venture_web_json_to_display(JsonNode *value)
 			money = venture_money_new(
 				venture_json_object_get_int(object, "amount", 0),
 				venture_json_object_get_string(object,
-					"currency", "USD"),
+					"currency", venture_money_get_default_currency()),
 				(guint)venture_json_object_get_int(object,
 					"exponent", 2));
 

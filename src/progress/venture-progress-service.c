@@ -503,7 +503,18 @@ retainer_invoke(VentureAction *action, VentureEntity *entity, GHashTable *parame
 	const VentureActor *actor, GError **error)
 {
 	VentureProgressService *self = venture_action_get_data(action);
-	g_autoptr(VentureMoney) amount = venture_money_from_json(g_hash_table_lookup(parameters, "amount"), NULL, error);
+	g_autoptr(VentureMoney) remaining = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *currency = NULL;
+	/* A bare number is in the only currency it can be: a release draws on
+	 * the retainer, so the retainer's; a collection is new money, so the
+	 * organization's book currency. The install's default made a euro
+	 * organization's "500" a dollar retainer. */
+	if (VENTURE_IS_CUSTOMER_RETAINER(entity))
+		g_object_get(entity, "remaining", &remaining, NULL);
+	currency = remaining != NULL ? g_strdup(venture_money_get_currency(remaining)) :
+		venture_database_get_book_currency(self->database, venture_entity_get_organization_id(entity));
+	amount = venture_money_from_json(g_hash_table_lookup(parameters, "amount"), currency, error);
 	if (amount == NULL)
 		return NULL;
 	if (VENTURE_IS_COMPANY(entity))

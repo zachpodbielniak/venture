@@ -11,6 +11,8 @@ The =quotes= module requires =crm= and =invoicing=. It owns =price_list=,
 CLI operations, serialization and assistant schemas.
 
 Create a draft quote with a number, organization, currency and customer.
+A quote saved with no currency takes the organization's book currency
+(see [[file:currencies.org][An amount that names no currency]]).
 Numbers are unique within the organization, including retained history.
 =revision= is the commercial counter; =version= remains the entity's
 optimistic concurrency field. A revision names its parent quote. Related
@@ -139,7 +141,7 @@ values for quotes issued in the selected period. It reports acceptance rate
 as accepted divided by all four outcomes and average elapsed days from send
 to acceptance. Drafts and superseded revisions are excluded. Select exact
 =organization_id= and =currency=; the defaults are the default organization
-and USD. Other currencies are excluded, never converted. This is a current
+and its book currency. Other currencies are excluded, never converted. This is a current
 outcome report for an issued cohort, not historical status reconstruction.
 
 Migration =000150_quote_validity= backfills the 30-day setting for existing

@@ -828,6 +828,14 @@ than one that fails.
   save validator runs, so a validator's own "module is off" refusal for a
   newly written reference is a backstop. Tests should match on the module
   name, not on either sentence.
+- **A currency nobody named is the book currency, never "USD".**
+  `venture_database_get_book_currency()` is the organization's book
+  currency, or the install's default with no organization; it never
+  returns NULL. A literal "USD" fallback passes every USD test and writes
+  dollars into a euro or gold organization -- budgets, payroll, quotes,
+  capture, documents, setup and an action's bare money parameter all did.
+  What is USD by law (the US sales-tax adapter, 1099-NEC, Stripe ACH) says
+  so in a comment and refuses other currencies by name.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

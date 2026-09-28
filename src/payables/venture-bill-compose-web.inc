@@ -20,23 +20,13 @@ static const gchar *const venture_bill_line_fields[] = {
 	"description", "quantity", "unit-price", "account-id", "tax-amount", NULL
 };
 
-/* The organization's currency, which every amount on the sheet is in. */
+/* The organization's book currency, which every amount on the sheet is
+ * in; the install's when it names none, never "USD". */
 static gchar *
 venture_bill_currency(VentureWebServer *self, gint64 organization)
 {
-	g_autoptr(VentureEntity) row = NULL;
-	gchar *currency = NULL;
-
-	row = venture_database_get(venture_context_get_database(self->context),
-	                           VENTURE_TYPE_ORGANIZATION, organization, NULL);
-	if (row != NULL)
-		g_object_get(row, "default-currency", &currency, NULL);
-	if (venture_string_is_empty(currency))
-	{
-		g_free(currency);
-		currency = g_strdup("USD");
-	}
-	return currency;
+	return venture_database_get_book_currency(venture_context_get_database(self->context),
+	                                          organization);
 }
 
 /* The expense accounts a line can be spent from, as options. */

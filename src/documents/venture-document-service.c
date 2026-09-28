@@ -266,13 +266,19 @@ lines_of(JsonObject *spec, GError **error)
 }
 
 static gboolean
-money_from_row(VentureEntity *line, JsonObject *row, GError **error)
+money_from_row(VentureEntity *line, JsonObject *row, const gchar *currency, GError **error)
 {
 	const gchar *price = venture_json_object_get_string(row, "unit_price", NULL);
+	g_autoptr(VentureMoney) unit = NULL;
 	if (price == NULL)
 		return refuse(error, "each line needs an exact unit_price");
-	if (!venture_entity_set_field_from_string(line, "unit-price", price, error))
+	/* A bare price is in @currency -- the quote's, or the organization's
+	 * book currency on an invoice -- rather than the install's default,
+	 * which put a euro organization's lines in dollars. */
+	unit = venture_money_from_string(price, currency, error);
+	if (unit == NULL)
 		return FALSE;
+	g_object_set(line, "unit-price", unit, NULL);
 	g_object_set(line, "discount-percent", venture_json_object_get_int(row, "discount_percent", 0),
 		"tax-percent", venture_json_object_get_int(row, "tax_percent", 0), NULL);
 	return TRUE;
@@ -384,6 +390,7 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 {
 	g_autoptr(VentureInvoice) invoice = NULL;
 	g_autofree gchar *number = NULL;
+	g_autofree gchar *currency = NULL;
 	g_autoptr(GDateTime) issued = NULL, due = NULL;
 	JsonArray *lines;
 	guint i;
@@ -395,6 +402,7 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 		return NULL;
 	invoice = venture_invoice_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(invoice), organization_id);
+	currency = venture_database_get_book_currency(self->database, organization_id);
 	number = g_strdup(venture_json_object_get_string(spec, "number", ""));
 	if (number == NULL || number[0] == '\0')
 	{
@@ -430,7 +438,7 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
 			"product-id", venture_json_object_get_int(row, "product_id", 0),
 			"tax-code-id", venture_json_object_get_int(row, "tax_code_id", 0), NULL);
-		if (!money_from_row(VENTURE_ENTITY(line), row, error) ||
+		if (!money_from_row(VENTURE_ENTITY(line), row, currency, error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			goto fail;
 	}
@@ -452,6 +460,7 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 {
 	g_autoptr(VentureQuote) quote = NULL;
 	g_autofree gchar *number = NULL;
+	g_autofree gchar *currency = NULL;
 	JsonArray *lines;
 	guint i;
 	gint64 quote_id;
@@ -463,6 +472,14 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 		return NULL;
 	quote = venture_quote_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(quote), organization_id);
+	/* A quote drafted from a document that names no currency is in the
+	 * organization's book currency, not in "USD". */
+	currency = g_strdup(venture_json_object_get_string(spec, "currency", NULL));
+	if (venture_string_is_empty(currency))
+	{
+		g_free(currency);
+		currency = venture_database_get_book_currency(self->database, organization_id);
+	}
 	number = g_strdup(venture_json_object_get_string(spec, "number", ""));
 	if (number == NULL || number[0] == '\0')
 	{
@@ -472,7 +489,7 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 	g_object_set(quote, "number", number, "company-id",
 		venture_json_object_get_int(spec, "company_id", 0),
 		"contact-id", venture_json_object_get_int(spec, "contact_id", 0),
-		"currency", venture_json_object_get_string(spec, "currency", "USD"),
+		"currency", currency,
 		"terms", venture_json_object_get_string(spec, "terms", ""),
 		"notes", venture_json_object_get_string(spec, "notes", ""),
 		"billing-mode", venture_json_object_get_string(spec, "billing_mode", ""), NULL);
@@ -497,7 +514,7 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 			"description", description, "quantity", quantity, "position", (gint64)(i + 1),
 			"product-id", venture_json_object_get_int(row, "product_id", 0),
 			"tax-code-id", venture_json_object_get_int(row, "tax_code_id", 0), NULL);
-		if (!money_from_row(VENTURE_ENTITY(line), row, error) ||
+		if (!money_from_row(VENTURE_ENTITY(line), row, currency, error) ||
 			!venture_database_save(self->database, VENTURE_ENTITY(line), actor, error))
 			goto fail;
 	}
