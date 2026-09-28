@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * Units of account beyond ISO 4217
@@ -56,6 +56,7 @@ a registered three-letter code stops counting as ISO money (see below).
 | =symbol=          | string  | shown with an amount, at most 16 bytes; blank shows the code             |
 | =symbol_position= | enum    | =prefix= (the default, "$12.50") or =suffix= ("12.50 pts")               |
 | =denominations=   | JSON    | optional coins, largest first; see below                                |
+| =book_treatment=  | enum    | =valued= (the default), =separate_book= or =memo=; see below             |
 | =description=     | text    | what it is and where it is used                                         |
 
 ** Why the code and exponent are fixed
@@ -145,6 +146,46 @@ letters (the ISO shape, as always) or names a registered currency. Any
 other word is still refused, which is what keeps "100.00 CR" -- a credit --
 from becoming a hundred units of "CR".
 
+* In the books: the book treatment
+
+What an amount in a currency does when the ledger posts it is the
+currency's =book_treatment=. It is the one thing about a currency that may
+change after it has amounts, and changing it changes only postings made
+afterwards.
+
+| Treatment       | What the ledger does                                                              |
+|-----------------+-----------------------------------------------------------------------------------|
+| =valued=        | converted into the organization's book currency when an =exchange_rate= to it exists on the accounting date; with no rate, kept in balanced books of its own, exactly as before the choice existed |
+| =separate_book= | always kept in balanced books of its own, never converted, even when a rate exists |
+| =memo=          | never posted: tracked as quantities and holdings only                             |
+
+=valued= is the zero value and the default, and every built-in ISO code is
+treated as valued. An upgraded install sets =valued= on every existing
+currency (migration =000705=), which is what they all behaved as.
+
+A game economy is the worked case. Its book currency is =GOLD=. Darkmoon
+Faire tickets are something the business counts but that has no price in
+gold: =separate_book= keeps a TICKET trial balance of their own, and a
+ticket-bought prize sold for gold posts gold sales and ticket cost of goods
+sold side by side. Festival tokens that are only ever counted are =memo=: a
+sale for them saves with no journal at all. A currency that trades against
+gold at a known rate is =valued= with an =exchange_rate=, and posts into the
+gold books at that rate with its own amount kept on every line.
+
+#+begin_src sh
+venturectl create currency code=TICKET name='Darkmoon ticket' exponent=0 book_treatment=separate_book
+venturectl create currency code=BREWFEST name='Brewfest token' exponent=0 book_treatment=memo
+venturectl update currency 3 book_treatment=valued   # from the next posting on
+#+end_src
+
+The rule itself -- which journal a line goes to, how a document spanning
+two currencies is balanced through currency clearing, what a manual journal
+may mix -- is written once, in the posting service. See
+[[file:ledger.org][the general journal]], section "Currencies in the books".
+Code that needs the answer asks =venture_currency_get_book_treatment()= for
+the treatment alone, or =venture_posting_service_route_currency()= for what
+an organization would do with an amount on a date.
+
 * Symbols
 
 A registered currency with a symbol shows it where =symbol_position= says:
@@ -215,7 +256,8 @@ cutover payloads, CRM import -- accepts any valid code.
 
 Exchange rates already work between any valid codes. Record an
 =exchange_rate= from =GOLD= to =USD= and the rate-table policy values gold
-in dollars exactly as it values euros:
+in dollars exactly as it values euros -- unless GOLD is a =separate_book=
+or =memo= currency, which the ledger never converts:
 
 #+begin_src sh
 venturectl create exchange_rate from_currency=GOLD to_currency=USD \
@@ -240,6 +282,10 @@ exchange_rate=.
   "GOL".
 - *An ISO door must ask =venture_currency_is_iso()=,* not "is it three
   letters" -- a registered three-letter code is not money Stripe can take.
+- *The treatment lives in the registry too.* The loader sets it after
+  registering each row, and a re-registration keeps the treatment the
+  entry had, so a reload never shows a separate-book currency as valued
+  for a moment. A code the registry does not hold is valued.
 - *Tests share the process-wide registry.* A test that registers a
   currency clears it (=venture_currency_clear_registered()=) before it
   returns.

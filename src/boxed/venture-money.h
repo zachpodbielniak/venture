@@ -753,6 +753,39 @@ venture_currency_register(
 );
 
 /**
+ * venture_currency_set_book_treatment:
+ * @currency: a registered currency's code
+ * @treatment: how the ledger treats amounts in it
+ *
+ * Records a registered currency's book treatment, read back by
+ * venture_currency_get_book_treatment(). The `currency` records set it when
+ * they are loaded; a replaced registration keeps the treatment it had, so a
+ * reload never shows a currency as valued for a moment.
+ *
+ * Returns: %TRUE if @currency is registered
+ */
+gboolean
+venture_currency_set_book_treatment(
+	const gchar		*currency,
+	VentureBookTreatment	 treatment
+);
+
+/**
+ * venture_currency_get_book_treatment:
+ * @currency: (nullable): a currency code
+ *
+ * How the ledger treats amounts in @currency: a user-defined currency
+ * answers what its record says; every built-in ISO code, and any code the
+ * registry does not hold, is %VENTURE_BOOK_TREATMENT_VALUED. Whether a
+ * valued amount is actually converted also depends on an exchange rate
+ * existing -- ask venture_posting_service_route_currency() for that.
+ *
+ * Returns: the currency's book treatment
+ */
+VentureBookTreatment
+venture_currency_get_book_treatment(const gchar *currency);
+
+/**
  * venture_currency_retain_registered:
  * @keep: (nullable) (array zero-terminated=1): the codes to keep
  *

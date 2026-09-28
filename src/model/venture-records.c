@@ -2447,6 +2447,14 @@ static const VentureFieldDecl venture_currency_fields[] = {
 	              "{\"suffix\":\"s\",\"units\":100},"
 	              "{\"suffix\":\"c\",\"units\":1}] shows 12g 34s 56c",
 	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	/* Mutable, unlike the code and exponent: it decides how the next
+	 * posting is made, and never rewrites a journal already posted. */
+	VENTURE_FIELD_ENUM("book-treatment", "In the books",
+	                   "valued: converted into the book currency when an "
+	                   "exchange rate exists, else kept in its own books; "
+	                   "separate_book: always its own balanced books, never "
+	                   "converted; memo: tracked as quantities, never posted",
+	                   venture_book_treatment_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("description", "Description", "What it is and where it is used")
 };
 

@@ -1781,6 +1781,61 @@ GType
 venture_symbol_position_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureBookTreatment:
+ * @VENTURE_BOOK_TREATMENT_VALUED: valued in the organization's book
+ *   currency when an exchange rate to it exists on the accounting date;
+ *   with no rate it is kept in books of its own, exactly as if it were
+ *   %VENTURE_BOOK_TREATMENT_SEPARATE_BOOK, because a rate is never
+ *   invented. Every built-in ISO 4217 currency is treated this way.
+ * @VENTURE_BOOK_TREATMENT_SEPARATE_BOOK: always kept in its own balanced
+ *   books, never converted, even when a rate exists
+ * @VENTURE_BOOK_TREATMENT_MEMO: tracked as quantities only and never
+ *   posted to the general ledger
+ *
+ * How the ledger treats amounts in a user-defined currency. The zero value
+ * is the one every currency had before the choice existed, so a row
+ * written before the column was added reads back unchanged.
+ */
+typedef enum
+{
+	VENTURE_BOOK_TREATMENT_VALUED = 0,
+	VENTURE_BOOK_TREATMENT_SEPARATE_BOOK,
+	VENTURE_BOOK_TREATMENT_MEMO
+} VentureBookTreatment;
+
+#define VENTURE_TYPE_BOOK_TREATMENT (venture_book_treatment_get_type())
+
+GType
+venture_book_treatment_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureBookRoute:
+ * @VENTURE_BOOK_ROUTE_BOOK: the amount is already in the book currency
+ * @VENTURE_BOOK_ROUTE_CONVERTED: a valued currency with a rate on the
+ *   accounting date; the line keeps its original amount and is valued
+ *   into the book-currency journal
+ * @VENTURE_BOOK_ROUTE_SEPARATE: posted to a balanced journal of its own
+ *   currency (a separate-book currency, or a valued one with no rate)
+ * @VENTURE_BOOK_ROUTE_MEMO: never posted
+ *
+ * Where one amount goes when an organization posts it on a given date:
+ * the answer to venture_posting_service_route_currency(), which is the one
+ * place the rule is decided.
+ */
+typedef enum
+{
+	VENTURE_BOOK_ROUTE_BOOK = 0,
+	VENTURE_BOOK_ROUTE_CONVERTED,
+	VENTURE_BOOK_ROUTE_SEPARATE,
+	VENTURE_BOOK_ROUTE_MEMO
+} VentureBookRoute;
+
+#define VENTURE_TYPE_BOOK_ROUTE (venture_book_route_get_type())
+
+GType
+venture_book_route_get_type(void) G_GNUC_CONST;
+
+/**
  * venture_link_kind_inverse:
  * @kind: a link kind
  *

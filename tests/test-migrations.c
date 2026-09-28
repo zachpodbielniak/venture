@@ -916,6 +916,53 @@ test_taxonomy_sales_off(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * A currency defined before book treatment existed has a NULL column once
+ * reconciliation adds it; 000705 makes it valued, which is what every
+ * currency behaved as, and a restart runs nothing twice. If this regresses
+ * an upgraded currency reads a treatment nobody chose -- or the column
+ * holds a value the ledger does not know.
+ */
+static void
+test_currency_book_treatment(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO currencies (uuid, organization_id, created_at, updated_at, version, code, name, exponent) "
+		"VALUES ('cur-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'TICKET', 'Ticket', 0);"
+		"UPDATE currencies SET book_treatment = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 705", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *nulls = NULL;
+		g_autofree gchar *value = NULL;
+
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		nulls = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM currencies WHERE book_treatment IS NULL");
+		g_assert_cmpstr(nulls, ==, "0");
+		value = query_text(database,
+			"SELECT CAST(book_treatment AS TEXT) FROM currencies WHERE code = 'TICKET'");
+		g_assert_cmpstr(value, ==, "0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -930,6 +977,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
+	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);

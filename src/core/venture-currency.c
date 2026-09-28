@@ -175,11 +175,13 @@ venture_currency_load_registry(
 		g_autoptr(GError) refused = NULL;
 		gint64 exponent;
 		gint position;
+		gint treatment;
 
 		row = g_ptr_array_index(rows, i);
 		g_object_get(row, "code", &code, "exponent", &exponent,
 		             "symbol", &symbol, "symbol-position", &position,
-		             "denominations", &denominations, NULL);
+		             "denominations", &denominations,
+		             "book-treatment", &treatment, NULL);
 
 		if ((exponent < 0) || (exponent > VENTURE_MONEY_MAX_EXPONENT) ||
 		    !venture_currency_register(code, (guint8)exponent, symbol,
@@ -194,6 +196,7 @@ venture_currency_load_registry(
 			continue;
 		}
 
+		venture_currency_set_book_treatment(code, (VentureBookTreatment)treatment);
 		g_ptr_array_add(codes, g_steal_pointer(&code));
 	}
 

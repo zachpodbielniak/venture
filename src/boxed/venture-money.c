@@ -110,6 +110,7 @@ typedef struct
 	const gchar		*symbol;
 	gboolean		symbol_suffix;
 	gboolean		registered;
+	VentureBookTreatment	treatment;
 	guint			n_units;
 	VentureCurrencyUnit	units[VENTURE_CURRENCY_MAX_DENOMINATIONS];
 } VentureCurrencyEntry;
@@ -2451,11 +2452,74 @@ venture_currency_register(
 		venture_currency_registry = g_hash_table_new_full(g_str_hash,
 			g_str_equal, NULL, g_free);
 
+	/* A reload re-registers every row and only then sets its treatment.
+	 * Carrying the old one over means a currency never reads as valued
+	 * for the moment in between -- a posting that looked then would put
+	 * a separate-book amount into the book currency. */
+	{
+		VentureCurrencyEntry *previous;
+
+		previous = g_hash_table_lookup(venture_currency_registry, entry->code);
+
+		if (NULL != previous)
+			entry->treatment = previous->treatment;
+	}
+
 	/* The key lives inside the value, so the two go together. */
 	g_hash_table_replace(venture_currency_registry, entry->code, entry);
 	g_rw_lock_writer_unlock(&venture_currency_registry_lock);
 
 	return TRUE;
+}
+
+gboolean
+venture_currency_set_book_treatment(
+	const gchar		*currency,
+	VentureBookTreatment	 treatment
+){
+	gchar key[VENTURE_MONEY_CURRENCY_LEN];
+	VentureCurrencyEntry *entry;
+	gboolean found;
+
+	if ((NULL == currency) || ('\0' == currency[0]) ||
+	    !venture_money_store_currency(key, currency))
+		return FALSE;
+
+	g_rw_lock_writer_lock(&venture_currency_registry_lock);
+	entry = (NULL != venture_currency_registry)
+		? g_hash_table_lookup(venture_currency_registry, key) : NULL;
+	found = (NULL != entry);
+
+	if (found)
+		entry->treatment = treatment;
+
+	g_rw_lock_writer_unlock(&venture_currency_registry_lock);
+
+	return found;
+}
+
+VentureBookTreatment
+venture_currency_get_book_treatment(const gchar *currency)
+{
+	gchar key[VENTURE_MONEY_CURRENCY_LEN];
+	VentureCurrencyEntry *entry;
+	VentureBookTreatment treatment;
+
+	/* Anything the registry does not hold -- every ISO code, and a code
+	 * nobody defined -- is valued: converted when a rate exists, kept
+	 * apart when none does. That is what every currency did before a
+	 * treatment could be chosen. */
+	if ((NULL == currency) || ('\0' == currency[0]) ||
+	    !venture_money_store_currency(key, currency))
+		return VENTURE_BOOK_TREATMENT_VALUED;
+
+	g_rw_lock_reader_lock(&venture_currency_registry_lock);
+	entry = (NULL != venture_currency_registry)
+		? g_hash_table_lookup(venture_currency_registry, key) : NULL;
+	treatment = (NULL != entry) ? entry->treatment : VENTURE_BOOK_TREATMENT_VALUED;
+	g_rw_lock_reader_unlock(&venture_currency_registry_lock);
+
+	return treatment;
 }
 
 void
