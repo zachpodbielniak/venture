@@ -1773,6 +1773,54 @@ test_retention_sweep(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
 }
 
+/* Erasure deletes every response carrying the address, sensitive answers
+ * included, leaves others alone, and leaves one audit entry that says it
+ * happened without saying whose. */
+static void
+test_erase_person(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "erase-form");
+	g_autoptr(VentureEntity) note = make_field(f, form, "contact_again", "Where else can we reach you?",
+		VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 70);
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) audits = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autofree gchar *text = NULL;
+	const gchar *const hers[] = { "name", "Alice", "email", "Alice@Example.com", "topic", "sales", NULL };
+	const gchar *const hidden[] = { "name", "A2", "email", "other@example.com", "topic", "sales", "contact_again", "alice@example.com", NULL };
+	const gchar *const his[] = { "name", "Bob", "email", "bob@example.com", "topic", "sales", NULL };
+	gboolean recorded = FALSE;
+	guint i;
+	(void)data;
+	g_object_set(note, "sensitive", TRUE, NULL);
+	save(f, note);
+	g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, hers, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(submit_pairs(f, form, hidden, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(submit_pairs(f, form, his, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	result = venture_forms_erase_person(f->db, f->org, " alice@example.com ", NULL, &error);
+	g_assert_no_error(error);
+	text = json_to_string(result, FALSE);
+	g_assert_nonnull(strstr(text, "\"erased\":2"));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	venture_query_set_limit(audits, 0);
+	entries = venture_database_find(f->db, audits, NULL);
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autofree gchar *label = NULL, *diff = NULL;
+		g_object_get(g_ptr_array_index(entries, i), "target-label", &label, "diff", &diff, NULL);
+		g_assert_null(strstr(label != NULL ? label : "", "Alice"));
+		g_assert_null(strstr(diff != NULL ? diff : "", "alice"));
+		if (g_strcmp0(label, "Erasure request") == 0)
+			recorded = TRUE;
+	}
+	g_assert_true(recorded);
+	g_clear_pointer(&result, json_node_unref);
+	g_assert_null(venture_forms_erase_person(f->db, f->org, "nobody", NULL, &error));
+	g_assert_nonnull(error);
+}
+
 /* ==========================================================================
  * After a submission
  * ========================================================================== */
@@ -1950,6 +1998,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/consent-recorded", Fixture, NULL, setup, test_consent_recorded, teardown);
 	g_test_add("/forms/sensitive-kept-apart", Fixture, NULL, setup, test_sensitive_kept_apart, teardown);
 	g_test_add("/forms/retention-sweep", Fixture, NULL, setup, test_retention_sweep, teardown);
+	g_test_add("/forms/erase-person", Fixture, NULL, setup, test_erase_person, teardown);
 	g_test_add("/forms/a11y-contract", Fixture, NULL, setup, test_a11y_contract, teardown);
 	g_test_add("/forms/versions-freeze", Fixture, NULL, setup, test_versions_freeze, teardown);
 	g_test_add("/forms/versions-publish-rules", Fixture, NULL, setup, test_versions_publish_rules, teardown);

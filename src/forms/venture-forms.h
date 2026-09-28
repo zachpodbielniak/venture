@@ -432,6 +432,23 @@ gboolean venture_forms_submit(VentureDatabase *database, VentureEntity *form, GH
 JsonNode *venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id, guint limit,
 	GDateTime *now, const VentureActor *actor, GError **error);
 
+/**
+ * venture_forms_erase_person:
+ * @database: a #VentureDatabase
+ * @organization_id: the organization to erase in
+ * @email: the address whose responses to erase
+ * @actor: (nullable): who asked
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Deletes every response whose answers carry @email, cancels their queued
+ * confirmations, and records one audit entry saying an erasure happened
+ * and how many, without the address or any answer.
+ *
+ * Returns: (transfer full) (nullable): what was erased and cancelled
+ */
+JsonNode *venture_forms_erase_person(VentureDatabase *database, gint64 organization_id,
+	const gchar *email, const VentureActor *actor, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

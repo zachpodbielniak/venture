@@ -679,6 +679,26 @@ forms_sweep_invoke(VentureAction *action, VentureEntity *entity, GHashTable *par
 	return answer;
 }
 
+static VentureEntity *
+forms_erase_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	JsonNode *email = g_hash_table_lookup(params, "email");
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *text = NULL;
+	VentureEntity *answer;
+
+	result = venture_forms_erase_person(venture_action_get_data(action), venture_entity_get_organization_id(entity),
+		(NULL != email && JSON_NODE_HOLDS_VALUE(email)) ? json_node_get_string(email) : NULL, actor, error);
+	if (NULL == result)
+		return NULL;
+	text = json_to_string(result, FALSE);
+	answer = VENTURE_ENTITY(venture_form_new());
+	venture_entity_set_organization_id(answer, venture_entity_get_organization_id(entity));
+	g_object_set(answer, "name", "Erasure", "result", text, NULL);
+	return answer;
+}
+
 static void
 forms_register_actions(VentureDatabase *database)
 {
@@ -706,6 +726,19 @@ forms_register_actions(VentureDatabase *database)
 	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 		forms_publish_allowed_type, forms_sweep_invoke, database, NULL, &error))
 		g_error("Form retention action registration: %s", error->message);
+	g_clear_object(&action);
+	g_ptr_array_set_size(parameters, 1);
+	g_ptr_array_add(parameters, venture_field_spec_new("email", "Email", VENTURE_FIELD_KIND_STRING));
+	/* Deleting what a person sent is access management, not data entry:
+	 * owners only, like users and tokens. */
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "erase_person", "label", "Erase a person's responses",
+		"description", "Delete every form response that carries this email address, cancel their queued confirmations, and record that an erasure happened",
+		"parameters", parameters, "stageable", TRUE, "type-level", TRUE, "service-transaction", TRUE,
+		"roles", VENTURE_USER_ROLE_OWNER, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed_type, forms_erase_invoke, database, NULL, &error))
+		g_error("Form erasure action registration: %s", error->message);
 }
 
 void
@@ -2060,4 +2093,127 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 	json_builder_add_boolean_value(builder, 0 == budget);
 	json_builder_end_object(builder);
 	return json_builder_get_root(builder);
+}
+
+/* ==========================================================================
+ * Erasure
+ *
+ * "Delete everything this person sent": every response in the
+ * organization whose answers carry the address, sensitive answers
+ * included. Queued confirmations are cancelled so they are never sent (the
+ * outbox keeps its own retained record of every message, sent or not, as
+ * mail does). The responses are deleted outright, and one audit entry
+ * says an erasure happened and how many -- not whose, and not what.
+ * Leads made from those responses are CRM records and are erased there.
+ * ========================================================================== */
+
+/* Whether any string in @text's JSON object equals @email, ignoring case. */
+static gboolean
+forms_answers_mention(const gchar *text, const gchar *email)
+{
+	g_autoptr(JsonNode) root = NULL;
+	JsonObjectIter iter;
+	const gchar *member;
+	JsonNode *node;
+
+	if (venture_string_is_empty(text))
+		return FALSE;
+	root = json_from_string(text, NULL);
+	if (NULL == root || !JSON_NODE_HOLDS_OBJECT(root))
+		return FALSE;
+	json_object_iter_init(&iter, json_node_get_object(root));
+	while (json_object_iter_next(&iter, &member, &node))
+		if (JSON_NODE_HOLDS_VALUE(node) && G_TYPE_STRING == json_node_get_value_type(node))
+		{
+			g_autofree gchar *value = g_strstrip(g_strdup(json_node_get_string(node)));
+
+			if (0 == g_ascii_strcasecmp(value, email))
+				return TRUE;
+		}
+	return FALSE;
+}
+
+JsonNode *
+venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, const gchar *email,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autofree gchar *wanted = NULL;
+	gint64 erased = 0, cancelled = 0;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+
+	wanted = g_strstrip(g_strdup(email != NULL ? email : ""));
+	if (NULL == strchr(wanted, '@'))
+	{
+		venture_set_error_validation(error, "email", "name the address whose responses to erase");
+		return NULL;
+	}
+	query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(database, query, error);
+	if (NULL == rows || !venture_database_begin(database, error))
+		return NULL;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *response = g_ptr_array_index(rows, i);
+		g_autofree gchar *open = venture_forms_get_string(response, "answers");
+		g_autofree gchar *hidden = venture_forms_get_string(response, "sensitive-answers");
+
+		if (!forms_answers_mention(open, wanted) && !forms_answers_mention(hidden, wanted))
+			continue;
+		if (G_TYPE_INVALID != venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message") &&
+		    NULL != venture_database_get_mail_outbox(database))
+		{
+			g_autoptr(VentureQuery) mail = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+			g_autoptr(VentureEntity) message = NULL;
+			g_autofree gchar *key = g_strdup_printf("form-response:%s", venture_entity_get_uuid(response));
+
+			venture_query_set_organization(mail, organization_id);
+			venture_query_add_filter_string(mail, "idempotency-key", VENTURE_FILTER_OP_EQ, key, NULL);
+			message = venture_database_find_one(database, mail, NULL);
+			/* Already sent is sent; a refusal to cancel it is not a
+			 * reason to keep the response. */
+			if (NULL != message && venture_mail_outbox_cancel(venture_database_get_mail_outbox(database),
+				organization_id, venture_entity_get_id(message), "erasure request", actor, NULL))
+				cancelled++;
+		}
+		if (!venture_database_purge(database, response, actor, error))
+			goto fail;
+		erased++;
+	}
+
+	{
+		g_autoptr(VentureAuditEntry) entry = NULL;
+		g_autoptr(JsonNode) diff = json_from_string("{}", NULL);
+
+		json_object_set_int_member(json_node_get_object(diff), "erased", erased);
+		entry = venture_audit_entry_new_for_change(VENTURE_AUDIT_ACTION_DELETE,
+			NULL != actor ? actor->kind : VENTURE_ACTOR_KIND_SYSTEM,
+			NULL != actor && NULL != actor->name ? actor->name : "system", NULL, diff);
+		venture_entity_set_organization_id(VENTURE_ENTITY(entry), organization_id);
+		g_object_set(entry, "target-type", "form_submission", "target-label", "Erasure request", NULL);
+		if (!venture_database_save(database, VENTURE_ENTITY(entry), NULL, error))
+			goto fail;
+	}
+	if (!venture_database_commit(database, error))
+		return NULL;
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "erased");
+	json_builder_add_int_value(builder, erased);
+	json_builder_set_member_name(builder, "confirmations_cancelled");
+	json_builder_add_int_value(builder, cancelled);
+	json_builder_end_object(builder);
+	return json_builder_get_root(builder);
+
+fail:
+	venture_database_rollback(database);
+	return NULL;
 }
