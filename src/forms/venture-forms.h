@@ -414,6 +414,24 @@ gboolean venture_forms_submit(VentureDatabase *database, VentureEntity *form, GH
 	const gchar *origin, GDateTime *now, VentureFormsOutcome *outcome,
 	VentureEntity **submission, JsonObject **errors, GError **error);
 
+/**
+ * venture_forms_retention_sweep:
+ * @database: a #VentureDatabase
+ * @organization_id: the organization to sweep
+ * @limit: the most responses to remove in this run (at most 1000; 0 for 100)
+ * @now: the time retention is judged at
+ * @actor: (nullable): who asked
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Anonymises or purges, per each form's setting, responses older than the
+ * form keeps them. Bounded, and run only when asked.
+ *
+ * Returns: (transfer full) (nullable): counts of anonymised and purged
+ *   responses and whether the limit was reached
+ */
+JsonNode *venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id, guint limit,
+	GDateTime *now, const VentureActor *actor, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

@@ -23,6 +23,7 @@
 
 #define VENTURE_FORMS_STATE_KEY "venture-forms-installed"
 #define VENTURE_FORMS_DEFAULT_FILL_SECONDS 3
+#define VENTURE_FORMS_ANONYMISING_KEY "venture-forms-anonymising"
 
 static gboolean forms_check_published(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, GError **error);
@@ -114,6 +115,26 @@ forms_validate_form(
 
 	(void)user_data;
 
+	{
+		g_autofree gchar *privacy = venture_forms_get_string(entity, "privacy-url");
+		g_autofree gchar *retain = venture_forms_get_string(entity, "retention-action");
+
+		if (!venture_string_is_empty(privacy) && !forms_redirect_valid(privacy))
+		{
+			venture_set_error_validation(error, "Privacy notice", "must be an http:// or https:// address");
+			return FALSE;
+		}
+		if (!venture_string_is_empty(retain) && 0 != g_strcmp0(retain, "anonymise") && 0 != g_strcmp0(retain, "purge"))
+		{
+			venture_set_error_validation(error, "After that", "must be anonymise or purge");
+			return FALSE;
+		}
+		if (venture_forms_get_int(entity, "retention-days") < 0)
+		{
+			venture_set_error_validation(error, "Keep responses for", "cannot be negative");
+			return FALSE;
+		}
+	}
 	if (!venture_string_is_empty(redirect) && !forms_redirect_valid(redirect))
 	{
 		venture_set_error_validation(error, "Redirect to",
@@ -491,6 +512,11 @@ forms_validate_submission(
 		return TRUE;
 	}
 
+	/* Anonymising is the one rewrite: the retention sweep empties the
+	 * answers and names nobody, and marks it done. */
+	if (NULL != g_object_get_data(G_OBJECT(entity), VENTURE_FORMS_ANONYMISING_KEY))
+		return TRUE;
+
 	/* What was sent is evidence. The team may mark it reviewed and add
 	 * notes; they may not rewrite it. */
 	{
@@ -606,6 +632,20 @@ forms_publish_allowed(VentureAction *action, VentureEntity *entity, const Ventur
 	return TRUE;
 }
 
+static gboolean
+forms_publish_allowed_type(VentureAction *action, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	(void)action;
+	(void)entity;
+	(void)actor;
+	if (G_TYPE_INVALID == venture_entity_registry_lookup(venture_entity_registry_get_default(), "form"))
+	{
+		venture_set_error_validation(error, "module", "The forms module is off");
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static VentureEntity *
 forms_publish_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
 	const VentureActor *actor, GError **error)
@@ -613,6 +653,30 @@ forms_publish_invoke(VentureAction *action, VentureEntity *entity, GHashTable *p
 	(void)params;
 
 	return venture_forms_publish(venture_action_get_data(action), entity, actor, error);
+}
+
+/* A type-level action: the placeholder carries the organization the
+ * access policy judged, placed there from organization_id. */
+static VentureEntity *
+forms_sweep_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *text = NULL;
+	JsonNode *limit = g_hash_table_lookup(params, "limit");
+	gint64 count = (NULL != limit && JSON_NODE_HOLDS_VALUE(limit)) ? json_node_get_int(limit) : 0;
+	VentureEntity *answer;
+
+	result = venture_forms_retention_sweep(venture_action_get_data(action),
+		venture_entity_get_organization_id(entity), (guint)CLAMP(count, 0, 1000), now, actor, error);
+	if (NULL == result)
+		return NULL;
+	text = json_to_string(result, FALSE);
+	answer = VENTURE_ENTITY(venture_form_new());
+	venture_entity_set_organization_id(answer, venture_entity_get_organization_id(entity));
+	g_object_set(answer, "name", "Retention sweep", "result", text, NULL);
+	return answer;
 }
 
 static void
@@ -631,6 +695,17 @@ forms_register_actions(VentureDatabase *database)
 	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 		forms_publish_allowed, forms_publish_invoke, database, NULL, &error))
 		g_error("Form publish action registration: %s", error->message);
+	g_clear_object(&action);
+	g_ptr_array_add(parameters, venture_field_spec_new("organization_id", "Organization", VENTURE_FIELD_KIND_INTEGER));
+	g_ptr_array_add(parameters, venture_field_spec_new("limit", "Limit", VENTURE_FIELD_KIND_INTEGER));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "sweep_retention", "label", "Apply retention",
+		"description", "Anonymise or purge responses older than each form keeps them, at most limit (100) at a time",
+		"parameters", parameters, "stageable", TRUE, "type-level", TRUE, "service-transaction", TRUE,
+		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed_type, forms_sweep_invoke, database, NULL, &error))
+		g_error("Form retention action registration: %s", error->message);
 }
 
 void
@@ -1892,4 +1967,97 @@ venture_forms_has_unpublished_changes(VentureDatabase *database, VentureEntity *
 	draft = venture_forms_definition_to_json(fields);
 	frozen = venture_forms_get_string(version, "definition");
 	return 0 != g_strcmp0(draft, frozen);
+}
+
+/* ==========================================================================
+ * Retention
+ *
+ * A form may keep its responses for a number of days. The sweep removes
+ * what is older, a bounded number at a time, when it is asked to --
+ * never on a timer, because the only background thread belongs to coding
+ * runs and may not touch the database. Anonymising keeps the response and
+ * its version, so the counts stay right, and empties everything a person
+ * typed; purging deletes it. Files and drafts, when forms have them, go
+ * with the response here.
+ * ========================================================================== */
+
+static gboolean
+forms_anonymise(VentureDatabase *database, VentureEntity *response, GDateTime *now,
+	const VentureActor *actor, GError **error)
+{
+	g_autofree gchar *name = g_strdup_printf("Anonymised response #%" G_GINT64_FORMAT,
+		venture_entity_get_id(response));
+
+	g_object_set(response, "name", name, "answers", "{}", "sensitive-answers", NULL,
+		"summary", "", "notes", NULL, "origin", NULL, "mapping-note", NULL,
+		"anonymised-at", now, NULL);
+	g_object_set_data(G_OBJECT(response), VENTURE_FORMS_ANONYMISING_KEY, GINT_TO_POINTER(1));
+	return venture_database_save(database, response, actor, error);
+}
+
+JsonNode *
+venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id, guint limit,
+	GDateTime *now, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureQuery) forms = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	gint64 anonymised = 0, purged = 0;
+	guint budget, i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+
+	budget = limit > 0 ? MIN(limit, 1000) : 100;
+	forms = venture_query_new(VENTURE_TYPE_FORM);
+	venture_query_set_organization(forms, organization_id);
+	venture_query_set_limit(forms, 0);
+	venture_query_add_filter_int(forms, "retention-days", VENTURE_FILTER_OP_GT, 0, NULL);
+	rows = venture_database_find(database, forms, error);
+	if (NULL == rows)
+		return NULL;
+
+	for (i = 0; i < rows->len && budget > 0; i++)
+	{
+		VentureEntity *form = g_ptr_array_index(rows, i);
+		g_autofree gchar *action = venture_forms_get_string(form, "retention-action");
+		g_autoptr(GDateTime) cutoff = g_date_time_add_days(now, -(gint)venture_forms_get_int(form, "retention-days"));
+		g_autofree gchar *before = venture_time_to_string(cutoff);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+		g_autoptr(GPtrArray) expired = NULL;
+		gboolean purge = 0 == g_strcmp0(action, "purge");
+		guint j;
+
+		venture_query_set_organization(query, organization_id);
+		venture_query_set_limit(query, budget);
+		venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(form), NULL);
+		venture_query_add_filter_string(query, "submitted-at", VENTURE_FILTER_OP_LT, before, NULL);
+		if (!purge)
+			venture_query_add_filter_string(query, "anonymised-at", VENTURE_FILTER_OP_IS_NULL, NULL, NULL);
+		venture_query_add_order(query, "submitted-at", VENTURE_SORT_ASCENDING, NULL);
+		expired = venture_database_find(database, query, error);
+		if (NULL == expired)
+			return NULL;
+		for (j = 0; j < expired->len && budget > 0; j++, budget--)
+		{
+			VentureEntity *response = g_ptr_array_index(expired, j);
+
+			if (purge ? !venture_database_purge(database, response, actor, error)
+			          : !forms_anonymise(database, response, now, actor, error))
+				return NULL;
+			if (purge)
+				purged++;
+			else
+				anonymised++;
+		}
+	}
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "anonymised");
+	json_builder_add_int_value(builder, anonymised);
+	json_builder_set_member_name(builder, "purged");
+	json_builder_add_int_value(builder, purged);
+	json_builder_set_member_name(builder, "limit_reached");
+	json_builder_add_boolean_value(builder, 0 == budget);
+	json_builder_end_object(builder);
+	return json_builder_get_root(builder);
 }

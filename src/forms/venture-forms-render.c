@@ -567,6 +567,18 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 		g_string_append(html, "\">");
 	}
 
+	/* The privacy notice sits by the button: it is what a person reads
+	 * just before handing their answers over. */
+	{
+		g_autofree gchar *privacy = venture_forms_get_string(form, "privacy-url");
+
+		if (!venture_string_is_empty(privacy))
+		{
+			g_string_append(html, "<p class=\"vf-privacy\"><a href=\"");
+			forms_escape(html, privacy);
+			g_string_append(html, "\">Privacy notice</a></p>");
+		}
+	}
 	g_string_append(html, "<div class=\"vf-actions\"><button class=\"vf-submit\" type=\"submit\"");
 	if (preview)
 		g_string_append(html, " disabled");
@@ -656,6 +668,12 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 		"Thank you. Your response has been received." : success);
 	json_builder_set_member_name(builder, "action");
 	json_builder_add_string_value(builder, action != NULL ? action : "");
+	{
+		g_autofree gchar *privacy = venture_forms_get_string(form, "privacy-url");
+
+		json_builder_set_member_name(builder, "privacy_url");
+		json_builder_add_string_value(builder, privacy != NULL ? privacy : "");
+	}
 	json_builder_set_member_name(builder, "honeypot");
 	json_builder_add_string_value(builder, VENTURE_FORMS_HONEYPOT);
 	json_builder_set_member_name(builder, "ticket_field");

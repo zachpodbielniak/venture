@@ -221,6 +221,12 @@ test_form_validation(Fixture *f, gconstpointer data)
 	save(f, form);
 	g_object_set(form, "response-limit", (gint64)-1, NULL);
 	refuse(f, form, "Response limit");
+	g_object_set(form, "privacy-url", "ftp://example.com/p", NULL);
+	refuse(f, form, "Privacy");
+	g_object_set(form, "privacy-url", "https://example.com/privacy", "retention-action", "shred", NULL);
+	refuse(f, form, "anonymise");
+	g_object_set(form, "retention-action", "purge", "response-limit", (gint64)0, NULL);
+	save(f, form);
 	g_object_set(form, "response-limit", (gint64)0, "min-fill-seconds", (gint64)-2, NULL);
 	refuse(f, form, "fill");
 	g_object_set(form, "min-fill-seconds", (gint64)0, "on-duplicate", "sometimes", NULL);
@@ -1281,6 +1287,8 @@ static void
 test_a11y_contract(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) form = every_kind_form(f, "a11y-form");
+	g_object_set(form, "privacy-url", "https://example.com/privacy", NULL);
+	save(f, form);
 	g_autoptr(JsonObject) errors = json_object_new();
 	g_autoptr(JsonObject) values = json_object_new();
 	g_autoptr(GPtrArray) fields = venture_forms_fields(f->db, form, NULL);
@@ -1320,6 +1328,7 @@ test_a11y_contract(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(refused, "autofocus"));
 	g_assert_nonnull(strstr(thanks, "role=\"status\""));
 	g_assert_nonnull(strstr(blank, "autocomplete=\"email\""));
+	g_assert_nonnull(strstr(blank, "<p class=\"vf-privacy\"><a href=\"https://example.com/privacy\">Privacy notice</a></p>"));
 	g_assert_nonnull(strstr(blank, "autocomplete=\"tel\""));
 }
 
@@ -1714,6 +1723,56 @@ test_sensitive_kept_apart(Fixture *f, gconstpointer data)
 	refuse(f, health, "sensitive");
 }
 
+/* The sweep anonymises what a form no longer keeps -- the count stays, the
+ * answers go -- or purges it, and never more than it is allowed. */
+static void
+test_retention_sweep(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "retention-form");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) later = g_date_time_add_days(now, 40);
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL, *answers = NULL, *name = NULL;
+	const gchar *const pairs[] = { "name", "Alice", "email", "a@example.com", "topic", "sales", NULL };
+	guint i;
+	(void)data;
+	for (i = 0; i < 3; i++)
+		g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_object_set(form, "retention-days", (gint64)30, NULL);
+	save(f, form);
+	/* Nothing is old yet. */
+	result = venture_forms_retention_sweep(f->db, f->org, 10, now, NULL, &error);
+	g_assert_no_error(error);
+	text = json_to_string(result, FALSE);
+	g_assert_nonnull(strstr(text, "\"anonymised\":0"));
+	g_clear_pointer(&result, json_node_unref);
+	g_clear_pointer(&text, g_free);
+	/* Forty days on, two at a time. */
+	result = venture_forms_retention_sweep(f->db, f->org, 2, later, NULL, &error);
+	g_assert_no_error(error);
+	text = json_to_string(result, FALSE);
+	g_assert_nonnull(strstr(text, "\"anonymised\":2"));
+	g_assert_nonnull(strstr(text, "\"limit_reached\":true"));
+	g_clear_pointer(&result, json_node_unref);
+	result = venture_forms_retention_sweep(f->db, f->org, 10, later, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 3);
+	rows = venture_database_find(f->db, query, NULL);
+	g_object_get(g_ptr_array_index(rows, 0), "answers", &answers, "name", &name, NULL);
+	g_assert_cmpstr(answers, ==, "{}");
+	g_assert_null(strstr(name, "Alice"));
+	/* Purging deletes. */
+	g_object_set(form, "retention-action", "purge", NULL);
+	save(f, form);
+	g_clear_pointer(&result, json_node_unref);
+	result = venture_forms_retention_sweep(f->db, f->org, 10, later, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+}
+
 /* ==========================================================================
  * After a submission
  * ========================================================================== */
@@ -1890,6 +1949,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/builder-page", Fixture, NULL, setup, test_builder_page, teardown);
 	g_test_add("/forms/consent-recorded", Fixture, NULL, setup, test_consent_recorded, teardown);
 	g_test_add("/forms/sensitive-kept-apart", Fixture, NULL, setup, test_sensitive_kept_apart, teardown);
+	g_test_add("/forms/retention-sweep", Fixture, NULL, setup, test_retention_sweep, teardown);
 	g_test_add("/forms/a11y-contract", Fixture, NULL, setup, test_a11y_contract, teardown);
 	g_test_add("/forms/versions-freeze", Fixture, NULL, setup, test_versions_freeze, teardown);
 	g_test_add("/forms/versions-publish-rules", Fixture, NULL, setup, test_versions_publish_rules, teardown);

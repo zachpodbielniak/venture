@@ -122,6 +122,32 @@ are you to recommend us (0-10)?". So a form has versions.
 - The form's own texts --- title, introduction, button, thank-you --- are
   not versioned: they change what a page says, not what an answer means.
 
+* Privacy
+
+- *Consent.* A =consent= question is one box whose answer is the words it
+  was given to: =label=, with =help= as detail, stored as
+  ={"given":true,"wording":...}= under the response's version and time.
+  An unticked box records nothing, so consent is never made up from a
+  default. It can be required.
+- *Sensitive questions.* A question marked =sensitive= is checked like any
+  other and stored apart, in the response's =sensitive_answers=, a
+  sensitive column: never in the API's JSON, the assistant's view,
+  webhooks, notifications, search or the audit log. The summary names the
+  question only. The response's own page shows it. A sensitive question
+  cannot fill a lead.
+- *The audit log holds no answers.* A response's audit entries are
+  labelled "Form response #N", and changes to its name, answers, summary,
+  notes and origin are recorded as changed and redacted.
+- *Privacy notice.* =privacy_url= puts a "Privacy notice" link
+  (=vf-privacy=) by the button and in the schema.
+- *Retention.* =retention_days= keeps responses that long;
+  =retention_action= =anonymise= (the default: the response and its
+  version stay for the counts, everything typed goes) or =purge=. The
+  sweep runs when asked, never on a timer, at most =limit= (100, up to
+  1000) responses a run: =venturectl act form 0 sweep_retention
+  organization_id=1 limit=200=. It returns how many it anonymised and
+  purged and whether it hit the limit.
+
 * Putting it on a site
 
 Every way in is the one renderer, =venture_forms_render()=, so the preview,
@@ -177,6 +203,7 @@ features add names; none is removed.
 | =vf-hp=                       | the honeypot's container, =hidden=; a page that overrides =[hidden]= must hide it |
 | =vf-actions=, =vf-submit=     | the button's container and the button                               |
 | =vf-success=                  | the thank-you, =role="status"=                                      |
+| =vf-privacy=                  | the privacy notice link                                             |
 | =vf-page=                     | the hosted page's =<main>=                                          |
 
 Element ids are =vf-TOKEN-KEY= for an input, with =-help= and =-error=
