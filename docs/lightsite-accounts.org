@@ -1,0 +1,94 @@
+#+TITLE: Lightsite account validation
+
+* Purpose and boundary
+
+[[https://git.mcgoaty.com/lightsite/daemon/issues/20][Lightsite daemon #20]] needs a verified identity before an operator provisions
+an owning account. =GET /api/v1/account-identity/:id= returns that identity;
+=:id= is a positive organization ID in this hosted workspace.
+
+This endpoint uses ordinary bearer-token authentication. It does not expose
+the =tenant_workspace= administrative record to tokens or create a second
+identity/credential store. That generic administrative API still requires an
+interactive tenant administrator.
+
+* Contract
+
+A successful response is JSON with HTTP 200 and =Cache-Control: no-store=:
+
+#+begin_src json
+{"origin":"https://business.example","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","organization_id":42,"state":"active"}
+#+end_src
+
+Use the canonical =hosted.origin=, including its port when configured. The
+ordinary hosted Host/Origin boundary applies. The route is classified tenant
+work, with no support-capability or platform bypass.
+
+The current authenticated principal must be an active hosted member and
+have organization owner/admin authority. For a token, both its captured
+membership snapshot and current membership must allow that organization.
+A later grant cannot enlarge an existing token. Use a token attached to the
+provisioning member, minted through the existing account/token flow after
+the organization's authority has been granted; no new token type is needed.
+An interactive tenant administrator retains the existing organization-policy
+semantics. Ordinary token calls do not inherit tenant-administrator authority.
+
+The core =venture_tenant_service_account_identity()= reads the principal from
+the database access scope. Its caller must authenticate credentials first.
+It reuses the tenant service and organization access policy and reads the
+organization through the repository. HTTP calls do this through the usual
+authentication layer, so revoked/expired tokens, inactive users/memberships,
+inactive or deleted organizations and token snapshot limits all apply.
+
+Provisioning requires an initialized, active workspace. Read-only, suspended,
+unknown, changed-identity and uninitialized workspaces refuse it. This read
+endpoint checks the write/side-effect lifecycle gate because its response
+permits provisioning elsewhere. It changes no Venture records.
+
+| Result | Meaning |
+|--------+---------|
+| 200 | Exact account reference validated; state is active |
+| 401 | Missing, expired or invalid credentials |
+| 403 | Hosted identity, lifecycle or organization authority refused |
+| 404 | Requested organization unavailable through repository lookup |
+| 422 | Organization ID is not a positive signed 64-bit integer |
+
+A hosted preflight may return 403 before the handler runs. Clients treat
+all non-200 responses as refusal; response wording is not an API contract.
+
+* Consumer requirements
+
+Lightsite selects a trusted connection from private operator configuration.
+It compares the returned origin, workspace UUID and organization ID against
+the complete requested reference, and requires =state: active=. A bare
+organization ID, owner email or submitted workspace UUID is insufficient.
+Redirects must not forward credentials. Bound response size and request time;
+network errors must not create an account.
+
+Validation is a provisioning assertion, not a session or permission grant.
+Consumers must separately authorize each management action. Suspending an
+account does not delete its sites or public files.
+
+* Verification
+
+=tests/test-account-identity.c= starts a real hosted server and uses a minted
+bearer token. Before implementation the first valid request failed with
+404 instead of 200. The test covers the returned identity, anonymous and bad
+credentials, incorrect Host, another organization, later membership grants,
+malformed and overflowing IDs, token expiry, read-only/suspended/unknown
+lifecycle, changed workspace identity, inactive users, deleted organizations,
+membership revocation, token revocation, and continued token refusal on
+workspace administration. Role demotion revokes an existing admin token;
+promotion does not enlarge a token minted with a viewer membership. Successful
+responses are checked for exactly the four documented fields; successful and
+refused responses both prohibit caching. =tests/test-auth.c= includes the new
+route in anonymous checks.
+
+#+begin_src sh
+make DEBUG=1 test-one T=test-account-identity
+make DEBUG=1 test-one T=test-tenant
+make DEBUG=1 test-one T=test-auth
+#+end_src
+
+The end-to-end Lightsite demonstration is linked from the prerequisite PR
+and Lightsite PR #23. It uses the actual provisioning command and this built
+server; fixture responses alone do not establish interoperability.

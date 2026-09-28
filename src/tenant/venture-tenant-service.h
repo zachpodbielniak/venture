@@ -53,6 +53,21 @@ const gchar *venture_tenant_service_get_workspace_id(VentureTenantService *self)
  */
 const gchar *venture_tenant_service_get_origin(VentureTenantService *self);
 /**
+ * venture_tenant_service_account_identity:
+ * @self: initialized hosted service
+ * @organization_id: owning organization, greater than zero
+ * @error: (out) (optional): lifecycle or authority refusal
+ *
+ * Describes one provisioning account for the authenticated principal in the
+ * database access scope. The caller must authenticate credentials before
+ * entering that scope. Rechecks current tenant and organization authority,
+ * including the token's membership snapshot; no tenant-admin access is granted.
+ * Only active workspaces and organization owners/administrators are accepted.
+ * Returns: (transfer full) (nullable): canonical account identity, or %NULL
+ */
+JsonNode *venture_tenant_service_account_identity(VentureTenantService *self,
+	gint64 organization_id, GError **error);
+/**
  * venture_tenant_service_check_operation:
  * @self: service
  * @write: whether an operation writes or starts an external side effect

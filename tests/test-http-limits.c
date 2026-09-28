@@ -327,6 +327,25 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(response, " 200 "));
 	g_assert_cmpuint(f->writes, ==, settled + 1);
 }
+static void test_nested_rejection(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *response = NULL;
+	const gchar *ordinary = "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+	(void)data;
+	f->nested_request = "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n";
+	response = exchange(f, ordinary);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_nonnull(f->nested_response);
+	if (*f->nested_response) g_assert_nonnull(strstr(f->nested_response, " 413 "));
+	pump();
+	/* An oversized nested body never reaches application dispatch, even if
+	 * the nested context serves its socket before the outer handler exits. */
+	g_assert_cmpuint(f->writes, ==, 1);
+	g_clear_pointer(&response, g_free);
+	response = exchange(f, ordinary);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(f->writes, ==, 2);
+}
 static void test_active_teardown(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GSocketClient) client = g_socket_client_new();
@@ -418,6 +437,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/aggregate-release", Fixture, GINT_TO_POINTER(2), setup, test_aggregate, teardown);
 	g_test_add("/http-limits/timeout-budget-release", Fixture, NULL, setup, test_timeout_budget, teardown);
 	g_test_add("/http-limits/nested-dispatch", Fixture, NULL, setup, test_nested_dispatch, teardown);
+	g_test_add("/http-limits/nested-rejection", Fixture, NULL, setup, test_nested_rejection, teardown);
 	g_test_add("/http-limits/active-teardown", Fixture, NULL, setup, test_active_teardown, teardown);
 	g_test_add("/http-limits/negative-length", Fixture, NULL, setup, test_negative_length, teardown);
 	g_test_add_func("/http-limits/private-context", test_private_context);
