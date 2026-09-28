@@ -545,8 +545,9 @@ TALLOW_PURSE=$(new account organization_id=$ORG code=EVM-1102 name="Tallow's pur
     kind=asset location_id=$TALLOW active=true)
 #+end_src
 
-A purse may not be spent below zero -- spending tickets you do not have
-is refused, and the whole document with it -- unless =allow_negative= is
+A purse may not be spent below zero -- spending tickets you do not have,
+or did not have yet on the date the spend is written for, is refused, and
+the whole document with it -- unless =allow_negative= is
 ticked on its account. A location with no purse of its own gets one made
 the first time something lands there.
 

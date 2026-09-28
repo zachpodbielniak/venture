@@ -1333,9 +1333,12 @@ Posted currencies (book, `valued`, `separate_book`) are held as the
 account's journal lines; memo currencies as `holding_txn` rows the ledger
 writes. **Never create a `holding_txn` in a posted currency** (refused) and
 never edit or delete one whose `source_type` is set (refused: change the
-sale/expense/session instead). **A holding cannot go below zero** — the
-document that would do it is refused whole ("… holds 12 TICKET and this
-takes 50 TICKET …") — unless the account has `allow_negative=true`.
+sale/expense/session instead). **A holding cannot go below zero at any
+moment** — the document that would do it is refused whole ("… holds 12
+TICKET on 2026-03-02 and this takes 50 TICKET …") — unless the account has
+`allow_negative=true`. It is the balance *on the document's date*, not
+today's: a spend back-dated to before the takings it needs is refused, so
+record (or date) what came in first.
 Accounts with no location are never judged. A location with two holding
 accounts makes `transfer` and `session post` refuse; name the account.
 One is made on first use (`<org>:holding:<location>`) when there is none.

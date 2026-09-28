@@ -236,9 +236,10 @@ venturectl report holdings all location_id=12
 #+end_src
 
 A session's money yield lands in the holding at the session's location
-when the session is posted. A holding may not be spent below zero unless
-its account's =allow_negative= is ticked; an ordinary account with no
-location is never judged.
+when the session is posted. A holding may not be spent below zero -- on
+the date of the spend, not only today -- unless its account's
+=allow_negative= is ticked; an ordinary account with no location is
+never judged.
 
 ** What posts where
 

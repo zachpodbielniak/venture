@@ -624,7 +624,12 @@ than one that fails.
   holding account and original currency. Only accounts with a location are
   judged -- an overdraft on 1000 Cash is a real balance -- and
   `allow-negative` (FALSE, the zero value) lifts it. Reversals are exempt.
-  Do not add a third check in a handler or a page.
+  Do not add a third check in a handler or a page. Both judge the
+  *running* balance from the change's date on (`holdings_check_floor()`),
+  never the all-time total: a back-dated spend that passes today's balance
+  is exactly the case to refuse. The rule is "no moment below zero that
+  was not, and none deeper than it was", so a dip a reversal or an
+  allowed overdraft left behind does not block unrelated changes.
 - **A sale honours `cash-account-id` like an expense.** The autojournal's
   `use_cash_account()` swaps the profile's cash account for the document's
   on the sale, refund and expense legs. It sets it on the profile object

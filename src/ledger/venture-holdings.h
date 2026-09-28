@@ -18,8 +18,9 @@
  *
  * The balance of a holding in a currency is the sum of both, so a
  * currency whose treatment changed keeps its history. A holding may not go
- * below zero unless its account allows it; ordinary accounts, which carry
- * no location, are never judged.
+ * below zero at any moment unless its account allows it -- the running
+ * balance from a change's date onward, not only today's -- and ordinary
+ * accounts, which carry no location, are never judged.
  */
 
 #ifndef VENTURE_HOLDINGS_H
@@ -69,8 +70,9 @@ venture_holdings_install(VentureContext *context);
  *
  * The removal half of the holding rules, in the database's subsystem guard
  * list: a movement the ledger derived from a document is removed only by
- * the ledger, and deleting a movement typed by hand may not leave its
- * holding below zero. Every other write passes.
+ * the ledger, and deleting (or restoring) a movement typed by hand may
+ * not leave its holding below zero from the movement's date on. Every
+ * other write passes.
  *
  * Returns: %TRUE when the write may proceed
  */

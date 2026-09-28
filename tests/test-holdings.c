@@ -568,6 +568,127 @@ test_floor(Fixture *f, gconstpointer data)
 	save_refused(f, gold, "Transfer action");
 }
 
+/* A hand adjustment of @amount to @location's holding on @date, saved. */
+static gint64
+adjust_on(Fixture *f, gint64 location, const gchar *amount, const gchar *date)
+{
+	g_autoptr(VentureEntity) movement = record(f, "holding_txn");
+
+	g_object_set(movement, "account-id", holding(f, location), NULL);
+	field(movement, "amount", amount);
+	field(movement, "occurred-at", date);
+	save(f, movement);
+	return venture_entity_get_id(movement);
+}
+
+/* The same, expecting the floor to refuse it. */
+static void
+adjust_refused(Fixture *f, gint64 location, const gchar *amount, const gchar *date)
+{
+	g_autoptr(VentureEntity) movement = record(f, "holding_txn");
+
+	g_object_set(movement, "account-id", holding(f, location), NULL);
+	field(movement, "amount", amount);
+	field(movement, "occurred-at", date);
+	save_refused(f, movement, "below zero");
+}
+
+/*
+ * The floor is the running balance, not today's. Aria wins 12 tickets on
+ * 1 March; a spend dated in February is refused although she holds 12
+ * now, because in February she held none -- through an expense (a memo
+ * movement), through a posted currency's journal, by hand, by moving a
+ * spend earlier, and by deleting an earlier earning that later spends
+ * leaned on. A moment already below zero -- left by a period the account
+ * allowed it -- does not block a change that leaves it as it was, but
+ * one that deepens it is refused. If this regresses, a back-dated
+ * purchase spends tickets a character did not have yet, and the history
+ * shows a purse below zero that nothing ever allowed.
+ */
+static void
+test_floor_back_dated(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) early = NULL;
+	g_autoptr(VentureEntity) late = NULL;
+	g_autoptr(VentureEntity) moved = NULL;
+	g_autoptr(VentureEntity) earning = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 session;
+	gint64 spend;
+	gint64 lent;
+
+	(void)data;
+	earn_in_session(f, f->aria, "12 TICKET", &session);
+	post_session(f, session);
+
+	/* A memo expense dated before the takings: refused, then accepted a
+	 * day after them. */
+	early = expense_from(f, f->aria, "5 TICKET");
+	field(early, "occurred-at", "2026-02-15");
+	save_refused(f, early, "below zero");
+	field(early, "occurred-at", "2026-03-02");
+	save(f, early);
+	g_assert_cmpint(held(f, f->aria, "TICKET"), ==, 7);
+
+	/* A posted currency, through the posting guard. */
+	earn_in_session(f, f->bram, "7 BREWFEST", &session);
+	post_session(f, session);
+	late = expense_from(f, f->bram, "3 BREWFEST");
+	field(late, "occurred-at", "2026-02-20");
+	save_refused(f, late, "below zero");
+	field(late, "occurred-at", "2026-03-02");
+	save(f, late);
+	g_assert_cmpint(held(f, f->bram, "BREWFEST"), ==, 4);
+
+	/* By hand, and by moving a spend earlier than the takings. */
+	adjust_refused(f, f->aria, "-3 TICKET", "2026-02-01");
+	spend = adjust_on(f, f->aria, "-2 TICKET", "2026-03-05");
+	moved = venture_database_get(f->db, VENTURE_TYPE_HOLDING_TXN, spend, NULL);
+	field(moved, "occurred-at", "2026-02-01");
+	save_refused(f, moved, "below zero");
+	g_clear_object(&moved);
+	moved = venture_database_get(f->db, VENTURE_TYPE_HOLDING_TXN, spend, NULL);
+	g_object_set(moved, "notes", "the goldfish", NULL);
+	save(f, moved);
+	g_assert_cmpint(held(f, f->aria, "TICKET"), ==, 5);
+
+	/* Deleting an earning a later spend leaned on: 10 lent on 1 January
+	 * and 8 spent on the 2nd. Today's balance would survive losing the
+	 * 10 (the faire's 12 came later), but 2 January would not. */
+	lent = adjust_on(f, f->aria, "10 TICKET", "2026-01-01");
+	adjust_on(f, f->aria, "-8 TICKET", "2026-01-02");
+	earning = venture_database_get(f->db, VENTURE_TYPE_HOLDING_TXN, lent, NULL);
+	g_assert_false(venture_database_delete(f->db, earning, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "below zero"));
+	g_clear_error(&error);
+	g_assert_cmpint(held(f, f->aria, "TICKET"), ==, 7);
+
+	/* A dip the account once allowed: Bram overspends in January while
+	 * overdrafts were allowed, then they are not. A spend in April, when
+	 * he holds plenty, still goes through; one that deepens January is
+	 * refused. */
+	account = venture_database_get(f->db, VENTURE_TYPE_ACCOUNT, holding(f, f->bram), NULL);
+	g_object_set(account, "allow-negative", TRUE, NULL);
+	save(f, account);
+	g_clear_object(&late);
+	late = expense_from(f, f->bram, "1 BREWFEST");
+	field(late, "occurred-at", "2026-01-05");
+	save(f, late);
+	g_object_set(account, "allow-negative", FALSE, NULL);
+	save(f, account);
+	g_clear_object(&late);
+	late = expense_from(f, f->bram, "1 BREWFEST");
+	field(late, "occurred-at", "2026-04-01");
+	save(f, late);
+	g_clear_object(&late);
+	late = expense_from(f, f->bram, "1 BREWFEST");
+	field(late, "occurred-at", "2026-01-06");
+	save_refused(f, late, "below zero");
+	g_assert_cmpint(held(f, f->bram, "BREWFEST"), ==, 2);
+}
+
 /*
  * A movement the ledger derived from a document is the document's: its
  * amount cannot be edited nor the row deleted by hand; its notes can. If
@@ -1118,6 +1239,8 @@ main(int argc, char **argv)
 	g_test_add("/holdings/sale-into-holding", Fixture, NULL, setup, test_sale_into_holding, teardown);
 	g_test_add("/holdings/spend-from-holding", Fixture, NULL, setup, test_spend_from_holding, teardown);
 	g_test_add("/holdings/floor", Fixture, NULL, setup, test_floor, teardown);
+	g_test_add("/holdings/floor-back-dated", Fixture, NULL, setup, test_floor_back_dated,
+	           teardown);
 	g_test_add("/holdings/derived-frozen", Fixture, NULL, setup, test_derived_frozen, teardown);
 	g_test_add("/holdings/transfer", Fixture, NULL, setup, test_transfer, teardown);
 	g_test_add("/holdings/organization-scope", Fixture, NULL, setup, test_organization_scope, teardown);

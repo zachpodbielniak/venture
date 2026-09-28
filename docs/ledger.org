@@ -486,20 +486,40 @@ cash account is untouched: an overdraft is a real balance, and a bank
 account is not a holding unless someone gives its ledger account a
 location.
 
-- A memo movement is judged by the =holding_txn= save validator, against
-  the balance without the row being saved; only a change that takes
-  something away is judged, so editing an old movement's notes never fails
-  because of a later one. Deleting a positive hand adjustment is judged the
-  same way.
+*The balance judged is the running one.* A change is judged on every
+moment from its date onward -- the balance after each instant at which
+the holding moved, the change included -- never only on today's total. A
+spend dated 15 February against tickets won on 1 March is refused even
+though the purse holds plenty now, because on 15 February it held none.
+Movements at the same instant count together, so a document dated the
+second its takings landed is judged against them. The rule is "no moment
+below zero that was not below it before, and none deeper than it was":
+a moment already short -- left by a reversal (never refused, below) or by
+a period when the account allowed overdrafts -- does not block a change
+that leaves it as it was, only one that deepens it. A weaker all-time rule
+was the first version and let a back-dated purchase spend what the
+character did not yet have.
+
+- A memo movement is judged by the =holding_txn= save validator. Its
+  stored value stops counting and the new one starts, each at its own
+  date, so moving a spend earlier or an earning later is judged like a new
+  one; a move to another holding or currency judges both. Only a change
+  to the holding, amount or date is judged, so editing an old movement's
+  notes never fails because of a later one. Deleting a hand adjustment
+  (an earning taken out) and restoring one (a spend put back) are judged
+  the same way, from the movement's date.
 - A journal is judged on the posting service's =posting= signal, after
   validation and before anything is written: the journal's net on each
-  holding, per original currency, added to the balance. A reversal is
+  holding, per original currency, at the journal's date. A reversal is
   never refused -- it corrects evidence already posted, and the shortfall
-  it leaves is the truth.
+  it leaves is the truth. A document saved again reverses its old journal
+  first (dated no earlier than the original), so the replacement is judged
+  against a timeline that no longer counts the old one.
 
-A refusal names the holding, what it holds and what was asked ("Characters
-/ Aria holds 12 TICKET and this takes 50 TICKET, which would leave it below
-zero ..."), and it refuses the whole document: an expense that would
+A refusal names the holding, what it held on the first moment that would
+go short, that date, and what the change takes ("Characters / Aria holds
+0 TICKET on 2026-02-15 and this takes 5 TICKET, which would leave it below
+zero then ..."), and it refuses the whole document: an expense that would
 overspend a purse is not saved.
 
 ** Holding accounts

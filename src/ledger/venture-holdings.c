@@ -13,9 +13,10 @@
  *  - memo movements that came from a document are the ledger's to write,
  *    replace and remove; a person writes only adjustments, in a memo
  *    currency, and never a transfer (that has two sides);
- *  - a holding may not go below zero unless its account allows it. A memo
- *    movement is judged by its save validator, a journal by the posting
- *    service's `posting` signal -- both before anything is written.
+ *  - a holding may not go below zero at any moment from a change's date
+ *    on unless its account allows it. A memo movement is judged by its
+ *    save validator, a journal by the posting service's `posting` signal
+ *    -- both before anything is written.
  */
 
 #include "venture.h"
@@ -496,59 +497,185 @@ venture_holdings_balance(
 	return g_steal_pointer(&total);
 }
 
+/* One event on a holding's timeline: which balances it counts in. */
+typedef enum
+{
+	HOLDINGS_EVENT_BOTH = 0,
+	HOLDINGS_EVENT_BEFORE,
+	HOLDINGS_EVENT_AFTER
+} HoldingsEventSide;
+
+typedef struct
+{
+	GDateTime		*when;
+	const VentureMoney	*amount;
+	HoldingsEventSide	 side;
+} HoldingsEvent;
+
+static gint
+holdings_event_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const HoldingsEvent *left;
+	const HoldingsEvent *right;
+
+	left = a;
+	right = b;
+
+	return g_date_time_compare(left->when, right->when);
+}
+
 /*
- * Refuses a change of @delta to the holding @account in @amount's currency
- * when it would leave the holding below zero and the account does not
- * allow that. @exclude_txn_id is the movement being replaced, whose stored
- * value is not counted.
+ * Refuses a change to the holding @account when it would take the holding
+ * below zero at any moment from the change onward, unless the account
+ * allows that.
+ *
+ * The change is described as what it removes and what it adds, in one
+ * currency: @was (at @was_at) is a movement that stops counting -- the
+ * stored value of a row being edited or deleted -- and @delta (at @at) one
+ * that starts. Either may be NULL. @exclude_txn_id is the stored row
+ * itself, left out of the rest of the timeline.
+ *
+ * Judged on the running balance, not today's: a spend dated in March is
+ * refused when the holding was short in March even if it has plenty now,
+ * because in March it did not. The rule is "never take a moment below
+ * zero, and never deepen a moment already below it": a point is refused
+ * only where the balance after the change is negative *and* lower than it
+ * was. A shortfall a reversal left in the past -- which is never refused,
+ * because it corrects evidence -- therefore does not block an unrelated
+ * change that leaves it as it was. Movements at the same instant are
+ * counted together, so a document dated the same second as the takings it
+ * spends is judged against them.
  */
 static gboolean
 holdings_check_floor(
 	VentureDatabase		 *database,
 	VentureEntity		 *account,
 	const VentureMoney	 *delta,
+	GDateTime		 *at,
+	const VentureMoney	 *was,
+	GDateTime		 *was_at,
 	gint64			  exclude_txn_id,
 	GError			**error
 ){
-	g_autoptr(VentureMoney) held = NULL;
+	g_autoptr(GPtrArray) movements = NULL;
+	g_autoptr(GArray) events = NULL;
+	g_autoptr(VentureMoney) before = NULL;
 	g_autoptr(VentureMoney) after = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	const gchar *currency;
+	gint64 organization_id;
 	gboolean allow;
+	guint i;
 
 	allow = FALSE;
 	g_object_get(account, "allow-negative", &allow, NULL);
 
-	if (allow || (holdings_int(account, "location-id") <= 0) ||
-	    !venture_money_is_negative(delta))
+	if (allow || (holdings_int(account, "location-id") <= 0))
 		return TRUE;
 
-	held = venture_holdings_balance(database, venture_entity_get_id(account),
-	                                delta->currency, exclude_txn_id, error);
+	currency = (NULL != delta) ? delta->currency : ((NULL != was) ? was->currency : NULL);
 
-	if (NULL == held)
+	if (NULL == currency)
+		return TRUE;
+
+	/* Only a change that removes something positive or adds something
+	 * negative can lower any moment. */
+	if (((NULL == delta) || !venture_money_is_negative(delta)) &&
+	    ((NULL == was) || venture_money_is_negative(was) || venture_money_is_zero(was)))
+		return TRUE;
+
+	organization_id = venture_entity_get_organization_id(account);
+	movements = g_ptr_array_new_with_free_func(holdings_movement_free);
+
+	if (!holdings_collect_ledger(database, organization_id, venture_entity_get_id(account),
+	                             currency, movements, error) ||
+	    !holdings_collect_memo(database, organization_id, venture_entity_get_id(account),
+	                           currency, exclude_txn_id, movements, error))
 		return FALSE;
 
-	after = venture_money_add(held, delta, error);
+	now = venture_time_now();
+	events = g_array_sized_new(FALSE, FALSE, sizeof(HoldingsEvent), movements->len + 2);
 
-	if (NULL == after)
-		return FALSE;
-
-	if (venture_money_is_negative(after))
+	for (i = 0; i < movements->len; i++)
 	{
-		g_autofree gchar *name = NULL;
-		g_autofree gchar *has = NULL;
-		g_autofree gchar *wants = NULL;
-		g_autoptr(VentureMoney) taken = NULL;
+		HoldingsMovement *movement;
+		HoldingsEvent event;
 
-		name = holdings_account_name(database, account);
-		taken = venture_money_negate(delta);
-		has = venture_money_to_display_string(held, TRUE);
-		wants = venture_money_to_display_string(taken, TRUE);
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		            "%s holds %s and this takes %s, which would leave it below zero. "
-		            "Record what came in first, or tick Allow negative on account #%"
-		            G_GINT64_FORMAT " if it may be overdrawn", name, has, wants,
-		            venture_entity_get_id(account));
-		return FALSE;
+		movement = g_ptr_array_index(movements, i);
+		event.when = movement->when;
+		event.amount = movement->amount;
+		event.side = HOLDINGS_EVENT_BOTH;
+		g_array_append_val(events, event);
+	}
+
+	if (NULL != was)
+	{
+		HoldingsEvent event;
+
+		event.when = (NULL != was_at) ? was_at : now;
+		event.amount = was;
+		event.side = HOLDINGS_EVENT_BEFORE;
+		g_array_append_val(events, event);
+	}
+
+	if (NULL != delta)
+	{
+		HoldingsEvent event;
+
+		event.when = (NULL != at) ? at : now;
+		event.amount = delta;
+		event.side = HOLDINGS_EVENT_AFTER;
+		g_array_append_val(events, event);
+	}
+
+	g_array_sort(events, holdings_event_compare);
+	before = venture_money_new_zero(currency);
+	after = venture_money_new_zero(currency);
+
+	for (i = 0; i < events->len; i++)
+	{
+		HoldingsEvent *event;
+
+		event = &g_array_index(events, HoldingsEvent, i);
+
+		if ((HOLDINGS_EVENT_AFTER != event->side) &&
+		    !holdings_money_add(&before, event->amount, error))
+			return FALSE;
+
+		if ((HOLDINGS_EVENT_BEFORE != event->side) &&
+		    !holdings_money_add(&after, event->amount, error))
+			return FALSE;
+
+		/* A moment is the end of every movement at one instant. */
+		if ((i + 1 < events->len) &&
+		    (0 == g_date_time_compare(event->when,
+		                              g_array_index(events, HoldingsEvent, i + 1).when)))
+			continue;
+
+		if (venture_money_is_negative(after) && (venture_money_compare(after, before) < 0))
+		{
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *has = NULL;
+			g_autofree gchar *wants = NULL;
+			g_autofree gchar *day = NULL;
+			g_autoptr(VentureMoney) taken = NULL;
+
+			name = holdings_account_name(database, account);
+			taken = venture_money_subtract(before, after, NULL);
+			has = venture_money_to_display_string(before, TRUE);
+			wants = (NULL != taken) ? venture_money_to_display_string(taken, TRUE)
+			                        : g_strdup("more");
+			day = venture_time_to_date_string(event->when, NULL);
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "%s holds %s on %s and this takes %s, which would leave it below "
+			            "zero then. Record what came in first (dated no later), or tick "
+			            "Allow negative on account #%" G_GINT64_FORMAT " if it may be "
+			            "overdrawn", name, has, (NULL != day) ? day : "that day", wants,
+			            venture_entity_get_id(account));
+			return FALSE;
+		}
 	}
 
 	return TRUE;
@@ -594,8 +721,8 @@ venture_holdings_validate_txn(
 	g_autofree gchar *was_rule = NULL;
 	VentureHoldingKind kind;
 	VentureHoldingKind was_kind;
+	g_autoptr(GDateTime) when_set = NULL;
 	gboolean permitted;
-	gboolean lowering;
 	gint64 account_id;
 	gint64 source_id;
 
@@ -738,18 +865,50 @@ venture_holdings_validate_txn(
 
 	/* --- The floor --- */
 
-	/* Only a change that takes something away is judged: editing the
-	 * notes of an old movement must not fail because of a later one. */
-	lowering = (NULL == previous) ||
-	           (holdings_int(previous, "account-id") != account_id) ||
-	           (NULL == was_amount) ||
-	           (0 != g_strcmp0(was_amount->currency, amount->currency)) ||
-	           (venture_money_compare(amount, was_amount) < 0);
+	/* Only a change to what the movement is -- its holding, amount or
+	 * date -- is judged: editing the notes of an old movement must not
+	 * fail because of a later one. The stored value stops counting and
+	 * the new one starts, each at its own date, so moving a spend earlier
+	 * or an earning later is judged like a new one. A move to another
+	 * holding or currency is two changes: the old holding loses the
+	 * stored movement, the new one gains this. */
+	if (NULL != account)
+	{
+		g_autoptr(GDateTime) was_when = NULL;
+		gboolean same_line;
+		gboolean changed;
 
-	if (lowering && (NULL != account) && venture_money_is_negative(amount) &&
-	    !holdings_check_floor(database, account, amount,
-	                          venture_entity_get_id(entity), error))
-		return FALSE;
+		if (NULL != previous)
+			g_object_get(previous, "occurred-at", &was_when, NULL);
+
+		g_object_get(entity, "occurred-at", &when_set, NULL);
+		same_line = (NULL != previous) && (NULL != was_amount) &&
+		            (holdings_int(previous, "account-id") == account_id) &&
+		            (0 == g_strcmp0(was_amount->currency, amount->currency));
+		changed = !same_line || !venture_money_equal(amount, was_amount) ||
+		          ((NULL != was_when) != (NULL != when_set)) ||
+		          ((NULL != was_when) && !g_date_time_equal(was_when, when_set));
+
+		if (changed &&
+		    !holdings_check_floor(database, account, amount, when_set,
+		                          same_line ? was_amount : NULL, was_when,
+		                          venture_entity_get_id(entity), error))
+			return FALSE;
+
+		if (!same_line && (NULL != previous) && (NULL != was_amount) &&
+		    venture_entity_is_persisted(previous))
+		{
+			g_autoptr(VentureEntity) was_account = NULL;
+
+			was_account = holdings_read(database, VENTURE_TYPE_ACCOUNT,
+			                            holdings_int(previous, "account-id"));
+
+			if ((NULL != was_account) &&
+			    !holdings_check_floor(database, was_account, NULL, NULL, was_amount,
+			                          was_when, venture_entity_get_id(entity), error))
+				return FALSE;
+		}
+	}
 
 	return TRUE;
 }
@@ -764,7 +923,7 @@ venture_holdings_check_write(
 	g_autoptr(VentureEntity) stored = NULL;
 	g_autoptr(VentureEntity) account = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
-	g_autoptr(VentureMoney) taken = NULL;
+	g_autoptr(GDateTime) when = NULL;
 	g_autofree gchar *source_type = NULL;
 
 	if (!removal || !VENTURE_IS_HOLDING_TXN(entity) || holdings_permitted(database, entity))
@@ -787,10 +946,7 @@ venture_holdings_check_write(
 		return FALSE;
 	}
 
-	/* Deleting what came in may leave the holding short; a restore puts
-	 * something back and is never judged. */
-	if (venture_entity_is_deleted(stored) || (NULL == amount) ||
-	    venture_money_is_negative(amount))
+	if (NULL == amount)
 		return TRUE;
 
 	account = holdings_read(database, VENTURE_TYPE_ACCOUNT, holdings_int(stored, "account-id"));
@@ -798,9 +954,17 @@ venture_holdings_check_write(
 	if (NULL == account)
 		return TRUE;
 
-	taken = venture_money_negate(amount);
+	g_object_get(stored, "occurred-at", &when, NULL);
 
-	return holdings_check_floor(database, account, taken,
+	/* A restore puts the movement back at its own date, which takes the
+	 * holding down when it was a spend; a deletion takes it out, which
+	 * takes the holding down when it was an earning. Both are judged on
+	 * the running balance from that date on. */
+	if (venture_entity_is_deleted(stored))
+		return holdings_check_floor(database, account, amount, when, NULL, NULL,
+		                            venture_entity_get_id(stored), error);
+
+	return holdings_check_floor(database, account, NULL, NULL, amount, when,
 	                            venture_entity_get_id(stored), error);
 }
 
@@ -811,8 +975,9 @@ venture_holdings_check_write(
 /*
  * The journal half of the floor, on the posting service's `posting`
  * signal: after validation, before anything is written. Each holding the
- * journal touches is judged on its net, per original currency, so a
- * journal paying into and out of one holding is judged once. A reversal is
+ * journal touches is judged on its net, per original currency, at the
+ * journal's date, so a journal paying into and out of one holding is
+ * judged once and a back-dated one against the balance it was dated in. A reversal is
  * a correction of evidence already posted and is never refused -- the
  * holding it leaves short is the truth.
  */
@@ -827,6 +992,7 @@ holdings_posting_guard(
 	g_autoptr(GHashTable) nets = NULL;
 	g_autoptr(GHashTable) accounts = NULL;
 	GHashTableIter iter;
+	g_autoptr(GDateTime) when = NULL;
 	gpointer key;
 	gpointer value;
 	GError *error;
@@ -839,6 +1005,10 @@ holdings_posting_guard(
 
 	if ((NULL == lines) || (holdings_int(VENTURE_ENTITY(journal), "reverses-id") > 0))
 		return NULL;
+
+	/* The journal's date is where its net lands on each holding's
+	 * timeline; a back-dated spend is judged against the balance then. */
+	g_object_get(journal, "occurred-at", &when, NULL);
 
 	nets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                             (GDestroyNotify)venture_money_free);
@@ -926,7 +1096,7 @@ holdings_posting_guard(
 		account = g_hash_table_lookup(accounts, &account_id);
 
 		if ((NULL != account) &&
-		    !holdings_check_floor(database, account, value, 0, &error))
+		    !holdings_check_floor(database, account, value, when, NULL, NULL, 0, &error))
 			return error;
 	}
 
