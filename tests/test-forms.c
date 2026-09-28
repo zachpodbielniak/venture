@@ -1799,6 +1799,16 @@ test_erase_person(Fixture *f, gconstpointer data)
 	g_assert_cmpint(submit_pairs(f, form, hers, NULL), ==, VENTURE_FORMS_ACCEPTED);
 	g_assert_cmpint(submit_pairs(f, form, hidden, NULL), ==, VENTURE_FORMS_ACCEPTED);
 	g_assert_cmpint(submit_pairs(f, form, his, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	/* An access request first: both of hers, the sensitive one included. */
+	{
+		g_autoptr(JsonNode) exported = venture_forms_export_person(f->db, f->org, "ALICE@example.com", &error);
+		g_autofree gchar *dump = NULL;
+		g_assert_no_error(error);
+		dump = json_to_string(exported, FALSE);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(exported), "responses")), ==, 2);
+		g_assert_nonnull(strstr(dump, "\"contact_again\":\"alice@example.com\""));
+		g_assert_null(strstr(dump, "Bob"));
+	}
 	result = venture_forms_erase_person(f->db, f->org, " alice@example.com ", NULL, &error);
 	g_assert_no_error(error);
 	text = json_to_string(result, FALSE);

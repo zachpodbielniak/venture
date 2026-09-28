@@ -154,6 +154,10 @@ are you to recommend us (0-10)?". So a form has versions.
   retained record of every message, as mail always does); and records one
   audit entry, "Erasure request", with how many --- not whose, and not
   what. Leads made from those responses are CRM records, erased there.
+- *Export.* =venturectl act form 0 export_person organization_id=1
+  email=someone@example.com= (owners only, never staged) returns every
+  response carrying the address --- form, version, time, answers and
+  sensitive answers --- for an access request.
 
 * Putting it on a site
 

@@ -449,6 +449,21 @@ JsonNode *venture_forms_retention_sweep(VentureDatabase *database, gint64 organi
 JsonNode *venture_forms_erase_person(VentureDatabase *database, gint64 organization_id,
 	const gchar *email, const VentureActor *actor, GError **error);
 
+/**
+ * venture_forms_export_person:
+ * @database: a #VentureDatabase
+ * @organization_id: the organization to look in
+ * @email: the address whose responses to export
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every response whose answers carry @email, sensitive answers included,
+ * with its form, version and time: what an access request is owed.
+ *
+ * Returns: (transfer full) (nullable): the export
+ */
+JsonNode *venture_forms_export_person(VentureDatabase *database, gint64 organization_id,
+	const gchar *email, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

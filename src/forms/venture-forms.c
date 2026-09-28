@@ -699,6 +699,27 @@ forms_erase_invoke(VentureAction *action, VentureEntity *entity, GHashTable *par
 	return answer;
 }
 
+static VentureEntity *
+forms_export_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	JsonNode *email = g_hash_table_lookup(params, "email");
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *text = NULL;
+	VentureEntity *answer;
+
+	(void)actor;
+	result = venture_forms_export_person(venture_action_get_data(action), venture_entity_get_organization_id(entity),
+		(NULL != email && JSON_NODE_HOLDS_VALUE(email)) ? json_node_get_string(email) : NULL, error);
+	if (NULL == result)
+		return NULL;
+	text = json_to_string(result, FALSE);
+	answer = VENTURE_ENTITY(venture_form_new());
+	venture_entity_set_organization_id(answer, venture_entity_get_organization_id(entity));
+	g_object_set(answer, "name", "Export", "result", text, NULL);
+	return answer;
+}
+
 static void
 forms_register_actions(VentureDatabase *database)
 {
@@ -739,6 +760,17 @@ forms_register_actions(VentureDatabase *database)
 	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 		forms_publish_allowed_type, forms_erase_invoke, database, NULL, &error))
 		g_error("Form erasure action registration: %s", error->message);
+	g_clear_object(&action);
+	/* Owners only and never staged: the answer carries sensitive answers,
+	 * and a confirmation card is shown to more people than the owner. */
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "export_person", "label", "Export a person's responses",
+		"description", "Every form response carrying this email address, sensitive answers included, for an access request",
+		"parameters", parameters, "stageable", FALSE, "type-level", TRUE, "service-transaction", TRUE,
+		"roles", VENTURE_USER_ROLE_OWNER, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed_type, forms_export_invoke, database, NULL, &error))
+		g_error("Form export action registration: %s", error->message);
 }
 
 void
@@ -2216,4 +2248,73 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 fail:
 	venture_database_rollback(database);
 	return NULL;
+}
+
+/* ==========================================================================
+ * Export: a person's responses, for an access request
+ * ========================================================================== */
+
+JsonNode *
+venture_forms_export_person(VentureDatabase *database, gint64 organization_id, const gchar *email,
+	GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autofree gchar *wanted = g_strstrip(g_strdup(email != NULL ? email : ""));
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+
+	if (NULL == strchr(wanted, '@'))
+	{
+		venture_set_error_validation(error, "email", "name the address whose responses to export");
+		return NULL;
+	}
+	query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 0);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(database, query, error);
+	if (NULL == rows)
+		return NULL;
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "email");
+	json_builder_add_string_value(builder, wanted);
+	json_builder_set_member_name(builder, "responses");
+	json_builder_begin_array(builder);
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *response = g_ptr_array_index(rows, i);
+		g_autofree gchar *open = venture_forms_get_string(response, "answers");
+		g_autofree gchar *hidden = venture_forms_get_string(response, "sensitive-answers");
+		g_autoptr(VentureEntity) form = NULL;
+		g_autoptr(GDateTime) at = NULL;
+		g_autofree gchar *when = NULL, *title = NULL;
+
+		if (!forms_answers_mention(open, wanted) && !forms_answers_mention(hidden, wanted))
+			continue;
+		form = venture_database_get(database, VENTURE_TYPE_FORM, venture_forms_get_int(response, "form-id"), NULL);
+		title = venture_forms_get_string(form, "title");
+		g_object_get(response, "submitted-at", &at, NULL);
+		when = NULL != at ? venture_time_to_string(at) : g_strdup("");
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "form");
+		json_builder_add_string_value(builder, title != NULL ? title : "");
+		json_builder_set_member_name(builder, "form_version");
+		json_builder_add_int_value(builder, venture_forms_get_int(response, "version-number"));
+		json_builder_set_member_name(builder, "received");
+		json_builder_add_string_value(builder, when);
+		/* Everything they sent, sensitive answers included: an access
+		 * request is owed the lot. */
+		json_builder_set_member_name(builder, "answers");
+		json_builder_add_value(builder, json_from_string(venture_string_is_empty(open) ? "{}" : open, NULL));
+		json_builder_set_member_name(builder, "sensitive_answers");
+		json_builder_add_value(builder, json_from_string(venture_string_is_empty(hidden) ? "{}" : hidden, NULL));
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	return json_builder_get_root(builder);
 }
