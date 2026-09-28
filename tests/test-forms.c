@@ -14,6 +14,8 @@
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
+#include <libxml/HTMLparser.h>
+#include <libxml/tree.h>
 
 typedef struct {
 	VentureDatabase *db;
@@ -962,6 +964,392 @@ test_builder_page(Fixture *f, gconstpointer data)
 }
 
 /* ==========================================================================
+ * Accessibility: the rules the embed contract promises, checked
+ *
+ * A structural checker over the parsed markup, in the suite so it runs on
+ * every build. It checks what the renderer is responsible for on any host
+ * page: every control named, ids unique, every description reference
+ * real, groups labelled, required said in text and to assistive
+ * technology, errors tied to their fields and summarised with working
+ * links, focus order left alone, no styling of ours. Colour contrast is
+ * the host page's, so it is not ours to check; tools/venture-forms-axe.sh
+ * runs axe-core over the same renderings when node is available.
+ * ========================================================================== */
+
+typedef struct
+{
+	GHashTable	*ids;		/* id -> element */
+	GHashTable	*label_for;	/* ids named by a <label for> */
+	GPtrArray	*elements;
+} A11yIndex;
+
+static gchar *
+a11y_attr(xmlNode *node, const gchar *name)
+{
+	xmlChar *value = xmlGetProp(node, (const xmlChar *)name);
+	gchar *copy = value != NULL ? g_strdup((const gchar *)value) : NULL;
+	xmlFree(value);
+	return copy;
+}
+
+static gboolean
+a11y_has(xmlNode *node, const gchar *name)
+{
+	return xmlHasProp(node, (const xmlChar *)name) != NULL;
+}
+
+static gboolean
+a11y_is(xmlNode *node, const gchar *tag)
+{
+	return node->type == XML_ELEMENT_NODE && g_ascii_strcasecmp((const gchar *)node->name, tag) == 0;
+}
+
+static gchar *
+a11y_text(xmlNode *node)
+{
+	xmlChar *text = xmlNodeGetContent(node);
+	gchar *copy = g_strstrip(g_strdup(text != NULL ? (const gchar *)text : ""));
+	xmlFree(text);
+	return copy;
+}
+
+static void
+a11y_collect(xmlNode *node, A11yIndex *index, GString *problems)
+{
+	for (; node != NULL; node = node->next)
+	{
+		if (node->type != XML_ELEMENT_NODE)
+			continue;
+		g_ptr_array_add(index->elements, node);
+		{
+			g_autofree gchar *id = a11y_attr(node, "id");
+			if (id != NULL)
+			{
+				if (g_hash_table_contains(index->ids, id))
+					g_string_append_printf(problems, "duplicate id %s\n", id);
+				g_hash_table_insert(index->ids, g_strdup(id), node);
+			}
+		}
+		if (a11y_is(node, "label"))
+		{
+			gchar *target = a11y_attr(node, "for");
+			if (target != NULL)
+				g_hash_table_add(index->label_for, target);
+		}
+		a11y_collect(node->children, index, problems);
+	}
+}
+
+static gboolean
+a11y_inside(xmlNode *node, const gchar *tag)
+{
+	for (node = node->parent; node != NULL; node = node->parent)
+		if (a11y_is(node, tag))
+			return TRUE;
+	return FALSE;
+}
+
+static xmlNode *
+a11y_enclosing(xmlNode *node, const gchar *tag)
+{
+	for (node = node->parent; node != NULL; node = node->parent)
+		if (a11y_is(node, tag))
+			return node;
+	return NULL;
+}
+
+/* Every problem found, one per line; empty when the markup keeps every
+ * rule. */
+static gchar *
+a11y_check(const gchar *html)
+{
+	GString *problems = g_string_new(NULL);
+	htmlDocPtr doc;
+	A11yIndex index;
+	gboolean any_invalid = FALSE, any_required = FALSE;
+	guint i;
+
+	doc = htmlReadMemory(html, (int)strlen(html), NULL, "utf-8",
+		HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET);
+	g_assert_nonnull(doc);
+	index.ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	index.label_for = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	index.elements = g_ptr_array_new();
+	a11y_collect(xmlDocGetRootElement(doc), &index, problems);
+
+	for (i = 0; i < index.elements->len; i++)
+	{
+		xmlNode *node = g_ptr_array_index(index.elements, i);
+		g_autofree gchar *type = a11y_attr(node, "type");
+		g_autofree gchar *id = a11y_attr(node, "id");
+		g_autofree gchar *tabindex = a11y_attr(node, "tabindex");
+		g_autofree gchar *invalid = a11y_attr(node, "aria-invalid");
+		g_autofree gchar *described = a11y_attr(node, "aria-describedby");
+		g_autofree gchar *role = a11y_attr(node, "role");
+
+		/* Ours never styles. */
+		if (a11y_has(node, "style"))
+			g_string_append_printf(problems, "<%s> has a style attribute\n", node->name);
+		/* Focus order is the host page's: nothing jumps the queue. */
+		if (tabindex != NULL && g_ascii_strtoll(tabindex, NULL, 10) > 0)
+			g_string_append_printf(problems, "<%s> has a positive tabindex\n", node->name);
+		/* Every description a control points at exists. */
+		if (described != NULL)
+		{
+			g_auto(GStrv) refs = g_strsplit(described, " ", -1);
+			guint j;
+			for (j = 0; refs[j] != NULL; j++)
+				if (*refs[j] != '\0' && !g_hash_table_contains(index.ids, refs[j]))
+					g_string_append_printf(problems, "aria-describedby names missing id %s\n", refs[j]);
+		}
+		/* A control is named: wrapped by its label or named by one. */
+		if ((a11y_is(node, "input") && g_strcmp0(type, "hidden") != 0 && g_strcmp0(type, "submit") != 0) ||
+		    a11y_is(node, "textarea") || a11y_is(node, "select"))
+		{
+			if (!a11y_inside(node, "label") && (id == NULL || !g_hash_table_contains(index.label_for, id)))
+				g_string_append_printf(problems, "control %s has no label\n", id != NULL ? id : "(no id)");
+			if (a11y_has(node, "required"))
+			{
+				any_required = TRUE;
+				if (g_strcmp0(type, "radio") == 0)
+				{
+					xmlNode *group = a11y_enclosing(node, "fieldset");
+					g_autofree gchar *said = group != NULL ? a11y_attr(group, "aria-required") : NULL;
+					if (g_strcmp0(said, "true") != 0)
+						g_string_append_printf(problems, "required radio %s: its group does not say so\n", id);
+				}
+				else
+				{
+					g_autofree gchar *said = a11y_attr(node, "aria-required");
+					if (g_strcmp0(said, "true") != 0)
+						g_string_append_printf(problems, "required control %s lacks aria-required\n", id);
+				}
+			}
+		}
+		/* A group is labelled by its first child. */
+		if (a11y_is(node, "fieldset"))
+		{
+			xmlNode *first = node->children;
+			while (first != NULL && first->type != XML_ELEMENT_NODE)
+				first = first->next;
+			if (first == NULL || !a11y_is(first, "legend"))
+				g_string_append_printf(problems, "fieldset %s has no legend first\n", id != NULL ? id : "");
+			else
+			{
+				g_autofree gchar *text = a11y_text(first);
+				if (*text == '\0')
+					g_string_append_printf(problems, "fieldset %s has an empty legend\n", id != NULL ? id : "");
+			}
+		}
+		/* A refusal is said in words, beside the answer, not in colour. */
+		if (g_strcmp0(invalid, "true") == 0)
+		{
+			gboolean told = FALSE;
+			any_invalid = TRUE;
+			if (described != NULL)
+			{
+				g_auto(GStrv) refs = g_strsplit(described, " ", -1);
+				guint j;
+				for (j = 0; refs[j] != NULL; j++)
+				{
+					xmlNode *target = g_hash_table_lookup(index.ids, refs[j]);
+					g_autofree gchar *text = target != NULL ? a11y_text(target) : NULL;
+					if (target != NULL && !a11y_has(target, "hidden") && text != NULL && *text != '\0')
+						told = TRUE;
+				}
+			}
+			if (!told)
+				g_string_append_printf(problems, "%s is invalid with no visible message tied to it\n",
+					id != NULL ? id : (const gchar *)node->name);
+		}
+		/* Every link in the error summary goes somewhere. */
+		if (a11y_is(node, "a"))
+		{
+			g_autofree gchar *href = a11y_attr(node, "href");
+			if (href != NULL && href[0] == '#' && !g_hash_table_contains(index.ids, href + 1))
+				g_string_append_printf(problems, "link to missing %s\n", href);
+		}
+		if (a11y_is(node, "button"))
+		{
+			g_autofree gchar *text = a11y_text(node);
+			if (*text == '\0')
+				g_string_append(problems, "a button has no text\n");
+		}
+		(void)role;
+	}
+
+	/* A failed submit is summarised at the top, where focus goes. */
+	if (any_invalid)
+	{
+		gboolean summary = FALSE;
+		for (i = 0; i < index.elements->len; i++)
+		{
+			xmlNode *node = g_ptr_array_index(index.elements, i);
+			g_autofree gchar *role = a11y_attr(node, "role");
+			g_autofree gchar *tabindex = a11y_attr(node, "tabindex");
+			if (g_strcmp0(role, "alert") == 0 && !a11y_has(node, "hidden") && g_strcmp0(tabindex, "-1") == 0)
+				summary = TRUE;
+		}
+		if (!summary)
+			g_string_append(problems, "errors with no visible, focusable summary\n");
+	}
+	/* Required is said in words for those who read the page. */
+	if (any_required && strstr(html, "class=\"vf-required-note\"") == NULL)
+		g_string_append(problems, "required questions with no note saying what marks them\n");
+	/* A whole page says its language and its title. */
+	{
+		xmlNode *root = xmlDocGetRootElement(doc);
+		if (strstr(html, "<!DOCTYPE") != NULL)
+		{
+			g_autofree gchar *lang = root != NULL ? a11y_attr(root, "lang") : NULL;
+			if (lang == NULL || *lang == '\0')
+				g_string_append(problems, "the page has no lang\n");
+			if (strstr(html, "<title>") == NULL || strstr(html, "<title></title>") != NULL)
+				g_string_append(problems, "the page has no title\n");
+		}
+	}
+
+	g_hash_table_unref(index.ids);
+	g_hash_table_unref(index.label_for);
+	g_ptr_array_unref(index.elements);
+	xmlFreeDoc(doc);
+	return g_string_free(problems, FALSE);
+}
+
+/* A form with every kind, alternating required, some with help. */
+static VentureEntity *
+every_kind_form(Fixture *f, const gchar *token)
+{
+	VentureEntity *form = make_form(f, token, VENTURE_FORM_LIVE);
+	GEnumClass *klass = g_type_class_ref(VENTURE_TYPE_FORM_FIELD_KIND);
+	guint i;
+	for (i = 0; i < klass->n_values; i++)
+	{
+		GEnumValue *value = &klass->values[i];
+		g_autofree gchar *key = g_strdup(value->value_nick);
+		g_autoptr(VentureEntity) field = make_field(f, form, key, value->value_nick,
+			(VentureFormFieldKind)value->value, i % 2 == 0, (gint64)i);
+		if (i % 3 == 0)
+			g_object_set(field, "help", "A line of help.", NULL);
+		if (value->value == VENTURE_FORM_FIELD_SINGLE_CHOICE || value->value == VENTURE_FORM_FIELD_MULTIPLE_CHOICE)
+			g_object_set(field, "choices", "One\nTwo\nThree", NULL);
+		save(f, field);
+	}
+	g_type_class_unref(klass);
+	g_object_unref(publish(f, form));
+	return form;
+}
+
+static gchar *
+render_with(Fixture *f, VentureEntity *form, VentureFormsRenderMode mode, JsonObject *values, JsonObject *errors)
+{
+	VentureFormsRender options;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) version = venture_forms_published_version(f->db, form, NULL);
+	gchar *html;
+	options.mode = mode;
+	options.action = NULL;
+	options.ticket = "1.1.x";
+	options.values = values;
+	options.errors = errors;
+	options.version = version;
+	html = venture_forms_render(f->db, form, &options, &error);
+	g_assert_no_error(error);
+	return html;
+}
+
+/* Writes a rendering where tools/venture-forms-axe.sh will find it, when
+ * asked to; the suite itself only checks. */
+static void
+a11y_keep(const gchar *name, const gchar *html)
+{
+	const gchar *directory = g_getenv("VENTURE_FORMS_A11Y_DIR");
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	if (directory == NULL)
+		return;
+	path = g_build_filename(directory, name, NULL);
+	page = g_str_has_prefix(html, "<!DOCTYPE") ? g_strdup(html) :
+		g_strdup_printf("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>%s</title>"
+		"</head><body><main>%s</main></body></html>", name, html);
+	g_assert_true(g_file_set_contents(path, page, -1, NULL));
+}
+
+/* Every field kind, in every state a stranger sees -- blank, refused and
+ * thanked, bare and as a whole page -- keeps every rule. */
+static void
+test_a11y_contract(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = every_kind_form(f, "a11y-form");
+	g_autoptr(JsonObject) errors = json_object_new();
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(GPtrArray) fields = venture_forms_fields(f->db, form, NULL);
+	g_autofree gchar *blank = NULL, *page = NULL, *refused = NULL, *thanks = NULL, *bare_thanks = NULL;
+	guint i;
+	(void)data;
+	for (i = 0; i < fields->len; i++)
+	{
+		g_autofree gchar *key = NULL;
+		g_object_get(g_ptr_array_index(fields, i), "key", &key, NULL);
+		if (g_strcmp0(key, "hidden") != 0)
+			json_object_set_string_member(errors, key, "This answer needs attention.");
+		json_object_set_string_member(values, key, "x");
+	}
+	json_object_set_string_member(errors, "fax", "This form has no such question.");
+	blank = render_with(f, form, VENTURE_FORMS_RENDER_FRAGMENT, NULL, NULL);
+	page = render_with(f, form, VENTURE_FORMS_RENDER_HOSTED, NULL, NULL);
+	refused = render_with(f, form, VENTURE_FORMS_RENDER_HOSTED, values, errors);
+	thanks = venture_forms_render_success(form, TRUE);
+	bare_thanks = venture_forms_render_success(form, FALSE);
+	{
+		const gchar *names[] = { "blank.html", "page.html", "refused.html", "thanks.html", "bare-thanks.html" };
+		const gchar *pages[] = { blank, page, refused, thanks, bare_thanks };
+		for (i = 0; i < G_N_ELEMENTS(pages); i++)
+		{
+			g_autofree gchar *problems = a11y_check(pages[i]);
+			a11y_keep(names[i], pages[i]);
+			if (*problems != '\0')
+				g_error("%s breaks the accessibility contract:\n%s", names[i], problems);
+		}
+	}
+	/* The refused page's summary links to every refused question and
+	 * takes focus; the success says so to a screen reader. */
+	g_assert_nonnull(strstr(refused, "class=\"vf-error-list\""));
+	g_assert_nonnull(strstr(refused, "href=\"#vf-a11y-form-email\""));
+	g_assert_nonnull(strstr(refused, "href=\"#vf-a11y-form-single_choice--one\""));
+	g_assert_nonnull(strstr(refused, "autofocus"));
+	g_assert_nonnull(strstr(thanks, "role=\"status\""));
+	g_assert_nonnull(strstr(blank, "autocomplete=\"email\""));
+	g_assert_nonnull(strstr(blank, "autocomplete=\"tel\""));
+}
+
+/* The checker is only worth something if it fails bad markup. */
+static void
+test_a11y_checker_catches(void)
+{
+	static const gchar *const bad[] = {
+		"<form><input id=\"a\" name=\"a\"></form>",
+		"<form><label for=\"a\">A</label><input id=\"a\" required></form>",
+		"<form><fieldset><div></div><input type=\"radio\" id=\"r\"></fieldset></form>",
+		"<form><label for=\"a\">A</label><input id=\"a\" aria-invalid=\"true\"></form>",
+		"<form><label for=\"a\">A</label><input id=\"a\" aria-describedby=\"nothing\"></form>",
+		"<form><a href=\"#nowhere\">x</a></form>",
+		"<form><label for=\"a\">A</label><input id=\"a\" tabindex=\"3\"></form>",
+		"<form><p style=\"color:red\">x</p></form>",
+		"<form><button></button></form>",
+		"<!DOCTYPE html><html><head></head><body></body></html>",
+		NULL
+	};
+	guint i;
+	for (i = 0; bad[i] != NULL; i++)
+	{
+		g_autofree gchar *problems = a11y_check(bad[i]);
+		if (*problems == '\0')
+			g_error("the checker passed bad markup: %s", bad[i]);
+	}
+}
+
+/* ==========================================================================
  * Versions
  * ========================================================================== */
 
@@ -1393,6 +1781,7 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/forms/records", test_records);
 	g_test_add_func("/forms/urlencoded-repeats", test_urlencoded_repeats);
+	g_test_add_func("/forms/a11y-checker-catches", test_a11y_checker_catches);
 	g_test_add("/forms/form-defaults", Fixture, NULL, setup, test_form_defaults, teardown);
 	g_test_add("/forms/form-validation", Fixture, NULL, setup, test_form_validation, teardown);
 	g_test_add("/forms/field-keys", Fixture, NULL, setup, test_field_keys, teardown);
@@ -1411,6 +1800,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-ways-in", Fixture, NULL, setup, test_http_ways_in, teardown);
 	g_test_add("/forms/embed-codes", Fixture, NULL, setup, test_embed_codes, teardown);
 	g_test_add("/forms/builder-page", Fixture, NULL, setup, test_builder_page, teardown);
+	g_test_add("/forms/a11y-contract", Fixture, NULL, setup, test_a11y_contract, teardown);
 	g_test_add("/forms/versions-freeze", Fixture, NULL, setup, test_versions_freeze, teardown);
 	g_test_add("/forms/versions-publish-rules", Fixture, NULL, setup, test_versions_publish_rules, teardown);
 	g_test_add("/forms/versions-read-only", Fixture, NULL, setup, test_versions_read_only, teardown);

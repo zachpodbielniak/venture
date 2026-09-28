@@ -261,6 +261,19 @@ forms_validate_form(
 	return forms_check_published(database, entity, previous, error);
 }
 
+/* The autofill tokens a question may declare: the HTML standard's, less
+ * the payment and one-time-code ones a form of ours should never ask a
+ * browser to fill. */
+static const gchar *const forms_autocomplete_tokens[] = {
+	"off", "on", "name", "honorific-prefix", "given-name", "additional-name", "family-name",
+	"honorific-suffix", "nickname", "username", "organization-title", "organization",
+	"street-address", "address-line1", "address-line2", "address-line3", "address-level4",
+	"address-level3", "address-level2", "address-level1", "country", "country-name",
+	"postal-code", "bday", "bday-day", "bday-month", "bday-year", "sex", "url", "photo",
+	"tel", "tel-country-code", "tel-national", "tel-area-code", "tel-local", "tel-extension",
+	"email", "impp", "language", NULL
+};
+
 static const gchar *const forms_lead_targets[] = {
 	"name", "email", "phone", "company_name", "website", "notes", NULL
 };
@@ -277,6 +290,7 @@ forms_validate_field(
 	g_autofree gchar *key = venture_forms_get_string(entity, "key");
 	g_autofree gchar *pattern = venture_forms_get_string(entity, "pattern");
 	g_autofree gchar *maps = venture_forms_get_string(entity, "maps-to");
+	g_autofree gchar *autocomplete = venture_forms_get_string(entity, "autocomplete");
 	g_autofree gchar *choices_text = venture_forms_get_string(entity, "choices");
 	VentureFormFieldKind kind = forms_kind(entity);
 	gint64 form_id = venture_forms_get_int(entity, "form-id");
@@ -400,6 +414,13 @@ forms_validate_field(
 				"is not a regular expression: %s", regex_error->message);
 			return FALSE;
 		}
+	}
+	if (!venture_string_is_empty(autocomplete) && !g_strv_contains(forms_autocomplete_tokens, autocomplete))
+	{
+		venture_set_error_validation(error, "Autofill",
+			"\"%s\" is not a browser autofill token; use one like given-name, "
+			"family-name, street-address or postal-code", autocomplete);
+		return FALSE;
 	}
 	if (!venture_string_is_empty(maps) && !g_strv_contains(forms_lead_targets, maps))
 	{

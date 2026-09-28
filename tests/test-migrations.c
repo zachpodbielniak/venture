@@ -958,6 +958,7 @@ test_forms_schema(void)
 	g_assert_false(table_exists(database, "form_versions"));
 	g_assert_cmpint(applied(database, 710), ==, 1);
 	g_assert_cmpint(applied(database, 720), ==, 1);
+	g_assert_cmpint(applied(database, 730), ==, 1);
 	g_clear_object(&context);
 	g_clear_object(&database);
 
@@ -974,6 +975,7 @@ test_forms_schema(void)
 		g_assert_true(table_exists(database, "form_versions"));
 		g_assert_cmpint(applied(database, 710), ==, 1);
 		g_assert_cmpint(applied(database, 720), ==, 1);
+		g_assert_cmpint(applied(database, 730), ==, 1);
 		{
 			g_autofree gchar *index = query_text(database,
 				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "

@@ -44,6 +44,7 @@ typedef struct
 	gchar			*pattern;
 	gchar			*default_value;
 	gchar			*maps_to;
+	gchar			*autocomplete;
 	gdouble			 min_value;
 	gdouble			 max_value;
 	gint64			 min_length;

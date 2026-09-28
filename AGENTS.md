@@ -1266,6 +1266,12 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   that version even after a newer one is published. Tests that build a
   ticket from a form object must have that object's `published-number`
   current, or the ticket names no version.
+- **The renderer is checked for accessibility on every build.**
+  `/forms/a11y-contract` parses every kind in every state and fails on an
+  unnamed control, a dangling aria reference, a legendless group, a silent
+  required or invalid answer, a summary that cannot take focus, a positive
+  tabindex or a style attribute. A new question kind must pass it: add the
+  kind and the test renders it automatically.
 - **The forms epic's migrations start at 000710.** 000700 was taken by
   product categories before the epic started; each child takes the next
   multiple of ten in delivery order (the table is on the epic issue).

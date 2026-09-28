@@ -289,6 +289,7 @@ venture_forms_field_free(gpointer data)
 	g_free(field->pattern);
 	g_free(field->default_value);
 	g_free(field->maps_to);
+	g_free(field->autocomplete);
 	g_clear_pointer(&field->choices, g_ptr_array_unref);
 	g_free(field);
 }
@@ -348,7 +349,8 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 		             "required", &field->required, "position", &field->position,
 		             "help", &field->help, "placeholder", &field->placeholder,
 		             "pattern", &field->pattern, "default-value", &field->default_value,
-		             "maps-to", &field->maps_to, "min-value", &field->min_value,
+		             "maps-to", &field->maps_to, "autocomplete", &field->autocomplete,
+		             "min-value", &field->min_value,
 		             "max-value", &field->max_value, "min-length", &field->min_length,
 		             "max-length", &field->max_length, NULL);
 		field->choices = venture_forms_choices_parse(choices, FALSE, NULL);
@@ -395,6 +397,7 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		FORMS_STRING(pattern, "pattern")
 		FORMS_STRING(default_value, "default_value")
 		FORMS_STRING(maps_to, "maps_to")
+		FORMS_STRING(autocomplete, "autocomplete")
 #undef FORMS_STRING
 		if (0 != field->min_value)
 		{
@@ -501,6 +504,7 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		field->pattern = forms_member_string(object, "pattern");
 		field->default_value = forms_member_string(object, "default_value");
 		field->maps_to = forms_member_string(object, "maps_to");
+		field->autocomplete = forms_member_string(object, "autocomplete");
 		field->min_value = forms_member_number(object, "min_value");
 		field->max_value = forms_member_number(object, "max_value");
 		field->min_length = (gint64)forms_member_number(object, "min_length");

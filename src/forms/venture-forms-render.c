@@ -217,6 +217,13 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 		g_string_append_printf(html, "<fieldset class=\"vf-field vf-field--%s%s\" data-vf-field=\"%s\" "
 		                       "data-vf-kind=\"%s\" id=\"%s\"", kind_class,
 		                       NULL != message ? " vf-field--invalid" : "", key, nick, id);
+		/* A radio group is one answer and can say it is required; a
+		 * box group is several and cannot, so the legend's marker and
+		 * the note at the top say it instead. */
+		if (VENTURE_FORM_FIELD_MULTIPLE_CHOICE == kind)
+			g_string_append(html, " role=\"group\"");
+		else
+			g_string_append_printf(html, " role=\"radiogroup\"%s", required ? " aria-required=\"true\"" : "");
 		forms_described(html, id, has_help, NULL != message);
 		g_string_append(html, "><legend class=\"vf-label\">");
 		forms_render_label_text(html, label, required);
@@ -225,8 +232,10 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 		{
 			VentureFormsChoice *choice = g_ptr_array_index(choices, i);
 
+			/* Each box has an id, so the error summary can link to the
+			 * group's first one. Choice ids are [a-z0-9_-]. */
 			g_string_append_printf(html, "<label class=\"vf-choice\"><input class=\"vf-input\" "
-			                       "type=\"%s\" name=\"%s\" value=\"", type, key);
+			                       "id=\"%s--%s\" type=\"%s\" name=\"%s\" value=\"", id, choice->id, type, key);
 			forms_escape(html, choice->id);
 			g_string_append_c(html, '"');
 			/* A required radio group is satisfied by any one box; a
@@ -272,7 +281,11 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	g_string_append(html, "</label>");
 
 	if (VENTURE_FORM_FIELD_LONG_TEXT == kind)
+	{
 		g_string_append_printf(html, "<textarea class=\"vf-input\" id=\"%s\" name=\"%s\" rows=\"5\"", id, key);
+		if (!venture_string_is_empty(field->autocomplete))
+			g_string_append_printf(html, " autocomplete=\"%s\"", field->autocomplete);
+	}
 	else
 	{
 		const gchar *type = "text", *complete = NULL;
@@ -295,6 +308,14 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 			break;
 		}
 		g_string_append_printf(html, "<input class=\"vf-input\" id=\"%s\" name=\"%s\" type=\"%s\"", id, key, type);
+		/* The question's own token, else what its kind or its lead
+		 * mapping says it holds, so a browser can fill it in. */
+		if (!venture_string_is_empty(field->autocomplete))
+			complete = field->autocomplete;
+		else if (NULL == complete && 0 == g_strcmp0(field->maps_to, "name"))
+			complete = "name";
+		else if (NULL == complete && 0 == g_strcmp0(field->maps_to, "company_name"))
+			complete = "organization";
 		if (NULL != complete)
 			g_string_append_printf(html, " autocomplete=\"%s\"", complete);
 		if (VENTURE_FORM_FIELD_NUMBER == kind)
@@ -343,6 +364,97 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	g_string_append(html, "</div>");
 }
 
+/* Where the error summary's link for @field goes: the input, or the first
+ * box of a group, which is what takes focus when the link is followed. */
+static gchar *
+forms_error_target(const gchar *prefix, const VentureFormsField *field)
+{
+	if (VENTURE_FORM_FIELD_RATING == field->kind)
+	{
+		gint64 low, high;
+
+		venture_forms_rating_bounds(field, &low, &high);
+		return g_strdup_printf("%s-%s--%" G_GINT64_FORMAT, prefix, field->key, low);
+	}
+	if (venture_forms_kind_has_choices(field->kind) && field->choices->len > 0)
+		return g_strdup_printf("%s-%s--%s", prefix, field->key,
+			((VentureFormsChoice *)g_ptr_array_index(field->choices, 0))->id);
+	return g_strdup_printf("%s-%s", prefix, field->key);
+}
+
+/*
+ * The error summary: at the top, role=alert, a count and one link per
+ * refused answer to its question, in the order they are asked. It is
+ * focusable (tabindex -1) so the loader can move focus to it after a
+ * failed submit, and on the hosted page it takes focus itself -- a person
+ * who cannot see the red must be told first what went wrong and then be
+ * able to walk to each place. With no errors it is present and hidden, so
+ * the loader has somewhere to put them.
+ */
+static void
+forms_render_summary(GString *html, const gchar *prefix, GPtrArray *fields,
+	const VentureFormsRender *options, gboolean hosted)
+{
+	guint count = 0, i;
+	const gchar *form_message = forms_error(options, "_form");
+
+	if (NULL != options->errors)
+		count = json_object_get_size(options->errors);
+	g_string_append_printf(html, "<div class=\"vf-errors\" id=\"%s-errors\" role=\"alert\" tabindex=\"-1\"%s%s>",
+	                       prefix, 0 == count ? " hidden" : "", (count > 0 && hosted) ? " autofocus" : "");
+	if (0 == count)
+	{
+		g_string_append(html, "</div>");
+		return;
+	}
+	if (NULL != form_message && 1 == count)
+	{
+		g_string_append(html, "<p class=\"vf-errors-title\">");
+		forms_escape(html, form_message);
+		g_string_append(html, "</p></div>");
+		return;
+	}
+	g_string_append_printf(html, "<p class=\"vf-errors-title\">There %s a problem with %u answer%s.</p>"
+	                       "<ul class=\"vf-error-list\">", count == 1 ? "is" : "are", count, count == 1 ? "" : "s");
+	for (i = 0; i < fields->len; i++)
+	{
+		const VentureFormsField *field = g_ptr_array_index(fields, i);
+		const gchar *message = forms_error(options, field->key);
+		g_autofree gchar *target = NULL;
+
+		if (NULL == message)
+			continue;
+		target = forms_error_target(prefix, field);
+		g_string_append_printf(html, "<li><a href=\"#%s\">", target);
+		forms_escape(html, field->label);
+		g_string_append(html, ": ");
+		forms_escape(html, message);
+		g_string_append(html, "</a></li>");
+	}
+	/* Names that are no question here have nowhere to link to. */
+	{
+		JsonObjectIter iter;
+		const gchar *key;
+		JsonNode *node;
+
+		json_object_iter_init(&iter, options->errors);
+		while (json_object_iter_next(&iter, &key, &node))
+		{
+			if (NULL != venture_forms_definition_find(fields, key))
+				continue;
+			g_string_append(html, "<li>");
+			if (0 != g_strcmp0(key, "_form"))
+			{
+				forms_escape(html, key);
+				g_string_append(html, ": ");
+			}
+			forms_escape(html, json_node_get_string(node));
+			g_string_append(html, "</li>");
+		}
+	}
+	g_string_append(html, "</ul></div>");
+}
+
 static void
 forms_document_open(GString *html, VentureEntity *form, gboolean basic)
 {
@@ -373,7 +485,6 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 	g_autofree gchar *token = NULL, *title = NULL, *description = NULL, *submit = NULL;
 	g_autofree gchar *prefix = NULL, *action = NULL;
 	gboolean hosted, preview;
-	const gchar *form_message;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -396,7 +507,6 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 	hosted = (VENTURE_FORMS_RENDER_HOSTED == options->mode) ||
 	         (VENTURE_FORMS_RENDER_HOSTED_BASIC == options->mode);
 	preview = (VENTURE_FORMS_RENDER_PREVIEW == options->mode);
-	form_message = forms_error(options, "_form");
 
 	html = g_string_new(NULL);
 	if (hosted)
@@ -425,13 +535,21 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 		g_string_append(html, "</div>");
 	}
 
-	g_string_append_printf(html, "<div class=\"vf-errors\" id=\"%s-errors\" role=\"alert\"%s>",
-	                       prefix, (NULL != options->errors && json_object_get_size(options->errors) > 0) ? "" : " hidden");
-	if (NULL != form_message)
-		forms_escape(html, form_message);
-	else if (NULL != options->errors && json_object_get_size(options->errors) > 0)
-		g_string_append(html, "Please correct the answers marked below.");
-	g_string_append(html, "</div>");
+	forms_render_summary(html, prefix, fields, options, hosted);
+
+	for (i = 0; i < fields->len; i++)
+	{
+		const VentureFormsField *field = g_ptr_array_index(fields, i);
+
+		if (field->required && VENTURE_FORM_FIELD_HIDDEN != field->kind)
+		{
+			/* The asterisk beside each question is hidden from screen
+			 * readers, which hear aria-required instead; this sentence
+			 * is what explains it to everyone else. */
+			g_string_append(html, "<p class=\"vf-required-note\">Questions marked * are required.</p>");
+			break;
+		}
+	}
 
 	for (i = 0; i < fields->len; i++)
 		forms_render_field(html, prefix, g_ptr_array_index(fields, i), options);

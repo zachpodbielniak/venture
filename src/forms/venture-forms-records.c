@@ -200,6 +200,10 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("maps-to", "Maps to",
 	              "With Create a lead: name, email, phone, company_name, website or notes",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("autocomplete", "Autofill",
+	              "Optional: what the browser may fill in, e.g. given-name, postal-code; "
+	              "email, phone and web address questions set their own",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 

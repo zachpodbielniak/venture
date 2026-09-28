@@ -163,7 +163,9 @@ features add names; none is removed.
 |-------------------------------+---------------------------------------------------------------------|
 | =vf-form=                     | the =<form>=; also =data-vf-form="TOKEN"=                           |
 | =vf-title=, =vf-description=  | the heading (=h2=, =h1= on the hosted page) and the introduction    |
-| =vf-errors=                   | the error summary, =role="alert"=, =hidden= when there are none     |
+| =vf-errors=                   | the error summary, =role="alert"=, =tabindex="-1"=, =hidden= when there are none |
+| =vf-errors-title=, =vf-error-list= | the summary's count and its list of links to the refused questions |
+| =vf-required-note=            | "Questions marked * are required.", when any is                    |
 | =vf-field=                    | each question; also =vf-field--KIND= (=vf-field--short-text=, …), =data-vf-field="KEY"=, =data-vf-kind="KIND"= |
 | =vf-field--invalid=           | a question whose answer was refused                                 |
 | =vf-label=                    | the =<label>= or =<legend>=                                         |
@@ -178,7 +180,59 @@ features add names; none is removed.
 | =vf-page=                     | the hosted page's =<main>=                                          |
 
 Element ids are =vf-TOKEN-KEY= for an input, with =-help= and =-error=
-for its texts.
+for its texts, and =vf-TOKEN-KEY--CHOICE= for each box of a choice or
+scale question.
+
+** Accessibility
+
+The markup is ours even when the styles are not, so accessibility is part
+of the contract. Every rendering keeps these rules, and
+=/forms/a11y-contract= checks them over every field kind, blank, refused
+and thanked, bare and as a whole page, on every build:
+
+- Every input has a =<label for>= or sits inside its =<label>=. Choice and
+  scale questions are a =<fieldset>= whose first child is its =<legend>=.
+- Required is said in text and to assistive technology: an asterisk in the
+  label (=aria-hidden=, since the next point says it better), a sentence at
+  the top saying what the asterisk means, =required= and
+  =aria-required="true"= on the input, and on a radio group's fieldset
+  (=role="radiogroup"=). A box group (=role="group"=) cannot be required
+  in HTML; the asterisk, the sentence and the server say it.
+- Help and the error are tied to the input with =aria-describedby=; a
+  refused answer gets =aria-invalid="true"= and its message in words beside
+  it. Nothing is said by colour alone.
+- A refused submission is summarised at the top: =role="alert"=, the
+  number of problems, then one link per refused question to its input (or
+  the group's first box), in the order asked. The hosted page gives the
+  summary =autofocus=; the loader moves focus to it. Following a link
+  lands on the question.
+- The thank-you is =role="status"=; the loader moves focus to it.
+- Autofill tokens: email, phone and web address questions set =email=,
+  =tel= and =url=; a question mapped to a lead's name or company sets
+  =name= or =organization=; any question may name its own (=autocomplete=,
+  from the HTML standard's list, payment tokens excluded).
+- No positive =tabindex=, no =style=, no stylesheet of ours: focus order
+  and focus rings are the host page's.
+- The hosted page has =lang= and a =<title>=.
+
+*Keyboard and screen-reader patterns.* A rating is a group of native
+radio buttons: Tab reaches the group, the arrow keys move between points,
+Space picks, and the legend names the question. A multiple choice is
+native checkboxes, each its own Tab stop. Later question types (the page
+progress of a multi-page form, repeating groups, the booking slot picker)
+write their pattern here as they are added.
+
+*The loader* never traps focus: it only moves it to the summary or the
+thank-you, and never holds it. It never removes the no-script path: the
+fragment it fetches is the same form with the same =action=, so if the
+script fails after the markup arrives, the form still posts natively.
+
+*axe-core.* =tools/venture-forms-axe.sh= renders the same pages through the
+test and runs axe-core over them in jsdom (it installs axe-core and jsdom
+into a cache the first time; it needs node). Colour contrast is excluded:
+jsdom has no layout, and the colours on a host page are the host's. It
+reports no violations; the run is kept in
+[[file:evidence/forms-accessibility.org][the accessibility evidence]].
 
 * The public door
 

@@ -20,46 +20,83 @@
 (function () {
 	"use strict";
 
+	/*
+	 * The same summary the server renders without script: a count, then
+	 * one link per refused answer to its question, in the order asked.
+	 * Focus moves to it, so a screen reader hears what went wrong first
+	 * and a keyboard can walk to each place; the messages beside the
+	 * questions are tied to them with aria-describedby already.
+	 */
 	function showErrors(form, errors, message) {
 		var summary = form.querySelector(".vf-errors");
-		var boxes = form.querySelectorAll(".vf-error");
-		var i;
+		var keys = Object.keys(errors || {});
+		var list = document.createElement("ul");
 
-		for (i = 0; i < boxes.length; i++) {
-			boxes[i].textContent = "";
-			boxes[i].hidden = true;
-		}
+		form.querySelectorAll(".vf-error").forEach(function (box) {
+			box.textContent = "";
+			box.hidden = true;
+		});
 		form.querySelectorAll("[aria-invalid]").forEach(function (input) {
 			input.removeAttribute("aria-invalid");
 		});
+		list.className = "vf-error-list";
 
-		Object.keys(errors || {}).forEach(function (key) {
-			var field = form.querySelector("[data-vf-field=\"" + key.replace(/["\\]/g, "") + "\"]");
-			var box = field && field.querySelector(".vf-error");
+		form.querySelectorAll("[data-vf-field]").forEach(function (field) {
+			var key = field.getAttribute("data-vf-field");
+			var box = field.querySelector(".vf-error");
+			var target = field.querySelector(".vf-input");
+			var label = field.querySelector(".vf-label");
+			var item, link;
 
+			if (!Object.prototype.hasOwnProperty.call(errors || {}, key)) {
+				return;
+			}
 			if (box) {
 				box.textContent = errors[key];
 				box.hidden = false;
 			}
-			if (field) {
-				field.querySelectorAll(".vf-input").forEach(function (input) {
-					input.setAttribute("aria-invalid", "true");
-				});
-				if (field.hasAttribute("aria-describedby")) {
-					field.setAttribute("aria-invalid", "true");
-				}
+			field.querySelectorAll(".vf-input").forEach(function (input) {
+				input.setAttribute("aria-invalid", "true");
+			});
+			if (field.getAttribute("role")) {
+				field.setAttribute("aria-invalid", "true");
 			}
+			item = document.createElement("li");
+			link = document.createElement("a");
+			link.href = "#" + (target ? target.id : "");
+			link.textContent = (label ? label.textContent.replace(/\*\s*$/, "").trim() : key) +
+				": " + errors[key];
+			item.appendChild(link);
+			list.appendChild(item);
+			keys.splice(keys.indexOf(key), 1);
 		});
 
-		if (summary) {
-			summary.textContent = message || "";
-			summary.hidden = !message;
+		/* Names that are no question here have nowhere to link to. */
+		keys.forEach(function (key) {
+			var item = document.createElement("li");
+
+			item.textContent = (key === "_form" ? "" : key + ": ") + errors[key];
+			list.appendChild(item);
+		});
+
+		if (!summary) {
+			return;
 		}
+		summary.textContent = "";
+		if (message) {
+			var title = document.createElement("p");
 
-		var first = form.querySelector("[aria-invalid] .vf-input, .vf-input[aria-invalid]");
-
-		if (first && first.focus) {
-			first.focus();
+			title.className = "vf-errors-title";
+			title.textContent = message;
+			summary.appendChild(title);
+		}
+		if (list.children.length) {
+			summary.appendChild(list);
+		}
+		summary.hidden = !message && !list.children.length;
+		if (!summary.hidden) {
+			summary.setAttribute("tabindex", "-1");
+			summary.focus();
 		}
 	}
 
