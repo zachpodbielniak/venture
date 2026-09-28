@@ -1659,6 +1659,7 @@ seed_virtual_economy () {
     local goal
     local dashboard
     local item
+    local brisk_purse tallow_purse
 
     # The unit of account first: every money field below is written in it,
     # and the organization names it as its book currency. Four digits of
@@ -1708,6 +1709,26 @@ seed_virtual_economy () {
         description="The crafter: alchemy.")"
     bank="$(make_record location organization_id="${org}" name="Guild bank" kind=bank active=true \
         description="Finished goods waiting to be listed.")"
+
+    # Gold is not the only thing a character carries. Faire tickets are
+    # counted and never priced (memo: holdings only, nothing posted), and
+    # festival tokens keep a small book of their own (separate_book: a
+    # balanced BREWFEST trial balance, never converted into gold).
+    add currency code=TICKET name="Darkmoon ticket" kind=virtual exponent=0 \
+        book_treatment=memo \
+        description="Prize tickets from the travelling faire. Counted per character, never valued."
+    add currency code=BREWFEST name="Brewfest token" kind=virtual exponent=0 \
+        book_treatment=separate_book \
+        description="Festival tokens: their own small book, never converted into gold."
+
+    # A purse per character: an account with a location is a holding, and
+    # everything a character earns or spends in any currency lands in it --
+    # the vendor gold from the farming runs below included. It may not be
+    # spent below zero; allow_negative would say otherwise.
+    brisk_purse="$(make_record account organization_id="${org}" code=EVM-1101 \
+        name="Brisk's purse" kind=asset location_id="${brisk}" active=true)"
+    tallow_purse="$(make_record account organization_id="${org}" code=EVM-1102 \
+        name="Tallow's purse" kind=asset location_id="${tallow}" active=true)"
 
     silverleaf="$(make_record product organization_id="${org}" venture_id="${venture}" \
         name=Silverleaf sku=HERB-SL category_id="${herbs}" tags=herb,farmable \
@@ -1806,6 +1827,53 @@ ore_route -360 60
 herb_route -240 90
 ore_route -144 55
 herb_route -48 80"
+
+    step "Faire tickets and festival tokens, held per character"
+
+    # A night at the faire and a day at the festival: money yields in the
+    # two other currencies, posted into each character's purse like the
+    # vendor gold above -- the tickets as memo movements, the tokens as a
+    # BREWFEST journal.
+    local faire brewfest whistle
+    faire="$(make_record session organization_id="${org}" venture_id="${venture}" \
+        name="Darkmoon Faire games" activity="darkmoon faire" location_id="${tallow}" \
+        started_at="$(at_minute -2000)" ended_at="$(at_minute -1880)")"
+    add session_yield organization_id="${org}" session_id="${faire}" amount="35 TICKET" \
+        notes="Ring toss and the shooting gallery"
+    brewfest="$(make_record session organization_id="${org}" venture_id="${venture}" \
+        name="Brewfest barking" activity="brewfest" location_id="${brisk}" \
+        started_at="$(at_minute -1700)" ended_at="$(at_minute -1610)")"
+    add session_yield organization_id="${org}" session_id="${brewfest}" amount="18 BREWFEST" \
+        notes="Barking quests"
+    ctl act session "${faire}" post > /dev/null || die "could not post the faire session"
+    ctl act session "${brewfest}" post > /dev/null || die "could not post the brewfest session"
+
+    # A prize bought with tickets out of Tallow's purse, then sold for gold
+    # into the same purse. The prize is not stocked, so the sale's cost of
+    # goods is its cost in tickets -- memo, so it posts nothing -- while the
+    # gold sale posts to the gold books as ever.
+    whistle="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Whistle of the Faire" sku=FAIRE-WHISTLE category_id="${crafted}" \
+        tags=prize,faire cost="20 TICKET" list_price="$(gold 450000)" active=true)"
+    add expense organization_id="${org}" venture_id="${venture}" \
+        description="Darkmoon prize: Whistle of the Faire" vendor="Faire prize booth" \
+        amount="20 TICKET" cash_account_id="${tallow_purse}" occurred_at="$(at_hour -30)" \
+        category=SUPPLIES
+    add sale organization_id="${org}" venture_id="${venture}" product_id="${whistle}" \
+        quantity=1 gross="$(gold 450000)" occurred_at="$(at_hour -20)" \
+        channel="auction house" buyer_name="Auction house" cash_account_id="${tallow_purse}"
+    add expense organization_id="${org}" venture_id="${venture}" \
+        description="Brewfest ram racing reins" vendor="Festival vendor" \
+        amount="6 BREWFEST" cash_account_id="${brisk_purse}" occurred_at="$(at_hour -26)" \
+        category=SUPPLIES
+
+    # Moves between characters: the transfer action, one currency at a time.
+    ctl act location "${tallow}" transfer to_location_id="${brisk}" amount="5 TICKET" \
+        notes="Tickets for Brisk's turn at the games" > /dev/null \
+        || die "could not move tickets between characters"
+    ctl act location "${brisk}" transfer to_location_id="${tallow}" amount="4 BREWFEST" \
+        notes="Tokens for Tallow's ram" > /dev/null \
+        || die "could not move tokens between characters"
 
     step "Two recipes, and the potions and flasks crafted from the harvest"
 
@@ -1987,6 +2055,12 @@ ${flask} 68000"
     add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
         title="Gold per hour" report_name=session_performance period=last_90_days \
         span=full position=6
+    # Tickets are memo, so their holdings are rows of holding_txn and a sum
+    # of their signed amounts is what the characters hold between them.
+    # Posted currencies are read with `venturectl report holdings`.
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
+        title="Faire tickets held" entity_type=holding_txn field=amount \
+        span=normal position=7
 }
 
 seed_dashboards () {
