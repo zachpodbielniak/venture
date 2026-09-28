@@ -428,7 +428,7 @@ venture_category_validate_category(
 
 	if (('\0' != venture_category_or_empty(applies_to)[0]) &&
 	    (G_TYPE_INVALID == venture_entity_registry_lookup_any(
-	    	venture_entity_registry_get_default(), applies_to)))
+			venture_entity_registry_get_default(), applies_to)))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 		            "category.applies_to: \"%s\" is not a record type", applies_to);
@@ -462,9 +462,9 @@ venture_category_validate_category(
 				            "a category's parent must group the same records",
 				            parent_id,
 				            ('\0' != venture_category_or_empty(parent_applies)[0])
-				            	? parent_applies : "any record type",
+				                ? parent_applies : "any record type",
 				            ('\0' != venture_category_or_empty(applies_to)[0])
-				            	? applies_to : "any record type");
+				                ? applies_to : "any record type");
 				return FALSE;
 			}
 		}
