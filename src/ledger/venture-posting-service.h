@@ -169,6 +169,31 @@ gchar *venture_posting_service_book_label(VenturePostingService *self,
 GPtrArray *venture_posting_service_post_by_currency(VenturePostingService *self,
 	VentureJournal *header, GPtrArray *lines, const VentureActor *actor, GError **error);
 /**
+ * venture_posting_service_post_by_currency_full:
+ * @self: posting service
+ * @header: as for venture_posting_service_post_by_currency()
+ * @lines: (element-type VentureJournalLine): as for venture_posting_service_post_by_currency()
+ * @replace_memo: %TRUE when @header's source, rule and organization name a
+ *   document whose earlier memo movements these lines replace (a re-saved
+ *   sale); %FALSE appends (each session yield, each transfer is new)
+ * @actor: (nullable): audit attribution
+ * @out_movements: (out) (optional) (transfer full) (element-type VentureHoldingTxn):
+ *   the holding movements written for memo lines, oldest first
+ * @error: (out) (optional): refusal or storage error
+ *
+ * venture_posting_service_post_by_currency(), which calls this with
+ * @replace_memo %FALSE, and additionally hands back the memo movements. A
+ * memo line whose account carries a location is a holding's movement: it
+ * is written as a `holding_txn` in the same transaction (see
+ * venture_holdings_record_memo()). Other memo lines are dropped, as before.
+ *
+ * Returns: (transfer full) (element-type VentureJournal) (nullable): the
+ *   posted journals, book journal first; empty when every line was memo
+ */
+GPtrArray *venture_posting_service_post_by_currency_full(VenturePostingService *self,
+	VentureJournal *header, GPtrArray *lines, gboolean replace_memo, const VentureActor *actor,
+	GPtrArray **out_movements, GError **error);
+/**
  * venture_posting_service_find_source:
  * @self: posting service
  * @source_type: registered source record type

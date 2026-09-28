@@ -1836,6 +1836,33 @@ GType
 venture_book_route_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureHoldingKind:
+ * @VENTURE_HOLDING_KIND_ADJUST: a correction typed in by hand, counted as
+ *   earned or spent by its sign; the zero value, because a row nobody
+ *   classified is one somebody typed
+ * @VENTURE_HOLDING_KIND_EARN: more held, from a session, a sale or any
+ *   document that paid into the holding
+ * @VENTURE_HOLDING_KIND_SPEND: less held, paid out of the holding
+ * @VENTURE_HOLDING_KIND_TRANSFER: moved between two holdings of one
+ *   organization; only the transfer action writes it, always in pairs
+ *
+ * Why a memo-currency holding moved. Posted currencies need no such field:
+ * their movements are journal lines, classified by the journal's rule.
+ */
+typedef enum
+{
+	VENTURE_HOLDING_KIND_ADJUST = 0,
+	VENTURE_HOLDING_KIND_EARN,
+	VENTURE_HOLDING_KIND_SPEND,
+	VENTURE_HOLDING_KIND_TRANSFER
+} VentureHoldingKind;
+
+#define VENTURE_TYPE_HOLDING_KIND (venture_holding_kind_get_type())
+
+GType
+venture_holding_kind_get_type(void) G_GNUC_CONST;
+
+/**
  * venture_link_kind_inverse:
  * @kind: a link kind
  *

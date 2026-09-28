@@ -608,6 +608,34 @@ than one that fails.
   `venture_market_price_preferring()` (book currency wherever seen, else
   any) or strictly in the named one. The query cannot filter on a money
   field's currency, so the lookup pages newest-first; keep it paged.
+- **A holding has one truth per currency.** A holding is an `account`
+  with `location_id`. A posted currency's holding is the account's journal
+  lines (original `amount`, never `book-amount`); a memo currency's is
+  `holding_txn` rows, which `venture_holdings_record_memo()` writes from the
+  memo lines `post_by_currency_full()` would have dropped. Never write a
+  movement beside a journal line for the same money: the validator refuses
+  a hand movement in a posted currency, and `venture_ledger_save_source()`
+  adds none for a document an earlier treatment already journaled. Re-saves
+  *replace* a document's movements (unchanged ones kept), session yields and
+  transfers *append* -- pick the right one or an edited expense spends twice.
+- **The holding floor lives in two places, both before any write.** A memo
+  movement is judged by the `holding_txn` save validator, a journal by the
+  posting service's `posting` signal (`holdings_posting_guard()`), per
+  holding account and original currency. Only accounts with a location are
+  judged -- an overdraft on 1000 Cash is a real balance -- and
+  `allow-negative` (FALSE, the zero value) lifts it. Reversals are exempt.
+  Do not add a third check in a handler or a page.
+- **A sale honours `cash-account-id` like an expense.** The autojournal's
+  `use_cash_account()` swaps the profile's cash account for the document's
+  on the sale, refund and expense legs. It sets it on the profile object
+  the rule fetched for this call, never on a saved profile.
+- **A session money yield posts only into a location's holding.** No
+  location, or the ledger off, skips it (not a refusal -- the goods post
+  must still work) and it stays unposted for a later post. Either stamp
+  (`journal-id`, `holding-txn-id`) makes it posted and frozen; adding a
+  third form of posting means adding its stamp to `sessions_yield_posted()`
+  and the removal query. Existing sessions' money yields post on their next
+  post -- a behaviour change, documented in docs/sessions.org.
 - **A word beside a number is a code only if it is three letters or
   registered.** Widening the parser to every short word would read
   `100.00 CR` as a hundred of "CR"; `venture_money_word_is_code()` is the

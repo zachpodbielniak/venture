@@ -1218,3 +1218,15 @@ static const GEnumValue venture_book_route_values[] = {
 VENTURE_DEFINE_ENUM_TYPE(venture_book_route_get_type,
                          "VentureBookRoute",
                          venture_book_route_values)
+
+static const GEnumValue venture_holding_kind_values[] = {
+	VE(VENTURE_HOLDING_KIND_ADJUST,   "adjust"),
+	VE(VENTURE_HOLDING_KIND_EARN,     "earn"),
+	VE(VENTURE_HOLDING_KIND_SPEND,    "spend"),
+	VE(VENTURE_HOLDING_KIND_TRANSFER, "transfer"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_holding_kind_get_type,
+                         "VentureHoldingKind",
+                         venture_holding_kind_values)

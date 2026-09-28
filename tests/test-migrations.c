@@ -963,6 +963,53 @@ test_currency_book_treatment(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * An account written before holdings existed has a NULL allow_negative
+ * once reconciliation adds the column; 000710 makes it FALSE, the safe
+ * value, and a restart runs nothing twice. It has no location either, so
+ * the floor never judges it. If this regresses the column holds a value
+ * the ledger does not read, or a restart fails on the history.
+ */
+static void
+test_account_holdings(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO accounts (uuid, organization_id, created_at, updated_at, version, code, name, kind) "
+		"VALUES ('acct-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'OLD-1', 'Cash', 0);"
+		"UPDATE accounts SET allow_negative = NULL, location_id = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 710", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *nulls = NULL;
+		g_autofree gchar *value = NULL;
+
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		nulls = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM accounts WHERE allow_negative IS NULL");
+		g_assert_cmpstr(nulls, ==, "0");
+		value = query_text(database,
+			"SELECT CAST(allow_negative AS TEXT) FROM accounts WHERE code = 'OLD-1'");
+		g_assert_cmpstr(value, ==, "0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -977,6 +1024,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
+	g_test_add_func("/migrations/account-holdings", test_account_holdings);
 	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);

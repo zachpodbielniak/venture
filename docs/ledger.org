@@ -248,7 +248,7 @@ accounting date /D/:
 =venture_posting_service_route_currency()= answers this for one
 organization, currency and date, and returns the book currency with it.
 =venture_posting_service_book_currency()= answers the book currency alone.
-Both are the hooks reports, holdings and inventory call rather than
+Both are the hooks reports, holdings (below) and inventory call rather than
 repeating the rule.
 
 A rate is the latest =exchange_rate= row of that organization from /C/ to /B/
@@ -385,6 +385,196 @@ it:
   rate to USD)") where a missing rate used to refuse the whole report and a
   member's non-book sections were silently absent. The consolidated
   reports default to the parent's book currency. See [[file:group.org][Group]].
+
+* Holdings: what each wallet, till or character holds
+
+A *holding* is an =account= that carries a =location_id=: a wallet, a
+till, a petty-cash tin, a game character's purse. It holds any number of
+currencies at once -- one character's purse holds gold, fair tickets and
+festival tokens -- and the =holdings= report says, per location and
+currency, what came in, what went out and what is left. Nothing about it
+is specific to games: a market stall's till is a holding at the stall.
+
+** One truth per currency
+
+What a holding holds in a currency comes from exactly one place, decided
+by the currency's book treatment through the posting rule above:
+
+| Currency is                     | Its movements on the holding are                      |
+|---------------------------------+-------------------------------------------------------|
+| the book currency, =valued= or =separate_book= | the account's posted journal lines, in their original =amount= |
+| =memo=                          | =holding_txn= rows, because a memo line never posts   |
+
+The ledger is not duplicated for a posted currency: a gold sale paid into a
+purse is the journal line debiting that purse and nothing else. A memo
+currency has no journal, so the posting service writes each memo line
+whose account carries a location as a =holding_txn= *movement* instead,
+in the same transaction as whatever the document did post. A memo line
+on an ordinary account (the memo sale's income, a cost of goods sold)
+is dropped as it always was.
+
+The balance of a holding in a currency is the sum of both sources
+(=venture_holdings_balance()=): posted journal lines (=posted= or
+=reversed= journals, never tax-book ones) signed debit-positive in their
+original currency, plus the live movements. A currency whose treatment
+changes keeps its history on either side of the change. Original amounts
+are read, never =book-amount=: a valued currency converted into gold still
+sits in the purse as the currency it is.
+
+** The movement record: =holding_txn=
+
+| Field         | Kind      | For                                                              |
+|---------------+-----------+------------------------------------------------------------------|
+| =account_id=  | reference | the holding account; must carry a location, in the row's organization |
+| =amount=      | money     | signed, in a memo currency: more held is positive                |
+| =kind=        | enum      | =adjust= (zero value: typed by hand), =earn=, =spend=, =transfer= |
+| =occurred_at= | datetime  | when; now when left empty                                        |
+| =source_type=, =source_id=, =rule_name= | technical | set by the ledger: the document and rule it came from |
+| =notes=       | text      | the document's memo, or the person's                             |
+
+It belongs to the =ledger= module. Its save validator
+(=src/ledger/venture-holdings.c=) holds for every writer:
+
+- the source fields are the ledger's. A row the ledger derived from a
+  document is frozen but for its notes ("came from session #12; change that
+  record and the ledger rewrites this") and cannot be deleted by hand;
+- a person writes adjustments (and =earn=/=spend=, signed to match) in a
+  *memo* currency only. A posted currency's holding is its journal lines,
+  and a movement beside them would be a second truth ("is in GOLD, which
+  the ledger posts ...");
+- =transfer= is never written by hand: it has two sides, and the transfer
+  action writes both;
+- nothing takes a holding below zero (below).
+
+** Where movements come from
+
+=venture_posting_service_post_by_currency_full()= is
+=post_by_currency()= plus the memo movements: it writes them for memo lines
+on holding accounts and hands them back. Callers choose append or replace:
+
+- *Append* -- each session yield, each transfer is a new event.
+- *Replace* -- a sale or expense saved again (=venture_ledger_save_source()=)
+  and a sale's refund replace the movements that document and rule wrote
+  before; unchanged ones are left exactly as they were, so editing a note
+  does not churn history, and an edited amount moves the holding once. A
+  refund taken back to zero removes its movement. A document an earlier
+  treatment already posted keeps its journal as its only truth: no movement
+  is added beside it.
+
+The doors that move a holding:
+
+| Door                                           | Posted currency                        | Memo currency                    |
+|------------------------------------------------+----------------------------------------+----------------------------------|
+| a =sale= with =cash_account_id= = a holding    | cash leg debits the holding            | an =earn= movement               |
+| an =expense= with =cash_account_id= = a holding | cash leg credits the holding           | a =spend= movement               |
+| a session's money yield (=session post=)       | holding debited, session income credited | an =earn= movement             |
+| the =transfer= action on =location=            | one journal, rule =holding_transfer=   | two =transfer= movements         |
+| a manual journal on the holding account        | as posted                              | refused, as every memo line is   |
+| a =holding_txn= by hand                        | refused                                | an adjustment                    |
+
+A =sale= honours =cash_account_id= the way an =expense= always has: its
+cash leg (and a refund's) posts to that account instead of the posting
+profile's. Empty is the profile's account, as before.
+
+** The floor: never below zero, unless allowed
+
+A holding may not go below zero in any currency. The account's
+=allow_negative= (false by default -- the safe value, and the one
+migration =000710= writes on every existing account) lifts it. The rule
+reads only accounts that carry a location, so every existing bank and
+cash account is untouched: an overdraft is a real balance, and a bank
+account is not a holding unless someone gives its ledger account a
+location.
+
+- A memo movement is judged by the =holding_txn= save validator, against
+  the balance without the row being saved; only a change that takes
+  something away is judged, so editing an old movement's notes never fails
+  because of a later one. Deleting a positive hand adjustment is judged the
+  same way.
+- A journal is judged on the posting service's =posting= signal, after
+  validation and before anything is written: the journal's net on each
+  holding, per original currency, added to the balance. A reversal is
+  never refused -- it corrects evidence already posted, and the shortfall
+  it leaves is the truth.
+
+A refusal names the holding, what it holds and what was asked ("Characters
+/ Aria holds 12 TICKET and this takes 50 TICKET, which would leave it below
+zero ..."), and it refuses the whole document: an expense that would
+overspend a purse is not saved.
+
+** Holding accounts
+
+=venture_holdings_account_for_location()= finds the one account held at a
+location; with =create= it makes one on first use -- an asset coded
+=<organization>:holding:<location>=, named "Holding: <location path>" -- so
+a session or a transfer never needs one made first. A location with two
+holding accounts is refused rather than guessed between; name the account
+itself (a sale's or expense's =cash_account_id=) instead. Creating the
+account by hand first, with a code and name of your choosing, is the usual
+way; the lookup then finds it.
+
+=bank_account= gets no location of its own. A bank account already names
+its ledger account, and giving that account a location makes the bank
+account a holding: one mechanism, not two that could disagree.
+
+** Transfers
+
+=transfer= is a record action on =location=, the place the money leaves:
+
+#+begin_src sh
+venturectl act location 12 transfer to_location_id=13 amount="5 TICKET" notes="for the games"
+venturectl act location 12 transfer to_location_id=13 amount="4 BREWFEST"
+curl -X POST .../api/v1/location/12/actions/transfer \
+    -d '{"to_location_id": 13, "amount": "25 GOLD"}'
+#+end_src
+
+One currency per transfer. A bare number is in the book currency. Both
+locations must be in one organization; either holding account is made on
+first use. A posted currency moves by one journal (debit the destination,
+credit the source, rule =holding_transfer=, source =location:<from>=); a
+memo one by a =transfer= movement on each side. The source may not go below
+zero. Stageable: approval performs the transfer afresh against the balance
+then. It returns the source location.
+
+** The =holdings= report
+
+One row per location and currency:
+
+| Column        | Meaning                                                              |
+|---------------+----------------------------------------------------------------------|
+| =location=    | the location's path ("Characters / Aria")                             |
+| =currency=    | the currency; the book currency first under each location, then by code |
+| =books=       | how it reaches the books: =venture_posting_service_book_label()= for a posted currency, "Memo: TICKET (counted here, never posted)" for a memo one |
+| =earned=      | what came in during the period, transfers aside                       |
+| =spent=       | what went out during the period, transfers aside                      |
+| =transfers=   | net moved in (+) or out (-) by transfers during the period            |
+| =net=         | earned - spent + transfers                                           |
+| =balance=     | what it holds at the period's end (or =as_of=, when earlier)           |
+
+Metrics carry the totals per currency: =held= in the book currency and
+=held_<CODE>= for every other, the rule every per-currency report follows.
+
+A reversal takes back what it reverses instead of counting on the other
+side: a sale corrected from 10 to 12 gold shows 12 earned, not 22 earned
+and 10 spent. A reversed transfer is still a transfer.
+
+Options, forwarded by every door (API, report page, =venturectl report=,
+MCP and the assistant's =venture_report=): =organization_id= (the default
+organization when omitted), =location_id= (that location and every
+location beneath it), =currency= (one currency) and =as_of=. It belongs to
+the =ledger= module and is hidden with it.
+
+#+begin_src sh
+venturectl report holdings all organization_id=2
+venturectl report holdings this_month organization_id=2 location_id=12
+venturectl report holdings all organization_id=2 currency=TICKET as_of=2026-03-31
+#+end_src
+
+On a dashboard, a =sum= widget over =holding_txn= =amount= (optionally
+filtered to =account_id=) shows memo-currency holdings, scoped like every
+widget. Posted currencies are journal lines, whose amounts are unsigned, so
+their holdings are read from this report; a =report= widget runs it for the
+default organization.
 
 * Reading the books
 

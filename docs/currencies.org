@@ -163,18 +163,20 @@ afterwards.
 treated as valued. An upgraded install sets =valued= on every existing
 currency (migration =000705=), which is what they all behaved as.
 
-A game economy is the worked case. Its book currency is =GOLD=. Darkmoon
-Faire tickets are something the business counts but that has no price in
-gold: =separate_book= keeps a TICKET trial balance of their own, and a
-ticket-bought prize sold for gold posts gold sales and ticket cost of goods
-sold side by side. Festival tokens that are only ever counted are =memo=: a
-sale for them saves with no journal at all. A currency that trades against
-gold at a known rate is =valued= with an =exchange_rate=, and posts into the
-gold books at that rate with its own amount kept on every line.
+A game economy is the worked case. Its book currency is =GOLD=. Fair
+tickets are only ever counted -- how many each character holds -- and have
+no price in gold: =memo= keeps them out of the ledger entirely, a sale for
+them saves with no journal, and the holdings report counts them per
+character. Festival tokens are something the business wants in books of
+their own: =separate_book= keeps a BREWFEST trial balance, and a
+token-bought prize sold for gold posts gold sales and token cost of goods
+sold side by side. A currency that trades against gold at a known rate is
+=valued= with an =exchange_rate=, and posts into the gold books at that
+rate with its own amount kept on every line.
 
 #+begin_src sh
-venturectl create currency code=TICKET name='Darkmoon ticket' exponent=0 book_treatment=separate_book
-venturectl create currency code=BREWFEST name='Brewfest token' exponent=0 book_treatment=memo
+venturectl create currency code=TICKET name='Darkmoon ticket' exponent=0 book_treatment=memo
+venturectl create currency code=BREWFEST name='Brewfest token' exponent=0 book_treatment=separate_book
 venturectl update currency 3 book_treatment=valued   # from the next posting on
 #+end_src
 
@@ -194,6 +196,67 @@ statements have one section per currency that posted, labelled "Separate
 book: TICKET" and the like, and a memo currency has none. A close and a
 consolidation leave a separate, memo or rate-less book out and say so,
 rather than refusing.
+
+* Several currencies in one organization
+
+A guide for the case the treatments exist for: one organization, one book
+currency, and other currencies beside it that often have no rate to it at
+all -- a game's gold with its fair tickets and festival tokens, a shop's
+dollars with its loyalty points and gift-card credit, a club's dues with
+its raffle tickets. Nothing below is specific to any of them.
+
+** Choosing a treatment
+
+| If the currency ...                                               | Choose          |
+|-------------------------------------------------------------------+-----------------|
+| is the organization's own money                                   | the book currency (=default_currency= on the organization) |
+| has a price in the book currency you are willing to record         | =valued=, plus an =exchange_rate= |
+| has no price, but you want its trial balance and statements        | =separate_book= |
+| is only ever counted -- who holds how many                         | =memo=          |
+
+A =valued= currency with no rate on file behaves like a separate book
+until one is recorded, and is converted from then on; the books are never
+rewritten backwards. Changing a treatment later changes only what is
+posted afterwards.
+
+** Where each currency is held
+
+Give every wallet, till or character a =location=, and each one an
+account with that =location_id= -- a *holding*. A holding holds every
+currency at once. Everything that pays into or out of one moves it:
+
+#+begin_src sh
+venturectl create location name=Aria kind=character
+venturectl create account code=EVM-1101 name="Aria's purse" kind=asset location_id=12
+venturectl create sale venture_id=3 gross="45 GOLD" cash_account_id=40      # into the purse
+venturectl create expense venture_id=3 amount="20 TICKET" cash_account_id=40 \
+    description="Prize from the faire"                                     # out of it
+venturectl act location 12 transfer to_location_id=13 amount="5 TICKET"     # to Bram
+venturectl report holdings all location_id=12
+#+end_src
+
+A session's money yield lands in the holding at the session's location
+when the session is posted. A holding may not be spent below zero unless
+its account's =allow_negative= is ticked; an ordinary account with no
+location is never judged.
+
+** What posts where
+
+| Treatment       | A sale or expense in it                          | Its holdings are                  | Statements                              |
+|-----------------+--------------------------------------------------+-----------------------------------+-----------------------------------------|
+| book currency   | the book journal                                 | the holding account's journal lines | the book section                       |
+| =valued=, rate  | the book journal, converted; =amount= kept        | journal lines, in the currency itself | the book section                      |
+| =valued=, none  | a journal of its own                             | journal lines                     | "Own book: EUR (no rate to GOLD)"       |
+| =separate_book= | a journal of its own, never converted            | journal lines                     | "Separate book: BREWFEST"               |
+| =memo=          | nothing                                          | =holding_txn= movements           | none                                    |
+
+A document mixing currencies posts each by its treatment; when its lines
+land in two journals, each is balanced through the currency clearing
+account. =pnl=, =ventures= and =monthly= read the documents, not the
+ledger, so every currency -- memo included -- has figures of its own there,
+the book currency first. See [[file:ledger.org][the general journal]]
+("Currencies in the books" and "Holdings") and
+[[file:reporting.org][Reporting]].
 
 * Symbols
 

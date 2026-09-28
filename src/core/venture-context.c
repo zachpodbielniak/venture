@@ -173,6 +173,11 @@ venture_context_new(
 	 * stock once. */
 	venture_sessions_install(self);
 
+	/* Holdings: memo movements only the ledger derives, and no holding
+	 * spent below zero unless its account allows it; the transfer action
+	 * between two locations. */
+	venture_holdings_install(self);
+
 	/* Goals whose target differs from their start, sub-goals that do not
 	 * loop, and achieved and done times that follow the status. */
 	venture_goals_install(self);

@@ -17,7 +17,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:quickstart.org][Quickstart]] — zero to a running VENTURE with the demo organisation, an invoice, a bank statement and a closed period, in under fifteen minutes
 - [[file:docs-site.org][The documentation site]] — this documentation, rendered and served by every instance at =/docs=; =make docs-site=
 - [[file:../README.org][README]] — what VENTURE is, in one page
-- [[file:examples/game-economy.org][Worked example: a game economy]] — an auction-house trade inside an online game, modelled with nothing but generic features: a gold currency with coins, characters as locations, item groups as categories, price feeds, listings, farming sessions, recipes and a profession as a goal
+- [[file:examples/game-economy.org][Worked example: a game economy]] — an auction-house trade inside an online game, modelled with nothing but generic features: a gold currency with coins, characters as locations, item groups as categories, price feeds, listings, farming sessions, recipes, a profession as a goal, and tickets and tokens held per character
 
 ** Documents
 
@@ -42,8 +42,8 @@ New to VENTURE? Two pages, in this order:
 - [[file:mcp.org][venturectl mcp]] — serving the API to an outside AI agent over stdio
 - [[file:periods.org][Fiscal periods]] — calendars, closing controls and historical reports
 - [[file:money.org][Money and accounting]] — exact arithmetic, allocation, deductibility, the ledger
-- [[file:currencies.org][Currencies]] — user-defined units of account: points, commodities, a game's gold, with denominations such as 12g 34s 56c
-- [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances
+- [[file:currencies.org][Currencies]] — user-defined units of account: points, commodities, a game's gold, with denominations such as 12g 34s 56c; valued, separate-book or memo; several in one organization
+- [[file:ledger.org][General journal]] — atomic posting, immutable journals, rules, reversals and authoritative balances; each currency by its treatment; holdings per wallet, till or character
 - [[file:stripe.org][Stripe payments]] — hosted Checkout and verified settlement
 - [[file:assets.org][Fixed assets and deferrals]] — book depreciation, monthly releases and period sweeps
 - [[file:receivables.org][Customer receivables]] — receipts, credits, refunds and historical customer balances
@@ -51,7 +51,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
 - [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS, costed per currency
 - [[file:production.org][Production]] — recipes (bills of materials), crafting them in one transaction at FIFO cost, and each recipe's margin at a chosen price source
-- [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost, and what an hour of each kind is worth
+- [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost and money into the location's holding, and what an hour of each kind is worth
 - [[file:goals.org][Goals]] — measurable targets (a skill to level, a sum to save, a weight to lose) with ordered steps, progress measured from the start, a straight-line forecast, and the shopping list for recipe steps still ahead
 - [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record

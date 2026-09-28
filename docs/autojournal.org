@@ -34,6 +34,13 @@ The service uses existing organization-scoped chart codes and creates missing ac
 | Unpaid expenses | payable_account_id | 2000 | Credit |
 | Uncategorized expense | default_expense_account_id | 6900 | Debit |
 
+A sale or an expense that names its own =cash_account_id= posts its cash
+leg (and a sale's refund leg) to that account instead of the profile's: a
+card, a till, a character's purse. An account with a location is a
+holding, which may not be spent below zero (see [[file:ledger.org][the
+general journal]], "Holdings"). Sales honour it since holdings; expenses
+always did.
+
 Codes 4200, 4300 and 6900 supplement the standard chart. The expense category
 JSON object maps exact category strings to account IDs. Defaults cover
 ADVERTISING (6200), SOFTWARE (6300), SUPPLIES (6400), PROFESSIONAL (6500),

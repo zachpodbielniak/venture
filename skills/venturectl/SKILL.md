@@ -100,7 +100,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge settings ID` | encrypted configure/test/disconnect/import operation, JSON from stdin |
 | `forge set-token ID` / `forge set-secret ID` | retired; refuse with encrypted-settings guidance |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width; `report aggregate PERIOD type=… measure=… group_by=…` totals any type (see *Aggregating any record type*) |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N] [location_id=ID]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width; `report aggregate PERIOD type=… measure=… group_by=…` totals any type (see *Aggregating any record type*) |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -1311,6 +1311,48 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
 - A purchase order line and a vendor bill line must be in their order's or
   bill's `currency`; the save is refused otherwise.
 
+## Holdings: what each wallet, till or character holds
+
+Module `ledger`. A **holding** is an `account` with `location_id` set (a
+purse, a till, a petty-cash tin). It holds every currency. What moves it:
+
+- a `sale` or `expense` whose `cash_account_id` is the holding account
+  (sales honour it now, like expenses always did);
+- `act session ID post`: each money yield goes into the holding at the
+  session's `location_id` (credit: `session_income` control-map account,
+  else `<org>:4900` "Session income"); no location, or ledger off → the
+  money yield stays unposted (skipped, not refused);
+- `act location FROM transfer to_location_id=TO amount="5 TICKET"
+  [occurred_at=…] [notes=…]` — one currency per transfer, a bare number is
+  in the book currency, both locations in one organization;
+- a `holding_txn` by hand — **memo currencies only** (`amount` signed;
+  `kind` `adjust` default, `earn` positive, `spend` negative; `transfer`
+  refused by hand).
+
+Posted currencies (book, `valued`, `separate_book`) are held as the
+account's journal lines; memo currencies as `holding_txn` rows the ledger
+writes. **Never create a `holding_txn` in a posted currency** (refused) and
+never edit or delete one whose `source_type` is set (refused: change the
+sale/expense/session instead). **A holding cannot go below zero** — the
+document that would do it is refused whole ("… holds 12 TICKET and this
+takes 50 TICKET …") — unless the account has `allow_negative=true`.
+Accounts with no location are never judged. A location with two holding
+accounts makes `transfer` and `session post` refuse; name the account.
+One is made on first use (`<org>:holding:<location>`) when there is none.
+
+```sh
+venturectl create account code=EVM-1101 name="Aria's purse" kind=asset location_id=12 organization_id=2
+venturectl create expense venture_id=3 amount="20 TICKET" cash_account_id=40 description=Prize organization_id=2
+venturectl act location 12 transfer to_location_id=13 amount="5 TICKET"
+venturectl report holdings all organization_id=2 [location_id=12] [currency=TICKET] [as_of=DATE]
+```
+
+`report holdings`: one row per location path **and currency**, book
+currency first: `location`, `currency`, `books` (how it reaches the books,
+e.g. `Memo: TICKET (counted here, never posted)`), `earned`, `spent`,
+`transfers` (net), `net`, `balance`. Metrics `held` (book currency) and
+`held_<CODE>`. `location_id` includes every location beneath it.
+
 ## Categories, locations and tags
 
 - `category` (always on): `name`, `parent_id`, `applies_to` (a record type
@@ -1546,12 +1588,14 @@ Check `venturectl describe session` and `describe session_yield`.
 - `session_yield`: **goods** (`product_id` + `quantity` ≥ 1, optional
   `unit_value`, optional `inventory_item_id`) **or money** (`amount` > 0),
   never both, never neither. `unit_value` is a valuation, not a cost.
-  `inventory_txn_id` is set by posting only (writing it is refused).
-  Goods need the sales module; money does not.
-- A **posted** yield (it has `inventory_txn_id`) cannot change product,
-  quantity, stock or session, and cannot be deleted; nor can a session
-  with posted yields. `unit_value` and `notes` stay editable. Correct
-  stock with an adjustment.
+  `inventory_txn_id`, `journal_id` and `holding_txn_id` are set by posting
+  only (writing them is refused). Goods need the sales module; money does
+  not.
+- A **posted** yield (any of those three set) cannot change product,
+  quantity, amount, stock or session, and cannot be deleted; nor can a
+  session with posted yields. `unit_value` and `notes` stay editable.
+  Correct stock with an adjustment, money with an expense or a
+  `holding_txn` adjustment.
 
 Posting is the `post` action on a session; it takes no arguments:
 
@@ -1568,8 +1612,11 @@ venturectl list inventory_txn reference=session:8
 - One transaction: each unposted goods yield arrives as a positive
   `production` inventory transaction (reference `session:<id>`, dated the
   session's end) with a **zero-cost** layer, and is stamped with it and
-  the stock it landed in; the session gets `posted_at`. Money yields are
-  left alone. Any refusal writes nothing.
+  the stock it landed in; each unposted money yield lands in the holding
+  at the session's location (see *Holdings*) as a journal (posted
+  currency, `journal_id`) or a holding movement (memo, `holding_txn_id`);
+  the session gets `posted_at`. Any refusal writes nothing. **Posting
+  counts money yields now**: a session with a location posts them too.
 - **Idempotent**: posting again posts only yields added since; nothing
   new is a success that changes nothing. Retrying is safe.
 - Stock: the yield's `inventory_item_id`, else the one item for the

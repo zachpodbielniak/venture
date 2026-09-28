@@ -1452,6 +1452,14 @@ GPtrArray *
 venture_posting_service_post_by_currency(VenturePostingService *self, VentureJournal *header,
 	GPtrArray *lines, const VentureActor *actor, GError **error)
 {
+	return venture_posting_service_post_by_currency_full(self, header, lines, FALSE, actor, NULL, error);
+}
+
+GPtrArray *
+venture_posting_service_post_by_currency_full(VenturePostingService *self, VentureJournal *header,
+	GPtrArray *lines, gboolean replace_memo, const VentureActor *actor, GPtrArray **out_movements,
+	GError **error)
+{
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureExchangePolicy) policy = NULL;
@@ -1487,6 +1495,11 @@ venture_posting_service_post_by_currency(VenturePostingService *self, VentureJou
 		goto fail;
 	posted = post_plan(self, header, groups, policy, actor, error);
 	if (NULL == posted)
+		goto fail;
+	/* A memo line on a holding is not dropped: it is the holding's
+	 * movement, written in the same transaction as the journals, so a
+	 * refusal of either leaves neither. */
+	if (!venture_holdings_record_memo(db, header, lines, replace_memo, actor, out_movements, error))
 		goto fail;
 	if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error))
 		return NULL;
@@ -1749,16 +1762,35 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	groups = plan_by_currency(self, db, draft, rows, policy, error);
 	if (NULL == groups)
 		goto fail;
-	/* Every amount in a memo currency: nothing is posted, and whatever an
-	 * earlier treatment posted is left as it is rather than reversed by a
-	 * save that may only have changed the notes. */
-	if (0 == groups->len)
-		goto commit;
 	existing = venture_posting_service_find_source(self, name, venture_entity_get_id(copy),
 		NULL != previous ? venture_entity_get_organization_id(previous) :
 			venture_entity_get_organization_id(copy), error);
 	if (NULL == existing)
 		goto fail;
+	/* Memo lines on a holding become its movements, replacing what an
+	 * earlier save of this document wrote, so an edited amount moves the
+	 * holding once. A document an earlier treatment already posted keeps
+	 * its journal as its only truth: adding a movement beside it would
+	 * count the same takings twice. */
+	{
+		gboolean journaled = FALSE;
+
+		for (i = 0; i < existing->len && !journaled; i++)
+		{
+			g_autofree gchar *old_rule = NULL;
+			VentureJournalState state;
+
+			g_object_get(g_ptr_array_index(existing, i), "state", &state, "rule-name", &old_rule, NULL);
+			journaled = state == VENTURE_JOURNAL_POSTED && g_strcmp0(old_rule, name) == 0;
+		}
+		if (!journaled && !venture_holdings_record_memo(db, draft, rows, TRUE, actor, NULL, error))
+			goto fail;
+	}
+	/* Every amount in a memo currency: nothing is posted, and whatever an
+	 * earlier treatment posted is left as it is rather than reversed by a
+	 * save that may only have changed the notes. */
+	if (0 == groups->len)
+		goto commit;
 	current = g_ptr_array_new_with_free_func(g_object_unref);
 	for (i = 0; i < existing->len; i++)
 	{

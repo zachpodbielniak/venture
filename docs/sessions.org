@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-09-27]
 #+updated: [2026-09-28]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * Effort measured by what it yielded
 
@@ -17,8 +17,9 @@ record types, one action and one report:
   ended, what kind of run it was (=activity=), what it cost.
 - =session_yield= :: one thing it produced: /goods/ (units of a product)
   or /money/ (an amount), never both.
-- =post= :: the action on a session that puts its goods into stock --
-  each yield once, at no cost, in one transaction.
+- =post= :: the action on a session that puts its goods into stock at no
+  cost and its money into the holding of the session's location -- each
+  yield once, in one transaction.
 - =session_performance= :: the report that compares kinds of run: hours,
   what they yielded, what they cost, and what an hour of each is worth.
 
@@ -26,8 +27,8 @@ The same records describe:
 
 - *A farming run in a game*: a session is forty minutes on a herb route;
   its yields are 38 herbs and 12 gold looted from mobs; posting puts the
-  herbs into the character's bags; the report says which route makes the
-  most gold an hour.
+  herbs into the character's bags and the gold into the character's purse;
+  the report says which route makes the most gold an hour.
 - *A market stall*: a session is Saturday at the farmers' market; its cost
   is the pitch fee and the fuel; its yield is the cash taken (money) and
   the jars of jam made the night before are sales elsewhere. Compare
@@ -49,7 +50,10 @@ inventory items and locations -- a goods yield names a product, posting
 fills an inventory item, and a session's location is a =location= -- and
 =market=, whose observed prices value goods that were recorded without a
 value. With =sales= off the module still works for money yields; goods and
-posting are refused with a message that says so (see below). See
+posting are refused with a message that says so (see below). Posting a
+money yield needs the =ledger= module, whose accounts are what holds it
+(see [[file:ledger.org][the general journal]], "Holdings"); with it off a
+money yield stays a record the report counts. See
 [[file:modules.org][Modules]].
 
 * Sessions
@@ -129,6 +133,8 @@ through a text box need not come back byte for byte.
 | =unit_value=        | money     | goods, optional: what one unit was worth when recorded            |
 | =inventory_item_id= | reference | goods, optional: the stock it lands in when posted                |
 | =inventory_txn_id=  | reference | technical: the movement that put it into stock; set by Post       |
+| =journal_id=        | reference | technical: money in a posted currency -- the journal that put it into the holding; set by Post |
+| =holding_txn_id=    | reference | technical: money in a memo currency -- the holding movement; set by Post |
 | =notes=             | text      |                                                                   |
 
 ** Two forms, exactly one
@@ -140,7 +146,8 @@ A yield is either goods or money:
   and =inventory_item_id= belong to this form only.
 - *Money* -- =amount= (> 0). Coins looted, cash taken at the stall, a
   bounty. Counted by the report in its own currency; it never touches
-  inventory, and posting leaves it alone.
+  inventory. Posting puts it into the holding of the session's location
+  (see "Money into a holding" below).
 
 Both at once is refused ("a yield is goods or money, not both; record the
 amount as a second yield"): the report would count it twice. Neither is
@@ -174,10 +181,10 @@ The validator runs for every writer:
   ("goods name a product, and products belong to the sales module, which
   is off; record an amount instead, or turn sales on"). A yield recorded
   before sales was switched off stays editable;
-- =inventory_txn_id= written by anything but the post ("is set by posting
-  the session, not by hand"). A hand-written one could make a yield look
-  posted with nothing on the shelf, or clear it and post the same units
-  twice.
+- =inventory_txn_id=, =journal_id= or =holding_txn_id= written by anything
+  but the post ("are set by posting the session, not by hand"). A
+  hand-written one could make a yield look posted with nothing on the shelf
+  or in the purse, or clear it and post the same units or coins twice.
 
 ** A posted yield is frozen
 
@@ -189,14 +196,19 @@ movement records how many and where. So:
   #41 ... Record a correction as a stock adjustment");
 - its =unit_value= and =notes= can -- they move nothing;
 - it cannot be deleted, and neither can its session ("This session has
-  yields in stock"). Deleting would leave the units on the shelf with no
-  record of where they came from. Both refusals come from
+  posted yields, in stock or in a holding"). Deleting would leave the units
+  on the shelf with no record of where they came from. Both refusals come from
   =venture_sessions_check_write()=, which sits in the database's subsystem
   guard list and therefore covers delete, purge and restore from every
   door.
 
-Correcting a posted yield is an inventory question, not a session one:
-adjust the stock, and add a note to the yield.
+A posted money yield is frozen the same way (its =amount= and =session_id=
+cannot change, and it cannot be deleted): its money is in a holding, as a
+journal or a holding movement.
+
+Correcting a posted yield is an inventory or holding question, not a
+session one: adjust the stock, or spend or adjust the holding, and add a
+note to the yield.
 
 The session's page lists its yields under related records, with New to
 add one; there is no bespoke yields block. The Post button is in the
@@ -211,8 +223,12 @@ yield goes is on the records, where the page shows it. In one database
 transaction, =venture_sessions_post()=:
 
 1. refuses when the sales module is off (there is no stock to post into);
-2. reads the session's live yields, oldest first;
-3. for every *goods* yield with no =inventory_txn_id=:
+2. reads the session's live yields, oldest first, and skips every one
+   already posted (any of its three stamps set);
+3. for every *money* yield, when the ledger module is on and the session
+   names a location, posts it into that location's holding (below) and
+   stamps the yield with the journal or the movement;
+4. for every *goods* yield:
    - finds its stock (below);
    - receives =quantity= units into it through
      =venture_inventory_service_produce()= with no draws: a positive
@@ -220,11 +236,14 @@ transaction, =venture_sessions_post()=:
      (now for an open session), =reference= =session:<id>=, and a
      *zero-cost* layer;
    - stamps the yield with the transaction and the stock it landed in;
-4. if anything was posted, stamps the session's =posted_at= with now.
+5. if anything was posted, stamps the session's =posted_at= with now.
 
-Money yields and already-posted yields are skipped. A refusal or a failure
-at any step -- the last yield's write included -- rolls everything back:
-no movement, no layer, no stamp.
+A money yield of a session with no location has nowhere to land and is
+skipped, as is every money yield while the ledger is off; it stays a
+record the report counts, and a later post (after a location is set, or
+the ledger switched on) posts it. A refusal or a failure at any step --
+the last yield's write included -- rolls everything back: no movement, no
+layer, no journal, no holding movement, no stamp.
 
 The action returns the session as it stands afterwards. Stamping it is a
 save, which bumps its version; the object the action returns is that
@@ -246,6 +265,38 @@ Nothing to post is a success, not an error: =venture_sessions_post()=
 reports how many it posted (0), and the action returns the session. That
 is also why the Post button is offered on a session with nothing new: a
 retry must not be refused.
+
+** Money into a holding
+
+A holding is an account that carries a location (see
+[[file:ledger.org][the general journal]], "Holdings"). A money yield
+posts:
+
+| Debit                                | Credit                              |
+|--------------------------------------+-------------------------------------|
+| the session location's holding, =amount= | session income, =amount=        |
+
+in the yield's own currency, under the rule name =session_yield=, sourced
+=session:<id>= and dated like the goods. The holding is the one account
+held at the session's location (made on first use as =<org>:holding:<location>=,
+"Holding: Characters / Aria"; a location with two holding accounts is
+refused). Session income is the control map's =session_income= account,
+else an income account "Session income" coded =<org>:4900=, made on first
+use.
+
+Which book it lands in is the posting service's decision, never the
+session's: GOLD in a gold organization posts to the gold books, a
+=separate_book= currency (festival tokens) posts a balanced journal of its
+own, a =valued= currency with a rate is converted, and a =memo= currency
+(fair tickets) posts nothing and is written as a =holding_txn= movement
+instead. The yield is stamped with whichever was made (=journal_id= or
+=holding_txn_id=), which is the whole of its idempotency; the journal's
+posting key =session_yield:<yield id>= backs it up.
+
+This changed the meaning of an existing post: before holdings, a money
+yield was never posted. Sessions posted before the change keep their
+money yields unposted until the next post of that session, which then
+posts them.
 
 ** Which stock
 
@@ -460,7 +511,10 @@ locations, and the auction house's observed prices in the market module:
    the price, else leave it to the report), the gold looted from mobs as
    money.
 3. =act session N post=: the herbs arrive in the character's inventory
-   items at zero cost; the gold is not stock and stays on the session.
+   items at zero cost; the gold is not stock and lands in the character's
+   purse -- the holding account held at that location -- with session
+   income on the other side. =report holdings= then says what each
+   character holds, in every currency.
 4. Next week, =report session_performance group_by=activity
    price_source="market value"= compares herbing with mining by gold per
    hour, net of repairs -- and with =category_depth=, "Farming" as a whole
@@ -486,6 +540,12 @@ as goods into finished stock).
   make it an error.
 - *A goods yield needs the sales module.* Money yields do not; the module
   requires only core.
+- *A money yield posts only into a location's holding.* No location, or the
+  ledger off, leaves it unposted -- skipped, not refused, so a goods post
+  still works. Which book it reaches is the posting service's route; never
+  test the treatment here.
+- *=journal_id= and =holding_txn_id= are the post's,* like
+  =inventory_txn_id=; either one set makes a money yield posted.
 - *The report's counts repeat per currency row.* Never sum =sessions= or
   =hours= down the column.
 - *A missing value is blank, not zero,* and it blanks the group's value,

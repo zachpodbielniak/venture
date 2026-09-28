@@ -141,6 +141,21 @@ book_currency(VentureDatabase *db, VentureEntity *source)
 
 	return currency != NULL ? currency : g_strdup(venture_money_get_default_currency());
 }
+/* A sale or an expense that names its own cash account -- a till, a
+ * character's purse, a card -- posts its cash leg there instead of the
+ * profile's. The profile is this call's own copy, so nothing else sees the
+ * substitution. */
+static void
+use_cash_account(VenturePostingProfile *profile, VentureEntity *source)
+{
+	gint64 cash_id = 0;
+
+	if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "cash-account-id") == NULL)
+		return;
+	g_object_get(source, "cash-account-id", &cash_id, NULL);
+	if (cash_id > 0)
+		g_object_set(profile, "cash-account-id", cash_id, NULL);
+}
 static VentureMoney *
 amount(VentureEntity *source, const gchar *field, const gchar *currency)
 {
@@ -169,6 +184,7 @@ refund_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *sourc
 	if (profile == NULL) return NULL;
 	book = book_currency(db, source);
 	refund = amount(source, "refunded", book);
+	use_cash_account(profile, source);
 	if (!leg(rows, profile, "refunds-account-id", VENTURE_LEDGER_SIDE_DEBIT, refund, error) ||
 		!leg(rows, profile, "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, refund, error)) return NULL;
 	return g_steal_pointer(&rows);
@@ -203,6 +219,7 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 		g_autofree gchar *book = book_currency(db, source);
 		gint64 product_id, quantity;
 		guint i;
+		use_cash_account(profile, source);
 		base = amount(source, "gross", book);
 		cash = venture_money_new_zero(base->currency);
 		for (i = 0; i < G_N_ELEMENTS(fields); i++) {
@@ -284,13 +301,7 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 			g_autofree gchar *book = book_currency(db, source);
 			base = amount(source, "amount", book);
 		}
-		if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "cash-account-id") != NULL)
-		{
-			gint64 cash_id = 0;
-			g_object_get(source, "cash-account-id", &cash_id, NULL);
-			if (cash_id > 0)
-				g_object_set(profile, "cash-account-id", cash_id, NULL);
-		}
+		use_cash_account(profile, source);
 		if (!leg(rows, profile, "default-expense-account-id", VENTURE_LEDGER_SIDE_DEBIT, base, error) ||
 			!leg(rows, profile, g_strcmp0(method, "credit") == 0 || g_strcmp0(method, "credit_card") == 0 || g_strcmp0(method, "accounts_payable") == 0 || g_strcmp0(method, "unpaid") == 0 ? "payable-account-id" : "cash-account-id", VENTURE_LEDGER_SIDE_CREDIT, base, error)) return NULL;
 	} else {
@@ -384,7 +395,11 @@ post_refund(VentureAutojournalService *self, VentureEntity *source, const Ventur
 		g_object_get(journal, "rule-name", &rule, "state", &state, NULL);
 		if (g_strcmp0(rule, "sale_refund") == 0 && state == VENTURE_JOURNAL_POSTED) last = journal;
 	}
-	if (last == NULL && refund->amount == 0) return TRUE;
+	/* Nothing posted and nothing refunded: a memo sale's refund may still
+	 * have moved its holding on an earlier save, and that movement goes. */
+	if (last == NULL && refund->amount == 0)
+		return venture_holdings_clear_memo(db, venture_entity_get_organization_id(source), "sale",
+			venture_entity_get_id(source), "sale_refund", actor, error);
 	g_object_get(source, "refunded-at", &when, NULL);
 	if (when == NULL) g_object_get(source, "occurred-at", &when, NULL);
 	if (when == NULL) when = g_date_time_ref(venture_entity_get_created_at(source));
@@ -430,7 +445,9 @@ post_refund(VentureAutojournalService *self, VentureEntity *source, const Ventur
 	g_object_set(header, "posting-key", posting_key, "organization-id", venture_entity_get_organization_id(source), "source-type", "sale",
 		"source-id", venture_entity_get_id(source), "source-version", venture_entity_get_version(source),
 		"rule-name", "sale_refund", "occurred-at", when, "currency", refund->currency, NULL);
-	posted = venture_posting_service_post_by_currency(posting, header, rows, actor, error);
+	/* Replacing: a memo sale re-saved with the same refund must not take
+	 * it out of the holding a second time. */
+	posted = venture_posting_service_post_by_currency_full(posting, header, rows, last == NULL, actor, NULL, error);
 	return posted != NULL;
 }
 

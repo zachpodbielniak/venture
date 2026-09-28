@@ -1792,6 +1792,19 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/session/1/actions/post", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Holdings likewise: the memo movements, the report, and the
+	 * transfer action, which moves money between two holdings. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/holding_txn"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/holdings"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/holdings"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/holding_txn"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/location/1/actions/transfer", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
 	/* Goals likewise: their records and both reports. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/goal"),
 		==, SOUP_STATUS_FOUND);

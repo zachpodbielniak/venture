@@ -722,7 +722,8 @@ test_post_success(
 	farm(fixture, &farm_run);
 	before = reread(fixture, VENTURE_TYPE_SESSION, farm_run.session);
 
-	g_assert_cmpuint(post(fixture, farm_run.session), ==, 2);
+	/* Two goods yields into stock, and the coins into the bank's holding. */
+	g_assert_cmpuint(post(fixture, farm_run.session), ==, 3);
 
 	g_assert_cmpint(on_hand(fixture, farm_run.herb_item), ==, 10);
 	g_assert_cmpint(on_hand(fixture, farm_run.ore_item), ==, 3);
@@ -734,8 +735,12 @@ test_post_success(
 	                       "inventory-item-id"), ==, farm_run.herb_item);
 	g_assert_cmpint(int_of(fixture, VENTURE_TYPE_SESSION_YIELD, farm_run.ore_yield,
 	                       "inventory-txn-id"), >, 0);
+	/* Money never touches stock: it lands in the location's holding, as a
+	 * journal because GOLD posts (a book of its own; no rate to USD). */
 	g_assert_cmpint(int_of(fixture, VENTURE_TYPE_SESSION_YIELD, farm_run.coin_yield,
 	                       "inventory-txn-id"), ==, 0);
+	g_assert_cmpint(int_of(fixture, VENTURE_TYPE_SESSION_YIELD, farm_run.coin_yield,
+	                       "journal-id"), >, 0);
 
 	txn = reread(fixture, VENTURE_TYPE_INVENTORY_TXN, txn_id);
 	g_object_get(txn, "kind", &kind, "reference", &reference,
@@ -784,7 +789,7 @@ test_post_idempotent(
 	(void)user_data;
 
 	farm(fixture, &farm_run);
-	g_assert_cmpuint(post(fixture, farm_run.session), ==, 2);
+	g_assert_cmpuint(post(fixture, farm_run.session), ==, 3);
 	txns = count_rows(fixture, VENTURE_TYPE_INVENTORY_TXN);
 	first = reread(fixture, VENTURE_TYPE_SESSION, farm_run.session);
 
@@ -858,7 +863,7 @@ test_post_immutable(
 	run = reread(fixture, VENTURE_TYPE_SESSION, farm_run.session);
 	g_assert_false(venture_database_delete(fixture->database, run, NULL, &error));
 	g_assert_nonnull(error);
-	g_assert_nonnull(strstr(error->message, "yields in stock"));
+	g_assert_nonnull(strstr(error->message, "posted yields"));
 	g_clear_error(&error);
 	g_assert_cmpint(on_hand(fixture, farm_run.herb_item), ==, 10);
 
@@ -957,7 +962,7 @@ test_post_rollback(
 	g_assert_null(posted_at);
 
 	wire.armed = FALSE;
-	g_assert_cmpuint(post(fixture, farm_run.session), ==, 2);
+	g_assert_cmpuint(post(fixture, farm_run.session), ==, 3);
 	g_assert_cmpint(on_hand(fixture, farm_run.herb_item), ==, 10);
 }
 

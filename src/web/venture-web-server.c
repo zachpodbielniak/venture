@@ -3183,7 +3183,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6974,6 +6974,78 @@ venture_web_goals_controls(
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
+/*
+ * holdings' questions, as a form: which location (and everything beneath
+ * it) as a picker showing each place's path, which currency, the date the
+ * balances are read at and the period earned and spent are counted in.
+ * All are query parameters the API takes too.
+ */
+static void
+venture_web_holdings_controls(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureReport		*report,
+	GString			*content
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) locations = NULL;
+	VentureDatabase *database;
+	const gchar *organization;
+	const gchar *chosen;
+	gint64 organization_id;
+	guint i;
+
+	if (0 != g_strcmp0(venture_report_get_name(report), "holdings"))
+		return;
+
+	database = venture_context_get_database(self->context);
+	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
+		venture_html_escape_append(content, organization);
+		g_string_append(content, "\">");
+	}
+
+	organization_id = venture_string_is_empty(organization)
+		? venture_context_get_default_organization_id(self->context)
+		: g_ascii_strtoll(organization, NULL, 10);
+	query = venture_query_new(VENTURE_TYPE_LOCATION);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	/* A picker, not a catalogue: past this a person types the id. */
+	venture_query_set_limit(query, 500);
+	locations = venture_database_find(database, query, NULL);
+	chosen = htmx_request_get_query_param(request, "location_id");
+
+	g_string_append(content, "<div class=\"field\"><label>Held at<select name=\"location_id\">"
+	                         "<option value=\"\">every location</option>");
+
+	for (i = 0; (NULL != locations) && (i < locations->len); i++)
+	{
+		VentureEntity *location;
+		g_autofree gchar *path = NULL;
+		gint64 id;
+
+		location = g_ptr_array_index(locations, i);
+		id = venture_entity_get_id(location);
+		path = venture_category_path(database, VENTURE_TYPE_LOCATION, id, NULL);
+		g_string_append_printf(content, "<option value=\"%" G_GINT64_FORMAT "\"%s>", id,
+		                       ((NULL != chosen) && (g_ascii_strtoll(chosen, NULL, 10) == id))
+		                       ? " selected" : "");
+		venture_html_escape_append(content, (NULL != path) ? path : "");
+		g_string_append(content, "</option>");
+	}
+
+	g_string_append(content, "</select></label></div>");
+	venture_web_goals_input(request, content, "Currency", "currency", "every currency");
+	venture_web_goals_input(request, content, "As of", "as_of", "the period's end");
+	venture_web_goals_input(request, content, "Period", "period", "all");
+	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
 static HtmxResponse *
 venture_web_ui_report(
 	HtmxRequest	*request,
@@ -7033,7 +7105,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7071,6 +7143,7 @@ venture_web_ui_report(
 		venture_web_production_controls(self, request, report, form);
 		venture_web_sessions_controls(self, request, report, form);
 		venture_web_goals_controls(self, request, report, form);
+		venture_web_holdings_controls(self, request, report, form);
 		body = g_strdup_printf("%s<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       form->str, words);
 		return venture_web_html_response(
@@ -7081,7 +7154,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -7145,7 +7218,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -7169,6 +7242,7 @@ venture_web_ui_report(
 	venture_web_production_controls(self, request, report, content);
 	venture_web_sessions_controls(self, request, report, content);
 	venture_web_goals_controls(self, request, report, content);
+	venture_web_holdings_controls(self, request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 

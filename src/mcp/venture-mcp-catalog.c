@@ -822,6 +822,8 @@ venture_mcp_catalog_add_tool_extras(
 		/* The goals reports' questions. */
 		venture_mcp_catalog_add_string_property(builder, "status", "goal_progress: active, paused, achieved or abandoned, or several comma separated.");
 		venture_mcp_catalog_add_integer_property(builder, "goal_id", "goal_materials: only this goal and its sub-goals.");
+		/* The ledger's holdings. */
+		venture_mcp_catalog_add_integer_property(builder, "location_id", "holdings: only this location and every location beneath it.");
 		venture_mcp_catalog_add_boolean_property(builder, "include_on_hand", "goal_materials: true (default) takes stock on hand off what is needed; false does not.");
 
 		json_builder_set_member_name(builder, "format");

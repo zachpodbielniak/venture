@@ -551,10 +551,10 @@ static const gchar *const venture_module_requires_stripe[] = { "receivables", "i
 
 static GType (*const venture_module_ledger_types[]) (void) = {
 	venture_journal_get_type, venture_journal_line_get_type,
-	venture_exchange_rate_get_type, NULL
+	venture_exchange_rate_get_type, venture_holding_txn_get_type, NULL
 };
 static const gchar *const venture_module_requires_finance[] = { "finance", NULL };
-static const gchar *const venture_module_reports_ledger[] = { "trial_balance", NULL };
+static const gchar *const venture_module_reports_ledger[] = { "trial_balance", "holdings", NULL };
 static GType (*const venture_module_periods_types[]) (void) = {
 	venture_fiscal_year_get_type, venture_fiscal_period_get_type,
 	venture_report_snapshot_get_type, NULL
@@ -907,7 +907,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		FALSE
 	},
 	{
-		"ledger", "General journal", "Immutable double-entry journals and account balances.",
+		"ledger", "General journal", "Immutable double-entry journals, account balances, and "
+		"holdings: what each wallet, till or character holds in every currency.",
 		venture_module_requires_finance, NULL, venture_module_ledger_types,
 		venture_module_reports_ledger, NULL, FALSE
 	},

@@ -8,7 +8,8 @@
  * time-boxed run -- a farming route, a market day, a study block, a shift
  * -- and its `session_yield` rows are what it produced: units of a
  * product, or an amount of money. The `post` action puts a session's
- * product yields into stock, once each, in one transaction; the
+ * product yields into stock and its money yields into the holding at its
+ * location, once each, in one transaction; the
  * `session_performance` report divides what each kind of run yielded by
  * the hours it took. The rules that keep the records honest are save
  * validators and a write guard installed here, so every writer obeys them.
@@ -85,8 +86,13 @@ venture_sessions_check_write(
  * into stock, in one transaction: each becomes a positive PRODUCTION
  * inventory transaction referenced "session:<id>", with a zero cost layer
  * (a yield was not bought), into the yield's own inventory item or the
- * one item holding the product at the session's location. Each posted
- * yield is stamped with its transaction and the session with the time.
+ * one item holding the product at the session's location. Every unposted
+ * money yield goes into the holding at the session's location -- debit
+ * the holding, credit session income, in the yield's currency -- as a
+ * journal for a posted currency or a holding movement for a memo one; a
+ * session with no location, or the ledger module off, leaves its money
+ * yields unposted. Each posted yield is stamped with what it made and the
+ * session with the time.
  *
  * Posting is idempotent: a yield already posted is never posted again,
  * and a session with nothing new to post succeeds with @out_posted 0 and

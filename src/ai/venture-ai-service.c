@@ -2769,6 +2769,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"goal_progress: only goals with this status (active, paused, achieved, abandoned; several comma separated)", FALSE);
 	ai_tool_add_parameter(report, "goal_id", "integer",
 		"goal_materials: only this goal and its sub-goals", FALSE);
+	ai_tool_add_parameter(report, "location_id", "integer",
+		"holdings: only this location (a wallet, till or character) and every location beneath it", FALSE);
 	ai_tool_add_parameter(report, "include_on_hand", "boolean",
 		"goal_materials: take stock on hand off what is needed; true by default", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);

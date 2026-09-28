@@ -315,6 +315,12 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("refunded-at", "Refund date", "Falls back to the sale date", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	/* The expense's field, on the other side: where the takings went. A
+	 * holding (an account with a location) makes this a character's or a
+	 * till's earnings; empty is the posting profile's cash account. */
+	VENTURE_FIELD_REF("cash-account-id", "Paid into",
+	                  "Ledger cash account or holding the takings went to; empty means the posting profile's",
+	                  "account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tags", "Tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
 };
@@ -550,7 +556,18 @@ static const VentureFieldDecl venture_account_fields[] = {
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("cash-flow-class", "Cash-flow class",
 		"operating, investing or financing; empty infers from the account class",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/* An account with a location is a holding: a wallet, a till, a
+	 * character's purse. The holdings report reads it per currency, and
+	 * it may not go below zero unless allow-negative says so -- an
+	 * ordinary bank or cash account has no location and is never
+	 * judged, because an overdraft is a real balance. */
+	VENTURE_FIELD_REF("location-id", "Held at",
+		"Optional: the place or character holding this money; makes it a holding",
+		"location", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("allow-negative", "Allow negative",
+		"Holdings only: when ticked, it may be spent below zero",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccount, venture_account, venture_account_fields,
