@@ -302,6 +302,39 @@ test_set_field(Fixture *f, gconstpointer data)
 	assert_money(stored, "unit-price", 300, "EUR");
 }
 
+/*
+ * A line of a document that names its own currency is in that currency:
+ * "25" on a dollar bill of a euro organization is 25 USD, found through
+ * the line's reference to the bill. Read in the book currency it would
+ * be 25 EUR, and the bill would refuse to total.
+ */
+static void
+test_document_currency(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) vendor = NULL;
+	g_autoptr(VentureEntity) bill = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *reply = NULL;
+
+	(void)data;
+	vendor = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", f->org, "name", "Paper Co",
+		"kind", VENTURE_COMPANY_KIND_SUPPLIER, NULL);
+	save(f, vendor);
+	bill = g_object_new(VENTURE_TYPE_VENDOR_BILL, "organization-id", f->org, "number", "B-1",
+		"company-id", venture_entity_get_id(vendor), "currency", "USD", "status", "draft", NULL);
+	g_assert_true(venture_entity_set_field_from_string(bill, "bill-date", "2026-01-01", &error));
+	save(f, bill);
+	body = g_strdup_printf("{\"bill_id\":%" G_GINT64_FORMAT ",\"description\":\"Paper\","
+		"\"quantity\":\"1\",\"category\":\"supplies\",\"unit_price\":\"25\"}",
+		venture_entity_get_id(bill));
+	g_assert_cmpuint(send(f, "POST", "/api/v1/vendor_bill_lines", "application/json", body, &reply), ==, 201);
+	line = venture_database_get(f->database, VENTURE_TYPE_VENDOR_BILL_LINE, reply_id(reply), NULL);
+	g_assert_nonnull(line);
+	assert_money(line, "unit-price", 2500, "USD");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -309,6 +342,7 @@ main(int argc, char **argv)
 	g_test_add("/bare-money/rest", Fixture, NULL, set_up, test_rest, tear_down);
 	g_test_add("/bare-money/explicit", Fixture, NULL, set_up, test_explicit, tear_down);
 	g_test_add("/bare-money/form", Fixture, NULL, set_up, test_form, tear_down);
+	g_test_add("/bare-money/document-currency", Fixture, NULL, set_up, test_document_currency, tear_down);
 	g_test_add("/bare-money/set-field", Fixture, NULL, set_up, test_set_field, tear_down);
 	return g_test_run();
 }

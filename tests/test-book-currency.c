@@ -350,6 +350,107 @@ test_budget(Fixture *f, gconstpointer data)
 	}
 }
 
+/*
+ * A manual journal through the generic action with bare amounts. The
+ * lines decode in the install's default and are marked; the posting
+ * service splits by currency and balances before anything is saved, so
+ * the lines must be resolved first -- otherwise the header says USD, the
+ * saved lines say EUR and the book amounts disagree with both. Every
+ * journal, line amount and book amount is EUR.
+ */
+static void
+test_journal_action(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL;
+	guint i;
+	JsonNode *node;
+
+	(void)data;
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"source_type\":\"organization\","
+		"\"source_id\":%" G_GINT64_FORMAT ",\"occurred_at\":\"2026-03-01\",\"lines\":["
+		"{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"debit\",\"amount\":\"12.50\"},"
+		"{\"account_id\":%" G_GINT64_FORMAT ",\"side\":\"credit\",\"amount\":\"12.50\"}]}",
+		f->org, f->org, account_id(f, "1000"), account_id(f, "4000"));
+	params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_unref);
+	node = json_node_new(JSON_NODE_VALUE);
+	json_node_set_string(node, body);
+	g_hash_table_insert(params, g_strdup("journal"), node);
+	result = venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		"journal", 0, "create_and_post", params, NULL, VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+
+	journals = venture_posting_service_find_source(venture_database_get_posting_service(f->db),
+		"organization", f->org, f->org, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(journals->len, ==, 1);
+	{
+		g_autofree gchar *currency = NULL;
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+		g_autoptr(GPtrArray) lines = NULL;
+
+		g_object_get(g_ptr_array_index(journals, 0), "currency", &currency, NULL);
+		g_assert_cmpstr(currency, ==, "EUR");
+		venture_query_add_filter_int(query, "journal-id", VENTURE_FILTER_OP_EQ,
+			venture_entity_get_id(g_ptr_array_index(journals, 0)), NULL);
+		lines = venture_database_find(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(lines->len, ==, 2);
+		for (i = 0; i < lines->len; i++)
+		{
+			assert_currency(g_ptr_array_index(lines, i), "amount", "EUR");
+			assert_currency(g_ptr_array_index(lines, i), "book-amount", "EUR");
+		}
+	}
+}
+
+/*
+ * Paying a bill with a bare amount: the payment is money against that
+ * bill, so "10" is in the bill's currency -- here a dollar bill of a euro
+ * organization. Read in the book currency it would be 10 EUR against a
+ * USD bill and refused (or worse, paid in the wrong money).
+ */
+static void
+test_bill_payment(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) bill = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureEntity) approve = NULL;
+	g_autoptr(VentureEntity) pay = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) date = venture_time_from_string("2026-01-02", NULL);
+	VenturePayablesService *service = venture_payables_service_get(f->db);
+
+	(void)data;
+	bill = g_object_new(VENTURE_TYPE_VENDOR_BILL, "organization-id", f->org, "number", "B-USD",
+		"company-id", f->company, "currency", "USD", "status", "draft", NULL);
+	g_assert_true(venture_entity_set_field_from_string(bill, "bill-date", "2026-01-01", &error));
+	g_assert_true(venture_entity_set_field_from_string(bill, "due-date", "2026-01-31", &error));
+	save(f, bill);
+	line = g_object_new(VENTURE_TYPE_VENDOR_BILL_LINE, "organization-id", f->org,
+		"bill-id", venture_entity_get_id(bill), "description", "Paper", "quantity", "1",
+		"category", "supplies", NULL);
+	g_assert_true(venture_entity_set_field_from_string(line, "unit-price", "25 USD", &error));
+	save(f, line);
+	approve = venture_payables_service_prepare_action(service, venture_entity_get_id(bill), "approve", NULL, &error);
+	g_assert_no_error(error);
+	g_object_set(approve, "date", date, NULL);
+	save(f, approve);
+
+	options = venture_json_parse("{\"amount\":\"10\",\"date\":\"2026-01-03\"}", &error);
+	g_assert_no_error(error);
+	pay = venture_payables_service_prepare_action(service, venture_entity_get_id(bill), "pay", options, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(pay);
+	save(f, pay);
+	assert_currency(pay, "amount", "USD");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -361,5 +462,7 @@ main(int argc, char **argv)
 	g_test_add("/book-currency/documents", Fixture, NULL, setup, test_documents, teardown);
 	g_test_add("/book-currency/capture", Fixture, NULL, setup, test_capture, teardown);
 	g_test_add("/book-currency/budget", Fixture, NULL, setup, test_budget, teardown);
+	g_test_add("/book-currency/bill-payment", Fixture, NULL, setup, test_bill_payment, teardown);
+	g_test_add("/book-currency/journal-action", Fixture, NULL, setup, test_journal_action, teardown);
 	return g_test_run();
 }

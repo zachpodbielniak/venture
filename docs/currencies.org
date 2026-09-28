@@ -353,13 +353,21 @@ install's default and mark the field. =venture_database_save()= and
 staging call =venture_database_resolve_bare_money()=, which reads each
 marked field again in the book currency of the organization the record is
 now in: the body's =organization_id=, the stored row's, or the default one
-each generic writer fills in. "12.50" on an invoice line in a euro
-organization is therefore 12.50 EUR; "20" in an update of a stored line is
+each generic writer fills in. A record that names its own =currency=
+(a vendor bill, a quote, a payroll run, a budget, a journal header) is
+the exception, and so is a record that references one through its field
+table (a bill line, a payment against a bill, a quote line): a bare "25"
+on a dollar bill of a euro organization is 25 USD. "12.50" on an invoice
+line in a euro organization is therefore 12.50 EUR; "20" in an update of a stored line is
 20.00 EUR; a bare integer is minor units of the book currency. A field set
 to anything else before the save -- by a service, a validator or an
 explicit value -- keeps that value, and an amount that names its currency
 ("7 USD", or an object with =currency=) is never marked. A staged write is
-resolved before its diff is shown, so the approver sees euros too.
+resolved before its diff is shown, so the approver sees euros too. The
+posting service resolves every line it is handed on entry, before it
+splits, balances or values anything: =journal create_and_post=, a
+recurring journal and a posted batch would otherwise plan a USD journal
+whose lines were saved as EUR.
 
 A record action's parameters are checked before the organization is known,
 so the check is a shape check in the install's default; the handler then

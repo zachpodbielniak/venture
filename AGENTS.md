@@ -838,9 +838,12 @@ than one that fails.
   so in a comment and refuses other currencies by name. The generic
   decoders read a bare amount in the install default and *mark* it; the
   save (and staging) re-reads marked fields in the record's book currency
-  via `venture_database_resolve_bare_money()`. A service that decodes a
-  body and then does arithmetic before saving sees the install default
-  until the save -- resolve first if it matters.
+  via `venture_database_resolve_bare_money()` -- in the record's own
+  `currency`, else a referenced document's, else the book currency. A
+  service that decodes a body and then does arithmetic before saving must
+  resolve first; the posting service does so on entry, which is what
+  keeps a bare-amount `create_and_post` from planning a USD journal with
+  EUR lines.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

@@ -1473,10 +1473,87 @@ accounting_save_needs_scope(VentureDatabase *database, VentureEntity *entity)
 	return FALSE;
 }
 
+/*
+ * The currency a record's own "currency" field names, if the type declares
+ * one as text and it is set. A vendor bill, a quote, a payroll run or a
+ * budget says which money its amounts are in.
+ */
+static gchar *
+venture_database_document_currency(VentureEntity *entity)
+{
+	GParamSpec *pspec;
+	gchar *currency = NULL;
+
+	pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(entity), "currency");
+	if (NULL == pspec || G_TYPE_STRING != G_PARAM_SPEC_VALUE_TYPE(pspec))
+		return NULL;
+	g_object_get(entity, "currency", &currency, NULL);
+	if (!venture_currency_is_valid(currency))
+	{
+		g_free(currency);
+		return NULL;
+	}
+	return currency;
+}
+
+/*
+ * What a bare amount on @entity is in. A document that names its currency
+ * decides for its own amounts, and for the amounts of a record that
+ * references it -- a bill line or a payment against the bill, a quote
+ * line, a pay line -- found through the field table's references, never a
+ * list of types. Anything else is in its organization's book currency.
+ */
+static gchar *
+venture_database_bare_currency(VentureDatabase *self, VentureEntity *entity)
+{
+	VentureEntityClass *klass;
+	g_autofree GParamSpec **properties = NULL;
+	gchar *currency;
+	guint n_properties;
+	guint i;
+
+	currency = venture_database_document_currency(entity);
+	if (NULL != currency)
+		return currency;
+	klass = VENTURE_ENTITY_GET_CLASS(entity);
+	properties = venture_entity_class_list_persistent_properties(klass, &n_properties);
+	for (i = 0; i < n_properties; i++)
+	{
+		g_autoptr(VentureEntity) target = NULL;
+		const gchar *target_name;
+		GType target_type;
+		gint64 target_id = 0;
+
+		target_name = venture_entity_class_get_reference(klass, properties[i]->name);
+		if (NULL == target_name || G_TYPE_INT64 != G_PARAM_SPEC_VALUE_TYPE(properties[i]))
+			continue;
+		g_object_get(entity, properties[i]->name, &target_id, NULL);
+		target_type = venture_entity_registry_lookup(venture_entity_registry_get_default(), target_name);
+		if (target_id <= 0 || G_TYPE_INVALID == target_type)
+			continue;
+		{
+			GObjectClass *target_class = g_type_class_ref(target_type);
+			gboolean has_currency = NULL != g_object_class_find_property(target_class, "currency");
+
+			g_type_class_unref(target_class);
+			if (!has_currency)
+				continue;
+		}
+		/* A missing target is the reference check's refusal to make. */
+		target = venture_database_get(self, target_type, target_id, NULL);
+		if (NULL == target)
+			continue;
+		currency = venture_database_document_currency(target);
+		if (NULL != currency)
+			return currency;
+	}
+	return venture_database_get_book_currency(self, venture_entity_get_organization_id(entity));
+}
+
 gboolean
 venture_database_resolve_bare_money(VentureDatabase *self, VentureEntity *entity, GError **error)
 {
-	g_autofree gchar *book = NULL;
+	g_autofree gchar *currency = NULL;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
@@ -1486,8 +1563,8 @@ venture_database_resolve_bare_money(VentureDatabase *self, VentureEntity *entity
 	 * or the stored row set, or the one each generic writer has placed it
 	 * in by now. An organization of 0 reads as the install's default,
 	 * which is exactly what the decoder already used. */
-	book = venture_database_get_book_currency(self, venture_entity_get_organization_id(entity));
-	return venture_entity_resolve_bare_money(entity, book, error);
+	currency = venture_database_bare_currency(self, entity);
+	return venture_entity_resolve_bare_money(entity, currency, error);
 }
 
 /* The generic writer is itself a business command: source hooks can generate

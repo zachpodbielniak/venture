@@ -690,6 +690,43 @@ save_projection(VenturePostingService *self, VentureDatabase *db, VentureJournal
 	return save_authorized(self, db, VENTURE_ENTITY(entry), actor, error);
 }
 
+/*
+ * Reads every bare amount on a journal's header and @rows in the book
+ * currency of the organization posting them. Lines built by a generic
+ * decoder -- create_and_post, a recurring template, an imported batch --
+ * carry amounts marked as bare (venture_entity_resolve_bare_money()), and
+ * the posting service splits, balances and values them long before any of
+ * them is saved. Resolved only at the save, the plan was made in the
+ * install's currency: a USD journal whose saved lines said EUR.
+ */
+static gboolean
+resolve_bare_rows(VentureDatabase *db, VentureEntity *header, gint64 org, GPtrArray *rows, GError **error)
+{
+	g_autofree gchar *book = NULL;
+	guint i;
+	gboolean any;
+
+	any = NULL != header && venture_entity_has_bare_money(header);
+	for (i = 0; !any && NULL != rows && i < rows->len; i++)
+		any = venture_entity_has_bare_money(g_ptr_array_index(rows, i));
+	if (!any)
+		return TRUE;
+	/* A header that names its currency decides, as any document does. */
+	if (NULL != header)
+		g_object_get(header, "currency", &book, NULL);
+	if (!venture_currency_is_valid(book))
+	{
+		g_free(book);
+		book = venture_database_get_book_currency(db, org);
+	}
+	if (NULL != header && !venture_entity_resolve_bare_money(header, book, error))
+		return FALSE;
+	for (i = 0; NULL != rows && i < rows->len; i++)
+		if (!venture_entity_resolve_bare_money(g_ptr_array_index(rows, i), book, error))
+			return FALSE;
+	return TRUE;
+}
+
 static VentureJournal *
 post_internal(VenturePostingService *self, VentureJournal *input, GPtrArray *input_lines,
 	VentureExchangePolicy *policy, const VentureActor *actor, gboolean reversing, GError **error)
@@ -834,6 +871,8 @@ venture_posting_service_post(VenturePostingService *self, VentureJournal *journa
 	g_return_val_if_fail(NULL == policy || VENTURE_IS_EXCHANGE_POLICY(policy), NULL);
 	db = g_weak_ref_get(&self->database);
 	if (db == NULL) return NULL;
+	if (!resolve_bare_rows(db, VENTURE_ENTITY(journal),
+		venture_entity_get_organization_id(VENTURE_ENTITY(journal)), rows, error)) return NULL;
 	if (rows == NULL && venture_entity_is_persisted(VENTURE_ENTITY(journal)))
 	{
 		stored_rows = journal_lines(db, venture_entity_get_id(VENTURE_ENTITY(journal)), error);
@@ -1505,6 +1544,8 @@ venture_posting_service_post_by_currency_full(VenturePostingService *self, Ventu
 			"A journal requires a legal entity and accounting date");
 		return NULL;
 	}
+	if (!resolve_bare_rows(db, VENTURE_ENTITY(header), org, lines, error))
+		return NULL;
 	policy = venture_rate_table_policy_new(db, org);
 	operation = venture_accounting_operation_begin(db, "ledger.post_by_currency", VENTURE_ENTITY(header),
 		lines, exchange_arguments(policy), org, actor, error);
@@ -1939,6 +1980,8 @@ venture_posting_service_post_entries(VenturePostingService *self, GPtrArray *ent
 	first = g_ptr_array_index(entries, 0);
 
 	org = venture_entity_get_organization_id(first);
+	if (!resolve_bare_rows(db, NULL, org, entries, error))
+		return FALSE;
 	g_object_get(first, "transaction-id", &transaction, "source-type", &source_type,
 		"source-id", &source_id, "occurred-at", &when, NULL);
 	dated = NULL != when;
