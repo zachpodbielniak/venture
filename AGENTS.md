@@ -835,7 +835,12 @@ than one that fails.
   dollars into a euro or gold organization -- budgets, payroll, quotes,
   capture, documents, setup and an action's bare money parameter all did.
   What is USD by law (the US sales-tax adapter, 1099-NEC, Stripe ACH) says
-  so in a comment and refuses other currencies by name.
+  so in a comment and refuses other currencies by name. The generic
+  decoders read a bare amount in the install default and *mark* it; the
+  save (and staging) re-reads marked fields in the record's book currency
+  via `venture_database_resolve_bare_money()`. A service that decodes a
+  body and then does arithmetic before saving sees the install default
+  until the save -- resolve first if it matters.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.

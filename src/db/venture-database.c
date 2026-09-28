@@ -1473,6 +1473,23 @@ accounting_save_needs_scope(VentureDatabase *database, VentureEntity *entity)
 	return FALSE;
 }
 
+gboolean
+venture_database_resolve_bare_money(VentureDatabase *self, VentureEntity *entity, GError **error)
+{
+	g_autofree gchar *book = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_entity_has_bare_money(entity))
+		return TRUE;
+	/* The organization the record is being written to: whatever the body
+	 * or the stored row set, or the one each generic writer has placed it
+	 * in by now. An organization of 0 reads as the install's default,
+	 * which is exactly what the decoder already used. */
+	book = venture_database_get_book_currency(self, venture_entity_get_organization_id(entity));
+	return venture_entity_resolve_bare_money(entity, book, error);
+}
+
 /* The generic writer is itself a business command: source hooks can generate
  * postings before the ordinary row save. Scope it before dispatching any hook. */
 gboolean
@@ -1493,6 +1510,10 @@ venture_database_save(VentureDatabase *self, VentureEntity *entity,
 		return FALSE;
 	}
 	g_rec_mutex_unlock(&self->lock);
+	/* Before anything reads an amount: a validator, a hook or a posting
+	 * must see "12.50" as the organization's money, not the install's. */
+	if (!venture_database_resolve_bare_money(self, entity, error))
+		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error) ||
 		!venture_orgaccess_prepare(self, entity, error))
 		return FALSE;

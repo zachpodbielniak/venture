@@ -329,6 +329,7 @@ every test, and on a euro or gold install it quietly writes dollars.
 
 | Writer                                       | A missing currency is                                   |
 |----------------------------------------------+---------------------------------------------------------|
+| any record through the generic machinery: REST create and update, the record form, =venturectl create/update=, the assistant's record tools, CSV import | the book currency of the organization the record is written to |
 | a record action's bare money parameter       | the organization's book currency (a retainer release: the retainer's own) |
 | a Stripe authorization's bare limit          | the organization's book currency                        |
 | a payroll run, and its lines' bare amounts   | the run's currency, itself the book currency by default |
@@ -342,6 +343,23 @@ every test, and on a euro or gold install it quietly writes dollars.
 | opening a close workspace over the API       | the period's organization's book currency               |
 | group consolidation page and API             | the parent's book currency unless =currency= is given   |
 | the vendor-bill sheet                        | the book currency                                       |
+
+The generic record path is one mechanism, not a rule per type. The
+decoders (=venture_serializable_from_json()= and
+=venture_entity_set_field_from_string()=) cannot know the book currency --
+a record does not know its organization's settings, and the body may name
+the organization after the amount -- so they read a bare amount in the
+install's default and mark the field. =venture_database_save()= and
+staging call =venture_database_resolve_bare_money()=, which reads each
+marked field again in the book currency of the organization the record is
+now in: the body's =organization_id=, the stored row's, or the default one
+each generic writer fills in. "12.50" on an invoice line in a euro
+organization is therefore 12.50 EUR; "20" in an update of a stored line is
+20.00 EUR; a bare integer is minor units of the book currency. A field set
+to anything else before the save -- by a service, a validator or an
+explicit value -- keeps that value, and an amount that names its currency
+("7 USD", or an object with =currency=) is never marked. A staged write is
+resolved before its diff is shown, so the approver sees euros too.
 
 A record action's parameters are checked before the organization is known,
 so the check is a shape check in the install's default; the handler then
