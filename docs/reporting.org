@@ -273,6 +273,33 @@ appears correctly in the browser, the terminal, a CSV export and an org file.
 CSV escaping defuses a leading =​== that a spreadsheet would otherwise execute
 as a formula; HTML output escapes its content.
 
+** =organization_id= is a question, not a grant
+
+Every door takes =organization_id= from its caller: the query string on
+=/reports/:name= and =/api/v1/reports/:name= (and so =venturectl report= and
+the MCP tool, which go through the API), the assistant's tool input. None of
+them checks membership before the report runs, and none needs to: the web
+layer runs every authenticated request under the caller's access scope
+(=venture_orgaccess_web_dispatch()=), and the assistant under its own
+(=venture_ai_service_enter_scope()=), so every read the report makes --
+=venture_database_get()= and =venture_database_find()= alike -- is refused a
+row the caller may not read. A report that checks its organization exists
+(=recipe_margin=, the goals, market and sessions reports) therefore answers
+another organization's id with 404 /Organization #N not found/, exactly as if
+it did not exist; the generic =aggregate= counts none of its rows; the
+product and goal pickers on the report pages list only readable rows; and a
+craft naming another organization's location refuses with "location #N",
+never its name.
+
+What would break this is a read under an internal scope
+(=venture_access_policy_enter(policy, NULL)=) of a record whose id came from
+the caller. Internal scopes exist for validators and machinery; a report, a
+picker or a refusal message that names a caller-supplied record must read it
+under the caller's scope. =/orgaccess/report-organization= in
+=tests/test-auth.c= pins all of it with two organizations and a member of
+one, and fails when a picker or the craft's location name is read under an
+internal scope.
+
 ** Periods and calendar dates
 
 A date typed without a time (=2026-03-01=, or =today=) is a calendar date, stored as midnight UTC on that day by =venture_time_from_string()=. Every period boundary =venture_date_range_parse()= builds is a midnight UTC for the same reason, whatever =locale.timezone= says; the configured zone only decides what /today/, /this month/ and /this year/ are, so at nine in the evening on 31 March in New York =this_month= is still March. The consequence is the one that matters in a ledger: an expense dated 1 March is in March's P&L, and one dated 1 January is in the same year as the tax filing, whose years were always UTC.
