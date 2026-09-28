@@ -841,6 +841,14 @@ than one that fails.
   authoritative, and the API still scopes by `?organization_id=` alone.
   File a business's dashboard under that business's organization rather
   than telling people to switch the sidebar first.
+- **A report widget gets the scope as report options.**
+  `venture_widget_run_report()` hands the report `organization_id` (the
+  scope's first entity) and `venture_id`; a new kind that runs a report
+  must go through it, or its card answers for the default organization
+  beside cards that answer for the page's. Widget `options` reach the
+  report only when the report's parameter schema declares them, and the
+  save refuses the rest -- `organization_id`/`venture_id` always. A report
+  that needs a widget option must declare it in `describe_parameters`.
 - **Dashboards and widgets are checked at the save, like everything.**
   Slug uniqueness and the single home page live in the dashboard's save
   validator, which writes the other dashboards from inside the lock (it is

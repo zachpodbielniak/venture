@@ -570,11 +570,13 @@ venturectl report holdings this_month organization_id=2 location_id=12
 venturectl report holdings all organization_id=2 currency=TICKET as_of=2026-03-31
 #+end_src
 
-On a dashboard, a =sum= widget over =holding_txn= =amount= (optionally
-filtered to =account_id=) shows memo-currency holdings, scoped like every
-widget. Posted currencies are journal lines, whose amounts are unsigned, so
-their holdings are read from this report; a =report= widget runs it for the
-default organization.
+On a dashboard, a =report= widget runs it in the page's organization --
+the one picked, or the one the dashboard is filed under -- like every
+widget, and passes its declared options: ={"currency": "TICKET"}= or
+={"location_id": 12}=. The demo's Evermoor dashboard carries one. A =sum=
+widget over =holding_txn= =amount= still totals memo movements alone;
+posted currencies are journal lines, whose amounts are unsigned, so their
+holdings are only ever read from this report.
 
 * Reading the books
 

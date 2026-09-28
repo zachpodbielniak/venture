@@ -2055,12 +2055,14 @@ ${flask} 68000"
     add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
         title="Gold per hour" report_name=session_performance period=last_90_days \
         span=full position=6
-    # Tickets are memo, so their holdings are rows of holding_txn and a sum
-    # of their signed amounts is what the characters hold between them.
-    # Posted currencies are read with `venturectl report holdings`.
-    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
-        title="Faire tickets held" entity_type=holding_txn field=amount \
-        span=normal position=7
+    # What each character holds, in every currency and whatever its
+    # treatment: gold and tokens from their journal lines, tickets from
+    # their memo movements. The widget names no organization -- the page
+    # scopes it to the one this dashboard is filed under -- and its tiles
+    # (one "held" figure per currency) are left to the table.
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
+        title="Held per character" report_name=holdings period=all \
+        options='{"tiles": false}' span=full position=7
 }
 
 seed_dashboards () {

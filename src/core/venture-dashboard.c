@@ -1676,17 +1676,118 @@ venture_widget_kind_links(
 /* --- metric: one headline figure from a report ---------------------------- */
 
 /*
- * Runs the widget's report for its period. Shared by the report, metric
- * and chart kinds.
+ * What a widget may say to its report, besides what the report declares:
+ * the report kind's own display switches, which never reach the report.
+ */
+static const gchar *const venture_widget_report_display_options[] = {
+	"tiles", "table", NULL
+};
+
+/*
+ * What the caller decides and a widget may not: the organization and the
+ * venture come from the page's scope, so one widget answers about the same
+ * rows through every door.
+ */
+static const gchar *const venture_widget_report_scope_options[] = {
+	"organization_id", "venture_id", NULL
+};
+
+/* The "properties" object of a report's parameter schema, or NULL. */
+static JsonObject *
+venture_widget_report_properties(JsonNode *schema)
+{
+	JsonObject *object;
+
+	if ((NULL == schema) || !JSON_NODE_HOLDS_OBJECT(schema))
+		return NULL;
+
+	object = json_node_get_object(schema);
+
+	if (!json_object_has_member(object, "properties") ||
+	    !JSON_NODE_HOLDS_OBJECT(json_object_get_member(object, "properties")))
+		return NULL;
+
+	return json_object_get_object_member(object, "properties");
+}
+
+/*
+ * The options a report is run with from a widget: every widget option the
+ * report declares in its parameter schema, then the scope -- the primary
+ * organization the caller picked and its venture. Options the schema does
+ * not declare are not forwarded: the save validator refused them, and a
+ * widget saved before that rule existed still renders.
+ */
+static JsonObject *
+venture_widget_report_options(
+	VentureReport			 *report,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	GError				**error
+){
+	g_autoptr(JsonObject) options = NULL;
+	g_autoptr(JsonNode) own = NULL;
+	g_autoptr(JsonNode) schema = NULL;
+	JsonObject *properties;
+
+	options = json_object_new();
+	own = venture_widget_get_options(widget, error);
+
+	if ((NULL == own) && (NULL != error) && (NULL != *error))
+		return NULL;
+
+	schema = venture_report_describe_parameters(report);
+	properties = venture_widget_report_properties(schema);
+
+	if ((NULL != own) && JSON_NODE_HOLDS_OBJECT(own) && (NULL != properties))
+	{
+		g_autoptr(GList) members = NULL;
+		GList *item;
+
+		members = json_object_get_members(json_node_get_object(own));
+
+		for (item = members; NULL != item; item = item->next)
+		{
+			const gchar *name;
+
+			name = item->data;
+
+			if (g_strv_contains(venture_widget_report_scope_options, name) ||
+			    !json_object_has_member(properties, name))
+				continue;
+
+			json_object_set_member(options, name, json_node_copy(
+				json_object_get_member(json_node_get_object(own), name)));
+		}
+	}
+
+	/* The primary entity only: a report answers for one organization,
+	 * and the first of the tree is the one the viewer picked. */
+	if ((NULL != scope) && (NULL != scope->organization_ids) &&
+	    (scope->n_organizations > 0))
+		json_object_set_int_member(options, "organization_id",
+		                           scope->organization_ids[0]);
+
+	if ((NULL != scope) && (0 != scope->venture_id))
+		json_object_set_int_member(options, "venture_id", scope->venture_id);
+
+	return g_steal_pointer(&options);
+}
+
+/*
+ * Runs the widget's report for its period, under the caller's scope and
+ * with the options the report declares. Shared by the report, metric and
+ * chart kinds.
  */
 static VentureReportResult *
 venture_widget_run_report(
-	VentureContext		 *context,
-	VentureDashboardWidget	 *widget,
-	VentureReport		**out_report,
-	GError			**error
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	VentureReport			**out_report,
+	GError				**error
 ){
 	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(JsonObject) options = NULL;
 	g_autofree gchar *name = NULL;
 	g_autofree gchar *period_text = NULL;
 	VentureReport *report;
@@ -1717,10 +1818,15 @@ venture_widget_run_report(
 	if (NULL == period)
 		return NULL;
 
+	options = venture_widget_report_options(report, widget, scope, error);
+
+	if (NULL == options)
+		return NULL;
+
 	if (NULL != out_report)
 		*out_report = report;
 
-	return venture_report_generate(report, context, period, NULL, error);
+	return venture_report_generate(report, context, period, options, error);
 }
 
 static VentureWidgetResult *
@@ -1742,10 +1848,9 @@ venture_widget_kind_metric(
 	GPtrArray *metrics;
 	guint i;
 
-	(void)scope;
 	(void)user_data;
 
-	report_result = venture_widget_run_report(context, widget, &report, error);
+	report_result = venture_widget_run_report(context, widget, scope, &report, error);
 
 	if (NULL == report_result)
 		return NULL;
@@ -1843,7 +1948,6 @@ venture_widget_kind_report(
 	gboolean tiles;
 	gboolean table;
 
-	(void)scope;
 	(void)user_data;
 
 	options = venture_widget_get_options(widget, error);
@@ -1851,7 +1955,7 @@ venture_widget_kind_report(
 	if ((NULL == options) && (NULL != *error))
 		return NULL;
 
-	report_result = venture_widget_run_report(context, widget, &report, error);
+	report_result = venture_widget_run_report(context, widget, scope, &report, error);
 
 	if (NULL == report_result)
 		return NULL;
@@ -1933,10 +2037,9 @@ venture_widget_kind_chart(
 	guint limit;
 	guint i;
 
-	(void)scope;
 	(void)user_data;
 
-	report_result = venture_widget_run_report(context, widget, &report, error);
+	report_result = venture_widget_run_report(context, widget, scope, &report, error);
 
 	if (NULL == report_result)
 		return NULL;
@@ -6179,6 +6282,177 @@ venture_dashboard_validate_numeric_fields(
 	return TRUE;
 }
 
+/* Whether a JSON value is what a schema property's "type" says. */
+static gboolean
+venture_dashboard_option_has_type(
+	JsonNode	*value,
+	const gchar	*type
+){
+	GType value_type;
+
+	if (NULL == type)
+		return TRUE;
+
+	if ((NULL == value) || !JSON_NODE_HOLDS_VALUE(value))
+		return FALSE;
+
+	value_type = json_node_get_value_type(value);
+
+	if (0 == g_strcmp0(type, "string"))
+		return G_TYPE_STRING == value_type;
+
+	if (0 == g_strcmp0(type, "integer"))
+		return G_TYPE_INT64 == value_type;
+
+	if (0 == g_strcmp0(type, "number"))
+		return (G_TYPE_INT64 == value_type) || (G_TYPE_DOUBLE == value_type);
+
+	if (0 == g_strcmp0(type, "boolean"))
+		return G_TYPE_BOOLEAN == value_type;
+
+	return TRUE;
+}
+
+/*
+ * The options of a widget that runs a report, against the report's own
+ * parameter schema: a name the report declares, of the type it declares,
+ * one of its values when it lists them. The organization and the venture
+ * are refused outright -- they are the caller's scope, and a widget that
+ * named its own would answer about other rows than the page around it.
+ * A report whose module is off is let through unchecked, as its type is:
+ * its schema cannot be read while it is hidden.
+ */
+static gboolean
+venture_dashboard_validate_report_options(
+	VentureContext	 *context,
+	const gchar	 *kind,
+	const gchar	 *report_name,
+	JsonNode	 *options,
+	GError		**error
+){
+	g_autoptr(JsonNode) schema = NULL;
+	g_autoptr(GList) members = NULL;
+	VentureReport *report;
+	JsonObject *properties;
+	JsonObject *object;
+	GList *item;
+
+	if ((0 != g_strcmp0(kind, "report")) && (0 != g_strcmp0(kind, "chart")) &&
+	    (0 != g_strcmp0(kind, "metric")))
+		return TRUE;
+
+	if ((NULL == report_name) || (NULL == options) || !JSON_NODE_HOLDS_OBJECT(options))
+		return TRUE;
+
+	report = venture_report_registry_lookup(
+		venture_context_get_report_registry(context), report_name);
+
+	if (NULL == report)
+		return TRUE;
+
+	schema = venture_report_describe_parameters(report);
+	properties = venture_widget_report_properties(schema);
+	object = json_node_get_object(options);
+	members = json_object_get_members(object);
+
+	for (item = members; NULL != item; item = item->next)
+	{
+		const gchar *name;
+		JsonNode *value;
+		JsonObject *property;
+		const gchar *type;
+
+		name = item->data;
+		value = json_object_get_member(object, name);
+
+		if ((0 == g_strcmp0(kind, "report")) &&
+		    g_strv_contains(venture_widget_report_display_options, name))
+			continue;
+
+		if (g_strv_contains(venture_widget_report_scope_options, name))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "options.%s comes from the page the dashboard is opened "
+			            "on, not the widget: a widget never scopes itself", name);
+			return FALSE;
+		}
+
+		if ((NULL == properties) || !json_object_has_member(properties, name) ||
+		    !JSON_NODE_HOLDS_OBJECT(json_object_get_member(properties, name)))
+		{
+			g_autoptr(GString) offered = NULL;
+			g_autoptr(GList) declared = NULL;
+			GList *each;
+
+			offered = g_string_new(NULL);
+
+			if (NULL != properties)
+				declared = json_object_get_members(properties);
+
+			for (each = declared; NULL != each; each = each->next)
+			{
+				if (g_strv_contains(venture_widget_report_scope_options, each->data))
+					continue;
+
+				g_string_append_printf(offered, "%s%s",
+				                       (offered->len > 0) ? ", " : "",
+				                       (const gchar *)each->data);
+			}
+
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "The %s report has no option \"%s\"; %s%s", report_name,
+			            name, (offered->len > 0) ? "it takes " : "it takes none",
+			            offered->str);
+			return FALSE;
+		}
+
+		property = json_object_get_object_member(properties, name);
+		type = json_object_has_member(property, "type")
+			? json_object_get_string_member(property, "type") : NULL;
+
+		if (!venture_dashboard_option_has_type(value, type))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "options.%s must be a %s for the %s report", name, type,
+			            report_name);
+			return FALSE;
+		}
+
+		if (json_object_has_member(property, "enum") &&
+		    JSON_NODE_HOLDS_ARRAY(json_object_get_member(property, "enum")) &&
+		    (G_TYPE_STRING == json_node_get_value_type(value)))
+		{
+			JsonArray *allowed;
+			gboolean found;
+			guint i;
+
+			allowed = json_object_get_array_member(property, "enum");
+			found = FALSE;
+
+			for (i = 0; (i < json_array_get_length(allowed)) && !found; i++)
+			{
+				JsonNode *candidate;
+
+				candidate = json_array_get_element(allowed, i);
+				found = JSON_NODE_HOLDS_VALUE(candidate) &&
+				        (G_TYPE_STRING == json_node_get_value_type(candidate)) &&
+				        (0 == g_strcmp0(json_node_get_string(candidate),
+				                        json_node_get_string(value)));
+			}
+
+			if (!found)
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "options.%s \"%s\" is not one the %s report accepts",
+				            name, json_node_get_string(value), report_name);
+				return FALSE;
+			}
+		}
+	}
+
+	return TRUE;
+}
+
 /*
  * A widget must name a kind that exists, a record type that exists (even
  * one whose module is off -- the widget outlives the switch), a report
@@ -6285,6 +6559,10 @@ venture_dashboard_validate_widget(
 
 	if (!venture_dashboard_validate_numeric_fields(context, widget, kind,
 	                                                entity_type, options, error))
+		return FALSE;
+
+	if (!venture_dashboard_validate_report_options(context, kind, report_name,
+	                                               options, error))
 		return FALSE;
 
 	/* The grid hints must at least be sane numbers; whether they fit the

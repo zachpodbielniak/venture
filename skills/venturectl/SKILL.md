@@ -1451,6 +1451,18 @@ Dashboards have the same arithmetic as widgets: `sum` (a money/number
 `options={"target_field":"budget"}`, of one `record_id` or summed over a
 filter). Their fields are checked when the widget is saved.
 
+`report`, `chart` and `metric` widgets run their report in the page's
+organization (the one picked, or the one the dashboard is filed under) --
+never put `organization_id` or `venture_id` in their `options`, the save
+refuses it. Their `options` pass the report's **declared** parameters
+only (what `GET /api/v1/reports` lists for that report), type-checked at
+the save; `tiles`/`table` are the report kind's own switches:
+
+```sh
+venturectl create dashboard_widget dashboard_id=4 kind=report \
+    report_name=holdings period=all options='{"currency": "TICKET", "tiles": false}'
+```
+
 ## Market: price observations and listings
 
 Module `market` (requires `sales`). Check `venturectl describe listing`

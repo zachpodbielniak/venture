@@ -655,6 +655,196 @@ test_dashboard_report_kinds(
 	g_assert_nonnull(strstr(result->error, "moonshine"));
 }
 
+/*
+ * A report widget answers for the organization the page scopes it to,
+ * exactly as a count does: the primary entity of the caller's scope
+ * reaches the report as organization_id, and no scope is the default
+ * entity. What breaks: a profit-and-loss card on a second business's
+ * dashboard that quietly shows the first business's figures.
+ */
+static void
+test_dashboard_report_scope(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) other = NULL;
+	g_autoptr(VentureVenture) venture = NULL;
+	g_autoptr(VentureSale) sale = NULL;
+	g_autoptr(VentureMoney) gross = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) metric = NULL;
+	g_autoptr(VentureDashboardWidget) report = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWidgetScope scope = { NULL, 0, 0, NULL, 0 };
+	gint64 trading;
+
+	(void)user_data;
+
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Trading Arm", "slug", "trading", NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, &error));
+	g_assert_no_error(error);
+	trading = venture_entity_get_id(other);
+
+	venture = venture_venture_new();
+	g_object_set(venture, "name", "Stall", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(venture), trading);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(venture), NULL, &error));
+	g_assert_no_error(error);
+
+	gross = venture_money_from_string("4242 USD", NULL, &error);
+	g_assert_no_error(error);
+	when = venture_time_now();
+	sale = venture_sale_new();
+	g_object_set(sale, "venture-id", venture_entity_get_id(VENTURE_ENTITY(venture)),
+	             "gross", gross, "occurred-at", when, "quantity", (gint64)1, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(sale), trading);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(sale), NULL, &error));
+	g_assert_no_error(error);
+
+	dashboard = create_dashboard(fixture, "Trading figures");
+	metric = create_widget(fixture, dashboard, "metric", "report-name", "pnl",
+	                       "field", "revenue", "period", "this_year", NULL);
+	report = create_widget(fixture, dashboard, "report", "report-name", "pnl",
+	                       "period", "this_year", "options", "{\"table\": false}",
+	                       NULL);
+
+	/* No scope: the default entity, which sold nothing. */
+	result = venture_dashboard_render_widget(fixture->context, metric, NULL);
+	g_assert_null(result->error);
+	g_assert_null(strstr(result->html, "4,242"));
+	g_clear_pointer(&result, venture_widget_result_free);
+
+	/* The trading arm's page: its sale, in the figure and in the tiles. */
+	scope.organization_ids = &trading;
+	scope.n_organizations = 1;
+	result = venture_dashboard_render_widget(fixture->context, metric, &scope);
+	g_assert_null(result->error);
+	g_assert_nonnull(strstr(result->html, "4,242"));
+	g_clear_pointer(&result, venture_widget_result_free);
+
+	result = venture_dashboard_render_widget(fixture->context, report, &scope);
+	g_assert_null(result->error);
+	g_assert_nonnull(strstr(result->html, "4,242"));
+}
+
+/* A holding account at a new location, holding @amount of a memo currency. */
+static void
+hold_memo(
+	Fixture		*fixture,
+	const gchar	*place,
+	const gchar	*amount
+){
+	g_autoptr(VentureEntity) location = NULL;
+	g_autoptr(VentureEntity) movement = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 account = 0;
+
+	location = venture_entity_registry_create(venture_entity_registry_get_default(),
+	                                          "location", NULL);
+	file_under_default(fixture, location);
+	g_object_set(location, "name", place, NULL);
+	g_assert_true(venture_database_save(fixture->database, location, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_holdings_account_for_location(fixture->database,
+		venture_context_get_default_organization_id(fixture->context),
+		venture_entity_get_id(location), TRUE, NULL, &account, &error));
+	g_assert_no_error(error);
+
+	movement = venture_entity_registry_create(venture_entity_registry_get_default(),
+	                                          "holding_txn", NULL);
+	file_under_default(fixture, movement);
+	g_object_set(movement, "account-id", account, NULL);
+	g_assert_true(venture_entity_set_field_from_string(movement, "amount", amount, &error));
+	g_assert_true(venture_database_save(fixture->database, movement, NULL, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * A widget's options reach its report when the report declares them in
+ * its parameter schema, and only then: an undeclared name, a value of the
+ * wrong type and the scope's own organization_id are refused at the save,
+ * for every writer. What breaks: a holdings card asked for tickets that
+ * shows every currency, or a widget that names its own organization and
+ * answers about other rows than the page around it.
+ */
+static void
+test_dashboard_report_options(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	static const gchar *const codes[] = { "TICKET", "TOKEN" };
+	guint i;
+
+	(void)user_data;
+
+	venture_currency_clear_registered();
+
+	for (i = 0; i < G_N_ELEMENTS(codes); i++)
+	{
+		g_autoptr(VentureEntity) currency = NULL;
+
+		currency = venture_entity_registry_create(venture_entity_registry_get_default(),
+		                                          "currency", NULL);
+		file_under_default(fixture, currency);
+		g_object_set(currency, "code", codes[i], "name", codes[i], "exponent", (gint64)0,
+		             "book-treatment", VENTURE_BOOK_TREATMENT_MEMO, NULL);
+		g_assert_true(venture_database_save(fixture->database, currency, NULL, &error));
+		g_assert_no_error(error);
+	}
+
+	hold_memo(fixture, "Aria", "12 TICKET");
+	hold_memo(fixture, "Bram", "5 TOKEN");
+
+	dashboard = create_dashboard(fixture, "Purses");
+	widget = venture_dashboard_widget_new();
+	file_under_default(fixture, widget);
+	g_object_set(widget, "dashboard-id", venture_entity_get_id(VENTURE_ENTITY(dashboard)),
+	             "kind", "report", "report-name", "holdings", "period", "all", NULL);
+
+	g_object_set(widget, "options", "{\"organization_id\": 1}", NULL);
+	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(widget),
+	                                     NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "never scopes itself"));
+	g_clear_error(&error);
+
+	g_object_set(widget, "options", "{\"character\": \"Aria\"}", NULL);
+	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(widget),
+	                                     NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "location_id"));
+	g_clear_error(&error);
+
+	g_object_set(widget, "options", "{\"location_id\": \"Aria\"}", NULL);
+	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(widget),
+	                                     NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* The report kind's own switches are its, not the report's. */
+	g_object_set(widget, "options", "{\"currency\": \"TICKET\", \"tiles\": false}", NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(widget),
+	                                    NULL, &error));
+	g_assert_no_error(error);
+
+	result = venture_dashboard_render_widget(fixture->context, widget, NULL);
+	g_assert_null(result->error);
+	g_assert_nonnull(strstr(result->html, "Aria"));
+	g_assert_null(strstr(result->html, "Bram"));
+	g_assert_null(strstr(result->html, "TOKEN"));
+
+	venture_currency_clear_registered();
+}
+
 /* --- sum and progress ----------------------------------------------------- */
 
 /* A venture for the sales and campaigns below: references are checked. */
@@ -2448,6 +2638,8 @@ main(
 	    test_dashboard_count_list_breakdown);
 	ADD("/dashboard/note-and-actions", test_dashboard_note_and_actions);
 	ADD("/dashboard/report-kinds", test_dashboard_report_kinds);
+	ADD("/dashboard/report-scope", test_dashboard_report_scope);
+	ADD("/dashboard/report-options", test_dashboard_report_options);
 	ADD("/dashboard/sum", test_dashboard_sum);
 	ADD("/dashboard/progress", test_dashboard_progress);
 	ADD("/dashboard/numeric-validation", test_dashboard_numeric_validation);

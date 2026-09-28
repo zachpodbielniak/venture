@@ -460,8 +460,16 @@ new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=sum span=norma
     title="Minutes farmed, 30 days" entity_type=session field=minutes \
     period=last_30_days options='{"date_field": "started_at"}'
 new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=report span=wide \
-    title="Sale rate" report_name=listing_performance period=last_90_days
+    title="Sale rate" report_name=listing_performance period=last_90_days \
+    options='{"group_by": "category"}'
+new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=report span=full \
+    title="Held per character" report_name=holdings period=all \
+    options='{"tiles": false}'
 #+end_src
+
+A =report= widget passes the options its report declares -- =group_by=
+above -- and runs in the dashboard's organization like the rest; naming
+=organization_id= in its options is refused at the save.
 
 A =sum= totals a money or number field per currency ("30g 18s 10c"); a
 =progress= with =start_field= draws the same fraction =goal_progress= does.
