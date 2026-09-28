@@ -1666,10 +1666,12 @@ test_consent_recorded(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(second, "news"));
 }
 
-/* A sensitive answer stays on its record: not in the summary search and
- * webhooks read, not in the record's JSON (the API, the assistant), not
- * in the audit log, and it cannot be copied into a lead. The response's
- * own page shows it. */
+/* A sensitive answer stays on its record: not in the summary search reads,
+ * not in the record's JSON -- which is exactly what the API, the
+ * assistant's record tools and an outbound webhook's data carry
+ * (venture-webhook.c serialises the record with the same call) -- and not
+ * in the audit log, whose label and diff are what inbox notifications are
+ * built from. It cannot be copied into a lead. Its own page shows it. */
 static void
 test_sensitive_kept_apart(Fixture *f, gconstpointer data)
 {
