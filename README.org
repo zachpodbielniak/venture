@@ -46,7 +46,10 @@ make DEBUG=1              # debug build into build/debug
 make                      # release build into build/release
 make DEBUG=1 test         # GTest suite
 make run                  # run the server against a scratch SQLite database
+make -j clean all         # clean finishes, then the build; -j stays on the build
 #+end_src
+
+=make -j clean all= (also =clean-all= and =clean-deps= beside any other goal) runs the clean in its own sub-make and only then starts the build. One invocation used to update both goals at once, so =clean='s =rm -rf= removed =build/debug= while the generators were still writing =venture-assets.h= and the other headers into it.
 
 See =make help= for the full target list and =make show-config= for the resolved configuration.
 

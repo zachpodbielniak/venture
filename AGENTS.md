@@ -23,6 +23,10 @@ make compose-up              # rebuild the image and recreate the local stack
 first, because the suite loads the example plugin for real; without them that
 test skips itself rather than failing.
 
+`make -j clean all` is safe: a clean goal beside any other goal finishes in
+a sub-make before the build starts. The generators write into the directory
+`clean` removes, so the two goals must not run at once.
+
 Zero warnings, always. `-Werror` is on with a wide warning set, and a warning
 is a latent bug. Never silence one by lowering the warning level.
 
