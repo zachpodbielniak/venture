@@ -1754,7 +1754,9 @@ Module `forms` (requires only `core`; suggests `leads`, `mail` and `marketing`).
 
 - `form`: `name` (internal), `title`/`description`/`submit_label`/
   `success_message` (public), `state` (`draft` default, `live`, `closed`),
-  `closes_at`, `response_limit`, `redirect_url` (http/https only),
+  `opens_at` (inclusive), `closes_at` (exclusive), `response_limit`,
+  `unique_email_field` (a required email question key; blank permits repeats),
+  `redirect_url` (http/https only),
   `allowed_origins` (one `https://host[:port]` per line; empty = any),
   `hourly_limit`, `min_fill_seconds`, `create_lead`, `lead_source`,
   `campaign_id`, `on_duplicate` (`merge`/`create`/`reject`),

@@ -452,3 +452,46 @@ holds a response without a version; one would be read against the first.
 
 The [[file:evidence/forms-consent.org][marketing consent demonstration]] records
 the built-server unchecked and checked submissions and retained evidence.
+
+* Scheduled availability and the last response
+
+=opens_at= is inclusive: a live, published form begins accepting responses at
+that instant. =closes_at= is exclusive: it stops at that instant. Either may
+be empty; when both are set, closing must be later than opening. Use the
+normal date-time input format, including an offset for an unambiguous instant.
+These are live settings, so changing them does not require republishing.
+
+Availability is checked both when the form is opened and again inside the
+submission transaction, after rereading the form. Someone holding a form open
+cannot submit after its closing time. =response_limit= is checked under the
+same lock; zero means unlimited. Two in-flight requests for the last place
+produce one response and one refusal.
+
+The public door retains its uniform 404 for not-yet-open, closed, expired,
+full, draft, disabled and unknown forms. It does not reveal which state caused
+the refusal. This follows the public-door privacy contract, including the
+fragment and schema endpoints. There is no browser-only scheduling check.
+
+Migration =000750_form_schedule= leaves existing forms without an opening
+restriction. =/forms/schedule= checks exact boundary instants and stale form
+objects; =/forms/last-slot= checks simultaneous requests for one place.
+
+Set =unique_email_field= to a required email question's stable key in the
+published version to allow one response per address. Blank disables the limit.
+The comparison ignores ASCII case and surrounding whitespace. A duplicate is
+shown beside that question, before any lead or confirmation email is created.
+This proves only that the same address was entered, not who controls it.
+
+The check includes earlier responses to that key, even those received before
+the limit was enabled, and reads both ordinary and sensitive answers. It scans
+retained responses in batches of 100 inside the transaction; checking a large
+form therefore takes time proportional to its retained responses. Anonymising,
+erasing or purging a response removes its identity and allows that address to
+respond again. There is no separate identity list surviving erasure. Changing
+the configured question changes which answer key is compared.
+
+Browser storage is not an identity guarantee: it can be cleared and is not a
+server-enforced response limit. Personal-link and contact limits remain part
+of the subsequent personal-link work.
+
+The [[file:evidence/forms-schedule.org][built-server demonstration]] exercises these public flows.

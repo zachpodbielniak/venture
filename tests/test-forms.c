@@ -751,7 +751,7 @@ test_http_json(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
 }
 
-/* Draft, closed, unknown, past its close date and over its cap: all five
+/* Draft, closed, unknown, scheduled, past its close date and over its cap: all
  * answer exactly the same 404, so the door says nothing about which. */
 static void
 test_http_refusals(Fixture *f, gconstpointer data)
@@ -759,16 +759,20 @@ test_http_refusals(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) draft = make_form(f, "draft-form", VENTURE_FORM_DRAFT);
 	g_autoptr(VentureEntity) closed = make_form(f, "closed-form", VENTURE_FORM_CLOSED);
 	g_autoptr(VentureEntity) capped = contact_form(f, "capped-form");
+	g_autoptr(VentureEntity) scheduled = contact_form(f, "future-form");
 	g_autoptr(VentureEntity) expired = make_form(f, "expired-form", VENTURE_FORM_LIVE);
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(GDateTime) past = g_date_time_add_hours(now, -1);
+	g_autoptr(GDateTime) future = g_date_time_add_hours(now, 1);
 	const gchar *paths[] = { "/pub/form/draft-form", "/pub/form/closed-form", "/pub/form/no-such-form",
-		"/pub/form/expired-form", "/pub/form/capped-form" };
+		"/pub/form/expired-form", "/pub/form/capped-form", "/pub/form/future-form" };
 	g_autofree gchar *reference = NULL;
 	g_autofree gchar *ticket = old_ticket(capped);
 	g_autofree gchar *body = g_strdup_printf("%s&name=A&email=a%%40example.com&topic=sales", ticket);
 	guint i;
 	(void)data;
+	g_object_set(scheduled, "opens-at", future, NULL);
+	save(f, scheduled);
 	g_object_set(expired, "closes-at", past, NULL);
 	save(f, expired);
 	g_object_set(capped, "response-limit", (gint64)1, NULL);
@@ -797,6 +801,160 @@ test_http_refusals(Fixture *f, gconstpointer data)
 		}
 	}
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+}
+
+/* Enabling the email limit counts responses received before it was enabled,
+ * and compares addresses without case. Refused responses trigger no follow-up. */
+static void
+test_unique_email(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "unique-email");
+	g_autoptr(VentureEntity) response = NULL;
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	VentureFormsOutcome outcome;
+	(void)data;
+	venture_forms_answers_add(answers, "name", "Alice");
+	venture_forms_answers_add(answers, "email", "Alice@example.com");
+	venture_forms_answers_add(answers, "topic", "sales");
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	g_clear_object(&response);
+	g_object_set(form, "unique-email-field", "email", NULL);
+	save(f, form);
+	g_hash_table_remove(answers, "email");
+	venture_forms_answers_add(answers, "email", "alice@EXAMPLE.com");
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, &errors, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_INVALID);
+	g_assert_null(response);
+	g_assert_true(json_object_has_member(errors, "email"));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_clear_pointer(&errors, json_object_unref);
+	g_hash_table_remove(answers, "email");
+	venture_forms_answers_add(answers, "email", "bob@example.com");
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, &errors, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 2);
+	g_object_set(form, "unique-email-field", "name", NULL);
+	refuse(f, form, "One response per email");
+}
+
+/* Sensitive email answers enforce the same limit, and erasure removes the
+ * identity used for that limit rather than leaving a hidden deny-list. */
+static void
+test_unique_email_sensitive(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "private-email", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) email = make_field(f, form, "private_email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 1);
+	g_autoptr(JsonNode) erased = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *const answers[] = { "private_email", "alice@example.com", NULL };
+	(void)data;
+	g_object_set(email, "sensitive", TRUE, NULL);
+	save(f, email);
+	g_object_unref(publish(f, form));
+	g_object_set(form, "unique-email-field", "private_email", NULL);
+	save(f, form);
+	g_assert_cmpint(submit_pairs(f, form, answers, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(submit_pairs(f, form, answers, NULL), ==, VENTURE_FORMS_INVALID);
+	erased = venture_forms_erase_person(f->db, f->org, "alice@example.com", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(erased);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(submit_pairs(f, form, answers, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+}
+
+/* The same instant is judged at the public door and inside the save lock;
+ * a cached form object cannot bypass a changed opening or closing time. */
+static void
+test_schedule(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "scheduled-form");
+	g_autoptr(VentureEntity) stale = reread(f, form);
+	g_autoptr(VentureEntity) found = NULL;
+	g_autoptr(VentureEntity) submission = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) later = g_date_time_add_hours(now, 1);
+	g_autoptr(GDateTime) end = g_date_time_add_hours(now, 2);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(GError) error = NULL;
+	VentureFormsOutcome outcome;
+	(void)data;
+	venture_forms_answers_add(answers, "name", "Alice");
+	venture_forms_answers_add(answers, "email", "alice@example.com");
+	venture_forms_answers_add(answers, "topic", "sales");
+	g_object_set(form, "opens-at", later, "closes-at", end, NULL);
+	save(f, form);
+	found = venture_forms_find_live(f->db, "scheduled-form", now, &error);
+	g_assert_null(found);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+	g_assert_false(venture_forms_submit(f->db, stale, answers, NULL, now,
+		&outcome, &submission, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+	found = venture_forms_find_live(f->db, "scheduled-form", later, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(found);
+	g_assert_true(venture_forms_submit(f->db, stale, answers, NULL, later,
+		&outcome, &submission, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	g_clear_object(&submission);
+	g_assert_false(venture_forms_submit(f->db, stale, answers, NULL, end,
+		&outcome, &submission, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_object_set(form, "opens-at", end, "closes-at", later, NULL);
+	refuse(f, form, "Closes at");
+}
+
+/* Two requests are in flight for the last slot before either callback runs. */
+static void
+test_last_slot(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "last-slot");
+	g_autofree gchar *ticket = old_ticket(form);
+	g_autofree gchar *body = g_strdup_printf("%s&name=Alice&email=alice%%40example.com&topic=sales", ticket);
+	g_autofree gchar *uri = NULL;
+	g_autoptr(SoupMessage) first = NULL;
+	g_autoptr(SoupMessage) second = NULL;
+	g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+	Pending a = { FALSE, NULL, NULL }, b = { FALSE, NULL, NULL };
+	gint64 deadline;
+	guint sa, sb;
+	(void)data;
+	g_object_set(form, "response-limit", (gint64)1, NULL);
+	save(f, form);
+	start_http(f);
+	uri = g_strdup_printf("http://127.0.0.1:%u/pub/form/last-slot", f->port);
+	first = soup_message_new("POST", uri);
+	second = soup_message_new("POST", uri);
+	soup_message_set_request_body_from_bytes(first, "application/x-www-form-urlencoded", bytes);
+	soup_message_set_request_body_from_bytes(second, "application/x-www-form-urlencoded", bytes);
+	soup_session_send_and_read_async(f->session, first, G_PRIORITY_DEFAULT, NULL, received, &a);
+	soup_session_send_and_read_async(f->session, second, G_PRIORITY_DEFAULT, NULL, received, &b);
+	deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+	while ((!a.done || !b.done) && g_get_monotonic_time() < deadline)
+	{
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
+	g_assert_true(a.done && b.done);
+	g_assert_no_error(a.error);
+	g_assert_no_error(b.error);
+	sa = soup_message_get_status(first);
+	sb = soup_message_get_status(second);
+	g_assert_true((sa == 200 && sb == 404) || (sa == 404 && sb == 200));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_bytes_unref(a.body);
+	g_bytes_unref(b.body);
 }
 
 /* An oversize body is refused before it is parsed; a flood from one client
@@ -2123,6 +2281,10 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-plain-post", Fixture, NULL, setup, test_http_plain_post, teardown);
 	g_test_add("/forms/http-json", Fixture, NULL, setup, test_http_json, teardown);
 	g_test_add("/forms/http-refusals", Fixture, NULL, setup, test_http_refusals, teardown);
+	g_test_add("/forms/unique-email-sensitive", Fixture, NULL, setup, test_unique_email_sensitive, teardown);
+	g_test_add("/forms/unique-email", Fixture, NULL, setup, test_unique_email, teardown);
+	g_test_add("/forms/last-slot", Fixture, NULL, setup, test_last_slot, teardown);
+	g_test_add("/forms/schedule", Fixture, NULL, setup, test_schedule, teardown);
 	g_test_add("/forms/http-limits", Fixture, NULL, setup, test_http_limits, teardown);
 	g_test_add("/forms/http-spam", Fixture, NULL, setup, test_http_spam, teardown);
 	g_test_add("/forms/http-origins", Fixture, NULL, setup, test_http_origins, teardown);

@@ -154,6 +154,17 @@ forms_validate_form(
 		}
 	}
 
+	{
+		g_autoptr(GDateTime) opens = NULL;
+		g_autoptr(GDateTime) closes = NULL;
+
+		g_object_get(entity, "opens-at", &opens, "closes-at", &closes, NULL);
+		if (opens != NULL && closes != NULL && g_date_time_compare(opens, closes) >= 0)
+		{
+			venture_set_error_validation(error, "Closes at", "must be after Opens at");
+			return FALSE;
+		}
+	}
 	if (venture_forms_get_int(entity, "response-limit") < 0)
 	{
 		venture_set_error_validation(error, "Response limit", "cannot be negative");
@@ -611,17 +622,28 @@ forms_check_published(VentureDatabase *database, VentureEntity *entity, VentureE
 		g_object_set(entity, "published-number", (gint64)0, NULL);
 		return TRUE;
 	}
-	if (NULL != previous && venture_forms_get_int(previous, "published-version-id") == id)
-	{
-		g_object_set(entity, "published-number", venture_forms_get_int(previous, "published-number"), NULL);
-		return TRUE;
-	}
+	(void)previous;
 	version = venture_database_get(database, VENTURE_TYPE_FORM_VERSION, id, NULL);
 	if (NULL == version || venture_forms_get_int(version, "form-id") != venture_entity_get_id(entity))
 	{
 		venture_set_error_validation(error, "Published version",
 			"#%" G_GINT64_FORMAT " is not a version of this form", id);
 		return FALSE;
+	}
+	{
+		g_autofree gchar *key = venture_forms_get_string(entity, "unique-email-field");
+		if (!venture_string_is_empty(key))
+		{
+			g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, entity, version, error);
+			const VentureFormsField *field;
+			if (fields == NULL) return FALSE;
+			field = venture_forms_definition_find(fields, key);
+			if (field == NULL || field->kind != VENTURE_FORM_FIELD_EMAIL || !field->required)
+			{
+				venture_set_error_validation(error, "One response per email", "must name a required email question in the published version");
+				return FALSE;
+			}
+		}
 	}
 	g_object_set(entity, "published-number", venture_forms_get_int(version, "number"), NULL);
 	return TRUE;
@@ -838,21 +860,28 @@ static gboolean
 forms_is_open(VentureDatabase *database, VentureEntity *form, GDateTime *now)
 {
 	g_autoptr(GDateTime) closes = NULL;
+	g_autoptr(GDateTime) opens = NULL;
 	VentureFormState state = VENTURE_FORM_DRAFT;
 	gint64 limit = venture_forms_get_int(form, "response-limit");
 
 	if (venture_entity_is_deleted(form))
 		return FALSE;
-	g_object_get(form, "state", &state, "closes-at", &closes, NULL);
+	g_object_get(form, "state", &state, "opens-at", &opens, "closes-at", &closes, NULL);
 	if (VENTURE_FORM_LIVE != state)
 		return FALSE;
 	/* Live and never published has nothing to show a stranger. */
 	if (venture_forms_get_int(form, "published-version-id") <= 0)
 		return FALSE;
+	if (NULL != opens && g_date_time_compare(now, opens) < 0)
+		return FALSE;
 	if (NULL != closes && g_date_time_compare(now, closes) >= 0)
 		return FALSE;
-	if (limit > 0 && forms_response_count(database, form) >= limit)
-		return FALSE;
+	if (limit > 0)
+	{
+		gint64 count = forms_response_count(database, form);
+		/* A failed count is not evidence that a place remains. */
+		if (count < 0 || count >= limit) return FALSE;
+	}
 	return TRUE;
 }
 
@@ -1747,11 +1776,81 @@ forms_record_marketing_consent(VentureDatabase *database, VentureEntity *form,
 	return TRUE;
 }
 
+/* Reuse stored answers instead of keeping a second identity after erasure.
+ * The caller holds the save lock. Read in bounded batches so enabling the
+ * limit also covers responses collected before it was configured. */
+static gchar *
+forms_response_email(VentureEntity *response, const gchar *key)
+{
+	const gchar *columns[] = { "answers", "sensitive-answers" };
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(columns); i++)
+	{
+		g_autofree gchar *text = venture_forms_get_string(response, columns[i]);
+		g_autoptr(JsonParser) parser = json_parser_new();
+		JsonNode *root, *value;
+		if (venture_string_is_empty(text) || !json_parser_load_from_data(parser, text, -1, NULL))
+			continue;
+		root = json_parser_get_root(parser);
+		if (!JSON_NODE_HOLDS_OBJECT(root)) continue;
+		value = json_object_get_member(json_node_get_object(root), key);
+		if (value != NULL && JSON_NODE_HOLDS_VALUE(value) && json_node_get_value_type(value) == G_TYPE_STRING)
+		{
+			g_autofree gchar *address = g_strdup(json_node_get_string(value));
+			return g_ascii_strdown(g_strstrip(address), -1);
+		}
+	}
+	return NULL;
+}
+
+static gboolean
+forms_check_email_limit(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *submission, GPtrArray *fields, JsonObject *refused, GError **error)
+{
+	g_autofree gchar *key = venture_forms_get_string(form, "unique-email-field");
+	g_autofree gchar *email = NULL;
+	const VentureFormsField *field;
+	gint64 after = 0;
+	if (venture_string_is_empty(key)) return TRUE;
+	field = venture_forms_definition_find(fields, key);
+	email = forms_response_email(submission, key);
+	if (field == NULL || field->kind != VENTURE_FORM_FIELD_EMAIL || venture_string_is_empty(email))
+	{
+		forms_refuse(refused, key, "An email address is required for this form.");
+		return FALSE;
+	}
+	for (;;)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+		venture_query_set_organization(query, venture_entity_get_organization_id(form));
+		venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(form), NULL);
+		venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_GT, after, NULL);
+		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 100);
+		rows = venture_database_find(database, query, error);
+		if (rows == NULL) return FALSE;
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(rows, i);
+			g_autofree gchar *previous = forms_response_email(row, key);
+			after = venture_entity_get_id(row);
+			if (g_strcmp0(email, previous) == 0)
+			{
+				forms_refuse(refused, key, "A response for this email address has already been received.");
+				return FALSE;
+			}
+		}
+		if (rows->len < 100) return TRUE;
+	}
+}
+
 /* One attempt at the whole write: the lead, the confirmation and the
  * response, in one transaction. */
 static gboolean
 forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submission,
-	GPtrArray *fields, JsonObject *answers, gboolean follow_up, GDateTime *now, GError **error)
+	GPtrArray *fields, JsonObject *answers, gboolean follow_up, GDateTime *now, JsonObject *refused, GError **error)
 {
 	g_autofree gchar *note = NULL;
 
@@ -1770,6 +1869,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
 			goto fail;
 		}
+		if (!forms_check_email_limit(database, fresh, submission, fields, refused, error))
+			goto fail;
 	}
 
 	if (follow_up && venture_forms_get_bool(form, "create-lead"))
@@ -1943,10 +2044,15 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 
 	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
 	g_object_set(response, "sensitive-answers", secret_text, NULL);
-	if (!forms_write(database, form, response, fields, stored, TRUE, now, &follow_error))
+	if (!forms_write(database, form, response, fields, stored, TRUE, now, refused, &follow_error))
 	{
 		g_autofree gchar *note = NULL;
 
+		if (json_object_get_size(refused) > 0)
+		{
+			if (errors != NULL) *errors = g_steal_pointer(&refused);
+			return TRUE;
+		}
 		/* A form that is no longer open refuses outright. Anything else
 		 * was the lead or the email: the response is what matters, so it
 		 * is kept, and says what did not happen. */
@@ -1961,8 +2067,15 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_clear_object(&response);
 		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
 		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, NULL);
-		if (!forms_write(database, form, response, fields, stored, FALSE, now, error))
+		if (!forms_write(database, form, response, fields, stored, FALSE, now, refused, error))
+		{
+			if (json_object_get_size(refused) > 0)
+			{
+				if (errors != NULL) *errors = g_steal_pointer(&refused);
+				return TRUE;
+			}
 			return FALSE;
+		}
 	}
 
 	*outcome = VENTURE_FORMS_ACCEPTED;
