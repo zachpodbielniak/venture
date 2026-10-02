@@ -341,6 +341,30 @@ forms_validate_field(
 
 	(void)user_data;
 
+	{
+		g_autofree gchar *contact = venture_forms_get_string(entity, "contact-field");
+		gboolean query = venture_forms_get_bool(entity, "allow-prefill");
+		const gchar *allowed[] = { "name", "email", "phone", "role", "website", "address", NULL };
+		if (query && (g_strcmp0(key, "personal") == 0 || g_strcmp0(key, "style") == 0))
+		{
+			venture_set_error_validation(error, "Prefill", "personal and style are reserved public query parameters");
+			return FALSE;
+		}
+
+		if (!venture_string_is_empty(contact) && !g_strv_contains(allowed, contact))
+		{
+			venture_set_error_validation(error, "Contact prefill", "choose name, email, phone, role, website or address");
+			return FALSE;
+		}
+		if ((query || !venture_string_is_empty(contact)) && (kind == VENTURE_FORM_FIELD_CONSENT ||
+		    kind == VENTURE_FORM_FIELD_PAGE_BREAK || venture_forms_get_bool(entity, "sensitive") ||
+		    venture_forms_get_int(entity, "group-id") != 0))
+		{
+			venture_set_error_validation(error, "Prefill", "consent, sensitive questions, page breaks and repeated questions cannot be prefilled");
+			return FALSE;
+		}
+	}
+
 	/* --- The form it belongs to, which never changes --- */
 
 	if (NULL != previous && venture_forms_get_int(previous, "form-id") != form_id)
@@ -591,6 +615,8 @@ forms_validate_submission(
 		g_autofree gchar *after = venture_forms_get_string(entity, "answers");
 		g_autofree gchar *secret_before = venture_forms_get_string(previous, "sensitive-answers");
 		g_autofree gchar *secret_after = venture_forms_get_string(entity, "sensitive-answers");
+		g_autofree gchar *personal_before = venture_forms_get_string(previous, "personal-hash");
+		g_autofree gchar *personal_after = venture_forms_get_string(entity, "personal-hash");
 		g_autofree gchar *omitted_before = venture_forms_get_string(previous, "not-shown");
 		g_autofree gchar *omitted_after = venture_forms_get_string(entity, "not-shown");
 		g_autofree gchar *summary_before = venture_forms_get_string(previous, "summary");
@@ -604,6 +630,8 @@ forms_validate_submission(
 		g_object_get(entity, "submitted-at", &at_after, NULL);
 		if (0 != g_strcmp0(before, after) || 0 != g_strcmp0(secret_before, secret_after) ||
 		    0 != g_strcmp0(omitted_before, omitted_after) ||
+		    0 != g_strcmp0(personal_before, personal_after) ||
+		    venture_forms_get_int(previous, "contact-id") != venture_forms_get_int(entity, "contact-id") ||
 		    venture_forms_get_int(previous, "form-id") != venture_forms_get_int(entity, "form-id") ||
 		    venture_forms_get_int(previous, "version-id") != venture_forms_get_int(entity, "version-id") ||
 		    venture_forms_get_int(previous, "version-number") != venture_forms_get_int(entity, "version-number") ||
@@ -817,6 +845,61 @@ forms_export_invoke(VentureAction *action, VentureEntity *entity, GHashTable *pa
 	return answer;
 }
 
+/* Bulk generation returns capabilities only to an owner, never to a staged
+ * card. Campaign/sequence services use the same link constructor privately. */
+static VentureEntity *
+forms_personal_links_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	VentureDatabase *database = venture_action_get_data(action);
+	JsonNode *ids = g_hash_table_lookup(params, "contact_ids");
+	JsonNode *origin_node = g_hash_table_lookup(params, "origin");
+	JsonNode *days_node = g_hash_table_lookup(params, "days");
+	const gchar *origin = origin_node != NULL && JSON_NODE_HOLDS_VALUE(origin_node) &&
+		json_node_get_value_type(origin_node) == G_TYPE_STRING ? json_node_get_string(origin_node) : NULL;
+	gint64 days = days_node != NULL && JSON_NODE_HOLDS_VALUE(days_node) &&
+		json_node_get_value_type(days_node) == G_TYPE_INT64 ? json_node_get_int(days_node) : 7;
+	g_autoptr(GDateTime) now = venture_time_now(), expires = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *text = NULL;
+	VentureEntity *answer;
+	guint i;
+	(void)actor;
+	if (ids == NULL || !JSON_NODE_HOLDS_ARRAY(ids) || json_array_get_length(json_node_get_array(ids)) == 0 ||
+	    json_array_get_length(json_node_get_array(ids)) > 200 || days < 1 || days > 30)
+	{
+		venture_set_error_validation(error, "Personal links", "name 1..200 contact IDs and 1..30 days");
+		return NULL;
+	}
+	expires = g_date_time_add_days(now, (gint)days);
+	json_builder_begin_array(builder);
+	for (i = 0; i < json_array_get_length(json_node_get_array(ids)); i++)
+	{
+		JsonNode *id = json_array_get_element(json_node_get_array(ids), i);
+		g_autoptr(VentureEntity) contact = NULL;
+		g_autofree gchar *url = NULL;
+		if (!JSON_NODE_HOLDS_VALUE(id) || json_node_get_value_type(id) != G_TYPE_INT64 || json_node_get_int(id) <= 0)
+		{
+			venture_set_error_validation(error, "Personal links", "contact IDs must be positive integers");
+			return NULL;
+		}
+		contact = venture_database_get(database, VENTURE_TYPE_CONTACT, json_node_get_int(id), error);
+		if (contact == NULL) return NULL;
+		url = venture_forms_personal_link(database, entity, contact, origin, expires, now, error);
+		if (url == NULL) return NULL;
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "contact_id"); json_builder_add_int_value(builder, venture_entity_get_id(contact));
+		json_builder_set_member_name(builder, "url"); json_builder_add_string_value(builder, url);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder); result = json_builder_get_root(builder); text = json_to_string(result, FALSE);
+	answer = VENTURE_ENTITY(venture_form_new());
+	venture_entity_set_organization_id(answer, venture_entity_get_organization_id(entity));
+	g_object_set(answer, "name", "Personal links", "result", text, NULL);
+	return answer;
+}
+
 static void
 forms_register_actions(VentureDatabase *database)
 {
@@ -868,6 +951,20 @@ forms_register_actions(VentureDatabase *database)
 	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 		forms_publish_allowed_type, forms_export_invoke, database, NULL, &error))
 		g_error("Form export action registration: %s", error->message);
+	g_clear_object(&action);
+	g_ptr_array_set_size(parameters, 0);
+	g_ptr_array_add(parameters, venture_field_spec_new("contact_ids", "Contact IDs", VENTURE_FIELD_KIND_JSON));
+	g_ptr_array_add(parameters, venture_field_spec_new("origin", "Public origin", VENTURE_FIELD_KIND_STRING));
+	g_ptr_array_add(parameters, venture_field_spec_new("days", "Days", VENTURE_FIELD_KIND_INTEGER));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "personal_links", "label", "Generate personal links",
+		"description", "Generate private form links for 1..200 contacts, expiring after 1..30 days (default 7)",
+		"parameters", parameters, "stageable", FALSE, "service-transaction", TRUE,
+		"roles", VENTURE_USER_ROLE_OWNER, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed, forms_personal_links_invoke, database, NULL, &error))
+		g_error("Form personal link action registration: %s", error->message);
+
 }
 
 void
@@ -1698,6 +1795,59 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 	g_string_append_printf(summary, "%s: %s\n", label, text);
 }
 
+/* Prefill is untrusted input, even when it originated from a contact.
+ * Invalid values disappear rather than bypassing the ordinary validator. */
+JsonObject *
+venture_forms_prefill_values(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *version, GHashTable *query, const gchar *personal, GDateTime *now, GError **error)
+{
+	g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, error);
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autoptr(JsonObject) result = json_object_new();
+	guint i;
+	if (fields == NULL) return NULL;
+	if (personal != NULL)
+	{
+		contact = venture_forms_personal_contact(database, form, personal, now, error);
+		if (contact == NULL) return NULL;
+		json_object_set_string_member(result, VENTURE_FORMS_PERSONAL, personal);
+	}
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFormsField *field = g_ptr_array_index(fields, i);
+		g_autofree gchar *mapped = NULL;
+		const gchar *value = NULL;
+		g_autoptr(GPtrArray) raw = g_ptr_array_new();
+		g_autoptr(JsonObject) checked = json_object_new(), refused = json_object_new();
+		g_autoptr(GString) summary = g_string_new(NULL);
+		JsonNode *node;
+		if (field->sensitive || field->kind == VENTURE_FORM_FIELD_CONSENT ||
+		    field->kind == VENTURE_FORM_FIELD_PAGE_BREAK || field->group_key != NULL) continue;
+		if (field->allow_prefill && query != NULL) value = g_hash_table_lookup(query, field->key);
+		if (contact != NULL && !venture_string_is_empty(field->contact_field))
+		{
+			const gchar *allowed[] = { "name", "email", "phone", "role", "website", "address", NULL };
+			if (!g_strv_contains(allowed, field->contact_field)) continue;
+			mapped = venture_forms_get_string(contact, field->contact_field);
+			value = mapped;
+		}
+		if (value == NULL || strlen(value) > 32768) continue;
+		g_ptr_array_add(raw, (gpointer)value);
+		forms_check_field(field, raw, checked, refused, summary);
+		node = json_object_get_member(checked, field->key);
+		if (node != NULL && json_object_get_size(refused) == 0)
+		{
+			if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) != G_TYPE_STRING)
+			{
+				g_autofree gchar *text = json_to_string(node, FALSE);
+				json_object_set_string_member(result, field->key, text);
+			}
+			else json_object_set_member(result, field->key, json_node_copy(node));
+		}
+	}
+	return g_steal_pointer(&result);
+}
+
 /* ==========================================================================
  * Saving a response
  * ========================================================================== */
@@ -1955,6 +2105,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
 			goto fail;
 		}
+		if (!venture_forms_personal_bind(database, fresh, submission, now, refused, error))
+			goto fail;
 		if (!forms_check_email_limit(database, fresh, submission, fields, refused, error))
 			goto fail;
 	}
@@ -2048,6 +2200,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autoptr(GHashTable) not_shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	g_autofree gchar *secret_text = NULL;
 	g_autofree gchar *omitted_text = NULL;
+	g_autofree gchar *personal = g_strdup(forms_first(answers, VENTURE_FORMS_PERSONAL));
 	g_autoptr(GString) summary = g_string_new(NULL);
 	g_autoptr(VentureEntity) response = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -2075,6 +2228,18 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
 		return FALSE;
 	}
+	if (personal != NULL)
+	{
+		g_autoptr(VentureEntity) contact = venture_forms_personal_contact(database, form, personal, now, error);
+		if (contact == NULL) return FALSE;
+	}
+	if (g_hash_table_contains(answers, VENTURE_FORMS_PREFILL))
+	{
+		g_autoptr(JsonObject) seed = venture_forms_prefill_unpack(form, version,
+			forms_first(answers, VENTURE_FORMS_PREFILL), error);
+		if (seed == NULL) return FALSE;
+	}
+
 	base_fields = venture_forms_definition_for(database, form, version, error);
 	if (NULL == base_fields)
 		return FALSE;
@@ -2087,7 +2252,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_hash_table_iter_init(&iter, answers);
 	while (g_hash_table_iter_next(&iter, &key, NULL))
 	{
-		if (0 == g_strcmp0(key, VENTURE_FORMS_HONEYPOT) || 0 == g_strcmp0(key, VENTURE_FORMS_TICKET))
+		if (0 == g_strcmp0(key, VENTURE_FORMS_HONEYPOT) || 0 == g_strcmp0(key, VENTURE_FORMS_TICKET) ||
+		    0 == g_strcmp0(key, VENTURE_FORMS_PERSONAL) || 0 == g_strcmp0(key, VENTURE_FORMS_PREFILL))
 			continue;
 		if (NULL == venture_forms_definition_find(fields, key))
 			forms_refuse(refused, key, "This form has no such question.");
@@ -2147,6 +2313,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_string_truncate(summary, summary->len - 1);
 
 	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+	g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 	g_object_set(response, "sensitive-answers", secret_text, NULL);
 	{
 		g_autoptr(JsonObject) omitted = json_object_new();
@@ -2179,6 +2346,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_clear_error(&follow_error);
 		g_clear_object(&response);
 		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+		g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, "not-shown", omitted_text, NULL);
 		if (!forms_write(database, form, response, fields, stored, FALSE, now, refused, error))
 		{
@@ -2373,7 +2541,7 @@ forms_anonymise(VentureDatabase *database, VentureEntity *response, GDateTime *n
 
 	g_object_set(response, "name", name, "answers", "{}", "sensitive-answers", NULL, "not-shown", NULL,
 		"summary", "", "notes", NULL, "origin", NULL, "mapping-note", NULL,
-		"anonymised-at", now, NULL);
+		"anonymised-at", now, "contact-id", (gint64)0, "personal-hash", NULL, NULL);
 	g_object_set_data(G_OBJECT(response), VENTURE_FORMS_ANONYMISING_KEY, GINT_TO_POINTER(1));
 	return venture_database_save(database, response, actor, error);
 }
@@ -2515,6 +2683,19 @@ forms_answers_mention(const gchar *text, const gchar *email)
 	return root != NULL && JSON_NODE_HOLDS_OBJECT(root) && forms_node_mentions(root, email, 0);
 }
 
+static gboolean
+forms_bound_email(VentureDatabase *database, VentureEntity *response, const gchar *email)
+{
+	gint64 id = venture_forms_get_int(response, "contact-id");
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autofree gchar *address = NULL;
+	if (id <= 0) return FALSE;
+	contact = venture_database_get(database, VENTURE_TYPE_CONTACT, id, NULL);
+	if (contact == NULL || venture_entity_get_organization_id(contact) != venture_entity_get_organization_id(response)) return FALSE;
+	address = venture_forms_get_string(contact, "email");
+	return address != NULL && g_ascii_strcasecmp(g_strstrip(address), email) == 0;
+}
+
 JsonNode *
 venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, const gchar *email,
 	const VentureActor *actor, GError **error)
@@ -2548,7 +2729,8 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 		g_autofree gchar *open = venture_forms_get_string(response, "answers");
 		g_autofree gchar *hidden = venture_forms_get_string(response, "sensitive-answers");
 
-		if (!forms_answers_mention(open, wanted) && !forms_answers_mention(hidden, wanted))
+		if (!forms_answers_mention(open, wanted) && !forms_answers_mention(hidden, wanted) &&
+		    !forms_bound_email(database, response, wanted))
 			continue;
 		if (G_TYPE_INVALID != venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message") &&
 		    NULL != venture_database_get_mail_outbox(database))
@@ -2583,7 +2765,7 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 		{
 			VentureEntity *draft = g_ptr_array_index(drafts, i);
 			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
-			if (!forms_answers_mention(text, wanted)) continue;
+			if (!forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
 			if (!venture_database_purge(database, draft, actor, error)) goto fail;
 			erased++;
 		}
@@ -2661,7 +2843,8 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 		g_autoptr(GDateTime) at = NULL;
 		g_autofree gchar *when = NULL, *title = NULL;
 
-		if (!forms_answers_mention(open, wanted) && !forms_answers_mention(hidden, wanted))
+		if (!forms_answers_mention(open, wanted) && !forms_answers_mention(hidden, wanted) &&
+		    !forms_bound_email(database, response, wanted))
 			continue;
 		form = venture_database_get(database, VENTURE_TYPE_FORM, venture_forms_get_int(response, "form-id"), NULL);
 		title = venture_forms_get_string(form, "title");
@@ -2697,7 +2880,7 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 		{
 			VentureEntity *draft = g_ptr_array_index(drafts, i);
 			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
-			if (!forms_answers_mention(text, wanted)) continue;
+			if (!forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
 			json_builder_begin_object(builder);
 			json_builder_set_member_name(builder, "form_id");
 			json_builder_add_int_value(builder, venture_forms_get_int(draft, "form-id"));

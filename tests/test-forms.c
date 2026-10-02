@@ -1330,6 +1330,154 @@ test_repeat_rules_privacy(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
 }
 
+/* A link identifies a contact, never a login. Editing a visible email may
+ * change the answer but cannot move its binding or evade retained limits. */
+static void
+test_personal_links(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "personal-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) other = make_form(f, "other-personal", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) contact = VENTURE_ENTITY(venture_contact_new());
+	g_autoptr(VentureEntity) name = NULL, email = NULL, version = NULL, found = NULL, response = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), expires = NULL, later = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GHashTable) query = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(JsonObject) values = NULL, restored = NULL, errors = NULL;
+	g_autoptr(JsonNode) erased = NULL;
+	g_autofree gchar *url = NULL, *url2 = NULL, *seed = NULL, *text = NULL;
+	const gchar *token;
+	const gchar *pairs[7];
+	(void)data;
+	venture_entity_set_organization_id(contact, f->org);
+	g_object_set(contact, "name", "Known contact", "email", "known@example.com", "notes", "PRIVATE CRM NOTES", NULL); save(f, contact);
+	name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	email = make_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 2);
+	g_object_set(name, "allow-prefill", TRUE, "contact-field", "name", NULL); save(f, name);
+	g_object_set(email, "contact-field", "email", NULL); save(f, email);
+	{
+		g_autoptr(VentureEntity) consent = make_field(f, form, "agree", "Agree", VENTURE_FORM_FIELD_CONSENT, FALSE, 3);
+		g_object_set(consent, "allow-prefill", TRUE, NULL); refuse(f, consent, "cannot be prefilled");
+		g_object_set(consent, "allow-prefill", FALSE, "contact-field", "notes", NULL); refuse(f, consent, "choose name");
+		g_object_set(name, "sensitive", TRUE, NULL); refuse(f, name, "cannot be prefilled");
+		g_object_set(name, "sensitive", FALSE, NULL);
+	}
+
+	g_object_set(form, "one-per-link", TRUE, NULL); save(f, form);
+	version = publish(f, form);
+	expires = g_date_time_add_days(now, 1); later = g_date_time_add_days(now, 2);
+	url = venture_forms_personal_link(f->db, form, contact, "https://forms.example", expires, now, &error); g_assert_no_error(error);
+	g_assert_nonnull(url); token = strstr(url, "personal=") + strlen("personal=");
+	found = venture_forms_personal_contact(f->db, form, token, now, &error); g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(found), ==, venture_entity_get_id(contact)); g_clear_object(&found);
+	found = venture_forms_personal_contact(f->db, other, token, now, &error); g_assert_null(found);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	found = venture_forms_personal_contact(f->db, form, token, later, &error); g_assert_null(found);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	{
+		g_autofree gchar *tampered = g_strdup(token);
+		tampered[strlen(tampered) - 1] = tampered[strlen(tampered) - 1] == 'a' ? 'b' : 'a';
+		found = venture_forms_personal_contact(f->db, form, tampered, now, &error); g_assert_null(found);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	}
+	g_hash_table_insert(query, g_strdup("name"), g_strdup("Query name")); g_hash_table_insert(query, g_strdup("email"), g_strdup("forged@example.com"));
+	values = venture_forms_prefill_values(f->db, form, version, query, NULL, now, &error); g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(values, "name"), ==, "Query name");
+	g_assert_false(json_object_has_member(values, "email")); g_clear_pointer(&values, json_object_unref);
+	values = venture_forms_prefill_values(f->db, form, version, query, token, now, &error); g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(values, "name"), ==, "Known contact");
+	g_assert_cmpstr(json_object_get_string_member(values, "email"), ==, "known@example.com");
+	g_assert_false(json_object_has_member(values, "notes"));
+	seed = venture_forms_prefill_pack(form, version, values);
+	restored = venture_forms_prefill_unpack(form, version, seed, &error); g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(restored, "name"), ==, "Known contact");
+	pairs[0] = "name"; pairs[1] = "Edited name"; pairs[2] = "email"; pairs[3] = "changed@example.com";
+	pairs[4] = VENTURE_FORMS_PERSONAL; pairs[5] = token; pairs[6] = NULL;
+	g_assert_cmpint(submit_pairs(f, form, pairs, &errors), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	g_assert_cmpint(venture_forms_get_int(response, "contact-id"), ==, venture_entity_get_id(contact));
+	text = venture_forms_get_string(response, "answers"); g_assert_nonnull(strstr(text, "changed@example.com"));
+	g_assert_null(strstr(text, "personal"));
+	g_assert_cmpint(submit_pairs(f, form, pairs, &errors), ==, VENTURE_FORMS_INVALID); g_clear_pointer(&errors, json_object_unref);
+	url2 = venture_forms_personal_link(f->db, form, contact, "https://forms.example", expires, now, &error); g_assert_no_error(error);
+	pairs[5] = strstr(url2, "personal=") + strlen("personal=");
+	g_assert_cmpint(submit_pairs(f, form, pairs, &errors), ==, VENTURE_FORMS_ACCEPTED);
+	g_object_set(form, "one-per-contact", TRUE, NULL); save(f, form);
+	g_assert_cmpint(submit_pairs(f, form, pairs, &errors), ==, VENTURE_FORMS_INVALID); g_clear_pointer(&errors, json_object_unref);
+	erased = venture_forms_erase_person(f->db, f->org, "known@example.com", NULL, &error); g_assert_no_error(error);
+	g_assert_nonnull(erased); g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(submit_pairs(f, form, pairs, &errors), ==, VENTURE_FORMS_ACCEPTED);
+	{
+		g_autoptr(VentureEntity) organization = VENTURE_ENTITY(venture_organization_new());
+		g_autoptr(VentureEntity) outsider = VENTURE_ENTITY(venture_contact_new());
+		g_autofree gchar *wrong = NULL;
+		g_object_set(organization, "name", "Other organization", NULL); save(f, organization);
+		venture_entity_set_organization_id(outsider, venture_entity_get_id(organization));
+		g_object_set(outsider, "name", "Other contact", "email", "other@example.com", NULL); save(f, outsider);
+		wrong = venture_forms_personal_link(f->db, form, outsider, "https://forms.example", expires, now, &error);
+		g_assert_null(wrong); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	}
+	g_assert_true(venture_database_delete(f->db, contact, NULL, &error)); g_assert_no_error(error);
+	found = venture_forms_personal_contact(f->db, form, token, now, &error); g_assert_null(found);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+
+}
+
+/* Defaults for later pages travel in a signed seed, without creating an
+ * anonymous GET-side draft or trusting extra fields in a page POST. */
+static void
+test_query_prefill_pages(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "query-prefill", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) name = NULL, email = NULL, version = NULL;
+	g_autoptr(GHashTable) query = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free), answers = venture_forms_answers_new();
+	g_autoptr(GDateTime) now = venture_time_now(), issued = NULL;
+	g_autoptr(JsonObject) values = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureFormsStep) step = NULL;
+	g_autofree gchar *seed = NULL, *ticket = NULL, *html = NULL;
+	VentureFormsRender options;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "next", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 2);
+	email = make_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 3);
+	g_object_set(name, "allow-prefill", TRUE, NULL); save(f, name);
+	g_object_set(email, "allow-prefill", TRUE, NULL); save(f, email);
+	version = publish(f, form); start_http(f);
+	request(f, "/pub/form/query-prefill?name=Alex&email=later%40example.com&notes=FORGED", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "value=\"Alex\""));
+	g_assert_null(strstr(reply.body, "FORGED")); g_assert_nonnull(strstr(reply.body, "name=\"_vf_prefill\"")); reply_clear(&reply);
+	request(f, "/pub/form/query-prefill", "application/x-www-form-urlencoded", "_vf_personal=invalid&name=Alex", NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 404); reply_clear(&reply);
+
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+	g_hash_table_insert(query, g_strdup("email"), g_strdup("not an address"));
+	values = venture_forms_prefill_values(f->db, form, version, query, NULL, now, &error); g_assert_no_error(error);
+	g_assert_false(json_object_has_member(values, "email")); g_clear_pointer(&values, json_object_unref);
+
+	g_hash_table_insert(query, g_strdup("email"), g_strdup("later@example.com"));
+	values = venture_forms_prefill_values(f->db, form, version, query, NULL, now, &error); g_assert_no_error(error);
+	seed = venture_forms_prefill_pack(form, version, values);
+	issued = g_date_time_add_seconds(now, -60); ticket = venture_forms_ticket_new(form, issued);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	venture_forms_answers_add(answers, VENTURE_FORMS_PREFILL, seed);
+	venture_forms_answers_add(answers, "name", "Edited Alex");
+	step = venture_forms_step(f->db, form, answers, NULL, now, &error); g_assert_no_error(error);
+	g_assert_nonnull(step); g_assert_cmpuint(step->page, ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(step->values, "email"), ==, "later@example.com");
+	options.mode = VENTURE_FORMS_RENDER_FRAGMENT; options.action = NULL; options.ticket = step->ticket;
+	options.values = step->values; options.errors = step->errors; options.version = step->version;
+	html = venture_forms_render_step(f->db, form, &options, step, &error); g_assert_no_error(error);
+	g_assert_nonnull(strstr(html, "value=\"later@example.com\""));
+	g_clear_pointer(&step, venture_forms_step_free); g_hash_table_remove_all(answers);
+	seed[strlen(seed)-1] = seed[strlen(seed)-1] == 'a' ? 'b' : 'a';
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	venture_forms_answers_add(answers, VENTURE_FORMS_PREFILL, seed);
+	venture_forms_answers_add(answers, "name", "Alex");
+	step = venture_forms_step(f->db, form, answers, NULL, now, &error); g_assert_null(step);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
 /* Hidden answers cannot influence either required branches or saved data;
  * navigation and conditions are frozen with the questions they govern. */
 static void
@@ -2933,6 +3081,8 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-json", Fixture, NULL, setup, test_http_json, teardown);
 	g_test_add("/forms/http-refusals", Fixture, NULL, setup, test_http_refusals, teardown);
 	g_test_add("/forms/unique-email-sensitive", Fixture, NULL, setup, test_unique_email_sensitive, teardown);
+	g_test_add("/forms/query-prefill-pages", Fixture, NULL, setup, test_query_prefill_pages, teardown);
+	g_test_add("/forms/personal-links", Fixture, NULL, setup, test_personal_links, teardown);
 	g_test_add("/forms/repeat-rules-privacy", Fixture, NULL, setup, test_repeat_rules_privacy, teardown);
 	g_test_add("/forms/repeat-early-add", Fixture, NULL, setup, test_repeat_early_add, teardown);
 	g_test_add_func("/forms/repeat-json", test_repeat_json);

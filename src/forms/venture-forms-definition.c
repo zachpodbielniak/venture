@@ -289,6 +289,7 @@ venture_forms_field_free(gpointer data)
 	g_free(field->pattern);
 	g_free(field->default_value);
 	g_free(field->maps_to);
+	g_free(field->contact_field);
 	g_free(field->autocomplete);
 	g_free(field->group_key);
 	g_free(field->group_label);
@@ -355,6 +356,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 		             "position", &field->position, "group-id", &field->group_id,
 		             "help", &field->help, "placeholder", &field->placeholder,
 		             "pattern", &field->pattern, "default-value", &field->default_value,
+		             "allow-prefill", &field->allow_prefill, "contact-field", &field->contact_field,
 		             "maps-to", &field->maps_to, "autocomplete", &field->autocomplete,
 		             "min-value", &field->min_value,
 		             "max-value", &field->max_value, "min-length", &field->min_length,
@@ -441,6 +443,9 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		FORMS_STRING(pattern, "pattern")
 		FORMS_STRING(default_value, "default_value")
 		FORMS_STRING(maps_to, "maps_to")
+		FORMS_STRING(contact_field, "contact_field")
+		json_builder_set_member_name(builder, "allow_prefill");
+		json_builder_add_boolean_value(builder, field->allow_prefill);
 		FORMS_STRING(autocomplete, "autocomplete")
 #undef FORMS_STRING
 		if (0 != field->min_value)
@@ -569,6 +574,8 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		field->pattern = forms_member_string(object, "pattern");
 		field->default_value = forms_member_string(object, "default_value");
 		field->maps_to = forms_member_string(object, "maps_to");
+		field->contact_field = forms_member_string(object, "contact_field");
+		field->allow_prefill = json_object_get_boolean_member_with_default(object, "allow_prefill", FALSE);
 		field->autocomplete = forms_member_string(object, "autocomplete");
 		field->min_value = forms_member_number(object, "min_value");
 		field->max_value = forms_member_number(object, "max_value");

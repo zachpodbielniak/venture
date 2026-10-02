@@ -75,7 +75,7 @@ forms_draft_save(VentureDatabase *database, VentureEntity *draft, VentureFormsSt
 		venture_set_error_validation(error, "Draft", "too much data for one response");
 		return FALSE;
 	}
-	g_object_set(draft, "answers", text, "page", (gint64)step->page, "finishing", finishing,
+	g_object_set(draft, "contact-id", step->contact_id, "answers", text, "page", (gint64)step->page, "finishing", finishing,
 		"generation", venture_forms_get_int(draft, "generation") + 1, NULL);
 	g_object_set_data(G_OBJECT(draft), VENTURE_FORMS_DRAFT_WRITE, GINT_TO_POINTER(1));
 	return venture_database_save(database, draft, NULL, error);
@@ -130,6 +130,30 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		step->ticket = g_strdup(forms_first(answers, VENTURE_FORMS_TICKET));
 	}
 	if (step->version == NULL) goto missing;
+	if (draft == NULL)
+	{
+		g_autoptr(JsonObject) initial = venture_forms_prefill_unpack(fresh, step->version,
+			forms_first(answers, VENTURE_FORMS_PREFILL), error);
+		const gchar *personal = forms_first(answers, VENTURE_FORMS_PERSONAL);
+		if (initial == NULL) goto fail;
+		g_clear_pointer(&step->values, json_object_unref);
+		step->values = g_steal_pointer(&initial);
+		if (personal != NULL) json_object_set_string_member(step->values, VENTURE_FORMS_PERSONAL, personal);
+	}
+	{
+		JsonNode *binding = json_object_get_member(step->values, VENTURE_FORMS_PERSONAL);
+		const gchar *personal = binding != NULL && JSON_NODE_HOLDS_VALUE(binding) &&
+			json_node_get_value_type(binding) == G_TYPE_STRING ? json_node_get_string(binding) : NULL;
+		const gchar *posted_personal = forms_first(answers, VENTURE_FORMS_PERSONAL);
+		if (draft != NULL && posted_personal != NULL && g_strcmp0(posted_personal, personal) != 0) goto missing;
+		if (personal != NULL)
+		{
+			g_autoptr(VentureEntity) contact = venture_forms_personal_contact(database, fresh, personal, now, error);
+			if (contact == NULL) goto fail;
+			step->contact_id = venture_entity_get_id(contact);
+		}
+	}
+
 	base_fields = venture_forms_definition_for(database, fresh, step->version, error);
 	if (base_fields == NULL) goto fail;
 	step->pages = venture_forms_page_count(base_fields);
@@ -141,7 +165,8 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 	while (g_hash_table_iter_next(&iter, &key, NULL))
 	{
 		if (g_strcmp0(key, VENTURE_FORMS_DRAFT_TOKEN) == 0 || g_strcmp0(key, VENTURE_FORMS_MOVE) == 0 ||
-		    g_strcmp0(key, VENTURE_FORMS_TICKET) == 0 || g_strcmp0(key, VENTURE_FORMS_HONEYPOT) == 0) continue;
+		    g_strcmp0(key, VENTURE_FORMS_TICKET) == 0 || g_strcmp0(key, VENTURE_FORMS_HONEYPOT) == 0 ||
+		    g_strcmp0(key, VENTURE_FORMS_PERSONAL) == 0 || g_strcmp0(key, VENTURE_FORMS_PREFILL) == 0) continue;
 		if (venture_forms_definition_find(page_fields, key) == NULL)
 			forms_refuse(step->errors, "_form", "Only questions on the current page may be answered.");
 	}

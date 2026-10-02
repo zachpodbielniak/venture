@@ -1494,3 +1494,11 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   instantiates per-row rules, and folding happens only after validation. Keep
   public and sensitive row arrays aligned. Add/remove are draft operations,
   never intake; final intake rechecks the original ticket and every row.
+
+- **A personal form link is a capability, not a contact ID from the browser.**
+  The forms service checks its form-bound signature, contact UUID, organization,
+  deletion and expiry again under the final save lock. Contact/link limits count
+  retained responses there. Query prefill is separately opted in and validated;
+  its signed seed carries later-page defaults, never authentication. Marketing
+  and sequence links belong only in private delivery bodies, not previews or
+  ordinary tracking destinations.

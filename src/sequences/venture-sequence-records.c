@@ -108,6 +108,7 @@ static const VentureFieldDecl sequence_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureSequence, venture_sequence, sequence_fields)
 static const VentureFieldDecl sequence_step_fields[] = {
+	VENTURE_FIELD_REF("survey-form-id", "Personal survey form", "Append a private personal link to email delivery", "form", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("sequence-id", "Sequence id", NULL, "sequence", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("position", "Position", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("delay-days", "Delay days", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
@@ -136,6 +137,7 @@ static const VentureFieldDecl sequence_enrollment_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureSequenceEnrollment, venture_sequence_enrollment, sequence_enrollment_fields)
 static const VentureFieldDecl sequence_delivery_fields[] = {
+	VENTURE_FIELD("private-body", "Private adapter body", "Personal form capability for the mail adapter; never display", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_REF("enrollment-id", "Enrollment id", NULL, "sequence_enrollment", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("step-id", "Step id", NULL, "sequence_step", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("channel", "Channel", NULL, venture_sequence_channel_get_type, VENTURE_COLUMN_FLAG_INDEXED),

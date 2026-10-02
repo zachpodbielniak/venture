@@ -465,6 +465,20 @@ JsonNode *venture_forms_erase_person(VentureDatabase *database, gint64 organizat
 JsonNode *venture_forms_export_person(VentureDatabase *database, gint64 organization_id,
 	const gchar *email, GError **error);
 
+/**
+ * venture_forms_personal_link:
+ * @database: database
+ * @form: form in the contact's organization
+ * @contact: existing contact
+ * @origin: public HTTPS origin (HTTP allowed on loopback)
+ * @expires: expiry within 30 days
+ * @now: generation time
+ * @error: (out) (optional): validation failure
+ * Returns: (transfer full) (nullable): bearer URL; keep private
+ */
+gchar *venture_forms_personal_link(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *contact, const gchar *origin, GDateTime *expires, GDateTime *now, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

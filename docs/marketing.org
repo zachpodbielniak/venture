@@ -239,3 +239,11 @@ metadata (including declarative =retain_reference: true=), so a future evidence
 record can preserve its original subject without another hardcoded type list.
 The flag does not grant write permission or replace immutable-save validators.
 Exports retain the original subject IDs; private capabilities remain excluded.
+
+* Personal survey links
+
+Set a draft send's =survey_form_id= to a published form before preview.
+Eligible contacts receive a seven-day personal link, frozen only in private
+delivery content and delivered through the ordinary approved outbox path.
+Non-contact audience members are excluded. The form exposes only published
+contact mappings; see [[file:forms.org][Forms]] for scopes, expiry and duplicate limits.

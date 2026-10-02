@@ -622,6 +622,20 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	}
 	g_string_append_c(html, '>');
 
+	if (!preview && options->values != NULL)
+	{
+		const gchar *keys[] = { VENTURE_FORMS_PERSONAL, VENTURE_FORMS_PREFILL };
+		guint k;
+		for (k = 0; k < G_N_ELEMENTS(keys); k++)
+		{
+			JsonNode *value = json_object_get_member(options->values, keys[k]);
+			if (value == NULL || !JSON_NODE_HOLDS_VALUE(value) || json_node_get_value_type(value) != G_TYPE_STRING) continue;
+			g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" value=\"", keys[k]);
+			forms_escape(html, json_node_get_string(value));
+			g_string_append(html, "\">");
+		}
+	}
+
 	/* Enter in a row must submit the page, never implicitly remove a row. */
 	if (!preview && venture_forms_has_groups(selected))
 		g_string_append(html, "<button type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"next\" hidden aria-hidden=\"true\" tabindex=\"-1\">Continue</button>");
@@ -856,6 +870,9 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 		json_builder_add_string_value(builder, field->label != NULL ? field->label : "");
 		json_builder_set_member_name(builder, "kind");
 		json_builder_add_string_value(builder, venture_forms_kind_nick(field->kind));
+		json_builder_set_member_name(builder, "allow_prefill");
+		json_builder_add_boolean_value(builder, field->allow_prefill);
+
 		json_builder_set_member_name(builder, "required");
 		json_builder_add_boolean_value(builder, field->required);
 		json_builder_set_member_name(builder, "help");

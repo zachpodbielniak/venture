@@ -131,6 +131,37 @@ static gint run(Fixture *f)
 	gint result = venture_marketing_service_run(f->service, 1, venture_entity_get_id(f->send), 100, now, NULL, &error);
 	g_assert_no_error(error); return result;
 }
+/* Personal capabilities travel through the existing private outbox payload,
+ * never through the frozen public preview or ordinary API serialization. */
+static void test_personal_survey(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = venture_context_new(config, f->db);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", (gint64)1, "name", "Survey", "state", VENTURE_FORM_LIVE, NULL);
+	g_autoptr(VentureEntity) field = NULL, version = NULL;
+	g_autoptr(VentureMarketingConsent) consent = permission_for(f, f->contact, "survey-permission");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(JsonNode) json = NULL;
+	g_autofree gchar *public_text = NULL, *private_text = NULL, *serialized = NULL, *delivered = NULL;
+	(void)data;
+	persist(f, form);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", (gint64)1, "form-id", venture_entity_get_id(form),
+		"key", "email", "label", "Email", "kind", VENTURE_FORM_FIELD_EMAIL, "contact-field", "email", NULL); persist(f, field);
+	version = venture_forms_publish(f->db, form, NULL, &error); g_assert_no_error(error); g_assert_nonnull(version);
+	g_object_set(f->send, "survey-form-id", venture_entity_get_id(form), NULL); persist(f, f->send);
+	preview(f); rows = recipients(f); g_assert_cmpuint(rows->len, ==, 1);
+	g_object_get(g_ptr_array_index(rows, 0), "text-body", &public_text, "private-text-body", &private_text, NULL);
+	g_assert_null(strstr(public_text, "personal=")); g_assert_nonnull(strstr(private_text, "personal="));
+	json = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(rows, 0)), FALSE);
+	serialized = json_to_string(json, FALSE); g_assert_null(strstr(serialized, "personal="));
+	approve(f); g_assert_cmpint(run(f), ==, 1); g_assert_cmpint(run(f), ==, 0);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(f->outbox, 1, 100, NULL, NULL, &error), ==, 1); g_assert_no_error(error);
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 1);
+	g_object_get(g_ptr_array_index((GPtrArray *)venture_log_mailer_get_messages(f->mailer), 0), "private-text-body", &delivered, NULL);
+	g_assert_nonnull(strstr(delivered, "personal="));
+}
+
 /* An approval binds both the address set and rendered personalizations. */
 static void test_snapshot(Fixture *f, gconstpointer data)
 {
@@ -887,6 +918,7 @@ int main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/marketing/records", test_records);
 	g_test_add_func("/marketing/evidence-guard", test_evidence_guard);
+	g_test_add("/marketing/personal-survey", Fixture, NULL, setup, test_personal_survey, teardown);
 	g_test_add("/marketing/snapshot", Fixture, NULL, setup, test_snapshot, teardown);
 	g_test_add("/marketing/unsubscribe", Fixture, NULL, setup, test_unsubscribe, teardown);
 	g_test_add("/marketing/unsubscribe-deleted-subject", Fixture, GINT_TO_POINTER(1), setup, test_unsubscribe, teardown);

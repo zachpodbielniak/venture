@@ -1751,6 +1751,17 @@ downward goal reads as done before it starts.
 
 Module `forms` (requires only `core`; suggests `leads`, `mail` and `marketing`). Check
 `venturectl describe form`, `describe form_field`, `describe form_submission`.
+URL prefill is opt-in per question (`allow_prefill=true`); invalid values are
+omitted and final answers revalidate. Personal links use a published
+`contact_field=name|email|phone|role|website|address` mapping. Owners can call
+`act form ID personal_links contact_ids='[3,8]' origin=https://forms.example days=7`.
+The nonstageable result contains private bearer URLs, valid for 1–30 days.
+Do not put them in shared notes or logs. `one_per_link`/`one_per_contact` limit
+retained bound responses. Consent, sensitive and repeated questions cannot
+be prefilled. Marketing sends and email sequence steps accept `survey_form_id`;
+links live in private delivery bodies. See `docs/forms.org` for the adapter
+contract and expiration behavior.
+
 For repeated questions, inspect `describe form_group`, create a group with
 `form_id`, stable `key`, `label`, `min_rows` and `max_rows`, then set member
 questions' `group_id`. Keep members consecutive on one page and publish.

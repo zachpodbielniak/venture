@@ -105,6 +105,9 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("closes-at", "Closes at",
 	              "Optional: stop taking responses at this time",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("one-per-contact", "One response per contact", "A personal link cannot submit twice for the same retained contact", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("one-per-link", "One response per personal link", "A personal link cannot create a second retained response", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+
 	VENTURE_FIELD("unique-email-field", "One response per email",
 	              "Optional: the key of a required email question; blank allows repeat responses",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
@@ -221,6 +224,9 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("default-value", "Default", "Optional: the value it starts with",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("allow-prefill", "Allow URL prefill", "Accept this question's initial value from the public query string", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("contact-field", "Prefill contact field", "For personal links: name, email, phone, role, website or address", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+
 	VENTURE_FIELD("maps-to", "Maps to",
 	              "With Create a lead: name, email, phone, company_name, website or notes",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
@@ -308,6 +314,9 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD("anonymised-at", "Anonymised", "When the retention sweep removed its answers",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("contact-id", "Contact", "Contact bound by the personal form link", "contact", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("personal-hash", "Personal link digest", "Private duplicate limit; removed on erasure", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_TECHNICAL),
+
 	VENTURE_FIELD_REF("lead-id", "Lead", "The lead this response became", "lead",
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("mapping-note", "Follow-up note",
@@ -324,7 +333,7 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
  * the shared audit log: an erased response must leave nothing behind but
  * the fact that it existed. */
 static const gchar *const venture_form_submission_private[] = {
-	"name", "summary", "answers", "sensitive-answers", "notes", "origin", "mapping-note", NULL
+	"name", "summary", "answers", "sensitive-answers", "notes", "origin", "mapping-note", "contact-id", "personal-hash", NULL
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormSubmission, venture_form_submission,
@@ -336,6 +345,7 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormSubmission, venture_form_submission,
  * a person has not yet submitted them. Generation makes sensitive-only edits
  * visible to the generic writer's empty-diff check and invalidates stale tokens. */
 static const VentureFieldDecl venture_form_draft_fields[] = {
+	VENTURE_FIELD_REF("contact-id", "Contact", "Private personal-link binding", "contact", VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_NAME("name", "Draft", "Intermediate form response"),
 	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("version-id", "Form version", NULL, "form_version", VENTURE_COLUMN_FLAG_NOT_NULL),

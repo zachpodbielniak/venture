@@ -89,7 +89,7 @@ forms_web_common(HtmxResponse *response, const gchar *allow_origin)
 {
 	htmx_response_add_header(response, "Cache-Control", "no-store, private");
 	htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
-	htmx_response_add_header(response, "Referrer-Policy", "strict-origin-when-cross-origin");
+	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
 	if (NULL != allow_origin)
 	{
 		htmx_response_add_header(response, "Access-Control-Allow-Origin", allow_origin);
@@ -220,6 +220,35 @@ venture_web_forms_script(HtmxRequest *request, GHashTable *params, gpointer data
 
 /* GET /pub/form/:token/fragment -- the bare form the script loader fetches
  * into a page. Absolute action, so it posts here from wherever it lands. */
+static JsonObject *
+forms_web_prefill(VentureWebServer *self, HtmxRequest *request, VentureEntity *form,
+	VentureEntity *version, GDateTime *now)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, NULL);
+	g_autoptr(GHashTable) query = g_hash_table_new(g_str_hash, g_str_equal);
+	g_autoptr(JsonObject) values = NULL;
+	g_autofree gchar *seed = NULL;
+	guint i;
+	if (fields == NULL) return NULL;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFormsField *field = g_ptr_array_index(fields, i);
+		const gchar *value = htmx_request_get_query_param(request, field->key);
+		if (field->allow_prefill && value != NULL) g_hash_table_insert(query, field->key, (gpointer)value);
+	}
+	values = venture_forms_prefill_values(database, form, version, query,
+		htmx_request_get_query_param(request, "personal"), now, NULL);
+	if (values == NULL) return NULL;
+	if (json_object_get_size(values) > 0)
+	{
+		seed = venture_forms_prefill_pack(form, version, values);
+		if (seed == NULL) return NULL;
+		json_object_set_string_member(values, VENTURE_FORMS_PREFILL, seed);
+	}
+	return g_steal_pointer(&values);
+}
+
 static HtmxResponse *
 venture_web_forms_fragment(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -227,6 +256,7 @@ venture_web_forms_fragment(HtmxRequest *request, GHashTable *params, gpointer da
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(VentureEntity) form = forms_web_live(self, params, now);
 	g_autoptr(VentureEntity) version = NULL;
+	g_autoptr(JsonObject) values = NULL;
 	g_autofree gchar *ticket = NULL, *action = NULL;
 	const gchar *origin = forms_web_origin(request);
 	VentureFormsRender options;
@@ -242,7 +272,9 @@ venture_web_forms_fragment(HtmxRequest *request, GHashTable *params, gpointer da
 	options.mode = VENTURE_FORMS_RENDER_FRAGMENT;
 	options.action = action;
 	options.ticket = ticket;
-	options.values = NULL;
+	values = forms_web_prefill(self, request, form, version, now);
+	if (values == NULL) return forms_web_missing();
+	options.values = values;
 	options.errors = NULL;
 	options.version = version;
 	html = venture_forms_render(venture_context_get_database(self->context), form, &options, NULL);
@@ -271,6 +303,13 @@ venture_web_forms_schema(HtmxRequest *request, GHashTable *params, gpointer data
 	schema = venture_forms_schema(venture_context_get_database(self->context), form, action, now, NULL);
 	if (NULL == schema)
 		return forms_web_missing();
+	{
+		g_autoptr(VentureEntity) version = venture_forms_published_version(venture_context_get_database(self->context), form, NULL);
+		g_autoptr(JsonObject) values = forms_web_prefill(self, request, form, version, now);
+		if (values == NULL) return forms_web_missing();
+		json_object_set_object_member(json_node_get_object(schema), "prefill", g_steal_pointer(&values));
+	}
+
 	response = forms_web_json(schema, 200);
 	forms_web_common(response, origin);
 	return response;
@@ -440,6 +479,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	{
 		g_autofree gchar *ticket = NULL;
 		g_autoptr(VentureEntity) version = NULL;
+		g_autoptr(JsonObject) values = NULL;
 		const gchar *style = htmx_request_get_query_param(request, "style");
 		VentureFormsRender options;
 		gchar *html;
@@ -452,7 +492,9 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		options.mode = (0 == g_strcmp0(style, "basic")) ? VENTURE_FORMS_RENDER_HOSTED_BASIC : VENTURE_FORMS_RENDER_HOSTED;
 		options.action = NULL;
 		options.ticket = ticket;
-		options.values = NULL;
+		values = forms_web_prefill(self, request, form, version, now);
+		if (values == NULL) return forms_web_missing();
+		options.values = values;
 		options.errors = NULL;
 		options.version = version;
 		html = venture_forms_render(database, form, &options, NULL);
@@ -493,6 +535,15 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 			return forms_web_json_result(FALSE, error->message, NULL, problem, status, allow_origin);
 		}
 		return forms_web_status(status, error->message);
+	}
+
+	if (g_hash_table_contains(answers, VENTURE_FORMS_PERSONAL))
+	{
+		GPtrArray *tokens = g_hash_table_lookup(answers, VENTURE_FORMS_PERSONAL);
+		g_autoptr(VentureEntity) contact = NULL;
+		if (tokens == NULL || tokens->len != 1) return forms_web_missing();
+		contact = venture_forms_personal_contact(database, form, g_ptr_array_index(tokens, 0), now, NULL);
+		if (contact == NULL) return forms_web_missing();
 	}
 
 	{

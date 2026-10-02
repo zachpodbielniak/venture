@@ -47,6 +47,8 @@ typedef struct
 	gchar			*label;
 	VentureFormFieldKind	 kind;
 	gboolean		 marketing_consent;
+	gboolean		 allow_prefill;
+	gchar			*contact_field;
 	gboolean		 required;
 	gboolean		 sensitive;
 	gint64			 position;
@@ -74,6 +76,10 @@ typedef struct
 	JsonArray		*rules;
 } VentureFormsField;
 
+#define VENTURE_FORMS_PERSONAL "_vf_personal"
+#define VENTURE_FORMS_PREFILL "_vf_prefill"
+#define VENTURE_FORMS_PERSONAL_WRITE "venture-forms-personal-write"
+
 #define VENTURE_FORMS_DRAFT_TOKEN "_vf_draft"
 #define VENTURE_FORMS_MOVE "_vf_move"
 #define VENTURE_FORMS_DRAFT_WRITE "venture-forms-draft-write"
@@ -87,6 +93,7 @@ typedef struct {
 	guint page;
 	guint pages;
 	gboolean complete;
+	gint64 contact_id;
 } VentureFormsStep;
 
 void venture_forms_step_free(VentureFormsStep *step);
@@ -97,6 +104,15 @@ VentureFormsStep *venture_forms_step(VentureDatabase *database, VentureEntity *f
 	GHashTable *answers, const gchar *origin, GDateTime *now, GError **error);
 gchar *venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error);
+
+gboolean venture_forms_personal_bind(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *submission, GDateTime *now, JsonObject *refused, GError **error);
+VentureEntity *venture_forms_personal_contact(VentureDatabase *database, VentureEntity *form,
+	const gchar *token, GDateTime *now, GError **error);
+JsonObject *venture_forms_prefill_values(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *version, GHashTable *query, const gchar *personal, GDateTime *now, GError **error);
+gchar *venture_forms_prefill_pack(VentureEntity *form, VentureEntity *version, JsonObject *values);
+JsonObject *venture_forms_prefill_unpack(VentureEntity *form, VentureEntity *version, const gchar *seed, GError **error);
 
 JsonObject *venture_forms_flatten_json_answers(JsonObject *object, GError **error);
 gboolean venture_forms_has_groups(GPtrArray *fields);

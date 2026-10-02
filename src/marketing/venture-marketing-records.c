@@ -59,6 +59,7 @@ static const VentureFieldDecl consent_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingConsent, venture_marketing_consent, consent_fields)
 static const VentureFieldDecl send_fields[] = {
+	REF("survey-form-id", "Personal survey form", "form"),
 	VENTURE_FIELD_NAME("name","Name",NULL), REF("list-id","Audience list","marketing_list"),
 	STR("subject","Subject"), VENTURE_FIELD_TEXT("text-body","Text body",NULL), VENTURE_FIELD_TEXT("html-body","HTML body",NULL),
 	VENTURE_FIELD("tracking","Track observations","Requires organization marketing tracking permission",VENTURE_FIELD_KIND_BOOLEAN,VENTURE_COLUMN_FLAG_NONE),

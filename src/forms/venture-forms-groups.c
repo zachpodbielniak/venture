@@ -204,7 +204,7 @@ group_field_copy(const VentureFormsField *field)
 #define COPY_STRING(member) copy->member = g_strdup(field->member)
 	COPY_STRING(key); COPY_STRING(label); COPY_STRING(help); COPY_STRING(placeholder);
 	COPY_STRING(pattern); COPY_STRING(default_value); COPY_STRING(maps_to); COPY_STRING(autocomplete);
-	COPY_STRING(group_key); COPY_STRING(group_label); COPY_STRING(base_key);
+	COPY_STRING(contact_field); COPY_STRING(group_key); COPY_STRING(group_label); COPY_STRING(base_key);
 #undef COPY_STRING
 	copy->choices = field->choices != NULL ? g_ptr_array_ref(field->choices) : NULL;
 	copy->rules = field->rules != NULL ? json_array_ref(field->rules) : NULL;

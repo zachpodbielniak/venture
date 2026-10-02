@@ -450,6 +450,78 @@ numeric averages use answered rows. A question moved into or out of a
 group starts a separate version segment. Final response counts still
 count people submitting forms, not their rows.
 
+* Prefill and personal links
+
+A question opts into public URL values with =allow_prefill=true=. For
+example, =?name=Alex&utm_campaign=autumn= sets those questions only if
+both opt in. Unknown parameters and questions that do not opt in are
+ignored. Values pass the same field validator as typed answers before
+they are rendered; invalid values are omitted. A person can edit visible
+prefilled answers, and final submission validates them again. Consent,
+sensitive questions, page breaks and repeated questions cannot be
+prefilled. =personal= and =style= are reserved query parameters.
+
+For a known contact, set each question's =contact_field= to =name=,
+=email=, =phone=, =role=, =website= or =address=. No other contact property
+is exposed. A mapped contact value takes precedence over query prefill.
+Publish the mapping with the questions. An owner generates links using:
+
+#+begin_src sh
+venturectl act form 12 personal_links contact_ids='[3,8]' origin=https://forms.example days=7
+#+end_src
+
+The action returns a JSON array in =result=, with =contact_id= and =url=
+for each contact. It accepts 1–200 IDs in this form's organization and an
+expiry of 1–30 days (7 by default). It is not stageable: generated
+capabilities must not appear on a shared confirmation card. =origin=
+is an HTTPS origin; HTTP is accepted only for loopback development.
+Treat each URL as a bearer link: forwarding it forwards access to the
+mapped initial values. It does not create a login or permit contact edits.
+
+The token is signed for one form and contact identity. A modified,
+expired, other-form or deleted-contact token gets the same 404 as an
+unknown form, both when rendering and when submitting. A valid personal
+submission records =contact_id= even if the person edits the email
+answer. The form's =one_per_link= and =one_per_contact= switches check
+retained responses inside the submission transaction; anonymous
+responses are not assigned a contact by guessing from an email address.
+Erasure/anonymisation removes these bindings and their duplicate limits.
+Owner email export/erasure also finds bound responses and drafts through
+the contact's current email when the submitted answer was different.
+
+Initial values for later pages travel in a bounded, signed
+=_vf_prefill= hidden payload until the first page is saved, then in the
+private draft. Personal identity travels as =_vf_personal= and cannot be
+swapped within an existing draft. The final save checks the personal
+token again. Custom clients receive the same validated values and control
+fields in the public schema's =prefill= object. The loader and HTML
+renderer use the ordinary inputs and styling hooks. Public form responses
+set =Referrer-Policy: no-referrer= and are not cacheable.
+
+A hidden opted-in question can retain UTM or campaign text in the answer
+object. That text does not replace an attribution visitor identity,
+grant analytics consent, or change the form's configured CRM campaign.
+The attribution module continues to own its consenting visitor records.
+
+** Campaigns and sequences
+
+Set a marketing send's =survey_form_id= before previewing it. Preview
+creates a seven-day personal link for each eligible contact and freezes
+it in the private delivery bodies. Non-contact audience members are
+excluded with =form_requires_contact=. The ordinary preview/API bodies
+contain no capability. Approval, suppression checks, unsubscribe and
+idempotent delivery still go through the marketing service and outbox.
+Send within the link lifetime; a later campaign needs a fresh preview.
+
+An email sequence step can also set =survey_form_id=. Execution generates
+its seven-day link using the sequence service's configured public
+=base-url= and delivery clock. The existing in-process mail adapter must
+prefer =sequence_delivery.private_body= when present, otherwise =body=.
+Private body is service-owned and absent from generic reads. The personal
+URL is not added to ordinary tracking-destination records. A non-email
+step with a survey form fails visibly. The sequence engine retains its
+existing adapter boundary and does not itself send mail.
+
 * The public door
 
 =/pub/form/TOKEN= (GET and POST), =/pub/form/TOKEN/fragment= and
@@ -603,6 +675,9 @@ venturectl list form_submission form_id=3
 #+end_src
 
 * Upgrading
+
+Migrations =000790=–=000792= check prefill/link fields and optional marketing
+and sequence integration tables. Each optional table has its own guard.
 
 Migration =000780= checks the metadata-created group table and field
 references for both database backends.

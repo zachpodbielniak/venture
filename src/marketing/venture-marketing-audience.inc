@@ -27,6 +27,7 @@ static gboolean make_recipient(VentureMarketingService *self, VentureEntity *sen
 	gboolean blocked = FALSE;
 	key = g_strdup_printf("%s:%s", venture_entity_get_uuid(send), source_key);
 	if (!source) reason = "source_missing";
+	else if (number(send, "survey-form-id") > 0 && !VENTURE_IS_CONTACT(source)) reason = "form_requires_contact";
 	else if (!valid_address(email)) reason = "invalid_email";
 	else {
 		if (!suppressed(self, org, email, &blocked, error)) return FALSE;
@@ -66,6 +67,22 @@ static gboolean make_recipient(VentureMarketingService *self, VentureEntity *sen
 			g_autofree gchar *escaped = g_markup_escape_text(text ? text : "", -1);
 			private_html = g_strdup_printf("<pre>%s</pre>", escaped);
 		}
+		if (number(send, "survey-form-id") > 0)
+		{
+			g_autoptr(VentureEntity) form = venture_database_get(self->database, VENTURE_TYPE_FORM, number(send, "survey-form-id"), error);
+			g_autoptr(GDateTime) now = venture_time_now();
+			g_autoptr(GDateTime) expires = g_date_time_add_days(now, 7);
+			g_autofree gchar *personal = NULL, *escaped = NULL, *joined = NULL;
+			if (form == NULL) return FALSE;
+			personal = venture_forms_personal_link(self->database, form, source, base, expires, now, error);
+			if (personal == NULL) return FALSE;
+			joined = g_strdup_printf("%s\n\nYour personal form: %s", private_text, personal);
+			g_free(private_text); private_text = g_steal_pointer(&joined);
+			escaped = g_markup_escape_text(personal, -1);
+			joined = g_strdup_printf("%s<p><a href=\"%s\">Your personal form</a></p>", private_html, escaped);
+			g_free(private_html); private_html = g_steal_pointer(&joined);
+		}
+
 		if (tracking) {
 			g_autofree gchar *tracking_token = venture_sequence_tracking_token(error), *tracking_hash = NULL, *tracking_base = NULL, *wrapped = NULL, *links = NULL;
 			g_autoptr(GPtrArray) urls = g_ptr_array_new_with_free_func(g_free);
