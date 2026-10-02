@@ -1487,3 +1487,10 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   Back recomputes the previous visited page. The loader receives prior-condition
   booleans, never hidden copies of earlier answers. `not-shown` is private,
   immutable accounting for the summary and is cleared by anonymisation.
+
+- **Repeated answers retain their row identity.** `form_group` bounds and
+  member metadata freeze with the published definition. Public indexed names
+  and JSON row arrays normalize before validation; `venture_forms_expand_groups()`
+  instantiates per-row rules, and folding happens only after validation. Keep
+  public and sensitive row arrays aligned. Add/remove are draft operations,
+  never intake; final intake rechecks the original ticket and every row.

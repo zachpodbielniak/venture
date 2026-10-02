@@ -1751,6 +1751,15 @@ downward goal reads as done before it starts.
 
 Module `forms` (requires only `core`; suggests `leads`, `mail` and `marketing`). Check
 `venturectl describe form`, `describe form_field`, `describe form_submission`.
+For repeated questions, inspect `describe form_group`, create a group with
+`form_id`, stable `key`, `label`, `min_rows` and `max_rows`, then set member
+questions' `group_id`. Keep members consecutive on one page and publish.
+Maximum 0 means 10; the cap is 50. Public JSON accepts arrays of row objects
+under the group key; HTML uses `attendee[0][name]`. Responses and owner
+exports retain row arrays, with sensitive members in `sensitive_answers`.
+The summary counts rows for repeated questions. Add/remove are private draft
+edits, not responses. See `docs/forms.org` for same-row rules and limits.
+
 Use `describe form_rule` before editing conditional questions. A rule has
 `form_id`, `action=show|hide|require|jump|end`, `target_key`, and a `conditions`
 JSON array of `{field,operator,value}`. Conditions use a closed comparison

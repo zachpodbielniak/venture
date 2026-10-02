@@ -120,6 +120,15 @@ typedef enum
 GType venture_form_rule_action_get_type(void) G_GNUC_CONST;
 #define VENTURE_TYPE_FORM_RULE_ACTION (venture_form_rule_action_get_type())
 
+#define VENTURE_TYPE_FORM_GROUP (venture_form_group_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormGroup, venture_form_group, FORM_GROUP)
+
+/**
+ * venture_form_group_new:
+ *
+ * Returns: (transfer full): an unsaved repeating question group
+ */
+
 #define VENTURE_TYPE_FORM_RULE (venture_form_rule_get_type())
 VENTURE_DECLARE_ENTITY(VentureFormRule, venture_form_rule, FORM_RULE)
 

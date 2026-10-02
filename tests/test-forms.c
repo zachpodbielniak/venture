@@ -945,7 +945,10 @@ test_draft_privacy(Fixture *f, gconstpointer data)
 	add_field(f, form, "next", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 2);
 	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 3);
 	g_object_unref(publish(f, form));
-	ticket = venture_forms_ticket_new(form, now);
+	{
+		g_autoptr(GDateTime) issued = g_date_time_add_seconds(now, -60);
+		ticket = venture_forms_ticket_new(form, issued);
+	}
 	venture_forms_answers_add(answers, "_vf_t", ticket);
 	venture_forms_answers_add(answers, "email", "private@example.com");
 	step = venture_forms_step(f->db, form, answers, NULL, now, &error);
@@ -1013,7 +1016,10 @@ test_draft_version(Fixture *f, gconstpointer data)
 	g_clear_error(&error);
 	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 3);
 	version = publish(f, form);
-	ticket = venture_forms_ticket_new(form, now);
+	{
+		g_autoptr(GDateTime) issued = g_date_time_add_seconds(now, -60);
+		ticket = venture_forms_ticket_new(form, issued);
+	}
 	venture_forms_answers_add(answers, "_vf_t", ticket);
 	venture_forms_answers_add(answers, "name", "Alice");
 	first = venture_forms_step(f->db, form, answers, NULL, now, &error);
@@ -1035,6 +1041,176 @@ test_draft_version(Fixture *f, gconstpointer data)
 	g_assert_false(venture_database_save(f->db, forged, NULL, &error));
 	g_assert_nonnull(error);
 	g_assert_nonnull(strstr(error->message, "public form service"));
+}
+
+/* Add/remove are private draft edits. They must work without script and
+ * preserve the other row's answers when the first row is removed. */
+static void
+test_repeat_groups(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "repeat-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) group = VENTURE_ENTITY(venture_form_group_new());
+	g_autoptr(VentureEntity) name = NULL, email = NULL;
+	g_autofree gchar *ticket = NULL, *body = NULL, *token = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	venture_entity_set_organization_id(group, f->org);
+	g_object_set(group, "label", "Attendee", "key", "attendee", "form-id", venture_entity_get_id(form),
+		"min-rows", (gint64)1, "max-rows", (gint64)2, NULL);
+	save(f, group);
+	name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	email = make_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 2);
+	g_object_set(name, "group-id", venture_entity_get_id(group), NULL); save(f, name);
+	g_object_set(email, "group-id", venture_entity_get_id(group), NULL); save(f, email);
+	g_object_unref(publish(f, form));
+	start_http(f);
+	request(f, "/pub/form/repeat-form", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "name=\"attendee[0][name]\""));
+	g_assert_nonnull(strstr(reply.body, "value=\"add:attendee\""));
+	reply_clear(&reply);
+	ticket = old_ticket(form);
+	body = g_strdup_printf("%s&attendee[0][_row]=1&attendee[0][name]=Alice&_vf_move=add:attendee", ticket);
+	request(f, "/pub/form/repeat-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "name=\"attendee[1][name]\""));
+	g_assert_nonnull(strstr(reply.body, "value=\"Alice\""));
+	token = page_token(reply.body); reply_clear(&reply);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&attendee[0][_row]=1&attendee[0][name]=Alice&attendee[0][email]=alice%%40example.com&attendee[1][_row]=1&attendee[1][name]=Bob&attendee[1][email]=bob%%40example.com&_vf_move=add:attendee", token);
+	request(f, "/pub/form/repeat-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422);
+	g_free(token); token = page_token(reply.body); reply_clear(&reply);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&attendee[0][_row]=1&attendee[0][name]=Alice&attendee[0][email]=alice%%40example.com&attendee[1][_row]=1&attendee[1][name]=Bob&attendee[1][email]=bob%%40example.com&_vf_move=remove:attendee:0", token);
+	request(f, "/pub/form/repeat-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "value=\"Bob\""));
+	g_assert_null(strstr(reply.body, "Alice"));
+	g_assert_null(strstr(reply.body, "name=\"attendee[1][name]\""));
+	g_free(token); token = page_token(reply.body); reply_clear(&reply);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&attendee[0][_row]=1&attendee[0][name]=Bob", token);
+	request(f, "/pub/form/repeat-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422);
+	g_free(token); token = page_token(reply.body); reply_clear(&reply);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&attendee[0][_row]=1&attendee[0][name]=Bob&attendee[0][email]=bob%%40example.com", token);
+	g_assert_cmpuint(post_form(f, "/pub/form/repeat-form", body), ==, 200);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+		g_autoptr(VentureEntity) response = venture_database_find_one(f->db, query, NULL);
+		g_autofree gchar *text = venture_forms_get_string(response, "answers");
+		g_autoptr(JsonNode) answers = json_from_string(text, NULL);
+		JsonArray *rows = json_object_get_array_member(json_node_get_object(answers), "attendee");
+		g_assert_cmpuint(json_array_get_length(rows), ==, 1);
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "name"), ==, "Bob");
+		g_assert_null(strstr(text, "Alice"));
+		g_assert_null(strstr(text, "_row"));
+	}
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
+		g_autoptr(JsonObject) options = json_object_new();
+		g_autoptr(VentureReportResult) result = NULL;
+		g_autoptr(JsonNode) json = NULL;
+		JsonArray *rows;
+		guint i, found = 0;
+		json_object_set_int_member(options, "form_id", venture_entity_get_id(form));
+		result = venture_report_generate(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "form_summary"), f->context, period, options, &error);
+		g_assert_no_error(error);
+		json = venture_report_result_to_json(result);
+		rows = json_object_get_array_member(json_node_get_object(json), "rows");
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, i);
+			const gchar *answer = json_object_get_string_member(row, "answer");
+			if (g_strcmp0(answer, "Rows") == 0 || g_strcmp0(answer, "Answered") == 0)
+			{
+				g_assert_cmpfloat(json_object_get_double_member(row, "count"), ==, 1);
+				found++;
+			}
+		}
+		g_assert_cmpuint(found, ==, 4);
+	}
+
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(JsonNode) exported = venture_forms_export_person(f->db, f->org, "BOB@example.com", &error);
+		g_autoptr(JsonNode) erased = NULL;
+		g_assert_no_error(error);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(exported), "responses")), ==, 1);
+		erased = venture_forms_erase_person(f->db, f->org, "bob@example.com", NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(erased);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	}
+
+}
+
+/* A zero-row group's first Add click may precede the fill-time floor.
+ * That exception may create a draft, but must never admit final intake. */
+static void
+test_repeat_early_add(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "early-add", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) group = VENTURE_ENTITY(venture_form_group_new());
+	g_autoptr(VentureEntity) name = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *ticket = NULL, *body = NULL, *token = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	g_object_set(form, "min-fill-seconds", (gint64)3600, NULL); save(f, form);
+	venture_entity_set_organization_id(group, f->org);
+	g_object_set(group, "label", "Attendee", "key", "attendee", "form-id", venture_entity_get_id(form), "min-rows", (gint64)0, "max-rows", (gint64)2, NULL); save(f, group);
+	name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	g_object_set(name, "group-id", venture_entity_get_id(group), NULL); save(f, name);
+	g_object_unref(publish(f, form)); start_http(f);
+	ticket = venture_forms_ticket_new(form, now);
+	body = g_strdup_printf("_vf_t=%s&_vf_move=add:attendee", ticket);
+	request(f, "/pub/form/early-add", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "attendee[0][name]"));
+	token = page_token(reply.body); reply_clear(&reply);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 1);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&attendee[0][_row]=1&attendee[0][name]=Robot", token);
+	g_assert_cmpuint(post_form(f, "/pub/form/early-add", body), ==, 200);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+}
+
+/* Both wire representations must feed identical validation. Ambiguous names
+ * must never let object iteration order select the retained answer. */
+static void
+test_repeat_json(void)
+{
+	static const gchar *bad[] = {
+		"{\"attendee\":[{\"name\":\"A\"}],\"attendee[0][name]\":\"B\"}",
+		"{\"attendee[0][_row]\":\"1\",\"attendee\":[{\"name\":\"A\"}]}",
+		"{\"attendee\":[{},\"bad\"]}",
+		"{\"attendee\":[{\"child\":{\"name\":\"A\"}}]}",
+		"{\"attendee\":[{\"child\":[{}]}]}",
+		"{\"attendee\":[{\"_row\":\"forged\"}]}"
+	};
+	g_autoptr(JsonNode) root = json_from_string("{\"attendee\":[{\"name\":\"Alice\",\"choices\":[\"a\",\"b\"]},{}]}", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GHashTable) answers = venture_forms_answers_from_json(json_node_get_object(root), &error);
+	GPtrArray *values;
+	guint i;
+	g_assert_no_error(error);
+	g_assert_nonnull(answers);
+	values = g_hash_table_lookup(answers, "attendee[0][name]");
+	g_assert_cmpstr(g_ptr_array_index(values, 0), ==, "Alice");
+	values = g_hash_table_lookup(answers, "attendee[0][choices]");
+	g_assert_cmpuint(values->len, ==, 2);
+	g_assert_true(g_hash_table_contains(answers, "attendee[1][_row]"));
+	g_assert_true(json_object_has_member(json_node_get_object(root), "attendee"));
+	for (i = 0; i < G_N_ELEMENTS(bad); i++)
+	{
+		g_autoptr(JsonNode) invalid = json_from_string(bad[i], NULL);
+		g_autoptr(GHashTable) refused = venture_forms_answers_from_json(json_node_get_object(invalid), &error);
+		g_assert_null(refused);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+	}
 }
 
 static void
@@ -1085,6 +1261,73 @@ make_rule(Fixture *f, VentureEntity *form, VentureFormRuleAction action,
 	g_object_set(rule, "name", "Test rule", "form-id", venture_entity_get_id(form),
 		"action", action, "target-key", target, "conditions", conditions, NULL);
 	return rule;
+}
+
+/* A condition belongs to its own row. Forged hidden values are discarded,
+ * and sensitive row answers remain available only to the owner export. */
+static void
+test_repeat_rules_privacy(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "row-rules", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) group = VENTURE_ENTITY(venture_form_group_new());
+	g_autoptr(VentureEntity) kind = NULL, email = NULL, detail = NULL, show = NULL, required = NULL, response = NULL;
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *open = NULL, *secret = NULL, *html = NULL;
+	g_autoptr(JsonNode) exported = NULL, erased = NULL;
+	const gchar *conditions = "[{\"field\":\"kind\",\"operator\":\"equals\",\"value\":\"yes\"}]";
+	const gchar *missing[] = { "attendee[0][kind]", "yes", "attendee[0][email]", "one@example.com", "attendee[1][kind]", "no", "attendee[1][email]", "two@example.com", "attendee[1][detail]", "forged", NULL };
+	const gchar *valid[] = { "attendee[0][kind]", "yes", "attendee[0][email]", "one@example.com", "attendee[0][detail]", "private health answer", "attendee[1][kind]", "no", "attendee[1][email]", "two@example.com", "attendee[1][detail]", "forged", NULL };
+	const gchar *sparse[] = { "attendee[1][kind]", "no", "attendee[1][email]", "two@example.com", NULL };
+	const gchar *excess[] = { "attendee[0][kind]", "no", "attendee[1][kind]", "no", "attendee[2][kind]", "no", NULL };
+	const gchar *empty[] = { NULL };
+	(void)data;
+	venture_entity_set_organization_id(group, f->org);
+	g_object_set(group, "label", "Attendee", "key", "attendee", "form-id", venture_entity_get_id(form), "min-rows", (gint64)1, "max-rows", (gint64)2, NULL);
+	save(f, group);
+	kind = make_field(f, form, "kind", "Needs details", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	email = make_field(f, form, "email", "Address", VENTURE_FORM_FIELD_EMAIL, TRUE, 2);
+	detail = make_field(f, form, "detail", "Private details", VENTURE_FORM_FIELD_LONG_TEXT, FALSE, 3);
+	g_object_set(kind, "group-id", venture_entity_get_id(group), NULL); save(f, kind);
+	g_object_set(email, "group-id", venture_entity_get_id(group), NULL); save(f, email);
+	g_object_set(detail, "group-id", venture_entity_get_id(group), "sensitive", TRUE, NULL); save(f, detail);
+	show = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "detail", conditions); save(f, show);
+	required = make_rule(f, form, VENTURE_FORM_RULE_REQUIRE, "detail", conditions); save(f, required);
+	g_object_unref(publish(f, form));
+	g_object_set(form, "unique-email-field", "email", NULL); refuse(f, form, "required email");
+	g_object_set(form, "unique-email-field", NULL, "confirmation-field", "email", NULL); refuse(f, form, "non-repeated");
+	g_object_set(form, "confirmation-field", NULL, NULL);
+
+	g_assert_cmpint(submit_pairs(f, form, excess, &errors), ==, VENTURE_FORMS_INVALID);
+	g_assert_true(json_object_has_member(errors, "attendee")); g_clear_pointer(&errors, json_object_unref);
+	g_assert_cmpint(submit_pairs(f, form, empty, &errors), ==, VENTURE_FORMS_INVALID);
+	g_assert_true(json_object_has_member(errors, "attendee")); g_clear_pointer(&errors, json_object_unref);
+	g_assert_cmpint(submit_pairs(f, form, sparse, &errors), ==, VENTURE_FORMS_INVALID);
+	g_assert_true(json_object_has_member(errors, "attendee")); g_clear_pointer(&errors, json_object_unref);
+	g_assert_cmpint(submit_pairs(f, form, missing, &errors), ==, VENTURE_FORMS_INVALID);
+	g_assert_true(json_object_has_member(errors, "attendee[0][detail]"));
+	g_assert_false(json_object_has_member(errors, "attendee[1][detail]")); g_clear_pointer(&errors, json_object_unref);
+	g_assert_cmpint(submit_pairs(f, form, valid, &errors), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	open = venture_forms_get_string(response, "answers");
+	secret = venture_forms_get_string(response, "sensitive-answers");
+	g_assert_null(strstr(open, "private health answer"));
+	g_assert_null(strstr(open, "forged"));
+	g_assert_nonnull(strstr(secret, "private health answer"));
+	g_assert_null(strstr(secret, "forged"));
+	html = venture_forms_render_answers(f->db, response, &error); g_assert_no_error(error);
+	g_assert_nonnull(strstr(html, "one@example.com"));
+	g_assert_nonnull(strstr(html, "two@example.com"));
+	g_assert_null(strstr(html, "private health answer"));
+	exported = venture_forms_export_person(f->db, f->org, "two@example.com", &error); g_assert_no_error(error);
+	{
+		g_autofree gchar *text = json_to_string(exported, FALSE);
+		g_assert_nonnull(strstr(text, "private health answer"));
+		g_assert_nonnull(strstr(text, "one@example.com"));
+	}
+	erased = venture_forms_erase_person(f->db, f->org, "two@example.com", NULL, &error); g_assert_no_error(error);
+	g_assert_nonnull(erased);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
 }
 
 /* Hidden answers cannot influence either required branches or saved data;
@@ -1152,7 +1395,10 @@ test_rules(Fixture *f, gconstpointer data)
 	g_assert_cmpint(submit_pairs(f, form, person, NULL), ==, VENTURE_FORMS_ACCEPTED);
 	/* Unpublished rule edits cannot change the public branch. */
 	g_object_set(jump, "conditions", other, NULL); save(f, jump);
-	ticket = venture_forms_ticket_new(form, now);
+	{
+		g_autoptr(GDateTime) issued = g_date_time_add_seconds(now, -60);
+		ticket = venture_forms_ticket_new(form, issued);
+	}
 	venture_forms_answers_add(answers, "_vf_t", ticket);
 	venture_forms_answers_add(answers, "kind", "business");
 	first = venture_forms_step(f->db, form, answers, NULL, now, &error);
@@ -2687,6 +2933,10 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-json", Fixture, NULL, setup, test_http_json, teardown);
 	g_test_add("/forms/http-refusals", Fixture, NULL, setup, test_http_refusals, teardown);
 	g_test_add("/forms/unique-email-sensitive", Fixture, NULL, setup, test_unique_email_sensitive, teardown);
+	g_test_add("/forms/repeat-rules-privacy", Fixture, NULL, setup, test_repeat_rules_privacy, teardown);
+	g_test_add("/forms/repeat-early-add", Fixture, NULL, setup, test_repeat_early_add, teardown);
+	g_test_add_func("/forms/repeat-json", test_repeat_json);
+	g_test_add("/forms/repeat-groups", Fixture, NULL, setup, test_repeat_groups, teardown);
 	g_test_add_func("/forms/rule-vocabulary", test_rule_vocabulary);
 	g_test_add("/forms/rules", Fixture, NULL, setup, test_rules, teardown);
 	g_test_add("/forms/draft-version", Fixture, NULL, setup, test_draft_version, teardown);

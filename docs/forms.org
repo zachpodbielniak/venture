@@ -395,6 +395,61 @@ jsdom has no layout, and the colours on a host page are the host's. It
 reports no violations; the run is kept in
 [[file:evidence/forms-accessibility.org][the accessibility evidence]].
 
+* Repeating rows
+
+Create a =form_group= with a stable =key= (for example =attendee=), a
+=label=, =form_id=, =min_rows= and =max_rows=. Maximum 0 means 10; the
+absolute maximum is 50. Set each member question's =group_id= and keep
+its questions consecutive on one page. Publish to make the group, its
+bounds and its questions public together. Existing drafts keep their
+published definition when you edit the group.
+
+The ordinary question kinds and validation apply separately to every
+row. A rule's source and target may be in the same row; it is evaluated
+independently for that row. A non-repeated earlier question can also
+control a repeated question. A repeated answer cannot control navigation
+or a question outside its row: choosing which row would be ambiguous.
+Lead mappings, marketing permission, confirmation recipients and email
+uniqueness use non-repeated questions.
+
+=Add another= and =Remove= are real submit buttons. With scripts disabled
+they return the form with the other answers kept; the loader replaces
+its fragment in place. These edits permit incomplete answers and create
+only a private draft. They create no response, lead or business event.
+The final submission validates the row bounds and every visible answer
+again, including the original fill-time ticket. Removing a row renumbers
+the later rows, preserving their answers.
+
+The embed contract uses =attendee[0][name]= and =attendee[0][email]= for
+the first row, then index 1, and so on. The hidden
+=attendee[0][_row]=1= marker preserves an otherwise empty row; it is not
+stored as an answer. Indices must be consecutive from zero. The JSON
+schema gives each question a =group= object with =key=, =label=,
+=min_rows= and =max_rows=. JSON clients can send the indexed names or
+structured rows:
+
+#+begin_src json
+{"attendee": [{"name": "Alex", "email": "alex@example.com"}]}
+#+end_src
+
+Do not mix both encodings for the same answer. Nested groups, unknown
+questions, sparse indices and excessive rows are refused. The form's
+maximum possible input count, including row markers, is bounded at
+publication. Use =vf-group=, =vf-row=, =vf-group-limits=, =vf-add-row= and
+=vf-remove-row= to style these controls; the existing question hooks
+carry the indexed name. Row legends and group error links remain usable
+with keyboard navigation.
+
+Responses store arrays of row objects under the group key. Sensitive
+members are stored separately using the same row indices; the response
+page, ordinary API and reports never expose their values. Owner export
+returns both =answers= and =sensitive_answers= with that structure.
+Email-based export and erasure search inside rows too. The summary's
+=Rows= and answer counts use row totals for repeated questions, and
+numeric averages use answered rows. A question moved into or out of a
+group starts a separate version segment. Final response counts still
+count people submitting forms, not their rows.
+
 * The public door
 
 =/pub/form/TOKEN= (GET and POST), =/pub/form/TOKEN/fragment= and
@@ -548,6 +603,9 @@ venturectl list form_submission form_id=3
 #+end_src
 
 * Upgrading
+
+Migration =000780= checks the metadata-created group table and field
+references for both database backends.
 
 Migration =000760= checks the metadata-created draft table and draft lifetime
 column on SQLite and PostgreSQL; it is safe when the forms module is disabled.

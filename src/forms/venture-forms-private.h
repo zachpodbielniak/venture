@@ -32,6 +32,15 @@ typedef struct
 	gchar	*label;
 } VentureFormsChoice;
 
+typedef enum
+{
+	VENTURE_FORMS_GROUP_NONE = 0,
+	VENTURE_FORMS_GROUP_START,
+	VENTURE_FORMS_GROUP_ROW_START,
+	VENTURE_FORMS_GROUP_ROW_END,
+	VENTURE_FORMS_GROUP_END
+} VentureFormsGroupBoundary;
+
 typedef struct
 {
 	gchar			*key;
@@ -47,6 +56,15 @@ typedef struct
 	gchar			*default_value;
 	gchar			*maps_to;
 	gchar			*autocomplete;
+	gint64			 group_id;
+	gchar			*group_key;
+	gchar			*group_label;
+	gchar			*base_key;
+	guint			 group_min;
+	guint			 group_max;
+	guint			 row_index;
+	guint			 row_count;
+	guint			 group_boundary;
 	gdouble			 min_value;
 	gdouble			 max_value;
 	gint64			 min_length;
@@ -79,6 +97,21 @@ VentureFormsStep *venture_forms_step(VentureDatabase *database, VentureEntity *f
 	GHashTable *answers, const gchar *origin, GDateTime *now, GError **error);
 gchar *venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error);
+
+JsonObject *venture_forms_flatten_json_answers(JsonObject *object, GError **error);
+gboolean venture_forms_has_groups(GPtrArray *fields);
+JsonArray *venture_forms_group_render_rules(GPtrArray *fields);
+JsonObject *venture_forms_groups_overlay(GPtrArray *fields, guint page, JsonObject *previous, JsonObject *posted);
+void venture_forms_groups_clear_page(GPtrArray *fields, guint page, JsonObject *values);
+gboolean venture_forms_group_move(GPtrArray *fields, const gchar *move, JsonObject *values, JsonObject *errors);
+void venture_forms_groups_fold(GPtrArray *fields, JsonObject *answers, GHashTable *not_shown, gboolean secret);
+GPtrArray *venture_forms_expand_groups(GPtrArray *fields, JsonObject *values, gboolean rendering, JsonObject *errors);
+void venture_forms_groups_validate(GPtrArray *fields, GHashTable *not_shown, JsonObject *errors);
+gboolean venture_forms_groups_check(GPtrArray *fields, GError **error);
+gboolean venture_forms_key_valid(const gchar *key);
+gboolean venture_forms_validate_group(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error);
+gboolean venture_forms_groups_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
 
 gboolean venture_forms_rules_restore(GPtrArray *fields, JsonNode *node, GError **error);
 gboolean venture_forms_rules_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);

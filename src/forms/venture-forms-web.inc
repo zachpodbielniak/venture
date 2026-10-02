@@ -495,16 +495,28 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		return forms_web_status(status, error->message);
 	}
 
-	/* A robot is told it succeeded. Telling it why it did not would teach
-	 * it which of the two guards to get past. */
-	if (!g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN) && !venture_forms_screen(form, answers, now))
-		return forms_web_accepted(form, json, allow_origin);
-
 	{
 		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
 		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, NULL);
+		gboolean repeated = venture_forms_has_groups(fields);
+		/* Add can be the first click in a zero-row group. A valid signed
+		 * ticket and empty honeypot permit that private edit; final intake
+		 * still checks elapsed time using the original ticket. */
+		if (!g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN) && !venture_forms_screen(form, answers, now))
+		{
+			GPtrArray *moves = g_hash_table_lookup(answers, VENTURE_FORMS_MOVE);
+			GPtrArray *tickets = g_hash_table_lookup(answers, VENTURE_FORMS_TICKET);
+			GPtrArray *honeypot = g_hash_table_lookup(answers, VENTURE_FORMS_HONEYPOT);
+			const gchar *move = moves != NULL && moves->len > 0 ? g_ptr_array_index(moves, 0) : "";
+			const gchar *ticket = tickets != NULL && tickets->len > 0 ? g_ptr_array_index(tickets, 0) : NULL;
+			gint64 issued = 0, number = 0;
+			gboolean row_edit = repeated && (g_str_has_prefix(move, "add:") || g_str_has_prefix(move, "remove:")) &&
+				(honeypot == NULL || honeypot->len == 0 || venture_string_is_empty(g_ptr_array_index(honeypot, 0))) &&
+				venture_forms_ticket_parse(form, ticket, &issued, &number);
+			if (!row_edit) return forms_web_accepted(form, json, allow_origin);
+		}
 		if (g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN) ||
-		    (fields != NULL && venture_forms_page_count(fields) > 1))
+		    (fields != NULL && (repeated || venture_forms_page_count(fields) > 1)))
 		{
 			g_autoptr(VentureFormsStep) step = venture_forms_step(database, form, answers, origin, now, &error);
 			g_autofree gchar *html = NULL;

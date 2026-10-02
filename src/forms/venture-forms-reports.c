@@ -49,79 +49,89 @@ summary_answers(VentureEntity *response)
 	return node;
 }
 
-/* How many responses gave @key the answer @id: equal to it, or containing
- * it for a multiple choice. */
+/* Borrow only one response's row objects at a time; a bounded response
+ * query must not become millions of synthetic GObjects for repeated rows. */
+static GPtrArray *
+summary_objects(JsonNode *answers, const VentureFormsField *field)
+{
+	GPtrArray *objects = g_ptr_array_new();
+	JsonNode *rows;
+	guint i;
+	if (answers == NULL) return objects;
+	if (field->group_key == NULL)
+	{
+		g_ptr_array_add(objects, json_node_get_object(answers));
+		return objects;
+	}
+	rows = json_object_get_member(json_node_get_object(answers), field->group_key);
+	if (rows == NULL || !JSON_NODE_HOLDS_ARRAY(rows)) return objects;
+	for (i = 0; i < json_array_get_length(json_node_get_array(rows)); i++)
+	{
+		JsonNode *row = json_array_get_element(json_node_get_array(rows), i);
+		if (JSON_NODE_HOLDS_OBJECT(row)) g_ptr_array_add(objects, json_node_get_object(row));
+	}
+	return objects;
+}
+
+static gboolean
+summary_matches(JsonNode *node, const gchar *id)
+{
+	if (node == NULL) return FALSE;
+	if (id == NULL) return TRUE;
+	if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *array = json_node_get_array(node);
+		guint i;
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			JsonNode *item = json_array_get_element(array, i);
+			if (JSON_NODE_HOLDS_VALUE(item) && json_node_get_value_type(item) == G_TYPE_STRING &&
+			    g_strcmp0(json_node_get_string(item), id) == 0) return TRUE;
+		}
+	}
+	else if (JSON_NODE_HOLDS_VALUE(node))
+	{
+		GType type = json_node_get_value_type(node);
+		if (type == G_TYPE_STRING) return g_strcmp0(json_node_get_string(node), id) == 0;
+		if (type == G_TYPE_BOOLEAN) return (json_node_get_boolean(node) ? "yes" : "no")[0] == id[0];
+		if (type == G_TYPE_INT64) return json_node_get_int(node) == g_ascii_strtoll(id, NULL, 10);
+	}
+	return FALSE;
+}
+
 static gint64
-summary_count(GPtrArray *responses, const gchar *key, const gchar *id)
+summary_count(GPtrArray *responses, const VentureFormsField *field, const gchar *id)
 {
 	gint64 count = 0;
-	guint i;
-
+	guint i, j;
 	for (i = 0; i < responses->len; i++)
 	{
-		g_autoptr(JsonNode) answers = NULL;
-		JsonObject *object;
-		JsonNode *node;
-
-		answers = summary_answers(g_ptr_array_index(responses, i));
-		if (NULL == answers)
-			continue;
-		object = json_node_get_object(answers);
-		if (!json_object_has_member(object, key))
-			continue;
-		node = json_object_get_member(object, key);
-		if (NULL == id)
-		{
-			count++;
-			continue;
-		}
-		if (JSON_NODE_HOLDS_ARRAY(node))
-		{
-			JsonArray *array = json_node_get_array(node);
-			guint j;
-
-			for (j = 0; j < json_array_get_length(array); j++)
-				if (0 == g_strcmp0(json_array_get_string_element(array, j), id))
-					count++;
-		}
-		else if (JSON_NODE_HOLDS_VALUE(node))
-		{
-			GType type = json_node_get_value_type(node);
-
-			if (G_TYPE_STRING == type && 0 == g_strcmp0(json_node_get_string(node), id))
-				count++;
-			else if (G_TYPE_BOOLEAN == type && (json_node_get_boolean(node) ? "yes" : "no")[0] == id[0])
-				count++;
-			else if (G_TYPE_INT64 == type && json_node_get_int(node) == g_ascii_strtoll(id, NULL, 10))
-				count++;
-		}
+		g_autoptr(JsonNode) answers = summary_answers(g_ptr_array_index(responses, i));
+		g_autoptr(GPtrArray) objects = summary_objects(answers, field);
+		for (j = 0; j < objects->len; j++)
+			if (summary_matches(json_object_get_member(g_ptr_array_index(objects, j), field->key), id)) count++;
 	}
 	return count;
 }
 
-/* The average of a numeric answer, over those who gave one. */
 static gboolean
-summary_average(GPtrArray *responses, const gchar *key, gdouble *average, gint64 *answered)
+summary_average(GPtrArray *responses, const VentureFormsField *field, gdouble *average, gint64 *answered)
 {
 	gdouble total = 0;
-	guint i;
-
+	guint i, j;
 	*answered = 0;
 	for (i = 0; i < responses->len; i++)
 	{
-		g_autoptr(JsonNode) answers = NULL;
-		JsonNode *node;
-
-		answers = summary_answers(g_ptr_array_index(responses, i));
-		if (NULL == answers || !json_object_has_member(json_node_get_object(answers), key))
-			continue;
-		node = json_object_get_member(json_node_get_object(answers), key);
-		if (!JSON_NODE_HOLDS_VALUE(node))
-			continue;
-		if (G_TYPE_INT64 != json_node_get_value_type(node) && G_TYPE_DOUBLE != json_node_get_value_type(node))
-			continue;
-		total += json_node_get_double(node);
-		(*answered)++;
+		g_autoptr(JsonNode) answers = summary_answers(g_ptr_array_index(responses, i));
+		g_autoptr(GPtrArray) objects = summary_objects(answers, field);
+		for (j = 0; j < objects->len; j++)
+		{
+			JsonNode *node = json_object_get_member(g_ptr_array_index(objects, j), field->key);
+			if (node == NULL || !JSON_NODE_HOLDS_VALUE(node)) continue;
+			if (json_node_get_value_type(node) != G_TYPE_INT64 && json_node_get_value_type(node) != G_TYPE_DOUBLE) continue;
+			total += json_node_get_double(node);
+			(*answered)++;
+		}
 	}
 	*average = *answered > 0 ? total / (gdouble)*answered : 0;
 	return *answered > 0;
@@ -164,9 +174,9 @@ summary_meaning(const VentureFormsField *field)
 		gint64 low, high;
 
 		venture_forms_rating_bounds(field, &low, &high);
-		return g_strdup_printf("rating:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT, low, high);
+		return g_strdup_printf("%s:rating:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT, field->group_key ? field->group_key : "", low, high);
 	}
-	return g_strdup(venture_forms_kind_nick(field->kind));
+	return g_strdup_printf("%s:%s", field->group_key ? field->group_key : "", venture_forms_kind_nick(field->kind));
 }
 
 static void
@@ -392,19 +402,32 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 		g_autofree gchar *span = segment->first == segment->last ?
 			g_strdup_printf("%" G_GINT64_FORMAT, segment->first) :
 			g_strdup_printf("%" G_GINT64_FORMAT "-%" G_GINT64_FORMAT, segment->first, segment->last);
-		gint64 total = asked->len;
+		gint64 total = 0;
 		gint64 not_shown = 0;
 		for (j = 0; j < asked->len; j++)
 		{
-			g_autofree gchar *text = venture_forms_get_string(g_ptr_array_index(asked, j), "not-shown");
+			VentureEntity *response = g_ptr_array_index(asked, j);
+			g_autofree gchar *text = venture_forms_get_string(response, "not-shown");
 			g_autoptr(JsonNode) omitted = text != NULL ? json_from_string(text, NULL) : NULL;
-			if (omitted != NULL && JSON_NODE_HOLDS_OBJECT(omitted) &&
-			    json_object_has_member(json_node_get_object(omitted), field->key)) not_shown++;
+			g_autoptr(JsonNode) answers = summary_answers(response);
+			g_autoptr(GPtrArray) objects = summary_objects(answers, field);
+			guint k, length = field->group_key != NULL ? objects->len : 1;
+			total += length;
+			for (k = 0; k < length; k++)
+			{
+				g_autofree gchar *key = field->group_key != NULL ?
+					g_strdup_printf("%s[%u][%s]", field->group_key, k, field->key) : g_strdup(field->key);
+				if (omitted != NULL && JSON_NODE_HOLDS_OBJECT(omitted) &&
+				    json_object_has_member(json_node_get_object(omitted), key)) not_shown++;
+			}
 		}
+		if (field->group_key != NULL && !field->sensitive)
+			summary_row(result, field->label, span, "Rows", total, total, FALSE, 0);
+
 		if (!field->sensitive)
 		{
 			summary_row(result, field->label, span, "Not shown", not_shown, total, FALSE, 0);
-			summary_row(result, field->label, span, "Not answered", MAX((gint64)0, total - not_shown - summary_count(asked, segment->key, NULL)), total, FALSE, 0);
+			summary_row(result, field->label, span, "Not answered", MAX((gint64)0, total - not_shown - summary_count(asked, field, NULL)), total, FALSE, 0);
 		}
 
 
@@ -417,12 +440,12 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 				VentureFormsChoice *choice = g_ptr_array_index(segment->choices, j);
 
 				summary_row(result, field->label, span, choice->label,
-				            summary_count(asked, segment->key, choice->id), total, FALSE, 0);
+				            summary_count(asked, field, choice->id), total, FALSE, 0);
 			}
 			break;
 		case VENTURE_FORM_FIELD_CHECKBOX:
-			summary_row(result, field->label, span, "Yes", summary_count(asked, segment->key, "yes"), total, FALSE, 0);
-			summary_row(result, field->label, span, "No", summary_count(asked, segment->key, "no"), total, FALSE, 0);
+			summary_row(result, field->label, span, "Yes", summary_count(asked, field, "yes"), total, FALSE, 0);
+			summary_row(result, field->label, span, "No", summary_count(asked, field, "no"), total, FALSE, 0);
 			break;
 		case VENTURE_FORM_FIELD_RATING:
 		case VENTURE_FORM_FIELD_NUMBER:
@@ -440,10 +463,10 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 						g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, step);
 
 						summary_row(result, field->label, span, id,
-						            summary_count(asked, segment->key, id), total, FALSE, 0);
+						            summary_count(asked, field, id), total, FALSE, 0);
 					}
 				}
-				summary_average(asked, segment->key, &average, &answered);
+				summary_average(asked, field, &average, &answered);
 				summary_row(result, field->label, span, "Average", answered, total, answered > 0, average);
 			}
 			break;
@@ -456,7 +479,7 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 		case VENTURE_FORM_FIELD_HIDDEN:
 		default:
 			summary_row(result, field->label, span, "Answered",
-			            summary_count(asked, segment->key, NULL), total, FALSE, 0);
+			            summary_count(asked, field, NULL), total, FALSE, 0);
 			break;
 		}
 	}

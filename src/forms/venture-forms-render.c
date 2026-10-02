@@ -152,6 +152,45 @@ forms_render_help_and_error(GString *html, const gchar *id, const gchar *help, c
 }
 
 static void
+forms_render_group(GString *html, const gchar *prefix, const VentureFormsField *field,
+	const VentureFormsRender *options)
+{
+	gboolean preview = options->mode == VENTURE_FORMS_RENDER_PREVIEW;
+	g_autofree gchar *id = g_strdup_printf("%s-%s", prefix, field->group_key);
+	switch (field->group_boundary)
+	{
+	case VENTURE_FORMS_GROUP_START:
+		g_string_append_printf(html, "<fieldset class=\"vf-group\" data-vf-group=\"%s\" id=\"%s\" tabindex=\"-1\"", field->group_key, id);
+		forms_described(html, id, FALSE, forms_error(options, field->group_key) != NULL);
+		g_string_append(html, "><legend>");
+		forms_escape(html, field->group_label);
+		g_string_append(html, "</legend>");
+		g_string_append_printf(html, "<p class=\"vf-group-limits\">%u to %u rows.</p>", field->group_min, field->group_max);
+		forms_render_help_and_error(html, id, NULL, forms_error(options, field->group_key));
+		break;
+	case VENTURE_FORMS_GROUP_ROW_START:
+		g_string_append_printf(html, "<fieldset class=\"vf-row\" data-vf-row=\"%u\"><legend>", field->row_index);
+		forms_escape(html, field->group_label);
+		g_string_append_printf(html, " %u</legend><input type=\"hidden\" name=\"%s\" value=\"1\">", field->row_index + 1, field->key);
+		break;
+	case VENTURE_FORMS_GROUP_ROW_END:
+		g_string_append_printf(html, "<button class=\"vf-remove-row\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"remove:%s:%u\" formnovalidate%s>Remove ",
+			field->group_key, field->row_index, preview || field->row_count <= field->group_min ? " disabled" : "");
+		forms_escape(html, field->group_label);
+		g_string_append_printf(html, " %u</button></fieldset>", field->row_index + 1);
+		break;
+	case VENTURE_FORMS_GROUP_END:
+		g_string_append_printf(html, "<button class=\"vf-add-row\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"add:%s\" formnovalidate%s>Add another ",
+			field->group_key, preview || field->row_count >= field->group_max ? " disabled" : "");
+		forms_escape(html, field->group_label);
+		g_string_append(html, "</button></fieldset>");
+		break;
+	default:
+		break;
+	}
+}
+
+static void
 forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *field,
 	const VentureFormsRender *options)
 {
@@ -174,6 +213,12 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	gint64 max_length = field->max_length;
 	gdouble min = field->min_value;
 	gdouble max = field->max_value;
+
+	if (field->group_boundary != VENTURE_FORMS_GROUP_NONE)
+	{
+		forms_render_group(html, prefix, field, options);
+		return;
+	}
 
 	if (kind != VENTURE_FORM_FIELD_CONSENT && NULL == value && NULL == options->values)
 		value = fallback;
@@ -436,7 +481,7 @@ forms_render_summary(GString *html, const gchar *prefix, GPtrArray *fields,
 		const gchar *message = forms_error(options, field->key);
 		g_autofree gchar *target = NULL;
 
-		if (NULL == message)
+		if (NULL == message || (field->group_boundary != VENTURE_FORMS_GROUP_NONE && field->group_boundary != VENTURE_FORMS_GROUP_START))
 			continue;
 		target = forms_error_target(prefix, field);
 		g_string_append_printf(html, "<li><a href=\"#%s\">", target);
@@ -501,7 +546,8 @@ gchar *
 venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error)
 {
-	g_autoptr(GPtrArray) fields = NULL, selected = NULL;
+	g_autoptr(GPtrArray) fields = NULL, selected = NULL, base_fields = NULL;
+	g_autoptr(JsonArray) render_rules = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autofree gchar *token = NULL, *title = NULL, *description = NULL, *submit = NULL;
 	g_autofree gchar *prefix = NULL, *action = NULL;
@@ -514,9 +560,10 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 
 	/* A version renders what it froze; no version is the draft, which
 	 * only the builder's preview shows. */
-	fields = venture_forms_definition_for(database, form, options->version, error);
-	if (NULL == fields)
+	base_fields = venture_forms_definition_for(database, form, options->version, error);
+	if (NULL == base_fields)
 		return NULL;
+	fields = venture_forms_expand_groups(base_fields, options->values, TRUE, NULL);
 
 	token = venture_forms_get_string(form, "public-token");
 	title = venture_forms_get_string(form, "title");
@@ -530,6 +577,7 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	preview = (VENTURE_FORMS_RENDER_PREVIEW == options->mode);
 	pages = venture_forms_page_count(fields);
 	selected = preview ? g_ptr_array_ref(fields) : venture_forms_page_fields(fields, page);
+	render_rules = venture_forms_group_render_rules(selected);
 
 	html = g_string_new(NULL);
 	if (hosted)
@@ -537,10 +585,9 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 
 	g_string_append_printf(html, "<form class=\"vf-form\" id=\"%s\" data-vf-form=\"%s\" "
 	                       "method=\"post\" accept-charset=\"utf-8\"", prefix, token != NULL ? token : "");
-	if (fields->len > 0 && ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules != NULL &&
-	    json_array_get_length(((VentureFormsField *)g_ptr_array_index(fields, 0))->rules) > 0)
+	if (json_array_get_length(render_rules) > 0)
 	{
-		JsonArray *rules = ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules;
+		JsonArray *rules = render_rules;
 		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_ARRAY);
 		g_autoptr(JsonArray) states = json_array_new();
 		g_autofree gchar *text = NULL;
@@ -574,6 +621,10 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 		g_string_append_c(html, '"');
 	}
 	g_string_append_c(html, '>');
+
+	/* Enter in a row must submit the page, never implicitly remove a row. */
+	if (!preview && venture_forms_has_groups(selected))
+		g_string_append(html, "<button type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"next\" hidden aria-hidden=\"true\" tabindex=\"-1\">Continue</button>");
 
 	if (!venture_string_is_empty(title))
 	{
@@ -786,6 +837,21 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "key");
 		json_builder_add_string_value(builder, field->key);
+		if (field->group_key != NULL)
+		{
+			json_builder_set_member_name(builder, "group");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "key");
+			json_builder_add_string_value(builder, field->group_key);
+			json_builder_set_member_name(builder, "label");
+			json_builder_add_string_value(builder, field->group_label);
+			json_builder_set_member_name(builder, "min_rows");
+			json_builder_add_int_value(builder, field->group_min);
+			json_builder_set_member_name(builder, "max_rows");
+			json_builder_add_int_value(builder, field->group_max);
+			json_builder_end_object(builder);
+		}
+
 		json_builder_set_member_name(builder, "label");
 		json_builder_add_string_value(builder, field->label != NULL ? field->label : "");
 		json_builder_set_member_name(builder, "kind");
@@ -1020,19 +1086,41 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 	for (i = 0; i < fields->len; i++)
 	{
 		const VentureFormsField *field = g_ptr_array_index(fields, i);
-		g_autofree gchar *shown = NULL;
+		JsonArray *rows = NULL;
+		guint j, length = 1;
+		if (field->sensitive) continue;
+		if (field->group_key != NULL)
+		{
+			JsonNode *group = json_object_get_member(object, field->group_key);
+			if (group == NULL || !JSON_NODE_HOLDS_ARRAY(group)) continue;
+			rows = json_node_get_array(group);
+			length = json_array_get_length(rows);
+		}
+		for (j = 0; j < length; j++)
+		{
+			JsonObject *row = object;
+			g_autofree gchar *shown = NULL;
+			if (rows != NULL)
+			{
+				JsonNode *item = json_array_get_element(rows, j);
+				if (!JSON_NODE_HOLDS_OBJECT(item)) continue;
+				row = json_node_get_object(item);
+			}
+			if (!json_object_has_member(row, field->key)) continue;
+			shown = field->kind == VENTURE_FORM_FIELD_CONSENT ? g_strdup("Given") :
+				forms_answer_text(field, json_object_get_member(row, field->key));
+			g_string_append(html, "<dt>");
+			if (rows != NULL)
+			{
+				forms_escape(html, field->group_label);
+				g_string_append_printf(html, " %u — ", j + 1);
+			}
+			forms_escape(html, field->label);
+			g_string_append(html, "</dt><dd>");
+			forms_paragraphs(html, shown);
+			g_string_append(html, "</dd>");
+		}
 
-		if (field->sensitive || !json_object_has_member(object, field->key))
-			continue;
-		if (VENTURE_FORM_FIELD_CONSENT == field->kind)
-			shown = g_strdup("Given");
-		else
-			shown = forms_answer_text(field, json_object_get_member(object, field->key));
-		g_string_append(html, "<dt>");
-		forms_escape(html, field->label);
-		g_string_append(html, "</dt><dd>");
-		forms_paragraphs(html, shown);
-		g_string_append(html, "</dd>");
 	}
 	g_string_append(html, "</dl>");
 	if (NULL != version)

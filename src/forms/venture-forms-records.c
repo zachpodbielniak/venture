@@ -185,6 +185,8 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureForm, venture_form, venture_form_fields,
  * ========================================================================== */
 
 static const VentureFieldDecl venture_form_field_fields[] = {
+	VENTURE_FIELD_REF("group-id", "Repeat group", "Optional: this question repeats with its group",
+	                  "form_group", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("form-id", "Form", "The form this question belongs to",
 	                  "form", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("position", "Order", "Where it comes; lowest first",
@@ -379,3 +381,15 @@ static const VentureFieldDecl venture_form_rule_fields[] = {
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormRule, venture_form_rule, venture_form_rule_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form rule", NULL);)
+
+static const VentureFieldDecl venture_form_group_fields[] = {
+	VENTURE_FIELD_NAME("label", "Group", "What each repeated row is called"),
+	VENTURE_FIELD_REF("form-id", "Form", "The form containing these questions", "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("key", "Key", "Stable group name in answers and indexed input names",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("min-rows", "Minimum rows", "Fewest rows accepted; 0 permits no rows", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("max-rows", "Maximum rows", "Most rows accepted; 0 uses 10, at most 50", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormGroup, venture_form_group, venture_form_group_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form repeat group", NULL);
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)

@@ -87,14 +87,15 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 {
 	g_autoptr(VentureFormsStep) step = g_new0(VentureFormsStep, 1);
 	g_autoptr(VentureEntity) draft = NULL, fresh = NULL;
-	g_autoptr(GPtrArray) fields = NULL, page_fields = NULL;
+	g_autoptr(GPtrArray) fields = NULL, page_fields = NULL, base_fields = NULL;
+	g_autoptr(JsonObject) page_values = NULL;
 	g_autoptr(JsonObject) posted = venture_forms_answers_to_json(answers);
 	g_autoptr(JsonObject) checked = json_object_new();
 	g_autoptr(GString) summary = g_string_new(NULL);
 	const gchar *token = forms_first(answers, VENTURE_FORMS_DRAFT_TOKEN);
 	const gchar *move = forms_first(answers, VENTURE_FORMS_MOVE);
 	gboolean back = g_strcmp0(move, "back") == 0;
-	gboolean finishing = FALSE;
+	gboolean finishing = FALSE, row_operation = FALSE;
 	g_autoptr(GHashTable) not_shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	GHashTableIter iter;
 	gpointer key;
@@ -129,10 +130,12 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		step->ticket = g_strdup(forms_first(answers, VENTURE_FORMS_TICKET));
 	}
 	if (step->version == NULL) goto missing;
-	fields = venture_forms_definition_for(database, fresh, step->version, error);
-	if (fields == NULL) goto fail;
-	step->pages = venture_forms_page_count(fields);
+	base_fields = venture_forms_definition_for(database, fresh, step->version, error);
+	if (base_fields == NULL) goto fail;
+	step->pages = venture_forms_page_count(base_fields);
 	if (step->page >= step->pages) goto missing;
+	page_values = venture_forms_groups_overlay(base_fields, step->page, step->values, posted);
+	fields = venture_forms_expand_groups(base_fields, page_values, FALSE, step->errors);
 	page_fields = venture_forms_page_fields(fields, step->page);
 	g_hash_table_iter_init(&iter, answers);
 	while (g_hash_table_iter_next(&iter, &key, NULL))
@@ -142,17 +145,21 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		if (venture_forms_definition_find(page_fields, key) == NULL)
 			forms_refuse(step->errors, "_form", "Only questions on the current page may be answered.");
 	}
+	venture_forms_groups_clear_page(base_fields, step->page, step->values);
 	for (i = 0; i < page_fields->len; i++)
 	{
 		const VentureFormsField *field = g_ptr_array_index(page_fields, i);
 		JsonNode *value = json_object_get_member(posted, field->key);
+		if (field->group_boundary != VENTURE_FORMS_GROUP_NONE && field->group_boundary != VENTURE_FORMS_GROUP_ROW_START) continue;
 
 		json_object_remove_member(step->values, field->key);
 		if (value != NULL && field->kind != VENTURE_FORM_FIELD_PAGE_BREAK)
 			json_object_set_member(step->values, field->key, json_node_copy(value));
 	}
+	row_operation = venture_forms_group_move(page_fields, move, step->values, step->errors);
 	venture_forms_rules_filter(fields, step->values, not_shown);
-	for (i = 0; !back && i < page_fields->len; i++)
+	if (!back && !row_operation) venture_forms_groups_validate(page_fields, not_shown, step->errors);
+	for (i = 0; !back && !row_operation && i < page_fields->len; i++)
 	{
 		VentureFormsField *source = g_ptr_array_index(page_fields, i);
 		VentureFormsField effective = *source;
@@ -160,7 +167,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		venture_forms_field_active(source, step->values, &effective.required);
 		forms_check_field(&effective, g_hash_table_lookup(answers, source->key), checked, step->errors, summary);
 	}
-	if (json_object_get_size(step->errors) == 0)
+	if (!row_operation && json_object_get_size(step->errors) == 0)
 	{
 		if (back && step->page > 0)
 		{
@@ -201,6 +208,14 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		VentureFormsOutcome outcome;
 		if (complete == NULL) return NULL;
 		venture_forms_answers_add(complete, VENTURE_FORMS_TICKET, step->ticket);
+		if (forms_first(answers, VENTURE_FORMS_HONEYPOT) != NULL)
+			venture_forms_answers_add(complete, VENTURE_FORMS_HONEYPOT, forms_first(answers, VENTURE_FORMS_HONEYPOT));
+		if (!venture_forms_screen(fresh, complete, now))
+		{
+			step->complete = TRUE;
+			if (!venture_database_purge(database, draft, NULL, error)) return NULL;
+			return g_steal_pointer(&step);
+		}
 		if (!venture_forms_submit(database, fresh, complete, origin, now, &outcome, NULL, &refused, error))
 			return NULL;
 		if (outcome == VENTURE_FORMS_ACCEPTED)

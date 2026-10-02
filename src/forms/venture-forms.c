@@ -358,6 +358,20 @@ forms_validate_field(
 		return FALSE;
 	}
 
+	{
+		gint64 group_id = venture_forms_get_int(entity, "group-id");
+		if (group_id != 0 && (previous == NULL || group_id != venture_forms_get_int(previous, "group-id")))
+		{
+			g_autoptr(VentureEntity) group = venture_database_get(database, VENTURE_TYPE_FORM_GROUP, group_id, NULL);
+			if (group == NULL || venture_forms_get_int(group, "form-id") != form_id ||
+			    venture_entity_get_organization_id(group) != venture_entity_get_organization_id(entity))
+			{
+				venture_set_error_validation(error, "Repeat group", "choose a group on this form");
+				return FALSE;
+			}
+		}
+	}
+
 	/* --- The key: a stable identity --- */
 
 	if (NULL != previous)
@@ -374,18 +388,28 @@ forms_validate_field(
 	}
 	else
 	{
-		const gchar *cursor;
-		gboolean ok = !venture_string_is_empty(key) && strlen(key) <= VENTURE_FORMS_KEY_MAX &&
-		              g_ascii_islower(key[0]);
-
-		for (cursor = key; ok && *cursor != '\0'; cursor++)
-			ok = g_ascii_islower(*cursor) || g_ascii_isdigit(*cursor) || '_' == *cursor;
-		if (!ok)
+		if (!venture_forms_key_valid(key))
 		{
 			venture_set_error_validation(error, "Key",
 				"must start with a lowercase letter and use only lowercase letters, "
 				"digits and _ (at most %d)", VENTURE_FORMS_KEY_MAX);
 			return FALSE;
+		}
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_GROUP);
+			g_autoptr(GPtrArray) groups = NULL;
+			venture_query_set_organization(query, venture_entity_get_organization_id(entity));
+			venture_query_set_include_deleted(query, TRUE);
+			venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ, form_id, NULL);
+			venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, key, NULL);
+			venture_query_set_limit(query, 1);
+			groups = venture_database_find(database, query, error);
+			if (groups == NULL) return FALSE;
+			if (groups->len > 0)
+			{
+				venture_set_error_validation(error, "Key", "this name belongs to a repeat group");
+				return FALSE;
+			}
 		}
 		{
 			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_FIELD);
@@ -655,13 +679,29 @@ forms_check_published(VentureDatabase *database, VentureEntity *entity, VentureE
 			const VentureFormsField *field;
 			if (fields == NULL) return FALSE;
 			field = venture_forms_definition_find(fields, key);
-			if (field == NULL || field->kind != VENTURE_FORM_FIELD_EMAIL || !field->required)
+			if (field == NULL || field->kind != VENTURE_FORM_FIELD_EMAIL || !field->required || field->group_key != NULL)
 			{
 				venture_set_error_validation(error, "One response per email", "must name a required email question in the published version");
 				return FALSE;
 			}
 		}
 	}
+	{
+		g_autofree gchar *key = venture_forms_get_string(entity, "confirmation-field");
+		if (!venture_string_is_empty(key))
+		{
+			g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, entity, version, error);
+			const VentureFormsField *field;
+			if (fields == NULL) return FALSE;
+			field = venture_forms_definition_find(fields, key);
+			if (field != NULL && field->group_key != NULL)
+			{
+				venture_set_error_validation(error, "Confirmation recipient", "must name a non-repeated email question");
+				return FALSE;
+			}
+		}
+	}
+
 	g_object_set(entity, "published-number", venture_forms_get_int(version, "number"), NULL);
 	return TRUE;
 }
@@ -857,6 +897,8 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_draft, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RULE,
 	                                    venture_forms_validate_rule, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_GROUP,
+	                                    venture_forms_validate_group, NULL, NULL);
 	forms_register_actions(database);
 }
 
@@ -1146,11 +1188,16 @@ GHashTable *
 venture_forms_answers_from_json(JsonObject *object, GError **error)
 {
 	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(JsonObject) flat = NULL;
 	JsonObjectIter iter;
 	const gchar *name;
 	JsonNode *node;
 
 	g_return_val_if_fail(object != NULL, NULL);
+
+	flat = venture_forms_flatten_json_answers(object, error);
+	if (flat == NULL) return NULL;
+	object = flat;
 
 	if (json_object_get_size(object) > 500)
 		goto malformed;
@@ -1398,6 +1445,19 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 	glong length;
 	guint i;
 
+	if (field->group_boundary != VENTURE_FORMS_GROUP_NONE)
+	{
+		if (field->group_boundary == VENTURE_FORMS_GROUP_ROW_START)
+		{
+			if (values != NULL && (values->len != 1 || g_strcmp0(g_ptr_array_index(values, 0), "1") != 0))
+				forms_refuse(errors, field->group_key, "This row marker is not valid.");
+		}
+		else if (values != NULL && values->len > 0)
+			forms_refuse(errors, field->group_key, "A group heading does not accept an answer.");
+		if (field->group_boundary == VENTURE_FORMS_GROUP_START)
+			g_string_append_printf(summary, "%s: %u rows\n", field->group_label, field->row_count);
+		return;
+	}
 	if (kind == VENTURE_FORM_FIELD_PAGE_BREAK)
 	{
 		if (values != NULL && values->len > 0) forms_refuse(errors, key, "A page heading does not accept an answer.");
@@ -1979,7 +2039,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	VentureEntity **submission, JsonObject **errors, GError **error)
 {
 	g_autoptr(VentureEntity) version = NULL;
-	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(GPtrArray) fields = NULL, base_fields = NULL;
 	g_autoptr(JsonObject) stored = json_object_new();
 	g_autoptr(JsonObject) refused = json_object_new();
 	g_autoptr(JsonObject) secret = json_object_new();
@@ -2015,9 +2075,11 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
 		return FALSE;
 	}
-	fields = venture_forms_definition_for(database, form, version, error);
-	if (NULL == fields)
+	base_fields = venture_forms_definition_for(database, form, version, error);
+	if (NULL == base_fields)
 		return FALSE;
+	visible = venture_forms_answers_to_json(answers);
+	fields = venture_forms_expand_groups(base_fields, visible, FALSE, refused);
 
 	/* A name that is no question on this version is refused, not
 	 * dropped: the sender believes it was received. The door's own
@@ -2031,8 +2093,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 			forms_refuse(refused, key, "This form has no such question.");
 	}
 
-	visible = venture_forms_answers_to_json(answers);
 	venture_forms_rules_filter(fields, visible, not_shown);
+	venture_forms_groups_validate(fields, not_shown, refused);
 	filtered = venture_forms_answers_from_json(visible, error);
 	if (filtered == NULL) return FALSE;
 	answers = filtered;
@@ -2068,6 +2130,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	}
 
 	name = forms_response_name(form, fields, stored);
+	venture_forms_groups_fold(fields, stored, not_shown, FALSE);
+	venture_forms_groups_fold(fields, secret, not_shown, TRUE);
 	node = json_node_new(JSON_NODE_OBJECT);
 	json_node_set_object(node, stored);
 	/* JSON fields are stored as their text; written once, in one form. */
@@ -2413,30 +2477,42 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
  * Leads made from those responses are CRM records and are erased there.
  * ========================================================================== */
 
-/* Whether any string in @text's JSON object equals @email, ignoring case. */
+/* Row arrays and private drafts participate in the same erasure search. */
+static gboolean
+forms_node_mentions(JsonNode *node, const gchar *email, guint depth)
+{
+	if (depth > 8) return FALSE;
+	if (JSON_NODE_HOLDS_OBJECT(node))
+	{
+		JsonObjectIter iter;
+		const gchar *member;
+		JsonNode *child;
+		json_object_iter_init(&iter, json_node_get_object(node));
+		while (json_object_iter_next(&iter, &member, &child))
+			if (forms_node_mentions(child, email, depth + 1)) return TRUE;
+	}
+	else if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *array = json_node_get_array(node);
+		guint i;
+		for (i = 0; i < json_array_get_length(array); i++)
+			if (forms_node_mentions(json_array_get_element(array, i), email, depth + 1)) return TRUE;
+	}
+	else if (JSON_NODE_HOLDS_VALUE(node) && G_TYPE_STRING == json_node_get_value_type(node))
+	{
+		g_autofree gchar *value = g_strstrip(g_strdup(json_node_get_string(node)));
+		return g_ascii_strcasecmp(value, email) == 0;
+	}
+	return FALSE;
+}
+
 static gboolean
 forms_answers_mention(const gchar *text, const gchar *email)
 {
 	g_autoptr(JsonNode) root = NULL;
-	JsonObjectIter iter;
-	const gchar *member;
-	JsonNode *node;
-
-	if (venture_string_is_empty(text))
-		return FALSE;
+	if (venture_string_is_empty(text)) return FALSE;
 	root = json_from_string(text, NULL);
-	if (NULL == root || !JSON_NODE_HOLDS_OBJECT(root))
-		return FALSE;
-	json_object_iter_init(&iter, json_node_get_object(root));
-	while (json_object_iter_next(&iter, &member, &node))
-		if (JSON_NODE_HOLDS_VALUE(node) && G_TYPE_STRING == json_node_get_value_type(node))
-		{
-			g_autofree gchar *value = g_strstrip(g_strdup(json_node_get_string(node)));
-
-			if (0 == g_ascii_strcasecmp(value, email))
-				return TRUE;
-		}
-	return FALSE;
+	return root != NULL && JSON_NODE_HOLDS_OBJECT(root) && forms_node_mentions(root, email, 0);
 }
 
 JsonNode *

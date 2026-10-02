@@ -290,6 +290,9 @@ venture_forms_field_free(gpointer data)
 	g_free(field->default_value);
 	g_free(field->maps_to);
 	g_free(field->autocomplete);
+	g_free(field->group_key);
+	g_free(field->group_label);
+	g_free(field->base_key);
 	g_clear_pointer(&field->choices, g_ptr_array_unref);
 	g_clear_pointer(&field->rules, json_array_unref);
 	g_free(field);
@@ -349,7 +352,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 		g_object_get(row, "key", &field->key, "label", &field->label, "kind", &field->kind,
 		             "required", &field->required, "sensitive", &field->sensitive,
 		             "marketing-consent", &field->marketing_consent,
-		             "position", &field->position,
+		             "position", &field->position, "group-id", &field->group_id,
 		             "help", &field->help, "placeholder", &field->placeholder,
 		             "pattern", &field->pattern, "default-value", &field->default_value,
 		             "maps-to", &field->maps_to, "autocomplete", &field->autocomplete,
@@ -361,7 +364,8 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 			field->choices = g_ptr_array_new_with_free_func(venture_forms_choice_free);
 		g_ptr_array_add(fields, field);
 	}
-	if (!venture_forms_rules_load(database, form, fields, error))
+	if (!venture_forms_groups_load(database, form, fields, error) ||
+	    !venture_forms_rules_load(database, form, fields, error))
 	{
 		g_ptr_array_unref(fields);
 		return NULL;
@@ -394,6 +398,20 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		VentureFormsField *field = g_ptr_array_index(fields, i);
 
 		json_builder_begin_object(builder);
+		if (!venture_string_is_empty(field->group_key))
+		{
+			json_builder_set_member_name(builder, "group");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "key");
+			json_builder_add_string_value(builder, field->group_key);
+			json_builder_set_member_name(builder, "label");
+			json_builder_add_string_value(builder, field->group_label);
+			json_builder_set_member_name(builder, "min_rows");
+			json_builder_add_int_value(builder, field->group_min);
+			json_builder_set_member_name(builder, "max_rows");
+			json_builder_add_int_value(builder, field->group_max);
+			json_builder_end_object(builder);
+		}
 		json_builder_set_member_name(builder, "key");
 		json_builder_add_string_value(builder, field->key);
 		json_builder_set_member_name(builder, "label");
@@ -527,6 +545,25 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		field->marketing_consent = json_object_get_boolean_member_with_default(object, "marketing_consent", FALSE);
 		field->sensitive = json_object_get_boolean_member_with_default(object, "sensitive", FALSE);
 		field->position = json_object_get_int_member_with_default(object, "position", 0);
+		if (json_object_has_member(object, "group"))
+		{
+			JsonNode *group_node = json_object_get_member(object, "group");
+			JsonNode *minimum, *maximum;
+			JsonObject *group;
+			gint64 low, high;
+			if (!JSON_NODE_HOLDS_OBJECT(group_node)) goto broken;
+			group = json_node_get_object(group_node);
+			field->group_key = forms_member_string(group, "key");
+			field->group_label = forms_member_string(group, "label");
+			minimum = json_object_get_member(group, "min_rows");
+			maximum = json_object_get_member(group, "max_rows");
+			if (!venture_forms_key_valid(field->group_key) || field->group_label == NULL ||
+			    minimum == NULL || !JSON_NODE_HOLDS_VALUE(minimum) || json_node_get_value_type(minimum) != G_TYPE_INT64 ||
+			    maximum == NULL || !JSON_NODE_HOLDS_VALUE(maximum) || json_node_get_value_type(maximum) != G_TYPE_INT64) goto broken;
+			low = json_node_get_int(minimum); high = json_node_get_int(maximum);
+			if (low < 0 || high < 1 || high > 50 || low > high) goto broken;
+			field->group_min = (guint)low; field->group_max = (guint)high;
+		}
 		field->help = forms_member_string(object, "help");
 		field->placeholder = forms_member_string(object, "placeholder");
 		field->pattern = forms_member_string(object, "pattern");
@@ -560,6 +597,7 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 			}
 		}
 	}
+	if (!venture_forms_groups_check(fields, error)) return NULL;
 	if (!venture_forms_rules_restore(fields, json_object_get_member(json_node_get_object(root), "rules"), error))
 		return NULL;
 

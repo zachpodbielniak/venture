@@ -69,6 +69,15 @@ rule_from_record(VentureEntity *record, GPtrArray *fields, GError **error)
 		value = rule_string(condition, "value");
 		index = rule_field_index(fields, key, &page);
 		if (index < 0 || ((VentureFormsField *)g_ptr_array_index(fields, index))->kind == VENTURE_FORM_FIELD_PAGE_BREAK) goto invalid;
+		{
+			VentureFormsField *source = g_ptr_array_index(fields, index);
+			VentureFormsField *destination = target_index >= 0 ? g_ptr_array_index(fields, target_index) : NULL;
+			/* A repeated answer has a meaning within its row, not an arbitrary
+			 * first or last row that could select navigation for everybody. */
+			if (!venture_string_is_empty(source->group_key) &&
+			    (destination == NULL || action == VENTURE_FORM_RULE_JUMP ||
+			     g_strcmp0(source->group_key, destination->group_key) != 0)) goto invalid;
+		}
 		/* Navigation waits until every condition's question has been asked. */
 		source_page = MAX(source_page, page);
 		if (action != VENTURE_FORM_RULE_END && index >= target_index) goto invalid;
