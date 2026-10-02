@@ -32002,6 +32002,7 @@ venture_web_server_stop(VentureWebServer *self)
 
 	venture_federation_sync_stop(self->context);
 	venture_stripe_collection_stop(self->context);
+	venture_http_limits_shutdown(htmx_server_get_soup_server(self->server));
 	soup_server_disconnect(htmx_server_get_soup_server(self->server));
 	htmx_server_stop(self->server);
 }

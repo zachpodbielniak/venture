@@ -358,6 +358,23 @@ static void test_active_teardown(Fixture *f, gconstpointer data)
 	g_assert_null(weak);
 	g_assert_cmpint(g_input_stream_read(g_io_stream_get_input_stream(G_IO_STREAM(connection)), &byte, 1, NULL, &error), ==, 0); g_assert_no_error(error);
 }
+static void test_tls_active_teardown(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GSocketClient) client = g_socket_client_new();
+	g_autoptr(GSocketConnection) connection = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 started;
+	(void)data;
+	g_socket_client_set_timeout(client, 3);
+	connection = g_socket_client_connect_to_host(client, "127.0.0.1", (guint16)f->port, NULL, &error);
+	g_assert_no_error(error);
+	pump();
+	/* An unfinished TLS handshake must not hold synchronous shutdown until
+	 * the TLS backend's much longer handshake timeout expires. */
+	started = g_get_monotonic_time();
+	venture_web_server_stop(f->server);
+	g_assert_cmpint(g_get_monotonic_time() - started, <, 3 * G_USEC_PER_SEC);
+}
 static void test_negative_length(Fixture *f, gconstpointer data)
 {
 	g_autofree gchar *response = exchange(f, "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\nConnection: close\r\n\r\n");
@@ -428,6 +445,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/tls-declared", Fixture, GINT_TO_POINTER(1), setup, test_declared, teardown);
 	g_test_add("/http-limits/tls-slow-body", Fixture, GINT_TO_POINTER(1), setup, test_slow_body, teardown);
 	g_test_add("/http-limits/connections-and-neighbor", Fixture, GINT_TO_POINTER(2), setup, test_connections, teardown);
+	g_test_add("/http-limits/tls-active-teardown", Fixture, GINT_TO_POINTER(1), setup, test_tls_active_teardown, teardown);
 	g_test_add("/http-limits/tls-handshake-stall", Fixture, GINT_TO_POINTER(1), setup, test_tls_stall, teardown);
 	g_test_add("/http-limits/generic-record", Fixture, NULL, setup, test_generic, teardown);
 	g_test_add("/http-limits/aggregate-release", Fixture, GINT_TO_POINTER(2), setup, test_aggregate, teardown);

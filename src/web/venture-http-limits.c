@@ -216,6 +216,10 @@ static void request_started(SoupServer *server, SoupServerMessage *message, gpoi
 			soup_server_message_set_status(message, SOUP_STATUS_SERVICE_UNAVAILABLE, NULL);
 			return;
 		}
+		/* TLS performs blocking socket reads in its handshake worker. Bound
+		 * those too: closing a descriptor alone need not wake an existing
+		 * poll in another thread on every backend. */
+		g_socket_set_timeout(socket, limits->timeout);
 		connection = g_new0(Connection, 1); connection->limits = limits;
 		connection->socket = g_object_ref(socket); connection->first = g_object_ref(message);
 		g_signal_connect(message, "disconnected", G_CALLBACK(connection_disconnected), connection);
@@ -246,6 +250,22 @@ static void limits_stop(gpointer data)
 		socket_abort(connection->socket);
 	}
 	g_hash_table_remove_all(limits->connections); limits_unref(limits);
+}
+void venture_http_limits_shutdown(SoupServer *server)
+{
+	Limits *limits = g_object_get_data(G_OBJECT(server), "venture-http-limits");
+	GHashTableIter iter;
+	gpointer value;
+	if (!limits) return;
+	/* Soup disconnect closes TLS streams synchronously. Wake their pending
+	 * handshake reads before entering that close, while we own the sockets. */
+	g_hash_table_iter_init(&iter, limits->connections);
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+	{
+		Connection *connection = value;
+		source_clear(&connection->deadline);
+		socket_abort(connection->socket);
+	}
 }
 gboolean venture_http_limits_validate(VentureConfig *config, GError **error)
 {
