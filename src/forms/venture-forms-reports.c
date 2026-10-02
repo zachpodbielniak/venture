@@ -499,3 +499,5 @@ venture_forms_register_reports(VentureReportRegistry *registry)
 		"Answers to one form in the period: every choice counted, scales averaged, a question "
 		"split where a new version changed what it asked (form_id=<id>)", summary_report)));
 }
+
+#include "venture-forms-results.inc"

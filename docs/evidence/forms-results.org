@@ -1,0 +1,34 @@
+#+title: Form results dashboard demonstration
+
+* Built-server walkthrough
+
+Ran the DEBUG server in a disposable SQLite instance on loopback, with AI,
+plugins and automation disabled. The tested binary SHA-256 was
+=d86e227ede9ddf261e9ce90a4bffe8a2a4cdaf6414fa7d894592ce76bb1771b3=.
+
+Created a scored survey through the ordinary REST endpoints. Three public
+submissions selected a, b, a and rated 0, 7, 10. Published a second version
+with a page break, then advanced a JavaScript-disabled browser to its second
+page and left that draft unfinished. Created the built-in =form-results=
+dashboard template and set each widget's record ID to the survey.
+
+The browser read both the dashboard JSON and rendered page. It printed:
+
+#+begin_example
+PASS: form-results template created six widgets; three submitted responses and one unfinished page matched JSON and rendered HTML.
+Choice a=2; NPS=0; mean rating=5.666667; score distribution 1:1, 2:2; unfinished Page 2=1. Versions remain visible.
+#+end_example
+
+The unfinished count is a snapshot of retained drafts, not a historical
+visitor funnel. It cannot count visitors who leave before creating a draft,
+and retention or erasure removes a draft from that count.
+
+* Regression evidence
+
+All 25 dashboard tests and 83 forms tests passed. The dashboard forms test
+checks all six kinds, known values against the survey report, stable choice
+IDs after a label change, escaped HTML labels, version selection, separate
+segments after changing a rating scale, refusal of NPS on a non-0-10 scale,
+sensitive-question refusal, organization boundaries, module-off handling,
+bounded queries and template import. Draft answer text is absent from JSON.
+The existing template round-trip suite imports the new built-in template too.

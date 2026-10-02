@@ -124,7 +124,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
 | `dashboard export SLUG` | its definition as JSON; `dashboard import FILE` (or `-`) creates one from it |
-| `dashboard create TEMPLATE` | `today`, `factory`, `reporting`, `progress`, `work` or `overview`; `dashboard templates` and `dashboard kinds` list what is accepted |
+| `dashboard create TEMPLATE` | `today`, `factory`, `reporting`, `progress`, `work`, `overview` or `form-results`; `dashboard templates` and `dashboard kinds` list what is accepted |
 | `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
 | `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
 | `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs |
@@ -1987,3 +1987,10 @@ use invoice refund/dispute operations for the financial outcome. A payment
 retry must reuse its signed intake nonce and original answers, never create a
 second invoice. Pending payment answers participate in owner export/erasure;
 financial and guest CRM records retain their independent policies.
+
+The `form-results` dashboard template supplies six form statistics widgets.
+Set each widget's `record_id` to a form and its `field` to the stable question
+key for choice/NPS/rating kinds. `options={"version":2}` narrows before row
+limits. NPS requires a 0–10 rating. `form_dropoff` counts retained unfinished
+drafts by current page, not all historical visitors; it never exposes draft
+answers. `dashboard SLUG` reads the same scoped aggregates as the page.

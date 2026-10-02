@@ -349,3 +349,12 @@ organization_id=1 classic_home=true=) and =/= is the built-in overview,
 exactly as before. The cards are still at =/api/v1/headline= and the
 reports on =/reports=. One living settings row per organisation; a second
 is refused.
+
+* Form results
+
+=venturectl dashboard create form-results= creates six forms widgets. Set
+=record_id= on each to the desired form; choice, NPS and average widgets also
+need a stable question =field=. Their data is shared with the dashboard API
+and assistant, and their JSON and HTML use the same rows. See
+[[file:forms.org][Results on dashboards]] for version boundaries, scopes and the retained-draft
+meaning of the unfinished-page count.

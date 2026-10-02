@@ -530,6 +530,27 @@ gboolean venture_forms_check_write(VentureDatabase *database, VentureEntity *ent
 gboolean venture_forms_payment_reconcile(VentureDatabase *database, gint64 organization,
 	gint64 checkout_id, GDateTime *now, GError **error);
 
+/**
+ * venture_forms_results:
+ * @context: the application context
+ * @organization: organization to read, or 0 for the default
+ * @form_id: a form in that organization
+ * @kind: one of the six form widget kind names
+ * @key: (nullable): stable question key for choice, rating and NPS kinds
+ * @version_number: published version number, or 0 for all
+ * @period: (nullable): response period, or all dates
+ * @error: return location for a #GError
+ *
+ * Computes bounded, version-aware statistics using the survey report's counting
+ * rules. Sensitive answers and unsubmitted draft contents are never returned.
+ * Drop-off counts retained unfinished drafts by their current page.
+ *
+ * Returns: (transfer full) (nullable): aggregate JSON, or %NULL on error
+ */
+JsonNode *venture_forms_results(VentureContext *context, gint64 organization,
+	gint64 form_id, const gchar *kind, const gchar *key, gint64 version_number,
+	VentureDateRange *period, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

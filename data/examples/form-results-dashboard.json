@@ -1,0 +1,53 @@
+{
+  "name": "Form results",
+  "slug": "form-results",
+  "description": "Set each widget record_id to a published form; choose stable question keys for choice and rating widgets.",
+  "layout": "two_columns",
+  "widgets": [
+    {
+      "kind": "form_responses",
+      "title": "Responses over time",
+      "record_id": 0,
+      "period": "all",
+      "position": 1
+    },
+    {
+      "kind": "form_choices",
+      "title": "Choices",
+      "record_id": 0,
+      "period": "all",
+      "position": 2,
+      "field": "choice"
+    },
+    {
+      "kind": "form_nps",
+      "title": "Net promoter score",
+      "record_id": 0,
+      "period": "all",
+      "position": 3,
+      "field": "rating"
+    },
+    {
+      "kind": "form_rating",
+      "title": "Average rating",
+      "record_id": 0,
+      "period": "all",
+      "position": 4,
+      "field": "rating"
+    },
+    {
+      "kind": "form_scores",
+      "title": "Quiz scores",
+      "record_id": 0,
+      "period": "all",
+      "position": 5
+    },
+    {
+      "kind": "form_dropoff",
+      "title": "Unfinished pages",
+      "record_id": 0,
+      "period": "all",
+      "position": 6
+    }
+  ]
+}

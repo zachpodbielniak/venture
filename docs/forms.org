@@ -1144,3 +1144,33 @@ remaining payment payload after 30 days, or the form's shorter retention
 period. Independent invoice, guest CRM and
 mail records retain their own policies; form erasure never silently voids an
 invoice or issues a refund. Migration =000860= covers both database backends.
+
+* Results on dashboards
+
+Six widget kinds use the same answer-counting rules as the survey summary:
+=form_responses= (daily counts), =form_choices= (stable choice IDs), =form_nps=,
+=form_rating= (average), =form_scores= and =form_dropoff=. Set =record_id= to
+the form ID, =period= to a dashboard period, and =field= to the stable question
+key for choice, NPS and rating widgets. =options={"version":2}= restricts the
+published version before the row bound is applied; omit it for all versions.
+
+Choice labels can change without splitting their IDs. A changed rating scale
+starts a separate version segment. NPS requires a non-sensitive rating from
+0 through 10 in every selected version: 9-10 are promoters, 0-6 detractors,
+7-8 passive, and the result is 100 times (promoters minus detractors) divided
+by answered ratings. Empty ratings have no value, rather than a fabricated
+zero. Repeating questions count each answered row, as the survey does.
+
+Counts and score distributions show the published version boundary. The
+unfinished-page widget counts *retained unfinished drafts by their current
+page*, scoped by the draft's creation date. It is a current drop-off snapshot,
+not a historical visitor funnel: it does not count people who never advanced
+past the initial page, and retention/erasure remove their draft counts.
+It never reads draft answers. Submitted-response widgets use submitted dates.
+
+All kinds obey the viewer's organization and venture scope, refuse sensitive
+questions, and show the ordinary module-off state when forms are disabled.
+JSON and HTML are emitted together; the assistant reads the same aggregates.
+Queries are bounded and ask for a narrower period/version rather than silently
+truncating. The [[file:../data/examples/form-results-dashboard.json][form results dashboard template]] imports without a fixture
+form ID; set its IDs and question keys after import.
