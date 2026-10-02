@@ -217,8 +217,7 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	              "Consent questions only: record checked permission for the captured lead",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("sensitive", "Sensitive",
-	              "Kept out of the AI, webhooks, notifications, search and the audit log; "
-	              "shown only on the response's own page",
+	              "Kept out of pages, the AI, webhooks, notifications, search and the audit log",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("autocomplete", "Autofill",
 	              "Optional: what the browser may fill in, e.g. given-name, postal-code; "

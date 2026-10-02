@@ -393,6 +393,17 @@ forms_validate_field(
 
 	/* --- Settings that have to mean something --- */
 
+	if (kind == VENTURE_FORM_FIELD_CONSENT)
+	{
+		g_autofree gchar *default_value = venture_forms_get_string(entity, "default-value");
+
+		if (!venture_string_is_empty(default_value))
+		{
+			venture_set_error_validation(error, "Default", "a consent question cannot have a default answer");
+			return FALSE;
+		}
+	}
+
 	if (max != 0 && max < min)
 	{
 		venture_set_error_validation(error, "Maximum",

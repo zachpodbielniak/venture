@@ -1636,6 +1636,39 @@ test_versions_action(Fixture *f, gconstpointer data)
  * Privacy
  * ========================================================================== */
 
+/* Old drafts and frozen versions could contain a default-checked consent
+ * box. A browser must require a person's choice, not submit that default. */
+static void
+test_consent_no_default(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "consent-default", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) field = make_field(f, form, "permission", "Send news",
+		VENTURE_FORM_FIELD_CONSENT, FALSE, 10);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(JsonNode) schema = NULL;
+	g_autofree gchar *html = NULL;
+	JsonObject *question;
+	(void)data;
+
+	save(f, field);
+	g_object_unref(publish(f, form));
+	/* Represent a version written before the default-consent guard. */
+	g_assert_true(venture_database_execute(f->db,
+		"UPDATE form_fields SET default_value = 'on';"
+		"UPDATE form_versions SET definition = replace(definition, "
+		"'\"kind\":\"consent\"', '\"kind\":\"consent\",\"default_value\":\"on\"')", NULL, &error));
+	g_assert_no_error(error);
+	html = render(f, form, VENTURE_FORMS_RENDER_FRAGMENT);
+	g_assert_null(strstr(html, " checked"));
+	schema = venture_forms_schema(f->db, form, "/pub/form/consent-default", now, &error);
+	g_assert_no_error(error);
+	question = json_array_get_object_element(json_object_get_array_member(json_node_get_object(schema), "fields"), 0);
+	g_assert_cmpstr(json_object_get_string_member(question, "default"), ==, "");
+	g_object_set(field, "default-value", "true", NULL);
+	refuse(f, field, "consent");
+}
+
 /* Consent is the words it was given to; an unticked box records nothing,
  * so consent is never made up from a default. */
 static void
@@ -1733,7 +1766,7 @@ test_marketing_consent(Fixture *f, gconstpointer data)
  * assistant's record tools and an outbound webhook's data carry
  * (venture-webhook.c serialises the record with the same call) -- and not
  * in the audit log, whose label and diff are what inbox notifications are
- * built from. It cannot be copied into a lead. Its own page shows it. */
+ * built from. It cannot be copied into a lead or disclosed by the response page. */
 static void
 test_sensitive_kept_apart(Fixture *f, gconstpointer data)
 {
@@ -1770,7 +1803,7 @@ test_sensitive_kept_apart(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(text, "SECRET-CONDITION"));
 	page = venture_forms_render_answers(f->db, submission, &error);
 	g_assert_no_error(error);
-	g_assert_nonnull(strstr(page, "SECRET-CONDITION"));
+	g_assert_null(strstr(page, "SECRET-CONDITION"));
 	/* The audit log names it by number and holds none of what was sent. */
 	venture_query_set_limit(audits, 0);
 	entries = venture_database_find(f->db, audits, NULL);
@@ -2086,5 +2119,6 @@ main(int argc, char **argv)
 	g_test_add("/forms/summary-report", Fixture, NULL, setup, test_summary_report, teardown);
 	g_test_add("/forms/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
+	g_test_add("/forms/consent-no-default", Fixture, NULL, setup, test_consent_no_default, teardown);
 	return g_test_run();
 }

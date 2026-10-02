@@ -128,7 +128,8 @@ are you to recommend us (0-10)?". So a form has versions.
   was given to: =label=, with =help= as detail, stored as
   ={"given":true,"wording":...}= under the response's version and time.
   An unticked box records nothing, so consent is never made up from a
-  default. It can be required. Set =marketing_consent=true= only on a
+  default. Consent questions cannot declare a default answer; older defaults
+  are ignored by both the renderer and the public schema. They can be required. Set =marketing_consent=true= only on a
   non-sensitive consent question whose wording explicitly asks for marketing
   permission. With =create_lead= and name/email mappings, a checked answer
   writes through the marketing service in the response transaction. Its
@@ -142,7 +143,7 @@ are you to recommend us (0-10)?". So a form has versions.
   other and stored apart, in the response's =sensitive_answers=, a
   sensitive column: never in the API's JSON, the assistant's view,
   webhooks, notifications, search or the audit log. The summary names the
-  question only. The response's own page shows it. A sensitive question
+  question only. The response's page omits it too. A sensitive question
   cannot fill a lead. =/webhook/form-sensitive-delivery= checks actual
   outgoing HTTP create/update bodies and an emitted inbox notification.
 - *The audit log holds no answers.* A response's audit entries are

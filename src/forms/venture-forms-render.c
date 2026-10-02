@@ -174,7 +174,7 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	gdouble min = field->min_value;
 	gdouble max = field->max_value;
 
-	if (NULL == value && NULL == options->values)
+	if (kind != VENTURE_FORM_FIELD_CONSENT && NULL == value && NULL == options->values)
 		value = fallback;
 
 	kind_class = g_strdup(nick);
@@ -700,7 +700,8 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 		json_builder_set_member_name(builder, "placeholder");
 		json_builder_add_string_value(builder, field->placeholder != NULL ? field->placeholder : "");
 		json_builder_set_member_name(builder, "default");
-		json_builder_add_string_value(builder, field->default_value != NULL ? field->default_value : "");
+		json_builder_add_string_value(builder, field->kind != VENTURE_FORM_FIELD_CONSENT &&
+			field->default_value != NULL ? field->default_value : "");
 		if (venture_forms_kind_has_choices(field->kind))
 		{
 			json_builder_set_member_name(builder, "choices");
@@ -917,23 +918,6 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 	if (NULL == answers || !JSON_NODE_HOLDS_OBJECT(answers))
 		return g_strdup("<p class=\"muted\">No answers.</p>");
 	object = json_node_get_object(answers);
-	/* Sensitive answers are shown here, on the record's own page, and
-	 * nowhere else; merged in for display only. */
-	{
-		g_autofree gchar *hidden_text = venture_forms_get_string(submission, "sensitive-answers");
-		g_autoptr(JsonNode) hidden = venture_string_is_empty(hidden_text) ? NULL : json_from_string(hidden_text, NULL);
-
-		if (NULL != hidden && JSON_NODE_HOLDS_OBJECT(hidden))
-		{
-			JsonObjectIter iter;
-			const gchar *member;
-			JsonNode *value;
-
-			json_object_iter_init(&iter, json_node_get_object(hidden));
-			while (json_object_iter_next(&iter, &member, &value))
-				json_object_set_member(object, member, json_node_copy(value));
-		}
-	}
 
 	html = g_string_new("<dl class=\"form-answers\">");
 	for (i = 0; i < fields->len; i++)
@@ -941,7 +925,7 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 		const VentureFormsField *field = g_ptr_array_index(fields, i);
 		g_autofree gchar *shown = NULL;
 
-		if (!json_object_has_member(object, field->key))
+		if (field->sensitive || !json_object_has_member(object, field->key))
 			continue;
 		if (VENTURE_FORM_FIELD_CONSENT == field->kind)
 			shown = g_strdup("Given");

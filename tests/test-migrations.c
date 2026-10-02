@@ -1144,20 +1144,23 @@ test_forms_schema(void)
 	g_autoptr(VentureDatabase) database = NULL;
 	g_autoptr(GError) error = NULL;
 	guint run;
+	gboolean migrated;
 
 	/* Forms off: nothing to check, and it is recorded as done. */
 	venture_config_set_module_enabled(config, "forms", FALSE);
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
 	context = venture_context_new(config, database);
-	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
 	g_assert_no_error(error);
+	g_assert_true(migrated);
 	g_assert_false(table_exists(database, "form_fields"));
 	g_assert_false(table_exists(database, "form_versions"));
 	g_assert_cmpint(applied(database, 711), ==, 1);
 	g_assert_cmpint(applied(database, 720), ==, 1);
 	g_assert_cmpint(applied(database, 730), ==, 1);
 	g_assert_cmpint(applied(database, 740), ==, 1);
+	g_assert_cmpint(applied(database, 741), ==, 1);
 	g_clear_object(&context);
 	g_clear_object(&database);
 
@@ -1168,14 +1171,16 @@ test_forms_schema(void)
 		database = venture_database_new(uri, &error);
 		g_assert_no_error(error);
 		context = venture_context_new(config, database);
-		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
 		g_assert_no_error(error);
+		g_assert_true(migrated);
 		g_assert_true(table_exists(database, "form_fields"));
 		g_assert_true(table_exists(database, "form_versions"));
 		g_assert_cmpint(applied(database, 711), ==, 1);
 		g_assert_cmpint(applied(database, 720), ==, 1);
 		g_assert_cmpint(applied(database, 730), ==, 1);
 		g_assert_cmpint(applied(database, 740), ==, 1);
+		g_assert_cmpint(applied(database, 741), ==, 1);
 		{
 			g_autofree gchar *index = query_text(database,
 				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "

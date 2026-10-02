@@ -263,7 +263,8 @@ gboolean venture_forms_has_unpublished_changes(VentureDatabase *database, Ventur
  * @error: (out) (optional): return location for a #GError
  *
  * The response's answers as a definition list, labelled by the version of
- * the questions it answered, not by today's.
+ * the questions it answered, not by today's. Sensitive answers are omitted
+ * even on the response's own page.
  *
  * Returns: (transfer full) (nullable): the markup
  */
