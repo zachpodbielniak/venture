@@ -357,11 +357,12 @@ forms_web_json_result(gboolean ok, const gchar *message, const gchar *redirect, 
 
 /* What a person sees once a response is in -- or once a robot is told it is. */
 static HtmxResponse *
-forms_web_accepted(VentureEntity *form, gboolean json, const gchar *allow_origin)
+forms_web_accepted(VentureDatabase *database, VentureEntity *form, VentureEntity *submission, gboolean json, const gchar *allow_origin)
 {
 	g_autofree gchar *redirect = NULL, *message = NULL;
 
-	g_object_get(form, "redirect-url", &redirect, "success-message", &message, NULL);
+	g_object_get(form, "redirect-url", &redirect, NULL);
+	message = venture_forms_success_message(database, form, submission);
 	if (venture_string_is_empty(message))
 	{
 		g_free(message);
@@ -380,7 +381,7 @@ forms_web_accepted(VentureEntity *form, gboolean json, const gchar *allow_origin
 		forms_web_common(response, allow_origin);
 		return response;
 	}
-	return forms_web_html(form, venture_forms_render_success(form, TRUE), 200, allow_origin, TRUE);
+	return forms_web_html(form, venture_forms_render_success_text(form, message, TRUE), 200, allow_origin, TRUE);
 }
 
 /* Reads the body into answers, by content type. JSON may come as text/plain
@@ -474,7 +475,7 @@ venture_web_forms_confirm_signup(HtmxRequest *request, GHashTable *params, gpoin
 	result = venture_forms_confirm_signup(venture_context_get_database(self->context), form,
 		g_hash_table_lookup(params, "capability"), now, confirm, &error);
 	if (result == NULL) return forms_web_missing();
-	if (confirm) return forms_web_accepted(form, FALSE, NULL);
+	if (confirm) return forms_web_accepted(venture_context_get_database(self->context), form, result, FALSE, NULL);
 	return forms_web_html(form, g_strdup("<main class=\"vf-confirm\"><h1>Confirm your signup</h1><p>Press the button to confirm the signup requested for your inbox.</p><form method=\"post\"><button type=\"submit\">Confirm signup</button></form></main>"), 200, NULL, TRUE);
 }
 
@@ -486,7 +487,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	VentureWebServer *self = data;
 	VentureDatabase *database = venture_context_get_database(self->context);
 	g_autoptr(GDateTime) now = venture_time_now();
-	g_autoptr(VentureEntity) form = NULL;
+	g_autoptr(VentureEntity) form = NULL, submission = NULL;
 	g_autoptr(GHashTable) answers = NULL;
 	g_autoptr(JsonObject) errors = NULL;
 	g_autoptr(GError) error = NULL;
@@ -588,7 +589,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 			gboolean row_edit = repeated && (g_str_has_prefix(move, "add:") || g_str_has_prefix(move, "remove:")) &&
 				(honeypot == NULL || honeypot->len == 0 || venture_string_is_empty(g_ptr_array_index(honeypot, 0))) &&
 				venture_forms_ticket_parse(form, ticket, &issued, &number);
-			if (!row_edit) return forms_web_accepted(form, json, allow_origin);
+			if (!row_edit) return forms_web_accepted(database, form, NULL, json, allow_origin);
 		}
 		if (g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN) ||
 		    (fields != NULL && (repeated || venture_forms_page_count(fields) > 1)))
@@ -601,7 +602,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 				if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return forms_web_missing();
 				return forms_web_status(500, "The page could not be saved; please try again.");
 			}
-			if (step->complete) return step->awaiting_confirmation ? forms_web_pending(form, json, allow_origin) : forms_web_accepted(form, json, allow_origin);
+			if (step->complete) return step->awaiting_confirmation ? forms_web_pending(form, json, allow_origin) : forms_web_accepted(database, form, step->submission, json, allow_origin);
 			action = forms_web_action(self, form, json);
 			options.mode = json ? VENTURE_FORMS_RENDER_FRAGMENT : VENTURE_FORMS_RENDER_HOSTED;
 			options.action = action;
@@ -631,7 +632,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		}
 	}
 
-	if (!venture_forms_submit(database, form, answers, origin, now, &outcome, NULL, &errors, &error))
+	if (!venture_forms_submit(database, form, answers, origin, now, &outcome, &submission, &errors, &error))
 	{
 		if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))
 			return forms_web_missing();
@@ -639,7 +640,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	}
 	if (VENTURE_FORMS_PENDING == outcome) return forms_web_pending(form, json, allow_origin);
 	if (VENTURE_FORMS_ACCEPTED == outcome || VENTURE_FORMS_DISCARDED == outcome)
-		return forms_web_accepted(form, json, allow_origin);
+		return forms_web_accepted(database, form, submission, json, allow_origin);
 
 	if (json)
 		return forms_web_json_result(FALSE, "Please correct the answers marked below.", NULL, errors, 422, allow_origin);

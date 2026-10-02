@@ -97,6 +97,7 @@ typedef struct {
 	guint pages;
 	gboolean complete;
 	gboolean awaiting_confirmation;
+	VentureEntity *submission;
 	gint64 contact_id;
 } VentureFormsStep;
 
@@ -160,6 +161,23 @@ void venture_forms_choice_free(gpointer data);
 GPtrArray *venture_forms_choices_parse(const gchar *text, gboolean assign, GError **error);
 const gchar *venture_forms_choice_label(GPtrArray *choices, const gchar *id);
 void venture_forms_rating_bounds(const VentureFormsField *field, gint64 *low, gint64 *high);
+
+/* --- Answer piping: fixed placeholders over validated public answers --- */
+gboolean venture_forms_groups_load_metadata(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+VentureFormsField *venture_forms_field_from_record(VentureEntity *row);
+gboolean venture_forms_validate_piping(VentureDatabase *database, VentureEntity *entity, GError **error);
+gboolean venture_forms_piping_definition(GPtrArray *fields, const gchar *success, GError **error);
+JsonObject *venture_forms_pipe_values(GPtrArray *fields, JsonObject *raw);
+gchar *venture_forms_pipe_text(const gchar *text, GPtrArray *fields,
+	const VentureFormsField *target, JsonObject *values);
+JsonObject *venture_forms_pipe_stored_values(GPtrArray *fields, JsonObject *answers);
+void venture_forms_piping_apply(GPtrArray *fields, JsonObject *values);
+JsonObject *venture_forms_pipe_context(GPtrArray *selected, GPtrArray *fields, JsonObject *values);
+gchar *venture_forms_pipe_answer(const VentureFormsField *field, JsonNode *answer);
+void venture_forms_pipe_counts(GPtrArray *fields, JsonObject *raw, JsonObject *values);
+gchar *venture_forms_success_message(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *response);
+gchar *venture_forms_render_success_text(VentureEntity *form, const gchar *message, gboolean hosted);
 
 /* --- Definitions --- */
 

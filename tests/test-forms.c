@@ -3388,6 +3388,134 @@ test_optin_contact_limit(Fixture *f, gconstpointer data)
 }
 
 
+/* A later edit must not turn an allowed placeholder into a forward or
+ * sensitive reference; every generic writer reaches the same validator. */
+static void
+test_piping_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "pipe-validation", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) first = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 10);
+	g_autoptr(VentureEntity) later = make_field(f, form, "detail", "Hello {name}", VENTURE_FORM_FIELD_LONG_TEXT, FALSE, 20);
+	g_autoptr(VentureEntity) invalid = make_field(f, form, "bad", "Unknown {missing}", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 30);
+	(void)data;
+	save(f, first); save(f, later);
+	refuse(f, invalid, "placeholder");
+	g_object_set(invalid, "label", "Expression {name + 1}", NULL); refuse(f, invalid, "placeholder");
+	g_object_set(first, "sensitive", TRUE, NULL); refuse(f, first, "placeholder");
+	g_object_set(first, "sensitive", FALSE, "position", (gint64)40, NULL); refuse(f, first, "placeholder");
+	g_object_set(first, "position", (gint64)10, "help", "Later {detail}", NULL); refuse(f, first, "placeholder");
+	g_object_set(form, "success-message", "Unknown {missing}", NULL); refuse(f, form, "placeholder");
+	/* Equal positions retain the renderer's ID order, rather than refusing
+	 * an earlier question merely because both use the default position. */
+	add_field(f, form, "same_position", "Earlier {name}", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 10);
+	g_object_set(form, "success-message", "Thanks {name}; {{literal}}", NULL); save(f, form);
+	g_object_unref(publish(f, form));
+}
+
+/* Refill data can include invalid or forged hidden answers. Neither may
+ * become display text through a placeholder, even before final submission. */
+static void
+test_piping_visible_validated(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "pipe-visible", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) mode = make_field(f, form, "mode", "Mode", VENTURE_FORM_FIELD_SINGLE_CHOICE, TRUE, 1);
+	g_autoptr(VentureEntity) rule = NULL, version = NULL;
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autofree gchar *html = NULL;
+	VentureFormsRender options;
+	(void)data;
+	g_object_set(mode, "choices", "yes | Yes\nno | No", NULL); save(f, mode);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 10);
+	add_field(f, form, "detail", "Detail", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 20);
+	add_field(f, form, "reply", "Address: {email}; detail: {detail}", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 30);
+	rule = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "detail", "[{\"field\":\"mode\",\"operator\":\"equals\",\"value\":\"yes\"}]"); save(f, rule);
+	version = publish(f, form);
+	json_object_set_string_member(values, "mode", "no"); json_object_set_string_member(values, "email", "invalid");
+	json_object_set_string_member(values, "detail", "FORGED-HIDDEN");
+	options.mode = VENTURE_FORMS_RENDER_FRAGMENT; options.action = NULL; options.ticket = NULL;
+	options.values = values; options.errors = NULL; options.version = version;
+	html = venture_forms_render(f->db, form, &options, NULL);
+	g_assert_nonnull(html); g_assert_nonnull(strstr(html, ">Address: ; detail: </span>"));
+	g_clear_pointer(&html, g_free);
+	json_object_set_string_member(values, "mode", "yes"); json_object_set_string_member(values, "email", "alice@example.test");
+	json_object_set_string_member(values, "detail", "<script>alert(1)</script>");
+	html = venture_forms_render(f->db, form, &options, NULL);
+	g_assert_nonnull(strstr(html, ">Address: alice@example.test; detail: &lt;script&gt;alert(1)&lt;/script&gt;</span>"));
+	g_assert_null(strstr(html, "<script>alert(1)</script>"));
+}
+
+/* JS-off navigation carries validated answers into later headings and
+ * labels; the response supplies final text, not an untrusted echo of POST. */
+static void
+test_piping_pages_success(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "pipe-pages", VENTURE_FORM_LIVE), response = NULL;
+	g_autofree gchar *ticket = NULL, *body = NULL, *token = NULL, *answers = NULL;
+	g_autoptr(JsonNode) parsed = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "next", "Hello {name}", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "agree", "I, {name}, agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 30);
+	g_object_set(form, "success-message", "Thanks, {name}. {{Literal}}", NULL); save(f, form); g_object_unref(publish(f, form));
+	start_http(f); ticket = old_ticket(form);
+	body = g_strdup_printf("%s&name=%%3Cscript%%3Ealert(1)%%3C%%2Fscript%%3E", ticket);
+	request(f, "/pub/form/pipe-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, ">Hello &lt;script&gt;alert(1)&lt;/script&gt;</span>"));
+	g_assert_nonnull(strstr(reply.body, ">I, &lt;script&gt;alert(1)&lt;/script&gt;, agree</span>"));
+	g_assert_null(strstr(reply.body, "<script>alert(1)</script>"));
+	token = page_token(reply.body); reply_clear(&reply); g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("_vf_draft=%s", token);
+	request(f, "/pub/form/pipe-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422);
+	g_assert_nonnull(strstr(reply.body, "I, &lt;script&gt;alert(1)&lt;/script&gt;, agree: This box must be ticked."));
+	g_clear_pointer(&token, g_free); token = page_token(reply.body); reply_clear(&reply); g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("_vf_draft=%s&agree=on", token);
+	request(f, "/pub/form/pipe-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "Thanks, &lt;script&gt;alert(1)&lt;/script&gt;. {Literal}"));
+	response = last_form_response(f); g_assert_nonnull(response);
+	answers = venture_forms_get_string(response, "answers"); parsed = json_from_string(answers, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_node_get_object(parsed), "agree"), "wording"), ==,
+		"I, <script>alert(1)</script>, agree");
+	reply_clear(&reply);
+}
+
+/* Same-row references cannot borrow another row's name. A group count is
+ * derived from the validated row shape and is available to final text. */
+static void
+test_piping_rows(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "pipe-rows", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) group = g_object_new(VENTURE_TYPE_FORM_GROUP, "organization-id", f->org,
+		"form-id", venture_entity_get_id(form), "key", "attendee", "label", "Attendee", "max-rows", (gint64)3, NULL);
+	g_autoptr(VentureEntity) name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	g_autoptr(VentureEntity) consent = make_field(f, form, "agree", "I, {name}, agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 20);
+	g_autoptr(VentureEntity) response = NULL;
+	g_autofree gchar *message = NULL, *text = NULL, *html = NULL;
+	g_autoptr(JsonNode) answers = NULL;
+	JsonArray *rows;
+	const gchar *const pairs[] = { "attendee[0][name]", "Alice", "attendee[0][agree]", "on",
+		"attendee[1][name]", "Bob", "attendee[1][agree]", "on", NULL };
+	(void)data;
+	save(f, group); g_object_set(name, "group-id", venture_entity_get_id(group), NULL); save(f, name);
+	g_object_set(consent, "group-id", venture_entity_get_id(group), NULL); save(f, consent);
+	g_object_set(form, "success-message", "Registered {attendee.count} attendees.", NULL); save(f, form);
+	g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); message = venture_forms_success_message(f->db, form, response);
+	g_assert_cmpstr(message, ==, "Registered 2 attendees.");
+	text = venture_forms_get_string(response, "answers"); answers = json_from_string(text, NULL);
+	rows = json_object_get_array_member(json_node_get_object(answers), "attendee");
+	html = venture_forms_render_answers(f->db, response, NULL);
+	g_assert_nonnull(strstr(html, "I, Alice, agree"));
+	g_assert_nonnull(strstr(html, "I, Bob, agree"));
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_array_get_object_element(rows, 0), "agree"), "wording"), ==, "I, Alice, agree");
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_array_get_object_element(rows, 1), "agree"), "wording"), ==, "I, Bob, agree");
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -3449,6 +3577,10 @@ main(int argc, char **argv)
 	g_test_add("/forms/erase-sent-confirmation", Fixture, NULL, setup, test_erase_sent_confirmation, teardown);
 	g_test_add("/forms/optin-private-erasure", Fixture, NULL, setup, test_optin_private_erasure, teardown);
 	g_test_add("/forms/optin-contact-limit", Fixture, NULL, setup, test_optin_contact_limit, teardown);
+	g_test_add("/forms/piping-validation", Fixture, NULL, setup, test_piping_validation, teardown);
+	g_test_add("/forms/piping-visible-validated", Fixture, NULL, setup, test_piping_visible_validated, teardown);
+	g_test_add("/forms/piping-pages-success", Fixture, NULL, setup, test_piping_pages_success, teardown);
+	g_test_add("/forms/piping-rows", Fixture, NULL, setup, test_piping_rows, teardown);
 	g_test_add("/forms/double-optin", Fixture, NULL, setup, test_double_optin, teardown);
 	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
 	g_test_add("/forms/consent-no-default", Fixture, NULL, setup, test_consent_no_default, teardown);

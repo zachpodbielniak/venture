@@ -1,0 +1,47 @@
+#+title: Forms answer-piping demonstration
+#+date: 2026-10-02
+
+* Built artifact and isolation
+
+The DEBUG server's SHA256 was
+=6df2481918b3135bb79b6c83bbc52eb8df644faaec5288e654e675b32c2620c4=.
+The binary was newer than its generated asset header. A disposable SQLite
+instance listened only on loopback, with authentication disabled solely for
+this demonstration and AI, plugins and automation off. A second local HTTP
+server hosted the loader. Chromium exercised both JavaScript-disabled and
+loader contexts. No external service was used.
+
+* Observed behavior
+
+1. Created a two-page form with a choice controlling a name question, later
+   label/help references, a piped page heading/introduction, a consent label,
+   and a final success template. Published it. The public JSON schema
+   advertised the piping grammar and pipeable text properties.
+2. With JavaScript disabled, selected the named path and submitted the first
+   page. The required name became visible on redisplay. Entered the literal
+   text =<script>alert(1)</script>= and continued.
+3. The next heading, help and consent label contained that literal text.
+   There was no script element. After checking consent, the final success
+   message contained the same text and the literal brace escape ={Literal}=.
+4. In the loader, typing updated later label/help text immediately. Hiding
+   the source cleared its substitutions. Continuing with the source hidden
+   produced an empty substitution on the next page as well.
+5. Went Back, restored the named path, entered =Alice <script>= and continued.
+   The next page retained the validated substitution, with no injected markup.
+   Axe reported zero WCAG A/AA violations. Final submission used the same
+   text-only success message.
+
+The question's stable key in the demonstration was deliberately =constructor=.
+An earlier loader implementation inherited =Object.constructor= when a hidden
+prior-page value was absent. The expanded demonstration failed with
+=Next, function Object() { [native code] }= before the repair, and passes with
+own-property lookups. No answer or placeholder becomes JavaScript code.
+
+* Regression coverage
+
+The GTest cases cover unknown/malformed/forward/sensitive references, reverse
+validation when source properties change, equal-position question ordering,
+invalid email and forged hidden answers, HTML escaping, JavaScript-off page
+navigation and final success, piped error-summary labels, actual consent
+wording, same-row references, row counts and versioned response-page labels.
+The migration check supports forms disabled and later enabled.

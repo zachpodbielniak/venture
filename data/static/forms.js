@@ -175,12 +175,68 @@
 		update();
 	}
 
+	/* The server supplies only referenced public values from earlier pages.
+	 * Current input stays text: no expression evaluation or HTML insertion. */
+	function wirePiping(form) {
+		var context = JSON.parse(form.getAttribute("data-vf-piping") || "{}");
+		var previous = context.values || {}, fields = context.fields || {};
+		function read(key) {
+			var own = Object.prototype.hasOwnProperty;
+			var info = own.call(fields, key) ? fields[key] : null, named = form.elements.namedItem(key);
+			if (!named || !info) { return own.call(previous, key) ? previous[key] : ""; }
+			var controls = named.tagName ? [named] : Array.from(named);
+			if (!controls.length || controls.every(function (input) { return input.disabled; })) { return ""; }
+			if (controls.some(function (input) { return !input.disabled && !input.checkValidity(); })) { return ""; }
+			var raw = new FormData(form).getAll(key);
+			if (info.kind === "checkbox") { return raw.length ? "Yes" : "No"; }
+			if (info.kind === "consent") { return raw.length ? "Given" : ""; }
+			if (!raw.length) { return info.kind === "hidden" ? (info.default || "") : ""; }
+			var value = String(raw[0]).trim();
+			if (info.kind === "hidden" && !value) { value = info.default || ""; }
+			if (info.kind === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) { return ""; }
+			if (info.kind === "phone" && (!/^[0-9+() .-]+$/.test(value) || (value.match(/[0-9]/g) || []).length < 4)) { return ""; }
+			if (info.kind === "number" || info.kind === "rating") { return value && Number.isFinite(Number(value)) ? String(Number(value)) : ""; }
+			if (info.kind === "single_choice" || info.kind === "multiple_choice") {
+				if (raw.some(function (item) { return !Object.prototype.hasOwnProperty.call(info.choices, item); })) { return ""; }
+				return raw.map(function (item) { return info.choices[item]; }).join(", ");
+			}
+			return value;
+		}
+		function update() {
+			form.querySelectorAll("[data-vf-pipe]").forEach(function (node) {
+				var template = node.getAttribute("data-vf-pipe");
+				var holder = node.closest("[data-vf-field]");
+				var target = holder ? holder.getAttribute("data-vf-field") : "";
+				var row = target.match(/^([a-z][a-z0-9_]*\[[0-9]+\])\[/);
+				var value = template.replace(/\{\{|\}\}|\{([a-z][a-z0-9_]*(?:\.count)?)\}/g, function (match, key) {
+					if (match === "{{") { return "{"; } if (match === "}}") { return "}"; }
+					if (row && Object.prototype.hasOwnProperty.call(fields, row[1] + "[" + key + "]")) { key = row[1] + "[" + key + "]"; }
+					return read(key);
+				}).slice(0, 32768);
+				if (node.tagName === "DIV") {
+					node.replaceChildren();
+					value.split("\n\n").forEach(function (block) {
+						if (!block.trim()) { return; }
+						var paragraph = document.createElement("p");
+						block.trim().split("\n").forEach(function (line, index) {
+							if (index) { paragraph.appendChild(document.createElement("br")); }
+							paragraph.appendChild(document.createTextNode(line));
+						});
+						node.appendChild(paragraph);
+					});
+				} else { node.textContent = value; }
+			});
+		}
+		form.addEventListener("input", update); form.addEventListener("change", update); update();
+	}
+
 	function wire(form) {
 		if (form.ventureFormWired) {
 			return;
 		}
 		form.ventureFormWired = true;
 		wireRules(form);
+		wirePiping(form);
 
 		form.addEventListener("submit", function (event) {
 			var button = form.querySelector(".vf-submit");

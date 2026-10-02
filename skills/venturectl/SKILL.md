@@ -1762,6 +1762,14 @@ be prefilled. Marketing sends and email sequence steps accept `survey_form_id`;
 links live in private delivery bodies. See `docs/forms.org` for the adapter
 contract and expiration behavior.
 
+Question labels/help and page-break headings/intros accept `{earlier_key}`;
+`success_message` can refer to any non-repeated question. `{group.count}`
+inserts a validated repeat-row count; same-row members can refer to earlier
+members. Escape literal braces as `{{` and `}}`. Unknown, forward and
+sensitive references are refused at save, including changes that would break
+an existing template. Hidden/invalid answers substitute empty text. Piping
+never evaluates expressions or HTML. Publish after changing question text.
+
 Double opt-in requires `double_opt_in=true`, `optin_email_field` naming a
 required non-sensitive email, `public_origin=https://forms.example`, and a
 required `consent` question with `marketing_consent=true`. Optionally set

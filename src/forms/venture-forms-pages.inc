@@ -18,6 +18,7 @@ venture_forms_step_free(VentureFormsStep *step)
 {
 	if (step == NULL) return;
 	g_clear_object(&step->version);
+	g_clear_object(&step->submission);
 	g_clear_pointer(&step->values, json_object_unref);
 	g_clear_pointer(&step->errors, json_object_unref);
 	g_free(step->token); g_free(step->ticket); g_free(step);
@@ -241,7 +242,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 			if (!venture_database_purge(database, draft, NULL, error)) return NULL;
 			return g_steal_pointer(&step);
 		}
-		if (!venture_forms_submit(database, fresh, complete, origin, now, &outcome, NULL, &refused, error))
+		if (!venture_forms_submit(database, fresh, complete, origin, now, &outcome, &step->submission, &refused, error))
 			return NULL;
 		if (outcome == VENTURE_FORMS_ACCEPTED || outcome == VENTURE_FORMS_PENDING)
 		{

@@ -1511,3 +1511,12 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   and expiry, rotate the capability, and obey address and public rate limits.
   The private outbox body is the only persisted raw confirmation URL. Expiry
   and erasure purge the pending copy and cancel queued mail where possible.
+
+- **Piping consumes validated public answers, never raw refill data.**
+  The closed `{key}` / `{group.count}` grammar cannot reference a sensitive
+  question or a later field. Validation checks existing dependents when a
+  source changes. Render and intake share the same source validation; consent
+  evidence keeps substituted wording. Loader updates use text nodes and own
+  JSON properties, so a question named `constructor` cannot resolve an
+  inherited object member. The HTML context contains only referenced public
+  values; saved-response labels use their own version and row.

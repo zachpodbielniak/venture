@@ -307,7 +307,8 @@ forms_validate_form(
 			g_object_set(entity, "slug", slug, NULL);
 	}
 
-	return forms_check_published(database, entity, previous, error);
+	return venture_forms_validate_piping(database, entity, error) &&
+	       forms_check_published(database, entity, previous, error);
 }
 
 /* The autofill tokens a question may declare: the HTML standard's, less
@@ -587,7 +588,7 @@ forms_validate_field(
 			g_object_set(entity, "choices", normal->str, NULL);
 	}
 
-	return TRUE;
+	return venture_forms_validate_piping(database, entity, error);
 }
 
 static gboolean
@@ -1811,6 +1812,54 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 	g_string_append_printf(summary, "%s: %s\n", label, text);
 }
 
+/* Piping sees validated public data, even while a page is redisplaying an
+ * invalid submission. Neither sensitive nor branch-hidden answers enter it. */
+JsonObject *
+venture_forms_pipe_values(GPtrArray *fields, JsonObject *raw)
+{
+	g_autoptr(JsonObject) visible = json_object_new(), checked = json_object_new(), errors = json_object_new();
+	g_autoptr(GHashTable) hidden = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(GHashTable) answers = NULL;
+	g_autoptr(GString) summary = g_string_new(NULL);
+	JsonObject *values = json_object_new();
+	guint i;
+	if (raw != NULL)
+	{
+		JsonObjectIter iter;
+		const gchar *key;
+		JsonNode *node;
+		json_object_iter_init(&iter, raw);
+		while (json_object_iter_next(&iter, &key, &node)) json_object_set_member(visible, key, json_node_copy(node));
+	}
+	venture_forms_rules_filter(fields, visible, hidden);
+	answers = venture_forms_answers_from_json(visible, NULL);
+	if (answers == NULL) return values;
+	for (i = 0; i < fields->len; i++)
+	{
+		const VentureFormsField *source = g_ptr_array_index(fields, i);
+		VentureFormsField field = *source;
+		g_autofree gchar *text = NULL;
+		if (field.sensitive || field.group_boundary != VENTURE_FORMS_GROUP_NONE ||
+		    field.kind == VENTURE_FORM_FIELD_PAGE_BREAK || g_hash_table_contains(hidden, field.key)) continue;
+		if (!venture_forms_field_active(source, visible, &field.required)) continue;
+		forms_check_field(&field, g_hash_table_lookup(answers, field.key), checked, errors, summary);
+		if (json_object_has_member(errors, field.key)) continue;
+		text = venture_forms_pipe_answer(&field, json_object_get_member(checked, field.key));
+		json_object_set_string_member(values, field.key, text);
+	}
+	venture_forms_pipe_counts(fields, visible, values);
+	for (i = 0; i < fields->len; i++)
+	{
+		const VentureFormsField *field = g_ptr_array_index(fields, i);
+		if (field->group_boundary == VENTURE_FORMS_GROUP_START && g_hash_table_contains(hidden, field->key))
+		{
+			g_autofree gchar *key = g_strdup_printf("%s.count", field->group_key);
+			json_object_remove_member(values, key);
+		}
+	}
+	return values;
+}
+
 /* Prefill is untrusted input, even when it originated from a contact.
  * Invalid values disappear rather than bypassing the ordinary validator. */
 JsonObject *
@@ -2285,6 +2334,10 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	filtered = venture_forms_answers_from_json(visible, error);
 	if (filtered == NULL) return FALSE;
 	answers = filtered;
+	{
+		g_autoptr(JsonObject) pipe_values = venture_forms_pipe_values(fields, visible);
+		venture_forms_piping_apply(fields, pipe_values);
+	}
 
 	/* A sensitive answer is checked like any other, then kept apart: in
 	 * a column that never leaves the record, with only its question named
@@ -2441,6 +2494,10 @@ venture_forms_publish(VentureDatabase *database, VentureEntity *form, const Vent
 	fields = venture_forms_definition_from_records(database, stored, error);
 	if (NULL == fields)
 		goto fail;
+	{
+		g_autofree gchar *success = venture_forms_get_string(stored, "success-message");
+		if (!venture_forms_piping_definition(fields, success, error)) goto fail;
+	}
 	if (!forms_optin_definition(database, stored, fields, error)) goto fail;
 	if (0 == fields->len)
 	{

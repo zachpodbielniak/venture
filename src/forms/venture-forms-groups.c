@@ -103,8 +103,8 @@ invalid:
 	return FALSE;
 }
 
-gboolean
-venture_forms_groups_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error)
+static gboolean
+forms_groups_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, gboolean check_layout, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_GROUP);
 	g_autoptr(GPtrArray) groups = NULL;
@@ -151,7 +151,19 @@ venture_forms_groups_load(VentureDatabase *database, VentureEntity *form, GPtrAr
 			return FALSE;
 		}
 	}
-	return venture_forms_groups_check(fields, error);
+	return !check_layout || venture_forms_groups_check(fields, error);
+}
+
+gboolean
+venture_forms_groups_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error)
+{
+	return forms_groups_load(database, form, fields, TRUE, error);
+}
+
+gboolean
+venture_forms_groups_load_metadata(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error)
+{
+	return forms_groups_load(database, form, fields, FALSE, error);
 }
 
 static void

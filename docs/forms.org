@@ -21,6 +21,10 @@ structure and the handling; the host site supplies the look. The records and rep
 - =form_field= :: one question: a =key=, a =label=, a =kind=, =required=,
   =help=, =placeholder=, =position= and the per-kind settings below.
   Labelled "Form question".
+- =form_rule= :: conditional visibility, requiredness and forward navigation.
+- =form_group= :: a bounded repeating set of questions.
+- =form_draft= :: private intermediate answers while navigating pages or rows.
+- =form_pending= :: private double opt-in input awaiting inbox confirmation.
 - =form_version= :: what a form asked when it was published, frozen.
   The public sees the published version; editing questions changes the
   draft until the next publish.
@@ -448,6 +452,54 @@ Email-based export and erasure search inside rows too. The summary's
 numeric averages use answered rows. A question moved into or out of a
 group starts a separate version segment. Final response counts still
 count people submitting forms, not their rows.
+
+* Answer piping
+
+Write ={name}= in a later question's label or help, a page break's heading
+or introduction, or the form's =success_message=. It inserts the earlier
+answer as text. The syntax is fixed: ={field_key}=, or ={attendee.count}=
+for a repeating group's row count. ={{= and =}}= produce literal braces.
+There are no expressions, property paths, scripts or markup evaluation.
+
+A source must precede the text that uses it in the form's order (position,
+then record ID). A group member can refer to an earlier member of its own
+row; a question outside that group can use the group's count after the
+group, but cannot choose an arbitrary row's member. The success message
+can use any non-repeated question and any group count. Sensitive answers
+cannot be piped. Unknown, forward, malformed and sensitive references are
+refused at save and publish. Moving a source or making it sensitive also
+checks the templates that already refer to it.
+
+The server substitutes only validated, visible answers. Invalid, hidden,
+skipped and missing answers produce empty text. Choice IDs are displayed
+using their choice labels; multiple choices are joined with commas. Numeric
+answers and row counts remain numbers rendered as text. An answer containing
+=<script>= is HTML-escaped, and braces inside an answer are never evaluated
+again. Output is bounded to 32 KiB. Consent records retain the actual
+substituted wording shown, using the published question definition.
+
+With JavaScript off, submitting a page carries its validated answers into
+the next page's text and the final success message. A refused page also
+redisplays its labels and error-summary links with validated substitutions.
+The loader updates same-page references while typing, clears substitutions
+when a rule hides the source, and uses text nodes for every update. The
+server revalidates at submission. A source named =constructor= is an
+ordinary question, never an inherited JavaScript object property.
+
+The public schema's =piping= object describes the syntax and text-only
+contract. The root =pipeable_text= array names =success_message=. Each question's
+=pipeable_text= array names =label= and =help=;
+those strings contain the templates. In HTML, =data-vf-pipe= marks a text
+node's template and =data-vf-piping= holds only the referenced public values
+and source descriptions needed on that page. Custom renderers must perform
+text substitution and honor visibility/validation, never insert answers as
+HTML. Private drafts do not expose unrelated earlier answers through these
+attributes. Saved response pages resolve labels against their own version
+and public answers, preserving row identity.
+
+Migration =000810_form_piping= adds no columns: piping derives from existing
+text metadata and versioned definitions. See the
+[[file:evidence/forms-piping.org][built-server answer-piping demonstration]].
 
 * Double opt-in signups
 

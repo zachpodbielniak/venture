@@ -333,6 +333,29 @@ venture_forms_fields(VentureDatabase *database, VentureEntity *form, GError **er
 	return rows;
 }
 
+VentureFormsField *
+venture_forms_field_from_record(VentureEntity *row)
+{
+	VentureFormsField *field = g_new0(VentureFormsField, 1);
+	g_autofree gchar *choices = venture_forms_get_string(row, "choices");
+
+	g_object_get(row, "key", &field->key, "label", &field->label, "kind", &field->kind,
+	             "required", &field->required, "sensitive", &field->sensitive,
+	             "marketing-consent", &field->marketing_consent,
+	             "position", &field->position, "group-id", &field->group_id,
+	             "help", &field->help, "placeholder", &field->placeholder,
+	             "pattern", &field->pattern, "default-value", &field->default_value,
+	             "allow-prefill", &field->allow_prefill, "contact-field", &field->contact_field,
+	             "maps-to", &field->maps_to, "autocomplete", &field->autocomplete,
+	             "min-value", &field->min_value,
+	             "max-value", &field->max_value, "min-length", &field->min_length,
+	             "max-length", &field->max_length, NULL);
+	field->choices = venture_forms_choices_parse(choices, FALSE, NULL);
+	if (NULL == field->choices)
+		field->choices = g_ptr_array_new_with_free_func(venture_forms_choice_free);
+	return field;
+}
+
 GPtrArray *
 venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *form, GError **error)
 {
@@ -347,23 +370,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
-		VentureFormsField *field = g_new0(VentureFormsField, 1);
-		g_autofree gchar *choices = venture_forms_get_string(row, "choices");
-
-		g_object_get(row, "key", &field->key, "label", &field->label, "kind", &field->kind,
-		             "required", &field->required, "sensitive", &field->sensitive,
-		             "marketing-consent", &field->marketing_consent,
-		             "position", &field->position, "group-id", &field->group_id,
-		             "help", &field->help, "placeholder", &field->placeholder,
-		             "pattern", &field->pattern, "default-value", &field->default_value,
-		             "allow-prefill", &field->allow_prefill, "contact-field", &field->contact_field,
-		             "maps-to", &field->maps_to, "autocomplete", &field->autocomplete,
-		             "min-value", &field->min_value,
-		             "max-value", &field->max_value, "min-length", &field->min_length,
-		             "max-length", &field->max_length, NULL);
-		field->choices = venture_forms_choices_parse(choices, FALSE, NULL);
-		if (NULL == field->choices)
-			field->choices = g_ptr_array_new_with_free_func(venture_forms_choice_free);
+		VentureFormsField *field = venture_forms_field_from_record(row);
 		g_ptr_array_add(fields, field);
 	}
 	if (!venture_forms_groups_load(database, form, fields, error) ||
