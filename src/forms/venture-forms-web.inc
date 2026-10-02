@@ -454,6 +454,30 @@ forms_web_rate_allowed(VentureWebServer *self, VentureEntity *form, const gchar 
 	return htmx_rate_limiter_allow(bucket->limiter, token);
 }
 
+static HtmxResponse *
+forms_web_pending(VentureEntity *form, gboolean json, const gchar *allow_origin)
+{
+	if (json) return forms_web_json_result(TRUE, "Check your inbox to confirm your signup.", NULL, NULL, 200, allow_origin);
+	return forms_web_html(form, g_strdup("<main class=\"vf-complete\"><h1>Check your inbox</h1><p>Open the confirmation link and press Confirm signup. If you already requested one, please allow a minute before trying again.</p></main>"), 200, allow_origin, TRUE);
+}
+
+static HtmxResponse *
+venture_web_forms_confirm_signup(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureEntity) form = forms_web_live(self, params, now);
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean confirm = HTMX_METHOD_POST == htmx_request_get_method(request);
+	if (form == NULL) return forms_web_missing();
+	result = venture_forms_confirm_signup(venture_context_get_database(self->context), form,
+		g_hash_table_lookup(params, "capability"), now, confirm, &error);
+	if (result == NULL) return forms_web_missing();
+	if (confirm) return forms_web_accepted(form, FALSE, NULL);
+	return forms_web_html(form, g_strdup("<main class=\"vf-confirm\"><h1>Confirm your signup</h1><p>Press the button to confirm the signup requested for your inbox.</p><form method=\"post\"><button type=\"submit\">Confirm signup</button></form></main>"), 200, NULL, TRUE);
+}
+
 /* GET and POST /pub/form/:token -- the hosted page, and where every way in
  * posts its answers. */
 static HtmxResponse *
@@ -577,7 +601,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 				if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return forms_web_missing();
 				return forms_web_status(500, "The page could not be saved; please try again.");
 			}
-			if (step->complete) return forms_web_accepted(form, json, allow_origin);
+			if (step->complete) return step->awaiting_confirmation ? forms_web_pending(form, json, allow_origin) : forms_web_accepted(form, json, allow_origin);
 			action = forms_web_action(self, form, json);
 			options.mode = json ? VENTURE_FORMS_RENDER_FRAGMENT : VENTURE_FORMS_RENDER_HOSTED;
 			options.action = action;
@@ -613,6 +637,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 			return forms_web_missing();
 		return forms_web_status(500, "The response could not be saved; please try again.");
 	}
+	if (VENTURE_FORMS_PENDING == outcome) return forms_web_pending(form, json, allow_origin);
 	if (VENTURE_FORMS_ACCEPTED == outcome || VENTURE_FORMS_DISCARDED == outcome)
 		return forms_web_accepted(form, json, allow_origin);
 

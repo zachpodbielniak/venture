@@ -31,6 +31,15 @@ static gboolean forms_validate_draft(VentureDatabase *database, VentureEntity *e
 static gboolean forms_check_published(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, GError **error);
 
+static gboolean forms_validate_pending(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error);
+static gboolean forms_optin_definition(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+static gboolean forms_optin_store(VentureDatabase *database, VentureEntity *form, VentureEntity *version,
+	GHashTable *answers, GPtrArray *fields, JsonObject *checked, const gchar *origin,
+	GDateTime *now, JsonObject *refused, GError **error);
+static gboolean forms_optin_follow_up(VentureDatabase *database, VentureEntity *form, VentureEntity *response,
+	VentureEntity *pending, GPtrArray *fields, JsonObject *answers, GDateTime *now, GError **error);
+
 /* A form field record's kind. */
 static VentureFormFieldKind
 forms_kind(VentureEntity *field)
@@ -730,6 +739,11 @@ forms_check_published(VentureDatabase *database, VentureEntity *entity, VentureE
 		}
 	}
 
+	if (venture_forms_get_bool(entity, "double-opt-in"))
+	{
+		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, entity, version, error);
+		if (fields == NULL || !forms_optin_definition(database, entity, fields, error)) return FALSE;
+	}
 	g_object_set(entity, "published-number", venture_forms_get_int(version, "number"), NULL);
 	return TRUE;
 }
@@ -994,6 +1008,8 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_draft, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RULE,
 	                                    venture_forms_validate_rule, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_PENDING,
+	                                    forms_validate_pending, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_GROUP,
 	                                    venture_forms_validate_group, NULL, NULL);
 	forms_register_actions(database);
@@ -2111,7 +2127,12 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 			goto fail;
 	}
 
-	if (follow_up && venture_forms_get_bool(form, "create-lead"))
+	if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) != NULL)
+	{
+		if (!forms_optin_follow_up(database, form, submission,
+			g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING), fields, answers, now, error)) goto fail;
+	}
+	else if (follow_up && venture_forms_get_bool(form, "create-lead"))
 	{
 		g_autoptr(JsonObject) values = forms_lead_values(fields, answers);
 		g_autoptr(VentureEntity) lead = NULL;
@@ -2295,6 +2316,18 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		return TRUE;
 	}
 
+	if (venture_forms_get_bool(form, "double-opt-in") &&
+	    g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) == NULL)
+	{
+		if (!forms_optin_store(database, form, version, answers, fields, stored, origin, now, refused, error)) return FALSE;
+		if (json_object_get_size(refused) > 0)
+		{
+			if (errors != NULL) *errors = g_steal_pointer(&refused);
+		}
+		else *outcome = VENTURE_FORMS_PENDING;
+		return TRUE;
+	}
+
 	name = forms_response_name(form, fields, stored);
 	venture_forms_groups_fold(fields, stored, not_shown, FALSE);
 	venture_forms_groups_fold(fields, secret, not_shown, TRUE);
@@ -2333,6 +2366,11 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 			if (errors != NULL) *errors = g_steal_pointer(&refused);
 			return TRUE;
 		}
+		if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) != NULL)
+		{
+			g_propagate_error(error, g_steal_pointer(&follow_error));
+			return FALSE;
+		}
 		/* A form that is no longer open refuses outright. Anything else
 		 * was the lead or the email: the response is what matters, so it
 		 * is kept, and says what did not happen. */
@@ -2367,6 +2405,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 
 /* Private intermediate-state service; shares field validation and final intake. */
 #include "venture-forms-pages.inc"
+#include "venture-forms-optin.inc"
 
 /* ==========================================================================
  * Publishing
@@ -2402,6 +2441,7 @@ venture_forms_publish(VentureDatabase *database, VentureEntity *form, const Vent
 	fields = venture_forms_definition_from_records(database, stored, error);
 	if (NULL == fields)
 		goto fail;
+	if (!forms_optin_definition(database, stored, fields, error)) goto fail;
 	if (0 == fields->len)
 	{
 		venture_set_error_validation(error, "Questions",
@@ -2553,7 +2593,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(VentureQuery) forms = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
-	gint64 anonymised = 0, purged = 0, drafts = 0;
+	gint64 anonymised = 0, purged = 0, drafts = 0, pending = 0;
 	guint budget, i;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -2620,7 +2660,27 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		}
 	}
 
+	if (budget > 0)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_PENDING);
+		g_autoptr(GPtrArray) expired = NULL;
+		g_autofree gchar *cutoff = venture_time_to_string(now);
+		venture_query_set_organization(query, organization_id);
+		venture_query_set_include_deleted(query, TRUE);
+		venture_query_set_limit(query, budget);
+		venture_query_add_filter_string(query, "expires-at", VENTURE_FILTER_OP_LTE, cutoff, NULL);
+		expired = venture_database_find(database, query, error);
+		if (expired == NULL) return NULL;
+		for (i = 0; i < expired->len; i++, budget--)
+		{
+			if (!forms_pending_purge(database, g_ptr_array_index(expired, i), actor, NULL, error)) return NULL;
+			pending++;
+		}
+	}
+
 	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "expired_signups");
+	json_builder_add_int_value(builder, pending);
 	json_builder_set_member_name(builder, "expired_drafts");
 	json_builder_add_int_value(builder, drafts);
 	json_builder_set_member_name(builder, "anonymised");
@@ -2742,11 +2802,18 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 			venture_query_set_organization(mail, organization_id);
 			venture_query_add_filter_string(mail, "idempotency-key", VENTURE_FILTER_OP_EQ, key, NULL);
 			message = venture_database_find_one(database, mail, NULL);
-			/* Already sent is sent; a refusal to cancel it is not a
-			 * reason to keep the response. */
-			if (NULL != message && venture_mail_outbox_cancel(venture_database_get_mail_outbox(database),
-				organization_id, venture_entity_get_id(message), "erasure request", actor, NULL))
-				cancelled++;
+			/* Already sent is sent. Calling cancel on it would refuse and
+			 * roll back this outer erasure transaction as well. */
+			if (message != NULL)
+			{
+				g_autofree gchar *state = venture_forms_get_string(message, "state");
+				if (g_strcmp0(state, "queued") == 0 || g_strcmp0(state, "failed") == 0)
+				{
+					if (!venture_mail_outbox_cancel(venture_database_get_mail_outbox(database),
+						organization_id, venture_entity_get_id(message), "erasure request", actor, error)) goto fail;
+					cancelled++;
+				}
+			}
 		}
 		if (!venture_database_purge(database, response, actor, error))
 			goto fail;
@@ -2767,6 +2834,25 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
 			if (!forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
 			if (!venture_database_purge(database, draft, actor, error)) goto fail;
+			erased++;
+		}
+	}
+
+	{
+		g_autoptr(VentureQuery) pending_query = venture_query_new(VENTURE_TYPE_FORM_PENDING);
+		g_autoptr(GPtrArray) pending = NULL;
+		venture_query_set_organization(pending_query, organization_id);
+		venture_query_set_include_deleted(pending_query, TRUE);
+		venture_query_set_limit(pending_query, 0);
+		pending = venture_database_find(database, pending_query, error);
+		if (pending == NULL) goto fail;
+		for (i = 0; i < pending->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(pending, i);
+			g_autofree gchar *address = venture_forms_get_string(row, "email");
+			g_autofree gchar *text = venture_forms_get_string(row, "answers");
+			if (g_strcmp0(address, wanted) != 0 && !forms_answers_mention(text, wanted) && !forms_bound_email(database, row, wanted)) continue;
+			if (!forms_pending_purge(database, row, actor, &cancelled, error)) goto fail;
 			erased++;
 		}
 	}
@@ -2886,6 +2972,37 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 			json_builder_add_int_value(builder, venture_forms_get_int(draft, "form-id"));
 			json_builder_set_member_name(builder, "answers");
 			json_builder_add_value(builder, json_from_string(text, NULL));
+			json_builder_end_object(builder);
+		}
+		json_builder_end_array(builder);
+	}
+
+	{
+		g_autoptr(VentureQuery) pending_query = venture_query_new(VENTURE_TYPE_FORM_PENDING);
+		g_autoptr(GPtrArray) pending = NULL;
+		venture_query_set_organization(pending_query, organization_id);
+		venture_query_set_include_deleted(pending_query, TRUE);
+		venture_query_set_limit(pending_query, 0);
+		pending = venture_database_find(database, pending_query, error);
+		if (pending == NULL) return NULL;
+		json_builder_set_member_name(builder, "unconfirmed_signups");
+		json_builder_begin_array(builder);
+		for (i = 0; i < pending->len; i++)
+		{
+			VentureEntity *row = g_ptr_array_index(pending, i);
+			g_autofree gchar *text = venture_forms_get_string(row, "answers");
+			g_autoptr(JsonNode) answers = json_from_string(text, NULL);
+			g_autofree gchar *address = venture_forms_get_string(row, "email");
+			if (g_strcmp0(address, wanted) != 0 && !forms_answers_mention(text, wanted) && !forms_bound_email(database, row, wanted)) continue;
+			if (answers == NULL || !JSON_NODE_HOLDS_OBJECT(answers)) continue;
+			json_object_remove_member(json_node_get_object(answers), VENTURE_FORMS_TICKET);
+			json_object_remove_member(json_node_get_object(answers), VENTURE_FORMS_PERSONAL);
+			json_object_remove_member(json_node_get_object(answers), VENTURE_FORMS_PREFILL);
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "form_id");
+			json_builder_add_int_value(builder, venture_forms_get_int(row, "form-id"));
+			json_builder_set_member_name(builder, "answers");
+			json_builder_add_value(builder, g_steal_pointer(&answers));
 			json_builder_end_object(builder);
 		}
 		json_builder_end_array(builder);

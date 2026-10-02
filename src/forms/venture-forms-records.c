@@ -105,6 +105,11 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("closes-at", "Closes at",
 	              "Optional: stop taking responses at this time",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("double-opt-in", "Confirm signup by email", "Only a confirmed inbox link creates a response and marketing permission", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("optin-email-field", "Signup email question", "Required non-sensitive email question used for confirmation", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("optin-list-id", "Signup list", "Optional static marketing list joined after confirmation", "marketing_list", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("public-origin", "Public form origin", "HTTPS origin used in email links; loopback HTTP allowed for development", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+
 	VENTURE_FIELD("one-per-contact", "One response per contact", "A personal link cannot submit twice for the same retained contact", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("one-per-link", "One response per personal link", "A personal link cannot create a second retained response", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 
@@ -403,3 +408,26 @@ static const VentureFieldDecl venture_form_group_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormGroup, venture_form_group, venture_form_group_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form repeat group", NULL);
 	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)
+
+/* Unconfirmed input must not be visible as a business response or emit its
+ * save events. Only the forms service can create or transition this copy. */
+static const VentureFieldDecl venture_form_pending_fields[] = {
+	VENTURE_FIELD_NAME("name", "Unconfirmed signup", "Service-owned signup awaiting inbox confirmation"),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("version-id", "Form version", NULL, "form_version", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD_REF("list-id", "Signup list", NULL, "marketing_list", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("email", "Signup address", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("answers", "Unconfirmed answers", NULL, VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("origin", "Submitted from", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("token-hash", "Confirmation digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_UNIQUE),
+	VENTURE_FIELD("expires-at", "Expires", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("last-sent-at", "Last confirmation queued", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("send-count", "Confirmation messages", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("confirming", "Confirmation in progress", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("generation", "Internal revision", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormPending, venture_form_pending, venture_form_pending_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Unconfirmed signup", NULL);
+	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "email", "form-id", NULL);)

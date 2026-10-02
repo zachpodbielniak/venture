@@ -1,0 +1,57 @@
+#+title: Forms double opt-in demonstration
+#+date: 2026-10-02
+
+* Built artifact and isolation
+
+The DEBUG server was built with =make DEBUG=1=. Binary SHA256:
+=d8092630d607d2a0ed8dda8ebf947d9132e4582a59b1a86ff7008569014a1dfd=.
+A disposable SQLite instance listened only on a kernel-selected loopback
+port, with authentication disabled for this isolated demonstration, and
+with AI, plugins and automation disabled. No real recipient was contacted.
+Chromium ran with JavaScript disabled. The private queued message was read
+from the disposable database to simulate receiving the inbox link.
+The mail-fake GTests separately exercise actual outbox delivery.
+
+* Observed behavior
+
+1. Created a static marketing list and a live form with a required email
+   question, a required marketing consent question, double opt-in enabled,
+   and the explicit loopback origin. Published the form.
+2. Filled =signup@example.test= and checked "Send me the monthly newsletter"
+   with help "Unsubscribe any time.". Submitted after the fill-time delay.
+3. The page said "Check your inbox". Database counts were: one private
+   pending signup; zero responses, contacts, permission records or members.
+   The ordinary mail body contained no confirmation capability.
+4. Opened the URL from the private mail body. The page presented a *Confirm
+   signup* button and =Referrer-Policy: no-referrer=. GET left the response
+   count at zero.
+5. Pressed the button. The configured final success message appeared.
+   Counts became: zero pending signups and exactly one response, contact,
+   permission record and list member. Permission retained both the published
+   question wording and its help text.
+6. Repeated the confirmation POST. It returned the same 404 body as an
+   unknown form; no second response was created.
+
+* Regression coverage
+
+The forms suite uses =VentureLogMailer= for the delivered-message path and
+checks exact confirmation timestamps, replay, wrong-form and tampered links,
+resend spacing, old-link invalidation, the three-message cap, expiry, bounded
+purge, queued-mail cancellation and private-answer erasure. Suppression added
+between signup and confirmation rolls back contact and response creation.
+
+A synchronous-save regression also checks that a newly suppressed address
+emits no contact/response/permission/member save signal. Before the preflight
+suppression repair it observed one contact event despite the rollback.
+
+A delivered confirmation exposed an attempted cancellation of already-sent
+mail. Its nested rollback aborted confirmation. The repaired confirmation
+test passes after delivery. The same existing defect in ordinary response
+erasure has its own test: it fails with "The transaction was already rolled
+back" when the previous cancellation code is restored, and passes with the
+repair. Sent and actively leased messages are left to the outbox's retention
+contract; only queued or failed messages are cancelled.
+
+Targeted validation: all 60 forms tests and all 19 migration tests pass;
+the optional live PostgreSQL migration test skips without its fixture URI.
+The public forms authentication test also passes.

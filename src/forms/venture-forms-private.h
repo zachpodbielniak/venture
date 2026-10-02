@@ -76,6 +76,9 @@ typedef struct
 	JsonArray		*rules;
 } VentureFormsField;
 
+#define VENTURE_FORMS_PENDING_WRITE "venture-forms-pending-write"
+#define VENTURE_FORMS_CONFIRMING "venture-forms-confirming"
+
 #define VENTURE_FORMS_PERSONAL "_vf_personal"
 #define VENTURE_FORMS_PREFILL "_vf_prefill"
 #define VENTURE_FORMS_PERSONAL_WRITE "venture-forms-personal-write"
@@ -93,6 +96,7 @@ typedef struct {
 	guint page;
 	guint pages;
 	gboolean complete;
+	gboolean awaiting_confirmation;
 	gint64 contact_id;
 } VentureFormsStep;
 
@@ -105,6 +109,7 @@ VentureFormsStep *venture_forms_step(VentureDatabase *database, VentureEntity *f
 gchar *venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error);
 
+gboolean venture_forms_public_origin_valid(const gchar *origin, GError **error);
 gboolean venture_forms_personal_bind(VentureDatabase *database, VentureEntity *form,
 	VentureEntity *submission, GDateTime *now, JsonObject *refused, GError **error);
 VentureEntity *venture_forms_personal_contact(VentureDatabase *database, VentureEntity *form,

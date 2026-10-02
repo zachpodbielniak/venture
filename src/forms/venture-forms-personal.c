@@ -45,6 +45,25 @@ missing:
 	return NULL;
 }
 
+gboolean
+venture_forms_public_origin_valid(const gchar *origin, GError **error)
+{
+	g_autoptr(GUri) uri = NULL;
+	const gchar *scheme, *host, *path;
+
+	if (venture_string_is_empty(origin) || strlen(origin) > 2048 || strpbrk(origin, "\r\n\t \"'<>")) goto invalid;
+	uri = g_uri_parse(origin, G_URI_FLAGS_NONE, NULL);
+	if (uri == NULL || g_uri_get_userinfo(uri) != NULL || g_uri_get_query(uri) != NULL || g_uri_get_fragment(uri) != NULL) goto invalid;
+	scheme = g_uri_get_scheme(uri); host = g_uri_get_host(uri); path = g_uri_get_path(uri);
+	if (host == NULL || *host == '\0' || (path != NULL && *path != '\0' && strcmp(path, "/") != 0)) goto invalid;
+	if (g_strcmp0(scheme, "https") != 0 && !(g_strcmp0(scheme, "http") == 0 &&
+	    (g_strcmp0(host, "localhost") == 0 || g_strcmp0(host, "127.0.0.1") == 0 || g_strcmp0(host, "::1") == 0))) goto invalid;
+	return TRUE;
+invalid:
+	venture_set_error_validation(error, "Public origin", "use an HTTPS origin without credentials, path, query or fragment; HTTP is allowed only on loopback");
+	return FALSE;
+}
+
 /**
  * venture_forms_personal_link:
  * @database: database containing the form and contact
@@ -66,10 +85,8 @@ venture_forms_personal_link(VentureDatabase *database, VentureEntity *form,
 	VentureEntity *contact, const gchar *origin, GDateTime *expires,
 	GDateTime *now, GError **error)
 {
-	g_autoptr(GUri) uri = NULL;
 	g_autoptr(VentureEntity) saved = NULL;
 	g_autofree gchar *nonce = NULL, *payload = NULL, *mac = NULL, *public_token = NULL;
-	const gchar *scheme, *host, *path;
 	gint64 seconds;
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
@@ -78,13 +95,7 @@ venture_forms_personal_link(VentureDatabase *database, VentureEntity *form,
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "form") == G_TYPE_INVALID ||
 	    venture_entity_registry_lookup(venture_entity_registry_get_default(), "contact") == G_TYPE_INVALID ||
 	    venture_entity_is_deleted(form) || venture_forms_get_int(form, "published-number") <= 0) goto invalid;
-	if (venture_string_is_empty(origin) || strlen(origin) > 2048 || strpbrk(origin, "\r\n\t \"'<>")) goto invalid;
-	uri = g_uri_parse(origin, G_URI_FLAGS_NONE, NULL);
-	if (uri == NULL || g_uri_get_userinfo(uri) != NULL || g_uri_get_query(uri) != NULL || g_uri_get_fragment(uri) != NULL) goto invalid;
-	scheme = g_uri_get_scheme(uri); host = g_uri_get_host(uri); path = g_uri_get_path(uri);
-	if (host == NULL || *host == '\0' || (path != NULL && *path != '\0' && strcmp(path, "/") != 0)) goto invalid;
-	if (g_strcmp0(scheme, "https") != 0 && !(g_strcmp0(scheme, "http") == 0 &&
-	    (g_strcmp0(host, "localhost") == 0 || g_strcmp0(host, "127.0.0.1") == 0 || g_strcmp0(host, "::1") == 0))) goto invalid;
+	if (!venture_forms_public_origin_valid(origin, error)) return NULL;
 	seconds = g_date_time_to_unix(expires);
 	if (seconds <= g_date_time_to_unix(now) || seconds - g_date_time_to_unix(now) > 30 * G_TIME_SPAN_DAY / G_TIME_SPAN_SECOND) goto invalid;
 	saved = venture_database_get(database, VENTURE_TYPE_CONTACT, venture_entity_get_id(contact), NULL);

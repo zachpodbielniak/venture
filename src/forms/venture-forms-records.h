@@ -182,6 +182,14 @@ VENTURE_DECLARE_ENTITY(VentureFormSubmission, venture_form_submission, FORM_SUBM
  *   service may save one
  */
 
+#define VENTURE_TYPE_FORM_PENDING (venture_form_pending_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormPending, venture_form_pending, FORM_PENDING)
+/**
+ * venture_form_pending_new:
+ * Returns: (transfer full): unsaved service-owned unconfirmed signup
+ */
+
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_RECORDS_H */

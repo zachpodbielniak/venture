@@ -243,9 +243,10 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		}
 		if (!venture_forms_submit(database, fresh, complete, origin, now, &outcome, NULL, &refused, error))
 			return NULL;
-		if (outcome == VENTURE_FORMS_ACCEPTED)
+		if (outcome == VENTURE_FORMS_ACCEPTED || outcome == VENTURE_FORMS_PENDING)
 		{
 			step->complete = TRUE;
+			step->awaiting_confirmation = outcome == VENTURE_FORMS_PENDING;
 			if (!venture_database_purge(database, draft, NULL, error)) return NULL;
 			return g_steal_pointer(&step);
 		}

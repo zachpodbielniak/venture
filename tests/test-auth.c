@@ -4853,6 +4853,8 @@ test_forms_public_door(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/door-form/anything"), !=, 200);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form/schema", NULL, body, NULL, NULL), !=, 200);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/no-such-form"), ==, 404);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/door-form/confirm/no-capability"), ==, 404);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form/confirm/no-capability", NULL, "", NULL, NULL), ==, 404);
 }
 
 static void

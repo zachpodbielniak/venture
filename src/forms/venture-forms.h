@@ -93,6 +93,7 @@ typedef struct
  * @VENTURE_FORMS_DISCARDED: looked like a robot; nothing saved, and the
  *   sender is told it succeeded
  * @VENTURE_FORMS_INVALID: refused, with a message per question
+ * @VENTURE_FORMS_PENDING: private signup awaiting inbox confirmation
  *
  * What became of one submission.
  */
@@ -100,7 +101,8 @@ typedef enum
 {
 	VENTURE_FORMS_ACCEPTED = 0,
 	VENTURE_FORMS_DISCARDED,
-	VENTURE_FORMS_INVALID
+	VENTURE_FORMS_INVALID,
+	VENTURE_FORMS_PENDING
 } VentureFormsOutcome;
 
 /**
@@ -478,6 +480,23 @@ JsonNode *venture_forms_export_person(VentureDatabase *database, gint64 organiza
  */
 gchar *venture_forms_personal_link(VentureDatabase *database, VentureEntity *form,
 	VentureEntity *contact, const gchar *origin, GDateTime *expires, GDateTime *now, GError **error);
+
+/**
+ * venture_forms_confirm_signup:
+ * @database: the database
+ * @form: the live form
+ * @token: private signed confirmation capability
+ * @now: confirmation clock
+ * @confirm: whether to consume the capability
+ * @error: return location for an error
+ *
+ * A read validates the link without consuming it. A confirmation atomically
+ * creates the response, contact, permission and optional list membership.
+ * Returns: (transfer full) (nullable): private pending copy on read, final
+ * response on confirmation, or %NULL for an invalid/expired/consumed link
+ */
+VentureEntity *venture_forms_confirm_signup(VentureDatabase *database, VentureEntity *form,
+	const gchar *token, GDateTime *now, gboolean confirm, GError **error);
 
 G_END_DECLS
 

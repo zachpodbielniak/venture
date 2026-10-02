@@ -1762,6 +1762,17 @@ be prefilled. Marketing sends and email sequence steps accept `survey_form_id`;
 links live in private delivery bodies. See `docs/forms.org` for the adapter
 contract and expiration behavior.
 
+Double opt-in requires `double_opt_in=true`, `optin_email_field` naming a
+required non-sensitive email, `public_origin=https://forms.example`, and a
+required `consent` question with `marketing_consent=true`. Optionally set
+`optin_list_id` to a static marketing list, then publish. Mail, marketing and
+contacts must be enabled. Initial input is a private `form_pending` working
+copy; do not create/update it through CRUD. Only the email confirmation POST
+creates contact, permission, membership and final response. Links expire in
+24 hours; resubmission resends at most three times, 60 seconds apart. Retention
+reports `expired_signups`; owner export/erasure includes them. Never log or
+paste confirmation capabilities into shared records.
+
 For repeated questions, inspect `describe form_group`, create a group with
 `form_id`, stable `key`, `label`, `min_rows` and `max_rows`, then set member
 questions' `group_id`. Keep members consecutive on one page and publish.

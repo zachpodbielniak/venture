@@ -1502,3 +1502,12 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   its signed seed carries later-page defaults, never authentication. Marketing
   and sequence links belong only in private delivery bodies, not previews or
   ordinary tracking destinations.
+
+- **Double opt-in creates no business response before inbox confirmation.**
+  `form_pending` is a sensitive, service-owned working copy. Only confirmation
+  POST consumes its signed digest; GET is safe for mail scanners. Contact,
+  permission, list membership and final response share one transaction, with
+  no ordinary follow-up fallback on error. Resends preserve the first answers
+  and expiry, rotate the capability, and obey address and public rate limits.
+  The private outbox body is the only persisted raw confirmation URL. Expiry
+  and erasure purge the pending copy and cancel queued mail where possible.

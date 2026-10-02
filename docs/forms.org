@@ -10,8 +10,7 @@
 
 The =forms= module builds forms --- contact forms, surveys, signups,
 intake, feedback --- and puts them on any site. VENTURE supplies the
-structure and the handling; the host site supplies the look. Three record
-types and one report:
+structure and the handling; the host site supplies the look. The records and report are:
 
 - =form= :: what a site embeds. Its =name= and =notes= are internal; its
   =title=, =description=, =submit_label= and =success_message= are what a
@@ -450,6 +449,52 @@ numeric averages use answered rows. A question moved into or out of a
 group starts a separate version segment. Final response counts still
 count people submitting forms, not their rows.
 
+* Double opt-in signups
+
+Set =double_opt_in=true=, =optin_email_field= to a required, non-sensitive
+email question outside repeating groups, and =public_origin= to the public
+HTTPS origin (loopback HTTP is allowed for development). Add a required
+=consent= question with =marketing_consent=true=, write the exact permission
+being requested, then publish. An optional =optin_list_id= names a static
+marketing list in the same organization. Mail, contacts and marketing must
+be enabled; this workflow cannot silently skip its confirmation.
+
+A valid first submission creates only a private =form_pending= working copy
+and an outbox confirmation message. It creates no final response, lead,
+contact, permission or list membership, and the working copy emits no
+business save event, audit, webhook or notification. Its answers, address
+and token digest are sensitive. The message's bearer URL lives only in its
+private body. The page and loader say "Check your inbox"; the configured
+success message or redirect runs only after confirmation.
+
+The signed random link uses =/pub/form/TOKEN/confirm/CAPABILITY= and expires
+after 24 hours. Its unstyled markup uses =vf-confirm= for the confirmation
+page and =vf-complete= for the check-inbox page. Opening it displays a button;
+pressing *Confirm signup* consumes it. GET never confirms, so an email
+scanner cannot subscribe someone. Confirmation uses the original published
+questions and list, rechecks current availability and response limits, and
+atomically creates one response, finds or creates the contact, records the
+published permission with the confirmation time, and adds list membership.
+Existing contact details are preserved. A personal-link signup must confirm
+that contact's own inbox. Ambiguous matching contacts are refused. Address
+suppression always wins, including if added after the signup was requested.
+A failed confirmation rolls back all writes and leaves the link retryable.
+
+Submitting again with the same form and normalized address resends without
+replacing the original answers. At most three messages are queued, at least
+60 seconds apart, within the original expiration. A resend invalidates the
+previous link. The public per-client and per-form rate limits apply as well.
+The same check-inbox response is used for a coalesced or suppressed address.
+Expired, altered, wrong-form and consumed links receive the uniform 404.
+
+The bounded retention sweep purges expired pending signups and reports
+=expired_signups=. Owner export and erasure include unconfirmed signups;
+erasure and expiration cancel queued confirmation mail where still
+cancellable. Sent mail follows the outbox's separate retention policy.
+Migration =000800_form_optin= supports SQLite and PostgreSQL. Generic CRUD
+cannot manufacture or confirm =form_pending= records. See the
+[[file:evidence/forms-optin.org][built-server double opt-in demonstration]].
+
 * Prefill and personal links
 
 A question opts into public URL values with =allow_prefill=true=. For
@@ -738,7 +783,7 @@ respond again. There is no separate identity list surviving erasure. Changing
 the configured question changes which answer key is compared.
 
 Browser storage is not an identity guarantee: it can be cleared and is not a
-server-enforced response limit. Personal-link and contact limits remain part
-of the subsequent personal-link work.
+server-enforced response limit. For verified identity, use the signed personal
+links and =one_per_link= / =one_per_contact= limits described above.
 
 The [[file:evidence/forms-schedule.org][built-server demonstration]] exercises these public flows.

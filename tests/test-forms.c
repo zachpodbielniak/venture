@@ -3061,6 +3061,333 @@ test_module_off(Fixture *f, gconstpointer data)
 	venture_config_set_module_enabled(f->config, "forms", TRUE);
 }
 
+static void
+optin_business_saved(VentureDatabase *database, VentureEntity *entity, gboolean created, gpointer data)
+{
+	(void)database; (void)created;
+	if (VENTURE_IS_FORM_PENDING(entity) || VENTURE_IS_FORM_SUBMISSION(entity) ||
+	    VENTURE_IS_CONTACT(entity) || VENTURE_IS_MARKETING_CONSENT(entity) || VENTURE_IS_MARKETING_MEMBER(entity))
+		(*(guint *)data)++;
+}
+
+/* Inbox ownership must precede every CRM/consent/response write. Reading a
+ * link (including a mail scanner) cannot count as the person's confirmation. */
+static void
+test_double_optin(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "optin-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) news = make_field(f, form, "news", "Send the newsletter", VENTURE_FORM_FIELD_CONSENT, TRUE, 20);
+	g_autoptr(VentureEntity) list = g_object_new(VENTURE_TYPE_MARKETING_LIST, "organization-id", f->org, "name", "Readers", NULL);
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now(), later = NULL;
+	g_autoptr(VentureEntity) pending = NULL, response = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL, *token = NULL, *public_body = NULL;
+	const gchar *const yes[] = { "email", "Alice@Example.test", "news", "on", NULL };
+	const gchar *begin, *end;
+	guint business_saves = 0;
+	gulong saved_handler;
+	(void)data;
+	save(f, list);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 10);
+	g_object_set(news, "marketing-consent", TRUE, "help", "Unsubscribe any time.", NULL); save(f, news);
+	g_object_set(form, "double-opt-in", TRUE, "optin-email-field", "email", "public-origin", "https://forms.example.test",
+		"optin-list-id", venture_entity_get_id(list), NULL); save(f, form);
+	g_object_unref(publish(f, form));
+	{
+		g_autoptr(VentureEntity) forged = g_object_new(VENTURE_TYPE_FORM_PENDING,
+			"organization-id", f->org, "form-id", venture_entity_get_id(form),
+			"version-id", venture_forms_get_int(form, "published-version-id"), "name", "Forged signup", "email", "forged@example.test", NULL);
+		refuse(f, forged, "only the forms service");
+	}
+	saved_handler = g_signal_connect(f->db, "entity-saved", G_CALLBACK(optin_business_saved), &business_saves);
+	g_assert_cmpint(submit_pairs(f, form, yes, NULL), ==, VENTURE_FORMS_PENDING);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_CONTACT), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_MEMBER), ==, 0);
+	g_assert_cmpuint(business_saves, ==, 0);
+	/* A second immediate submit coalesces without another message. */
+	g_assert_cmpint(submit_pairs(f, form, yes, NULL), ==, VENTURE_FORMS_PENDING);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 1);
+	later = g_date_time_add_minutes(now, 1);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, f->org, 10, later, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_log_mailer_get_messages(mailer)->len, ==, 1);
+	g_object_get(g_ptr_array_index((GPtrArray *)venture_log_mailer_get_messages(mailer), 0),
+		"private-text-body", &body, "text-body", &public_body, NULL);
+	begin = strstr(body, "/confirm/"); g_assert_nonnull(begin); begin += strlen("/confirm/");
+	end = strchr(begin, '\n'); g_assert_nonnull(end); token = g_strndup(begin, end - begin);
+	g_assert_null(strstr(public_body, token));
+	g_clear_pointer(&later, g_date_time_unref); later = venture_time_now();
+	pending = venture_forms_confirm_signup(f->db, form, token, later, FALSE, &error);
+	g_assert_no_error(error); g_assert_nonnull(pending);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	{
+		g_autoptr(JsonNode) json = venture_serializable_to_json(VENTURE_SERIALIZABLE(pending), FALSE);
+		g_autofree gchar *text = json_to_string(json, FALSE);
+		g_assert_null(strstr(text, "alice@example.test")); g_assert_null(strstr(text, token));
+	}
+	response = venture_forms_confirm_signup(f->db, form, token, later, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(response);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_CONTACT), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_MEMBER), ==, 1);
+	g_assert_cmpuint(business_saves, ==, 4);
+	g_signal_handler_disconnect(f->db, saved_handler);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MARKETING_CONSENT);
+		g_autoptr(VentureEntity) consent = venture_database_find_one(f->db, query, &error);
+		g_autoptr(GDateTime) recorded = NULL;
+		g_autofree gchar *evidence = NULL;
+		g_assert_no_error(error); g_assert_nonnull(consent);
+		g_object_get(consent, "recorded-at", &recorded, "evidence", &evidence, NULL);
+		g_assert_cmpint(g_date_time_compare(recorded, later), ==, 0);
+		g_assert_nonnull(strstr(evidence, "Send the newsletter"));
+		g_assert_nonnull(strstr(evidence, "Unsubscribe any time."));
+	}
+	g_clear_object(&response);
+	response = venture_forms_confirm_signup(f->db, form, token, later, TRUE, &error);
+	g_assert_null(response); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+}
+
+
+static VentureEntity *
+optin_form(Fixture *f, const gchar *token)
+{
+	VentureEntity *form = make_form(f, token, VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) consent = make_field(f, form, "news", "Send newsletter", VENTURE_FORM_FIELD_CONSENT, TRUE, 20);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 10);
+	g_object_set(consent, "marketing-consent", TRUE, NULL); save(f, consent);
+	g_object_set(form, "double-opt-in", TRUE, "optin-email-field", "email", "public-origin", "https://forms.example.test", NULL);
+	save(f, form); g_object_unref(publish(f, form));
+	return form;
+}
+
+static gchar *
+optin_latest_token(Fixture *f)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(VentureEntity) message = NULL;
+	g_autofree gchar *body = NULL;
+	const gchar *begin, *end;
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	message = venture_database_find_one(f->db, query, NULL); g_assert_nonnull(message);
+	body = venture_forms_get_string(message, "private-text-body");
+	begin = strstr(body, "/confirm/"); g_assert_nonnull(begin); begin += strlen("/confirm/");
+	end = strchr(begin, '\n'); g_assert_nonnull(end);
+	return g_strndup(begin, end - begin);
+}
+
+static void
+optin_submit_at(Fixture *f, VentureEntity *form, const gchar *email, GDateTime *now)
+{
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(GError) error = NULL;
+	VentureFormsOutcome outcome;
+	venture_forms_answers_add(answers, "email", email); venture_forms_answers_add(answers, "news", "on");
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, NULL, NULL, &error));
+	g_assert_no_error(error); g_assert_cmpint(outcome, ==, VENTURE_FORMS_PENDING);
+}
+
+/* Resend cannot refresh the retention clock or retain an earlier capability.
+ * Expiry and erasure cover working copies even though there is no response. */
+static void
+test_optin_resend_expiry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = optin_form(f, "optin-resend"), other = optin_form(f, "optin-other");
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now(), later = NULL;
+	g_autofree gchar *first = NULL, *second = NULL, *third = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(JsonNode) report = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	optin_submit_at(f, form, "Alice@Example.test", now); first = optin_latest_token(f);
+	result = venture_forms_confirm_signup(f->db, other, first, now, TRUE, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	{
+		g_autofree gchar *tampered = g_strdup(first);
+		tampered[0] = tampered[0] == 'a' ? 'b' : 'a';
+		result = venture_forms_confirm_signup(f->db, form, tampered, now, TRUE, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	}
+	later = g_date_time_add_seconds(now, 59); optin_submit_at(f, form, "alice@example.test", later);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 1); g_clear_pointer(&later, g_date_time_unref);
+	later = g_date_time_add_seconds(now, 60); optin_submit_at(f, form, "alice@example.test", later); second = optin_latest_token(f);
+	g_assert_cmpstr(first, !=, second); g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 2);
+	result = venture_forms_confirm_signup(f->db, form, first, later, FALSE, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_clear_pointer(&later, g_date_time_unref); later = g_date_time_add_seconds(now, 120);
+	optin_submit_at(f, form, "alice@example.test", later); third = optin_latest_token(f);
+	g_assert_cmpstr(second, !=, third); g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 3);
+	g_clear_pointer(&later, g_date_time_unref); later = g_date_time_add_seconds(now, 180);
+	optin_submit_at(f, form, "alice@example.test", later); g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 3);
+	report = venture_forms_export_person(f->db, f->org, "alice@example.test", &error);
+	g_assert_no_error(error); g_assert_nonnull(report);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(report), "unconfirmed_signups")), ==, 1);
+	g_clear_pointer(&report, json_node_unref);
+	g_clear_pointer(&later, g_date_time_unref); later = g_date_time_add_hours(now, 24);
+	result = venture_forms_confirm_signup(f->db, form, third, later, TRUE, &error);
+	g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	report = venture_forms_retention_sweep(f->db, f->org, 1, later, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(report);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(report), "expired_signups"), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 0);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, f->org, 10, later, NULL, &error), ==, 0);
+	g_assert_no_error(error); g_clear_pointer(&report, json_node_unref);
+	optin_submit_at(f, form, "alice@example.test", later);
+	report = venture_forms_erase_person(f->db, f->org, "alice@example.test", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(report);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+}
+
+/* A suppression introduced between signup and confirmation must roll back
+ * contact creation as well as permission; ordinary follow-up fallback would
+ * otherwise keep an unconfirmed response and consume its one-use link. */
+static void
+test_optin_atomic_suppression(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = optin_form(f, "optin-atomic");
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureEntity) suppression = g_object_new(VENTURE_TYPE_SUPPRESSION,
+		"organization-id", f->org, "email", "alice@example.test", NULL), result = NULL;
+	g_autofree gchar *token = NULL;
+	g_autoptr(GError) error = NULL;
+	guint business_saves = 0;
+	gulong saved_handler;
+	(void)data;
+	optin_submit_at(f, form, "alice@example.test", now); token = optin_latest_token(f);
+	save(f, suppression);
+	saved_handler = g_signal_connect(f->db, "entity-saved", G_CALLBACK(optin_business_saved), &business_saves);
+	result = venture_forms_confirm_signup(f->db, form, token, now, TRUE, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_cmpuint(business_saves, ==, 0);
+	g_signal_handler_disconnect(f->db, saved_handler);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_CONTACT), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 1);
+	result = venture_forms_confirm_signup(f->db, form, token, now, FALSE, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	/* A fresh suppressed request gives the same public outcome and no mail. */
+	{
+		g_autoptr(VentureEntity) other = optin_form(f, "optin-suppressed");
+		optin_submit_at(f, other, "alice@example.test", now);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 1);
+		g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 1);
+	}
+}
+
+
+/* Erasure must also work after transactional thank-you mail was sent. A
+ * refused nested cancel used to roll the entire erasure transaction back. */
+static void
+test_erase_sent_confirmation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "erase-sent-mail");
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now(), due = g_date_time_add_minutes(now, 1);
+	g_autoptr(JsonNode) erased = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *const pairs[] = { "name", "Alice", "email", "alice@example.test", "topic", "sales", NULL };
+	(void)data;
+	g_object_set(form, "confirmation-field", "email", NULL); save(f, form);
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, f->org, 10, due, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	erased = venture_forms_erase_person(f->db, f->org, "alice@example.test", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(erased);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(erased), "erased"), ==, 1);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(erased), "confirmations_cancelled"), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+}
+
+/* A person named in a private pending answer can exercise access/erasure
+ * even if the inbox used to confirm the signup belongs to somebody else. */
+static void
+test_optin_private_erasure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = optin_form(f, "pending-private"), field = NULL;
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *const pairs[] = { "email", "signup@example.test", "news", "on", "private_email", "private@example.test", NULL };
+	(void)data;
+	field = make_field(f, form, "private_email", "Private address", VENTURE_FORM_FIELD_EMAIL, FALSE, 30);
+	g_object_set(field, "sensitive", TRUE, NULL); save(f, field); g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_PENDING);
+	result = venture_forms_export_person(f->db, f->org, "private@example.test", &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(result), "unconfirmed_signups")), ==, 1);
+	g_clear_pointer(&result, json_node_unref);
+	result = venture_forms_erase_person(f->db, f->org, "private@example.test", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result), "confirmations_cancelled"), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 0);
+}
+
+
+/* Inbox confirmation reuses a current contact without overwriting its CRM
+ * details, and that verified identity participates in the contact cap. */
+static void
+test_optin_contact_limit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = optin_form(f, "optin-contact"), result = NULL;
+	g_autoptr(VentureEntity) contact = g_object_new(VENTURE_TYPE_CONTACT,
+		"organization-id", f->org, "name", "Existing CRM name", "email", "Alice@Example.test", NULL);
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *token = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	save(f, contact); g_object_set(form, "one-per-contact", TRUE, NULL); save(f, form);
+	optin_submit_at(f, form, "alice@example.test", now); token = optin_latest_token(f);
+	/* Publishing new wording while the email waits must not change evidence. */
+	{
+		g_autoptr(GPtrArray) fields = venture_forms_fields(f->db, form, &error);
+		guint i;
+		g_assert_no_error(error);
+		for (i = 0; i < fields->len; i++)
+		{
+			VentureEntity *field = g_ptr_array_index(fields, i);
+			if (!venture_forms_get_bool(field, "marketing-consent")) continue;
+			g_object_set(field, "label", "New published wording", NULL); save(f, field);
+		}
+		g_object_unref(publish(f, form));
+	}
+	result = venture_forms_confirm_signup(f->db, form, token, now, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(venture_forms_get_int(result, "contact-id"), ==, venture_entity_get_id(contact));
+	g_assert_cmpint(venture_forms_get_int(result, "version-number"), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_CONTACT), ==, 1);
+	{
+		g_autoptr(VentureEntity) fresh = reread(f, contact);
+		g_autofree gchar *name = venture_forms_get_string(fresh, "name");
+		g_assert_cmpstr(name, ==, "Existing CRM name");
+	}
+	g_clear_object(&result); g_clear_pointer(&token, g_free);
+	optin_submit_at(f, form, "alice@example.test", now); token = optin_latest_token(f);
+	result = venture_forms_confirm_signup(f->db, form, token, now, TRUE, &error);
+	g_assert_null(result); g_assert_nonnull(error); g_assert_nonnull(strstr(error->message, "already"));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 1);
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -3117,6 +3444,12 @@ main(int argc, char **argv)
 	g_test_add("/forms/audited", Fixture, NULL, setup, test_audited, teardown);
 	g_test_add("/forms/summary-report", Fixture, NULL, setup, test_summary_report, teardown);
 	g_test_add("/forms/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/forms/optin-resend-expiry", Fixture, NULL, setup, test_optin_resend_expiry, teardown);
+	g_test_add("/forms/optin-atomic-suppression", Fixture, NULL, setup, test_optin_atomic_suppression, teardown);
+	g_test_add("/forms/erase-sent-confirmation", Fixture, NULL, setup, test_erase_sent_confirmation, teardown);
+	g_test_add("/forms/optin-private-erasure", Fixture, NULL, setup, test_optin_private_erasure, teardown);
+	g_test_add("/forms/optin-contact-limit", Fixture, NULL, setup, test_optin_contact_limit, teardown);
+	g_test_add("/forms/double-optin", Fixture, NULL, setup, test_double_optin, teardown);
 	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
 	g_test_add("/forms/consent-no-default", Fixture, NULL, setup, test_consent_no_default, teardown);
 	return g_test_run();
