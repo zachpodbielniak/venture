@@ -582,17 +582,14 @@ static void
 start_http(Fixture *f)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) reservation = g_socket_listener_new();
 	f->state_dir = g_dir_make_tmp("venture-forms-XXXXXX", NULL);
-	f->port = g_socket_listener_add_any_inet_port(reservation, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(reservation);
-	g_object_set(f->config, "state-dir", f->state_dir, "server-port", (gint64)f->port,
+	g_object_set(f->config, "state-dir", f->state_dir, "server-port", (gint64)0,
 		"server-bind-address", "127.0.0.1", "security-require-auth", !f->open, NULL);
 	f->server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	f->port = venture_web_server_get_port(f->server);
 	f->session = soup_session_new();
 }
 
@@ -1666,6 +1663,71 @@ test_consent_recorded(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(second, "news"));
 }
 
+/* General consent is not marketing permission. Only an explicitly mapped,
+ * checked question may create evidence, using the published wording. */
+static void
+test_marketing_consent(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "marketing-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	g_autoptr(VentureEntity) email = make_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 20);
+	g_autoptr(VentureEntity) news = make_field(f, form, "news", "Send the newsletter", VENTURE_FORM_FIELD_CONSENT, FALSE, 30);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MARKETING_CONSENT);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *evidence = NULL;
+	g_autoptr(GDateTime) recorded = NULL;
+	const gchar *const yes[] = { "name", "Alice", "email", "alice@example.com", "news", "on", NULL };
+	const gchar *const no[] = { "name", "Bob", "email", "bob@example.com", NULL };
+	(void)data;
+	g_object_set(form, "create-lead", TRUE, NULL);
+	save(f, form);
+	g_object_set(name, "maps-to", "name", NULL);
+	g_object_set(email, "maps-to", "email", NULL);
+	save(f, name);
+	save(f, email);
+	save(f, news);
+	g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, yes, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 0);
+	g_object_set(news, "marketing-consent", TRUE, "help", "You can unsubscribe.", NULL);
+	save(f, news);
+	g_object_unref(publish(f, form));
+	g_object_set(news, "label", "Unpublished wording", NULL);
+	save(f, news);
+	g_assert_cmpint(submit_pairs(f, form, no, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 0);
+	g_assert_cmpint(submit_pairs(f, form, yes, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	rows = venture_database_find(f->db, query, NULL);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_object_get(g_ptr_array_index(rows, 0), "evidence", &evidence, "recorded-at", &recorded, NULL);
+	g_assert_nonnull(strstr(evidence, "Send the newsletter"));
+	g_assert_nonnull(strstr(evidence, "You can unsubscribe."));
+	g_assert_nonnull(strstr(evidence, "version 2"));
+	g_assert_null(strstr(evidence, "Unpublished wording"));
+	g_assert_nonnull(recorded);
+	/* Suppression wins over another checked box; the response survives
+	 * the failed follow-up without manufacturing permission. */
+	{
+		g_autoptr(VentureEntity) suppression = g_object_new(VENTURE_TYPE_SUPPRESSION,
+			"organization-id", f->org, "email", "alice@example.com", NULL);
+		g_autoptr(VentureQuery) responses = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+		g_autoptr(VentureEntity) response = NULL;
+		g_autofree gchar *note = NULL;
+		gint64 lead_id = -1;
+
+		save(f, suppression);
+		g_assert_cmpint(submit_pairs(f, form, yes, NULL), ==, VENTURE_FORMS_ACCEPTED);
+		g_assert_cmpint(count(f, VENTURE_TYPE_MARKETING_CONSENT), ==, 1);
+		venture_query_add_order(responses, "id", VENTURE_SORT_DESCENDING, NULL);
+		response = venture_database_find_one(f->db, responses, NULL);
+		g_object_get(response, "mapping-note", &note, "lead-id", &lead_id, NULL);
+		g_assert_nonnull(strstr(note, "suppression"));
+		g_assert_cmpint(lead_id, ==, 0);
+	}
+	g_object_set(news, "sensitive", TRUE, NULL);
+	refuse(f, news, "marketing");
+}
+
 /* A sensitive answer stays on its record: not in the summary search reads,
  * not in the record's JSON -- which is exactly what the API, the
  * assistant's record tools and an outbound webhook's data carry
@@ -2023,5 +2085,6 @@ main(int argc, char **argv)
 	g_test_add("/forms/audited", Fixture, NULL, setup, test_audited, teardown);
 	g_test_add("/forms/summary-report", Fixture, NULL, setup, test_summary_report, teardown);
 	g_test_add("/forms/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
 	return g_test_run();
 }

@@ -128,7 +128,16 @@ are you to recommend us (0-10)?". So a form has versions.
   was given to: =label=, with =help= as detail, stored as
   ={"given":true,"wording":...}= under the response's version and time.
   An unticked box records nothing, so consent is never made up from a
-  default. It can be required.
+  default. It can be required. Set =marketing_consent=true= only on a
+  non-sensitive consent question whose wording explicitly asks for marketing
+  permission. With =create_lead= and name/email mappings, a checked answer
+  writes through the marketing service in the response transaction. Its
+  evidence contains the published label, help, question key, form version
+  and submission time. Ordinary consent and unchecked boxes grant nothing.
+  The marketing module must be enabled; a refusal (including an existing
+  address suppression) rolls back follow-ups and keeps the response with
+  =mapping_note=. Permission never clears suppression. Without lead capture,
+  consent remains response evidence only.
 - *Sensitive questions.* A question marked =sensitive= is checked like any
   other and stored apart, in the response's =sensitive_answers=, a
   sensitive column: never in the API's JSON, the assistant's view,
@@ -426,6 +435,10 @@ venturectl list form_submission form_id=3
 
 * Upgrading
 
+Migration =000741_form_marketing_consent= leaves existing questions without
+marketing permission; it never converts historical acknowledgements into
+marketing consent.
+
 Migration =000711_forms= pins the schema the module relies on --- the
 per-form key index and the columns the door reads --- on SQLite and
 PostgreSQL. =000720_form_versions= pins the version table and the columns
@@ -433,3 +446,6 @@ that tie a form and a response to a version. With forms switched off the
 tables are absent and both pass; switched on later, reconciliation makes
 them. Forms and versions ship in one release, so no released install
 holds a response without a version; one would be read against the first.
+
+The [[file:evidence/forms-consent.org][marketing consent demonstration]] records
+the built-server unchecked and checked submissions and retained evidence.

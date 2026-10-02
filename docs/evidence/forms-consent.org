@@ -1,0 +1,56 @@
+#+title: Forms marketing consent demonstration
+#+description: Built-server evidence for explicit marketing permission
+
+* Scope
+
+This demonstrates the marketing-consent integration for issue #147 through
+an isolated built DEBUG server and its HTTP API. It is not completion evidence
+for the remaining forms epic. Authentication was disabled only on the
+throwaway loopback instance. AI, plugins and automation were disabled;
+no mail or provider request was made. The fixture used synthetic addresses.
+
+The server was built after integrating master at =23f2c0e= and adding the
+explicit =form_field.marketing_consent= property. The binary digest is in
+the transcript. The GTest case =/forms/marketing-consent= additionally checks
+published wording against an unpublished edit, preserved suppression and
+response survival after a refused follow-up.
+
+* Requests exercised
+
+1. Start =build/debug/venture= with a private SQLite database, state
+   directory and explicit loopback port; use =--no-ai --no-plugins
+   --no-automation=. The port comes from =venture_test_free_port()=.
+2. =POST /api/v1/form= with =state=live=, =create_lead=true= and
+   =min_fill_seconds=1=.
+3. Create required name and email questions mapped to the corresponding
+   lead fields. Create an optional =consent= question keyed =news=, labelled
+   "Send the monthly newsletter", with =marketing_consent=true=.
+4. =POST /api/v1/form/1/actions/publish= with an empty object.
+5. Fetch =/pub/form/TOKEN= and read its signed =_vf_t=. Wait more than the
+   configured one-second fill interval before each POST; a too-fast submit
+   intentionally looks successful while retaining no response.
+6. POST JSON with name, email and ticket, first without =news=, then with
+   =news="on"= and a different address. Query =/api/v1/marketing_consent=
+   after each submission. Assert zero records for the first and one for the
+   second, including the published wording and version in its evidence.
+
+* Recorded output
+
+#+begin_example
+Isolated server: http://127.0.0.1:56239
+Binary SHA256: 5e34685a99680b24525eeab1ab0c68a65c51ffc6f9251853d7cb75b9a14fb559
+Created form #1
+Published version: 1
+Submit unchecked@example.test unchecked: accepted
+Unchecked box: 0 marketing permissions
+Submit checked@example.test checked: accepted
+Checked box: 1 marketing permission
+Retained evidence: Form #1 version 1; question news
+Send the monthly newsletter
+Recorded at: 2026-10-02T04:36:33.881374Z
+PASS: built-server consent flow
+#+end_example
+
+The instance was stopped after the assertions. This demonstrates consent
+capture, not double opt-in delivery, cross-organization authorization or the
+other pending forms features.

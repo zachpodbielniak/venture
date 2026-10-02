@@ -198,3 +198,5 @@ screen's ordinary sync-and-import test.
 - [[file:evidence/backup-retention-demonstration.org][Local backup retention demonstration]] — archive catalog, explicit expiry plans, holds and crash reconciliation
 
 - [[file:printing.org][Receipt printers]] — named ESC/POS printers, thermal receipts and invoice summaries.
+
+- [[file:evidence/forms-consent.org][Forms consent demonstration]] — built-server capture of explicitly checked marketing permission.

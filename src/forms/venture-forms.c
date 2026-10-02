@@ -443,6 +443,13 @@ forms_validate_field(
 			"family-name, street-address or postal-code", autocomplete);
 		return FALSE;
 	}
+	if (venture_forms_get_bool(entity, "marketing-consent") &&
+	    (kind != VENTURE_FORM_FIELD_CONSENT || venture_forms_get_bool(entity, "sensitive")))
+	{
+		venture_set_error_validation(error, "Marketing permission",
+			"only a non-sensitive consent question may grant marketing permission");
+		return FALSE;
+	}
 	/* A sensitive answer copied into a lead would leave the one column
 	 * that keeps it in. */
 	if (venture_forms_get_bool(entity, "sensitive") && !venture_string_is_empty(maps))
@@ -1688,6 +1695,47 @@ forms_queue_confirmation(VentureDatabase *database, VentureEntity *form, Venture
 	return NULL != queued;
 }
 
+/* Opting into an intake/privacy statement is not permission to market.
+ * Only the published question's explicit mapping can grant that permission;
+ * the shared service retains suppression and normalized-address rules. */
+static gboolean
+forms_record_marketing_consent(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *submission, VentureEntity *lead, GPtrArray *fields,
+	JsonObject *answers, GDateTime *now, GError **error)
+{
+	guint i;
+
+	for (i = 0; i < fields->len; i++)
+	{
+		const VentureFormsField *field = g_ptr_array_index(fields, i);
+		g_autoptr(VentureMarketingConsent) consent = NULL;
+		g_autofree gchar *key = NULL;
+		g_autofree gchar *source = NULL;
+		g_autofree gchar *evidence = NULL;
+		JsonNode *answer;
+
+		if (!field->marketing_consent || field->sensitive ||
+		    field->kind != VENTURE_FORM_FIELD_CONSENT ||
+		    !json_object_has_member(answers, field->key))
+			continue;
+		answer = json_object_get_member(answers, field->key);
+		if (!JSON_NODE_HOLDS_OBJECT(answer) ||
+		    !json_object_get_boolean_member_with_default(json_node_get_object(answer), "given", FALSE))
+			continue;
+		key = g_strdup_printf("form:%s:%s", venture_entity_get_uuid(submission), field->key);
+		source = g_strdup_printf("Form #%" G_GINT64_FORMAT " version %" G_GINT64_FORMAT,
+			venture_entity_get_id(form), venture_forms_get_int(submission, "version-number"));
+		evidence = g_strdup_printf("%s; question %s\n%s%s%s", source, field->key,
+			field->label, venture_string_is_empty(field->help) ? "" : "\n",
+			field->help != NULL ? field->help : "");
+		consent = venture_marketing_service_consent(venture_marketing_service_get(database),
+			venture_entity_get_organization_id(form), lead, source, evidence, key, now, NULL, error);
+		if (NULL == consent)
+			return FALSE;
+	}
+	return TRUE;
+}
+
 /* One attempt at the whole write: the lead, the confirmation and the
  * response, in one transaction. */
 static gboolean
@@ -1736,6 +1784,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 		if (NULL == lead)
 			goto fail;
 		g_object_set(submission, "lead-id", venture_entity_get_id(lead), NULL);
+		if (!forms_record_marketing_consent(database, form, submission, lead, fields, answers, now, error))
+			goto fail;
 	}
 	if (follow_up && !forms_queue_confirmation(database, form, submission, answers, &note, error))
 		goto fail;

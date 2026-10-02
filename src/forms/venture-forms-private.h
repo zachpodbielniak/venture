@@ -37,6 +37,7 @@ typedef struct
 	gchar			*key;
 	gchar			*label;
 	VentureFormFieldKind	 kind;
+	gboolean		 marketing_consent;
 	gboolean		 required;
 	gboolean		 sensitive;
 	gint64			 position;

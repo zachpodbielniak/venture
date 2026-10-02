@@ -347,6 +347,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 
 		g_object_get(row, "key", &field->key, "label", &field->label, "kind", &field->kind,
 		             "required", &field->required, "sensitive", &field->sensitive,
+		             "marketing-consent", &field->marketing_consent,
 		             "position", &field->position,
 		             "help", &field->help, "placeholder", &field->placeholder,
 		             "pattern", &field->pattern, "default-value", &field->default_value,
@@ -389,6 +390,11 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		json_builder_add_boolean_value(builder, field->required);
 		json_builder_set_member_name(builder, "position");
 		json_builder_add_int_value(builder, field->position);
+		if (field->marketing_consent)
+		{
+			json_builder_set_member_name(builder, "marketing_consent");
+			json_builder_add_boolean_value(builder, TRUE);
+		}
 		if (field->sensitive)
 		{
 			json_builder_set_member_name(builder, "sensitive");
@@ -504,6 +510,7 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		if (NULL == field->key || NULL == kind || !forms_kind_from_nick(kind, &field->kind))
 			goto broken;
 		field->required = json_object_get_boolean_member_with_default(object, "required", FALSE);
+		field->marketing_consent = json_object_get_boolean_member_with_default(object, "marketing_consent", FALSE);
 		field->sensitive = json_object_get_boolean_member_with_default(object, "sensitive", FALSE);
 		field->position = json_object_get_int_member_with_default(object, "position", 0);
 		field->help = forms_member_string(object, "help");

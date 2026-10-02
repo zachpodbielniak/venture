@@ -213,6 +213,9 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	VENTURE_FIELD("maps-to", "Maps to",
 	              "With Create a lead: name, email, phone, company_name, website or notes",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("marketing-consent", "Marketing permission",
+	              "Consent questions only: record checked permission for the captured lead",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("sensitive", "Sensitive",
 	              "Kept out of the AI, webhooks, notifications, search and the audit log; "
 	              "shown only on the response's own page",
