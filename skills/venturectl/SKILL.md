@@ -1749,7 +1749,7 @@ downward goal reads as done before it starts.
 
 ## Forms: questions, responses and the summary
 
-Module `forms` (requires only `core`; suggests `leads` and `mail`). Check
+Module `forms` (requires only `core`; suggests `leads`, `mail` and `marketing`). Check
 `venturectl describe form`, `describe form_field`, `describe form_submission`.
 
 - `form`: `name` (internal), `title`/`description`/`submit_label`/
@@ -1764,7 +1764,7 @@ Module `forms` (requires only `core`; suggests `leads` and `mail`). Check
 - `form_field` ("Form question"): `form_id`, `key`, `label`, `kind`
   (`short_text` default, `long_text`, `email`, `phone`, `url`, `number`,
   `date`, `single_choice`, `multiple_choice`, `checkbox`, `rating`,
-  `hidden`), `required`, `position`, `help`, `placeholder`, `choices`,
+  `hidden`, `consent`), `required`, `position`, `help`, `placeholder`, `choices`,
   `min_value`/`max_value`, `min_length`/`max_length`, `pattern`,
   `default_value`, `maps_to` (`name`, `email`, `phone`, `company_name`,
   `website`, `notes`).
@@ -1796,6 +1796,27 @@ venturectl act form 3 publish
 venturectl list form_submission form_id=3
 venturectl report form_summary all form_id=3
 ```
+
+
+Privacy settings and actions:
+
+- `form.privacy_url`, `retention_days`, `retention_action` (`anonymise` or
+  `purge`). `venturectl act form 0 sweep_retention organization_id=1 limit=100`
+  processes a bounded batch; it is not a timer.
+- `form_field.sensitive=true` keeps answers out of generic JSON, pages,
+  AI tools, audit content, webhooks and notifications. Sensitive questions
+  cannot map to leads or marketing permission.
+- `kind=consent` records the published wording, version and time. It cannot
+  have `default_value`. `marketing_consent=true` explicitly maps checked
+  permission to the lead captured by `create_lead` and its name/email
+  mappings. The marketing module must be enabled; suppression is never
+  cleared. Check `mapping_note` for a refused follow-up.
+- `venturectl act form 0 erase_person organization_id=1 email=person@example.com`
+  is owner-only and erases matching responses across forms in that organization.
+- `export_person` is an owner-only access-request export containing sensitive
+  answers. It cannot be staged, so generated assistant and MCP action tools
+  refuse it. A human owner performs this outside those tools; never put its
+  payload into AI context or an approval card.
 
 Public addresses (no session): `/pub/form/TOKEN` (hosted page and where
 answers are posted), `/pub/form/TOKEN/fragment`, `/pub/form/TOKEN/schema`,

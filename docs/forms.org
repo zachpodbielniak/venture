@@ -168,7 +168,8 @@ are you to recommend us (0-10)?". So a form has versions.
 - *Export.* =venturectl act form 0 export_person organization_id=1
   email=someone@example.com= (owners only, never staged) returns every
   response carrying the address --- form, version, time, answers and
-  sensitive answers --- for an access request.
+  sensitive answers --- for an access request. Generated assistant and MCP
+  action tools always stage their calls, so they cannot run this export.
 
 * Putting it on a site
 

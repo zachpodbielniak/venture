@@ -1906,6 +1906,33 @@ test_erase_person(Fixture *f, gconstpointer data)
 		g_assert_nonnull(strstr(dump, "\"contact_again\":\"alice@example.com\""));
 		g_assert_null(strstr(dump, "Bob"));
 	}
+	/* Generated assistant and MCP action tools always stage. Export must
+	 * refuse before reading answers or putting them on an approval card. */
+	{
+		VentureAction *action = venture_action_registry_lookup(
+			venture_database_get_action_registry(f->db), "form", "export_person");
+		g_autoptr(GHashTable) params = g_hash_table_new_full(g_str_hash, g_str_equal,
+			g_free, (GDestroyNotify)json_node_unref);
+		VentureActor actor;
+		const VentureActorKind kinds[] = { VENTURE_ACTOR_KIND_AI, VENTURE_ACTOR_KIND_USER };
+		guint caller;
+
+		g_assert_nonnull(action);
+		actor.name = "export-test";
+		actor.prompt = NULL;
+		actor.request_id = NULL;
+		actor.approved_by = NULL;
+		for (caller = 0; caller < G_N_ELEMENTS(kinds); caller++)
+		{
+			actor.kind = kinds[caller];
+			actor.name = caller == 0 ? "ai" : "API token #1";
+			g_assert_null(venture_confirmation_store_stage_action(
+				venture_context_get_confirmations(f->context), action, form, params,
+				&actor, VENTURE_USER_ROLE_OWNER, "test", &error));
+			g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+			g_clear_error(&error);
+		}
+	}
 	result = venture_forms_erase_person(f->db, f->org, " alice@example.com ", NULL, &error);
 	g_assert_no_error(error);
 	text = json_to_string(result, FALSE);
