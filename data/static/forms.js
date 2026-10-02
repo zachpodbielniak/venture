@@ -111,11 +111,76 @@
 		done.focus();
 	}
 
+	/* Matches the server's closed condition vocabulary. Prior-page outcomes
+	 * are supplied as booleans, never as hidden copies of earlier answers. */
+	function wireRules(form) {
+		var rules = JSON.parse(form.getAttribute("data-vf-rules") || "[]");
+		var page = Number(form.getAttribute("data-vf-page") || 0);
+		if (!rules.length) { return; }
+		function atom(actual, op, wanted) {
+			if (op === "equals" || op === "not_equals") { return actual === wanted; }
+			if (op === "contains") { return actual.indexOf(wanted) !== -1; }
+			if (op === "any_of") { return wanted.split("\n").indexOf(actual) !== -1; }
+			var number = Number(actual);
+			if (!actual || actual !== actual.trimEnd() || !Number.isFinite(number)) { return false; }
+			return op === "greater_than" ? number > Number(wanted) : op === "less_than" && number < Number(wanted);
+		}
+		function match(rule, values) {
+			if (rule.from_page !== page) { return rule.matched; }
+			var matches = rule.conditions.map(function (condition, index) {
+				if (!form.elements.namedItem(condition.field)) { return rule.condition_matches[index]; }
+				var answers = values.getAll(condition.field);
+				if (condition.operator === "is_empty") { return !answers.length || answers.every(function (x) { return x === ""; }); }
+				if (!answers.length) { answers = [""]; }
+				var found = answers.some(function (x) { return atom(x, condition.operator, condition.value); });
+				return condition.operator === "not_equals" ? !found : found;
+			});
+			return rule.any ? matches.some(Boolean) : matches.every(Boolean);
+		}
+		function update() {
+			form.querySelectorAll("[data-vf-field]").forEach(function (field) {
+				var key = field.getAttribute("data-vf-field");
+				var values = new FormData(form);
+				var active = true, required = field.getAttribute("data-vf-required-base") === "true";
+				rules.forEach(function (rule) {
+					if (rule.target !== key) { return; }
+					var matched = match(rule, values);
+					if (rule.action === 0 && !matched) { active = false; }
+					if (rule.action === 1 && matched) { active = false; }
+					if (rule.action === 2 && matched) { required = true; }
+				});
+				field.hidden = !active;
+				var controls = field.matches("input,textarea,select") ? [field] : field.querySelectorAll("input,textarea,select");
+				controls.forEach(function (input) {
+					input.disabled = !active;
+					input.required = active && required && field.getAttribute("data-vf-kind") !== "multiple_choice";
+					if (input.required) { input.setAttribute("aria-required", "true"); }
+					else { input.removeAttribute("aria-required"); }
+				});
+				if (field.getAttribute("role") === "radiogroup") {
+					if (active && required) { field.setAttribute("aria-required", "true"); }
+					else { field.removeAttribute("aria-required"); }
+				}
+				var label = field.querySelector(".vf-label");
+				var marker = field.querySelector(".vf-required");
+				if (label && required && !marker) {
+					marker = document.createElement("span"); marker.className = "vf-required";
+					marker.setAttribute("aria-hidden", "true"); marker.textContent = "*"; label.appendChild(marker);
+				}
+				if (marker) { marker.hidden = !required; }
+			});
+		}
+		form.addEventListener("input", update);
+		form.addEventListener("change", update);
+		update();
+	}
+
 	function wire(form) {
 		if (form.ventureFormWired) {
 			return;
 		}
 		form.ventureFormWired = true;
+		wireRules(form);
 
 		form.addEventListener("submit", function (event) {
 			var button = form.querySelector(".vf-submit");

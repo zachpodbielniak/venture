@@ -1478,3 +1478,12 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   a sensitive-only edit persist and invalidates the previous signed step token.
   Final intake claims the draft before calling the ordinary submission service,
   whose follow-up retry must not run inside an enclosing transaction.
+
+- **A form rule runs on the published definition, not today's rule records.**
+  Conditions and their forward targets are frozen alongside questions. Clear
+  hidden questions and skipped pages in question order before checking required
+  answers or making follow-ups: an untrusted hidden value must not select a later
+  branch. Navigation uses the last condition's page and moves strictly forward;
+  Back recomputes the previous visited page. The loader receives prior-condition
+  booleans, never hidden copies of earlier answers. `not-shown` is private,
+  immutable accounting for the summary and is cleared by anonymisation.

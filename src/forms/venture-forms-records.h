@@ -95,6 +95,40 @@ typedef enum
 GType venture_form_field_kind_get_type(void) G_GNUC_CONST;
 #define VENTURE_TYPE_FORM_FIELD_KIND (venture_form_field_kind_get_type())
 
+/**
+ * VentureFormRuleAction:
+ * @VENTURE_FORM_RULE_SHOW: show a question when its condition matches
+ * @VENTURE_FORM_RULE_HIDE: hide a question when its condition matches
+ * @VENTURE_FORM_RULE_REQUIRE: require a visible question when matched
+ * @VENTURE_FORM_RULE_JUMP: continue at a later page
+ * @VENTURE_FORM_RULE_END: finish after the condition's page
+ */
+typedef enum
+{
+	VENTURE_FORM_RULE_SHOW = 0,
+	VENTURE_FORM_RULE_HIDE,
+	VENTURE_FORM_RULE_REQUIRE,
+	VENTURE_FORM_RULE_JUMP,
+	VENTURE_FORM_RULE_END
+} VentureFormRuleAction;
+
+/**
+ * venture_form_rule_action_get_type:
+ *
+ * Returns: the #GType of #VentureFormRuleAction
+ */
+GType venture_form_rule_action_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_FORM_RULE_ACTION (venture_form_rule_action_get_type())
+
+#define VENTURE_TYPE_FORM_RULE (venture_form_rule_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormRule, venture_form_rule, FORM_RULE)
+
+/**
+ * venture_form_rule_new:
+ *
+ * Returns: (transfer full): an unsaved conditional rule
+ */
+
 #define VENTURE_TYPE_FORM (venture_form_get_type())
 VENTURE_DECLARE_ENTITY(VentureForm, venture_form, FORM)
 

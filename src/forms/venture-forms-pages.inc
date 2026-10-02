@@ -95,6 +95,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 	const gchar *move = forms_first(answers, VENTURE_FORMS_MOVE);
 	gboolean back = g_strcmp0(move, "back") == 0;
 	gboolean finishing = FALSE;
+	g_autoptr(GHashTable) not_shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	GHashTableIter iter;
 	gpointer key;
 	guint i;
@@ -145,16 +146,38 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 	{
 		const VentureFormsField *field = g_ptr_array_index(page_fields, i);
 		JsonNode *value = json_object_get_member(posted, field->key);
-		if (!back) forms_check_field(field, g_hash_table_lookup(answers, field->key), checked, step->errors, summary);
+
 		json_object_remove_member(step->values, field->key);
 		if (value != NULL && field->kind != VENTURE_FORM_FIELD_PAGE_BREAK)
 			json_object_set_member(step->values, field->key, json_node_copy(value));
 	}
+	venture_forms_rules_filter(fields, step->values, not_shown);
+	for (i = 0; !back && i < page_fields->len; i++)
+	{
+		VentureFormsField *source = g_ptr_array_index(page_fields, i);
+		VentureFormsField effective = *source;
+		if (g_hash_table_contains(not_shown, source->key)) continue;
+		venture_forms_field_active(source, step->values, &effective.required);
+		forms_check_field(&effective, g_hash_table_lookup(answers, source->key), checked, step->errors, summary);
+	}
 	if (json_object_get_size(step->errors) == 0)
 	{
-		if (back && step->page > 0) step->page--;
-		else if (!back && step->page + 1 < step->pages) step->page++;
-		else if (!back) finishing = TRUE;
+		if (back && step->page > 0)
+		{
+			guint cursor = 0, previous = 0;
+			while (cursor < step->page)
+			{
+				previous = cursor;
+				cursor = venture_forms_next_page(fields, cursor, step->values);
+			}
+			step->page = previous;
+		}
+		else if (!back)
+		{
+			guint next = venture_forms_next_page(fields, step->page, step->values);
+			if (next < step->pages) step->page = next;
+			else finishing = TRUE;
+		}
 	}
 	if (draft == NULL && json_object_get_size(step->errors) == 0)
 	{

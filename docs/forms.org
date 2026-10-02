@@ -169,6 +169,67 @@ step tokens are not cross-device save-and-resume links.
 The built-server keyboard walkthrough, including server errors with JavaScript
 off and with the loader, is in [[file:evidence/forms-pages.org][multi-page evidence]].
 
+* Conditional questions and branching
+
+A =form_rule= belongs to a form and is edited through the ordinary record
+pages, API and CLI. Its =conditions= is a JSON array of 1–16 objects:
+
+#+begin_src json
+[{"field":"customer_kind","operator":"equals","value":"business"}]
+#+end_src
+
+The operators are =equals=, =not_equals=, =contains=, =any_of= (newline-separated
+values), =greater_than=, =less_than= and =is_empty= (no value needed). Comparisons
+are case-sensitive. Numeric comparisons refuse non-numbers and non-finite
+values. A multiple-choice answer matches if any selected id matches;
+=not_equals= means none matches. By default all conditions must match;
+=any_condition=true= changes this to any. There is no expression or script
+language. Conditions can combine questions from earlier pages.
+
+The =action= is =show=, =hide=, =require=, =jump= or =end=. =target_key= names a
+question for the first three, a later page-break key for =jump=, and is empty
+for =end=. A show rule hides its target unless it matches; a matching hide rule
+hides it; a matching require rule adds a requirement only while the question is
+visible. Multiple show rules all have to match, and any matching hide rule wins.
+The field's ordinary Required setting still applies whenever it is visible.
+
+Question targets must follow every condition's source question. A jump must
+move to a later page than every source. End finishes after the last source page.
+These forward-only constraints rule out cycles at save. Unknown questions,
+unknown operators and invalid targets are refused. Publication rechecks all
+rules, so deleting or reordering questions cannot publish a dangling rule.
+At most 256 rules are frozen in one version. Editing rules has no public effect
+until Publish, and existing drafts keep their original rules.
+
+Navigation rules run after the current page validates. The first matching
+navigation rule in =position= then record-id order wins. Back returns to the
+previous visited page, including after a jump. The server drops all answers on
+skipped pages and all answers to hidden questions before checking requirements,
+storing responses or creating any follow-up. Sending a forged hidden answer or
+omitting a required branch therefore cannot bypass the questionnaire.
+
+The loader updates same-page visibility and requirements on input, including
+native validation and accessible required markers. Conditions on previous pages
+arrive as server-computed booleans; earlier answer values remain on the server.
+With JavaScript off, put a condition's source before a page break when its
+result must change what the visitor sees next. Page navigation is always a real
+server-validated POST.
+
+The schema exposes a =rules= array alongside =fields= and =pages=. Each entry
+contains =conditions=, =any=, =target=, zero-based =from_page=/=to_page= and
+=action= (0 show, 1 hide, 2 require, 3 jump, 4 end). These numbers are the stable
+=VentureFormRuleAction= values. The loader's =data-vf-rules= additionally carries
+initial match results, and =data-vf-required-base= preserves a question's ordinary
+requirement. Host styles must honor =[hidden]= and should not re-enable disabled
+controls.
+
+The summary separates “Not shown” from “Not answered” for non-sensitive
+questions. Private branch accounting is stored separately from public answers;
+it is immutable and removed by anonymisation. Sensitive questions do not expose
+these branch counts. No answer is reconstructed from a hidden or skipped field.
+
+The [[file:evidence/forms-rules.org][built-server branching demonstration]] records the public-route checks.
+
 * Privacy
 
 - *Consent.* A =consent= question is one box whose answer is the words it

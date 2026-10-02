@@ -567,6 +567,8 @@ forms_validate_submission(
 		g_autofree gchar *after = venture_forms_get_string(entity, "answers");
 		g_autofree gchar *secret_before = venture_forms_get_string(previous, "sensitive-answers");
 		g_autofree gchar *secret_after = venture_forms_get_string(entity, "sensitive-answers");
+		g_autofree gchar *omitted_before = venture_forms_get_string(previous, "not-shown");
+		g_autofree gchar *omitted_after = venture_forms_get_string(entity, "not-shown");
 		g_autofree gchar *summary_before = venture_forms_get_string(previous, "summary");
 		g_autofree gchar *summary_after = venture_forms_get_string(entity, "summary");
 		g_autofree gchar *origin_before = venture_forms_get_string(previous, "origin");
@@ -577,6 +579,7 @@ forms_validate_submission(
 		g_object_get(previous, "submitted-at", &at_before, NULL);
 		g_object_get(entity, "submitted-at", &at_after, NULL);
 		if (0 != g_strcmp0(before, after) || 0 != g_strcmp0(secret_before, secret_after) ||
+		    0 != g_strcmp0(omitted_before, omitted_after) ||
 		    venture_forms_get_int(previous, "form-id") != venture_forms_get_int(entity, "form-id") ||
 		    venture_forms_get_int(previous, "version-id") != venture_forms_get_int(entity, "version-id") ||
 		    venture_forms_get_int(previous, "version-number") != venture_forms_get_int(entity, "version-number") ||
@@ -852,6 +855,8 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_version, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_DRAFT_RECORD,
 	                                    forms_validate_draft, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RULE,
+	                                    venture_forms_validate_rule, NULL, NULL);
 	forms_register_actions(database);
 }
 
@@ -1978,7 +1983,11 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autoptr(JsonObject) stored = json_object_new();
 	g_autoptr(JsonObject) refused = json_object_new();
 	g_autoptr(JsonObject) secret = json_object_new();
+	g_autoptr(JsonObject) visible = NULL;
+	g_autoptr(GHashTable) filtered = NULL;
+	g_autoptr(GHashTable) not_shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	g_autofree gchar *secret_text = NULL;
+	g_autofree gchar *omitted_text = NULL;
 	g_autoptr(GString) summary = g_string_new(NULL);
 	g_autoptr(VentureEntity) response = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -2022,12 +2031,22 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 			forms_refuse(refused, key, "This form has no such question.");
 	}
 
+	visible = venture_forms_answers_to_json(answers);
+	venture_forms_rules_filter(fields, visible, not_shown);
+	filtered = venture_forms_answers_from_json(visible, error);
+	if (filtered == NULL) return FALSE;
+	answers = filtered;
+
 	/* A sensitive answer is checked like any other, then kept apart: in
 	 * a column that never leaves the record, with only its question named
 	 * in the summary that search, webhooks and the assistant read. */
 	for (i = 0; i < fields->len; i++)
 	{
-		const VentureFormsField *field = g_ptr_array_index(fields, i);
+		const VentureFormsField *source = g_ptr_array_index(fields, i);
+		VentureFormsField effective = *source;
+		const VentureFormsField *field = &effective;
+		if (g_hash_table_contains(not_shown, field->key)) continue;
+		venture_forms_field_active(source, visible, &effective.required);
 
 		if (field->sensitive)
 		{
@@ -2065,6 +2084,15 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 
 	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
 	g_object_set(response, "sensitive-answers", secret_text, NULL);
+	{
+		g_autoptr(JsonObject) omitted = json_object_new();
+		g_autoptr(JsonNode) omitted_node = json_node_new(JSON_NODE_OBJECT);
+		g_hash_table_iter_init(&iter, not_shown);
+		while (g_hash_table_iter_next(&iter, &key, NULL)) json_object_set_boolean_member(omitted, key, TRUE);
+		json_node_set_object(omitted_node, omitted);
+		omitted_text = json_to_string(omitted_node, FALSE);
+		g_object_set(response, "not-shown", omitted_text, NULL);
+	}
 	if (!forms_write(database, form, response, fields, stored, TRUE, now, refused, &follow_error))
 	{
 		g_autofree gchar *note = NULL;
@@ -2087,7 +2115,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_clear_error(&follow_error);
 		g_clear_object(&response);
 		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
-		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, NULL);
+		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, "not-shown", omitted_text, NULL);
 		if (!forms_write(database, form, response, fields, stored, FALSE, now, refused, error))
 		{
 			if (json_object_get_size(refused) > 0)
@@ -2279,7 +2307,7 @@ forms_anonymise(VentureDatabase *database, VentureEntity *response, GDateTime *n
 	g_autofree gchar *name = g_strdup_printf("Anonymised response #%" G_GINT64_FORMAT,
 		venture_entity_get_id(response));
 
-	g_object_set(response, "name", name, "answers", "{}", "sensitive-answers", NULL,
+	g_object_set(response, "name", name, "answers", "{}", "sensitive-answers", NULL, "not-shown", NULL,
 		"summary", "", "notes", NULL, "origin", NULL, "mapping-note", NULL,
 		"anonymised-at", now, NULL);
 	g_object_set_data(G_OBJECT(response), VENTURE_FORMS_ANONYMISING_KEY, GINT_TO_POINTER(1));

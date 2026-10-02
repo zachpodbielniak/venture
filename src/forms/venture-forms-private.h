@@ -52,6 +52,8 @@ typedef struct
 	gint64			 min_length;
 	gint64			 max_length;
 	GPtrArray		*choices;
+	/* Each question owns a reference to its version's immutable rule array. */
+	JsonArray		*rules;
 } VentureFormsField;
 
 #define VENTURE_FORMS_DRAFT_TOKEN "_vf_draft"
@@ -77,6 +79,16 @@ VentureFormsStep *venture_forms_step(VentureDatabase *database, VentureEntity *f
 	GHashTable *answers, const gchar *origin, GDateTime *now, GError **error);
 gchar *venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error);
+
+gboolean venture_forms_rules_restore(GPtrArray *fields, JsonNode *node, GError **error);
+gboolean venture_forms_rules_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+gboolean venture_forms_validate_rule(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error);
+gboolean venture_forms_condition_matches(JsonObject *condition, JsonObject *values);
+gboolean venture_forms_rule_matches(JsonObject *rule, JsonObject *values);
+gboolean venture_forms_field_active(const VentureFormsField *field, JsonObject *values, gboolean *required);
+guint venture_forms_next_page(GPtrArray *fields, guint page, JsonObject *values);
+void venture_forms_rules_filter(GPtrArray *fields, JsonObject *values, GHashTable *not_shown);
 
 /* --- Reading records --- */
 

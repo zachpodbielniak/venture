@@ -291,6 +291,7 @@ venture_forms_field_free(gpointer data)
 	g_free(field->maps_to);
 	g_free(field->autocomplete);
 	g_clear_pointer(&field->choices, g_ptr_array_unref);
+	g_clear_pointer(&field->rules, json_array_unref);
 	g_free(field);
 }
 
@@ -360,6 +361,11 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 			field->choices = g_ptr_array_new_with_free_func(venture_forms_choice_free);
 		g_ptr_array_add(fields, field);
 	}
+	if (!venture_forms_rules_load(database, form, fields, error))
+	{
+		g_ptr_array_unref(fields);
+		return NULL;
+	}
 	return fields;
 }
 
@@ -373,6 +379,14 @@ venture_forms_definition_to_json(GPtrArray *fields)
 	guint i, j;
 
 	json_builder_begin_object(builder);
+	if (fields->len > 0 && ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules != NULL &&
+	    json_array_get_length(((VentureFormsField *)g_ptr_array_index(fields, 0))->rules) > 0)
+	{
+		g_autoptr(JsonNode) rules = json_node_new(JSON_NODE_ARRAY);
+		json_node_set_array(rules, ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules);
+		json_builder_set_member_name(builder, "rules");
+		json_builder_add_value(builder, json_node_copy(rules));
+	}
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
 	for (i = 0; i < fields->len; i++)
@@ -546,6 +560,9 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 			}
 		}
 	}
+	if (!venture_forms_rules_restore(fields, json_object_get_member(json_node_get_object(root), "rules"), error))
+		return NULL;
+
 	return g_steal_pointer(&fields);
 
 broken:

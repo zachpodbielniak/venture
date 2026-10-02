@@ -168,6 +168,7 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	const gchar *message = forms_error(options, key);
 	const gchar *value = forms_value(options, key);
 	gboolean required = field->required;
+	gboolean active = venture_forms_field_active(field, options->values, &required);
 	gboolean has_help = !venture_string_is_empty(help);
 	gint64 min_length = field->min_length;
 	gint64 max_length = field->max_length;
@@ -194,7 +195,7 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 		g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" data-vf-field=\"%s\" "
 		                       "data-vf-kind=\"hidden\" value=\"", key, key);
 		forms_escape(html, value);
-		g_string_append(html, "\">");
+		g_string_append(html, active ? "\">" : "\" disabled>");
 		return;
 	}
 
@@ -226,6 +227,7 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 		g_string_append_printf(html, "<fieldset class=\"vf-field vf-field--%s%s\" data-vf-field=\"%s\" "
 		                       "data-vf-kind=\"%s\" id=\"%s\"", kind_class,
 		                       NULL != message ? " vf-field--invalid" : "", key, nick, id);
+		g_string_append_printf(html, " data-vf-required-base=\"%s\"%s", field->required ? "true" : "false", active ? "" : " hidden");
 		/* A radio group is one answer and can say it is required; a
 		 * box group is several and cannot, so the legend's marker and
 		 * the note at the top say it instead. */
@@ -250,6 +252,7 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 			/* A required radio group is satisfied by any one box; a
 			 * required checkbox group cannot say "at least one" in
 			 * HTML, so the server alone judges it. */
+			if (!active) g_string_append(html, " disabled");
 			if (required && VENTURE_FORM_FIELD_MULTIPLE_CHOICE != kind)
 				g_string_append(html, " required");
 			if (forms_value_contains(options, key, choice->id))
@@ -265,13 +268,14 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	}
 
 	g_string_append_printf(html, "<div class=\"vf-field vf-field--%s%s\" data-vf-field=\"%s\" "
-	                       "data-vf-kind=\"%s\">", kind_class,
-	                       NULL != message ? " vf-field--invalid" : "", key, nick);
+	                       "data-vf-kind=\"%s\" data-vf-required-base=\"%s\"%s>", kind_class,
+	                       NULL != message ? " vf-field--invalid" : "", key, nick, field->required ? "true" : "false", active ? "" : " hidden");
 
 	if (VENTURE_FORM_FIELD_CHECKBOX == kind || VENTURE_FORM_FIELD_CONSENT == kind)
 	{
 		g_string_append_printf(html, "<label class=\"vf-label\" for=\"%s\"><input class=\"vf-input\" "
 		                       "type=\"checkbox\" id=\"%s\" name=\"%s\" value=\"on\"", id, id, key);
+		if (!active) g_string_append(html, " disabled");
 		if (required)
 			g_string_append(html, " required aria-required=\"true\"");
 		if (NULL != value && (0 == g_strcmp0(value, "on") || 0 == g_strcmp0(value, "true")))
@@ -350,6 +354,7 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 			g_string_append_c(html, '"');
 		}
 	}
+	if (!active) g_string_append(html, " disabled");
 	if (required)
 		g_string_append(html, " required aria-required=\"true\"");
 	if (min_length > 0)
@@ -532,6 +537,36 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 
 	g_string_append_printf(html, "<form class=\"vf-form\" id=\"%s\" data-vf-form=\"%s\" "
 	                       "method=\"post\" accept-charset=\"utf-8\"", prefix, token != NULL ? token : "");
+	if (fields->len > 0 && ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules != NULL &&
+	    json_array_get_length(((VentureFormsField *)g_ptr_array_index(fields, 0))->rules) > 0)
+	{
+		JsonArray *rules = ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules;
+		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_ARRAY);
+		g_autoptr(JsonArray) states = json_array_new();
+		g_autofree gchar *text = NULL;
+		for (i = 0; i < json_array_get_length(rules); i++)
+		{
+			g_autofree gchar *rule_text = json_to_string(json_array_get_element(rules, i), FALSE);
+			JsonNode *copy = json_from_string(rule_text, NULL);
+			json_object_set_boolean_member(json_node_get_object(copy), "matched",
+				venture_forms_rule_matches(json_node_get_object(copy), options->values));
+			{
+				JsonArray *conditions = json_object_get_array_member(json_node_get_object(copy), "conditions");
+				JsonArray *matches = json_array_new();
+				guint condition;
+				for (condition = 0; condition < json_array_get_length(conditions); condition++)
+					json_array_add_boolean_element(matches, venture_forms_condition_matches(
+						json_array_get_object_element(conditions, condition), options->values));
+				json_object_set_array_member(json_node_get_object(copy), "condition_matches", matches);
+			}
+			json_array_add_element(states, copy);
+		}
+		json_node_set_array(node, states);
+		text = json_to_string(node, FALSE);
+		g_string_append_printf(html, " data-vf-page=\"%u\" data-vf-rules=\"", page);
+		forms_escape(html, text);
+		g_string_append_c(html, '"');
+	}
 	if (!preview)
 	{
 		g_string_append(html, " action=\"");
@@ -561,7 +596,7 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	{
 		const VentureFormsField *field = g_ptr_array_index(selected, i);
 
-		if (field->required && VENTURE_FORM_FIELD_HIDDEN != field->kind)
+		if ((field->required || (field->rules != NULL && json_array_get_length(field->rules) > 0)) && VENTURE_FORM_FIELD_HIDDEN != field->kind)
 		{
 			/* The asterisk beside each question is hidden from screen
 			 * readers, which hear aria-required instead; this sentence
@@ -735,6 +770,13 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 		json_builder_end_object(builder);
 	}
 	json_builder_end_array(builder);
+	if (fields->len > 0 && ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules != NULL)
+	{
+		g_autoptr(JsonNode) rules = json_node_new(JSON_NODE_ARRAY);
+		json_node_set_array(rules, ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules);
+		json_builder_set_member_name(builder, "rules");
+		json_builder_add_value(builder, json_node_copy(rules));
+	}
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
 	for (i = 0; i < fields->len; i++)

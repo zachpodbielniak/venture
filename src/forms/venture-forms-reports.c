@@ -393,6 +393,20 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 			g_strdup_printf("%" G_GINT64_FORMAT, segment->first) :
 			g_strdup_printf("%" G_GINT64_FORMAT "-%" G_GINT64_FORMAT, segment->first, segment->last);
 		gint64 total = asked->len;
+		gint64 not_shown = 0;
+		for (j = 0; j < asked->len; j++)
+		{
+			g_autofree gchar *text = venture_forms_get_string(g_ptr_array_index(asked, j), "not-shown");
+			g_autoptr(JsonNode) omitted = text != NULL ? json_from_string(text, NULL) : NULL;
+			if (omitted != NULL && JSON_NODE_HOLDS_OBJECT(omitted) &&
+			    json_object_has_member(json_node_get_object(omitted), field->key)) not_shown++;
+		}
+		if (!field->sensitive)
+		{
+			summary_row(result, field->label, span, "Not shown", not_shown, total, FALSE, 0);
+			summary_row(result, field->label, span, "Not answered", MAX((gint64)0, total - not_shown - summary_count(asked, segment->key, NULL)), total, FALSE, 0);
+		}
+
 
 		switch (field->kind)
 		{

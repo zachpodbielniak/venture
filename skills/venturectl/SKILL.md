@@ -1751,6 +1751,13 @@ downward goal reads as done before it starts.
 
 Module `forms` (requires only `core`; suggests `leads`, `mail` and `marketing`). Check
 `venturectl describe form`, `describe form_field`, `describe form_submission`.
+Use `describe form_rule` before editing conditional questions. A rule has
+`form_id`, `action=show|hide|require|jump|end`, `target_key`, and a `conditions`
+JSON array of `{field,operator,value}`. Conditions use a closed comparison
+vocabulary (see `docs/forms.org`), never expressions. Question targets must
+follow their sources; jumps only go forward. Publish freezes rules as well as
+questions. Hidden and skipped answers are discarded by the server.
+
 For multiple pages, insert a `form_field kind=page_break` between questions by
 `position`; its label/help introduce the next page. Publish refuses empty pages.
 `form draft_minutes=60` controls unfinished-response lifetime (0 also means 60).

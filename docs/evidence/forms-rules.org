@@ -1,0 +1,45 @@
+#+title: Conditional forms demonstration
+
+* Built server
+
+A disposable SQLite instance on loopback, with AI, plugins and automation
+disabled, served a three-page form through its ordinary public HTTP routes.
+Chromium exercised both the script-free hosted page and an embedded loader
+on a separate HTTP origin. Synthetic questions and answers were used.
+
+The form showed and required an explanation for “other”, jumped over the
+personal page for “business”, and ended early for “other”. The crafted POST
+sent a hidden explanation anyway; the persisted responses did not contain it.
+A second loader form combined a condition from an earlier page with one from
+the current page. No earlier answer was copied into a hidden input.
+
+#+begin_example
+Refused dangling rule: HTTP 422
+Refused cyclic rule: HTTP 422
+Schema: four published rules
+JavaScript off: business jumps from page 1 to page 3
+JavaScript off: Back returns to visited page 1; completion succeeds
+Loader: Other reveals a required detail question
+axe: zero WCAG A/AA violations after conditional reveal
+Loader: matching end rule completes after page 1
+Crafted hidden answer discarded; exactly three final responses
+Loader: combined prior-page and current-page conditions reveal the required question
+PASS: published branching through real public routes
+Isolated server: http://127.0.0.1:34613
+Binary SHA256: 8f0dc8a7330d0bf7d6bdf0e92c9f5ab644c633b8bedad8bf27aa4f119fc36f43
+#+end_example
+
+* Regression coverage
+
+=/forms/rules= checks discarded hidden and skipped answers, conditional
+requirements, required branches, a combined condition across pages, early
+completion, Back after a jump, published rule pinning, schema exposure, dangling
+and cyclic references, unsupported operators, and “Not shown” report counts.
+=/forms/rule-vocabulary= checks case-sensitive equality, multiple-choice
+membership, negation, contains, any-of, numeric bounds, non-finite numbers and
+empty answers. The full forms suite contains 48 tests.
+
+The existing markup checker and axe-core runs include every answer kind and
+intermediate multi-page state. The browser axe check above additionally examines
+a conditionally revealed required question. This is not a human screen-reader
+session or cross-browser certification.

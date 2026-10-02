@@ -1037,6 +1037,174 @@ test_draft_version(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(error->message, "public form service"));
 }
 
+static void
+test_rule_vocabulary(void)
+{
+	static const struct { const gchar *field; const gchar *op; const gchar *wanted; gboolean matches; } cases[] = {
+		{ "text", "equals", "alpha beta", TRUE },
+		{ "text", "equals", "Alpha beta", FALSE },
+		{ "text", "contains", "beta", TRUE },
+		{ "multi", "equals", "alpha", TRUE },
+		{ "multi", "not_equals", "alpha", FALSE },
+		{ "multi", "not_equals", "beta", TRUE },
+		{ "multi", "any_of", "beta\ngamma", TRUE },
+		{ "number", "greater_than", "11", TRUE },
+		{ "number", "less_than", "12", FALSE },
+		{ "bad_number", "greater_than", "0", FALSE },
+		{ "empty", "is_empty", "", TRUE },
+		{ "missing", "is_empty", "", TRUE },
+		{ "multi", "is_empty", "", FALSE }
+	};
+	g_autoptr(JsonNode) values = json_from_string("{\"text\":\"alpha beta\",\"multi\":[\"alpha\",\"gamma\"],\"number\":\"12\",\"bad_number\":\"NaN\",\"empty\":[]}", NULL);
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(JsonObject) condition = json_object_new();
+		json_object_set_string_member(condition, "field", cases[i].field);
+		json_object_set_string_member(condition, "operator", cases[i].op);
+		json_object_set_string_member(condition, "value", cases[i].wanted);
+		g_assert_cmpint(venture_forms_condition_matches(condition, json_node_get_object(values)), ==, cases[i].matches);
+	}
+}
+
+static VentureEntity *
+last_form_response(Fixture *f)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	return venture_database_find_one(f->db, query, NULL);
+}
+
+static VentureEntity *
+make_rule(Fixture *f, VentureEntity *form, VentureFormRuleAction action,
+	const gchar *target, const gchar *conditions)
+{
+	VentureEntity *rule = VENTURE_ENTITY(venture_form_rule_new());
+	venture_entity_set_organization_id(rule, f->org);
+	g_object_set(rule, "name", "Test rule", "form-id", venture_entity_get_id(form),
+		"action", action, "target-key", target, "conditions", conditions, NULL);
+	return rule;
+}
+
+/* Hidden answers cannot influence either required branches or saved data;
+ * navigation and conditions are frozen with the questions they govern. */
+static void
+test_rules(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "rules-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) show = NULL, require = NULL, jump = NULL, end = NULL, bad = NULL, combined = NULL;
+	g_autoptr(VentureEntity) response = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) schema = NULL;
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) first = NULL, back = NULL, again = NULL, done = NULL;
+	g_autofree gchar *ticket = NULL;
+	const gchar *other = "[{\"field\":\"kind\",\"operator\":\"equals\",\"value\":\"other\"}]";
+	const gchar *business = "[{\"field\":\"kind\",\"operator\":\"equals\",\"value\":\"business\"}]";
+	const gchar *const hidden[] = { "kind", "business", "detail", "Discard this", "personal", "Forged skipped answer", "company", "Example", NULL };
+	const gchar *const missing[] = { "kind", "person", "company", "Cannot skip personal", NULL };
+	const gchar *const person[] = { "kind", "person", "personal", "done", NULL };
+	const gchar *const required[] = { "kind", "other", NULL };
+	const gchar *const ended[] = { "kind", "other", "detail", "Explained", "company", "Discard this too", NULL };
+	(void)data;
+	add_field(f, form, "kind", "Kind", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "detail", "Details", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 2);
+	add_field(f, form, "personal_page", "Personal", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 3);
+	add_field(f, form, "personal", "Personal answer", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 4);
+	add_field(f, form, "business_page", "Business", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 5);
+	add_field(f, form, "company", "Company", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 6);
+	show = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "detail", other); save(f, show);
+	require = make_rule(f, form, VENTURE_FORM_RULE_REQUIRE, "detail", other); save(f, require);
+	jump = make_rule(f, form, VENTURE_FORM_RULE_JUMP, "business_page", business); save(f, jump);
+	end = make_rule(f, form, VENTURE_FORM_RULE_END, "", other); save(f, end);
+	combined = make_rule(f, form, VENTURE_FORM_RULE_END, "",
+		"[{\"field\":\"kind\",\"operator\":\"equals\",\"value\":\"person\"},{\"field\":\"personal\",\"operator\":\"equals\",\"value\":\"done\"}]");
+	save(f, combined);
+	bad = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "missing", other); refuse(f, bad, "Rule");
+	g_object_set(bad, "target-key", "kind", NULL); refuse(f, bad, "Rule");
+	g_object_set(bad, "target-key", "detail", "conditions", "[{\"field\":\"kind\",\"operator\":\"eval\",\"value\":\"1\"}]", NULL);
+	refuse(f, bad, "Rule");
+	g_object_unref(publish(f, form));
+	schema = venture_forms_schema(f->db, form, "/pub/form/rules-form", now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(schema), "rules")), ==, 5);
+	g_assert_cmpint(submit_pairs(f, form, hidden, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	{
+		g_autofree gchar *stored = venture_forms_get_string(response, "answers");
+		g_autofree gchar *omitted = venture_forms_get_string(response, "not-shown");
+		g_assert_null(strstr(stored, "Discard"));
+		g_assert_null(strstr(stored, "Forged"));
+		g_assert_nonnull(strstr(omitted, "personal"));
+	}
+	g_clear_object(&response);
+	g_assert_cmpint(submit_pairs(f, form, missing, NULL), ==, VENTURE_FORMS_INVALID);
+	g_assert_cmpint(submit_pairs(f, form, required, NULL), ==, VENTURE_FORMS_INVALID);
+	g_assert_cmpint(submit_pairs(f, form, ended, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	{
+		g_autofree gchar *stored = venture_forms_get_string(response, "answers");
+		g_assert_nonnull(strstr(stored, "Explained"));
+		g_assert_null(strstr(stored, "Discard"));
+	}
+	g_assert_cmpint(submit_pairs(f, form, person, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	/* Unpublished rule edits cannot change the public branch. */
+	g_object_set(jump, "conditions", other, NULL); save(f, jump);
+	ticket = venture_forms_ticket_new(form, now);
+	venture_forms_answers_add(answers, "_vf_t", ticket);
+	venture_forms_answers_add(answers, "kind", "business");
+	first = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(first);
+	g_assert_cmpuint(first->page, ==, 2);
+	g_hash_table_remove_all(answers);
+	venture_forms_answers_add(answers, "_vf_draft", first->token);
+	venture_forms_answers_add(answers, "_vf_move", "back");
+	back = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(back);
+	g_assert_cmpuint(back->page, ==, 0);
+	g_hash_table_remove_all(answers);
+	venture_forms_answers_add(answers, "_vf_draft", back->token);
+	venture_forms_answers_add(answers, "kind", "business");
+	again = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(again);
+	g_assert_cmpuint(again->page, ==, 2);
+	g_hash_table_remove_all(answers);
+	venture_forms_answers_add(answers, "_vf_draft", again->token);
+	venture_forms_answers_add(answers, "company", "Example");
+	done = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(done);
+	g_assert_true(done->complete);
+	{
+		g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
+		g_autoptr(JsonObject) options = json_object_new();
+		g_autoptr(VentureReportResult) result = NULL;
+		g_autoptr(JsonNode) json = NULL;
+		JsonArray *rows;
+		guint i;
+		gboolean found = FALSE;
+		json_object_set_int_member(options, "form_id", venture_entity_get_id(form));
+		json_object_set_int_member(options, "organization_id", f->org);
+		result = venture_report_generate(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "form_summary"),
+			f->context, period, options, &error);
+		g_assert_no_error(error);
+		json = venture_report_result_to_json(result);
+		rows = json_object_get_array_member(json_node_get_object(json), "rows");
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, i);
+			if (g_strcmp0(json_object_get_string_member(row, "question"), "Personal answer") == 0 &&
+			    g_strcmp0(json_object_get_string_member(row, "answer"), "Not shown") == 0)
+			{
+				g_assert_cmpfloat(json_object_get_double_member(row, "count"), ==, 3);
+				found = TRUE;
+			}
+		}
+		g_assert_true(found);
+	}
+}
+
 /* Enabling the email limit counts responses received before it was enabled,
  * and compares addresses without case. Refused responses trigger no follow-up. */
 static void
@@ -2519,6 +2687,8 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-json", Fixture, NULL, setup, test_http_json, teardown);
 	g_test_add("/forms/http-refusals", Fixture, NULL, setup, test_http_refusals, teardown);
 	g_test_add("/forms/unique-email-sensitive", Fixture, NULL, setup, test_unique_email_sensitive, teardown);
+	g_test_add_func("/forms/rule-vocabulary", test_rule_vocabulary);
+	g_test_add("/forms/rules", Fixture, NULL, setup, test_rules, teardown);
 	g_test_add("/forms/draft-version", Fixture, NULL, setup, test_draft_version, teardown);
 	g_test_add("/forms/draft-privacy", Fixture, NULL, setup, test_draft_privacy, teardown);
 	g_test_add("/forms/multi-page", Fixture, NULL, setup, test_multi_page, teardown);

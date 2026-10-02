@@ -299,6 +299,8 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("answers", "Answer data", "The answers by question key, as stored",
 	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("not-shown", "Questions not shown", "Private branch accounting for aggregate reports",
+	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD("sensitive-answers", "Sensitive answers",
 	              "Answers to sensitive questions, kept apart so they never leave the record",
 	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_TECHNICAL),
@@ -345,3 +347,35 @@ static const VentureFieldDecl venture_form_draft_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormDraft, venture_form_draft, venture_form_draft_fields,
 	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form draft", NULL);)
+
+GType
+venture_form_rule_action_get_type(void)
+{
+	static gsize type_id = 0;
+	if (g_once_init_enter(&type_id))
+	{
+		static const GEnumValue values[] = {
+			{ VENTURE_FORM_RULE_SHOW, "VENTURE_FORM_RULE_SHOW", "show" },
+			{ VENTURE_FORM_RULE_HIDE, "VENTURE_FORM_RULE_HIDE", "hide" },
+			{ VENTURE_FORM_RULE_REQUIRE, "VENTURE_FORM_RULE_REQUIRE", "require" },
+			{ VENTURE_FORM_RULE_JUMP, "VENTURE_FORM_RULE_JUMP", "jump" },
+			{ VENTURE_FORM_RULE_END, "VENTURE_FORM_RULE_END", "end" },
+			{ 0, NULL, NULL }
+		};
+		GType id = g_enum_register_static("VentureFormRuleAction", values);
+		g_once_init_leave(&type_id, id);
+	}
+	return type_id;
+}
+
+static const VentureFieldDecl venture_form_rule_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "A name for this rule"),
+	VENTURE_FIELD_REF("form-id", "Form", "The form this rule belongs to", "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("position", "Order", "First matching navigation rule wins", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("action", "Action", "What happens when the conditions match", venture_form_rule_action_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("target-key", "Target", "Question key, or page-break key for a jump; empty for end", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("conditions", "Conditions", "Array of field, operator and value objects; no expressions or scripts", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("any-condition", "Any condition", "Match any condition instead of requiring all", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormRule, venture_form_rule, venture_form_rule_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form rule", NULL);)
