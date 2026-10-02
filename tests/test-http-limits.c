@@ -6,7 +6,7 @@
 
 /* A real socket must be rejected before either a future plugin route or generic
  * record writer can see its body. Handler-side Content-Length checks miss this. */
-typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; } Fixture;
+typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; guint marked_writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; } Fixture;
 typedef struct { guint port; gchar *request; gchar *response; gint done; GError *error; guint delay; guint timeout; gboolean tls; } Exchange;
 static gchar *exchange(Fixture *f, const gchar *request);
 static gchar *probe(Fixture *f, const gchar *request, guint seconds);
@@ -16,6 +16,7 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	GBytes *body = htmx_request_get_body_bytes(request);
 	(void)params;
 	f->writes++;
+	if (body != NULL && g_bytes_get_size(body) > 0 && ((const gchar *)g_bytes_get_data(body, NULL))[0] == 'y') f->marked_writes++;
 	if (f->nested_request)
 	{
 		const gchar *request_text = f->nested_request;
@@ -319,9 +320,16 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	/* The receive budget and the connection slots survived the abandoned
 	 * attempt: a further full-size request is served, and exactly once. */
 	g_clear_pointer(&response, g_free);
+	g_clear_pointer(&request, g_free);
+	/* The abandoned nested request may dispatch after pump() returns.
+	 * Identify the follow-up itself instead of counting that late request. */
+	body[0] = 'y';
+	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	response = exchange(f, request);
 	g_assert_nonnull(strstr(response, " 200 "));
-	g_assert_cmpuint(f->writes, ==, settled + 1);
+	g_assert_cmpuint(f->marked_writes, ==, 1);
+	g_assert_cmpuint(f->writes, >=, settled + 1);
+	g_assert_cmpuint(f->writes, <=, 3);
 }
 static void test_nested_rejection(Fixture *f, gconstpointer data)
 {

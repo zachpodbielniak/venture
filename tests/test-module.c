@@ -1195,9 +1195,25 @@ test_module_http_disabled_module_is_absent(
 	/* As a type of its own. Other types still carry a reference field
 	 * naming contact, and should: the column is there, only its target
 	 * is off. */
-	g_assert_null(strstr(schema, "\"name\" : \"contact\""));
-	g_assert_null(strstr(schema, "\"name\" : \"ticket\""));
-	g_assert_nonnull(strstr(schema, "\"name\" : \"sale\""));
+	{
+		g_autoptr(JsonNode) description = json_from_string(schema, NULL);
+		JsonArray *types;
+		gboolean sale = FALSE;
+		guint i;
+		g_assert_nonnull(description);
+		g_assert_true(JSON_NODE_HOLDS_ARRAY(description));
+		types = json_node_get_array(description);
+		/* A field named ticket (for example a draft's signed ticket) is
+		 * not evidence that the disabled ticket record type is exposed. */
+		for (i = 0; i < json_array_get_length(types); i++)
+		{
+			const gchar *name = json_object_get_string_member(json_array_get_object_element(types, i), "name");
+			g_assert_cmpstr(name, !=, "contact");
+			g_assert_cmpstr(name, !=, "ticket");
+			if (g_strcmp0(name, "sale") == 0) sale = TRUE;
+		}
+		g_assert_true(sale);
+	}
 }
 
 /*
