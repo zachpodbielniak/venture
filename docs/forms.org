@@ -122,6 +122,53 @@ are you to recommend us (0-10)?". So a form has versions.
 - The form's own texts --- title, introduction, button, thank-you --- are
   not versioned: they change what a page says, not what an answer means.
 
+* Pages and unfinished responses
+
+Insert a =form_field= with =kind=page_break= between questions. Its =label=
+is the next page's heading and its =help= is the introduction. =position=
+orders breaks and questions together; every question belongs to exactly one
+page. Publishing refuses empty pages and more than 32 pages. A page break
+cannot be required or mapped to a lead attribute.
+
+Each Next is a real POST. Only that page's answers are accepted and validated;
+posting an earlier question cannot overwrite its stored value. Back preserves
+the current entries without requiring them to be valid. The final Send
+validates the complete response against the version at which filling began,
+including if the form was republished meanwhile. Closing the form or reaching
+its response limit still stops an in-progress submission.
+
+The hosted form and HTML snippet work without JavaScript. The loader replaces
+the current page in place and moves focus to the error summary or page progress.
+The public schema's =pages= array lists each page's number, title, introduction
+and question keys. Custom clients POST the current answers and retain the
+returned =html='s =_vf_draft= token; JSON intermediate replies also include
+=page=, =pages= and =errors=. =_vf_move=back= requests Back. A successful
+intermediate step has =ok=false= because no response has been submitted yet.
+
+Earlier answers stay on the server in a =form_draft= working copy, never in
+hidden inputs. Its signed token binds the form, published version, expiry and
+current generation. Every step rotates the token; stale, tampered, expired or
+already completed tokens return the same 404 as an unavailable form. Refreshing
+or resubmitting an old page therefore requires starting again. This prevents
+parallel tabs or a replay from submitting the same draft twice.
+
+=draft_minutes= sets the lifetime from the first valid Next (1–1440 minutes;
+0 means 60). It does not extend on activity. Drafts emit no audit or business
+save/delete events, so they cannot trigger automation, webhooks or inbox
+notifications. Their answer and ticket properties are sensitive and absent
+from generic views, API responses and assistant context. Generic create/update
+is refused; only the form service writes working copies.
+
+The bounded retention sweep purges expired drafts as well as expired responses,
+reporting =expired_drafts=. Owner export and erasure by email include drafts.
+Final submission claims the draft before intake; if the process fails during
+that operation, its token remains unavailable rather than risking duplicate
+side effects. Such a draft expires and is swept normally. These short-lived
+step tokens are not cross-device save-and-resume links.
+
+The built-server keyboard walkthrough, including server errors with JavaScript
+off and with the loader, is in [[file:evidence/forms-pages.org][multi-page evidence]].
+
 * Privacy
 
 - *Consent.* A =consent= question is one box whose answer is the words it
@@ -227,11 +274,15 @@ features add names; none is removed.
 | =vf-actions=, =vf-submit=     | the button's container and the button                               |
 | =vf-success=                  | the thank-you, =role="status"=                                      |
 | =vf-privacy=                  | the privacy notice link                                             |
-| =vf-page=                     | the hosted page's =<main>=                                          |
+| =vf-page=                     | a current page section, and the hosted page's =<main>=                                          |
 
 Element ids are =vf-TOKEN-KEY= for an input, with =-help= and =-error=
 for its texts, and =vf-TOKEN-KEY--CHOICE= for each box of a choice or
 scale question.
+
+| =vf-progress=                 | current page and total; a focusable status message |
+| =vf-next=, =vf-back=           | real submit buttons for page navigation |
+| =vf-page-intro= | a page break's heading and introduction |
 
 ** Accessibility
 
@@ -268,8 +319,7 @@ and thanked, bare and as a whole page, on every build:
 *Keyboard and screen-reader patterns.* A rating is a group of native
 radio buttons: Tab reaches the group, the arrow keys move between points,
 Space picks, and the legend names the question. A multiple choice is
-native checkboxes, each its own Tab stop. Later question types (the page
-progress of a multi-page form, repeating groups, the booking slot picker)
+native checkboxes, each its own Tab stop. Later question types (repeating groups and the booking slot picker)
 write their pattern here as they are added.
 
 *The loader* never traps focus: it only moves it to the summary or the
@@ -437,6 +487,9 @@ venturectl list form_submission form_id=3
 #+end_src
 
 * Upgrading
+
+Migration =000760= checks the metadata-created draft table and draft lifetime
+column on SQLite and PostgreSQL; it is safe when the forms module is disabled.
 
 Migration =000741_form_marketing_consent= leaves existing questions without
 marketing permission; it never converts historical acknowledgements into

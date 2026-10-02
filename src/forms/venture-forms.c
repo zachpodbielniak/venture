@@ -25,6 +25,9 @@
 #define VENTURE_FORMS_DEFAULT_FILL_SECONDS 3
 #define VENTURE_FORMS_ANONYMISING_KEY "venture-forms-anonymising"
 
+static gboolean forms_validate_draft(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error);
+
 static gboolean forms_check_published(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, GError **error);
 
@@ -164,6 +167,11 @@ forms_validate_form(
 			venture_set_error_validation(error, "Closes at", "must be after Opens at");
 			return FALSE;
 		}
+	}
+	if (venture_forms_get_int(entity, "draft-minutes") < 0 || venture_forms_get_int(entity, "draft-minutes") > 1440)
+	{
+		venture_set_error_validation(error, "Draft lifetime", "must be 0..1440 minutes");
+		return FALSE;
 	}
 	if (venture_forms_get_int(entity, "response-limit") < 0)
 	{
@@ -404,6 +412,12 @@ forms_validate_field(
 
 	/* --- Settings that have to mean something --- */
 
+	if (kind == VENTURE_FORM_FIELD_PAGE_BREAK &&
+	    (venture_forms_get_bool(entity, "required") || !venture_string_is_empty(maps)))
+	{
+		venture_set_error_validation(error, "Page break", "cannot be required or mapped to a lead");
+		return FALSE;
+	}
 	if (kind == VENTURE_FORM_FIELD_CONSENT)
 	{
 		g_autofree gchar *default_value = venture_forms_get_string(entity, "default-value");
@@ -836,6 +850,8 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_submission, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_VERSION,
 	                                    forms_validate_version, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_DRAFT_RECORD,
+	                                    forms_validate_draft, NULL, NULL);
 	forms_register_actions(database);
 }
 
@@ -1377,6 +1393,11 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 	glong length;
 	guint i;
 
+	if (kind == VENTURE_FORM_FIELD_PAGE_BREAK)
+	{
+		if (values != NULL && values->len > 0) forms_refuse(errors, key, "A page heading does not accept an answer.");
+		return;
+	}
 	if (max_length <= 0)
 		max_length = forms_default_max_length(kind);
 
@@ -2084,6 +2105,9 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	return TRUE;
 }
 
+/* Private intermediate-state service; shares field validation and final intake. */
+#include "venture-forms-pages.inc"
+
 /* ==========================================================================
  * Publishing
  * ========================================================================== */
@@ -2123,6 +2147,34 @@ venture_forms_publish(VentureDatabase *database, VentureEntity *form, const Vent
 		venture_set_error_validation(error, "Questions",
 			"add at least one question before publishing");
 		goto fail;
+	}
+	{
+		guint i;
+		gboolean empty = TRUE;
+		if (venture_forms_page_count(fields) > 32)
+		{
+			venture_set_error_validation(error, "Pages", "at most 32 pages are supported");
+			goto fail;
+		}
+		for (i = 0; i < fields->len; i++)
+		{
+			VentureFormsField *field = g_ptr_array_index(fields, i);
+			if (field->kind == VENTURE_FORM_FIELD_PAGE_BREAK)
+			{
+				if (empty)
+				{
+					venture_set_error_validation(error, "Pages", "every page needs a question");
+					goto fail;
+				}
+				empty = TRUE;
+			}
+			else empty = FALSE;
+		}
+		if (empty)
+		{
+			venture_set_error_validation(error, "Pages", "the final page needs a question");
+			goto fail;
+		}
 	}
 	definition = venture_forms_definition_to_json(fields);
 
@@ -2241,7 +2293,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(VentureQuery) forms = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
-	gint64 anonymised = 0, purged = 0;
+	gint64 anonymised = 0, purged = 0, drafts = 0;
 	guint budget, i;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -2290,7 +2342,27 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		}
 	}
 
+	if (budget > 0)
+	{
+		g_autoptr(VentureQuery) expired_query = venture_query_new(VENTURE_TYPE_FORM_DRAFT_RECORD);
+		g_autoptr(GPtrArray) expired = NULL;
+		g_autofree gchar *cutoff = venture_time_to_string(now);
+		venture_query_set_organization(expired_query, organization_id);
+		venture_query_set_include_deleted(expired_query, TRUE);
+		venture_query_set_limit(expired_query, budget);
+		venture_query_add_filter_string(expired_query, "expires-at", VENTURE_FILTER_OP_LTE, cutoff, NULL);
+		expired = venture_database_find(database, expired_query, error);
+		if (expired == NULL) return NULL;
+		for (i = 0; i < expired->len; i++, budget--)
+		{
+			if (!venture_database_purge(database, g_ptr_array_index(expired, i), actor, error)) return NULL;
+			drafts++;
+		}
+	}
+
 	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "expired_drafts");
+	json_builder_add_int_value(builder, drafts);
 	json_builder_set_member_name(builder, "anonymised");
 	json_builder_add_int_value(builder, anonymised);
 	json_builder_set_member_name(builder, "purged");
@@ -2396,6 +2468,24 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 	}
 
 	{
+		g_autoptr(VentureQuery) draft_query = venture_query_new(VENTURE_TYPE_FORM_DRAFT_RECORD);
+		g_autoptr(GPtrArray) drafts = NULL;
+		venture_query_set_organization(draft_query, organization_id);
+		venture_query_set_include_deleted(draft_query, TRUE);
+		venture_query_set_limit(draft_query, 0);
+		drafts = venture_database_find(database, draft_query, error);
+		if (drafts == NULL) goto fail;
+		for (i = 0; i < drafts->len; i++)
+		{
+			VentureEntity *draft = g_ptr_array_index(drafts, i);
+			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
+			if (!forms_answers_mention(text, wanted)) continue;
+			if (!venture_database_purge(database, draft, actor, error)) goto fail;
+			erased++;
+		}
+	}
+
+	{
 		g_autoptr(VentureAuditEntry) entry = NULL;
 		g_autoptr(JsonNode) diff = json_from_string("{}", NULL);
 
@@ -2489,6 +2579,31 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 		json_builder_end_object(builder);
 	}
 	json_builder_end_array(builder);
+	{
+		g_autoptr(VentureQuery) draft_query = venture_query_new(VENTURE_TYPE_FORM_DRAFT_RECORD);
+		g_autoptr(GPtrArray) drafts = NULL;
+		venture_query_set_organization(draft_query, organization_id);
+		venture_query_set_include_deleted(draft_query, TRUE);
+		venture_query_set_limit(draft_query, 0);
+		drafts = venture_database_find(database, draft_query, error);
+		if (drafts == NULL) return NULL;
+		json_builder_set_member_name(builder, "drafts");
+		json_builder_begin_array(builder);
+		for (i = 0; i < drafts->len; i++)
+		{
+			VentureEntity *draft = g_ptr_array_index(drafts, i);
+			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
+			if (!forms_answers_mention(text, wanted)) continue;
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "form_id");
+			json_builder_add_int_value(builder, venture_forms_get_int(draft, "form-id"));
+			json_builder_set_member_name(builder, "answers");
+			json_builder_add_value(builder, json_from_string(text, NULL));
+			json_builder_end_object(builder);
+		}
+		json_builder_end_array(builder);
+	}
+
 	json_builder_end_object(builder);
 	return json_builder_get_root(builder);
 }

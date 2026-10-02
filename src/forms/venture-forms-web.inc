@@ -13,6 +13,8 @@
  * forms_web_missing() page, byte for byte.
  */
 
+#include "venture-forms-private.h"
+
 /* A form's hourly bucket, rebuilt when its limit is changed. */
 typedef struct
 {
@@ -495,8 +497,52 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 
 	/* A robot is told it succeeded. Telling it why it did not would teach
 	 * it which of the two guards to get past. */
-	if (!venture_forms_screen(form, answers, now))
+	if (!g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN) && !venture_forms_screen(form, answers, now))
 		return forms_web_accepted(form, json, allow_origin);
+
+	{
+		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
+		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, NULL);
+		if (g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN) ||
+		    (fields != NULL && venture_forms_page_count(fields) > 1))
+		{
+			g_autoptr(VentureFormsStep) step = venture_forms_step(database, form, answers, origin, now, &error);
+			g_autofree gchar *html = NULL;
+			VentureFormsRender options;
+			if (step == NULL)
+			{
+				if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return forms_web_missing();
+				return forms_web_status(500, "The page could not be saved; please try again.");
+			}
+			if (step->complete) return forms_web_accepted(form, json, allow_origin);
+			action = forms_web_action(self, form, json);
+			options.mode = json ? VENTURE_FORMS_RENDER_FRAGMENT : VENTURE_FORMS_RENDER_HOSTED;
+			options.action = action;
+			options.ticket = step->ticket;
+			options.values = step->values;
+			options.errors = step->errors;
+			options.version = step->version;
+			html = venture_forms_render_step(database, form, &options, step, &error);
+			if (html == NULL) return forms_web_missing();
+			status = json_object_get_size(step->errors) > 0 ? 422 : 200;
+			if (json)
+			{
+				g_autoptr(JsonNode) result = json_node_new(JSON_NODE_OBJECT);
+				g_autoptr(JsonObject) object = json_object_new();
+				HtmxResponse *response;
+				json_object_set_boolean_member(object, "ok", FALSE);
+				json_object_set_string_member(object, "html", html);
+				json_object_set_int_member(object, "page", step->page + 1);
+				json_object_set_int_member(object, "pages", step->pages);
+				json_object_set_object_member(object, "errors", json_object_ref(step->errors));
+				json_node_set_object(result, object);
+				response = forms_web_json(result, status);
+				forms_web_common(response, allow_origin);
+				return response;
+			}
+			return forms_web_html(form, g_steal_pointer(&html), status, allow_origin, TRUE);
+		}
+	}
 
 	if (!venture_forms_submit(database, form, answers, origin, now, &outcome, NULL, &errors, &error))
 	{

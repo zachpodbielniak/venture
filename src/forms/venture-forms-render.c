@@ -180,6 +180,15 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	kind_class = g_strdup(nick);
 	g_strdelimit(kind_class, "_", '-');
 
+	if (VENTURE_FORM_FIELD_PAGE_BREAK == kind)
+	{
+		g_string_append(html, "<div class=\"vf-page-intro\"><h2>");
+		forms_escape(html, field->label);
+		g_string_append(html, "</h2>");
+		forms_paragraphs(html, field->help);
+		g_string_append(html, "</div>");
+		return;
+	}
 	if (VENTURE_FORM_FIELD_HIDDEN == kind)
 	{
 		g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" data-vf-field=\"%s\" "
@@ -480,12 +489,19 @@ gchar *
 venture_forms_render(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, GError **error)
 {
-	g_autoptr(GPtrArray) fields = NULL;
+	return venture_forms_render_step(database, form, options, NULL, error);
+}
+
+gchar *
+venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
+	const VentureFormsRender *options, const VentureFormsStep *step, GError **error)
+{
+	g_autoptr(GPtrArray) fields = NULL, selected = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autofree gchar *token = NULL, *title = NULL, *description = NULL, *submit = NULL;
 	g_autofree gchar *prefix = NULL, *action = NULL;
 	gboolean hosted, preview;
-	guint i;
+	guint i, pages, page = step != NULL ? step->page : 0;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	g_return_val_if_fail(VENTURE_IS_FORM(form), NULL);
@@ -507,6 +523,8 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 	hosted = (VENTURE_FORMS_RENDER_HOSTED == options->mode) ||
 	         (VENTURE_FORMS_RENDER_HOSTED_BASIC == options->mode);
 	preview = (VENTURE_FORMS_RENDER_PREVIEW == options->mode);
+	pages = venture_forms_page_count(fields);
+	selected = preview ? g_ptr_array_ref(fields) : venture_forms_page_fields(fields, page);
 
 	html = g_string_new(NULL);
 	if (hosted)
@@ -535,11 +553,13 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 		g_string_append(html, "</div>");
 	}
 
-	forms_render_summary(html, prefix, fields, options, hosted);
+	if (pages > 1)
+		g_string_append_printf(html, "<section class=\"vf-page\" aria-label=\"Page %u\"><p class=\"vf-progress\" role=\"status\" tabindex=\"-1\">Page %u of %u</p>", page + 1, page + 1, pages);
+	forms_render_summary(html, prefix, selected, options, hosted);
 
-	for (i = 0; i < fields->len; i++)
+	for (i = 0; i < selected->len; i++)
 	{
-		const VentureFormsField *field = g_ptr_array_index(fields, i);
+		const VentureFormsField *field = g_ptr_array_index(selected, i);
 
 		if (field->required && VENTURE_FORM_FIELD_HIDDEN != field->kind)
 		{
@@ -551,8 +571,16 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 		}
 	}
 
-	for (i = 0; i < fields->len; i++)
-		forms_render_field(html, prefix, g_ptr_array_index(fields, i), options);
+	for (i = 0; i < selected->len; i++)
+		forms_render_field(html, prefix, g_ptr_array_index(selected, i), options);
+
+	if (pages > 1) g_string_append(html, "</section>");
+	if (step != NULL && step->token != NULL)
+	{
+		g_string_append(html, "<input type=\"hidden\" name=\"" VENTURE_FORMS_DRAFT_TOKEN "\" value=\"");
+		forms_escape(html, step->token);
+		g_string_append(html, "\">");
+	}
 
 	/* Hidden with the attribute, which every browser honours with no
 	 * stylesheet at all; a page that overrides [hidden] must hide .vf-hp. */
@@ -579,11 +607,14 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 			g_string_append(html, "\">Privacy notice</a></p>");
 		}
 	}
-	g_string_append(html, "<div class=\"vf-actions\"><button class=\"vf-submit\" type=\"submit\"");
+	g_string_append(html, "<div class=\"vf-actions\">");
+	if (page > 0)
+		g_string_append(html, "<button class=\"vf-back\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"back\" formnovalidate>Back</button>");
+	g_string_append_printf(html, "<button class=\"vf-submit%s\" type=\"submit\"", !preview && page + 1 < pages ? " vf-next" : "");
 	if (preview)
 		g_string_append(html, " disabled");
 	g_string_append_c(html, '>');
-	forms_escape(html, venture_string_is_empty(submit) ? "Send" : submit);
+	forms_escape(html, !preview && page + 1 < pages ? "Next" : (venture_string_is_empty(submit) ? "Send" : submit));
 	g_string_append(html, "</button></div></form>");
 
 	if (hosted)
@@ -680,6 +711,30 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 	json_builder_add_string_value(builder, VENTURE_FORMS_TICKET);
 	json_builder_set_member_name(builder, "ticket");
 	json_builder_add_string_value(builder, ticket);
+	json_builder_set_member_name(builder, "pages");
+	json_builder_begin_array(builder);
+	for (i = 0; i < venture_forms_page_count(fields); i++)
+	{
+		g_autoptr(GPtrArray) page_fields = venture_forms_page_fields(fields, i);
+		VentureFormsField *heading = page_fields->len > 0 ? g_ptr_array_index(page_fields, 0) : NULL;
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "title");
+		json_builder_add_string_value(builder, heading != NULL && heading->kind == VENTURE_FORM_FIELD_PAGE_BREAK ? heading->label : (title ? title : ""));
+		json_builder_set_member_name(builder, "introduction");
+		json_builder_add_string_value(builder, heading != NULL && heading->kind == VENTURE_FORM_FIELD_PAGE_BREAK ? (heading->help ? heading->help : "") : (description ? description : ""));
+		json_builder_set_member_name(builder, "number");
+		json_builder_add_int_value(builder, i + 1);
+		json_builder_set_member_name(builder, "fields");
+		json_builder_begin_array(builder);
+		for (j = 0; j < page_fields->len; j++)
+		{
+			VentureFormsField *field = g_ptr_array_index(page_fields, j);
+			if (field->kind != VENTURE_FORM_FIELD_PAGE_BREAK) json_builder_add_string_value(builder, field->key);
+		}
+		json_builder_end_array(builder);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
 	for (i = 0; i < fields->len; i++)

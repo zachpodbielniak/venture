@@ -5,7 +5,7 @@
 * What is checked, and by what
 
 - =/forms/a11y-contract= (=tests/test-forms.c=, in =make test=): a
-  structural checker over libxml2's parse of every field kind (all twelve,
+  structural checker over libxml2's parse of every answer field kind (
   alternating required, some with help), in five renderings: the bare
   fragment, the hosted page, the hosted page with every question refused
   and one unknown name, and the thank-you bare and as a page. It fails on
@@ -42,5 +42,6 @@ ok thanks.html: 0 violation(s), 14 rule(s) passed
 * What is not claimed here
 
 No human screen-reader session and no cross-browser certification. The
-keyboard-only walkthrough of a multi-page form with an error is recorded
-when multi-page forms land.
+keyboard-only walkthrough of a multi-page form with server errors, both with
+JavaScript disabled and with the loader, is recorded in
+[[file:forms-pages.org][the built-server multi-page evidence]].

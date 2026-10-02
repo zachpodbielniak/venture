@@ -120,6 +120,9 @@
 		form.addEventListener("submit", function (event) {
 			var button = form.querySelector(".vf-submit");
 			var body = new URLSearchParams(new FormData(form));
+			if (event.submitter && event.submitter.name) {
+				body.append(event.submitter.name, event.submitter.value);
+			}
 
 			event.preventDefault();
 			if (form.ventureSending) {
@@ -141,6 +144,18 @@
 					return { ok: false, message: "The form could not be sent. Please try again." };
 				});
 			}).then(function (result) {
+				if (result.html) {
+					var holder = document.createElement("template");
+					holder.innerHTML = result.html;
+					var next = holder.content.querySelector("form.vf-form");
+					if (!next) { throw new Error("invalid page"); }
+					form.replaceWith(next);
+					wire(next);
+					var focus = next.querySelector(".vf-errors:not([hidden])") ||
+						next.querySelector(".vf-progress") || next.querySelector(".vf-input");
+					if (focus) { focus.focus(); }
+					return;
+				}
 				if (result.ok && result.redirect) {
 					window.location.assign(result.redirect);
 					return;

@@ -1751,6 +1751,12 @@ downward goal reads as done before it starts.
 
 Module `forms` (requires only `core`; suggests `leads`, `mail` and `marketing`). Check
 `venturectl describe form`, `describe form_field`, `describe form_submission`.
+For multiple pages, insert a `form_field kind=page_break` between questions by
+`position`; its label/help introduce the next page. Publish refuses empty pages.
+`form draft_minutes=60` controls unfinished-response lifetime (0 also means 60).
+`form_draft` is service-owned: do not create/update it. Its sensitive answers
+are absent from generic reads. Retention sweep removes expired drafts within
+its limit and reports `expired_drafts`; owner export/erasure includes them.
 
 - `form`: `name` (internal), `title`/`description`/`submit_label`/
   `success_message` (public), `state` (`draft` default, `live`, `closed`),

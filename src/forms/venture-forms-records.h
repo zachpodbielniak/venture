@@ -59,6 +59,7 @@ GType venture_form_state_get_type(void) G_GNUC_CONST;
  * @VENTURE_FORM_FIELD_CHECKBOX: one yes-or-no box
  * @VENTURE_FORM_FIELD_RATING: a whole number on a scale
  * @VENTURE_FORM_FIELD_HIDDEN: a value the page supplies, not the person
+ * @VENTURE_FORM_FIELD_PAGE_BREAK: starts a new page, with a heading and introduction
  * @VENTURE_FORM_FIELD_CONSENT: one box that records a permission: the
  *   exact wording shown, the version and the time, and nothing when it is
  *   left unticked
@@ -82,7 +83,8 @@ typedef enum
 	VENTURE_FORM_FIELD_CHECKBOX,
 	VENTURE_FORM_FIELD_RATING,
 	VENTURE_FORM_FIELD_HIDDEN,
-	VENTURE_FORM_FIELD_CONSENT
+	VENTURE_FORM_FIELD_CONSENT,
+	VENTURE_FORM_FIELD_PAGE_BREAK
 } VentureFormFieldKind;
 
 /**
@@ -101,6 +103,15 @@ VENTURE_DECLARE_ENTITY(VentureFormField, venture_form_field, FORM_FIELD)
 
 #define VENTURE_TYPE_FORM_VERSION (venture_form_version_get_type())
 VENTURE_DECLARE_ENTITY(VentureFormVersion, venture_form_version, FORM_VERSION)
+
+#define VENTURE_TYPE_FORM_DRAFT_RECORD (venture_form_draft_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormDraft, venture_form_draft, FORM_DRAFT_RECORD)
+
+/**
+ * venture_form_draft_new:
+ *
+ * Returns: (transfer full): an unsaved intermediate response, owned by the forms service
+ */
 
 #define VENTURE_TYPE_FORM_SUBMISSION (venture_form_submission_get_type())
 VENTURE_DECLARE_ENTITY(VentureFormSubmission, venture_form_submission, FORM_SUBMISSION)

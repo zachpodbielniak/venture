@@ -1,0 +1,61 @@
+#+title: Multi-page forms demonstration
+
+* Built server, keyboard input
+
+Chromium 153 through Playwright, a disposable SQLite instance on loopback,
+synthetic addresses, no AI, plugins or automation. The server's normal public
+HTTP routes handled every step. A three-page form asked for name, email and
+consent. The embed host was a separate HTTP origin. Tab, typing, Space and Enter
+were the only input actions; assertions inspected the DOM and stored responses.
+
+A repeated email deliberately caused a server-side final-validation error.
+Both the loader and the script-free hosted form returned to page 2 and focused
+the error summary. Correcting the email and continuing created one response,
+not a response for each attempted submission.
+
+#+begin_example
+JavaScript disabled, keyboard only
+Next: page 2; earlier answers absent from HTML
+Back: page 1 retains name
+Next: page 3; prior email retained after Back
+Send: success
+Loader, keyboard only
+Next: page 2; earlier answers absent from HTML
+Back: page 1 retains name
+Next: page 3; prior email retained after Back
+axe: zero WCAG A/AA violations on final page
+Duplicate email: server returns page 2 with a focusable error summary
+Send: success
+JavaScript disabled, keyboard only
+Next: page 2; earlier answers absent from HTML
+Back: page 1 retains name
+Next: page 3; prior email retained after Back
+Duplicate email: server returns page 2 with a focusable error summary
+Send: success
+PASS: exactly three final responses, one per complete walkthrough
+Isolated server: http://127.0.0.1:59791
+Binary SHA256: 4f6462ad4e6d65dc97b0558ac889722d4383e4cf6f1f4a691a0c428ab83fd479
+#+end_example
+
+* Automated markup checks
+
+The forms GTest suite checks every intermediate rendering, token tampering,
+replay, attempts to alter earlier answers, expiry, privacy export/erasure and
+absence of audit/business signals for unfinished pages. The all-question-kind
+fixture excludes structural breaks; the multi-page test exercises those.
+axe-core in jsdom checked both fixtures (colour contrast excluded there):
+
+#+begin_example
+ok bare-thanks.html: 0 violation(s), 12 rule(s) passed
+ok blank.html: 0 violation(s), 29 rule(s) passed
+ok multi-page-0.html: 0 violation(s), 30 rule(s) passed
+ok multi-page-1.html: 0 violation(s), 30 rule(s) passed
+ok multi-page-2.html: 0 violation(s), 29 rule(s) passed
+ok multi-page-3.html: 0 violation(s), 30 rule(s) passed
+ok multi-page-4.html: 0 violation(s), 29 rule(s) passed
+ok page.html: 0 violation(s), 31 rule(s) passed
+ok refused.html: 0 violation(s), 34 rule(s) passed
+ok thanks.html: 0 violation(s), 14 rule(s) passed
+#+end_example
+
+No human screen-reader session or cross-browser certification is claimed.

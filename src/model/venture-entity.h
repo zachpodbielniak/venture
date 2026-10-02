@@ -560,6 +560,24 @@ venture_entity_class_get_field_order(
 );
 
 /**
+ * venture_entity_class_set_working_copy:
+ * @klass: a #VentureEntityClass
+ *
+ * Marks a service-owned intermediate record type. Its writes still obey
+ * validation and concurrency rules, but emit no audit or business signals.
+ * Use only for disposable drafts, never completed business records.
+ */
+void venture_entity_class_set_working_copy(VentureEntityClass *klass);
+
+/**
+ * venture_entity_is_working_copy:
+ * @self: a #VentureEntity
+ *
+ * Returns: whether the type stores intermediate state without business events
+ */
+gboolean venture_entity_is_working_copy(VentureEntity *self);
+
+/**
  * venture_entity_class_set_labels:
  * @klass: a #VentureEntityClass
  * @singular: what one record is called, in sentence case: "Form submission"

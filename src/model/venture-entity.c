@@ -491,6 +491,24 @@ venture_entity_class_set_labels(
 	                 venture_entity_labels_quark(), labels);
 }
 
+void
+venture_entity_class_set_working_copy(VentureEntityClass *klass)
+{
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass),
+		g_quark_from_static_string("venture-working-copy"), GINT_TO_POINTER(1));
+}
+
+gboolean
+venture_entity_is_working_copy(VentureEntity *self)
+{
+	GType type;
+	g_return_val_if_fail(VENTURE_IS_ENTITY(self), FALSE);
+	for (type = G_OBJECT_TYPE(self); type != VENTURE_TYPE_ENTITY; type = g_type_parent(type))
+		if (g_type_get_qdata(type, g_quark_from_static_string("venture-working-copy"))) return TRUE;
+	return FALSE;
+}
+
 static GQuark
 venture_entity_audit_private_quark(void)
 {

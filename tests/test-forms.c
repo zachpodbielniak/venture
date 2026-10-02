@@ -11,6 +11,7 @@
  */
 
 #include <venture.h>
+#include "../src/forms/venture-forms-private.h"
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
@@ -803,6 +804,239 @@ test_http_refusals(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
 }
 
+static gchar *a11y_check(const gchar *html);
+static void a11y_keep(const gchar *name, const gchar *html);
+
+static gchar *
+page_token(const gchar *html)
+{
+	const gchar *start = strstr(html, "name=\"_vf_draft\" value=\"");
+	const gchar *end;
+	g_autofree gchar *problems = a11y_check(html);
+	static guint rendering = 0;
+	g_autofree gchar *name = g_strdup_printf("multi-page-%u.html", rendering++);
+	g_assert_cmpstr(problems, ==, "");
+	a11y_keep(name, html);
+	g_assert_nonnull(start);
+	start += strlen("name=\"_vf_draft\" value=\"");
+	end = strchr(start, '"');
+	g_assert_nonnull(end);
+	return g_strndup(start, (gsize)(end - start));
+}
+
+static void
+page_saved(VentureDatabase *db, VentureEntity *entity, gboolean created, gpointer data)
+{
+	(void)db; (void)entity; (void)created;
+	(*(guint *)data)++;
+}
+
+static void
+page_audit(VentureDatabase *db, VentureEntity *entity, gpointer data)
+{
+	(void)db; (void)entity;
+	(*(guint *)data)++;
+}
+
+/* An unfinished page is server-side state, never a submitted response. */
+static void
+test_multi_page(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "pages-form", VENTURE_FORM_LIVE);
+	GEnumClass *kinds = g_type_class_ref(VENTURE_TYPE_FORM_FIELD_KIND);
+	GEnumValue *page_break = g_enum_get_value_by_nick(kinds, "page_break");
+	g_autofree gchar *ticket = NULL;
+	g_autofree gchar *body = NULL, *token = NULL, *old = NULL;
+	guint saves = 0, audits = 0;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	g_assert_nonnull(page_break);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "page_two", "Contact", page_break->value, FALSE, 2);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 3);
+	add_field(f, form, "page_three", "Confirmation", page_break->value, FALSE, 4);
+	add_field(f, form, "agree", "I agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 5);
+	g_type_class_unref(kinds);
+	g_object_unref(publish(f, form));
+	start_http(f);
+	request(f, "/pub/form/pages-form", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "name=\"name\""));
+	g_assert_null(strstr(reply.body, "name=\"email\""));
+	g_assert_nonnull(strstr(reply.body, "vf-next"));
+	reply_clear(&reply);
+	ticket = old_ticket(form);
+	/* An empty draft parameter cannot bypass the initial fill-time screen. */
+	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", "_vf_draft=&name=Robot"), ==, 404);
+	g_signal_connect(f->db, "entity-saved", G_CALLBACK(page_saved), &saves);
+	g_signal_connect(f->db, "audit", G_CALLBACK(page_audit), &audits);
+	body = g_strdup_printf("%s&name=Alice", ticket);
+	request(f, "/pub/form/pages-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "name=\"email\""));
+	g_assert_nonnull(strstr(reply.body, "name=\"_vf_draft\""));
+	g_assert_null(strstr(reply.body, "Alice"));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpuint(saves, ==, 0);
+	g_assert_cmpuint(audits, ==, 0);
+	token = page_token(reply.body);
+	reply_clear(&reply);
+	old = g_strdup(token);
+	old[strlen(old) - 1] = old[strlen(old) - 1] == 'a' ? 'b' : 'a';
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&email=alice%%40example.com", old);
+	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, 404);
+	/* The client may not overwrite earlier answers while posting this page. */
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&email=alice%%40example.com&name=Mallory", token);
+	request(f, "/pub/form/pages-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422);
+	g_free(token); token = page_token(reply.body);
+	reply_clear(&reply);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&email=alice%%40example.com", token);
+	request(f, "/pub/form/pages-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "name=\"agree\""));
+	g_free(token); token = page_token(reply.body);
+	reply_clear(&reply);
+	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, 404);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&_vf_move=back", token);
+	request(f, "/pub/form/pages-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "alice@example.com"));
+	g_free(token); token = page_token(reply.body);
+	reply_clear(&reply);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&email=alice%%40example.com", token);
+	request(f, "/pub/form/pages-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_free(token); token = page_token(reply.body);
+	reply_clear(&reply);
+	g_assert_cmpuint(saves, ==, 0);
+	g_assert_cmpuint(audits, ==, 0);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&agree=on", token);
+	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, 200);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+	g_assert_cmpuint(saves, >, 0);
+	g_assert_cmpuint(audits, >, 0);
+	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, 404);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+		g_autoptr(VentureEntity) response = venture_database_find_one(f->db, q, NULL);
+		g_autofree gchar *text = venture_forms_get_string(response, "answers");
+		g_assert_nonnull(strstr(text, "Alice"));
+		g_assert_null(strstr(text, "Mallory"));
+	}
+	g_signal_handlers_disconnect_by_data(f->db, &saves);
+	g_signal_handlers_disconnect_by_data(f->db, &audits);
+}
+
+static void
+test_draft_privacy(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "private-draft", VENTURE_FORM_LIVE);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) later = g_date_time_add_hours(now, 2);
+	g_autoptr(VentureFormsStep) step = NULL, refused = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) exported = NULL, swept = NULL, erased = NULL;
+	g_autofree gchar *ticket = NULL;
+	(void)data;
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 1);
+	add_field(f, form, "next", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 2);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 3);
+	g_object_unref(publish(f, form));
+	ticket = venture_forms_ticket_new(form, now);
+	venture_forms_answers_add(answers, "_vf_t", ticket);
+	venture_forms_answers_add(answers, "email", "private@example.com");
+	step = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(step);
+	exported = venture_forms_export_person(f->db, f->org, "private@example.com", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(exported), "drafts")), ==, 1);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_FORM_DRAFT_RECORD);
+		g_autoptr(VentureEntity) draft = venture_database_find_one(f->db, q, NULL);
+		g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(draft), FALSE);
+		g_autofree gchar *json = json_to_string(node, FALSE);
+		g_assert_null(strstr(json, "private@example.com"));
+	}
+	g_hash_table_remove_all(answers);
+	venture_forms_answers_add(answers, "_vf_draft", step->token);
+	venture_forms_answers_add(answers, "name", "Alice");
+	refused = venture_forms_step(f->db, form, answers, NULL, later, &error);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+	/* A generic soft delete must not leave private draft bytes outside cleanup. */
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_FORM_DRAFT_RECORD);
+		g_autoptr(VentureEntity) draft = venture_database_find_one(f->db, q, NULL);
+		g_assert_true(venture_database_delete(f->db, draft, NULL, &error));
+		g_assert_no_error(error);
+	}
+	swept = venture_forms_retention_sweep(f->db, f->org, 1, later, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(swept), "expired_drafts"), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+	g_hash_table_remove_all(answers);
+	venture_forms_answers_add(answers, "_vf_t", ticket);
+	venture_forms_answers_add(answers, "email", "private@example.com");
+	g_clear_pointer(&step, venture_forms_step_free);
+	step = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(step);
+	erased = venture_forms_erase_person(f->db, f->org, "private@example.com", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(erased);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+}
+
+/* Publishing a new questionnaire must not change the contract mid-fill. */
+static void
+test_draft_version(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "draft-version", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) version = NULL, forged = VENTURE_ENTITY(venture_form_draft_new());
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureFormsStep) first = NULL, last = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL;
+	(void)data;
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "next", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 2);
+	/* Empty pages would strand a visitor and are refused at publication. */
+	version = venture_forms_publish(f->db, form, NULL, &error);
+	g_assert_null(version);
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 3);
+	version = publish(f, form);
+	ticket = venture_forms_ticket_new(form, now);
+	venture_forms_answers_add(answers, "_vf_t", ticket);
+	venture_forms_answers_add(answers, "name", "Alice");
+	first = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(first);
+	add_field(f, form, "new_question", "New required question", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 4);
+	g_object_unref(publish(f, form));
+	g_hash_table_remove_all(answers);
+	venture_forms_answers_add(answers, "_vf_draft", first->token);
+	venture_forms_answers_add(answers, "email", "alice@example.com");
+	last = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(last);
+	g_assert_true(last->complete);
+	g_assert_cmpint(venture_entity_get_id(last->version), ==, venture_entity_get_id(version));
+	venture_entity_set_organization_id(forged, f->org);
+	g_object_set(forged, "name", "Forged draft", "form-id", venture_entity_get_id(form),
+		"version-id", venture_entity_get_id(version), NULL);
+	g_assert_false(venture_database_save(f->db, forged, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "public form service"));
+}
+
 /* Enabling the email limit counts responses received before it was enabled,
  * and compares addresses without case. Refused responses trigger no follow-up. */
 static void
@@ -1387,6 +1621,9 @@ every_kind_form(Fixture *f, const gchar *token)
 	for (i = 0; i < klass->n_values; i++)
 	{
 		GEnumValue *value = &klass->values[i];
+		/* Structural page breaks are exercised by the multi-page walkthrough. */
+		if (value->value == VENTURE_FORM_FIELD_PAGE_BREAK)
+			continue;
 		g_autofree gchar *key = g_strdup(value->value_nick);
 		g_autoptr(VentureEntity) field = make_field(f, form, key, value->value_nick,
 			(VentureFormFieldKind)value->value, i % 2 == 0, (gint64)i);
@@ -2282,6 +2519,9 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-json", Fixture, NULL, setup, test_http_json, teardown);
 	g_test_add("/forms/http-refusals", Fixture, NULL, setup, test_http_refusals, teardown);
 	g_test_add("/forms/unique-email-sensitive", Fixture, NULL, setup, test_unique_email_sensitive, teardown);
+	g_test_add("/forms/draft-version", Fixture, NULL, setup, test_draft_version, teardown);
+	g_test_add("/forms/draft-privacy", Fixture, NULL, setup, test_draft_privacy, teardown);
+	g_test_add("/forms/multi-page", Fixture, NULL, setup, test_multi_page, teardown);
 	g_test_add("/forms/unique-email", Fixture, NULL, setup, test_unique_email, teardown);
 	g_test_add("/forms/last-slot", Fixture, NULL, setup, test_last_slot, teardown);
 	g_test_add("/forms/schedule", Fixture, NULL, setup, test_schedule, teardown);

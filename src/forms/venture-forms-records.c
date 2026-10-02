@@ -51,6 +51,7 @@ venture_form_field_kind_get_type(void)
 			{ VENTURE_FORM_FIELD_RATING, "VENTURE_FORM_FIELD_RATING", "rating" },
 			{ VENTURE_FORM_FIELD_HIDDEN, "VENTURE_FORM_FIELD_HIDDEN", "hidden" },
 			{ VENTURE_FORM_FIELD_CONSENT, "VENTURE_FORM_FIELD_CONSENT", "consent" },
+			{ VENTURE_FORM_FIELD_PAGE_BREAK, "VENTURE_FORM_FIELD_PAGE_BREAK", "page_break" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureFormFieldKind", values);
@@ -96,6 +97,8 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("redirect-url", "Redirect to",
 	              "Optional: an https:// page to send people to instead of the message",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("draft-minutes", "Draft lifetime", "Minutes before an unfinished form expires; 0 uses 60",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("opens-at", "Opens at",
 	              "Optional: start taking responses at this time",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
@@ -324,3 +327,21 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormSubmission, venture_form_submission,
 	venture_form_submission_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form response", NULL);
 	venture_entity_class_set_audit_private(VENTURE_ENTITY_CLASS(klass), venture_form_submission_private);)
+
+/* Intermediate answers are all sensitive, including otherwise ordinary fields:
+ * a person has not yet submitted them. Generation makes sensitive-only edits
+ * visible to the generic writer's empty-diff check and invalidates stale tokens. */
+static const VentureFieldDecl venture_form_draft_fields[] = {
+	VENTURE_FIELD_NAME("name", "Draft", "Intermediate form response"),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("version-id", "Form version", NULL, "form_version", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("page", "Page", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("finishing", "Finishing", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("generation", "Generation", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("expires-at", "Expires", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("answers", "Unsubmitted answers", NULL, VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("ticket", "Fill-time ticket", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormDraft, venture_form_draft, venture_form_draft_fields,
+	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form draft", NULL);)

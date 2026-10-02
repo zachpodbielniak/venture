@@ -54,6 +54,30 @@ typedef struct
 	GPtrArray		*choices;
 } VentureFormsField;
 
+#define VENTURE_FORMS_DRAFT_TOKEN "_vf_draft"
+#define VENTURE_FORMS_MOVE "_vf_move"
+#define VENTURE_FORMS_DRAFT_WRITE "venture-forms-draft-write"
+
+typedef struct {
+	VentureEntity *version;
+	JsonObject *values;
+	JsonObject *errors;
+	gchar *token;
+	gchar *ticket;
+	guint page;
+	guint pages;
+	gboolean complete;
+} VentureFormsStep;
+
+void venture_forms_step_free(VentureFormsStep *step);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureFormsStep, venture_forms_step_free)
+guint venture_forms_page_count(GPtrArray *fields);
+GPtrArray *venture_forms_page_fields(GPtrArray *fields, guint page);
+VentureFormsStep *venture_forms_step(VentureDatabase *database, VentureEntity *form,
+	GHashTable *answers, const gchar *origin, GDateTime *now, GError **error);
+gchar *venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
+	const VentureFormsRender *options, const VentureFormsStep *step, GError **error);
+
 /* --- Reading records --- */
 
 gchar *venture_forms_get_string(VentureEntity *entity, const gchar *property);

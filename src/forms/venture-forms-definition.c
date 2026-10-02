@@ -614,3 +614,28 @@ venture_forms_published_version(VentureDatabase *database, VentureEntity *form, 
 		return NULL;
 	return venture_database_get(database, VENTURE_TYPE_FORM_VERSION, id, error);
 }
+
+/* Page-break labels belong to the page they introduce. The arrays borrow
+ * their fields from the complete frozen definition. */
+guint
+venture_forms_page_count(GPtrArray *fields)
+{
+	guint i, pages = 1;
+	for (i = 0; i < fields->len; i++)
+		if (((VentureFormsField *)g_ptr_array_index(fields, i))->kind == VENTURE_FORM_FIELD_PAGE_BREAK) pages++;
+	return pages;
+}
+
+GPtrArray *
+venture_forms_page_fields(GPtrArray *fields, guint wanted)
+{
+	GPtrArray *page = g_ptr_array_new();
+	guint i, current = 0;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFormsField *field = g_ptr_array_index(fields, i);
+		if (field->kind == VENTURE_FORM_FIELD_PAGE_BREAK) current++;
+		if (current == wanted) g_ptr_array_add(page, field);
+	}
+	return page;
+}

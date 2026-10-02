@@ -801,8 +801,8 @@ venture_database_record_audit(
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(GError) local_error = NULL;
 
-	/* An audit record about an audit record would recurse forever. */
-	if (VENTURE_IS_AUDIT_ENTRY(target))
+	/* Audit records cannot recurse; disposable working copies are not events. */
+	if (VENTURE_IS_AUDIT_ENTRY(target) || venture_entity_is_working_copy(target))
 		return;
 
 	entry = venture_audit_entry_new_for_change(action,
@@ -1845,8 +1845,9 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
 		venture_accounting_operation_suspend(self);
-		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
-		              entity, created);
+		if (!venture_entity_is_working_copy(entity))
+			g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
+			              entity, created);
 		venture_accounting_operation_resume(self);
 	}
 	return TRUE;
@@ -2124,7 +2125,8 @@ venture_database_delete(
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
 		venture_accounting_operation_suspend(self);
-		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
+		if (!venture_entity_is_working_copy(entity))
+			g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
 		              entity);
 		venture_accounting_operation_resume(self);
 	}

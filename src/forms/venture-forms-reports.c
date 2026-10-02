@@ -299,7 +299,7 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 			SummarySegment *segment = NULL;
 			guint k;
 
-			if (VENTURE_FORM_FIELD_HIDDEN == field->kind)
+			if (VENTURE_FORM_FIELD_HIDDEN == field->kind || VENTURE_FORM_FIELD_PAGE_BREAK == field->kind)
 				continue;
 			for (k = segments->len; k > 0; k--)
 			{

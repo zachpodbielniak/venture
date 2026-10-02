@@ -887,7 +887,7 @@ static const gchar *const goals_reports[] = { "goal_progress", "goal_materials",
 static const gchar *const forms_suggests[] = { "leads", "mail", "marketing", NULL };
 static GType (*const forms_types[]) (void) = {
 	venture_form_get_type, venture_form_field_get_type,
-	venture_form_submission_get_type, venture_form_version_get_type, NULL
+	venture_form_submission_get_type, venture_form_version_get_type, venture_form_draft_get_type, NULL
 };
 static const gchar *const forms_reports[] = { "form_summary", NULL };
 

@@ -1469,3 +1469,12 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   retain 000720 onward in delivery order (the table is on the epic PR).
   Databases made with the unreleased 000710_forms branch are not release
   upgrade sources; rebuild those disposable fixtures.
+
+- **Unfinished forms are working copies, not business events.** `form_draft`
+  declares `venture_entity_class_set_working_copy()`: ordinary metadata storage,
+  validation and optimistic concurrency still apply, but audit and entity
+  save/delete signals do not. Only the form service may save it. All answer and
+  ticket values are sensitive; the non-sensitive generation counter both makes
+  a sensitive-only edit persist and invalidates the previous signed step token.
+  Final intake claims the draft before calling the ordinary submission service,
+  whose follow-up retry must not run inside an enclosing transaction.
