@@ -965,3 +965,58 @@ Additional validation keys are =row_marker=, =group_heading=, =page_heading=,
 =row_consecutive=, =rows_excess=, =rows_minimum=, =rows_maximum=,
 =rows_keep= and =row_operation=. System failures before an authenticated
 form state exists retain generic messages.
+
+* Quizzes and scored assessments
+
+Set =quiz_enabled=true= and declare =scoring= on the question records.
+Publish the form to activate the grading scheme. Choice scores use stable
+choice IDs, not translated labels:
+
+#+begin_src json
+{"choices":{"yes":5,"no":-2},"correct":["yes"]}
+#+end_src
+
+Number and rating questions accept non-overlapping inclusive ranges:
+
+#+begin_src json
+{"ranges":[{"min":0,"max":5,"points":1},{"min":6,"max":10,"points":3}]}
+#+end_src
+
+Points are integers between -1000000 and 1000000; input numbers may be
+fractional. Each declaration has at most 128 entries and 16 KiB of JSON.
+An unmatched or unanswered value scores zero. Hidden answers are discarded
+before grading. Repeated rows each contribute their validated answers.
+Sensitive questions cannot be scored. Correct choice IDs are optional;
+=show_answer_key=true= publishes the key only after a completed response,
+for questions actually answered. Neither grading declarations nor correct
+answers appear in the public schema or the initial form.
+
+Create =form_result_band= records with =form_id=, a stable =key=, inclusive
+=minimum=/=maximum= bounds, and =message= or =redirect_url=. At most 128
+non-overlapping bands belong to a form. Redirects require HTTPS, without
+credentials. A band's message is plain text, without answer piping; translate
+it through =result.KEY.message=. The score and matched result are stored
+with the response. JavaScript-free forms and the loader use the same result;
+HTML in result text is displayed literally. A result redirect takes precedence
+over the form's general redirect. No matching band still displays the score.
+
+Only the server computes =score=, =result_key= and =result_message=. Public
+POSTs cannot supply them, and saved results cannot be edited through CRUD.
+Published versions freeze the points, bands and answer-key setting. A later
+edit does not regrade existing responses. =form_summary= includes score
+counts and shares separated by published version, because different grading
+schemes need not be comparable. Privacy exports include scores and results;
+anonymisation clears them together with the answers.
+
+For ordinary lead capture, =score_to_lead=true= supplies the computed score
+as the =assessment_score= attribute before the existing lead-scoring rules
+run. For example, a rule with =conditions=assessment_score=8= can add points
+to the existing formula. This does not replace the formula or a manual score
+override. With the option off, no assessment input is supplied. A duplicate
+lead receives the new input through the same scoring service; a contact or
+company match does not create a lead or alter that CRM record's score.
+Double opt-in's contact/list workflow remains a contact/list workflow.
+A refused follow-up keeps the response and its computed result with a note.
+
+Migration =000840= covers the assessment properties and result-band records
+on both database backends. See [[file:evidence/forms-quiz.org][the built-server quiz demonstration]].

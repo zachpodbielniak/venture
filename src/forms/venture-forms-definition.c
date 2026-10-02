@@ -298,6 +298,8 @@ venture_forms_field_free(gpointer data)
 	g_clear_pointer(&field->rules, json_array_unref);
 	g_clear_pointer(&field->catalog, json_object_unref);
 	g_free(field->language);
+	g_free(field->scoring);
+	g_clear_pointer(&field->quiz, json_object_unref);
 	g_free(field);
 }
 
@@ -341,7 +343,7 @@ venture_forms_field_from_record(VentureEntity *row)
 	VentureFormsField *field = g_new0(VentureFormsField, 1);
 	g_autofree gchar *choices = venture_forms_get_string(row, "choices");
 
-	g_object_get(row, "key", &field->key, "label", &field->label, "kind", &field->kind,
+	g_object_get(row, "scoring", &field->scoring, "key", &field->key, "label", &field->label, "kind", &field->kind,
 	             "required", &field->required, "sensitive", &field->sensitive,
 	             "marketing-consent", &field->marketing_consent,
 	             "position", &field->position, "group-id", &field->group_id,
@@ -377,6 +379,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 	}
 	if (!venture_forms_groups_load(database, form, fields, error) ||
 	    !venture_forms_rules_load(database, form, fields, error) ||
+	    !venture_forms_quiz_load(database, form, fields, error) ||
 	    !venture_forms_translations_load(database, form, fields, error))
 	{
 		g_ptr_array_unref(fields);
@@ -395,6 +398,12 @@ venture_forms_definition_to_json(GPtrArray *fields)
 	guint i, j;
 
 	json_builder_begin_object(builder);
+	if (venture_forms_quiz(fields) != NULL)
+	{
+		JsonNode *quiz = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(quiz, venture_forms_quiz(fields));
+		json_builder_set_member_name(builder, "quiz"); json_builder_add_value(builder, quiz);
+	}
 	if (fields->len > 0 && ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules != NULL &&
 	    json_array_get_length(((VentureFormsField *)g_ptr_array_index(fields, 0))->rules) > 0)
 	{
@@ -417,6 +426,11 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		VentureFormsField *field = g_ptr_array_index(fields, i);
 
 		json_builder_begin_object(builder);
+		if (!venture_string_is_empty(field->scoring))
+		{
+			json_builder_set_member_name(builder, "scoring");
+			json_builder_add_value(builder, json_from_string(field->scoring, NULL));
+		}
 		if (!venture_string_is_empty(field->group_key))
 		{
 			json_builder_set_member_name(builder, "group");
@@ -563,6 +577,7 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		kind = forms_member_string(object, "kind");
 		if (NULL == field->key || NULL == kind || !forms_kind_from_nick(kind, &field->kind))
 			goto broken;
+		if (json_object_has_member(object, "scoring")) field->scoring = json_to_string(json_object_get_member(object, "scoring"), FALSE);
 		field->required = json_object_get_boolean_member_with_default(object, "required", FALSE);
 		field->marketing_consent = json_object_get_boolean_member_with_default(object, "marketing_consent", FALSE);
 		field->sensitive = json_object_get_boolean_member_with_default(object, "sensitive", FALSE);
@@ -620,6 +635,13 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 					goto broken;
 			}
 		}
+	}
+	for (i = 0; i < fields->len; i++) if (!venture_forms_quiz_field_valid(g_ptr_array_index(fields, i), error)) return NULL;
+	if (json_object_has_member(json_node_get_object(root), "quiz"))
+	{
+		JsonNode *quiz = json_object_get_member(json_node_get_object(root), "quiz");
+		if (!JSON_NODE_HOLDS_OBJECT(quiz)) goto broken;
+		if (!venture_forms_quiz_restore(fields, json_node_get_object(quiz), error)) return NULL;
 	}
 	if (json_object_has_member(json_node_get_object(root), "translations"))
 	{

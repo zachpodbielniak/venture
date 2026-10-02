@@ -1161,6 +1161,7 @@ test_forms_schema(void)
 	g_assert_false(table_exists(database, "form_groups"));
 	g_assert_false(table_exists(database, "form_pendings"));
 	g_assert_false(table_exists(database, "form_translations"));
+	g_assert_false(table_exists(database, "form_result_bands"));
 	g_assert_cmpint(applied(database, 711), ==, 1);
 	g_assert_cmpint(applied(database, 720), ==, 1);
 	g_assert_cmpint(applied(database, 730), ==, 1);
@@ -1177,6 +1178,7 @@ test_forms_schema(void)
 	g_assert_cmpint(applied(database, 810), ==, 1);
 	g_assert_cmpint(applied(database, 820), ==, 1);
 	g_assert_cmpint(applied(database, 830), ==, 1);
+	g_assert_cmpint(applied(database, 840), ==, 1);
 	g_clear_object(&context);
 	g_clear_object(&database);
 
@@ -1197,6 +1199,7 @@ test_forms_schema(void)
 		g_assert_true(table_exists(database, "form_groups"));
 		g_assert_true(table_exists(database, "form_pendings"));
 		g_assert_true(table_exists(database, "form_translations"));
+		g_assert_true(table_exists(database, "form_result_bands"));
 		g_assert_cmpint(applied(database, 711), ==, 1);
 		g_assert_cmpint(applied(database, 720), ==, 1);
 		g_assert_cmpint(applied(database, 730), ==, 1);
@@ -1213,6 +1216,7 @@ test_forms_schema(void)
 		g_assert_cmpint(applied(database, 810), ==, 1);
 		g_assert_cmpint(applied(database, 820), ==, 1);
 		g_assert_cmpint(applied(database, 830), ==, 1);
+		g_assert_cmpint(applied(database, 840), ==, 1);
 		{
 			g_autofree gchar *index = query_text(database,
 				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "

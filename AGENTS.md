@@ -351,6 +351,12 @@ first seven columns were empty.
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
   while the tests pass against this hour's.
 
+- **Assessment scores are final server results.** Score only validated visible
+  answers against the published definition, before repeated rows are folded.
+  A follow-up retry copies that result; it must not grade the folded input
+  again. Lead capture can return a contact or company on a duplicate match,
+  so only a `VentureLead` may populate a response's `lead-id`.
+
 ## The CLI, and its skill
 
 `venturectl` is generic over record types: `list`, `get`, `create`,

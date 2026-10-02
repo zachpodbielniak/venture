@@ -200,6 +200,13 @@ VENTURE_DECLARE_ENTITY(VentureFormTranslation, venture_form_translation, FORM_TR
  * Returns: (transfer full): a new #VentureFormTranslation
  */
 
+#define VENTURE_TYPE_FORM_RESULT_BAND (venture_form_result_band_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormResultBand, venture_form_result_band, FORM_RESULT_BAND)
+/**
+ * venture_form_result_band_new:
+ * Returns: (transfer full): an unsaved score range and public result
+ */
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_RECORDS_H */

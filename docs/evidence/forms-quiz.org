@@ -1,0 +1,35 @@
+#+title: Form assessment demonstration
+
+* Built-server check
+
+Ran the DEBUG server in a disposable SQLite instance on loopback, with AI,
+plugins and automation disabled. Browser: Chromium 153 through Playwright.
+The built binary's SHA-256 was
+=27f23aa84f4b4847b7f90cdcf60c534d91758e6c1b2d898c2facfb7503c6b825=.
+
+Created a live assessment through the ordinary REST record endpoints, with
+choice points, two result-band records, and an explicitly enabled answer key;
+then published it. Submitted once in a browser context with JavaScript
+disabled and once through =/pub/forms.js= on a separate host page.
+
+Both completions showed score 8, the matching result, and the correct answer.
+The text =Plan B <recommended>= appeared literally, without creating an HTML
+element. The loader completion had zero axe-core WCAG 2 A/AA and 2.1 A/AA
+violations. Exactly two responses were stored with score 8 and result key
+=fit=. The initial HTML and public schema did not expose grading or correct
+answers.
+
+* Regression coverage
+
+The forms suite checks crafted score input, negative and numeric points,
+invalid declarations, hidden and repeated questions, opt-in answer keys,
+translated results, published-version isolation, result redirects for both
+HTML and JSON clients, separate version distributions, privacy export and
+retention cleanup. Lead tests cover mapping off/on, duplicate leads and
+manual overrides.
+
+Two regressions failed before their repairs: a refused lead follow-up lost
+the computed result when retrying response storage; a contact returned by
+CRM deduplication was linked as an unrelated lead with the same numeric ID.
+Both repaired cases retain the response's computed score, and the contact
+case creates no lead link.

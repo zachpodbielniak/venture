@@ -1937,3 +1937,18 @@ change. `venturectl report form_summary all form_id=3 language=fr` changes
 report labels while counting responses from every language. Public `?lang=fr`
 or the loader's `data-venture-form-lang` selects the language before header
 negotiation. Signed state pins the language through pages and opt-in emails.
+
+
+### Form assessments
+
+Use `describe form_field` before setting `scoring`: choice points are JSON
+keyed by stable choice IDs, for example `{"choices":{"yes":5,"no":0},"correct":["yes"]}`.
+Number/rating scoring uses inclusive, non-overlapping `ranges` with `min`,
+`max`, and integer `points`. Sensitive questions cannot be scored. Enable
+`quiz_enabled`, create `form_result_band` records with stable `key`, `form_id`,
+`minimum`, `maximum`, `message` and optional HTTPS `redirect_url`, then publish.
+`show_answer_key` is opt-in and applies only after completion. Never write
+response score/result properties: the server computes and freezes them.
+`score_to_lead` adds the trusted `assessment_score` attribute to ordinary lead
+capture before the existing scoring rules run; it preserves manual overrides.
+`form_summary` shows score distributions separately for each version.

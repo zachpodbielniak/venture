@@ -358,7 +358,7 @@ venture_forms_success_message(VentureDatabase *database, VentureEntity *form, Ve
 		venture_forms_localize(fields, language);
 		localized = g_strdup(venture_forms_text(fields, "form.success_message", template));
 		g_free(template); template = localized;
-		if (venture_string_is_empty(template)) return g_strdup(venture_forms_text(fields, "message.success", "Thank you. Your response has been received."));
+		if (venture_string_is_empty(template)) { g_free(template); template = g_strdup(venture_forms_text(fields, "message.success", "Thank you. Your response has been received.")); }
 	}
 	if (root != NULL && JSON_NODE_HOLDS_OBJECT(root))
 	{
@@ -366,7 +366,10 @@ venture_forms_success_message(VentureDatabase *database, VentureEntity *form, Ve
 		values = venture_forms_pipe_stored_values(fields, json_node_get_object(root));
 	}
 
-	return venture_forms_pipe_text(template, fields, NULL, values);
+	{
+		g_autofree gchar *success = venture_forms_pipe_text(template, fields, NULL, values);
+		return venture_forms_quiz_message(fields, root != NULL && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : NULL, response, success);
+	}
 }
 
 void

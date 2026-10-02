@@ -74,6 +74,8 @@ typedef struct
 	GPtrArray		*choices;
 	/* Each question owns a reference to its version's immutable rule array. */
 	JsonArray		*rules;
+	gchar			*scoring;
+	JsonObject		*quiz;
 	JsonObject		*catalog;
 	gchar			*language;
 } VentureFormsField;
@@ -152,6 +154,16 @@ gboolean venture_forms_rule_matches(JsonObject *rule, JsonObject *values);
 gboolean venture_forms_field_active(const VentureFormsField *field, JsonObject *values, gboolean *required);
 guint venture_forms_next_page(GPtrArray *fields, guint page, JsonObject *values);
 void venture_forms_rules_filter(GPtrArray *fields, JsonObject *values, GHashTable *not_shown);
+
+gboolean venture_forms_quiz_field_valid(const VentureFormsField *field, GError **error);
+gboolean venture_forms_quiz_validate_band(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error);
+gboolean venture_forms_quiz_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+gboolean venture_forms_quiz_restore(GPtrArray *fields, JsonObject *quiz, GError **error);
+JsonObject *venture_forms_quiz(GPtrArray *fields);
+gboolean venture_forms_quiz_apply(GPtrArray *fields, JsonObject *answers, VentureEntity *response, GError **error);
+gchar *venture_forms_quiz_message(GPtrArray *fields, JsonObject *values, VentureEntity *response, const gchar *success);
+void venture_forms_quiz_report(VentureReportResult *result, GPtrArray *responses);
 
 /* --- Reading records --- */
 

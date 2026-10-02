@@ -108,6 +108,9 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("closes-at", "Closes at",
 	              "Optional: stop taking responses at this time",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("quiz-enabled", "Score responses", "Compute an assessment score from published scoring rules", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("show-answer-key", "Show correct answers", "Show the answer key after final submission", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("score-to-lead", "Use score in lead rules", "Pass the computed score as the assessment_score input to existing lead rules", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("double-opt-in", "Confirm signup by email", "Only a confirmed inbox link creates a response and marketing permission", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("optin-email-field", "Signup email question", "Required non-sensitive email question used for confirmation", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("optin-list-id", "Signup list", "Optional static marketing list joined after confirmation", "marketing_list", VENTURE_COLUMN_FLAG_NONE),
@@ -230,6 +233,7 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("pattern", "Pattern", "Text: a regular expression the whole answer must match",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("scoring", "Scoring", "JSON choice points, numeric ranges and optional correct choice ids", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("default-value", "Default", "Optional: the value it starts with",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("allow-prefill", "Allow URL prefill", "Accept this question's initial value from the public query string", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
@@ -333,6 +337,11 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("origin", "Sent from", "The site it was sent from, when the browser said",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("scored", "Scored", "The published form computed an assessment", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("score", "Score", "Server-computed assessment points", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("result-key", "Result band", "Stable published result band key", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("result-message", "Result", "The result shown to this respondent", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("result-url", "Result page", "Published destination selected by the computed score", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD("reviewed", "Reviewed", "Someone has read it",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", "Your team's notes on it")
@@ -342,7 +351,7 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
  * the shared audit log: an erased response must leave nothing behind but
  * the fact that it existed. */
 static const gchar *const venture_form_submission_private[] = {
-	"name", "summary", "answers", "sensitive-answers", "notes", "origin", "mapping-note", "contact-id", "personal-hash", NULL
+	"name", "summary", "answers", "sensitive-answers", "notes", "origin", "mapping-note", "contact-id", "personal-hash", "score", "result-key", "result-message", "result-url", NULL
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormSubmission, venture_form_submission,
@@ -452,3 +461,16 @@ static const VentureFieldDecl venture_form_translation_fields[] = {
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormTranslation, venture_form_translation, venture_form_translation_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form translation", NULL);)
+
+static const VentureFieldDecl venture_form_result_band_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "Internal result band name"),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("key", "Key", "Stable result identity", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("minimum", "Minimum score", "Inclusive lower bound", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("maximum", "Maximum score", "Inclusive upper bound", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("message", "Result text", "Plain text shown after submitting", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("redirect-url", "Result page", "Optional HTTPS destination for this band", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormResultBand, venture_form_result_band, venture_form_result_band_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form result band", NULL);
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)

@@ -438,11 +438,21 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 			}
 			if (VENTURE_IS_LEAD(duplicate))
 			{
+				const gchar *assessment = venture_entity_get_attribute(entity, "assessment_score");
 				g_object_set(duplicate, "last-activity-at", now, NULL);
-				if (!write_record(self, duplicate, actor, error)) goto fail;
+				if (assessment != NULL)
+				{
+					g_autoptr(VentureEntity) rescored = NULL;
+					venture_entity_set_attribute(duplicate, "assessment_score", assessment);
+					/* Persisted leads take the same scoring/history path as any
+					 * edit. A manual score remains the operator's decision. */
+					rescored = save_lead(self, duplicate, "reject", actor, error);
+					if (rescored == NULL) goto fail;
+				}
+				else if (!write_record(self, duplicate, actor, error)) goto fail;
 			}
-			/* A merge leaves the existing record as it was, so the
-			 * history entry is where their message is kept. */
+			/* Ordinary capture fields do not overwrite CRM details. The
+			 * optional assessment input above is the explicit exception. */
 			body = venture_string_is_empty(notes) ? g_strdup(source)
 				: g_strdup_printf("%s\n\n%s", source != NULL ? source : "", notes);
 			if (!history(self, duplicate, "Lead capture", body, actor, error)) goto fail;
@@ -601,7 +611,7 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 static VentureEntity *
 capture_lead(VentureLeadService *self, gint64 organization_id, gint64 venture, const gchar *source,
 	const gchar *forced_source, gint64 campaign_id, JsonObject *fields, JsonNode *allowed,
-	const gchar *policy, GError **error)
+	const gchar *policy, const gint64 *assessment, GError **error)
 {
 	g_autoptr(VentureEntity) lead = NULL;
 	guint i;
@@ -638,6 +648,11 @@ capture_lead(VentureLeadService *self, gint64 organization_id, gint64 venture, c
 			return NULL;
 		}
 		g_object_set(lead, "campaign-id", campaign_id, NULL);
+	}
+	if (assessment != NULL)
+	{
+		g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, *assessment);
+		venture_entity_set_attribute(lead, "assessment_score", value);
 	}
 	/* A verified attribution source outranks whatever the page posted. */
 	if (forced_source != NULL) g_object_set(lead, "source", forced_source, NULL);
@@ -685,7 +700,7 @@ venture_lead_service_capture_result(VentureLeadService *self, const gchar *token
 		!venture_string_is_empty(venture_json_object_get_string(fields, honeypot, "")))
 		return venture_database_commit(self->database, error);
 	saved = capture_lead(self, venture_entity_get_organization_id(form), venture,
-		name, source, campaign_id, fields, allowed, policy, error);
+		name, source, campaign_id, fields, allowed, policy, NULL, error);
 	if (saved == NULL) goto fail;
 	if (!venture_database_commit(self->database, error)) return FALSE;
 	if (redirect_url != NULL) *redirect_url = string_field(form, "redirect-url");
@@ -696,9 +711,9 @@ fail:
 	return FALSE;
 }
 
-VentureEntity *
-venture_lead_service_capture_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
-	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, GError **error)
+static VentureEntity *
+capture_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
+	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, const gint64 *assessment, GError **error)
 {
 	g_return_val_if_fail(VENTURE_IS_LEAD_SERVICE(self), NULL);
 	g_return_val_if_fail(fields != NULL, NULL);
@@ -714,7 +729,21 @@ venture_lead_service_capture_values(VentureLeadService *self, gint64 organizatio
 		return NULL;
 	}
 	return capture_lead(self, organization_id, venture_id, source, NULL, campaign_id, fields, NULL,
-		policy != NULL && *policy != '\0' ? policy : "merge", error);
+		policy != NULL && *policy != '\0' ? policy : "merge", assessment, error);
+}
+
+VentureEntity *
+venture_lead_service_capture_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
+	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, GError **error)
+{
+	return capture_values(self, organization_id, venture_id, source, campaign_id, fields, policy, NULL, error);
+}
+
+VentureEntity *
+venture_lead_service_capture_scored_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
+	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, gint64 assessment, GError **error)
+{
+	return capture_values(self, organization_id, venture_id, source, campaign_id, fields, policy, &assessment, error);
 }
 
 gboolean

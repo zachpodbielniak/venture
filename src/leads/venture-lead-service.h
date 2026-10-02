@@ -196,5 +196,27 @@ gboolean venture_lead_service_rescore(VentureLeadService *self, VentureEntity *l
  * Returns: (transfer full): the normalised host, possibly empty
  */
 gchar *venture_lead_normalize_website(const gchar *value);
+/**
+ * venture_lead_service_capture_scored_values:
+ * @self: the canonical lead service
+ * @organization_id: capture organization
+ * @venture_id: optional venture identity
+ * @source: (nullable): capture source label
+ * @campaign_id: optional campaign identity
+ * @fields: ordinary capture values
+ * @policy: (nullable): duplicate policy
+ * @assessment: a trusted server-computed assessment value
+ * @error: (out) (optional): return location for an error
+ *
+ * Supplies assessment_score as an attribute before the ordinary routing and
+ * scoring formula runs. It neither sets score directly nor clears a manual
+ * override. Anonymous capture endpoints do not accept this argument.
+ *
+ * Returns: (transfer full) (nullable): the captured or merged record
+ */
+VentureEntity *venture_lead_service_capture_scored_values(VentureLeadService *self,
+	gint64 organization_id, gint64 venture_id, const gchar *source, gint64 campaign_id,
+	JsonObject *fields, const gchar *policy, gint64 assessment, GError **error);
+
 G_END_DECLS
 #endif

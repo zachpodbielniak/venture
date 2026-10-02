@@ -748,6 +748,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_form_group_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_pending_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_translation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_form_result_band_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_submission_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_version_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_draft_get_type, VENTURE_DATA_CLASS_TENANT },

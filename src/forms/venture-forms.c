@@ -611,6 +611,12 @@ forms_validate_field(
 			g_object_set(entity, "choices", normal->str, NULL);
 	}
 
+	{
+		VentureFormsField *field = venture_forms_field_from_record(entity);
+		gboolean valid = venture_forms_quiz_field_valid(field, error);
+		venture_forms_field_free(field);
+		if (!valid) return FALSE;
+	}
 	return venture_forms_validate_piping(database, entity, error);
 }
 
@@ -661,9 +667,15 @@ forms_validate_submission(
 		g_autoptr(GDateTime) at_before = NULL;
 		g_autoptr(GDateTime) at_after = NULL;
 
+		g_autofree gchar *result_before = venture_forms_get_string(previous, "result-message"), *result_after = venture_forms_get_string(entity, "result-message");
+		g_autofree gchar *key_before = venture_forms_get_string(previous, "result-key"), *key_after = venture_forms_get_string(entity, "result-key");
+		g_autofree gchar *url_before = venture_forms_get_string(previous, "result-url"), *url_after = venture_forms_get_string(entity, "result-url");
 		g_object_get(previous, "submitted-at", &at_before, NULL);
 		g_object_get(entity, "submitted-at", &at_after, NULL);
-		if (0 != g_strcmp0(before, after) || 0 != g_strcmp0(secret_before, secret_after) ||
+		if (venture_forms_get_bool(previous, "scored") != venture_forms_get_bool(entity, "scored") ||
+		    venture_forms_get_int(previous, "score") != venture_forms_get_int(entity, "score") ||
+		    g_strcmp0(result_before, result_after) != 0 || g_strcmp0(key_before, key_after) != 0 || g_strcmp0(url_before, url_after) != 0 ||
+		    0 != g_strcmp0(before, after) || 0 != g_strcmp0(secret_before, secret_after) ||
 		    0 != g_strcmp0(omitted_before, omitted_after) ||
 		    0 != g_strcmp0(personal_before, personal_after) ||
 		    venture_forms_get_int(previous, "contact-id") != venture_forms_get_int(entity, "contact-id") ||
@@ -1031,6 +1043,7 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_submission, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_VERSION,
 	                                    forms_validate_version, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RESULT_BAND, venture_forms_quiz_validate_band, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_DRAFT_RECORD,
 	                                    forms_validate_draft, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RULE,
@@ -2250,12 +2263,24 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 			g_free(source);
 			source = venture_forms_get_string(form, "name");
 		}
-		lead = venture_lead_service_capture_values(venture_database_get_lead_service(database),
+		if (venture_forms_get_bool(submission, "scored") && venture_forms_quiz(fields) != NULL &&
+		    json_object_get_boolean_member_with_default(venture_forms_quiz(fields), "lead_input", FALSE))
+			lead = venture_lead_service_capture_scored_values(venture_database_get_lead_service(database),
+				venture_entity_get_organization_id(form), venture_forms_get_int(form, "venture-id"), source,
+				venture_forms_get_int(form, "campaign-id"), values, policy, venture_forms_get_int(submission, "score"), error);
+		else
+			lead = venture_lead_service_capture_values(venture_database_get_lead_service(database),
 			venture_entity_get_organization_id(form), venture_forms_get_int(form, "venture-id"), source,
 			venture_forms_get_int(form, "campaign-id"), values, policy, error);
 		if (NULL == lead)
 			goto fail;
-		g_object_set(submission, "lead-id", venture_entity_get_id(lead), NULL);
+		/* Duplicate capture may return a contact or company. Its numeric ID
+		 * is not a lead reference and must not bind an unrelated lead. */
+		if (VENTURE_IS_LEAD(lead))
+			g_object_set(submission, "lead-id", venture_entity_get_id(lead), NULL);
+		else
+			g_object_set(submission, "mapping-note",
+				"Capture matched an existing CRM record; no new lead was created.", NULL);
 		if (!forms_record_marketing_consent(database, form, submission, lead, fields, answers, now, error))
 			goto fail;
 	}
@@ -2439,6 +2464,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	}
 
 	name = forms_response_name(form, fields, stored);
+	response = forms_new_response(form, version, name, now, "{}", "", origin);
+	if (!venture_forms_quiz_apply(fields, stored, response, error)) return FALSE;
 	venture_forms_groups_fold(fields, stored, not_shown, FALSE);
 	venture_forms_groups_fold(fields, secret, not_shown, TRUE);
 	node = json_node_new(JSON_NODE_OBJECT);
@@ -2455,7 +2482,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	if (summary->len > 0 && '\n' == summary->str[summary->len - 1])
 		g_string_truncate(summary, summary->len - 1);
 
-	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+	g_object_set(response, "answers", answers_text, "summary", summary->str, NULL);
 	g_object_set(response, "language", venture_forms_language(fields), NULL);
 	g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 	g_object_set(response, "sensitive-answers", secret_text, NULL);
@@ -2494,8 +2521,18 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		}
 		note = g_strdup_printf("Follow-up not done: %s", follow_error->message);
 		g_clear_error(&follow_error);
-		g_clear_object(&response);
-		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+		{
+			g_autoptr(VentureEntity) graded = g_steal_pointer(&response);
+			g_autofree gchar *result_key = venture_forms_get_string(graded, "result-key");
+			g_autofree gchar *result_message = venture_forms_get_string(graded, "result-message");
+			g_autofree gchar *result_url = venture_forms_get_string(graded, "result-url");
+			/* Retry storage, not grading: repeated answers are folded now,
+			 * and the result already describes the validated published input. */
+			response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+			g_object_set(response, "scored", venture_forms_get_bool(graded, "scored"),
+				"score", venture_forms_get_int(graded, "score"), "result-key", result_key,
+				"result-message", result_message, "result-url", result_url, NULL);
+		}
 		g_object_set(response, "language", venture_forms_language(fields), NULL);
 		g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, "not-shown", omitted_text, NULL);
@@ -2701,7 +2738,8 @@ forms_anonymise(VentureDatabase *database, VentureEntity *response, GDateTime *n
 
 	g_object_set(response, "name", name, "answers", "{}", "sensitive-answers", NULL, "not-shown", NULL,
 		"summary", "", "notes", NULL, "origin", NULL, "mapping-note", NULL,
-		"anonymised-at", now, "contact-id", (gint64)0, "personal-hash", NULL, NULL);
+		"anonymised-at", now, "contact-id", (gint64)0, "personal-hash", NULL,
+		"scored", FALSE, "score", (gint64)0, "result-key", "", "result-message", "", "result-url", "", NULL);
 	g_object_set_data(G_OBJECT(response), VENTURE_FORMS_ANONYMISING_KEY, GINT_TO_POINTER(1));
 	return venture_database_save(database, response, actor, error);
 }
@@ -3064,6 +3102,14 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 		json_builder_add_int_value(builder, venture_forms_get_int(response, "version-number"));
 		json_builder_set_member_name(builder, "received");
 		json_builder_add_string_value(builder, when);
+		if (venture_forms_get_bool(response, "scored"))
+		{
+			g_autofree gchar *result = venture_forms_get_string(response, "result-message");
+			g_autofree gchar *band = venture_forms_get_string(response, "result-key");
+			json_builder_set_member_name(builder, "score"); json_builder_add_int_value(builder, venture_forms_get_int(response, "score"));
+			json_builder_set_member_name(builder, "result_key"); json_builder_add_string_value(builder, band != NULL ? band : "");
+			json_builder_set_member_name(builder, "result"); json_builder_add_string_value(builder, result != NULL ? result : "");
+		}
 		/* Everything they sent, sensitive answers included: an access
 		 * request is owed the lot. */
 		json_builder_set_member_name(builder, "answers");

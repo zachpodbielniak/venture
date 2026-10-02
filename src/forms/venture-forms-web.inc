@@ -374,6 +374,11 @@ forms_web_accepted(VentureDatabase *database, VentureEntity *form, VentureEntity
 	g_autofree gchar *redirect = NULL, *message = NULL;
 
 	g_object_get(form, "redirect-url", &redirect, NULL);
+	if (submission != NULL && venture_forms_get_bool(submission, "scored"))
+	{
+		g_autofree gchar *result = venture_forms_get_string(submission, "result-url");
+		if (!venture_string_is_empty(result)) { g_free(redirect); redirect = g_steal_pointer(&result); }
+	}
 	message = venture_forms_success_message(database, form, submission);
 	if (venture_string_is_empty(message))
 	{

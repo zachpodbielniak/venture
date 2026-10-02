@@ -486,6 +486,7 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 		}
 	}
 
+	venture_forms_quiz_report(result, responses);
 	venture_report_result_add_metric(result, venture_metric_new_count("responses", "Responses", responses->len));
 	return g_steal_pointer(&result);
 }

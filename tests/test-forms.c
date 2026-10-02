@@ -4049,6 +4049,263 @@ test_resume_groups_expiry(Fixture *f, gconstpointer data)
 	}
 }
 
+static VentureEntity *
+quiz_form(Fixture *f, const gchar *token)
+{
+	VentureEntity *form = make_form(f, token, VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) choice = make_field(f, form, "answer", "Knowledge question", VENTURE_FORM_FIELD_SINGLE_CHOICE, TRUE, 10);
+	g_autoptr(VentureEntity) number = make_field(f, form, "number", "Scale", VENTURE_FORM_FIELD_NUMBER, TRUE, 20);
+	g_autoptr(VentureEntity) multiple = make_field(f, form, "multiple", "Multiple", VENTURE_FORM_FIELD_MULTIPLE_CHOICE, FALSE, 30);
+	g_autoptr(VentureEntity) low = g_object_new(VENTURE_TYPE_FORM_RESULT_BAND, "organization-id", f->org, "form-id", venture_entity_get_id(form),
+		"name", "Low", "key", "low", "minimum", (gint64)-1000, "maximum", (gint64)4, "message", "Keep learning", NULL);
+	g_autoptr(VentureEntity) high = g_object_new(VENTURE_TYPE_FORM_RESULT_BAND, "organization-id", f->org, "form-id", venture_entity_get_id(form),
+		"name", "High", "key", "high", "minimum", (gint64)5, "maximum", (gint64)1000, "message", "Plan B <recommended>", NULL);
+	g_object_set(form, "quiz-enabled", TRUE, NULL); save(f, form);
+	g_object_set(choice, "choices", "right | Right answer\nwrong | Wrong answer", "scoring", "{\"choices\":{\"right\":5,\"wrong\":-2},\"correct\":[\"right\"]}", NULL); save(f, choice);
+	g_object_set(number, "scoring", "{\"ranges\":[{\"min\":0,\"max\":10,\"points\":3},{\"min\":11,\"max\":20,\"points\":6}]}", NULL); save(f, number);
+	g_object_set(multiple, "choices", "a | A\nb | B", "scoring", "{\"choices\":{\"a\":2,\"b\":-1}}", NULL); save(f, multiple);
+	save(f, low); save(f, high); g_object_unref(publish(f, form));
+	return form;
+}
+
+static void
+test_quiz_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = quiz_form(f, "quiz-validation");
+	g_autoptr(VentureEntity) field = make_field(f, form, "new", "New", VENTURE_FORM_FIELD_SINGLE_CHOICE, FALSE, 40);
+	g_autoptr(VentureEntity) band = g_object_new(VENTURE_TYPE_FORM_RESULT_BAND, "organization-id", f->org, "form-id", venture_entity_get_id(form),
+		"name", "Overlapping", "key", "overlap", "minimum", (gint64)4, "maximum", (gint64)10, NULL);
+	(void)data;
+	g_object_set(field, "choices", "a | A", "scoring", "{\"choices\":{\"unknown\":1}}", NULL); refuse(f, field, "Scoring");
+	g_object_set(field, "scoring", "{\"choices\":{\"a\":1.5}}", NULL); refuse(f, field, "Scoring");
+	g_object_set(field, "scoring", "{\"choices\":{\"a\":1000001}}", NULL); refuse(f, field, "Scoring");
+	g_object_set(field, "scoring", "{\"correct\":[\"a\",\"a\"]}", NULL); refuse(f, field, "Scoring");
+	g_object_set(field, "scoring", "{\"choices\":{\"a\":1}}", "sensitive", TRUE, NULL); refuse(f, field, "Scoring");
+	g_object_set(field, "sensitive", FALSE, NULL); save(f, field);
+	g_object_set(field, "sensitive", TRUE, NULL); refuse(f, field, "Scoring");
+	refuse(f, band, "Result band");
+	g_object_set(band, "minimum", (gint64)1001, "maximum", (gint64)2000, "redirect-url", "javascript:alert(1)", NULL); refuse(f, band, "Result band");
+	g_object_set(band, "redirect-url", "https://example.test/result", NULL); save(f, band);
+	g_object_set(band, "key", "changed", NULL); refuse(f, band, "Result band");
+	{
+		g_autoptr(VentureEntity) number = make_field(f, form, "range", "Range", VENTURE_FORM_FIELD_NUMBER, FALSE, 50);
+		g_object_set(number, "scoring", "{\"ranges\":[{\"min\":0,\"max\":10,\"points\":1},{\"min\":10,\"max\":20,\"points\":2}]}", NULL);
+		refuse(f, number, "Scoring");
+		g_object_set(number, "scoring", "{\"ranges\":[{\"min\":true,\"max\":10,\"points\":1}]}", NULL); refuse(f, number, "Scoring");
+	}
+}
+
+/* Scores use the published server declaration, including after author edits.
+ * A score-looking POST member cannot replace a computed property. */
+static void
+test_quiz_score_and_key(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = quiz_form(f, "quiz-score"), response = NULL;
+	g_autofree gchar *message = NULL, *schema_text = NULL;
+	g_autoptr(JsonNode) schema = NULL;
+	const gchar *pairs[] = { "answer", "right", "number", "5.5", "multiple", "a", "multiple", "b", NULL };
+	const gchar *forged[] = { "answer", "wrong", "number", "5", "score", "999999", NULL };
+	(void)data;
+	g_assert_cmpint(submit_pairs(f, form, forged, NULL), ==, VENTURE_FORMS_INVALID);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); g_assert_true(venture_forms_get_bool(response, "scored")); g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 9);
+	message = venture_forms_success_message(f->db, form, response); g_assert_nonnull(strstr(message, "Score: 9")); g_assert_nonnull(strstr(message, "Plan B <recommended>")); g_assert_null(strstr(message, "Correct answers"));
+	g_object_set(response, "score", (gint64)100, NULL); refuse(f, response, "cannot be changed");
+	g_clear_object(&response); g_clear_pointer(&message, g_free);
+	g_object_set(form, "show-answer-key", TRUE, NULL); save(f, form);
+	/* An unpublished setting does not change the key shown to respondents. */
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); message = venture_forms_success_message(f->db, form, response); g_assert_null(strstr(message, "Correct answers"));
+	g_clear_object(&response); g_clear_pointer(&message, g_free); g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); message = venture_forms_success_message(f->db, form, response); g_assert_nonnull(strstr(message, "Correct answers: Right answer"));
+	{
+		g_autoptr(GDateTime) now = venture_time_now();
+		schema = venture_forms_schema(f->db, form, "/pub/form/quiz-score", now, NULL);
+	}
+	schema_text = json_to_string(schema, FALSE); g_assert_null(strstr(schema_text, "\"scoring\"")); g_assert_null(strstr(schema_text, "\"correct\""));
+	{
+		g_autoptr(JsonObject) options = json_object_new();
+		g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
+		g_autoptr(VentureReportResult) report = NULL;
+		g_autoptr(JsonNode) json = NULL;
+		g_autoptr(GError) error = NULL;
+		guint i, bins = 0;
+		JsonArray *rows;
+		json_object_set_int_member(options, "form_id", venture_entity_get_id(form));
+		report = venture_report_generate(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "form_summary"), f->context, period, options, &error);
+		g_assert_no_error(error); json = venture_report_result_to_json(report); rows = json_object_get_array_member(json_node_get_object(json), "rows");
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, i);
+			if (g_strcmp0(json_object_get_string_member(row, "question"), "Assessment score") != 0) continue;
+			bins++; g_assert_cmpstr(json_object_get_string_member(row, "answer"), ==, "9");
+			g_assert_cmpfloat(json_object_get_double_member(row, "share"), ==, 1.0);
+		}
+		g_assert_cmpuint(bins, ==, 2);
+	}
+}
+
+static void
+test_quiz_hidden_and_repeated(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = quiz_form(f, "quiz-hidden"), rule = NULL, response = NULL;
+	g_autofree gchar *message = NULL;
+	const gchar *hidden[] = { "gate", "skip", "answer", "right", "number", "5", NULL };
+	(void)data;
+	add_field(f, form, "gate", "Gate", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 1);
+	rule = make_rule(f, form, VENTURE_FORM_RULE_HIDE, "answer", "[{\"field\":\"gate\",\"operator\":\"equals\",\"value\":\"skip\"}]"); save(f, rule);
+	g_object_set(form, "show-answer-key", TRUE, NULL); save(f, form); g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, hidden, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 3);
+	message = venture_forms_success_message(f->db, form, response); g_assert_null(strstr(message, "Right answer"));
+	g_clear_object(&form); g_clear_object(&response);
+	form = make_form(f, "quiz-repeat", VENTURE_FORM_LIVE);
+	g_object_set(form, "quiz-enabled", TRUE, NULL); save(f, form);
+	{
+		g_autoptr(VentureEntity) group = g_object_new(VENTURE_TYPE_FORM_GROUP, "organization-id", f->org, "form-id", venture_entity_get_id(form), "key", "attendee", "label", "Attendee", "max-rows", (gint64)2, NULL);
+		g_autoptr(VentureEntity) answer = make_field(f, form, "answer", "Answer", VENTURE_FORM_FIELD_SINGLE_CHOICE, TRUE, 10);
+		const gchar *rows[] = { "attendee[0][answer]", "yes", "attendee[1][answer]", "yes", NULL };
+		save(f, group); g_object_set(answer, "group-id", venture_entity_get_id(group), "choices", "yes | Yes\nno | No", "scoring", "{\"choices\":{\"yes\":5}}", NULL); save(f, answer); g_object_unref(publish(f, form));
+		g_assert_cmpint(submit_pairs(f, form, rows, NULL), ==, VENTURE_FORMS_ACCEPTED);
+		response = last_form_response(f); g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 10);
+	}
+}
+
+static void
+test_quiz_lead_input(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = quiz_form(f, "quiz-lead"), response = NULL, lead = NULL;
+	g_autoptr(VentureEntity) base = g_object_new(VENTURE_TYPE_LEAD_SCORING_RULE, "organization-id", f->org, "name", "Base", "active", TRUE, "conditions", "", "points", (gint64)5, NULL);
+	g_autoptr(VentureEntity) assessment = g_object_new(VENTURE_TYPE_LEAD_SCORING_RULE, "organization-id", f->org, "name", "Assessment", "active", TRUE, "conditions", "assessment_score=8", "points", (gint64)7, NULL);
+	const gchar *off[] = { "name", "Off", "email", "off@example.test", "answer", "right", "number", "5", NULL };
+	const gchar *on[] = { "name", "Original CRM name", "email", "on@example.test", "answer", "right", "number", "5", NULL };
+	const gchar *again[] = { "name", "Do not overwrite", "email", "on@example.test", "answer", "wrong", "number", "5", NULL };
+	(void)data;
+	save(f, base); save(f, assessment);
+	{
+		g_autoptr(VentureEntity) name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+		g_autoptr(VentureEntity) email = make_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 2);
+		g_object_set(name, "maps-to", "name", NULL); save(f, name); g_object_set(email, "maps-to", "email", NULL); save(f, email);
+	}
+	g_object_set(form, "create-lead", TRUE, NULL); save(f, form); g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, off, NULL), ==, VENTURE_FORMS_ACCEPTED); response = last_form_response(f);
+	lead = venture_database_get(f->db, VENTURE_TYPE_LEAD, venture_forms_get_int(response, "lead-id"), NULL); g_assert_nonnull(lead);
+	g_assert_null(venture_entity_get_attribute(lead, "assessment_score")); g_assert_cmpint(venture_forms_get_int(lead, "score"), ==, 5);
+	g_clear_object(&lead); g_clear_object(&response);
+	g_object_set(form, "score-to-lead", TRUE, NULL); save(f, form); g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, on, NULL), ==, VENTURE_FORMS_ACCEPTED); response = last_form_response(f);
+	lead = venture_database_get(f->db, VENTURE_TYPE_LEAD, venture_forms_get_int(response, "lead-id"), NULL); g_assert_nonnull(lead);
+	g_assert_cmpstr(venture_entity_get_attribute(lead, "assessment_score"), ==, "8"); g_assert_cmpint(venture_forms_get_int(lead, "score"), ==, 12); g_assert_false(venture_forms_get_bool(lead, "score-manual"));
+	g_clear_object(&response);
+	g_assert_cmpint(submit_pairs(f, form, again, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	{
+		g_autoptr(VentureEntity) current = reread(f, lead);
+		g_autofree gchar *name = venture_forms_get_string(current, "name");
+		g_assert_cmpstr(name, ==, "Original CRM name"); g_assert_cmpstr(venture_entity_get_attribute(current, "assessment_score"), ==, "1"); g_assert_cmpint(venture_forms_get_int(current, "score"), ==, 5);
+		g_object_set(current, "score", (gint64)50, NULL); save(f, current);
+	}
+	g_assert_cmpint(submit_pairs(f, form, on, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	{
+		g_autoptr(VentureEntity) current = reread(f, lead);
+		g_assert_cmpint(venture_forms_get_int(current, "score"), ==, 50); g_assert_true(venture_forms_get_bool(current, "score-manual"));
+	}
+	/* A refused CRM follow-up keeps the response and its computed result. */
+	g_object_set(form, "on-duplicate", "reject", NULL); save(f, form);
+	g_assert_cmpint(submit_pairs(f, form, on, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	g_assert_true(venture_forms_get_bool(response, "scored")); g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 8);
+	g_clear_object(&response);
+	{
+		g_autoptr(VentureEntity) contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Existing contact", "email", "known@example.test", NULL);
+		const gchar *known[] = { "name", "Known", "email", "known@example.test", "answer", "right", "number", "5", NULL };
+		save(f, contact); g_object_set(form, "on-duplicate", "merge", NULL); save(f, form);
+		g_assert_cmpint(submit_pairs(f, form, known, NULL), ==, VENTURE_FORMS_ACCEPTED); response = last_form_response(f);
+		g_assert_cmpint(venture_forms_get_int(response, "lead-id"), ==, 0);
+		g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 8);
+		g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 2);
+	}
+}
+
+
+/* Grading and translated results remain evidence of the published version;
+ * retention removes derived personal results along with their input answers. */
+static void
+test_quiz_version_privacy(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = quiz_form(f, "quiz-version"), response = NULL;
+	g_autofree gchar *seed = NULL, *message = NULL;
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(JsonNode) exported = NULL, swept = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), later = g_date_time_add_days(now, 40);
+	g_autoptr(GError) error = NULL;
+	const gchar *pairs[] = { "answer", "right", "number", "5", "email", "quiz@example.test", VENTURE_FORMS_PREFILL, NULL, NULL };
+	guint i;
+	(void)data;
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 40);
+	g_object_set(form, "show-answer-key", TRUE, "retention-days", (gint64)30, NULL); save(f, form);
+	translate(f, form, "result.high.message", "Plan B recommandé");
+	translate(f, form, "choice.answer.right", "Bonne réponse");
+	translate(f, form, "message.correct_answers", "Réponses correctes");
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "fr"); pairs[7] = seed;
+	fields = venture_forms_fields(f->db, form, NULL);
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureEntity *field = g_ptr_array_index(fields, i);
+		g_autofree gchar *key = venture_forms_get_string(field, "key");
+		if (g_strcmp0(key, "answer") == 0)
+		{ g_object_set(field, "scoring", "{\"choices\":{\"right\":100}}", NULL); save(f, field); }
+	}
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 8);
+	message = venture_forms_success_message(f->db, form, response);
+	g_assert_nonnull(strstr(message, "Plan B recommandé")); g_assert_nonnull(strstr(message, "Réponses correctes: Bonne réponse"));
+	exported = venture_forms_export_person(f->db, f->org, "quiz@example.test", &error); g_assert_no_error(error);
+	{
+		JsonObject *row = json_array_get_object_element(json_object_get_array_member(json_node_get_object(exported), "responses"), 0);
+		g_assert_cmpint(json_object_get_int_member(row, "score"), ==, 8);
+		g_assert_cmpstr(json_object_get_string_member(row, "result_key"), ==, "high");
+	}
+	g_object_unref(publish(f, form));
+	g_clear_pointer(&seed, g_free); seed = language_seed(f, form, "fr"); pairs[7] = seed;
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_clear_object(&response); response = last_form_response(f); g_assert_cmpint(venture_forms_get_int(response, "score"), ==, 103);
+	swept = venture_forms_retention_sweep(f->db, f->org, 10, later, NULL, &error); g_assert_no_error(error);
+	{
+		g_autoptr(VentureEntity) retained = reread(f, response);
+		g_autofree gchar *result = venture_forms_get_string(retained, "result-message");
+		g_assert_false(venture_forms_get_bool(retained, "scored")); g_assert_cmpint(venture_forms_get_int(retained, "score"), ==, 0);
+		g_assert_true(venture_string_is_empty(result));
+	}
+}
+
+
+
+/* A published band chooses the destination on both public transports;
+ * the browser cannot substitute its own score or destination. */
+static void
+test_quiz_redirect(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = quiz_form(f, "quiz-redirect");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_RESULT_BAND);
+	g_autoptr(VentureEntity) band = NULL;
+	g_autofree gchar *ticket = NULL, *body = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, "high", NULL);
+	band = venture_database_find_one(f->db, query, NULL);
+	g_object_set(band, "redirect-url", "https://example.test/plan-b", NULL); save(f, band);
+	g_object_set(form, "redirect-url", "https://example.test/general", NULL); save(f, form);
+	g_object_unref(publish(f, form)); ticket = old_ticket(form);
+	body = g_strdup_printf("%s&answer=right&number=5", ticket);
+	start_http(f);
+	request(f, "/pub/form/quiz-redirect", "application/x-www-form-urlencoded", body, NULL, "text/html", &reply);
+	g_assert_cmpuint(reply.status, ==, 303); g_assert_cmpstr(reply.location, ==, "https://example.test/plan-b"); reply_clear(&reply);
+	request(f, "/pub/form/quiz-redirect", "application/x-www-form-urlencoded", body, NULL, "application/json", &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "https://example.test/plan-b")); reply_clear(&reply);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -4117,6 +4374,12 @@ main(int argc, char **argv)
 	g_test_add("/forms/double-optin", Fixture, NULL, setup, test_double_optin, teardown);
 	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
 	g_test_add("/forms/consent-no-default", Fixture, NULL, setup, test_consent_no_default, teardown);
+	g_test_add("/forms/quiz-validation", Fixture, NULL, setup, test_quiz_validation, teardown);
+	g_test_add("/forms/quiz-score-key", Fixture, NULL, setup, test_quiz_score_and_key, teardown);
+	g_test_add("/forms/quiz-hidden-repeated", Fixture, NULL, setup, test_quiz_hidden_and_repeated, teardown);
+	g_test_add("/forms/quiz-redirect", Fixture, NULL, setup, test_quiz_redirect, teardown);
+	g_test_add("/forms/quiz-version-privacy", Fixture, NULL, setup, test_quiz_version_privacy, teardown);
+	g_test_add("/forms/quiz-lead-input", Fixture, NULL, setup, test_quiz_lead_input, teardown);
 	g_test_add("/forms/resume-private-mail", Fixture, NULL, setup, test_resume_private_mail, teardown);
 	g_test_add("/forms/resume-http", Fixture, NULL, setup, test_resume_http, teardown);
 	g_test_add("/forms/resume-groups-expiry", Fixture, NULL, setup, test_resume_groups_expiry, teardown);

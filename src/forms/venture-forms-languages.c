@@ -10,6 +10,7 @@
  * an author. A translation can never change a stable key, choice id or rule. */
 typedef struct { const gchar *key; const gchar *text; } FormsMessage;
 static const FormsMessage messages[] = {
+	{ "score", "Score" }, { "correct_answers", "Correct answers" },
 	{ "save", "Save and continue later" },
 	{ "resume_email", "Email the resume link (optional)" },
 	{ "resume_link", "Your private resume link" },
@@ -123,6 +124,16 @@ forms_catalog_base(VentureEntity *form, GPtrArray *fields)
 		g_autofree gchar *key = g_strdup_printf("form.%s", properties[i]);
 		g_strdelimit(key, "-", '_');
 		json_object_set_string_member(base, key, value != NULL ? value : "");
+	}
+	if (venture_forms_quiz(fields) != NULL)
+	{
+		JsonArray *bands = json_object_get_array_member(venture_forms_quiz(fields), "bands");
+		for (i = 0; i < json_array_get_length(bands); i++)
+		{
+			JsonObject *band = json_array_get_object_element(bands, i);
+			g_autofree gchar *key = g_strdup_printf("result.%s.message", json_object_get_string_member(band, "key"));
+			json_object_set_string_member(base, key, json_object_get_string_member(band, "message"));
+		}
 	}
 	for (i = 0; i < G_N_ELEMENTS(messages); i++)
 	{
