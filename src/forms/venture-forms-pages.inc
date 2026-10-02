@@ -139,6 +139,9 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		if (initial == NULL) goto fail;
 		g_clear_pointer(&step->values, json_object_unref);
 		step->values = g_steal_pointer(&initial);
+		json_object_remove_member(step->values, VENTURE_FORMS_LANGUAGE);
+		if (forms_first(answers, VENTURE_FORMS_PREFILL) != NULL)
+			json_object_set_string_member(step->values, VENTURE_FORMS_PREFILL, forms_first(answers, VENTURE_FORMS_PREFILL));
 		if (personal != NULL) json_object_set_string_member(step->values, VENTURE_FORMS_PERSONAL, personal);
 	}
 	{
@@ -157,6 +160,10 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 
 	base_fields = venture_forms_definition_for(database, fresh, step->version, error);
 	if (base_fields == NULL) goto fail;
+	{
+		g_autofree gchar *language = venture_forms_language_from_values(fresh, step->version, step->values);
+		venture_forms_localize(base_fields, language);
+	}
 	step->pages = venture_forms_page_count(base_fields);
 	if (step->page >= step->pages) goto missing;
 	page_values = venture_forms_groups_overlay(base_fields, step->page, step->values, posted);
@@ -264,6 +271,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		}
 		if (!forms_draft_save(database, draft, step, FALSE, error)) return NULL;
 	}
+	venture_forms_translation_errors(fields, step->errors);
 	if (draft != NULL) step->token = forms_draft_token(fresh, draft);
 	return g_steal_pointer(&step);
 

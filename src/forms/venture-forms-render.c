@@ -188,14 +188,16 @@ forms_render_group(GString *html, const gchar *prefix, const VentureFormsField *
 		g_string_append_printf(html, " %u</legend><input type=\"hidden\" name=\"%s\" value=\"1\">", field->row_index + 1, field->key);
 		break;
 	case VENTURE_FORMS_GROUP_ROW_END:
-		g_string_append_printf(html, "<button class=\"vf-remove-row\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"remove:%s:%u\" formnovalidate%s>Remove ",
+		g_string_append_printf(html, "<button class=\"vf-remove-row\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"remove:%s:%u\" formnovalidate%s>",
 			field->group_key, field->row_index, preview || field->row_count <= field->group_min ? " disabled" : "");
+		forms_escape(html, venture_forms_field_text(field, "message.remove_row", "Remove")); g_string_append_c(html, ' ');
 		forms_escape(html, field->group_label);
 		g_string_append_printf(html, " %u</button></fieldset>", field->row_index + 1);
 		break;
 	case VENTURE_FORMS_GROUP_END:
-		g_string_append_printf(html, "<button class=\"vf-add-row\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"add:%s\" formnovalidate%s>Add another ",
+		g_string_append_printf(html, "<button class=\"vf-add-row\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"add:%s\" formnovalidate%s>",
 			field->group_key, preview || field->row_count >= field->group_max ? " disabled" : "");
+		forms_escape(html, venture_forms_field_text(field, "message.add_row", "Add another")); g_string_append_c(html, ' ');
 		forms_escape(html, field->group_label);
 		g_string_append(html, "</button></fieldset>");
 		break;
@@ -487,8 +489,9 @@ forms_render_summary(GString *html, const gchar *prefix, GPtrArray *fields,
 		g_string_append(html, "</p></div>");
 		return;
 	}
-	g_string_append_printf(html, "<p class=\"vf-errors-title\">There %s a problem with %u answer%s.</p>"
-	                       "<ul class=\"vf-error-list\">", count == 1 ? "is" : "are", count, count == 1 ? "" : "s");
+	g_string_append(html, "<p class=\"vf-errors-title\">");
+	forms_escape(html, venture_forms_text(fields, "message.errors", "Please check these answers."));
+	g_string_append(html, "</p><ul class=\"vf-error-list\">");
 	for (i = 0; i < fields->len; i++)
 	{
 		const VentureFormsField *field = g_ptr_array_index(fields, i);
@@ -530,12 +533,12 @@ forms_render_summary(GString *html, const gchar *prefix, GPtrArray *fields,
 }
 
 static void
-forms_document_open(GString *html, VentureEntity *form, gboolean basic)
+forms_document_open(GString *html, const gchar *title, gboolean basic, const gchar *language)
 {
-	g_autofree gchar *title = venture_forms_get_string(form, "title");
 
-	g_string_append(html, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-	                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+	g_string_append(html, "<!DOCTYPE html><html lang=\""); forms_escape(html, language != NULL ? language : "en");
+	g_string_append(html, "\"><head><meta charset=\"utf-8\">");
+	g_string_append(html, "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
 	                "<meta name=\"robots\" content=\"noindex\"><title>");
 	forms_escape(html, venture_string_is_empty(title) ? "Form" : title);
 	g_string_append(html, "</title>");
@@ -579,13 +582,20 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	base_fields = venture_forms_definition_for(database, form, options->version, error);
 	if (NULL == base_fields)
 		return NULL;
+	{
+		g_autofree gchar *language = venture_forms_language_from_values(form, options->version, options->values);
+		venture_forms_localize(base_fields, language);
+	}
 	fields = venture_forms_expand_groups(base_fields, options->values, TRUE, NULL);
 	pipe_values = venture_forms_pipe_values(fields, options->values);
 
 	token = venture_forms_get_string(form, "public-token");
 	title = venture_forms_get_string(form, "title");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.title", title)); g_free(title); title = localized; }
 	description = venture_forms_get_string(form, "description");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.description", description)); g_free(description); description = localized; }
 	submit = venture_forms_get_string(form, "submit-label");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.submit_label", submit)); g_free(submit); submit = localized; }
 	prefix = g_strdup_printf("vf-%s", token != NULL ? token : "form");
 	action = (NULL != options->action) ? g_strdup(options->action) :
 	         g_strdup_printf("/pub/form/%s", token != NULL ? token : "");
@@ -598,10 +608,12 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 
 	html = g_string_new(NULL);
 	if (hosted)
-		forms_document_open(html, form, VENTURE_FORMS_RENDER_HOSTED_BASIC == options->mode);
+		forms_document_open(html, title, VENTURE_FORMS_RENDER_HOSTED_BASIC == options->mode, venture_forms_language(fields));
 
 	g_string_append_printf(html, "<form class=\"vf-form\" id=\"%s\" data-vf-form=\"%s\" "
 	                       "method=\"post\" accept-charset=\"utf-8\"", prefix, token != NULL ? token : "");
+	g_string_append(html, " lang=\""); forms_escape(html, venture_forms_language(fields)); g_string_append_c(html, '"');
+	g_string_append(html, " data-vf-error-title=\""); forms_escape(html, venture_forms_text(fields, "message.errors", "Please check these answers.")); g_string_append_c(html, '"');
 	if (json_array_get_length(render_rules) > 0)
 	{
 		JsonArray *rules = render_rules;
@@ -678,7 +690,13 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	}
 
 	if (pages > 1)
-		g_string_append_printf(html, "<section class=\"vf-page\" aria-label=\"Page %u\"><p class=\"vf-progress\" role=\"status\" tabindex=\"-1\">Page %u of %u</p>", page + 1, page + 1, pages);
+	{
+		const gchar *word = venture_forms_text(fields, "message.page", "Page");
+		g_string_append(html, "<section class=\"vf-page\" aria-label=\""); forms_escape(html, word);
+		g_string_append_printf(html, " %u\"><p class=\"vf-progress\" role=\"status\" tabindex=\"-1\">", page + 1);
+		forms_escape(html, word); g_string_append_printf(html, " %u ", page + 1);
+		forms_escape(html, venture_forms_text(fields, "message.of", "of")); g_string_append_printf(html, " %u</p>", pages);
+	}
 	forms_render_summary(html, prefix, selected, options, hosted, fields, pipe_values);
 
 	for (i = 0; i < selected->len; i++)
@@ -690,7 +708,9 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 			/* The asterisk beside each question is hidden from screen
 			 * readers, which hear aria-required instead; this sentence
 			 * is what explains it to everyone else. */
-			g_string_append(html, "<p class=\"vf-required-note\">Questions marked * are required.</p>");
+			g_string_append(html, "<p class=\"vf-required-note\">");
+			forms_escape(html, venture_forms_text(fields, "message.required_note", "Questions marked * are required."));
+			g_string_append(html, "</p>");
 			break;
 		}
 	}
@@ -728,17 +748,21 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 		{
 			g_string_append(html, "<p class=\"vf-privacy\"><a href=\"");
 			forms_escape(html, privacy);
-			g_string_append(html, "\">Privacy notice</a></p>");
+			g_string_append(html, "\">"); forms_escape(html, venture_forms_text(fields, "message.privacy", "Privacy notice"));
+			g_string_append(html, "</a></p>");
 		}
 	}
 	g_string_append(html, "<div class=\"vf-actions\">");
 	if (page > 0)
-		g_string_append(html, "<button class=\"vf-back\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"back\" formnovalidate>Back</button>");
+	{
+		g_string_append(html, "<button class=\"vf-back\" type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"back\" formnovalidate>");
+		forms_escape(html, venture_forms_text(fields, "message.back", "Back")); g_string_append(html, "</button>");
+	}
 	g_string_append_printf(html, "<button class=\"vf-submit%s\" type=\"submit\"", !preview && page + 1 < pages ? " vf-next" : "");
 	if (preview)
 		g_string_append(html, " disabled");
 	g_string_append_c(html, '>');
-	forms_escape(html, !preview && page + 1 < pages ? "Next" : (venture_string_is_empty(submit) ? "Send" : submit));
+	forms_escape(html, !preview && page + 1 < pages ? venture_forms_text(fields, "message.next", "Next") : (venture_string_is_empty(submit) ? venture_forms_text(fields, "message.send", "Send") : submit));
 	g_string_append(html, "</button></div></form>");
 
 	if (hosted)
@@ -748,7 +772,7 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 }
 
 gchar *
-venture_forms_render_success_text(VentureEntity *form, const gchar *message, gboolean hosted)
+venture_forms_render_success_text(VentureEntity *form, const gchar *message, gboolean hosted, const gchar *language)
 {
 	GString *html;
 
@@ -756,7 +780,10 @@ venture_forms_render_success_text(VentureEntity *form, const gchar *message, gbo
 
 	html = g_string_new(NULL);
 	if (hosted)
-		forms_document_open(html, form, FALSE);
+	{
+		g_autofree gchar *title = venture_forms_get_string(form, "title");
+		forms_document_open(html, title, FALSE, language);
+	}
 	g_string_append(html, "<div class=\"vf-success\" role=\"status\">");
 	forms_paragraphs(html, venture_string_is_empty(message) ?
 		"Thank you. Your response has been received." : message);
@@ -771,7 +798,7 @@ venture_forms_render_success(VentureEntity *form, gboolean hosted)
 {
 	g_autofree gchar *template = venture_forms_get_string(form, "success-message");
 	g_autofree gchar *message = venture_forms_pipe_text(template, NULL, NULL, NULL);
-	return venture_forms_render_success_text(form, message, hosted);
+	return venture_forms_render_success_text(form, message, hosted, NULL);
 }
 
 /* ==========================================================================
@@ -779,8 +806,8 @@ venture_forms_render_success(VentureEntity *form, gboolean hosted)
  * ========================================================================== */
 
 JsonNode *
-venture_forms_schema(VentureDatabase *database, VentureEntity *form,
-	const gchar *action, GDateTime *now, GError **error)
+venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
+	const gchar *action, GDateTime *now, const gchar *language, GError **error)
 {
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(GPtrArray) fields = NULL;
@@ -804,14 +831,34 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 	if (NULL == fields)
 		return NULL;
 
+	venture_forms_localize(fields, language);
 	token = venture_forms_get_string(form, "public-token");
 	title = venture_forms_get_string(form, "title");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.title", title)); g_free(title); title = localized; }
 	description = venture_forms_get_string(form, "description");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.description", description)); g_free(description); description = localized; }
 	submit = venture_forms_get_string(form, "submit-label");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.submit_label", submit)); g_free(submit); submit = localized; }
 	success = venture_forms_get_string(form, "success-message");
+	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.success_message", success)); g_free(success); success = localized; }
 	ticket = venture_forms_ticket_new_for_version(form, venture_forms_get_int(version, "number"), now);
 
 	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "language"); json_builder_add_string_value(builder, venture_forms_language(fields));
+	json_builder_set_member_name(builder, "languages"); json_builder_begin_array(builder);
+	{
+		JsonObject *catalog = venture_forms_catalog(fields);
+		const gchar *fallback = catalog != NULL ? json_object_get_string_member_with_default(catalog, "default", "en") : "en";
+		json_builder_add_string_value(builder, fallback);
+		if (catalog != NULL)
+		{
+			JsonObjectIter iter; const gchar *lang; JsonNode *value;
+			json_object_iter_init(&iter, json_object_get_object_member(catalog, "languages"));
+			while (json_object_iter_next(&iter, &lang, &value))
+				if (g_strcmp0(lang, fallback) != 0) json_builder_add_string_value(builder, lang);
+		}
+	}
+	json_builder_end_array(builder);
 	json_builder_set_member_name(builder, "piping");
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "syntax"); json_builder_add_string_value(builder, "{field_key} or {group.count}");
@@ -831,10 +878,10 @@ venture_forms_schema(VentureDatabase *database, VentureEntity *form,
 	json_builder_set_member_name(builder, "description");
 	json_builder_add_string_value(builder, description != NULL ? description : "");
 	json_builder_set_member_name(builder, "submit_label");
-	json_builder_add_string_value(builder, venture_string_is_empty(submit) ? "Send" : submit);
+	json_builder_add_string_value(builder, venture_string_is_empty(submit) ? venture_forms_text(fields, "message.send", "Send") : submit);
 	json_builder_set_member_name(builder, "success_message");
 	json_builder_add_string_value(builder, venture_string_is_empty(success) ?
-		"Thank you. Your response has been received." : success);
+		venture_forms_text(fields, "message.success", "Thank you. Your response has been received.") : success);
 	json_builder_set_member_name(builder, "action");
 	json_builder_add_string_value(builder, action != NULL ? action : "");
 	{
@@ -1086,7 +1133,7 @@ forms_answer_text(const VentureFormsField *field, JsonNode *node)
 	switch (json_node_get_value_type(node))
 	{
 	case G_TYPE_BOOLEAN:
-		return g_strdup(json_node_get_boolean(node) ? "Yes" : "No");
+		return g_strdup(venture_forms_field_text(field, json_node_get_boolean(node) ? "message.yes" : "message.no", json_node_get_boolean(node) ? "Yes" : "No"));
 	case G_TYPE_INT64:
 		return g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(node));
 	case G_TYPE_DOUBLE:
@@ -1134,6 +1181,10 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 	fields = venture_forms_definition_for(database, form, version, error);
 	if (NULL == fields)
 		return NULL;
+	{
+		g_autofree gchar *language = venture_forms_get_string(submission, "language");
+		venture_forms_localize(fields, language);
+	}
 	text = venture_forms_get_string(submission, "answers");
 	answers = venture_string_is_empty(text) ? NULL : json_from_string(text, NULL);
 	if (NULL == answers || !JSON_NODE_HOLDS_OBJECT(answers))
@@ -1167,7 +1218,7 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 				row = json_node_get_object(item);
 			}
 			if (!json_object_has_member(row, field->key)) continue;
-			shown = field->kind == VENTURE_FORM_FIELD_CONSENT ? g_strdup("Given") :
+			shown = field->kind == VENTURE_FORM_FIELD_CONSENT ? g_strdup(venture_forms_field_text(field, "message.given", "Given")) :
 				forms_answer_text(field, json_object_get_member(row, field->key));
 			g_string_append(html, "<dt>");
 			if (rows != NULL)
@@ -1189,4 +1240,11 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 		g_string_append_printf(html, "<p class=\"field-help\">Answered on version %" G_GINT64_FORMAT
 		                       " of the form.</p>", venture_forms_get_int(version, "number"));
 	return g_string_free(html, FALSE);
+}
+
+JsonNode *
+venture_forms_schema(VentureDatabase *database, VentureEntity *form,
+	const gchar *action, GDateTime *now, GError **error)
+{
+	return venture_forms_schema_language(database, form, action, now, NULL, error);
 }

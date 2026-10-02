@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-28]
-#+updated: [2026-09-28]
+#+updated: [2026-10-02]
 #+version: 0.1.0
 
 * What a form is
@@ -22,6 +22,7 @@ structure and the handling; the host site supplies the look. The records and rep
   =help=, =placeholder=, =position= and the per-kind settings below.
   Labelled "Form question".
 - =form_rule= :: conditional visibility, requiredness and forward navigation.
+- =form_translation= :: versioned public wording by language and text key.
 - =form_group= :: a bounded repeating set of questions.
 - =form_draft= :: private intermediate answers while navigating pages or rows.
 - =form_pending= :: private double opt-in input awaiting inbox confirmation.
@@ -737,7 +738,7 @@ lost because its follow-up failed.
 responses' =submitted_at=. One row per choice of every choice question,
 =Yes= and =No= for a box, one row per step of a scale and an =Average=
 row for scales and numbers, and =Answered= for text, each with the
-=versions= it covers (see Versions). =share= is the percentage of the
+=versions= it covers (see Versions). =share= is a ratio in JSON (0 to 1), formatted as a percentage of the
 responses in the period that were asked that question. It reads at most 50,000
 responses and asks for a shorter period beyond that.
 
@@ -839,3 +840,80 @@ server-enforced response limit. For verified identity, use the signed personal
 links and =one_per_link= / =one_per_contact= limits described above.
 
 The [[file:evidence/forms-schedule.org][built-server demonstration]] exercises these public flows.
+
+* Languages
+
+A form's =default_language= identifies the original wording (default =en=).
+Add =form_translation= records through the ordinary editor, API or CLI, then
+publish. Each record names =form_id=, =language=, =text_key= and plain =text=;
+its display name is derived on save. Tags are case-insensitive and stored in
+lowercase, for example =fr= or =fr-ca=. Each form/language/text key has one
+active translation. Partial translations are allowed: the save validator emits
+an advisory count of missing strings and the default wording fills the gaps.
+An empty translated string also falls back. Invalid keys, unsafe piping and
+invalid language tags are refused. At most 2000 texts belong to a form, with a 1 MiB catalog bound.
+
+Text keys address public wording, never answer identities:
+
+| Key | What it translates |
+|-----+--------------------|
+| =form.title=, =form.description= | Heading and introduction |
+| =form.submit_label=, =form.success_message= | Final button and thanks |
+| =form.confirmation_subject=, =form.confirmation_message= | Ordinary response email |
+| =field.KEY.label=, =field.KEY.help=, =field.KEY.placeholder= | A question, including a page-break heading/introduction |
+| =choice.KEY.ID= | A choice label; =ID= stays fixed in answers |
+| =group.KEY.label= | A repeating group's label |
+| =message.NAME= | A validation or system message from the catalog below |
+
+#+begin_src sh
+venturectl create form_translation form_id=12 language=fr text_key=field.name.label text='Votre nom'
+venturectl create form_translation form_id=12 language=fr text_key=choice.topic.sales text=Ventes
+venturectl create form_translation form_id=12 language=fr text_key=message.required text='Une réponse est nécessaire.'
+venturectl create form_translation form_id=12 language=fr text_key=form.success_message text='Merci {name}.'
+venturectl act form 12 publish
+venturectl report form_summary all form_id=12 language=fr
+#+end_src
+
+Select =?lang=fr= on the hosted URL or fragment. A loader element can carry
+=data-venture-form-lang="fr"=; an explicit =lang= in its URL wins over the
+attribute. Otherwise the server negotiates the bounded =Accept-Language=
+header, including quality weights and parent-language fallback, then uses the
+default. Unsupported explicit tags fall through to that negotiation. The
+rendered =form= carries =lang=. The public schema reports the selected and
+available languages and retains stable choice ids.
+
+The language is carried in signed form state, not trusted from a posted
+language field. Working copies retain it through validation and Back/Next.
+Translations and default wording are frozen at publication. Editing a
+translation does not change an in-flight response or its consent evidence.
+=form_submission.language= records the language used; it is immutable like
+the answers. Reports combine all languages by key and choice id. The report's
+=language= option only changes labels, falling back within each original
+version; it does not filter responses.
+
+Piping uses translated labels and selected choice labels. Consent records the
+actual translated, substituted wording. Confirmation emails use that same
+language. Double-opt-in resends and confirmation preserve the original pending
+version and language even if a different language is used for a later request.
+Text is escaped on HTML surfaces and never used as a printf format or code.
+
+The =message.NAME= catalog includes =required=, =email=, =phone=, =url=,
+=date=, =number=, =choice=, =multiple=, =one_answer=, =checkbox=, =consent=,
+=single_line=, =pattern=, =max_length=, =min_length=, =minimum=, =maximum=,
+=rating=, =required_note=, =errors=, =next=, =back=, =send=, =page=, =of=,
+=privacy=, =yes=, =no=, =given=, =add_row=, =remove_row=, =success=,
+=inbox_title=, =inbox=, =confirm=, =confirm_intro=, =optin_subject=,
+=optin_intro=, =optin_expiry= and =mail_subject=. Bound-related translations
+are plain instructions; native input constraints still carry the numeric
+bounds. Browser-native validation messages follow the browser's locale.
+
+Unavailable forms retain the uniform public 404 contract: they do not reveal
+that a particular form is closed, full, scheduled or unknown, so there is no
+per-form closed-message override.
+
+Additional validation keys are =row_marker=, =group_heading=, =page_heading=,
+=unknown_question=, =email_required=, =duplicate_email=, =optin_permission=,
+=optin_email=, =personal_inbox=, =current_page=, =row_numbers=,
+=row_consecutive=, =rows_excess=, =rows_minimum=, =rows_maximum=,
+=rows_keep= and =row_operation=. System failures before an authenticated
+form state exists retain generic messages.

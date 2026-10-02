@@ -296,6 +296,8 @@ venture_forms_field_free(gpointer data)
 	g_free(field->base_key);
 	g_clear_pointer(&field->choices, g_ptr_array_unref);
 	g_clear_pointer(&field->rules, json_array_unref);
+	g_clear_pointer(&field->catalog, json_object_unref);
+	g_free(field->language);
 	g_free(field);
 }
 
@@ -374,7 +376,8 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 		g_ptr_array_add(fields, field);
 	}
 	if (!venture_forms_groups_load(database, form, fields, error) ||
-	    !venture_forms_rules_load(database, form, fields, error))
+	    !venture_forms_rules_load(database, form, fields, error) ||
+	    !venture_forms_translations_load(database, form, fields, error))
 	{
 		g_ptr_array_unref(fields);
 		return NULL;
@@ -399,6 +402,13 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		json_node_set_array(rules, ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules);
 		json_builder_set_member_name(builder, "rules");
 		json_builder_add_value(builder, json_node_copy(rules));
+	}
+	if (venture_forms_catalog(fields) != NULL)
+	{
+		JsonNode *catalog = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(catalog, venture_forms_catalog(fields));
+		json_builder_set_member_name(builder, "translations");
+		json_builder_add_value(builder, catalog);
 	}
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
@@ -610,6 +620,12 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 					goto broken;
 			}
 		}
+	}
+	if (json_object_has_member(json_node_get_object(root), "translations"))
+	{
+		JsonNode *catalog = json_object_get_member(json_node_get_object(root), "translations");
+		if (!JSON_NODE_HOLDS_OBJECT(catalog)) goto broken;
+		venture_forms_catalog_restore(fields, json_node_get_object(catalog));
 	}
 	if (!venture_forms_groups_check(fields, error)) return NULL;
 	if (!venture_forms_rules_restore(fields, json_object_get_member(json_node_get_object(root), "rules"), error))

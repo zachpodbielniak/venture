@@ -96,8 +96,8 @@ pipe_record_order(gconstpointer a, gconstpointer b)
 	return li == ri ? 0 : (li < ri ? -1 : 1);
 }
 
-static gboolean
-pipe_validate_text(const gchar *text, GPtrArray *fields, const VentureFormsField *target, GError **error)
+gboolean
+venture_forms_pipe_validate_text(const gchar *text, GPtrArray *fields, const VentureFormsField *target, GError **error)
 {
 	g_autoptr(GPtrArray) tokens = pipe_tokens(text, error);
 	guint i;
@@ -139,10 +139,28 @@ venture_forms_piping_definition(GPtrArray *fields, const gchar *success, GError 
 	for (i = 0; i < fields->len; i++)
 	{
 		const VentureFormsField *field = g_ptr_array_index(fields, i);
-		if (!pipe_validate_text(field->label, fields, field, error) ||
-		    !pipe_validate_text(field->help, fields, field, error)) return FALSE;
+		if (!venture_forms_pipe_validate_text(field->label, fields, field, error) ||
+		    !venture_forms_pipe_validate_text(field->help, fields, field, error)) return FALSE;
 	}
-	return pipe_validate_text(success, fields, NULL, error);
+	return venture_forms_pipe_validate_text(success, fields, NULL, error);
+}
+
+static gboolean
+pipe_catalog_has_templates(JsonObject *object, guint depth)
+{
+	JsonObjectIter iter;
+	const gchar *key;
+	JsonNode *node;
+	if (object == NULL || depth > 3) return FALSE;
+	json_object_iter_init(&iter, object);
+	while (json_object_iter_next(&iter, &key, &node))
+	{
+		(void)key;
+		if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING &&
+		    strpbrk(json_node_get_string(node), "{}") != NULL) return TRUE;
+		if (JSON_NODE_HOLDS_OBJECT(node) && pipe_catalog_has_templates(json_node_get_object(node), depth + 1)) return TRUE;
+	}
+	return FALSE;
 }
 
 /* Validate the edited draft as a whole: changing a source's order or
@@ -155,7 +173,7 @@ venture_forms_validate_piping(VentureDatabase *database, VentureEntity *entity, 
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GPtrArray) fields = g_ptr_array_new_with_free_func(venture_forms_field_free);
 	g_autofree gchar *success = NULL;
-	gboolean candidate = VENTURE_IS_FORM_FIELD(entity), replaced = FALSE, templated = FALSE;
+	gboolean candidate = VENTURE_IS_FORM_FIELD(entity), replaced = FALSE;
 	guint i;
 	if (form == NULL) return FALSE;
 	rows = venture_forms_fields(database, form, error);
@@ -174,16 +192,13 @@ venture_forms_validate_piping(VentureDatabase *database, VentureEntity *entity, 
 	for (i = 0; i < rows->len; i++) g_ptr_array_add(fields, venture_forms_field_from_record(g_ptr_array_index(rows, i)));
 
 	success = venture_forms_get_string(form, "success-message");
-	templated = success != NULL && strpbrk(success, "{}") != NULL;
-	for (i = 0; i < fields->len && !templated; i++)
-	{
-		const VentureFormsField *field = g_ptr_array_index(fields, i);
-		templated = (field->label != NULL && strpbrk(field->label, "{}") != NULL) ||
-			(field->help != NULL && strpbrk(field->help, "{}") != NULL);
-	}
-	if (!templated) return TRUE;
+	if (!venture_forms_translations_load(database, form, fields, error)) return FALSE;
+	/* Layout constraints belong to publish. Only templates need a draft's
+	 * group metadata while the author is still assembling its questions. */
+	if (!pipe_catalog_has_templates(venture_forms_catalog(fields), 0)) return TRUE;
 	if (!venture_forms_groups_load_metadata(database, form, fields, error)) return FALSE;
-	return venture_forms_piping_definition(fields, success, error);
+	return venture_forms_piping_definition(fields, success, error) &&
+		venture_forms_translations_check(fields, error);
 }
 
 gchar *
@@ -193,7 +208,7 @@ venture_forms_pipe_answer(const VentureFormsField *field, JsonNode *answer)
 	JsonArray *array = answer != NULL && JSON_NODE_HOLDS_ARRAY(answer) ? json_node_get_array(answer) : NULL;
 	guint i, length = array != NULL ? json_array_get_length(array) : 1;
 	if (answer == NULL || field->sensitive) return g_strdup("");
-	if (field->kind == VENTURE_FORM_FIELD_CONSENT) return g_strdup("Given");
+	if (field->kind == VENTURE_FORM_FIELD_CONSENT) return g_strdup(venture_forms_field_text(field, "message.given", "Given"));
 	for (i = 0; i < length; i++)
 	{
 		JsonNode *value = array != NULL ? json_array_get_element(array, i) : answer;
@@ -203,7 +218,7 @@ venture_forms_pipe_answer(const VentureFormsField *field, JsonNode *answer)
 		guint j;
 		if (!JSON_NODE_HOLDS_VALUE(value)) continue;
 		if (json_node_get_value_type(value) == G_TYPE_STRING) shown = json_node_get_string(value);
-		else if (json_node_get_value_type(value) == G_TYPE_BOOLEAN) shown = json_node_get_boolean(value) ? "Yes" : "No";
+		else if (json_node_get_value_type(value) == G_TYPE_BOOLEAN) shown = venture_forms_field_text(field, json_node_get_boolean(value) ? "message.yes" : "message.no", json_node_get_boolean(value) ? "Yes" : "No");
 		else if (json_node_get_value_type(value) == G_TYPE_DOUBLE) shown = g_ascii_dtostr(buffer, sizeof(buffer), json_node_get_double(value));
 		else { number = json_to_string(value, FALSE); shown = number; }
 		if (venture_forms_kind_has_choices(field->kind))
@@ -327,7 +342,7 @@ venture_forms_success_message(VentureDatabase *database, VentureEntity *form, Ve
 	g_autoptr(GPtrArray) fields = NULL;
 	g_autoptr(JsonNode) root = NULL;
 	g_autoptr(JsonObject) values = json_object_new();
-	if (venture_string_is_empty(template)) return g_strdup("Thank you. Your response has been received.");
+
 	if (response != NULL)
 	{
 		g_autofree gchar *text = venture_forms_get_string(response, "answers");
@@ -337,6 +352,14 @@ venture_forms_success_message(VentureDatabase *database, VentureEntity *form, Ve
 	else version = venture_forms_published_version(database, form, NULL);
 	fields = venture_forms_definition_for(database, form, version, NULL);
 	if (fields == NULL) return g_strdup("");
+	{
+		g_autofree gchar *language = response != NULL ? venture_forms_get_string(response, "language") : NULL;
+		gchar *localized;
+		venture_forms_localize(fields, language);
+		localized = g_strdup(venture_forms_text(fields, "form.success_message", template));
+		g_free(template); template = localized;
+		if (venture_string_is_empty(template)) return g_strdup(venture_forms_text(fields, "message.success", "Thank you. Your response has been received."));
+	}
 	if (root != NULL && JSON_NODE_HOLDS_OBJECT(root))
 	{
 		g_clear_pointer(&values, json_object_unref);
@@ -391,6 +414,9 @@ venture_forms_pipe_context(GPtrArray *selected, GPtrArray *fields, JsonObject *v
 					JsonObject *info = json_object_new(), *choices = json_object_new();
 					guint c;
 					json_object_set_string_member(info, "kind", venture_forms_kind_nick(source->kind));
+					json_object_set_string_member(info, "yes", venture_forms_field_text(source, "message.yes", "Yes"));
+					json_object_set_string_member(info, "no", venture_forms_field_text(source, "message.no", "No"));
+					json_object_set_string_member(info, "given", venture_forms_field_text(source, "message.given", "Given"));
 					if (source->kind == VENTURE_FORM_FIELD_HIDDEN) json_object_set_string_member(info, "default", source->default_value != NULL ? source->default_value : "");
 					for (c = 0; source->choices != NULL && c < source->choices->len; c++)
 					{

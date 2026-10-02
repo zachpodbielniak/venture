@@ -182,7 +182,7 @@ forms_optin_store(VentureDatabase *database, VentureEntity *form, VentureEntity 
 	g_autofree gchar *public = venture_forms_get_string(form, "public-token");
 	g_autoptr(VentureEntity) pending = NULL, contact = NULL, fresh = NULL;
 	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) rows = NULL, mail_fields = NULL;
 	g_autoptr(GDateTime) expires = NULL, sent = NULL;
 	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
 	VentureMailOutbox *outbox = venture_database_get_mail_outbox(database);
@@ -255,7 +255,7 @@ forms_optin_store(VentureDatabase *database, VentureEntity *form, VentureEntity 
 	}
 	if (pending == NULL)
 	{
-		g_autoptr(JsonObject) raw = venture_forms_answers_to_json(answers);
+		g_autoptr(JsonObject) raw = venture_forms_answers_state(answers);
 		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 		g_autofree gchar *text = NULL;
 		json_node_set_object(node, raw); text = json_to_string(node, FALSE);
@@ -274,11 +274,16 @@ forms_optin_store(VentureDatabase *database, VentureEntity *form, VentureEntity 
 	if (!forms_pending_save(database, pending, error)) goto fail;
 	url = g_strdup_printf("%.*s/pub/form/%s/confirm/%s",
 		(gint)(strlen(base) - (g_str_has_suffix(base, "/") ? 1 : 0)), base, public, token);
-	body = g_strdup_printf("Confirm your signup by opening this link and pressing Confirm signup:\n%s\n\nThis link expires 24 hours after the original request. If you did not request this signup, ignore this message.", url);
+	/* A resend belongs to the original pending version and selected language. */
+	mail_fields = venture_forms_record_definition(database, form, pending, error);
+	if (mail_fields == NULL) goto fail;
+	body = g_strdup_printf("%s\n%s\n\n%s",
+		venture_forms_text(mail_fields, "message.optin_intro", "Confirm your signup by opening this link and pressing Confirm signup:"), url,
+		venture_forms_text(mail_fields, "message.optin_expiry", "This link expires 24 hours after the original request. If you did not request this signup, ignore this message."));
 	idempotency = g_strdup_printf("form-optin:%s:%" G_GINT64_FORMAT, venture_entity_get_uuid(pending), venture_forms_get_int(pending, "send-count"));
 	message = venture_mail_message_new();
 	g_object_set(message, "organization-id", venture_entity_get_organization_id(form), "to", email,
-		"subject", "Confirm your signup", "text-body", "A private signup confirmation link was issued.",
+		"subject", venture_forms_text(mail_fields, "message.optin_subject", "Confirm your signup"), "text-body", "A private signup confirmation link was issued.",
 		"private-text-body", body, "idempotency-key", idempotency,
 		"related-type", "form_pending", "related-id", venture_entity_get_id(pending), NULL);
 	queued = venture_mail_outbox_enqueue(outbox, message, NULL, error);

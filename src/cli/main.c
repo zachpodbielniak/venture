@@ -1259,12 +1259,13 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "category_id")) &&
 				 (0 != g_strcmp0(parts[0], "goal_id")) &&
 				 (0 != g_strcmp0(parts[0], "form_id")) &&
+				 (0 != g_strcmp0(parts[0], "language")) &&
 				 (0 != g_strcmp0(parts[0], "location_id")) &&
 				 (0 != g_strcmp0(parts[0], "status")) &&
 				 (0 != g_strcmp0(parts[0], "include_on_hand"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, form_id");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, form_id, language");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3839,7 +3840,7 @@ main(
 		"                               session_performance takes group_by, category_depth, price_source, currency, venture_id;\n"
 		"                               goal_progress takes status, category_id, venture_id;\n"
 		"                               goal_materials takes goal_id, price_source, include_on_hand, venture_id\n"
-		"                               form_summary takes form_id\n"
+		"                               form_summary takes form_id and optional language\n"
 		"                               goal_materials takes goal_id, price_source, currency, include_on_hand, venture_id\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"

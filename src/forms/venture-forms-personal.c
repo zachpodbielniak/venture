@@ -160,7 +160,8 @@ venture_forms_prefill_unpack(VentureEntity *form, VentureEntity *version, const 
 	text = g_strndup((const gchar *)bytes, length);
 	if (!json_parser_load_from_data(parser, text, (gssize)length, NULL)) goto missing;
 	root = json_parser_get_root(parser);
-	if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root) || json_object_get_size(json_node_get_object(root)) > 500) goto missing;
+	/* At most 500 questions plus the private language and contact binding. */
+	if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root) || json_object_get_size(json_node_get_object(root)) > 502) goto missing;
 	return json_object_ref(json_node_get_object(root));
 missing:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");

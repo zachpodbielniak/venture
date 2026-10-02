@@ -190,6 +190,16 @@ VENTURE_DECLARE_ENTITY(VentureFormPending, venture_form_pending, FORM_PENDING)
  */
 
 
+#define VENTURE_TYPE_FORM_TRANSLATION (venture_form_translation_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormTranslation, venture_form_translation, FORM_TRANSLATION)
+/**
+ * venture_form_translation_new:
+ *
+ * Creates translated public wording for one form and language.
+ *
+ * Returns: (transfer full): a new #VentureFormTranslation
+ */
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_RECORDS_H */

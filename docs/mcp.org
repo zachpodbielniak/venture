@@ -228,3 +228,8 @@ confirmation queue for bank transactions when banking is available; neither appl
 The stdio MCP catalogue does not add a reconciliation-specific tool in this
 module. Existing generic confirmation tools can read and approve its staged
 actions. Approval calls the banking service and rechecks the line's version and eligibility. See [[file:reconciliation.org][reconciliation suggestions]].
+
+The forms summary report accepts =language= alongside =form_id=. It changes
+question and choice labels, with versioned default-language fallback, while
+combining responses from every language. Generic =form_translation= records
+edit wording; publishing freezes it. See [[file:forms.org][Forms]].

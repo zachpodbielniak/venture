@@ -3033,6 +3033,7 @@ test_summary_report(Fixture *f, gconstpointer data)
 	g_assert_nonnull(result);
 	json = venture_report_result_to_json(result);
 	g_assert_cmpfloat(summary_value(json, "Sales", "count"), ==, 2);
+	g_assert_cmpfloat_with_epsilon(summary_value(json, "Sales", "share"), 2.0 / 3.0, 0.000001);
 	g_assert_cmpfloat(summary_value(json, "Support", "count"), ==, 1);
 	g_assert_cmpfloat(summary_value(json, "Something else", "count"), ==, 0);
 	g_assert_cmpfloat(summary_value(json, "Average", "average"), ==, 4);
@@ -3516,6 +3517,290 @@ test_piping_rows(Fixture *f, gconstpointer data)
 }
 
 
+/* A translation changes wording, never the identity the answer is counted
+ * under. Partial catalogs intentionally fall back instead of blocking saves. */
+static VentureEntity *
+make_translation(Fixture *f, VentureEntity *form, const gchar *language, const gchar *key, const gchar *text)
+{
+	return g_object_new(VENTURE_TYPE_FORM_TRANSLATION, "organization-id", f->org,
+		"form-id", venture_entity_get_id(form), "language", language, "text-key", key, "text", text, NULL);
+}
+
+static void
+translate(Fixture *f, VentureEntity *form, const gchar *key, const gchar *text)
+{
+	g_autoptr(VentureEntity) row = make_translation(f, form, "fr", key, text);
+	save(f, row);
+}
+
+static gchar *
+language_seed(Fixture *f, VentureEntity *form, const gchar *language)
+{
+	g_autoptr(VentureEntity) version = venture_forms_published_version(f->db, form, NULL);
+	g_autoptr(JsonObject) values = json_object_new();
+	json_object_set_string_member(values, VENTURE_FORMS_LANGUAGE, language);
+	return venture_forms_prefill_pack(form, version, values);
+}
+
+static void
+test_languages_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "languages-validation");
+	g_autoptr(VentureEntity) row = make_translation(f, form, "FR", "field.name.label", "Votre nom");
+	g_autoptr(VentureEntity) duplicate = make_translation(f, form, "fr", "field.name.label", "Nom");
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(VentureEntity) version = NULL;
+	g_autofree gchar *chosen = NULL;
+	(void)data;
+	save(f, row); refuse(f, duplicate, "already");
+	g_object_set(duplicate, "language", "../fr", NULL); refuse(f, duplicate, "language");
+	g_object_set(duplicate, "language", "fr", "text-key", "field.unknown.label", NULL); refuse(f, duplicate, "text key");
+	g_object_set(duplicate, "text-key", "field.email.label", "text", "Plus tard {topic}", NULL); refuse(f, duplicate, "placeholder");
+	g_object_set(duplicate, "text-key", "form.confirmation_subject", "text", "Bonjour\nBcc: attacker@example.test", NULL); refuse(f, duplicate, "one line");
+	translate(f, form, "field.email.help", "Bonjour {name}");
+	{
+		g_autoptr(GPtrArray) rows = venture_forms_fields(f->db, form, NULL);
+		guint i;
+		for (i = 0; i < rows->len; i++)
+		{
+			VentureEntity *source = g_ptr_array_index(rows, i);
+			g_autofree gchar *key = venture_forms_get_string(source, "key");
+			if (g_strcmp0(key, "name") == 0)
+			{ g_object_set(source, "sensitive", TRUE, NULL); refuse(f, source, "placeholder"); }
+		}
+	}
+	version = publish(f, form); fields = venture_forms_definition_for(f->db, form, version, NULL);
+	chosen = venture_forms_language_choose(fields, NULL, "de;q=1, fr-CA;q=0.9, en;q=0.2"); g_assert_cmpstr(chosen, ==, "fr");
+	g_clear_pointer(&chosen, g_free); chosen = venture_forms_language_choose(fields, "en", "fr"); g_assert_cmpstr(chosen, ==, "en");
+	g_clear_pointer(&chosen, g_free); chosen = venture_forms_language_choose(fields, NULL, "fr;q=0, en;q=0.2"); g_assert_cmpstr(chosen, ==, "en");
+	venture_forms_localize(fields, "fr");
+	g_assert_cmpstr(venture_forms_definition_find(fields, "name")->label, ==, "Votre nom");
+	g_assert_cmpstr(venture_forms_definition_find(fields, "email")->label, ==, "Email");
+	g_object_set(row, "text", "Draft only", NULL); save(f, row);
+	g_clear_pointer(&fields, g_ptr_array_unref); fields = venture_forms_definition_for(f->db, form, version, NULL);
+	venture_forms_localize(fields, "fr"); g_assert_cmpstr(venture_forms_definition_find(fields, "name")->label, ==, "Votre nom");
+}
+
+static void
+test_languages_report(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "languages-report"), response = NULL;
+	g_autofree gchar *seed = NULL, *language = NULL, *answers = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(JsonNode) json = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureDateRange) period = venture_date_range_new_all_time();
+	g_autoptr(GError) error = NULL;
+	const gchar *english[] = { "name", "Alice", "email", "alice@example.test", "topic", "sales", NULL };
+	const gchar *french[] = { "name", "Anne", "email", "anne@example.test", "topic", "sales", VENTURE_FORMS_PREFILL, NULL, NULL };
+	(void)data;
+	translate(f, form, "message.errors", "Corrigez les réponses.");
+	translate(f, form, "message.email", "Saisissez une adresse courriel.");
+	translate(f, form, "field.topic.label", "Sujet"); translate(f, form, "choice.topic.sales", "Ventes");
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "fr"); french[7] = seed;
+	g_assert_cmpint(submit_pairs(f, form, english, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(submit_pairs(f, form, french, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f); language = venture_forms_get_string(response, "language"); answers = venture_forms_get_string(response, "answers");
+	g_assert_cmpstr(language, ==, "fr"); g_assert_nonnull(strstr(answers, "sales")); g_assert_null(strstr(answers, "Ventes"));
+	g_object_set(response, "language", "en", NULL); refuse(f, response, "cannot be changed");
+	json_object_set_int_member(options, "form_id", venture_entity_get_id(form)); json_object_set_int_member(options, "organization_id", f->org);
+	json_object_set_string_member(options, "language", "fr");
+	result = venture_report_generate(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "form_summary"), f->context, period, options, &error);
+	g_assert_no_error(error); g_assert_nonnull(result); json = venture_report_result_to_json(result);
+	g_assert_cmpfloat(summary_value(json, "Ventes", "count"), ==, 2);
+	{
+		g_autofree gchar *path = g_strdup_printf("/api/v1/reports/form_summary?period=all&form_id=%" G_GINT64_FORMAT "&language=fr", venture_entity_get_id(form));
+		g_autoptr(JsonNode) public_report = NULL;
+		Reply reply = { 0, NULL, NULL, NULL, NULL };
+		f->open = TRUE; start_http(f);
+		request(f, path, NULL, NULL, NULL, NULL, &reply);
+		g_assert_cmpuint(reply.status, ==, 200);
+		public_report = json_from_string(reply.body, &error); g_assert_no_error(error);
+		g_assert_cmpfloat(summary_value(public_report, "Ventes", "count"), ==, 2);
+		reply_clear(&reply);
+	}
+
+	{
+		g_autofree gchar *ticket = old_ticket(form), *encoded = g_uri_escape_string(seed, NULL, TRUE);
+		g_autofree gchar *body = g_strdup_printf("%s&_vf_prefill=%s&name=Anne&topic=sales&email=invalid", ticket, encoded);
+		g_autoptr(JsonNode) refusal = NULL;
+		Reply reply = { 0, NULL, NULL, NULL, NULL };
+		request(f, "/pub/form/languages-report", "application/x-www-form-urlencoded", body, NULL, "application/json", &reply);
+		g_assert_cmpuint(reply.status, ==, 422); refusal = json_from_string(reply.body, NULL);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(refusal), "message"), ==, "Corrigez les réponses.");
+		g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_node_get_object(refusal), "errors"), "email"), ==, "Saisissez une adresse courriel.");
+		reply_clear(&reply);
+		request(f, "/pub/form/languages-report", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+		g_assert_cmpuint(reply.status, ==, 422);
+		g_assert_nonnull(strstr(reply.body, "lang=\"fr\""));
+		g_assert_nonnull(strstr(reply.body, "name=\"_vf_prefill\""));
+		reply_clear(&reply);
+	}
+
+	{
+		g_autoptr(JsonNode) schema = NULL;
+		Reply reply = { 0, NULL, NULL, NULL, NULL };
+		request(f, "/pub/form/languages-report/schema?lang=fr", NULL, NULL, NULL, NULL, &reply);
+		g_assert_cmpuint(reply.status, ==, 200); schema = json_from_string(reply.body, NULL);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(schema), "language"), ==, "fr");
+		g_assert_false(json_object_has_member(json_object_get_object_member(json_node_get_object(schema), "prefill"), VENTURE_FORMS_LANGUAGE));
+		g_assert_true(json_object_has_member(json_object_get_object_member(json_node_get_object(schema), "prefill"), VENTURE_FORMS_PREFILL));
+		reply_clear(&reply);
+	}
+
+}
+
+/* A hidden language parameter is not authoritative. The signed seed, and then
+ * the server-owned working copy, pin the chosen language across every page. */
+static void
+test_languages_pages(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "languages-pages", VENTURE_FORM_LIVE), response = NULL;
+	g_autofree gchar *seed = NULL, *encoded = NULL, *ticket = NULL, *body = NULL, *token = NULL, *text = NULL;
+	g_autoptr(JsonNode) parsed = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "next", "Next page", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 30);
+	add_field(f, form, "agree", "I, {name}, agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 40);
+	translate(f, form, "form.title", "Bonjour"); translate(f, form, "field.name.label", "Nom");
+	translate(f, form, "field.agree.label", "Moi, {name}, je consens");
+	translate(f, form, "message.email", "Saisissez une adresse courriel.");
+	translate(f, form, "message.required", "Une réponse est nécessaire.");
+	translate(f, form, "form.success_message", "Merci {name}.");
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "fr"); encoded = g_uri_escape_string(seed, NULL, TRUE);
+	start_http(f);
+	request(f, "/pub/form/languages-pages?lang=fr", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "lang=\"fr\"")); g_assert_nonnull(strstr(reply.body, ">Bonjour</h1>")); reply_clear(&reply);
+	ticket = old_ticket(form); body = g_strdup_printf("%s&_vf_prefill=%s", ticket, encoded);
+	request(f, "/pub/form/languages-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422); g_assert_nonnull(strstr(reply.body, "Une réponse est nécessaire."));
+	reply_clear(&reply); g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("%s&_vf_prefill=%s&name=Anne", ticket, encoded);
+	request(f, "/pub/form/languages-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "Moi, Anne, je consens"));
+	g_clear_pointer(&token, g_free); token = page_token(reply.body); reply_clear(&reply); g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("_vf_draft=%s&email=not-email&agree=on", token);
+	request(f, "/pub/form/languages-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422); g_assert_nonnull(strstr(reply.body, "Saisissez une adresse courriel."));
+	g_clear_pointer(&token, g_free); token = page_token(reply.body); reply_clear(&reply); g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("_vf_draft=%s&email=anne%%40example.test&agree=on", token);
+	request(f, "/pub/form/languages-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "Merci Anne.")); reply_clear(&reply);
+	response = last_form_response(f); text = venture_forms_get_string(response, "answers"); parsed = json_from_string(text, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_node_get_object(parsed), "agree"), "wording"), ==, "Moi, Anne, je consens");
+	g_clear_pointer(&text, g_free); text = venture_forms_get_string(response, "language"); g_assert_cmpstr(text, ==, "fr");
+	/* Altering even one signed byte is refused before a working copy exists. */
+	seed[0] = seed[0] == 'a' ? 'b' : 'a'; g_clear_pointer(&encoded, g_free); encoded = g_uri_escape_string(seed, NULL, TRUE);
+	g_clear_pointer(&body, g_free); body = g_strdup_printf("%s&_vf_prefill=%s&name=Forged", ticket, encoded);
+	request(f, "/pub/form/languages-pages", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 404); reply_clear(&reply);
+}
+
+static void
+test_languages_optin(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = optin_form(f, "languages-optin"), translated = NULL, response = NULL;
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) later = g_date_time_add_seconds(now, -59);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *seed = NULL, *token = NULL, *language = NULL, *body = NULL;
+	const gchar *pairs[] = { "email", "anne@example.test", "news", "on", VENTURE_FORMS_PREFILL, NULL, NULL };
+	(void)data;
+	translated = make_translation(f, form, "fr", "message.optin_intro", "Confirmez votre inscription :"); save(f, translated);
+	translate(f, form, "field.news.label", "Je souhaite recevoir les nouvelles.");
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "fr"); pairs[5] = seed;
+	{
+		g_autoptr(GHashTable) raw = venture_forms_answers_new();
+		g_autoptr(GDateTime) earlier = g_date_time_add_seconds(now, -120);
+		VentureFormsOutcome outcome;
+		guint i;
+		for (i = 0; pairs[i] != NULL; i += 2) venture_forms_answers_add(raw, pairs[i], pairs[i + 1]);
+		g_assert_true(venture_forms_submit(f->db, form, raw, NULL, earlier, &outcome, NULL, NULL, &error));
+		g_assert_no_error(error); g_assert_cmpint(outcome, ==, VENTURE_FORMS_PENDING);
+	}
+	g_object_set(translated, "text", "New published text", NULL); save(f, translated); g_object_unref(publish(f, form));
+	/* A later resend in the default language must not replace original evidence. */
+	optin_submit_at(f, form, "anne@example.test", later);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(GPtrArray) rows = venture_database_find(f->db, query, NULL);
+		guint i;
+		g_assert_cmpuint(rows->len, ==, 2);
+		for (i = 0; i < rows->len; i++)
+		{
+			g_autofree gchar *mail = venture_forms_get_string(g_ptr_array_index(rows, i), "private-text-body");
+			g_assert_nonnull(strstr(mail, "Confirmez votre inscription")); g_assert_null(strstr(mail, "New published text"));
+		}
+	}
+	token = optin_latest_token(f); response = venture_forms_confirm_signup(f->db, form, token, later, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(response);
+	language = venture_forms_get_string(response, "language"); body = venture_forms_get_string(response, "answers");
+	g_assert_cmpstr(language, ==, "fr"); g_assert_nonnull(strstr(body, "Je souhaite recevoir les nouvelles."));
+}
+
+
+/* The same private-state omission also dropped personal-link binding before
+ * opt-in. Confirming another inbox must never claim the addressed contact. */
+static void
+test_optin_personal_state(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = optin_form(f, "optin-personal-state"), response = NULL;
+	g_autoptr(VentureEntity) contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org,
+		"name", "Known Anne", "email", "anne@example.test", NULL);
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now(), expires = g_date_time_add_days(now, 2);
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(JsonNode) exported = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL, *confirmation = NULL, *digest = NULL, *plain = NULL, *answers = NULL;
+	const gchar *personal;
+	const gchar *pairs[] = { "email", "different@example.test", "news", "on", VENTURE_FORMS_PERSONAL, NULL, NULL };
+	(void)data;
+	save(f, contact);
+	url = venture_forms_personal_link(f->db, form, contact, "https://forms.example.test", expires, now, &error);
+	g_assert_no_error(error); personal = strstr(url, "personal=") + strlen("personal="); pairs[5] = personal;
+	g_assert_cmpint(submit_pairs(f, form, pairs, &errors), ==, VENTURE_FORMS_INVALID);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 0);
+	pairs[1] = "anne@example.test";
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_PENDING);
+	exported = venture_forms_export_person(f->db, f->org, "anne@example.test", &error);
+	g_assert_no_error(error); plain = json_to_string(exported, FALSE); g_assert_null(strstr(plain, personal));
+	confirmation = optin_latest_token(f); response = venture_forms_confirm_signup(f->db, form, confirmation, now, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(response);
+	g_assert_cmpint(venture_forms_get_int(response, "contact-id"), ==, venture_entity_get_id(contact));
+	digest = venture_forms_get_string(response, "personal-hash"); g_assert_nonnull(digest); g_assert_cmpuint(strlen(digest), ==, 64);
+	answers = venture_forms_get_string(response, "answers"); g_assert_null(strstr(answers, "_vf_"));
+}
+
+/* Ordinary confirmation templates must use the same localized public answers
+ * as the response, without changing choice ids or evaluating author text. */
+static void
+test_languages_confirmation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "languages-mail"), response = NULL;
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(VentureEntity) mail = NULL;
+	g_autofree gchar *seed = NULL, *subject = NULL, *body = NULL;
+	const gchar *pairs[] = { "name", "Anne", "email", "anne@example.test", "topic", "sales", VENTURE_FORMS_PREFILL, NULL, NULL };
+	(void)data;
+	g_object_set(form, "confirmation-field", "email", NULL); save(f, form);
+	translate(f, form, "choice.topic.sales", "Ventes");
+	translate(f, form, "form.confirmation_subject", "Merci {name}");
+	translate(f, form, "form.confirmation_message", "Votre sujet : {topic}");
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "fr"); pairs[7] = seed;
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	mail = venture_database_find_one(f->db, query, NULL); g_assert_nonnull(mail);
+	subject = venture_forms_get_string(mail, "subject"); body = venture_forms_get_string(mail, "text-body");
+	g_assert_cmpstr(subject, ==, "Merci Anne"); g_assert_cmpstr(body, ==, "Votre sujet : Ventes");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3584,5 +3869,11 @@ main(int argc, char **argv)
 	g_test_add("/forms/double-optin", Fixture, NULL, setup, test_double_optin, teardown);
 	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
 	g_test_add("/forms/consent-no-default", Fixture, NULL, setup, test_consent_no_default, teardown);
+	g_test_add("/forms/languages-validation", Fixture, NULL, setup, test_languages_validation, teardown);
+	g_test_add("/forms/languages-report", Fixture, NULL, setup, test_languages_report, teardown);
+	g_test_add("/forms/languages-pages", Fixture, NULL, setup, test_languages_pages, teardown);
+	g_test_add("/forms/languages-optin", Fixture, NULL, setup, test_languages_optin, teardown);
+	g_test_add("/forms/optin-personal-state", Fixture, NULL, setup, test_optin_personal_state, teardown);
+	g_test_add("/forms/languages-confirmation", Fixture, NULL, setup, test_languages_confirmation, teardown);
 	return g_test_run();
 }

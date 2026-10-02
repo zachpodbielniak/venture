@@ -28,7 +28,7 @@ summary_row(VentureReportResult *result, const gchar *question, const gchar *ver
 	venture_report_result_set_text(result, "versions", versions);
 	venture_report_result_set_text(result, "answer", answer);
 	venture_report_result_set_number(result, "count", (gdouble)count);
-	venture_report_result_set_number(result, "share", total > 0 ? 100.0 * (gdouble)count / (gdouble)total : 0);
+	venture_report_result_set_number(result, "share", total > 0 ? (gdouble)count / (gdouble)total : 0);
 	if (with_average)
 		venture_report_result_set_number(result, "average", average);
 }
@@ -302,6 +302,7 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 		GPtrArray *fields = g_ptr_array_index(definitions, i);
 		gint64 number = versions->len > 0 ? venture_forms_get_int(g_ptr_array_index(versions, i), "number") : 1;
 
+		venture_forms_localize(fields, options != NULL ? json_object_get_string_member_with_default(options, "language", NULL) : NULL);
 		for (j = 0; j < fields->len; j++)
 		{
 			VentureFormsField *field = g_ptr_array_index(fields, j);
@@ -339,6 +340,7 @@ summary_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 			summary_add_choices(segment, field);
 		}
 	}
+
 
 	/* --- The responses in the period --- */
 

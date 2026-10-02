@@ -2773,6 +2773,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"holdings: only this location (a wallet, till or character) and every location beneath it", FALSE);
 	ai_tool_add_parameter(report, "include_on_hand", "boolean",
 		"goal_materials: take stock on hand off what is needed; true by default", FALSE);
+	ai_tool_add_parameter(report, "language", "string",
+		"form_summary: language for labels; combines answers from every language", FALSE);
 	ai_tool_add_parameter(report, "form_id", "integer",
 		"form_summary: the form whose answers to count; required for that report", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);

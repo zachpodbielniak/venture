@@ -826,6 +826,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "location_id", "holdings: only this location and every location beneath it.");
 		venture_mcp_catalog_add_boolean_property(builder, "include_on_hand", "goal_materials: true (default) takes stock on hand off what is needed; false does not.");
 		/* The forms report's question. */
+		venture_mcp_catalog_add_string_property(builder, "language", "form_summary: language for labels; combines answers from every language.");
 		venture_mcp_catalog_add_integer_property(builder, "form_id", "form_summary: the form whose answers to count (required).");
 
 		json_builder_set_member_name(builder, "format");

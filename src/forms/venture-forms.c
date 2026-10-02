@@ -307,6 +307,14 @@ forms_validate_form(
 			g_object_set(entity, "slug", slug, NULL);
 	}
 
+	{
+		g_autofree gchar *language = venture_forms_get_string(entity, "default-language");
+		g_autofree gchar *normalized = NULL;
+		if (!venture_string_is_empty(language) && !venture_forms_language_valid(language))
+		{ venture_set_error_validation(error, "Default language", "use a language tag such as en or fr-ca"); return FALSE; }
+		normalized = venture_string_is_empty(language) ? g_strdup("en") : g_ascii_strdown(language, -1);
+		g_object_set(entity, "default-language", normalized, NULL);
+	}
 	return venture_forms_validate_piping(database, entity, error) &&
 	       forms_check_published(database, entity, previous, error);
 }
@@ -631,6 +639,8 @@ forms_validate_submission(
 		g_autofree gchar *omitted_after = venture_forms_get_string(entity, "not-shown");
 		g_autofree gchar *summary_before = venture_forms_get_string(previous, "summary");
 		g_autofree gchar *summary_after = venture_forms_get_string(entity, "summary");
+		g_autofree gchar *language_before = venture_forms_get_string(previous, "language");
+		g_autofree gchar *language_after = venture_forms_get_string(entity, "language");
 		g_autofree gchar *origin_before = venture_forms_get_string(previous, "origin");
 		g_autofree gchar *origin_after = venture_forms_get_string(entity, "origin");
 		g_autoptr(GDateTime) at_before = NULL;
@@ -647,6 +657,7 @@ forms_validate_submission(
 		    venture_forms_get_int(previous, "version-number") != venture_forms_get_int(entity, "version-number") ||
 		    0 != g_strcmp0(summary_before, summary_after) ||
 		    0 != g_strcmp0(origin_before, origin_after) ||
+		    0 != g_strcmp0(language_before, language_after) ||
 		    ((NULL == at_before) != (NULL == at_after)) ||
 		    (NULL != at_before && !g_date_time_equal(at_before, at_after)))
 		{
@@ -1009,6 +1020,8 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_draft, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RULE,
 	                                    venture_forms_validate_rule, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_TRANSLATION,
+	                                    venture_forms_validate_translation, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_PENDING,
 	                                    forms_validate_pending, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_GROUP,
@@ -1411,6 +1424,22 @@ venture_forms_answers_to_json(GHashTable *answers)
 	return object;
 }
 
+/* Working-copy state may retain these two authenticated capabilities. The
+ * ordinary answer serializer deliberately excludes all internal controls. */
+JsonObject *
+venture_forms_answers_state(GHashTable *answers)
+{
+	JsonObject *values = venture_forms_answers_to_json(answers);
+	const gchar *keys[] = { VENTURE_FORMS_PERSONAL, VENTURE_FORMS_PREFILL };
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(keys); i++)
+	{
+		const gchar *value = forms_first(answers, keys[i]);
+		if (value != NULL) json_object_set_string_member(values, keys[i], value);
+	}
+	return values;
+}
+
 /* ==========================================================================
  * Validation
  * ========================================================================== */
@@ -1662,11 +1691,11 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 			if (!venture_string_is_empty(field->help))
 				json_object_set_string_member(consent, "detail", field->help);
 			json_object_set_object_member(answers, key, consent);
-			g_string_append_printf(summary, "%s: Given\n", label);
+			g_string_append_printf(summary, "%s: %s\n", label, venture_forms_field_text(field, "message.given", "Given"));
 			return;
 		}
 		json_object_set_boolean_member(answers, key, ticked);
-		g_string_append_printf(summary, "%s: %s\n", label, ticked ? "Yes" : "No");
+		g_string_append_printf(summary, "%s: %s\n", label, venture_forms_field_text(field, ticked ? "message.yes" : "message.no", ticked ? "Yes" : "No"));
 		return;
 	}
 
@@ -1695,14 +1724,14 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 	{
 		g_autofree gchar *message = g_strdup_printf("Use at most %" G_GINT64_FORMAT " characters.", max_length);
 
-		forms_refuse(errors, key, message);
+		forms_refuse(errors, key, venture_forms_field_text(field, "message.max_length", message));
 		return;
 	}
 	if (min_length > 0 && length < min_length)
 	{
 		g_autofree gchar *message = g_strdup_printf("Use at least %" G_GINT64_FORMAT " characters.", min_length);
 
-		forms_refuse(errors, key, message);
+		forms_refuse(errors, key, venture_forms_field_text(field, "message.min_length", message));
 		return;
 	}
 
@@ -1750,14 +1779,14 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 			{
 				g_autofree gchar *message = g_strdup_printf("Enter %g or more.", min);
 
-				forms_refuse(errors, key, message);
+				forms_refuse(errors, key, venture_forms_field_text(field, "message.minimum", message));
 				return;
 			}
 			if (max != 0 && number > max)
 			{
 				g_autofree gchar *message = g_strdup_printf("Enter %g or less.", max);
 
-				forms_refuse(errors, key, message);
+				forms_refuse(errors, key, venture_forms_field_text(field, "message.maximum", message));
 				return;
 			}
 			json_object_set_double_member(answers, key, number);
@@ -1774,7 +1803,7 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 				g_autofree gchar *message = g_strdup_printf("Choose a whole number from %" G_GINT64_FORMAT
 					" to %" G_GINT64_FORMAT ".", low, high);
 
-				forms_refuse(errors, key, message);
+				forms_refuse(errors, key, venture_forms_field_text(field, "message.rating", message));
 				return;
 			}
 			json_object_set_int_member(answers, key, rating);
@@ -2004,9 +2033,9 @@ forms_queue_confirmation(VentureDatabase *database, VentureEntity *form, Venture
 	JsonObject *answers, gchar **note, GError **error)
 {
 	g_autofree gchar *field = venture_forms_get_string(form, "confirmation-field");
-	g_autofree gchar *subject = venture_forms_get_string(form, "confirmation-subject");
-	g_autofree gchar *body = venture_forms_get_string(form, "confirmation-message");
-	g_autofree gchar *success = venture_forms_get_string(form, "success-message");
+	g_autofree gchar *subject = NULL, *body = NULL, *success = NULL;
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(JsonObject) values = NULL;
 	g_autofree gchar *key = NULL;
 	g_autoptr(VentureMailMessage) message = NULL;
 	g_autoptr(VentureMailMessage) queued = NULL;
@@ -2024,6 +2053,14 @@ forms_queue_confirmation(VentureDatabase *database, VentureEntity *form, Venture
 		*note = g_strdup("No confirmation was sent: the mail module is off.");
 		return TRUE;
 	}
+	fields = venture_forms_record_definition(database, form, submission, error);
+	if (fields == NULL) return FALSE;
+	values = venture_forms_pipe_stored_values(fields, answers);
+	subject = venture_forms_pipe_text(venture_forms_text(fields, "form.confirmation_subject",
+		venture_forms_text(fields, "message.mail_subject", "We received your response")), fields, NULL, values);
+	g_strdelimit(subject, "\r\n", ' ');
+	body = venture_forms_pipe_text(venture_forms_text(fields, "form.confirmation_message", ""), fields, NULL, values);
+	success = venture_forms_success_message(database, form, submission);
 	key = g_strdup_printf("form-response:%s", venture_entity_get_uuid(submission));
 	message = venture_mail_message_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(message), venture_entity_get_organization_id(form));
@@ -2271,6 +2308,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autofree gchar *secret_text = NULL;
 	g_autofree gchar *omitted_text = NULL;
 	g_autofree gchar *personal = g_strdup(forms_first(answers, VENTURE_FORMS_PERSONAL));
+	g_autofree gchar *language = NULL;
 	g_autoptr(GString) summary = g_string_new(NULL);
 	g_autoptr(VentureEntity) response = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -2308,12 +2346,14 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_autoptr(JsonObject) seed = venture_forms_prefill_unpack(form, version,
 			forms_first(answers, VENTURE_FORMS_PREFILL), error);
 		if (seed == NULL) return FALSE;
+		language = g_strdup(json_object_get_string_member_with_default(seed, VENTURE_FORMS_LANGUAGE, NULL));
 	}
 
 	base_fields = venture_forms_definition_for(database, form, version, error);
 	if (NULL == base_fields)
 		return FALSE;
-	visible = venture_forms_answers_to_json(answers);
+	venture_forms_localize(base_fields, language);
+	visible = venture_forms_answers_state(answers);
 	fields = venture_forms_expand_groups(base_fields, visible, FALSE, refused);
 
 	/* A name that is no question on this version is refused, not
@@ -2362,6 +2402,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		forms_check_field(field, g_hash_table_lookup(answers, field->key), stored, refused, summary);
 	}
 
+	venture_forms_translation_errors(fields, refused);
 	if (json_object_get_size(refused) > 0)
 	{
 		if (NULL != errors)
@@ -2373,6 +2414,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	    g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) == NULL)
 	{
 		if (!forms_optin_store(database, form, version, answers, fields, stored, origin, now, refused, error)) return FALSE;
+		venture_forms_translation_errors(fields, refused);
 		if (json_object_get_size(refused) > 0)
 		{
 			if (errors != NULL) *errors = g_steal_pointer(&refused);
@@ -2399,6 +2441,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_string_truncate(summary, summary->len - 1);
 
 	response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+	g_object_set(response, "language", venture_forms_language(fields), NULL);
 	g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 	g_object_set(response, "sensitive-answers", secret_text, NULL);
 	{
@@ -2414,6 +2457,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	{
 		g_autofree gchar *note = NULL;
 
+		venture_forms_translation_errors(fields, refused);
 		if (json_object_get_size(refused) > 0)
 		{
 			if (errors != NULL) *errors = g_steal_pointer(&refused);
@@ -2437,10 +2481,12 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_clear_error(&follow_error);
 		g_clear_object(&response);
 		response = forms_new_response(form, version, name, now, answers_text, summary->str, origin);
+		g_object_set(response, "language", venture_forms_language(fields), NULL);
 		g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, "not-shown", omitted_text, NULL);
 		if (!forms_write(database, form, response, fields, stored, FALSE, now, refused, error))
 		{
+			venture_forms_translation_errors(fields, refused);
 			if (json_object_get_size(refused) > 0)
 			{
 				if (errors != NULL) *errors = g_steal_pointer(&refused);
@@ -2533,6 +2579,7 @@ venture_forms_publish(VentureDatabase *database, VentureEntity *form, const Vent
 			goto fail;
 		}
 	}
+	if (!venture_forms_translations_check(fields, error)) goto fail;
 	definition = venture_forms_definition_to_json(fields);
 
 	/* Publishing what is already published changes nothing and makes no

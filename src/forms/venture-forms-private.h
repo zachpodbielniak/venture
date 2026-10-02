@@ -74,6 +74,8 @@ typedef struct
 	GPtrArray		*choices;
 	/* Each question owns a reference to its version's immutable rule array. */
 	JsonArray		*rules;
+	JsonObject		*catalog;
+	gchar			*language;
 } VentureFormsField;
 
 #define VENTURE_FORMS_PENDING_WRITE "venture-forms-pending-write"
@@ -177,8 +179,28 @@ gchar *venture_forms_pipe_answer(const VentureFormsField *field, JsonNode *answe
 void venture_forms_pipe_counts(GPtrArray *fields, JsonObject *raw, JsonObject *values);
 gchar *venture_forms_success_message(VentureDatabase *database, VentureEntity *form,
 	VentureEntity *response);
-gchar *venture_forms_render_success_text(VentureEntity *form, const gchar *message, gboolean hosted);
+gchar *venture_forms_render_success_text(VentureEntity *form, const gchar *message, gboolean hosted, const gchar *language);
 
+JsonNode *venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
+	const gchar *action, GDateTime *now, const gchar *language, GError **error);
+JsonObject *venture_forms_answers_state(GHashTable *answers);
+/* --- Versioned public wording --- */
+#define VENTURE_FORMS_LANGUAGE "_vf_lang"
+GPtrArray *venture_forms_record_definition(VentureDatabase *database, VentureEntity *form, VentureEntity *record, GError **error);
+gboolean venture_forms_pipe_validate_text(const gchar *text, GPtrArray *fields, const VentureFormsField *target, GError **error);
+gboolean venture_forms_translations_check(GPtrArray *fields, GError **error);
+gboolean venture_forms_language_valid(const gchar *language);
+gboolean venture_forms_translations_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+gboolean venture_forms_validate_translation(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error);
+void venture_forms_catalog_restore(GPtrArray *fields, JsonObject *catalog);
+JsonObject *venture_forms_catalog(GPtrArray *fields);
+gchar *venture_forms_language_choose(GPtrArray *fields, const gchar *explicit_language, const gchar *accept);
+void venture_forms_localize(GPtrArray *fields, const gchar *language);
+const gchar *venture_forms_language(GPtrArray *fields);
+const gchar *venture_forms_text(GPtrArray *fields, const gchar *key, const gchar *fallback);
+const gchar *venture_forms_field_text(const VentureFormsField *field, const gchar *key, const gchar *fallback);
+gchar *venture_forms_language_from_values(VentureEntity *form, VentureEntity *version, JsonObject *values);
+void venture_forms_translation_errors(GPtrArray *fields, JsonObject *errors);
 /* --- Definitions --- */
 
 void venture_forms_field_free(gpointer data);

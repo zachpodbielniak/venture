@@ -1920,3 +1920,13 @@ Trading", book currency `GOLD`); pass `organization_id=ID` to its reports
 (`listing_performance`, `session_performance`, `recipe_margin`,
 `goal_progress`, `goal_materials`, `aggregate`), or they answer for the
 default organization and read nothing.
+
+For multilingual forms, create `form_translation` records with `form_id`,
+`language`, `text_key` and plain `text`, then publish the form. Keys include
+`field.KEY.label`, `field.KEY.help`, `choice.KEY.ID`, `form.success_message`
+and `message.required`. Read `docs/forms.org` for the catalog. Partial
+translations fall back to the form's `default_language`; choice IDs never
+change. `venturectl report form_summary all form_id=3 language=fr` changes
+report labels while counting responses from every language. Public `?lang=fr`
+or the loader's `data-venture-form-lang` selects the language before header
+negotiation. Signed state pins the language through pages and opt-in emails.

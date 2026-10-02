@@ -220,6 +220,8 @@ group_field_copy(const VentureFormsField *field)
 #undef COPY_STRING
 	copy->choices = field->choices != NULL ? g_ptr_array_ref(field->choices) : NULL;
 	copy->rules = field->rules != NULL ? json_array_ref(field->rules) : NULL;
+	copy->catalog = field->catalog != NULL ? json_object_ref(field->catalog) : NULL;
+	copy->language = g_strdup(field->language);
 	return copy;
 }
 

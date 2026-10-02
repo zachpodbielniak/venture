@@ -1,0 +1,56 @@
+#+title: Forms language demonstration
+#+date: 2026-10-02
+
+* Built artifact and isolation
+
+The DEBUG server's SHA256 was
+=9a399551d88de8a256feb64c8b3e52dee2705db879da65ae8a1f726506a89fce=.
+Its binary was newer than the embedded asset header. The demonstration used a
+disposable SQLite database, a loopback-only server with authentication disabled
+solely for the demonstration, and a second local server hosting the loader.
+AI, plugins and automation were disabled. Chromium exercised JavaScript-off
+and loader contexts; no external email or AI service was contacted.
+
+* Observed behavior
+
+1. Created one two-page survey with stable =sales= and =support= choice IDs,
+   an English default and partial French =form_translation= records. Published
+   it. The schema negotiated =fr= from =fr-CA;q=0.9= and retained =sales= as
+   the choice ID while displaying =Ventes=.
+2. With JavaScript disabled, submitted an English response and a French
+   response. French headings and consent piped the earlier name; missing
+   translated help fell back to the original text. Back retained both the
+   answer and French language. The final message was =Merci Anne.=.
+3. A host page's =data-venture-form-lang="fr"= selected French in the loader.
+   Navigation and final success retained it. Axe reported zero WCAG A/AA
+   violations. The success element retained =lang="fr"= after replacing the
+   form, so its host's English language did not override it.
+4. The HTTP report and =venturectl report form_summary all form_id=1 language=fr=
+   displayed =Ventes= with count 2, combining the English and French sales
+   responses. All three stored responses retained stable choice IDs and
+   languages =en=, =fr=, =fr=; no internal controls entered public answers.
+
+* Regressions found and checked
+
+The first browser report exposed a dropped =language= HTTP parameter and a
+percentage displayed 100 times too large. Targeted tests failed before the
+repairs: =66.6666667= instead of the required ratio =0.666666667=, and no
+=Ventes= row through HTTP. Both checks pass after repair.
+
+The opt-in language test initially failed because the ordinary answer
+serializer removed the signed language seed from private pending state. The
+private-state conversion now retains only the authenticated prefill and
+personal-link controls. Tests confirm original-language resends after a new
+publish, translated consent evidence, personal-inbox binding, capability
+exclusion from owner exports and public answers, ordinary localized email
+piping, and language retention on single-page validation errors.
+
+Other coverage checks missing-string fallback, header priorities, immutable
+submission language, invalid/duplicate translation keys, forward and sensitive
+piping refusal (including a later source edit), multi-page Back/validation,
+and tampered signed state. Migration checks include forms disabled and later
+enabled, for both metadata and the guarded migration.
+
+All 70 forms tests and 19 migration tests passed; the final schema/HTTP language
+check also passed after the last schema repair. The optional live PostgreSQL
+integration was skipped because no disposable fixture URI was configured.

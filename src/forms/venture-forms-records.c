@@ -87,6 +87,7 @@ static const VentureFieldDecl venture_form_fields[] = {
 	                   venture_form_state_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("title", "Title", "The heading visitors see; leave empty for none",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD("default-language", "Default language", "Language tag of the original text; en when empty", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("description", "Introduction", "Shown above the questions",
 	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("submit-label", "Button", "The submit button's words; Send when empty",
@@ -304,6 +305,7 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	                  VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("version-id", "Form version", "The version of the questions it answered",
 	                  "form_version", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("language", "Language", "Language used when answering", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("version-number", "Version", NULL,
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("submitted-at", "Received", NULL,
@@ -431,3 +433,15 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormPending, venture_form_pending, ventur
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Unconfirmed signup", NULL);
 	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
 	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "email", "form-id", NULL);)
+
+/* Translation keys address public wording, never answer identities. The
+ * derived name makes (form, language, key) unique through ordinary metadata. */
+static const VentureFieldDecl venture_form_translation_fields[] = {
+	VENTURE_FIELD("name", "Translation", "Language and text key; filled on save", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("language", "Language", "Language tag, for example fr or fr-ca", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("text-key", "Text key", "form.title, field.KEY.label, choice.KEY.ID or message.NAME", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("text", "Translation text", "Plain text; empty falls back to the default language", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormTranslation, venture_form_translation, venture_form_translation_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form translation", NULL);)

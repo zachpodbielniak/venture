@@ -87,7 +87,7 @@
 			var title = document.createElement("p");
 
 			title.className = "vf-errors-title";
-			title.textContent = message;
+			title.textContent = form.getAttribute("data-vf-error-title") || message;
 			summary.appendChild(title);
 		}
 		if (list.children.length) {
@@ -104,6 +104,7 @@
 		var done = document.createElement("div");
 
 		done.className = "vf-success";
+		done.lang = form.lang;
 		done.setAttribute("role", "status");
 		done.textContent = message;
 		form.parentNode.replaceChild(done, form);
@@ -188,8 +189,8 @@
 			if (!controls.length || controls.every(function (input) { return input.disabled; })) { return ""; }
 			if (controls.some(function (input) { return !input.disabled && !input.checkValidity(); })) { return ""; }
 			var raw = new FormData(form).getAll(key);
-			if (info.kind === "checkbox") { return raw.length ? "Yes" : "No"; }
-			if (info.kind === "consent") { return raw.length ? "Given" : ""; }
+			if (info.kind === "checkbox") { return raw.length ? info.yes : info.no; }
+			if (info.kind === "consent") { return raw.length ? info.given : ""; }
 			if (!raw.length) { return info.kind === "hidden" ? (info.default || "") : ""; }
 			var value = String(raw[0]).trim();
 			if (info.kind === "hidden" && !value) { value = info.default || ""; }
@@ -303,6 +304,12 @@
 		if (!source || target.ventureFormLoaded) {
 			return;
 		}
+		try {
+			var url = new URL(source, document.baseURI);
+			var language = target.getAttribute("data-venture-form-lang");
+			if (language && !url.searchParams.has("lang")) url.searchParams.set("lang", language);
+			source = url.href;
+		} catch (error) { return; }
 		target.ventureFormLoaded = true;
 
 		fetch(source, { mode: "cors", credentials: "omit" }).then(function (response) {

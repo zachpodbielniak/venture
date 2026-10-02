@@ -1520,3 +1520,10 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   JSON properties, so a question named `constructor` cannot resolve an
   inherited object member. The HTML context contains only referenced public
   values; saved-response labels use their own version and row.
+
+- **Form translations belong to the published definition.** Localize the frozen
+  `VentureFormsField` descriptors before validation, piping or rendering; never
+  translate choice IDs. A language selected at GET travels in the signed prefill
+  seed and private working copy. `venture_forms_answers_to_json()` intentionally
+  drops internal controls; use `venture_forms_answers_state()` only for private
+  navigation/signup state, so language and personal binding survive confirmation.

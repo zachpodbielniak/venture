@@ -240,10 +240,16 @@ forms_web_prefill(VentureWebServer *self, HtmxRequest *request, VentureEntity *f
 	values = venture_forms_prefill_values(database, form, version, query,
 		htmx_request_get_query_param(request, "personal"), now, NULL);
 	if (values == NULL) return NULL;
+	{
+		g_autofree gchar *language = venture_forms_language_choose(fields,
+			htmx_request_get_query_param(request, "lang"), forms_web_header(request, "Accept-Language"));
+		json_object_set_string_member(values, VENTURE_FORMS_LANGUAGE, language);
+	}
 	if (json_object_get_size(values) > 0)
 	{
 		seed = venture_forms_prefill_pack(form, version, values);
 		if (seed == NULL) return NULL;
+		json_object_remove_member(values, VENTURE_FORMS_LANGUAGE);
 		json_object_set_string_member(values, VENTURE_FORMS_PREFILL, seed);
 	}
 	return g_steal_pointer(&values);
@@ -307,6 +313,12 @@ venture_web_forms_schema(HtmxRequest *request, GHashTable *params, gpointer data
 		g_autoptr(VentureEntity) version = venture_forms_published_version(venture_context_get_database(self->context), form, NULL);
 		g_autoptr(JsonObject) values = forms_web_prefill(self, request, form, version, now);
 		if (values == NULL) return forms_web_missing();
+		{
+			g_autofree gchar *language = venture_forms_language_from_values(form, version, values);
+			g_clear_pointer(&schema, json_node_unref);
+			schema = venture_forms_schema_language(venture_context_get_database(self->context), form, action, now, language, NULL);
+			if (schema == NULL) return forms_web_missing();
+		}
 		json_object_set_object_member(json_node_get_object(schema), "prefill", g_steal_pointer(&values));
 	}
 
@@ -381,7 +393,10 @@ forms_web_accepted(VentureDatabase *database, VentureEntity *form, VentureEntity
 		forms_web_common(response, allow_origin);
 		return response;
 	}
-	return forms_web_html(form, venture_forms_render_success_text(form, message, TRUE), 200, allow_origin, TRUE);
+	{
+		g_autofree gchar *language = submission != NULL ? venture_forms_get_string(submission, "language") : venture_forms_get_string(form, "default-language");
+		return forms_web_html(form, venture_forms_render_success_text(form, message, TRUE, language), 200, allow_origin, TRUE);
+	}
 }
 
 /* Reads the body into answers, by content type. JSON may come as text/plain
@@ -456,10 +471,20 @@ forms_web_rate_allowed(VentureWebServer *self, VentureEntity *form, const gchar 
 }
 
 static HtmxResponse *
-forms_web_pending(VentureEntity *form, gboolean json, const gchar *allow_origin)
+forms_web_pending(VentureDatabase *database, VentureEntity *form, GHashTable *answers, const VentureFormsStep *step, gboolean json, const gchar *allow_origin)
 {
-	if (json) return forms_web_json_result(TRUE, "Check your inbox to confirm your signup.", NULL, NULL, 200, allow_origin);
-	return forms_web_html(form, g_strdup("<main class=\"vf-complete\"><h1>Check your inbox</h1><p>Open the confirmation link and press Confirm signup. If you already requested one, please allow a minute before trying again.</p></main>"), 200, allow_origin, TRUE);
+	g_autoptr(VentureEntity) version = step != NULL ? g_object_ref(step->version) : venture_forms_version_for_answers(database, form, answers);
+	g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, NULL);
+	g_autoptr(JsonObject) values = step != NULL ? json_object_ref(step->values) : venture_forms_answers_state(answers);
+	g_autofree gchar *language = venture_forms_language_from_values(form, version, values);
+	g_autofree gchar *title = NULL, *message = NULL, *html = NULL;
+	if (fields == NULL) return forms_web_missing();
+	venture_forms_localize(fields, language);
+	if (json) return forms_web_json_result(TRUE, venture_forms_text(fields, "message.inbox", "Check your inbox to confirm your signup."), NULL, NULL, 200, allow_origin);
+	title = g_markup_escape_text(venture_forms_text(fields, "message.inbox_title", "Check your inbox"), -1);
+	message = g_markup_escape_text(venture_forms_text(fields, "message.inbox", "Open the confirmation link and press Confirm signup."), -1);
+	html = g_strdup_printf("<main class=\"vf-complete\" lang=\"%s\"><h1>%s</h1><p>%s</p></main>", venture_forms_language(fields), title, message);
+	return forms_web_html(form, g_steal_pointer(&html), 200, allow_origin, TRUE);
 }
 
 static HtmxResponse *
@@ -476,7 +501,17 @@ venture_web_forms_confirm_signup(HtmxRequest *request, GHashTable *params, gpoin
 		g_hash_table_lookup(params, "capability"), now, confirm, &error);
 	if (result == NULL) return forms_web_missing();
 	if (confirm) return forms_web_accepted(venture_context_get_database(self->context), form, result, FALSE, NULL);
-	return forms_web_html(form, g_strdup("<main class=\"vf-confirm\"><h1>Confirm your signup</h1><p>Press the button to confirm the signup requested for your inbox.</p><form method=\"post\"><button type=\"submit\">Confirm signup</button></form></main>"), 200, NULL, TRUE);
+	{
+		g_autoptr(GPtrArray) fields = venture_forms_record_definition(venture_context_get_database(self->context), form, result, NULL);
+		g_autofree gchar *title = NULL, *message = NULL, *button = NULL, *html = NULL;
+		if (fields == NULL) return forms_web_missing();
+		title = g_markup_escape_text(venture_forms_text(fields, "message.optin_subject", "Confirm your signup"), -1);
+		message = g_markup_escape_text(venture_forms_text(fields, "message.confirm_intro", "Press the button to confirm the signup requested for your inbox."), -1);
+		button = g_markup_escape_text(venture_forms_text(fields, "message.confirm", "Confirm signup"), -1);
+		html = g_strdup_printf("<main class=\"vf-confirm\" lang=\"%s\"><h1>%s</h1><p>%s</p><form method=\"post\" lang=\"%s\"><button type=\"submit\">%s</button></form></main>",
+			venture_forms_language(fields), title, message, venture_forms_language(fields), button);
+		return forms_web_html(form, g_steal_pointer(&html), 200, NULL, TRUE);
+	}
 }
 
 /* GET and POST /pub/form/:token -- the hosted page, and where every way in
@@ -602,7 +637,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 				if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return forms_web_missing();
 				return forms_web_status(500, "The page could not be saved; please try again.");
 			}
-			if (step->complete) return step->awaiting_confirmation ? forms_web_pending(form, json, allow_origin) : forms_web_accepted(database, form, step->submission, json, allow_origin);
+			if (step->complete) return step->awaiting_confirmation ? forms_web_pending(database, form, answers, step, json, allow_origin) : forms_web_accepted(database, form, step->submission, json, allow_origin);
 			action = forms_web_action(self, form, json);
 			options.mode = json ? VENTURE_FORMS_RENDER_FRAGMENT : VENTURE_FORMS_RENDER_HOSTED;
 			options.action = action;
@@ -638,17 +673,24 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 			return forms_web_missing();
 		return forms_web_status(500, "The response could not be saved; please try again.");
 	}
-	if (VENTURE_FORMS_PENDING == outcome) return forms_web_pending(form, json, allow_origin);
+	if (VENTURE_FORMS_PENDING == outcome) return forms_web_pending(database, form, answers, NULL, json, allow_origin);
 	if (VENTURE_FORMS_ACCEPTED == outcome || VENTURE_FORMS_DISCARDED == outcome)
 		return forms_web_accepted(database, form, submission, json, allow_origin);
 
 	if (json)
-		return forms_web_json_result(FALSE, "Please correct the answers marked below.", NULL, errors, 422, allow_origin);
+	{
+		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
+		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, NULL);
+		g_autoptr(JsonObject) values = venture_forms_answers_state(answers);
+		g_autofree gchar *language = venture_forms_language_from_values(form, version, values);
+		if (fields != NULL) venture_forms_localize(fields, language);
+		return forms_web_json_result(FALSE, venture_forms_text(fields, "message.errors", "Please correct the answers marked below."), NULL, errors, 422, allow_origin);
+	}
 
 	/* No script: show the form again with the messages beside the answers
 	 * and the answers still in the boxes, under the ticket it came with. */
 	{
-		g_autoptr(JsonObject) values = venture_forms_answers_to_json(answers);
+		g_autoptr(JsonObject) values = venture_forms_answers_state(answers);
 		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
 		GPtrArray *posted = g_hash_table_lookup(answers, VENTURE_FORMS_TICKET);
 		VentureFormsRender options;
