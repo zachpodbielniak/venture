@@ -98,6 +98,8 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("redirect-url", "Redirect to",
 	              "Optional: an https:// page to send people to instead of the message",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("allow-resume", "Save and continue later", "Offer a private expiring resume link on multi-page forms", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("resume-days", "Saved draft lifetime", "Days before a saved link expires; 0 uses 7, maximum 30", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("draft-minutes", "Draft lifetime", "Minutes before an unfinished form expires; 0 uses 60",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("opens-at", "Opens at",
@@ -352,6 +354,11 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormSubmission, venture_form_submission,
  * a person has not yet submitted them. Generation makes sensitive-only edits
  * visible to the generic writer's empty-diff check and invalidates stale tokens. */
 static const VentureFieldDecl venture_form_draft_fields[] = {
+	VENTURE_FIELD("resume-hash", "Resume digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("resume-email", "Resume inbox", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("resume-saved-at", "Saved at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("resume-sent-at", "Resume mail sent at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("resume-send-count", "Resume mail count", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD_REF("contact-id", "Contact", "Private personal-link binding", "contact", VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_NAME("name", "Draft", "Intermediate form response"),
 	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),

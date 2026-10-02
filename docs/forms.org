@@ -168,10 +168,58 @@ reporting =expired_drafts=. Owner export and erasure by email include drafts.
 Final submission claims the draft before intake; if the process fails during
 that operation, its token remains unavailable rather than risking duplicate
 side effects. Such a draft expires and is swept normally. These short-lived
-step tokens are not cross-device save-and-resume links.
+step tokens are not cross-device save-and-resume links; the opt-in feature
+below issues a separate capability.
 
 The built-server keyboard walkthrough, including server errors with JavaScript
 off and with the loader, is in [[file:evidence/forms-pages.org][multi-page evidence]].
+
+* Save and continue later
+
+Enable =allow_resume= on a multi-page form and set =public_origin= to its
+HTTPS origin (loopback HTTP is allowed for development). =resume_days= is
+1–30 days; 0 means seven. The public schema advertises =allow_resume=.
+
+Save and continue later keeps the current page, including incomplete answers,
+and displays a private link. The optional inbox field emails it through the
+outbox when mail is enabled. Saving does not create a response, contact, lead,
+marketing permission or list membership. The same form/client rate limits,
+fill-time ticket, body limit and honeypot apply. Email is limited to three
+messages per draft, at least a minute apart. A mail refusal keeps the entries
+editable; leave the inbox empty to obtain the link on screen.
+
+The link contains 32 random bytes; only its SHA-256 digest is stored in the
+working copy. Treat it like a password: its holder can read unfinished answers.
+The emailed bearer lives only in the outbox's sensitive body. GET shows a
+Resume form button without answers, so a mail scanner does not consume the
+link. POST invalidates the link and all earlier browser step tokens, and shows
+a replacement private link on the resumed page. Save again also issues a new link. The expiry starts at the first Save and never extends on
+activity or another email. Wrong, expired, consumed, closed and disabled links
+all receive the same 404.
+
+Explicit Resume always loads the latest published version. Compatible answers
+keep their stable question keys; removed questions, changed kinds, changed
+sensitivity and removed repeat rows are dropped. Conditions are re-evaluated.
+A changed version clears consent answers so the person sees the current
+wording and agrees again. New required or invalid questions on earlier reachable
+pages send the person back there; final submission still validates everything.
+The selected language is retained when available, with the normal fallback.
+Uninterrupted Back/Next continues to use its original version as documented
+above. A personal link must still be valid when its saved draft resumes.
+
+Expired drafts are purged by the bounded retention sweep. Final submission and
+owner erasure also purge them and cancel queued/failed resume mail. Mail already
+sent or being delivered cannot be recalled; its link stops working when the
+draft disappears. Export and erasure match the requested resume inbox as well
+as addresses in answers and a personal-link contact. Exports omit capability
+and signed-prefill controls. Drafts remain private working copies throughout.
+
+Custom clients send =_vf_move=save= with the current page's answers and optionally
+=_vf_resume_email=. The normal intermediate HTML reply contains the link and
+fresh =_vf_draft= token. The link's explicit POST returns a hosted form; subsequent
+page submissions use the ordinary public form endpoint.
+
+The built-server walkthrough is recorded in [[file:evidence/forms-resume.org][save-and-resume evidence]].
 
 * Conditional questions and branching
 

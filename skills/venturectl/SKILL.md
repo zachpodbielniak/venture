@@ -1799,6 +1799,13 @@ questions. Hidden and skipped answers are discarded by the server.
 
 For multiple pages, insert a `form_field kind=page_break` between questions by
 `position`; its label/help introduce the next page. Publish refuses empty pages.
+Forms can opt into saved drafts with `allow_resume=true`, `public_origin=https://forms.example.com`
+and `resume_days=7` (maximum 30). These are ordinary `form` fields. Public Save
+issues a private single-use link; Resume loads the newest published version and
+asks new required questions and consent again. Do not read or distribute draft
+capabilities through generic record tools. `forms` owner export/erasure includes
+the optional resume inbox; retention purges expired drafts and cancels queued mail.
+
 `form draft_minutes=60` controls unfinished-response lifetime (0 also means 60).
 `form_draft` is service-owned: do not create/update it. Its sensitive answers
 are absent from generic reads. Retention sweep removes expired drafts within

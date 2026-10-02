@@ -514,6 +514,49 @@ venture_web_forms_confirm_signup(HtmxRequest *request, GHashTable *params, gpoin
 	}
 }
 
+static HtmxResponse *
+venture_web_forms_resume(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureEntity) form = forms_web_live(self, params, now);
+	g_autoptr(VentureFormsStep) step = NULL;
+	g_autofree gchar *html = NULL, *action = NULL;
+	gboolean consume = htmx_request_get_method(request) == HTMX_METHOD_POST;
+	if (form == NULL) return forms_web_missing();
+	if (consume)
+	{
+		g_autofree gchar *address = venture_auth_remote_address(request);
+		GBytes *bytes = htmx_request_get_body_bytes(request);
+		if (bytes != NULL && g_bytes_get_size(bytes) > VENTURE_FORMS_MAX_BODY)
+			return forms_web_status(413, "Too much data for one response.");
+		if (!forms_web_rate_allowed(self, form, g_hash_table_lookup(params, "token"), address))
+			return forms_web_status(429, "Too many responses; try again later.");
+	}
+	step = venture_forms_resume(database, form, g_hash_table_lookup(params, "capability"), now, consume, NULL);
+	if (step == NULL) return forms_web_missing();
+	if (!consume)
+	{
+		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, step->version, NULL);
+		g_autofree gchar *button = NULL;
+		if (fields == NULL) return forms_web_missing();
+		button = g_markup_escape_text(venture_forms_text(fields, "message.resume", "Resume form"), -1);
+		html = g_strdup_printf("<main lang=\"%s\"><h1>%s</h1><form method=\"post\"><button type=\"submit\">%s</button></form></main>",
+			venture_forms_language(fields), button, button);
+	}
+	else
+	{
+		VentureFormsRender options;
+		action = forms_web_action(self, form, FALSE);
+		options.mode = VENTURE_FORMS_RENDER_HOSTED; options.action = action;
+		options.ticket = step->ticket; options.values = step->values; options.errors = step->errors; options.version = step->version;
+		html = venture_forms_render_step(database, form, &options, step, NULL);
+		if (html == NULL) return forms_web_missing();
+	}
+	return forms_web_html(form, g_steal_pointer(&html), 200, NULL, TRUE);
+}
+
 /* GET and POST /pub/form/:token -- the hosted page, and where every way in
  * posts its answers. */
 static HtmxResponse *

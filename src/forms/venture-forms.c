@@ -28,6 +28,11 @@
 static gboolean forms_validate_draft(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, gpointer data, GError **error);
 
+static gboolean forms_resume_save(VentureDatabase *database, VentureEntity *form, VentureEntity *draft,
+	VentureFormsStep *step, const gchar *email, GDateTime *now, GError **error);
+static gboolean forms_working_copy_purge(VentureDatabase *database, VentureEntity *copy, const gchar *type,
+	const VentureActor *actor, gint64 *cancelled, GError **error);
+
 static gboolean forms_check_published(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, GError **error);
 
@@ -176,6 +181,16 @@ forms_validate_form(
 			venture_set_error_validation(error, "Closes at", "must be after Opens at");
 			return FALSE;
 		}
+	}
+	if (venture_forms_get_int(entity, "resume-days") < 0 || venture_forms_get_int(entity, "resume-days") > 30)
+	{
+		venture_set_error_validation(error, "Saved draft lifetime", "must be 0..30 days");
+		return FALSE;
+	}
+	if (venture_forms_get_bool(entity, "allow-resume"))
+	{
+		g_autofree gchar *origin = venture_forms_get_string(entity, "public-origin");
+		if (!venture_forms_public_origin_valid(origin, error)) return FALSE;
 	}
 	if (venture_forms_get_int(entity, "draft-minutes") < 0 || venture_forms_get_int(entity, "draft-minutes") > 1440)
 	{
@@ -2504,6 +2519,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 
 /* Private intermediate-state service; shares field validation and final intake. */
 #include "venture-forms-pages.inc"
+#include "venture-forms-resume.inc"
 #include "venture-forms-optin.inc"
 
 /* ==========================================================================
@@ -2759,7 +2775,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		if (expired == NULL) return NULL;
 		for (i = 0; i < expired->len; i++, budget--)
 		{
-			if (!venture_database_purge(database, g_ptr_array_index(expired, i), actor, error)) return NULL;
+			if (!forms_working_copy_purge(database, g_ptr_array_index(expired, i), "form_draft", actor, NULL, error)) return NULL;
 			drafts++;
 		}
 	}
@@ -2936,8 +2952,9 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 		{
 			VentureEntity *draft = g_ptr_array_index(drafts, i);
 			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
-			if (!forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
-			if (!venture_database_purge(database, draft, actor, error)) goto fail;
+			g_autofree gchar *address = venture_forms_get_string(draft, "resume-email");
+			if (g_strcmp0(address, wanted) != 0 && !forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
+			if (!forms_working_copy_purge(database, draft, "form_draft", actor, &cancelled, error)) goto fail;
 			erased++;
 		}
 	}
@@ -3070,12 +3087,21 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 		{
 			VentureEntity *draft = g_ptr_array_index(drafts, i);
 			g_autofree gchar *text = venture_forms_get_string(draft, "answers");
-			if (!forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
+			g_autofree gchar *address = venture_forms_get_string(draft, "resume-email");
+			if (g_strcmp0(address, wanted) != 0 && !forms_answers_mention(text, wanted) && !forms_bound_email(database, draft, wanted)) continue;
 			json_builder_begin_object(builder);
 			json_builder_set_member_name(builder, "form_id");
 			json_builder_add_int_value(builder, venture_forms_get_int(draft, "form-id"));
 			json_builder_set_member_name(builder, "answers");
-			json_builder_add_value(builder, json_from_string(text, NULL));
+			{
+				JsonNode *value = json_from_string(text, NULL);
+				if (value != NULL && JSON_NODE_HOLDS_OBJECT(value))
+				{
+					json_object_remove_member(json_node_get_object(value), VENTURE_FORMS_PERSONAL);
+					json_object_remove_member(json_node_get_object(value), VENTURE_FORMS_PREFILL);
+				}
+				json_builder_add_value(builder, value);
+			}
 			json_builder_end_object(builder);
 		}
 		json_builder_end_array(builder);

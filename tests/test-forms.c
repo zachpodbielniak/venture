@@ -3801,6 +3801,254 @@ test_languages_confirmation(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(subject, ==, "Merci Anne"); g_assert_cmpstr(body, ==, "Votre sujet : Ventes");
 }
 
+/* A resume capability is not a submission or a reusable read URL. GET exposes
+ * no answers; POST rotates both it and the old active browser's draft token. */
+static void
+test_resume_lifecycle(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "resume-life", VENTURE_FORM_LIVE);
+	g_autoptr(GDateTime) now = venture_time_now(), started = g_date_time_add_seconds(now, -10);
+	g_autoptr(GDateTime) expired = g_date_time_add_days(now, 8);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) saved = NULL, landing = NULL, resumed = NULL, next = NULL, done = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL, *cap = NULL;
+	guint saves = 0, audits = 0;
+	(void)data;
+	g_object_set(form, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "page", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 30);
+	/* Version record ids are global; ticket numbers are per form. */
+	{
+		g_autoptr(VentureEntity) other = contact_form(f, "other-version-id");
+	}
+	g_object_unref(publish(f, form));
+	ticket = venture_forms_ticket_new(form, started);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save");
+	g_signal_connect(f->db, "entity-saved", G_CALLBACK(page_saved), &saves);
+	g_signal_connect(f->db, "audit", G_CALLBACK(page_audit), &audits);
+	/* Saving an empty required question is deliberately allowed. */
+	saved = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(saved); g_assert_nonnull(saved->resume_url);
+	g_assert_cmpuint(json_object_get_size(saved->errors), ==, 0); g_assert_cmpuint(saved->page, ==, 0);
+	g_assert_cmpuint(saves, ==, 0); g_assert_cmpuint(audits, ==, 0);
+	cap = g_strdup(strrchr(saved->resume_url, '/') + 1);
+	g_assert_null(venture_forms_resume(f->db, form, cap, expired, TRUE, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	landing = venture_forms_resume(f->db, form, cap, now, FALSE, &error);
+	g_assert_no_error(error); g_assert_nonnull(landing); g_assert_cmpuint(json_object_get_size(landing->values), ==, 0);
+	resumed = venture_forms_resume(f->db, form, cap, now, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(resumed); g_assert_cmpstr(resumed->token, !=, saved->token);
+	g_assert_nonnull(resumed->resume_url); g_assert_cmpstr(resumed->resume_url, !=, saved->resume_url);
+	/* A later publish must not change this resumed session again. */
+	add_field(f, form, "later", "Added after resume", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 40);
+	g_object_unref(publish(f, form));
+	saves = 0; audits = 0;
+	g_assert_null(venture_forms_resume(f->db, form, cap, now, TRUE, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, saved->token);
+	g_assert_null(venture_forms_step(f->db, form, answers, NULL, now, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, resumed->token);
+	venture_forms_answers_add(answers, "name", "Alice");
+	next = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(next); g_assert_cmpuint(next->page, ==, 1);
+	g_assert_cmpuint(saves, ==, 0); g_assert_cmpuint(audits, ==, 0);
+	g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, next->token);
+	venture_forms_answers_add(answers, "email", "alice@example.test");
+	done = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(done); g_assert_true(done->complete);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+	g_signal_handlers_disconnect_by_data(f->db, &saves); g_signal_handlers_disconnect_by_data(f->db, &audits);
+}
+
+/* A saved link upgrades the definition, unlike uninterrupted page navigation.
+ * Removed answers disappear, changed consent is asked again, and a new required
+ * question before the saved page sends the person back to that question. */
+static void
+test_resume_changed(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "resume-change", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) removed = make_field(f, form, "obsolete", "Old question", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 11);
+	g_autoptr(VentureEntity) version = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), started = g_date_time_add_seconds(now, -10);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) next = NULL, saved = NULL, resumed = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL, *seed = NULL;
+	const gchar *cap;
+	(void)data;
+	g_object_set(form, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10); save(f, removed);
+	add_field(f, form, "agree", "I agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 12);
+	add_field(f, form, "page", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 30);
+	translate(f, form, "form.title", "Reprendre");
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "fr"); ticket = venture_forms_ticket_new(form, started);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket); venture_forms_answers_add(answers, VENTURE_FORMS_PREFILL, seed);
+	venture_forms_answers_add(answers, "name", "Alice"); venture_forms_answers_add(answers, "obsolete", "discard me"); venture_forms_answers_add(answers, "agree", "on");
+	next = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(next); g_assert_cmpuint(next->page, ==, 1);
+	g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, next->token);
+	venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save"); venture_forms_answers_add(answers, "email", "incomplete");
+	saved = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(saved); g_assert_nonnull(saved->resume_url);
+	cap = strrchr(saved->resume_url, '/') + 1;
+	g_assert_true(venture_database_purge(f->db, removed, NULL, &error)); g_assert_no_error(error);
+	add_field(f, form, "new_required", "New required question", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 13);
+	version = publish(f, form);
+	resumed = venture_forms_resume(f->db, form, cap, now, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(resumed); g_assert_true(resumed->changed);
+	g_assert_cmpint(venture_entity_get_id(resumed->version), ==, venture_entity_get_id(version));
+	g_assert_cmpuint(resumed->page, ==, 0);
+	g_assert_false(json_object_has_member(resumed->values, "obsolete")); g_assert_false(json_object_has_member(resumed->values, "agree"));
+	g_assert_cmpstr(json_object_get_string_member(resumed->values, "name"), ==, "Alice");
+	g_assert_cmpstr(json_object_get_string_member(resumed->values, "email"), ==, "incomplete");
+	{
+		g_autofree gchar *language = venture_forms_language_from_values(form, resumed->version, resumed->values);
+		g_assert_cmpstr(language, ==, "fr");
+	}
+}
+
+static void
+test_resume_private_mail(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "resume-mail", VENTURE_FORM_LIVE);
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now(), started = g_date_time_add_seconds(now, -10);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) saved = NULL, again = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *ticket = NULL, *seed = NULL, *serialized = NULL;
+	(void)data;
+	g_object_set(form, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "page", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "agree", "I agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 30);
+	g_object_unref(publish(f, form)); seed = language_seed(f, form, "en"); ticket = venture_forms_ticket_new(form, started);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket); venture_forms_answers_add(answers, VENTURE_FORMS_PREFILL, seed);
+	venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save"); venture_forms_answers_add(answers, "name", "Unsubmitted secret");
+	venture_forms_answers_add(answers, VENTURE_FORMS_RESUME_EMAIL, "  PRIVATE@example.test  ");
+	saved = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(saved); g_assert_nonnull(saved->resume_url);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_CONTACT), ==, 0);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(VentureEntity) message = venture_database_find_one(f->db, query, &error);
+		g_autofree gchar *private_body = NULL;
+		g_assert_no_error(error); g_assert_nonnull(message);
+		private_body = venture_forms_get_string(message, "private-text-body"); g_assert_nonnull(strstr(private_body, saved->resume_url));
+		result = venture_serializable_to_json(VENTURE_SERIALIZABLE(message), FALSE); serialized = json_to_string(result, FALSE);
+		g_assert_null(strstr(serialized, saved->resume_url)); g_assert_null(strstr(serialized, "Unsubmitted secret"));
+		g_clear_pointer(&result, json_node_unref); g_clear_pointer(&serialized, g_free);
+	}
+	/* A new token cannot be used to bypass the draft's email throttle. */
+	g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, saved->token);
+	venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save"); venture_forms_answers_add(answers, "name", "Unsubmitted secret");
+	venture_forms_answers_add(answers, VENTURE_FORMS_RESUME_EMAIL, "private@example.test");
+	again = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(again); g_assert_null(again->resume_url); g_assert_cmpuint(json_object_get_size(again->errors), >, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_MAIL_MESSAGE), ==, 1);
+	/* The destination inbox is enough to find the working copy for erasure;
+	 * it need not also appear in a submitted question. Exports omit bearers. */
+	result = venture_forms_export_person(f->db, f->org, "private@example.test", &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(result), "drafts")), ==, 1);
+	serialized = json_to_string(result, FALSE); g_assert_null(strstr(serialized, "_vf_prefill")); g_assert_null(strstr(serialized, saved->resume_url));
+	g_clear_pointer(&result, json_node_unref);
+	result = venture_forms_erase_person(f->db, f->org, "private@example.test", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(VentureEntity) message = venture_database_find_one(f->db, query, &error);
+		g_autofree gchar *state = venture_forms_get_string(message, "state");
+		g_assert_cmpstr(state, ==, "cancelled");
+	}
+}
+
+static void
+test_resume_http(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "resume-http", VENTURE_FORM_LIVE);
+	g_autofree gchar *ticket = NULL, *body = NULL, *url = NULL, *token = NULL;
+	const gchar *begin, *end;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	g_object_set(form, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "page", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 30);
+	g_object_unref(publish(f, form)); start_http(f); ticket = old_ticket(form);
+	body = g_strdup_printf("%s&_vf_move=save&name=Private+Alice", ticket);
+	request(f, "/pub/form/resume-http", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	begin = strstr(reply.body, "https://forms.example.test/pub/form/resume-http/resume/"); g_assert_nonnull(begin);
+	begin += strlen("https://forms.example.test"); end = strchr(begin, '"'); g_assert_nonnull(end); url = g_strndup(begin, end - begin);
+	token = page_token(reply.body); reply_clear(&reply);
+	request(f, url, NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_null(strstr(reply.body, "Private Alice")); reply_clear(&reply);
+	request(f, url, "application/x-www-form-urlencoded", "", NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "Private Alice"));
+	g_assert_nonnull(strstr(reply.body, "action=\"/pub/form/resume-http\""));
+	reply_clear(&reply);
+	request(f, url, NULL, NULL, NULL, NULL, &reply); g_assert_cmpuint(reply.status, ==, 404); reply_clear(&reply);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&name=Stale", token);
+	g_assert_cmpuint(post_form(f, "/pub/form/resume-http", body), ==, 404);
+	g_assert_cmpuint(post_form(f, "/pub/form/resume-http/resume/guessed", ""), ==, 404);
+}
+
+static void
+test_resume_groups_expiry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "resume-groups", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) group = VENTURE_ENTITY(venture_form_group_new()), name = NULL;
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(mailer));
+	g_autoptr(GDateTime) now = venture_time_now(), started = g_date_time_add_seconds(now, -10), later = g_date_time_add_days(now, 8);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) saved = NULL, resumed = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) swept = NULL;
+	g_autofree gchar *ticket = NULL;
+	(void)data;
+	g_object_set(form, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	g_object_set(group, "organization-id", f->org, "form-id", venture_entity_get_id(form), "label", "Attendee", "key", "attendee", "max-rows", (gint64)3, NULL); save(f, group);
+	name = make_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	g_object_set(name, "group-id", venture_entity_get_id(group), NULL); save(f, name);
+	add_field(f, form, "page", "Next", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 20);
+	add_field(f, form, "agree", "I agree", VENTURE_FORM_FIELD_CONSENT, TRUE, 30);
+	g_object_unref(publish(f, form)); ticket = venture_forms_ticket_new(form, started);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket); venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save");
+	venture_forms_answers_add(answers, "attendee[0][_row]", "1"); venture_forms_answers_add(answers, "attendee[0][name]", "First");
+	venture_forms_answers_add(answers, "attendee[1][_row]", "1"); venture_forms_answers_add(answers, "attendee[1][name]", "Second");
+	venture_forms_answers_add(answers, VENTURE_FORMS_RESUME_EMAIL, "private@example.test");
+	saved = venture_forms_step(f->db, form, answers, NULL, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(saved); g_assert_nonnull(saved->resume_url);
+	g_object_set(group, "max-rows", (gint64)1, NULL); save(f, group); g_object_unref(publish(f, form));
+	resumed = venture_forms_resume(f->db, form, strrchr(saved->resume_url, '/') + 1, now, TRUE, &error);
+	g_assert_no_error(error); g_assert_nonnull(resumed);
+	g_assert_cmpstr(json_object_get_string_member(resumed->values, "attendee[0][name]"), ==, "First");
+	g_assert_false(json_object_has_member(resumed->values, "attendee[1][name]"));
+	g_assert_cmpuint(json_object_get_size(resumed->errors), ==, 0);
+	swept = venture_forms_retention_sweep(f->db, f->org, 1, later, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(swept);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(swept), "expired_drafts"), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(VentureEntity) message = venture_database_find_one(f->db, query, &error);
+		g_autofree gchar *state = venture_forms_get_string(message, "state");
+		g_assert_cmpstr(state, ==, "cancelled");
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3869,6 +4117,11 @@ main(int argc, char **argv)
 	g_test_add("/forms/double-optin", Fixture, NULL, setup, test_double_optin, teardown);
 	g_test_add("/forms/marketing-consent", Fixture, NULL, setup, test_marketing_consent, teardown);
 	g_test_add("/forms/consent-no-default", Fixture, NULL, setup, test_consent_no_default, teardown);
+	g_test_add("/forms/resume-private-mail", Fixture, NULL, setup, test_resume_private_mail, teardown);
+	g_test_add("/forms/resume-http", Fixture, NULL, setup, test_resume_http, teardown);
+	g_test_add("/forms/resume-groups-expiry", Fixture, NULL, setup, test_resume_groups_expiry, teardown);
+	g_test_add("/forms/resume-lifecycle", Fixture, NULL, setup, test_resume_lifecycle, teardown);
+	g_test_add("/forms/resume-changed", Fixture, NULL, setup, test_resume_changed, teardown);
 	g_test_add("/forms/languages-validation", Fixture, NULL, setup, test_languages_validation, teardown);
 	g_test_add("/forms/languages-report", Fixture, NULL, setup, test_languages_report, teardown);
 	g_test_add("/forms/languages-pages", Fixture, NULL, setup, test_languages_pages, teardown);

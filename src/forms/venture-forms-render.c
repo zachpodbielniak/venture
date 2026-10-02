@@ -689,6 +689,20 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 		g_string_append(html, "</div>");
 	}
 
+	if (step != NULL && step->resume_url != NULL)
+	{
+		g_string_append(html, "<aside class=\"vf-resume\" role=\"status\"><p>");
+		forms_escape(html, venture_forms_text(fields, "message.resume_warning", "Anyone with this link can read your unfinished answers. It expires and works only once."));
+		g_string_append(html, "</p><a rel=\"noreferrer\" href=\""); forms_escape(html, step->resume_url);
+		g_string_append(html, "\">"); forms_escape(html, venture_forms_text(fields, "message.resume_link", "Your private resume link"));
+		g_string_append(html, "</a></aside>");
+	}
+	if (step != NULL && step->changed)
+	{
+		g_string_append(html, "<p class=\"vf-resume-changed\" role=\"status\">");
+		forms_escape(html, venture_forms_text(fields, "message.resume_changed", "This form has changed. Review your answers and complete any new questions."));
+		g_string_append(html, "</p>");
+	}
 	if (pages > 1)
 	{
 		const gchar *word = venture_forms_text(fields, "message.page", "Page");
@@ -763,7 +777,17 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 		g_string_append(html, " disabled");
 	g_string_append_c(html, '>');
 	forms_escape(html, !preview && page + 1 < pages ? venture_forms_text(fields, "message.next", "Next") : (venture_string_is_empty(submit) ? venture_forms_text(fields, "message.send", "Send") : submit));
-	g_string_append(html, "</button></div></form>");
+	g_string_append(html, "</button></div>");
+	if (!preview && pages > 1 && venture_forms_get_bool(form, "allow-resume"))
+	{
+		g_string_append(html, "<div class=\"vf-save\"><label>");
+		forms_escape(html, venture_forms_text(fields, "message.resume_email", "Email the resume link (optional)"));
+		g_string_append(html, "<input type=\"email\" name=\"" VENTURE_FORMS_RESUME_EMAIL "\" autocomplete=\"email\"></label>"
+			"<button type=\"submit\" name=\"" VENTURE_FORMS_MOVE "\" value=\"save\" formnovalidate>");
+		forms_escape(html, venture_forms_text(fields, "message.save", "Save and continue later"));
+		g_string_append(html, "</button></div>");
+	}
+	g_string_append(html, "</form>");
 
 	if (hosted)
 		forms_document_close(html);
@@ -896,6 +920,8 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 	json_builder_add_string_value(builder, VENTURE_FORMS_TICKET);
 	json_builder_set_member_name(builder, "ticket");
 	json_builder_add_string_value(builder, ticket);
+	json_builder_set_member_name(builder, "allow_resume");
+	json_builder_add_boolean_value(builder, venture_forms_get_bool(form, "allow-resume") && venture_forms_page_count(fields) > 1);
 	json_builder_set_member_name(builder, "pages");
 	json_builder_begin_array(builder);
 	for (i = 0; i < venture_forms_page_count(fields); i++)

@@ -1,0 +1,57 @@
+#+title: Forms save-and-resume demonstration
+#+date: 2026-10-02
+
+* Built artifact and isolation
+
+The DEBUG server's SHA256 was
+=5ba713f23fc8a5d4a9f15a9b1c6747a0878dd6f1312dab235c31e6e2c02e6552=.
+The demonstration used a disposable SQLite database, a loopback-only server
+with authentication disabled solely for this demonstration, and a separate
+local page hosting the loader. AI, plugins and automation were disabled.
+Chromium exercised separate browser contexts; no external service was contacted.
+
+* Observed behavior
+
+1. Created and published a two-page form with Save enabled, its explicit public
+   origin and a seven-day lifetime. With JavaScript disabled, entered Alice on
+   page one, continued, entered an incomplete email on page two, and saved.
+   The form displayed its private link despite the incomplete required answer.
+2. Closed the browser context. Added a new required question before the page
+   break and published again. Opened the saved link in a fresh context. GET
+   showed only the Resume form button, without Alice's answers.
+3. Pressed Resume. The newest form returned to page one for the new required
+   question, retained Alice and displayed a changed-form notice and replacement
+   link. Completed the new question; page two still held the incomplete email.
+   Corrected it and submitted successfully. The consumed link returned 404.
+4. On the loader host, entered Bob but left a required question empty. Save
+   returned a private link without submitting. Axe reported zero WCAG A/AA
+   violations on that rendered state. Followed the link to the hosted Resume
+   button, restored Bob, completed both pages and submitted.
+5. The database contained exactly two completed responses. Neither response's
+   public answers contained internal controls or capabilities.
+
+* Automated coverage
+
+The save test first exposed Save being mistaken for a repeating-row operation;
+that refusal is repaired. Tests now cover incomplete saves without audit or
+business signals, expiry and replay refusal, old browser-token invalidation,
+replacement links, final intake exactly once, and per-form version numbers
+that differ from global version-record ids.
+
+Publication-change coverage checks new required questions, removed answers,
+cleared consent, preserved language and reduced repeat-group limits. Private
+outbox tests verify the bearer is absent from ordinary serialization, rate
+limits survive token rotation, owner export omits signed controls, erasure
+matches the optional resume inbox, and erasure/expiry cancel queued link mail.
+HTTP checks exercise scanner-safe GET, explicit POST and uniform 404 refusals.
+
+The per-form ticket regression was also run against a scratch build that used
+version-record ids. With another form published first and a further publication
+after Resume, that build refused final intake with Form not found. The corrected
+per-form-number build passed the same scenario.
+
+All 75 forms tests, 19 migration tests and the public-route authentication
+check passed. The strengthened lifecycle check passed again after adding the
+post-resume publication. The live PostgreSQL migration check also passed on a
+disposable, loopback-only PostgreSQL 18 container, including the guarded forms
+migrations; it was not skipped for this child.

@@ -127,7 +127,7 @@ forms_optin_find(VentureDatabase *database, VentureEntity *form, const gchar *to
 /* A pending capability must not arrive after its working copy was erased.
  * Already-sent mail belongs to the outbox's separate retention contract. */
 static gboolean
-forms_pending_purge(VentureDatabase *database, VentureEntity *pending, const VentureActor *actor, gint64 *cancelled, GError **error)
+forms_working_copy_purge(VentureDatabase *database, VentureEntity *pending, const gchar *type, const VentureActor *actor, gint64 *cancelled, GError **error)
 {
 	VentureMailOutbox *outbox = venture_database_get_mail_outbox(database);
 	if (outbox != NULL)
@@ -136,7 +136,7 @@ forms_pending_purge(VentureDatabase *database, VentureEntity *pending, const Ven
 		g_autoptr(GPtrArray) messages = NULL;
 		guint i;
 		venture_query_set_organization(query, venture_entity_get_organization_id(pending));
-		venture_query_add_filter_string(query, "related-type", VENTURE_FILTER_OP_EQ, "form_pending", NULL);
+		venture_query_add_filter_string(query, "related-type", VENTURE_FILTER_OP_EQ, type, NULL);
 		venture_query_add_filter_int(query, "related-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(pending), NULL);
 		venture_query_set_limit(query, 3);
 		messages = venture_database_find(database, query, error);
@@ -149,11 +149,17 @@ forms_pending_purge(VentureDatabase *database, VentureEntity *pending, const Ven
 			 * Sent/leased mail cannot be recalled; never attempt that write. */
 			if (g_strcmp0(state, "queued") != 0 && g_strcmp0(state, "failed") != 0) continue;
 			if (!venture_mail_outbox_cancel(outbox, venture_entity_get_organization_id(pending),
-				venture_entity_get_id(message), "signup ended", actor, error)) return FALSE;
+				venture_entity_get_id(message), "private form copy ended", actor, error)) return FALSE;
 			if (cancelled != NULL) (*cancelled)++;
 		}
 	}
 	return venture_database_purge(database, pending, actor, error);
+}
+
+static gboolean
+forms_pending_purge(VentureDatabase *database, VentureEntity *pending, const VentureActor *actor, gint64 *cancelled, GError **error)
+{
+	return forms_working_copy_purge(database, pending, "form_pending", actor, cancelled, error);
 }
 
 static gboolean

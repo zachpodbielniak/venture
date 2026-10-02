@@ -1479,6 +1479,14 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   Final intake claims the draft before calling the ordinary submission service,
   whose follow-up retry must not run inside an enclosing transaction.
 
+- **Resume is a publication boundary; Next is not.** Saved form capabilities
+  contain random bytes and the working copy stores only their digest. GET must
+  neither disclose answers nor consume the link. Explicit POST invalidates it,
+  upgrades compatible answers to the newest published version, clears consent
+  on a version change and revisits newly required questions. Ordinary Back/Next
+  remains version-pinned. Draft expiry never slides; cleanup cancels queued
+  capability mail before purging the working copy.
+
 - **A form rule runs on the published definition, not today's rule records.**
   Conditions and their forward targets are frozen alongside questions. Clear
   hidden questions and skipped pages in question order before checking required

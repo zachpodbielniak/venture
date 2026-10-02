@@ -87,6 +87,7 @@ typedef struct
 
 #define VENTURE_FORMS_DRAFT_TOKEN "_vf_draft"
 #define VENTURE_FORMS_MOVE "_vf_move"
+#define VENTURE_FORMS_RESUME_EMAIL "_vf_resume_email"
 #define VENTURE_FORMS_DRAFT_WRITE "venture-forms-draft-write"
 
 typedef struct {
@@ -95,6 +96,8 @@ typedef struct {
 	JsonObject *errors;
 	gchar *token;
 	gchar *ticket;
+	gchar *resume_url;
+	gboolean changed;
 	guint page;
 	guint pages;
 	gboolean complete;
@@ -111,6 +114,9 @@ VentureFormsStep *venture_forms_step(VentureDatabase *database, VentureEntity *f
 	GHashTable *answers, const gchar *origin, GDateTime *now, GError **error);
 gchar *venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error);
+
+VentureFormsStep *venture_forms_resume(VentureDatabase *database, VentureEntity *form,
+	const gchar *capability, GDateTime *now, gboolean consume, GError **error);
 
 gboolean venture_forms_public_origin_valid(const gchar *origin, GError **error);
 gboolean venture_forms_personal_bind(VentureDatabase *database, VentureEntity *form,

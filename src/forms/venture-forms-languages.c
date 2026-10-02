@@ -10,6 +10,14 @@
  * an author. A translation can never change a stable key, choice id or rule. */
 typedef struct { const gchar *key; const gchar *text; } FormsMessage;
 static const FormsMessage messages[] = {
+	{ "save", "Save and continue later" },
+	{ "resume_email", "Email the resume link (optional)" },
+	{ "resume_link", "Your private resume link" },
+	{ "resume_changed", "This form has changed. Review your answers and complete any new questions." },
+	{ "resume_subject", "Resume your form" },
+	{ "resume_intro", "Open this private link and press Resume form:" },
+	{ "resume_warning", "Anyone with this link can read your unfinished answers. It expires and works only once." },
+	{ "resume", "Resume form" },
 	{ "row_marker", "This row marker is not valid." },
 	{ "group_heading", "A group heading does not accept an answer." },
 	{ "page_heading", "A page heading does not accept an answer." },

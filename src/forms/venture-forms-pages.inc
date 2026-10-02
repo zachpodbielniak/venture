@@ -21,7 +21,7 @@ venture_forms_step_free(VentureFormsStep *step)
 	g_clear_object(&step->submission);
 	g_clear_pointer(&step->values, json_object_unref);
 	g_clear_pointer(&step->errors, json_object_unref);
-	g_free(step->token); g_free(step->ticket); g_free(step);
+	g_free(step->token); g_free(step->ticket); g_free(step->resume_url); g_free(step);
 }
 
 static gchar *
@@ -96,6 +96,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 	const gchar *token = forms_first(answers, VENTURE_FORMS_DRAFT_TOKEN);
 	const gchar *move = forms_first(answers, VENTURE_FORMS_MOVE);
 	gboolean back = g_strcmp0(move, "back") == 0;
+	gboolean save = g_strcmp0(move, "save") == 0;
 	gboolean finishing = FALSE, row_operation = FALSE;
 	g_autoptr(GHashTable) not_shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	GHashTableIter iter;
@@ -165,6 +166,15 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		venture_forms_localize(base_fields, language);
 	}
 	step->pages = venture_forms_page_count(base_fields);
+	if (save && (!venture_forms_get_bool(fresh, "allow-resume") || step->pages < 2)) goto missing;
+	if (save)
+	{
+		g_autoptr(GHashTable) screen = venture_forms_answers_new();
+		venture_forms_answers_add(screen, VENTURE_FORMS_TICKET, step->ticket);
+		if (forms_first(answers, VENTURE_FORMS_HONEYPOT) != NULL)
+			venture_forms_answers_add(screen, VENTURE_FORMS_HONEYPOT, forms_first(answers, VENTURE_FORMS_HONEYPOT));
+		if (!venture_forms_screen(fresh, screen, now)) goto missing;
+	}
 	if (step->page >= step->pages) goto missing;
 	page_values = venture_forms_groups_overlay(base_fields, step->page, step->values, posted);
 	fields = venture_forms_expand_groups(base_fields, page_values, FALSE, step->errors);
@@ -174,7 +184,8 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 	{
 		if (g_strcmp0(key, VENTURE_FORMS_DRAFT_TOKEN) == 0 || g_strcmp0(key, VENTURE_FORMS_MOVE) == 0 ||
 		    g_strcmp0(key, VENTURE_FORMS_TICKET) == 0 || g_strcmp0(key, VENTURE_FORMS_HONEYPOT) == 0 ||
-		    g_strcmp0(key, VENTURE_FORMS_PERSONAL) == 0 || g_strcmp0(key, VENTURE_FORMS_PREFILL) == 0) continue;
+		    g_strcmp0(key, VENTURE_FORMS_PERSONAL) == 0 || g_strcmp0(key, VENTURE_FORMS_PREFILL) == 0 ||
+		    (venture_forms_get_bool(fresh, "allow-resume") && g_strcmp0(key, VENTURE_FORMS_RESUME_EMAIL) == 0)) continue;
 		if (venture_forms_definition_find(page_fields, key) == NULL)
 			forms_refuse(step->errors, "_form", "Only questions on the current page may be answered.");
 	}
@@ -189,10 +200,10 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		if (value != NULL && field->kind != VENTURE_FORM_FIELD_PAGE_BREAK)
 			json_object_set_member(step->values, field->key, json_node_copy(value));
 	}
-	row_operation = venture_forms_group_move(page_fields, move, step->values, step->errors);
+	row_operation = !save && venture_forms_group_move(page_fields, move, step->values, step->errors);
 	venture_forms_rules_filter(fields, step->values, not_shown);
-	if (!back && !row_operation) venture_forms_groups_validate(page_fields, not_shown, step->errors);
-	for (i = 0; !back && !row_operation && i < page_fields->len; i++)
+	if (!back && !save && !row_operation) venture_forms_groups_validate(page_fields, not_shown, step->errors);
+	for (i = 0; !back && !save && !row_operation && i < page_fields->len; i++)
 	{
 		VentureFormsField *source = g_ptr_array_index(page_fields, i);
 		VentureFormsField effective = *source;
@@ -200,7 +211,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		venture_forms_field_active(source, step->values, &effective.required);
 		forms_check_field(&effective, g_hash_table_lookup(answers, source->key), checked, step->errors, summary);
 	}
-	if (!row_operation && json_object_get_size(step->errors) == 0)
+	if (!save && !row_operation && json_object_get_size(step->errors) == 0)
 	{
 		if (back && step->page > 0)
 		{
@@ -229,6 +240,8 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 			"version-id", venture_entity_get_id(step->version), "expires-at", expires, "ticket", step->ticket, NULL);
 	}
 	if (draft != NULL && !forms_draft_save(database, draft, step, finishing, error)) goto fail;
+	if (save && draft != NULL && json_object_get_size(step->errors) == 0 &&
+	    !forms_resume_save(database, fresh, draft, step, forms_first(answers, VENTURE_FORMS_RESUME_EMAIL), now, error)) goto fail;
 	if (!venture_database_commit(database, error)) return NULL;
 
 	/* Claim the draft before calling final intake: its follow-up retry owns its
@@ -246,7 +259,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		if (!venture_forms_screen(fresh, complete, now))
 		{
 			step->complete = TRUE;
-			if (!venture_database_purge(database, draft, NULL, error)) return NULL;
+			if (!forms_working_copy_purge(database, draft, "form_draft", NULL, NULL, error)) return NULL;
 			return g_steal_pointer(&step);
 		}
 		if (!venture_forms_submit(database, fresh, complete, origin, now, &outcome, &step->submission, &refused, error))
@@ -255,7 +268,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		{
 			step->complete = TRUE;
 			step->awaiting_confirmation = outcome == VENTURE_FORMS_PENDING;
-			if (!venture_database_purge(database, draft, NULL, error)) return NULL;
+			if (!forms_working_copy_purge(database, draft, "form_draft", NULL, NULL, error)) return NULL;
 			return g_steal_pointer(&step);
 		}
 		g_clear_pointer(&step->errors, json_object_unref);
