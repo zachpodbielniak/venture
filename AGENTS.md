@@ -357,6 +357,12 @@ first seven columns were empty.
   again. Lead capture can return a contact or company on a duplicate match,
   so only a `VentureLead` may populate a response's `lead-id`.
 
+- **Form bookings use the calendar booking service.** Availability and seat
+  capacity are checked under the save lock, with a private reservation before
+  follow-ups can re-enter the main loop. A draft never holds a slot. A working
+  copy hold emits no business event; confirming it creates the ordinary meeting.
+  Management URLs are signed capabilities and belong only in private mail bodies.
+
 ## The CLI, and its skill
 
 `venturectl` is generic over record types: `list`, `get`, `create`,

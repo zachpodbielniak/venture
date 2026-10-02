@@ -56,6 +56,8 @@ static HtmxResponse *venture_web_booking_plain(guint status, const gchar *text)
 	HtmxResponse *response = htmx_response_new_with_content(text);
 	htmx_response_set_status(response, status);
 	htmx_response_set_content_type(response, "text/html; charset=utf-8");
+	htmx_response_add_header(response, "Cache-Control", "no-store");
+	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
 	return response;
 }
 static gboolean venture_web_booking_wants_json(HtmxRequest *request)
@@ -150,4 +152,66 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 		g_string_append(html, "</body></html>");
 		return venture_web_booking_plain(200, html->str);
 	}
+}
+
+/* A GET only offers explicit actions, so mail scanners cannot cancel a meeting.
+ * The token is the route's guard and is never reflected into page content. */
+static HtmxResponse *venture_web_booking_manage(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureBookingService) service = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) page = NULL, reservation = NULL, activity = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *address = venture_auth_remote_address(request);
+	const gchar *slug = g_hash_table_lookup(params, "slug"), *capability = g_hash_table_lookup(params, "capability");
+	GBytes *bytes = htmx_request_get_body_bytes(request);
+	guint i;
+	if (!venture_web_module_enabled(self, "calendar")) return venture_web_booking_plain(404, "Not found");
+	if (bytes != NULL && g_bytes_get_size(bytes) > 16384) return venture_web_booking_plain(413, "Too large");
+	if (self->lead_limiter == NULL) self->lead_limiter = htmx_rate_limiter_new(30, 0.5);
+	if (!htmx_rate_limiter_allow(self->lead_limiter, address != NULL ? address : "unknown")) return venture_web_booking_plain(429, "Try again later");
+	service = venture_booking_service_new(database); query = venture_query_new(VENTURE_TYPE_BOOKING_PAGE);
+	venture_query_add_filter_string(query, "slug", VENTURE_FILTER_OP_EQ, slug, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	page = venture_database_find_one(database, query, NULL);
+	if (page == NULL || venture_entity_is_deleted(page)) return venture_web_booking_plain(404, "Not found");
+	reservation = venture_booking_service_lookup_capability(service, page, capability, NULL, &error);
+	if (reservation == NULL) return venture_web_booking_plain(404, "Not found");
+	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
+	{
+		const gchar *operation = htmx_request_get_form_value(request, "operation");
+		const gchar *start = htmx_request_get_form_value(request, "start");
+		VentureActor actor;
+		if (g_strcmp0(operation, "cancel") != 0 && g_strcmp0(operation, "reschedule") != 0)
+			return venture_web_booking_plain(422, "Choose cancellation or rescheduling.");
+		if (g_strcmp0(operation, "reschedule") == 0 && venture_string_is_empty(start))
+			return venture_web_booking_plain(422, "Choose an offered time.");
+		actor.kind = VENTURE_ACTOR_KIND_USER; actor.name = "public booking";
+		actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
+		activity = venture_booking_service_manage(service, page, capability,
+			g_strcmp0(operation, "cancel") == 0 ? NULL : start, NULL, &actor, &error);
+		if (activity == NULL) return venture_web_booking_plain(g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND) ? 404 : 409,
+			"The booking could not be changed. Reload and choose an available time.");
+		if (g_strcmp0(operation, "cancel") == 0) return venture_web_booking_plain(200, "<p>Your booking has been cancelled.</p>");
+		return venture_web_booking_plain(200, "<p>Your booking has been rescheduled. A new private link will be sent when confirmation email is configured.</p>");
+	}
+	slots = venture_booking_service_slots(service, page, NULL, &error);
+	html = g_string_new("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Manage booking</title></head><body><main><h1>Manage booking</h1><form method=\"post\"><button name=\"operation\" value=\"cancel\">Cancel booking</button></form>");
+	if (slots != NULL && json_array_get_length(json_node_get_array(slots)) > 0)
+	{
+		g_string_append(html, "<form method=\"post\"><label>New time <select name=\"start\" required>");
+		for (i = 0; i < json_array_get_length(json_node_get_array(slots)); i++)
+		{
+			JsonObject *slot = json_array_get_object_element(json_node_get_array(slots), i);
+			g_string_append(html, "<option value=\""); venture_html_escape_append(html, json_object_get_string_member(slot, "start"));
+			g_string_append(html, "\">"); venture_html_escape_append(html, json_object_get_string_member(slot, "label")); g_string_append(html, "</option>");
+		}
+		g_string_append(html, "</select></label><button name=\"operation\" value=\"reschedule\">Reschedule booking</button></form>");
+	}
+	g_string_append(html, "</main></body></html>");
+	return venture_web_booking_plain(200, html->str);
 }

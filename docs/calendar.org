@@ -122,7 +122,7 @@ widened by the buffer, it overlaps any of the owner's planned calls and
 meetings — which is where synced calendar events live, so a dentist
 appointment on the phone blocks the same half hour here. Times are shown in
 the owner's zone and submitted as UTC. =?format=json= returns the slots as
-={"start", "end", "label"}=.
+={"start", "end", "label", "day"}=.
 
 =POST /book/<slug>= with =start=, =name=, =email= and optional =notes=, as a
 form or JSON, books one. The contact is found by normalised email the way
@@ -130,16 +130,15 @@ lead deduplication and inbound mail match (lower case, trimmed, +tag
 removed) or created with =source=booking=; a planned meeting owned by the
 page owner, related to that contact, is written in the same transaction,
 with the customer's notes and address in its body. The slot is recomputed
-first, so a second booking of the same time — or a time that was never
-offered — is refused with 409 and nothing is written. No mail is sent: the
-meeting appears on the owner's worklist and, on the next sweep, their
-calendar. Sending a confirmation is one enqueue on the mail outbox, in
-=VentureBookingService=, when the product wants it.
+under the save lock, so a booking beyond the target's capacity — or a time that was never
+offered — is refused with 409 and nothing is written. The meeting appears
+on the owner's worklist and, on the next sweep, their calendar. With mail
+and a public origin configured, the service queues a private confirmation.
 
 The page is public: no session, the same per-address rate limit and
 request-size cap as lead capture, 404 for an unknown or inactive slug or
 when the module is off, and what a stranger types is bounded — a name over
-200 characters, an address over 254 or notes over 4000 are refused with 422
+200 bytes, an address over 254 bytes or notes over 4000 bytes are refused with 422
 before anything is written.
 
 * Running it
@@ -199,3 +198,25 @@ with the module on, off and against a half-present schema. =test-auth= covers an
 of the sync route, owner-only =calendar_account= and the =calendar_event=
 write refusal. =test-calendar-surfaces= drives =venturectl calendar sync=
 and =/book/<slug>= over HTTP against a private server.
+
+* Seat capacity and private management links
+
+=booking_page.capacity= declares seats per exact slot (zero means one, maximum
+10000). A different booking target or unrelated meeting still blocks overlap.
+Availability is shared with [[file:forms.org][booking questions on forms]]. A private
+=booking_reservation= working copy reserves a seat under the save lock, without
+emitting an audit entry or business event. Confirmation creates the ordinary
+meeting. An expired hold stops counting without waiting for a sweep.
+
+Set =public_origin= to the HTTPS origin used for confirmation links. With mail
+enabled, confirmations use the ordinary outbox, with the signed management URL
+in its private body. =GET /book/<slug>/manage/<capability>= offers buttons only;
+POST cancels or reschedules. Successful changes invalidate the old capability.
+A reschedule reuses the meeting and rechecks availability; cancellation changes
+its status so CalDAV propagates the cancellation. The link expires one day
+after the booked start. Keep the URL out of logs and shared notes.
+
+The form renderer and the original =/book= UI share this service. Existing
+scheduling links remain valid; no hidden form records are manufactured.
+Migrations =000850=/=000851= independently guard form references and optional
+calendar reservations. See [[file:evidence/forms-booking.org][the built-server booking demonstration]].

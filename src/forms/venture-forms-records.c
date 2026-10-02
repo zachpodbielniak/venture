@@ -52,6 +52,7 @@ venture_form_field_kind_get_type(void)
 			{ VENTURE_FORM_FIELD_HIDDEN, "VENTURE_FORM_FIELD_HIDDEN", "hidden" },
 			{ VENTURE_FORM_FIELD_CONSENT, "VENTURE_FORM_FIELD_CONSENT", "consent" },
 			{ VENTURE_FORM_FIELD_PAGE_BREAK, "VENTURE_FORM_FIELD_PAGE_BREAK", "page_break" },
+			{ VENTURE_FORM_FIELD_BOOKING, "VENTURE_FORM_FIELD_BOOKING", "booking" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureFormFieldKind", values);
@@ -233,6 +234,9 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("pattern", "Pattern", "Text: a regular expression the whole answer must match",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("booking-page-id", "Booking target", "Existing calendar booking page for a booking question", "booking_page", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-name-field", "Name question", "Stable question key; empty uses name", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-email-field", "Email question", "Stable question key; empty uses email", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("scoring", "Scoring", "JSON choice points, numeric ranges and optional correct choice ids", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("default-value", "Default", "Optional: the value it starts with",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
@@ -337,6 +341,7 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("origin", "Sent from", "The site it was sent from, when the browser said",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_REF("booking-id", "Booked meeting", "Meeting created from the selected slot", "activity", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("scored", "Scored", "The published form computed an assessment", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("score", "Score", "Server-computed assessment points", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("result-key", "Result band", "Stable published result band key", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),

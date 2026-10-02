@@ -1,0 +1,33 @@
+#+title: Form booking demonstration
+
+* Built-server demonstration
+
+Ran the DEBUG server in a disposable SQLite instance on loopback, with AI,
+plugins and automation disabled. The tested binary SHA-256 was
+=9214096974fbb0fe5f34c7e9491af4e867b0e5a970551a721e0015d2648a9b85=.
+
+Created a one-seat booking target and a form with required name, email and
+booking questions through the ordinary REST record endpoints; then published.
+Chromium 153 submitted the form once with JavaScript disabled and once through
+the embed loader on a separate host page. Both selected live radio slots and
+created linked meetings. The embedded picker had zero axe-core WCAG 2 A/AA
+and 2.1 A/AA violations.
+
+Two concurrent JSON submissions used the same offered remaining slot and the
+schema's signed fill-time ticket. Exactly one was accepted; the other returned
+HTTP 422 with a field-level request to choose another slot. Exactly three
+completed responses existed, each with a meeting link.
+
+* Service and HTTP regressions
+
+The calendar tests cover two-seat capacity, refusing the next person without
+creating a contact or meeting, disabled targets held by stale callers,
+side-effect-free holds, expiry without cleanup, confirmation after expiry,
+signed-token tampering, rescheduling, cancellation and replay refusal. The
+capacity test failed before the implementation and passes with it.
+
+The forms HTTP test checks schema slots, ordinary radio markup, final booking,
+stale-slot refusal, immutable meeting links, a confirmation URL from the private
+outbox body, scanner-safe GET, explicit cancellation and replay 404. Multi-page
+navigation creates a form draft without reserving a seat. The all-kind
+accessibility fixture uses a real booking target.

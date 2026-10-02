@@ -185,6 +185,7 @@ venture_context_new(
 	/* Forms whose tokens are unique capabilities, questions whose keys
 	 * never move, and responses only the public door creates. */
 	venture_forms_install(self);
+	venture_booking_service_install(self->database);
 
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as

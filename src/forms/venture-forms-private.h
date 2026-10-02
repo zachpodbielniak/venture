@@ -74,6 +74,10 @@ typedef struct
 	GPtrArray		*choices;
 	/* Each question owns a reference to its version's immutable rule array. */
 	JsonArray		*rules;
+	gint64			 booking_page_id;
+	gchar			*booking_name_field;
+	gchar			*booking_email_field;
+	JsonNode		*booking_slots;
 	gchar			*scoring;
 	JsonObject		*quiz;
 	JsonObject		*catalog;
@@ -240,6 +244,12 @@ VentureEntity *venture_forms_version_by_number(VentureDatabase *database, Ventur
 gboolean venture_forms_ticket_parse(VentureEntity *form, const gchar *ticket, gint64 *issued,
 	gint64 *version);
 
+gboolean venture_forms_booking_definition(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+gboolean venture_forms_booking_slots(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GDateTime *now, GError **error);
+gboolean venture_forms_booking_prepare(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, JsonObject *answers,
+	GDateTime *now, VentureEntity **hold, JsonObject *errors, GError **error);
+gboolean venture_forms_booking_finish(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, JsonObject *answers,
+	VentureEntity *hold, VentureEntity *response, GDateTime *now, JsonObject *errors, GError **error);
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_PRIVATE_H */

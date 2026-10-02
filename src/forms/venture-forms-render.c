@@ -260,11 +260,12 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 		return;
 	}
 
-	if (venture_forms_kind_has_choices(kind) || VENTURE_FORM_FIELD_RATING == kind)
+	if (venture_forms_kind_has_choices(kind) || VENTURE_FORM_FIELD_RATING == kind || VENTURE_FORM_FIELD_BOOKING == kind)
 	{
 		g_autoptr(GPtrArray) scale = NULL;
 		GPtrArray *choices = field->choices;
 		const gchar *type = (VENTURE_FORM_FIELD_MULTIPLE_CHOICE == kind) ? "checkbox" : "radio";
+		const gchar *last_day = NULL;
 		guint i;
 
 		/* A rating's choices are its scale, made here, never stored. */
@@ -304,10 +305,23 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 		{
 			VentureFormsChoice *choice = g_ptr_array_index(choices, i);
 
+			if (kind == VENTURE_FORM_FIELD_BOOKING && field->booking_slots != NULL)
+			{
+				JsonObject *slot = json_array_get_object_element(json_node_get_array(field->booking_slots), i);
+				const gchar *day = json_object_get_string_member(slot, "day");
+				if (g_strcmp0(last_day, day) != 0)
+				{
+					if (last_day != NULL) g_string_append(html, "</div>");
+					g_string_append(html, "<div class=\"vf-slot-day\" role=\"group\" aria-label=\"");
+					forms_escape(html, day); g_string_append(html, "\"><p>"); forms_escape(html, day); g_string_append(html, "</p>");
+					last_day = day;
+				}
+			}
+
 			/* Each box has an id, so the error summary can link to the
 			 * group's first one. Choice ids are [a-z0-9_-]. */
-			g_string_append_printf(html, "<label class=\"vf-choice\"><input class=\"vf-input\" "
-			                       "id=\"%s--%s\" type=\"%s\" name=\"%s\" value=\"", id, choice->id, type, key);
+			g_string_append_printf(html, "<label class=\"vf-choice%s\"><input class=\"vf-input\" "
+			                       "id=\"%s--%s\" type=\"%s\" name=\"%s\" value=\"", kind == VENTURE_FORM_FIELD_BOOKING ? " vf-slot" : "", id, choice->id, type, key);
 			forms_escape(html, choice->id);
 			g_string_append_c(html, '"');
 			/* A required radio group is satisfied by any one box; a
@@ -322,6 +336,9 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 			forms_escape(html, choice->label);
 			g_string_append(html, "</span></label>");
 		}
+		if (last_day != NULL) g_string_append(html, "</div>");
+		if (kind == VENTURE_FORM_FIELD_BOOKING && choices->len == 0)
+			g_string_append(html, "<p class=\"vf-no-slots\">No times are open right now. Please check back later.</p>");
 		g_string_append(html, "</div>");
 		forms_render_help_and_error(html, id, field->help, help, message);
 		g_string_append(html, "</fieldset>");
@@ -586,6 +603,7 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 		g_autofree gchar *language = venture_forms_language_from_values(form, options->version, options->values);
 		venture_forms_localize(base_fields, language);
 	}
+	if (!venture_forms_booking_slots(database, form, base_fields, NULL, error)) return NULL;
 	fields = venture_forms_expand_groups(base_fields, options->values, TRUE, NULL);
 	pipe_values = venture_forms_pipe_values(fields, options->values);
 
@@ -855,6 +873,7 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 	if (NULL == fields)
 		return NULL;
 
+	if (!venture_forms_booking_slots(database, form, fields, now, error)) return NULL;
 	venture_forms_localize(fields, language);
 	token = venture_forms_get_string(form, "public-token");
 	title = venture_forms_get_string(form, "title");
@@ -983,6 +1002,12 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 		json_builder_add_string_value(builder, field->label != NULL ? field->label : "");
 		json_builder_set_member_name(builder, "kind");
 		json_builder_add_string_value(builder, venture_forms_kind_nick(field->kind));
+		if (field->kind == VENTURE_FORM_FIELD_BOOKING)
+		{
+			json_builder_set_member_name(builder, "slots");
+			if (field->booking_slots != NULL) json_builder_add_value(builder, json_node_copy(field->booking_slots));
+			else { json_builder_begin_array(builder); json_builder_end_array(builder); }
+		}
 		json_builder_set_member_name(builder, "allow_prefill");
 		json_builder_add_boolean_value(builder, field->allow_prefill);
 

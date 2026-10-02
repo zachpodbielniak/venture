@@ -31807,6 +31807,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/calendar/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_calendar_sync, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/connectors/:type/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_connector_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/connectors/:type/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_connector_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/book/:slug/manage/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_manage, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/book/:slug/manage/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_manage, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/book/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_page, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/book/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_page, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
@@ -31835,6 +31837,8 @@ venture_web_server_new(
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
 	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
 	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
+	htmx_router_get(router, "/book/:slug/manage/:capability", venture_web_booking_manage, self);
+	htmx_router_post(router, "/book/:slug/manage/:capability", venture_web_booking_manage, self);
 	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
 	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
 	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);

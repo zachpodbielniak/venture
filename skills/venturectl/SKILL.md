@@ -1952,3 +1952,16 @@ response score/result properties: the server computes and freezes them.
 `score_to_lead` adds the trusted `assessment_score` attribute to ordinary lead
 capture before the existing scoring rules run; it preserves manual overrides.
 `form_summary` shows score distributions separately for each version.
+
+### Booking questions
+
+A `form_field` with `kind=booking` names an existing `booking_page_id`.
+Configure the form's HTTPS `public_origin` and required short-text/email
+questions first; `booking_name_field` and `booking_email_field` default to
+`name` and `email`. One booking question per form, without repeating groups,
+prefill, defaults or sensitive storage. Publish after changing the binding.
+The public schema exposes current `slots`; final submit rechecks capacity.
+`booking_page.capacity=0` means one seat. `form_submission.booking_id` is a
+service-owned link to the meeting. Do not write `booking_reservation` records:
+they are private working copies. Signed management links go through the private
+outbox body; opening one never cancels or reschedules a booking.

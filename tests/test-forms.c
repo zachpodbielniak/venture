@@ -2180,6 +2180,7 @@ every_kind_form(Fixture *f, const gchar *token)
 	VentureEntity *form = make_form(f, token, VENTURE_FORM_LIVE);
 	GEnumClass *klass = g_type_class_ref(VENTURE_TYPE_FORM_FIELD_KIND);
 	guint i;
+	g_object_set(form, "public-origin", "https://forms.example.test", NULL); save(f, form);
 	for (i = 0; i < klass->n_values; i++)
 	{
 		GEnumValue *value = &klass->values[i];
@@ -2189,6 +2190,15 @@ every_kind_form(Fixture *f, const gchar *token)
 		g_autofree gchar *key = g_strdup(value->value_nick);
 		g_autoptr(VentureEntity) field = make_field(f, form, key, value->value_nick,
 			(VentureFormFieldKind)value->value, i % 2 == 0, (gint64)i);
+		if (value->value == VENTURE_FORM_FIELD_BOOKING)
+		{
+			g_autoptr(VentureEntity) page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org,
+				"title", "Accessible slots", "slug", token, "owner", "owner", "duration-minutes", (gint64)30,
+				"timezone", "UTC", "horizon-days", (gint64)2, "active", TRUE,
+				"availability", "{\"mon\":\"09:00-17:00\",\"tue\":\"09:00-17:00\",\"wed\":\"09:00-17:00\",\"thu\":\"09:00-17:00\",\"fri\":\"09:00-17:00\",\"sat\":\"09:00-17:00\",\"sun\":\"09:00-17:00\"}", NULL);
+			save(f, page);
+			g_object_set(field, "booking-page-id", venture_entity_get_id(page), "booking-name-field", "short_text", NULL);
+		}
 		if (i % 3 == 0)
 			g_object_set(field, "help", "A line of help.", NULL);
 		if (value->value == VENTURE_FORM_FIELD_SINGLE_CHOICE || value->value == VENTURE_FORM_FIELD_MULTIPLE_CHOICE)
@@ -4306,6 +4316,80 @@ test_quiz_redirect(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "https://example.test/plan-b")); reply_clear(&reply);
 }
 
+/* Two completed intakes can carry the same offered slot. Availability must
+ * be decided under the final write lock, before any contact or meeting. */
+static void test_booking_form(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "booking-form", VENTURE_FORM_LIVE), page = NULL, field = NULL, response = NULL;
+	g_autoptr(VentureBookingService) service = venture_booking_service_new(f->db);
+	g_autoptr(JsonNode) slots = NULL, schema = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *start = NULL, *ticket = NULL, *body = NULL, *schema_text = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	g_object_set(form, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 20);
+	page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org, "title", "Consultation", "slug", "forms-consultation", "owner", "owner",
+		"duration-minutes", (gint64)30, "timezone", "UTC", "horizon-days", (gint64)2, "active", TRUE,
+		"availability", "{\"mon\":\"00:00-23:30\",\"tue\":\"00:00-23:30\",\"wed\":\"00:00-23:30\",\"thu\":\"00:00-23:30\",\"fri\":\"00:00-23:30\",\"sat\":\"00:00-23:30\",\"sun\":\"00:00-23:30\"}", NULL);
+	save(f, page);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", f->org, "form-id", venture_entity_get_id(form), "key", "time", "label", "Consultation time",
+		"kind", VENTURE_FORM_FIELD_BOOKING, "required", TRUE, "position", (gint64)30, "booking-page-id", venture_entity_get_id(page), NULL);
+	save(f, field); g_object_unref(publish(f, form));
+	slots = venture_booking_service_slots(service, page, now, &error); g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), >, 0);
+	start = g_strdup(json_object_get_string_member(json_array_get_object_element(json_node_get_array(slots), 0), "start"));
+	schema = venture_forms_schema(f->db, form, "/pub/form/booking-form", now, &error); g_assert_no_error(error);
+	schema_text = json_to_string(schema, FALSE); g_assert_nonnull(strstr(schema_text, "\"slots\"")); g_assert_nonnull(strstr(schema_text, start));
+	start_http(f); request(f, "/pub/form/booking-form", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "vf-slot")); g_assert_nonnull(strstr(reply.body, "type=\"radio\"")); reply_clear(&reply);
+	g_assert_cmpint(count(f, VENTURE_TYPE_BOOKING_RESERVATION), ==, 0);
+	ticket = old_ticket(form);
+	{
+		g_autofree gchar *encoded = g_uri_escape_string(start, NULL, TRUE);
+		body = g_strdup_printf("%s&name=First&email=first%%40example.test&time=%s", ticket, encoded);
+	}
+	request(f, "/pub/form/booking-form", "application/x-www-form-urlencoded", body, NULL, "text/html", &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "vf-success")); reply_clear(&reply);
+	response = last_form_response(f); g_assert_cmpint(venture_forms_get_int(response, "booking-id"), >, 0);
+	request(f, "/pub/form/booking-form", "application/x-www-form-urlencoded", body, NULL, "application/json", &reply);
+	g_assert_cmpuint(reply.status, ==, 422); g_assert_nonnull(strstr(reply.body, "Choose another slot")); reply_clear(&reply);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1); g_assert_cmpint(count(f, VENTURE_TYPE_ACTIVITY), ==, 1);
+	g_object_set(response, "booking-id", (gint64)0, NULL); refuse(f, response, "cannot be changed");
+	/* Scanner-safe GET, signed explicit cancellation, and replay refusal use
+	 * the capability delivered through the private outbox body. */
+	{
+		g_autoptr(VentureQuery) mail = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(VentureEntity) message = NULL;
+		g_autofree gchar *private_body = NULL, *cancel_path = NULL;
+		g_autoptr(GUri) uri = NULL;
+		const gchar *url;
+		venture_query_add_filter_string(mail, "related-type", VENTURE_FILTER_OP_EQ, "booking_reservation", NULL);
+		message = venture_database_find_one(f->db, mail, &error); g_assert_no_error(error); g_assert_nonnull(message);
+		private_body = venture_forms_get_string(message, "private-text-body");
+		url = strstr(private_body, "https://forms.example.test/book/"); g_assert_nonnull(url);
+		uri = g_uri_parse(url, G_URI_FLAGS_NONE, &error); g_assert_no_error(error); cancel_path = g_strdup(g_uri_get_path(uri));
+		request(f, cancel_path, NULL, NULL, NULL, NULL, &reply); g_assert_cmpuint(reply.status, ==, 200);
+		g_assert_nonnull(strstr(reply.body, "Cancel booking")); g_assert_null(strstr(reply.body, "first@example.test")); reply_clear(&reply);
+		request(f, cancel_path, "application/x-www-form-urlencoded", "operation=cancel", NULL, NULL, &reply);
+		g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "cancelled")); reply_clear(&reply);
+		request(f, cancel_path, NULL, NULL, NULL, NULL, &reply); g_assert_cmpuint(reply.status, ==, 404); reply_clear(&reply);
+	}
+
+	/* Navigating into a booking page keeps a private draft, not a seat. */
+	add_field(f, form, "next", "Choose a time", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 25);
+	g_object_unref(publish(f, form));
+	g_clear_pointer(&ticket, g_free); ticket = old_ticket(form);
+	g_clear_pointer(&body, g_free); body = g_strdup_printf("%s&name=Draft&email=draft%%40example.test&_vf_move=next", ticket);
+	request(f, "/pub/form/booking-form", "application/x-www-form-urlencoded", body, NULL, "text/html", &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "vf-slot")); reply_clear(&reply);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_BOOKING_RESERVATION), ==, 1);
+
+}
+
 int
 main(int argc, char **argv)
 {
@@ -4377,6 +4461,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/quiz-validation", Fixture, NULL, setup, test_quiz_validation, teardown);
 	g_test_add("/forms/quiz-score-key", Fixture, NULL, setup, test_quiz_score_and_key, teardown);
 	g_test_add("/forms/quiz-hidden-repeated", Fixture, NULL, setup, test_quiz_hidden_and_repeated, teardown);
+	g_test_add("/forms/booking", Fixture, NULL, setup, test_booking_form, teardown);
 	g_test_add("/forms/quiz-redirect", Fixture, NULL, setup, test_quiz_redirect, teardown);
 	g_test_add("/forms/quiz-version-privacy", Fixture, NULL, setup, test_quiz_version_privacy, teardown);
 	g_test_add("/forms/quiz-lead-input", Fixture, NULL, setup, test_quiz_lead_input, teardown);

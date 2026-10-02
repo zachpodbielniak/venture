@@ -24,6 +24,7 @@ structure and the handling; the host site supplies the look. The records and rep
 - =form_rule= :: conditional visibility, requiredness and forward navigation.
 - =form_translation= :: versioned public wording by language and text key.
 - =form_group= :: a bounded repeating set of questions.
+- =form_result_band= :: a published score range and its result text or page.
 - =form_draft= :: private intermediate answers while navigating pages or rows.
 - =form_pending= :: private double opt-in input awaiting inbox confirmation.
 - =form_version= :: what a form asked when it was published, frozen.
@@ -36,8 +37,9 @@ structure and the handling; the host site supplies the look. The records and rep
   and every scale averaged, for one form in a period.
 
 The module requires only =core=. It suggests =leads= (a form may turn each
-response into a lead) and =mail= (a form may send a confirmation); with
-either off, the response is kept and says what was not done.
+response into a lead), =mail= (confirmation), =marketing= (explicit opt-in),
+and =calendar= (booking questions). Ordinary lead/mail follow-up failure keeps
+the response with a note. A booking selection requires the calendar module.
 
 * Questions
 
@@ -65,6 +67,9 @@ the save says so in words before the index has to.
 | =checkbox=        | one checkbox           | true or false               | required means it must be ticked                         |
 | =rating=          | radio buttons          | a whole number              | on the scale (=min_value= to =max_value=, or 1 to 5)     |
 | =hidden=          | hidden input           | string                      | length; =default_value= when the page sends nothing      |
+| =consent=         | unchecked checkbox     | wording, version and time   | affirmative choice; no default                          |
+| =page_break=      | page heading           | no answer                   | forward navigation and required questions               |
+| =booking=         | slot radio buttons     | ISO 8601 start              | current target availability and seat capacity           |
 
 =min_value= applies when either bound is set; =max_value= of 0 means no
 maximum. =min_length= and =max_length= of 0 mean the kind's default. A
@@ -1020,3 +1025,52 @@ A refused follow-up keeps the response and its computed result with a note.
 
 Migration =000840= covers the assessment properties and result-band records
 on both database backends. See [[file:evidence/forms-quiz.org][the built-server quiz demonstration]].
+
+* Booking a time or a seat
+
+A =booking= question points at an existing =booking_page= through
+=booking_page_id=. It uses that service's availability windows, timezone,
+calendar conflicts, duration and buffer. There is no separate forms calendar.
+Set the form's =public_origin= to the configured HTTPS origin used for private
+management links; loopback HTTP is accepted for local development.
+
+A form has at most one booking question. It cannot repeat, be sensitive, have
+a default, accept prefill or map a selected time into lead fields. Its
+=booking_name_field= and =booking_email_field= name required, non-sensitive,
+non-repeated short-text and email questions; empty uses =name= and =email=.
+These references are frozen when published. The booking target's current
+availability is always re-read, including at final submit.
+
+Slots render as ordinary radios, with =vf-slot= labels inside =vf-slot-day=
+groups. They work without JavaScript and inherit host CSS. The public schema
+includes each available slot's start, end, label and local calendar day.
+An unavailable selection returns a field error and offers current slots.
+Neither viewing a form nor saving a draft reserves anything.
+
+A booking page's =capacity= is seats per exact slot: zero means one, at most
+10000. A meeting or hold from another target still blocks overlapping time;
+capacity never makes unrelated meetings disappear. A short service-owned hold
+reserves the seat under the save lock during final intake, before follow-ups
+can run. Expired holds do not count even before cleanup. Confirmation creates
+an ordinary meeting linked by the response's =booking_id=, with the contact
+on that meeting. Existing CalDAV synchronization carries the meeting to the
+owner's calendar. The selected time and booking link cannot be rewritten on
+an accepted response.
+
+With mail enabled, the outbox queues a confirmation containing a private,
+signed cancellation/rescheduling URL. It lives in the private mail body, not
+in audit or generic API output. Opening the link only shows explicit buttons;
+POST performs the change. A successful change rotates the capability, and
+replays and tampered links return not found. A link expires one day after its
+booked start. Rescheduling uses the same availability and capacity checks.
+Cancellation changes the existing meeting's status and releases its seat.
+The configured public origin is never taken from a respondent's Host header.
+
+The existing =/book/<slug>= surface remains compatible. It calls the same
+reservation and confirmation service rather than creating hidden one-field
+forms or changing the meaning of existing scheduling links. Standalone
+booking pages may set their own =public_origin= for confirmation links.
+
+Migrations =000850= and =000851= cover form booking references and the calendar
+service's private reservations on SQLite and PostgreSQL independently, so
+turning either module off does not prevent the other from migrating.

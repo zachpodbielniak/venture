@@ -390,7 +390,7 @@ forms_validate_field(
 			return FALSE;
 		}
 		if ((query || !venture_string_is_empty(contact)) && (kind == VENTURE_FORM_FIELD_CONSENT ||
-		    kind == VENTURE_FORM_FIELD_PAGE_BREAK || venture_forms_get_bool(entity, "sensitive") ||
+		    kind == VENTURE_FORM_FIELD_PAGE_BREAK || kind == VENTURE_FORM_FIELD_BOOKING || venture_forms_get_bool(entity, "sensitive") ||
 		    venture_forms_get_int(entity, "group-id") != 0))
 		{
 			venture_set_error_validation(error, "Prefill", "consent, sensitive questions, page breaks and repeated questions cannot be prefilled");
@@ -672,7 +672,8 @@ forms_validate_submission(
 		g_autofree gchar *url_before = venture_forms_get_string(previous, "result-url"), *url_after = venture_forms_get_string(entity, "result-url");
 		g_object_get(previous, "submitted-at", &at_before, NULL);
 		g_object_get(entity, "submitted-at", &at_after, NULL);
-		if (venture_forms_get_bool(previous, "scored") != venture_forms_get_bool(entity, "scored") ||
+		if (venture_forms_get_int(previous, "booking-id") != venture_forms_get_int(entity, "booking-id") ||
+		    venture_forms_get_bool(previous, "scored") != venture_forms_get_bool(entity, "scored") ||
 		    venture_forms_get_int(previous, "score") != venture_forms_get_int(entity, "score") ||
 		    g_strcmp0(result_before, result_after) != 0 || g_strcmp0(key_before, key_after) != 0 || g_strcmp0(url_before, url_after) != 0 ||
 		    0 != g_strcmp0(before, after) || 0 != g_strcmp0(secret_before, secret_after) ||
@@ -1786,6 +1787,12 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 			return;
 		}
 		break;
+	case VENTURE_FORM_FIELD_BOOKING:
+		{
+			g_autoptr(GDateTime) when = g_date_time_new_from_iso8601(text, NULL);
+			if (when == NULL) { forms_refuse(errors, key, "Choose an offered booking time."); return; }
+		}
+		break;
 	case VENTURE_FORM_FIELD_DATE:
 		if (!forms_date_valid(text))
 		{
@@ -2219,6 +2226,7 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 	GPtrArray *fields, JsonObject *answers, gboolean follow_up, GDateTime *now, JsonObject *refused, GError **error)
 {
 	g_autofree gchar *note = NULL;
+	g_autoptr(VentureEntity) booking_hold = NULL;
 
 	if (!venture_database_begin(database, error))
 		return FALSE;
@@ -2241,6 +2249,7 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 			goto fail;
 	}
 
+	if (!venture_forms_booking_prepare(database, form, fields, answers, now, &booking_hold, refused, error)) goto fail;
 	if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) != NULL)
 	{
 		if (!forms_optin_follow_up(database, form, submission,
@@ -2288,6 +2297,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 		goto fail;
 	if (NULL != note)
 		g_object_set(submission, "mapping-note", note, NULL);
+
+	if (!venture_forms_booking_finish(database, form, fields, answers, booking_hold, submission, now, refused, error)) goto fail;
 
 	if (!venture_database_save(database, submission, NULL, error))
 		goto fail;

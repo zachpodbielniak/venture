@@ -821,7 +821,7 @@ static const gchar *const customer_health_requires[] = { "headline", "activities
 static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "mail_sync", NULL };
 static const gchar *const customer_health_reports[] = { "customer_health", NULL };
 static const gchar *const calendar_requires[] = { "activities", "crm", "leads", NULL };
-static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, NULL };
+static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, venture_booking_reservation_get_type, NULL };
 static const gchar *const dedupe_requires[] = { "crm", NULL };
 static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
 static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
@@ -884,7 +884,7 @@ static const gchar *const goals_reports[] = { "goal_progress", "goal_materials",
  * or a signup names nothing else. It suggests leads, which a form may turn
  * each response into (the mapping notes and skips it while leads is off),
  * and mail, which sends the optional confirmation the same way. */
-static const gchar *const forms_suggests[] = { "leads", "mail", "marketing", NULL };
+static const gchar *const forms_suggests[] = { "leads", "mail", "marketing", "calendar", NULL };
 static GType (*const forms_types[]) (void) = {
 	venture_form_get_type, venture_form_field_get_type, venture_form_rule_get_type, venture_form_group_get_type, venture_form_translation_get_type, venture_form_result_band_get_type, venture_form_pending_get_type,
 	venture_form_submission_get_type, venture_form_version_get_type, venture_form_draft_get_type, NULL
