@@ -1264,8 +1264,7 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "include_on_hand"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, status, include_on_hand, form_id");
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, form_id");
 				return -1;
 			}
 			g_string_append_c(path, '&');
