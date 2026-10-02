@@ -10,7 +10,8 @@ throwaway loopback instance. AI, plugins and automation were disabled;
 no mail or provider request was made. The fixture used synthetic addresses.
 
 The server was built after integrating master at =23f2c0e= and adding the
-explicit =form_field.marketing_consent= property. The binary digest is in
+explicit =form_field.marketing_consent= property and privacy fixes at
+=0851fcb=. The binary digest is in
 the transcript. The GTest case =/forms/marketing-consent= additionally checks
 published wording against an unpublished edit, preserved suppression and
 response survival after a refused follow-up.
@@ -37,8 +38,8 @@ response survival after a refused follow-up.
 * Recorded output
 
 #+begin_example
-Isolated server: http://127.0.0.1:56239
-Binary SHA256: 5e34685a99680b24525eeab1ab0c68a65c51ffc6f9251853d7cb75b9a14fb559
+Isolated server: http://127.0.0.1:52185
+Binary SHA256: 56acbd766b558b5d36a672406b6e998ed036cddb4799246510cddfe6f5d6ce20
 Created form #1
 Published version: 1
 Submit unchecked@example.test unchecked: accepted
@@ -47,7 +48,7 @@ Submit checked@example.test checked: accepted
 Checked box: 1 marketing permission
 Retained evidence: Form #1 version 1; question news
 Send the monthly newsletter
-Recorded at: 2026-10-02T04:36:33.881374Z
+Recorded at: 2026-10-02T04:52:51.320597Z
 PASS: built-server consent flow
 #+end_example
 
