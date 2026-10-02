@@ -25,6 +25,19 @@
 #define VENTURE_FORMS_DEFAULT_FILL_SECONDS 3
 #define VENTURE_FORMS_ANONYMISING_KEY "venture-forms-anonymising"
 
+static gboolean forms_answers_mention(const gchar *text, const gchar *email);
+static gboolean forms_bound_email(VentureDatabase *database, VentureEntity *response, const gchar *email);
+static void forms_payment_context_free(gpointer data);
+static VentureEntity *forms_payment_recover_invoke(VentureAction *action, VentureEntity *form,
+	GHashTable *params, const VentureActor *actor, GError **error);
+static gboolean forms_payment_validate(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error);
+static gboolean forms_payment_limits(VentureDatabase *database, VentureEntity *form,
+	VentureEntity *response, JsonObject *refused, GError **error);
+static gboolean forms_payment_begin(VentureDatabase *database, VentureEntity *form, VentureEntity *version,
+	VentureEntity *response, GPtrArray *fields, JsonObject *answers, const gchar *nonce,
+	JsonArray *lines, VentureMoney *total, GDateTime *now, JsonObject *refused, GError **error);
+
 static gboolean forms_validate_draft(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, gpointer data, GError **error);
 
@@ -672,7 +685,8 @@ forms_validate_submission(
 		g_autofree gchar *url_before = venture_forms_get_string(previous, "result-url"), *url_after = venture_forms_get_string(entity, "result-url");
 		g_object_get(previous, "submitted-at", &at_before, NULL);
 		g_object_get(entity, "submitted-at", &at_after, NULL);
-		if (venture_forms_get_int(previous, "booking-id") != venture_forms_get_int(entity, "booking-id") ||
+		if (venture_forms_get_int(previous, "invoice-id") != venture_forms_get_int(entity, "invoice-id") ||
+		    venture_forms_get_int(previous, "booking-id") != venture_forms_get_int(entity, "booking-id") ||
 		    venture_forms_get_bool(previous, "scored") != venture_forms_get_bool(entity, "scored") ||
 		    venture_forms_get_int(previous, "score") != venture_forms_get_int(entity, "score") ||
 		    g_strcmp0(result_before, result_after) != 0 || g_strcmp0(key_before, key_after) != 0 || g_strcmp0(url_before, url_after) != 0 ||
@@ -1019,6 +1033,18 @@ forms_register_actions(VentureDatabase *database)
 		forms_publish_allowed, forms_personal_links_invoke, database, NULL, &error))
 		g_error("Form personal link action registration: %s", error->message);
 
+	g_clear_object(&action);
+	g_ptr_array_set_size(parameters, 0);
+	g_ptr_array_add(parameters, venture_field_spec_new("invoice_id", "Invoice", VENTURE_FIELD_KIND_INTEGER));
+	g_ptr_array_add(parameters, venture_field_spec_new("booking_start", "Replacement booking start", VENTURE_FIELD_KIND_STRING));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "reconcile_payment", "label", "Recover paid response",
+		"description", "Complete a retained invoice payment; optionally select an available replacement slot for an expired paid booking hold",
+		"parameters", parameters, "stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_OWNER, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed, forms_payment_recover_invoke, database, NULL, &error))
+		g_error("Form payment recovery registration: %s", error->message);
+
 }
 
 void
@@ -1029,6 +1055,12 @@ venture_forms_install(VentureContext *context)
 	g_return_if_fail(VENTURE_IS_CONTEXT(context));
 
 	database = venture_context_get_database(context);
+	{
+		GWeakRef *reference = g_new0(GWeakRef, 1);
+		g_weak_ref_init(reference, context);
+		g_object_set_data_full(G_OBJECT(database), "venture-forms-payment-context", reference, forms_payment_context_free);
+	}
+
 
 	/* The tests build several contexts over one database; validators are
 	 * per database, so the second one must add nothing. */
@@ -1044,6 +1076,8 @@ venture_forms_install(VentureContext *context)
 	                                    forms_validate_submission, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_VERSION,
 	                                    forms_validate_version, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_PAYMENT, forms_payment_validate, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_PRICE, venture_forms_price_validate, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_RESULT_BAND, venture_forms_quiz_validate_band, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_FORM_DRAFT_RECORD,
 	                                    forms_validate_draft, NULL, NULL);
@@ -1459,7 +1493,7 @@ JsonObject *
 venture_forms_answers_state(GHashTable *answers)
 {
 	JsonObject *values = venture_forms_answers_to_json(answers);
-	const gchar *keys[] = { VENTURE_FORMS_PERSONAL, VENTURE_FORMS_PREFILL };
+	const gchar *keys[] = { VENTURE_FORMS_PERSONAL, VENTURE_FORMS_PREFILL, VENTURE_FORMS_PAYMENT_NONCE };
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(keys); i++)
 	{
@@ -2238,18 +2272,28 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 		g_autoptr(VentureEntity) fresh = venture_database_get(database, VENTURE_TYPE_FORM,
 			venture_entity_get_id(form), NULL);
 
-		if (NULL == fresh || !forms_is_open(database, fresh, now))
+		if (NULL == fresh || (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_SETTLING) == NULL && !forms_is_open(database, fresh, now)))
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
 			goto fail;
 		}
-		if (!venture_forms_personal_bind(database, fresh, submission, now, refused, error))
-			goto fail;
-		if (!forms_check_email_limit(database, fresh, submission, fields, refused, error))
-			goto fail;
+		if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_SETTLING) == NULL &&
+		    (!venture_forms_personal_bind(database, fresh, submission, now, refused, error) ||
+		     !forms_check_email_limit(database, fresh, submission, fields, refused, error) ||
+		     !forms_payment_limits(database, fresh, submission, refused, error))) goto fail;
 	}
 
-	if (!venture_forms_booking_prepare(database, form, fields, answers, now, &booking_hold, refused, error)) goto fail;
+	if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_SETTLING) != NULL)
+	{
+		VentureEntity *pending = g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_SETTLING);
+		gint64 hold_id = venture_forms_get_int(pending, "reservation-id");
+		if (hold_id > 0)
+		{
+			booking_hold = venture_database_get(database, VENTURE_TYPE_BOOKING_RESERVATION, hold_id, error);
+			if (booking_hold == NULL) goto fail;
+		}
+	}
+	else if (!venture_forms_booking_prepare(database, form, fields, answers, now, &booking_hold, refused, error)) goto fail;
 	if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) != NULL)
 	{
 		if (!forms_optin_follow_up(database, form, submission,
@@ -2356,6 +2400,9 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autoptr(JsonObject) visible = NULL;
 	g_autoptr(GHashTable) filtered = NULL;
 	g_autoptr(GHashTable) not_shown = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(JsonArray) price_lines = NULL;
+	g_autoptr(VentureMoney) price_total = NULL;
+	g_autofree gchar *payment_nonce = g_strdup(forms_first(answers, VENTURE_FORMS_PAYMENT_NONCE));
 	g_autofree gchar *secret_text = NULL;
 	g_autofree gchar *omitted_text = NULL;
 	g_autofree gchar *personal = g_strdup(forms_first(answers, VENTURE_FORMS_PERSONAL));
@@ -2414,7 +2461,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	while (g_hash_table_iter_next(&iter, &key, NULL))
 	{
 		if (0 == g_strcmp0(key, VENTURE_FORMS_HONEYPOT) || 0 == g_strcmp0(key, VENTURE_FORMS_TICKET) ||
-		    0 == g_strcmp0(key, VENTURE_FORMS_PERSONAL) || 0 == g_strcmp0(key, VENTURE_FORMS_PREFILL))
+		    0 == g_strcmp0(key, VENTURE_FORMS_PERSONAL) || 0 == g_strcmp0(key, VENTURE_FORMS_PREFILL) ||
+		    0 == g_strcmp0(key, VENTURE_FORMS_PAYMENT_NONCE))
 			continue;
 		if (NULL == venture_forms_definition_find(fields, key))
 			forms_refuse(refused, key, "This form has no such question.");
@@ -2477,6 +2525,19 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	name = forms_response_name(form, fields, stored);
 	response = forms_new_response(form, version, name, now, "{}", "", origin);
 	if (!venture_forms_quiz_apply(fields, stored, response, error)) return FALSE;
+	if (venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	{
+		g_autoptr(GError) price_error = NULL;
+		price_total = venture_forms_price_total(fields, stored, &price_lines, &price_error);
+		if (price_total == NULL)
+		{
+			forms_refuse(refused, "_form", "Choose a positive order with whole quantities within the allowed range.");
+			venture_forms_translation_errors(fields, refused);
+			if (errors != NULL) *errors = g_steal_pointer(&refused);
+			return TRUE;
+		}
+	}
+
 	venture_forms_groups_fold(fields, stored, not_shown, FALSE);
 	venture_forms_groups_fold(fields, secret, not_shown, TRUE);
 	node = json_node_new(JSON_NODE_OBJECT);
@@ -2505,6 +2566,23 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		json_node_set_object(omitted_node, omitted);
 		omitted_text = json_to_string(omitted_node, FALSE);
 		g_object_set(response, "not-shown", omitted_text, NULL);
+	}
+	if (price_total != NULL)
+	{
+		if (!forms_payment_begin(database, form, version, response, fields, stored, payment_nonce,
+		    price_lines, price_total, now, refused, error))
+		{
+			venture_forms_translation_errors(fields, refused);
+			if (json_object_get_size(refused) > 0)
+			{
+				if (errors != NULL) *errors = g_steal_pointer(&refused);
+				return TRUE;
+			}
+			return FALSE;
+		}
+		*outcome = VENTURE_FORMS_PAYMENT;
+		if (submission != NULL) *submission = g_steal_pointer(&response);
+		return TRUE;
 	}
 	if (!forms_write(database, form, response, fields, stored, TRUE, now, refused, &follow_error))
 	{
@@ -2569,6 +2647,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 #include "venture-forms-pages.inc"
 #include "venture-forms-resume.inc"
 #include "venture-forms-optin.inc"
+#include "venture-forms-payments.inc"
 
 /* ==========================================================================
  * Publishing
@@ -2750,6 +2829,7 @@ forms_anonymise(VentureDatabase *database, VentureEntity *response, GDateTime *n
 	g_object_set(response, "name", name, "answers", "{}", "sensitive-answers", NULL, "not-shown", NULL,
 		"summary", "", "notes", NULL, "origin", NULL, "mapping-note", NULL,
 		"anonymised-at", now, "contact-id", (gint64)0, "personal-hash", NULL,
+		"invoice-id", (gint64)0, "booking-id", (gint64)0, "lead-id", (gint64)0,
 		"scored", FALSE, "score", (gint64)0, "result-key", "", "result-message", "", "result-url", "", NULL);
 	g_object_set_data(G_OBJECT(response), VENTURE_FORMS_ANONYMISING_KEY, GINT_TO_POINTER(1));
 	return venture_database_save(database, response, actor, error);
@@ -2762,7 +2842,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(VentureQuery) forms = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
-	gint64 anonymised = 0, purged = 0, drafts = 0, pending = 0;
+	gint64 anonymised = 0, purged = 0, drafts = 0, pending = 0, payment_payloads = 0;
 	guint budget, i;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -2801,6 +2881,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		{
 			VentureEntity *response = g_ptr_array_index(expired, j);
 
+			if (!forms_payment_forget_response(database, response, error)) return NULL;
 			if (purge ? !venture_database_purge(database, response, actor, error)
 			          : !forms_anonymise(database, response, now, actor, error))
 				return NULL;
@@ -2809,6 +2890,12 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 			else
 				anonymised++;
 		}
+		{
+			gint removed = forms_payment_expire_payloads(database, organization_id, venture_entity_get_id(form), cutoff, budget, error);
+			if (removed < 0) return NULL;
+			budget -= (guint)removed; payment_payloads += removed;
+		}
+
 	}
 
 	if (budget > 0)
@@ -2847,7 +2934,17 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		}
 	}
 
+	if (budget > 0)
+	{
+		g_autoptr(GDateTime) oldest = g_date_time_add_days(now, -30);
+		gint removed = forms_payment_expire_payloads(database, organization_id, 0, oldest, budget, error);
+		if (removed < 0) return NULL;
+		budget -= (guint)removed; payment_payloads += removed;
+	}
+
 	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "expired_payment_payloads");
+	json_builder_add_int_value(builder, payment_payloads);
 	json_builder_set_member_name(builder, "expired_signups");
 	json_builder_add_int_value(builder, pending);
 	json_builder_set_member_name(builder, "expired_drafts");
@@ -2984,9 +3081,26 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 				}
 			}
 		}
+		if (!forms_payment_forget_response(database, response, error)) goto fail;
 		if (!venture_database_purge(database, response, actor, error))
 			goto fail;
 		erased++;
+	}
+
+	{
+		g_autoptr(VentureQuery) payments_query = venture_query_new(VENTURE_TYPE_FORM_PAYMENT);
+		g_autoptr(GPtrArray) payments = NULL;
+		venture_query_set_organization(payments_query, organization_id);
+		venture_query_set_limit(payments_query, 0);
+		payments = venture_database_find(database, payments_query, error); if (payments == NULL) goto fail;
+		for (i = 0; i < payments->len; i++)
+		{
+			VentureEntity *pending_payment = g_ptr_array_index(payments, i);
+			if (!forms_payment_mentions(database, pending_payment, wanted, error))
+			{ if (error != NULL && *error != NULL) goto fail; continue; }
+			if (!forms_payment_forget(database, pending_payment, error)) goto fail;
+			erased++;
+		}
 	}
 
 	{
@@ -3131,6 +3245,33 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 	}
 	json_builder_end_array(builder);
 	{
+		g_autoptr(VentureQuery) payments_query = venture_query_new(VENTURE_TYPE_FORM_PAYMENT);
+		g_autoptr(GPtrArray) payments = NULL;
+		venture_query_set_organization(payments_query, organization_id); venture_query_set_limit(payments_query, 0);
+		payments = venture_database_find(database, payments_query, error); if (payments == NULL) return NULL;
+		json_builder_set_member_name(builder, "pending_payments"); json_builder_begin_array(builder);
+		for (i = 0; i < payments->len; i++)
+		{
+			VentureEntity *pending_payment = g_ptr_array_index(payments, i);
+			g_autoptr(VentureEntity) response = NULL;
+			g_autofree gchar *open = NULL, *hidden = NULL, *state = NULL;
+			if (!forms_payment_mentions(database, pending_payment, wanted, error))
+			{ if (error != NULL && *error != NULL) return NULL; continue; }
+			response = forms_payment_restore(pending_payment, error); if (response == NULL) return NULL;
+			open = venture_forms_get_string(response, "answers"); hidden = venture_forms_get_string(response, "sensitive-answers");
+			state = venture_forms_get_string(pending_payment, "state");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "form_id"); json_builder_add_int_value(builder, venture_forms_get_int(pending_payment, "form-id"));
+			json_builder_set_member_name(builder, "invoice_id"); json_builder_add_int_value(builder, venture_forms_get_int(pending_payment, "invoice-id"));
+			json_builder_set_member_name(builder, "state"); json_builder_add_string_value(builder, state);
+			json_builder_set_member_name(builder, "answers"); json_builder_add_value(builder, json_from_string(venture_string_is_empty(open) ? "{}" : open, NULL));
+			json_builder_set_member_name(builder, "sensitive_answers"); json_builder_add_value(builder, json_from_string(venture_string_is_empty(hidden) ? "{}" : hidden, NULL));
+			json_builder_end_object(builder);
+		}
+		json_builder_end_array(builder);
+	}
+
+	{
 		g_autoptr(VentureQuery) draft_query = venture_query_new(VENTURE_TYPE_FORM_DRAFT_RECORD);
 		g_autoptr(GPtrArray) drafts = NULL;
 		venture_query_set_organization(draft_query, organization_id);
@@ -3156,6 +3297,7 @@ venture_forms_export_person(VentureDatabase *database, gint64 organization_id, c
 				{
 					json_object_remove_member(json_node_get_object(value), VENTURE_FORMS_PERSONAL);
 					json_object_remove_member(json_node_get_object(value), VENTURE_FORMS_PREFILL);
+					json_object_remove_member(json_node_get_object(value), VENTURE_FORMS_PAYMENT_NONCE);
 				}
 				json_builder_add_value(builder, value);
 			}

@@ -614,6 +614,8 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.description", description)); g_free(description); description = localized; }
 	submit = venture_forms_get_string(form, "submit-label");
 	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.submit_label", submit)); g_free(submit); submit = localized; }
+	if (venture_string_is_empty(submit) && venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	{ g_free(submit); submit = g_strdup(venture_forms_text(fields, "message.checkout", "Continue to Checkout")); }
 	prefix = g_strdup_printf("vf-%s", token != NULL ? token : "form");
 	action = (NULL != options->action) ? g_strdup(options->action) :
 	         g_strdup_printf("/pub/form/%s", token != NULL ? token : "");
@@ -688,6 +690,15 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 			forms_escape(html, json_node_get_string(value));
 			g_string_append(html, "\">");
 		}
+	}
+
+	if (!preview && venture_forms_payment(fields) != NULL &&
+	    json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	{
+		const gchar *prior = options->values != NULL ? json_object_get_string_member_with_default(options->values, VENTURE_FORMS_PAYMENT_NONCE, NULL) : NULL;
+		g_autofree gchar *nonce = venture_forms_payment_nonce_valid(form, prior) ? g_strdup(prior) : venture_forms_payment_nonce(form);
+		g_string_append(html, "<input type=\"hidden\" name=\"" VENTURE_FORMS_PAYMENT_NONCE "\" value=\"");
+		forms_escape(html, nonce); g_string_append(html, "\">");
 	}
 
 	/* Enter in a row must submit the page, never implicitly remove a row. */
@@ -882,6 +893,8 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.description", description)); g_free(description); description = localized; }
 	submit = venture_forms_get_string(form, "submit-label");
 	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.submit_label", submit)); g_free(submit); submit = localized; }
+	if (venture_string_is_empty(submit) && venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	{ g_free(submit); submit = g_strdup(venture_forms_text(fields, "message.checkout", "Continue to Checkout")); }
 	success = venture_forms_get_string(form, "success-message");
 	{ gchar *localized = g_strdup(venture_forms_text(fields, "form.success_message", success)); g_free(success); success = localized; }
 	ticket = venture_forms_ticket_new_for_version(form, venture_forms_get_int(version, "number"), now);
@@ -939,6 +952,12 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 	json_builder_add_string_value(builder, VENTURE_FORMS_TICKET);
 	json_builder_set_member_name(builder, "ticket");
 	json_builder_add_string_value(builder, ticket);
+	if (venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	{
+		g_autofree gchar *nonce = venture_forms_payment_nonce(form);
+		json_builder_set_member_name(builder, "payment_field"); json_builder_add_string_value(builder, VENTURE_FORMS_PAYMENT_NONCE);
+		json_builder_set_member_name(builder, "payment_nonce"); json_builder_add_string_value(builder, nonce);
+	}
 	json_builder_set_member_name(builder, "allow_resume");
 	json_builder_add_boolean_value(builder, venture_forms_get_bool(form, "allow-resume") && venture_forms_page_count(fields) > 1);
 	json_builder_set_member_name(builder, "pages");

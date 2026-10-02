@@ -1,0 +1,51 @@
+#+title: Paid form demonstration
+
+* Built-server walkthrough
+
+Ran the real DEBUG web server and forms/Stripe services against a disposable
+SQLite database, with the existing offline Stripe transport injected through
+VentureContext. The acceptance executable SHA-256 was
+=2de5456d373f4e5c24cb7b0933fe54662c89f221d62824f6319f0ec76d85b29e=.
+The transport supplies distinct guest customer identities. Chromium intercepts
+the hosted Checkout URL with an offline page; no real charge is created.
+
+Created a product and a published form through the REST API, with required
+name, email and quantity questions and a USD 12.50 price per ticket. Submitted
+two tickets with JavaScript disabled, then with the loader on a separate
+loopback host. Both reached hosted Checkout for USD 25.00. Before each signed
+payment callback, the response count was unchanged. The callback completed
+one invoice-linked response; replaying it left the count unchanged.
+
+The loader form had zero axe-core WCAG 2 A/AA and 2.1 A/AA violations.
+The walkthrough printed:
+
+#+begin_example
+JavaScript off: server-priced order reached offline hosted Checkout; no response before settlement
+Verified payment completed exactly one response; duplicate webhook remained idempotent
+Paid form: zero axe WCAG A/AA violations
+Loader: server-priced order reached offline hosted Checkout; no response before settlement
+Verified payment completed exactly one response; duplicate webhook remained idempotent
+PASS: both embed modes used the existing invoice Checkout and settlement path, with zero real provider contact
+#+end_example
+
+* Regression evidence
+
+All eleven =/stripe/forms= tests pass with the existing offline transport.
+They observe the ordinary response-save signal: zero before settlement and
+exactly one afterward, including webhook replay. Crafted =amount= and
+=currency= controls are refused before any provider call. Pricing tests cover
+fixed, choice and quantity prices, frozen versions, fractional/oversized
+quantities, mixed currencies and malformed definitions.
+
+Failed and expired Checkout release paid booking holds. Late payment after a
+released hold records a recovery state; the owner selects an available
+replacement without a second charge. Late payment after released form capacity
+rechecks that capacity and remains recoverable if the form is closed. Delayed
+ACH settlement stays private until paid. A lost Checkout response retries the
+same invoice. Erasure prevents later callbacks from recreating answers.
+Sensitive answers survive private settlement recovery but remain absent from
+generic serialization; exports omit the bearer nonce. Generic pending-record
+delete/purge and cross-organization reconciliation are refused.
+
+The five targeted suites passed: forms, Stripe, calendar, authentication and
+migrations, including the disposable live PostgreSQL migration fixture.

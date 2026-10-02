@@ -67,6 +67,20 @@ gboolean venture_forms_booking_slots(VentureDatabase *database, VentureEntity *f
 		if (service == NULL) service = venture_booking_service_new(database);
 		field->booking_slots = venture_booking_service_slots(service, page, now, error);
 		if (field->booking_slots == NULL) return FALSE;
+		if (venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+		{
+			JsonArray *eligible = json_array_new(), *offered = json_node_get_array(field->booking_slots);
+			for (j = 0; j < json_array_get_length(offered); j++)
+			{
+				JsonObject *slot = json_array_get_object_element(offered, j);
+				g_autoptr(GDateTime) start = g_date_time_new_from_iso8601(json_object_get_string_member(slot, "start"), NULL);
+				if (start != NULL && g_date_time_difference(start, now) > 45 * G_TIME_SPAN_MINUTE)
+					json_array_add_element(eligible, json_node_copy(json_array_get_element(offered, j)));
+			}
+			g_clear_pointer(&field->booking_slots, json_node_unref);
+			field->booking_slots = json_node_new(JSON_NODE_ARRAY); json_node_take_array(field->booking_slots, eligible);
+		}
+
 		for (j = 0; j < json_array_get_length(json_node_get_array(field->booking_slots)); j++)
 		{
 			JsonObject *slot = json_array_get_object_element(json_node_get_array(field->booking_slots), j);
@@ -102,7 +116,13 @@ gboolean venture_forms_booking_prepare(VentureDatabase *database, VentureEntity 
 	page = venture_database_get(database, VENTURE_TYPE_BOOKING_PAGE, field->booking_page_id, &local);
 	if (page == NULL || venture_entity_is_deleted(page) || venture_entity_get_organization_id(page) != venture_entity_get_organization_id(form)) goto unavailable;
 	service = venture_booking_service_new(database);
-	*hold = venture_booking_service_reserve(service, page, start, 30, now, &local);
+	if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_WRITE) != NULL)
+	{
+		g_autoptr(GDateTime) begins = g_date_time_new_from_iso8601(start, NULL);
+		if (begins == NULL || g_date_time_difference(begins, now) <= 45 * G_TIME_SPAN_MINUTE) goto unavailable;
+	}
+	*hold = venture_booking_service_reserve(service, page, start,
+		g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_WRITE) != NULL ? 2700 : 30, now, &local);
 	if (*hold != NULL) return TRUE;
 unavailable:
 	if (local != NULL && !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_CONFLICT) && !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))

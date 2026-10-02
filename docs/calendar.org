@@ -220,3 +220,8 @@ The form renderer and the original =/book= UI share this service. Existing
 scheduling links remain valid; no hidden form records are manufactured.
 Migrations =000850=/=000851= independently guard form references and optional
 calendar reservations. See [[file:evidence/forms-booking.org][the built-server booking demonstration]].
+
+Paid form bookings hold capacity for 45 minutes and confirm only after verified
+invoice settlement. Only slots starting after that window are offered. Failed
+or expired Checkout releases the hold; late payment requires an available
+replacement through the owner recovery action. See [[file:forms.org][Payments on forms]].

@@ -94,6 +94,7 @@ typedef struct
  *   sender is told it succeeded
  * @VENTURE_FORMS_INVALID: refused, with a message per question
  * @VENTURE_FORMS_PENDING: private signup awaiting inbox confirmation
+ * @VENTURE_FORMS_PAYMENT: private response awaiting invoice settlement
  *
  * What became of one submission.
  */
@@ -102,7 +103,8 @@ typedef enum
 	VENTURE_FORMS_ACCEPTED = 0,
 	VENTURE_FORMS_DISCARDED,
 	VENTURE_FORMS_INVALID,
-	VENTURE_FORMS_PENDING
+	VENTURE_FORMS_PENDING,
+	VENTURE_FORMS_PAYMENT
 } VentureFormsOutcome;
 
 /**
@@ -497,6 +499,36 @@ gchar *venture_forms_personal_link(VentureDatabase *database, VentureEntity *for
  */
 VentureEntity *venture_forms_confirm_signup(VentureDatabase *database, VentureEntity *form,
 	const gchar *token, GDateTime *now, gboolean confirm, GError **error);
+
+/**
+ * venture_forms_check_write:
+ * @database: owning storage
+ * @entity: lifecycle target
+ * @removal: whether this operation removes the record
+ * @error: (out) (optional): refusal
+ *
+ * Keeps pending payment evidence owned by its service across save, restore,
+ * delete and purge. Other record types are unaffected.
+ * Returns: whether the lifecycle operation may proceed
+ */
+gboolean venture_forms_check_write(VentureDatabase *database, VentureEntity *entity,
+	gboolean removal, GError **error);
+
+/**
+ * venture_forms_payment_reconcile:
+ * @database: storage with no enclosing transaction
+ * @organization: organization owning the Checkout
+ * @checkout_id: locally retained Checkout, never a client payment claim
+ * @now: completion clock
+ * @error: (out) (optional): completion failure
+ *
+ * Called after verified settlement commits. Repeated calls are idempotent.
+ * An ordinary response is saved only for a completed Checkout with its
+ * settlement payment; delayed bank settlement keeps a private pending copy.
+ * Returns: whether the retained outcome was applied to any matching intake
+ */
+gboolean venture_forms_payment_reconcile(VentureDatabase *database, gint64 organization,
+	gint64 checkout_id, GDateTime *now, GError **error);
 
 G_END_DECLS
 

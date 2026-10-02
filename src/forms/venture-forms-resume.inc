@@ -115,6 +115,8 @@ forms_resume_values(GPtrArray *old_fields, GPtrArray *new_fields, JsonObject *ol
 	}
 	if (json_object_has_member(old_values, VENTURE_FORMS_PERSONAL))
 		json_object_set_member(values, VENTURE_FORMS_PERSONAL, json_node_copy(json_object_get_member(old_values, VENTURE_FORMS_PERSONAL)));
+	if (json_object_has_member(old_values, VENTURE_FORMS_PAYMENT_NONCE))
+		json_object_set_member(values, VENTURE_FORMS_PAYMENT_NONCE, json_node_copy(json_object_get_member(old_values, VENTURE_FORMS_PAYMENT_NONCE)));
 	return values;
 }
 

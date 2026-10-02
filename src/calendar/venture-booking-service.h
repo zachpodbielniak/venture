@@ -61,7 +61,7 @@ VentureEntity *venture_booking_service_book(VentureBookingService *self, Venture
  * @self: the service
  * @page: saved booking target; re-read under the save lock
  * @start: offered ISO 8601 slot start
- * @seconds: hold duration, 1 to 900 seconds
+ * @seconds: hold duration, 1 to 2700 seconds
  * @now: (nullable): reference clock
  * @error: (out) (optional): return location for an error
  *

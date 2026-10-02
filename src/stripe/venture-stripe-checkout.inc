@@ -43,7 +43,7 @@ stripe_checkout_exception(VentureStripeService *self, VentureEntity *checkout,
 
 static VentureStripeCheckout *
 stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime *deadline,
-	VentureStripePaymentLink *payment_link,
+	VentureStripePaymentLink *payment_link, gboolean cards_only,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
@@ -143,7 +143,7 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 		if (!to_stripe_amount(expected, &amount, error)) goto fail;
 		/* USD on purpose: ACH debit is a US bank rail and Stripe offers it
 		 * for dollar invoices only; any other currency gets cards. */
-		ach = self->ach_enabled && !g_strcmp0(venture_money_get_currency(expected), "USD") && amount >= 50;
+		ach = !cards_only && self->ach_enabled && !g_strcmp0(venture_money_get_currency(expected), "USD") && amount >= 50;
 		checkout = venture_stripe_checkout_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(checkout), self->organization_id);
 		g_object_set(checkout, "connection-id", self->connection_id, "invoice-id", invoice_id, "channel", "hosted",
@@ -244,5 +244,12 @@ VentureStripeCheckout *
 venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id,
 	const VentureActor *actor, GError **error)
 {
-	return stripe_checkout_create(self, invoice_id, NULL, NULL, actor, error);
+	return stripe_checkout_create(self, invoice_id, NULL, NULL, FALSE, actor, error);
+}
+
+VentureStripeCheckout *
+venture_stripe_service_checkout_until(VentureStripeService *self, gint64 invoice_id,
+	GDateTime *deadline, gboolean cards_only, const VentureActor *actor, GError **error)
+{
+	return stripe_checkout_create(self, invoice_id, deadline, NULL, cards_only, actor, error);
 }

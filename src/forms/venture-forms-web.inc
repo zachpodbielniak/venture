@@ -379,7 +379,18 @@ forms_web_accepted(VentureDatabase *database, VentureEntity *form, VentureEntity
 		g_autofree gchar *result = venture_forms_get_string(submission, "result-url");
 		if (!venture_string_is_empty(result)) { g_free(redirect); redirect = g_steal_pointer(&result); }
 	}
-	message = venture_forms_success_message(database, form, submission);
+	if (submission != NULL && g_object_get_data(G_OBJECT(submission), VENTURE_FORMS_PAYMENT_REDIRECT) != NULL)
+	{
+		g_free(redirect); redirect = g_strdup(g_object_get_data(G_OBJECT(submission), VENTURE_FORMS_PAYMENT_REDIRECT));
+		{
+			g_autoptr(VentureEntity) version = venture_database_get(database, VENTURE_TYPE_FORM_VERSION, venture_forms_get_int(submission, "version-id"), NULL);
+			g_autoptr(GPtrArray) fields = version != NULL ? venture_forms_definition_for(database, form, version, NULL) : NULL;
+			g_autofree gchar *language = venture_forms_get_string(submission, "language");
+			if (fields != NULL) venture_forms_localize(fields, language);
+			message = g_strdup(venture_forms_text(fields, "message.payment_continue", "Continue to secure Checkout. Your response completes after payment settles."));
+		}
+	}
+	else message = venture_forms_success_message(database, form, submission);
 	if (venture_string_is_empty(message))
 	{
 		g_free(message);
@@ -722,7 +733,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		return forms_web_status(500, "The response could not be saved; please try again.");
 	}
 	if (VENTURE_FORMS_PENDING == outcome) return forms_web_pending(database, form, answers, NULL, json, allow_origin);
-	if (VENTURE_FORMS_ACCEPTED == outcome || VENTURE_FORMS_DISCARDED == outcome)
+	if (VENTURE_FORMS_ACCEPTED == outcome || VENTURE_FORMS_DISCARDED == outcome || VENTURE_FORMS_PAYMENT == outcome)
 		return forms_web_accepted(database, form, submission, json, allow_origin);
 
 	if (json)

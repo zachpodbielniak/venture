@@ -376,3 +376,13 @@ seats and per-invoice limit. It does not create fresh consent for a cancelled
 subscription or collect its ordinary invoices after cancellation. Disabling
 or revoking authorization still prevents provider contact. Payment settles
 the final invoice without reactivating the subscription.
+
+* Payments collected through forms
+
+[[file:forms.org][Paid forms]] calculate exact prices on the server and create an ordinary
+invoice before using the existing Checkout service. Verified settlement commits
+first, then the forms service completes the private intake. Duplicate callbacks
+can recover completion without posting another payment. Paid bookings use a
+45-minute, card-only Checkout window; other paid forms retain configured ACH.
+Refunds, disputes and accounting remain on the invoice. See
+[[file:evidence/forms-payment.org][the offline built-server payment demonstration]].

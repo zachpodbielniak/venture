@@ -1074,3 +1074,73 @@ booking pages may set their own =public_origin= for confirmation links.
 Migrations =000850= and =000851= cover form booking references and the calendar
 service's private reservations on SQLite and PostgreSQL independently, so
 turning either module off does not prevent the other from migrating.
+
+* Payments and paid bookings
+
+Enable Stripe for the organization, then set =form.payment_enabled=true= and
+=public_origin=. Required non-sensitive short-text and email questions name
+the payer; =payment_name_field= and =payment_email_field= default to =name=
+and =email=. Payment and double-opt-in signup are separate forms: a purchase
+must not be treated as newsletter confirmation.
+
+Create =form_price= records with =form_id=, a stable =key=, public line =name=,
+=product_id= and exact =unit_price=. A line without conditions is fixed.
+=choice_field= plus a declared =choice_id= includes it only for that selected
+choice. =quantity_field= multiplies it by a visible number answer, restricted
+to whole counts from zero through 1000000. Missing/hidden quantities add no
+line. Price controls cannot use sensitive answers or repeating groups. All
+lines use one ISO currency, at most 100 per form, and the final total must be
+positive. Publish freezes the price declarations alongside the questions.
+
+The server computes every amount using =VentureMoney= and checked integer
+multiplication. The invoice contains exact computed line amounts at quantity
+one; its balance is checked against the computed total. A submitted =amount=
+or =currency= is an unknown question and is refused, never a price override.
+Checkout displays the final amount using the existing invoice payment path;
+no card or bank account data passes through the form.
+
+A paid submit creates an invoice and private =form_payment= working copy in
+state =pending_payment=, then leaves the database transaction before contacting
+Stripe. There is no ordinary response yet. The signed =_vf_payment= control
+identifies one intake across retries, pages and resume; retain the schema's
+=payment_field=/=payment_nonce= when building a custom client. It is distinct
+from the fill-time ticket and never appears in final answers, audit or export.
+Retrying the same intake reuses its invoice and provider idempotency key;
+changed answers require a fresh form. Payment records are service-owned. Generic record surfaces may show their
+processing metadata, but cannot read private contents or create, edit, delete,
+restore or purge them. The assistant and MCP never receive pending answers.
+
+Each public purchase gets a fresh guest company/contact. An unverified email
+cannot select an existing Stripe customer's saved Checkout details. Invoice
+and guest CRM records are financial/business records and may emit their own
+normal events. *Form response* automation, lead follow-ups, confirmation mail
+and booking confirmation wait until verified settlement has committed.
+A pending intake reserves response/email/personal-link limits under the save
+lock. ACH completion with an unpaid status stays private in =processing=;
+the later successful settlement creates exactly one ordinary response linked
+by =invoice_id=. Refunds and disputes remain on that invoice.
+
+Checkout expires after 45 minutes. Paid bookings hold their seat for that same
+window and require a start later than the deadline. They offer card Checkout,
+since delayed bank settlement cannot promise a short-lived seat. Ordinary
+paid forms retain the organization's configured ACH behavior. Expired or
+failed Checkout releases the seat and response reservation. A late successful
+payment rechecks released form capacity. It remains =paid_needs_capacity= if
+capacity is unavailable, or =paid_needs_booking= if its booking hold expired;
+it never overbooks or creates another charge.
+
+An owner can recover after a missed callback or repaired follow-up with the
+form action =reconcile_payment= and =invoice_id=. For =paid_needs_booking=,
+include =booking_start= naming a newly offered ISO timestamp arranged with the
+customer. The action uses the same availability lock, preserves the original
+answer as evidence and links the replacement meeting. It is not stageable.
+If capacity cannot be supplied, handle the refund on the invoice.
+
+Owner export includes pending payment answers without bearer controls.
+Erasure removes those answers and releases an unconfirmed hold; later payment
+callbacks cannot recreate an erased response. Completed working copies drop
+their answer payload immediately. The bounded retention sweep forgets any
+remaining payment payload after 30 days, or the form's shorter retention
+period. Independent invoice, guest CRM and
+mail records retain their own policies; form erasure never silently voids an
+invoice or issues a refund. Migration =000860= covers both database backends.

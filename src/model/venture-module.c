@@ -884,9 +884,9 @@ static const gchar *const goals_reports[] = { "goal_progress", "goal_materials",
  * or a signup names nothing else. It suggests leads, which a form may turn
  * each response into (the mapping notes and skips it while leads is off),
  * and mail, which sends the optional confirmation the same way. */
-static const gchar *const forms_suggests[] = { "leads", "mail", "marketing", "calendar", NULL };
+static const gchar *const forms_suggests[] = { "leads", "mail", "marketing", "calendar", "stripe", NULL };
 static GType (*const forms_types[]) (void) = {
-	venture_form_get_type, venture_form_field_get_type, venture_form_rule_get_type, venture_form_group_get_type, venture_form_translation_get_type, venture_form_result_band_get_type, venture_form_pending_get_type,
+	venture_form_get_type, venture_form_field_get_type, venture_form_rule_get_type, venture_form_group_get_type, venture_form_translation_get_type, venture_form_result_band_get_type, venture_form_price_get_type, venture_form_payment_get_type, venture_form_pending_get_type,
 	venture_form_submission_get_type, venture_form_version_get_type, venture_form_draft_get_type, NULL
 };
 static const gchar *const forms_reports[] = { "form_summary", NULL };

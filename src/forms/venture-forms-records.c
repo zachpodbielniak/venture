@@ -109,6 +109,9 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("closes-at", "Closes at",
 	              "Optional: stop taking responses at this time",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payment-enabled", "Require payment", "Complete the response only after invoice settlement", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payment-name-field", "Payer name question", "Required short-text key; empty uses name", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payment-email-field", "Payer email question", "Required email key; empty uses email", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("quiz-enabled", "Score responses", "Compute an assessment score from published scoring rules", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("show-answer-key", "Show correct answers", "Show the answer key after final submission", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("score-to-lead", "Use score in lead rules", "Pass the computed score as the assessment_score input to existing lead rules", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
@@ -341,6 +344,7 @@ static const VentureFieldDecl venture_form_submission_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("origin", "Sent from", "The site it was sent from, when the browser said",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_REF("invoice-id", "Paid invoice", "Invoice settled before this response completed", "invoice", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("booking-id", "Booked meeting", "Meeting created from the selected slot", "activity", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("scored", "Scored", "The published form computed an assessment", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("score", "Score", "Server-computed assessment points", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
@@ -479,3 +483,42 @@ static const VentureFieldDecl venture_form_result_band_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormResultBand, venture_form_result_band, venture_form_result_band_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form result band", NULL);
 	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)
+
+static const VentureFieldDecl venture_form_price_fields[] = {
+	VENTURE_FIELD_NAME("name", "Line description", "Public invoice line description"),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("key", "Key", "Stable price declaration identity", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD_REF("product-id", "Product", "Product being purchased", "product", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_MONEY("unit-price", "Unit price", "Exact server price, frozen at publication"),
+	VENTURE_FIELD("choice-field", "Choice question", "Optional stable question key controlling this line", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("choice-id", "Choice ID", "Stable choice ID that includes this line", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("quantity-field", "Quantity question", "Optional number question; empty means one", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormPrice, venture_form_price, venture_form_price_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form price", NULL);
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)
+
+/* Pending answers and bearer identities are never business events. Only the
+ * settled ordinary response enters automations, audit or generic surfaces. */
+static const VentureFieldDecl venture_form_payment_fields[] = {
+	VENTURE_FIELD_NAME("name", "Payment intake", NULL),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("version-id", "Published version", NULL, "form_version", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("checkout-id", "Checkout", NULL, "stripe_checkout", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("reservation-id", "Held booking", NULL, "booking_reservation", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("response-id", "Completed response", NULL, "form_submission", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("contact-id", "Personal contact", NULL, "contact", VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("personal-hash", "Personal link digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("nonce-hash", "Intake digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("answers-hash", "Answer digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("email-hash", "Email limit digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("payload", "Pending response", NULL, VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("expires-at", "Checkout deadline", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("generation", "Generation", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormPayment, venture_form_payment, venture_form_payment_fields,
+	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Pending form payment", NULL);
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "nonce-hash", "form-id", NULL);)

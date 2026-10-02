@@ -209,6 +209,19 @@ VENTURE_DECLARE_ENTITY(VentureFormResultBand, venture_form_result_band, FORM_RES
  * Returns: (transfer full): an unsaved score range and public result
  */
 
+#define VENTURE_TYPE_FORM_PAYMENT (venture_form_payment_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormPayment, venture_form_payment, FORM_PAYMENT)
+/**
+ * venture_form_payment_new:
+ * Returns: (transfer full): an unsaved service-owned payment intake
+ */
+
+#define VENTURE_TYPE_FORM_PRICE (venture_form_price_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormPrice, venture_form_price, FORM_PRICE)
+/**
+ * venture_form_price_new:
+ * Returns: (transfer full): an unsaved server price declaration
+ */
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_RECORDS_H */

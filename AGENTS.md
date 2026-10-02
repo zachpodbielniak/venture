@@ -1547,3 +1547,13 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   seed and private working copy. `venture_forms_answers_to_json()` intentionally
   drops internal controls; use `venture_forms_answers_state()` only for private
   navigation/signup state, so language and personal binding survive confirmation.
+
+- **Paid forms cross the provider boundary only after local commit.**
+  `form_payment` is a private working copy, never an ordinary response.
+  Prices are frozen `VentureMoney` declarations; a signed intake nonce is
+  distinct from the shared fill-time ticket. Invoice Checkout keeps its own
+  durable idempotency reservation. Verified settlement commits before
+  `venture_forms_payment_reconcile()` writes the response and follow-ups.
+  A response retry never repeats a debit; a late booking payment needs a new
+  available hold, never resurrection of expired capacity. Erasure marks the
+  intake terminal so a later webhook cannot recreate personal answers.

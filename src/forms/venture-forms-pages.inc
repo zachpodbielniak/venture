@@ -144,6 +144,8 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		if (forms_first(answers, VENTURE_FORMS_PREFILL) != NULL)
 			json_object_set_string_member(step->values, VENTURE_FORMS_PREFILL, forms_first(answers, VENTURE_FORMS_PREFILL));
 		if (personal != NULL) json_object_set_string_member(step->values, VENTURE_FORMS_PERSONAL, personal);
+		if (forms_first(answers, VENTURE_FORMS_PAYMENT_NONCE) != NULL)
+			json_object_set_string_member(step->values, VENTURE_FORMS_PAYMENT_NONCE, forms_first(answers, VENTURE_FORMS_PAYMENT_NONCE));
 	}
 	{
 		JsonNode *binding = json_object_get_member(step->values, VENTURE_FORMS_PERSONAL);
@@ -185,6 +187,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		if (g_strcmp0(key, VENTURE_FORMS_DRAFT_TOKEN) == 0 || g_strcmp0(key, VENTURE_FORMS_MOVE) == 0 ||
 		    g_strcmp0(key, VENTURE_FORMS_TICKET) == 0 || g_strcmp0(key, VENTURE_FORMS_HONEYPOT) == 0 ||
 		    g_strcmp0(key, VENTURE_FORMS_PERSONAL) == 0 || g_strcmp0(key, VENTURE_FORMS_PREFILL) == 0 ||
+		    g_strcmp0(key, VENTURE_FORMS_PAYMENT_NONCE) == 0 ||
 		    (venture_forms_get_bool(fresh, "allow-resume") && g_strcmp0(key, VENTURE_FORMS_RESUME_EMAIL) == 0)) continue;
 		if (venture_forms_definition_find(page_fields, key) == NULL)
 			forms_refuse(step->errors, "_form", "Only questions on the current page may be answered.");
@@ -264,7 +267,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		}
 		if (!venture_forms_submit(database, fresh, complete, origin, now, &outcome, &step->submission, &refused, error))
 			return NULL;
-		if (outcome == VENTURE_FORMS_ACCEPTED || outcome == VENTURE_FORMS_PENDING)
+		if (outcome == VENTURE_FORMS_ACCEPTED || outcome == VENTURE_FORMS_PENDING || outcome == VENTURE_FORMS_PAYMENT)
 		{
 			step->complete = TRUE;
 			step->awaiting_confirmation = outcome == VENTURE_FORMS_PENDING;

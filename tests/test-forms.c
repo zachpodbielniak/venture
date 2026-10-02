@@ -4316,6 +4316,62 @@ test_quiz_redirect(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "https://example.test/plan-b")); reply_clear(&reply);
 }
 
+/* Price edits must not alter an order filled against a published version.
+ * Client amount/currency members are never consulted by the calculator. */
+static void test_payment_pricing(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "paid", VENTURE_FORM_LIVE), version = NULL;
+	g_autoptr(VentureEntity) product = g_object_new(VENTURE_TYPE_PRODUCT, "organization-id", f->org, "name", "Admission", NULL);
+	g_autoptr(VentureEntity) price = NULL, choice = NULL;
+	g_autoptr(VentureMoney) unit = venture_money_new_for_currency(125, "USD"), total = NULL;
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(JsonObject) answers = json_object_new();
+	g_autoptr(JsonArray) lines = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	save(f, product);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 20);
+	add_field(f, form, "quantity", "Quantity", VENTURE_FORM_FIELD_NUMBER, TRUE, 30);
+	choice = make_field(f, form, "ticket", "Ticket", VENTURE_FORM_FIELD_SINGLE_CHOICE, TRUE, 40);
+	g_object_set(choice, "choices", "standard | Standard\npremium | Premium", NULL); save(f, choice);
+	g_object_set(form, "payment-enabled", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	price = g_object_new(VENTURE_TYPE_FORM_PRICE, "organization-id", f->org, "form-id", venture_entity_get_id(form),
+		"name", "Admission", "key", "admission", "product-id", venture_entity_get_id(product), "unit-price", unit,
+		"choice-field", "ticket", "choice-id", "premium", "quantity-field", "quantity", NULL); save(f, price);
+	version = publish(f, form);
+	fields = venture_forms_definition_for(f->db, form, version, &error); g_assert_no_error(error);
+	json_object_set_string_member(answers, "ticket", "premium"); json_object_set_int_member(answers, "quantity", 3);
+	json_object_set_int_member(answers, "amount", 1); json_object_set_string_member(answers, "currency", "EUR");
+	total = venture_forms_price_total(fields, answers, &lines, &error); g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(total), ==, 375); g_assert_cmpstr(venture_money_get_currency(total), ==, "USD");
+	g_assert_cmpuint(json_array_get_length(lines), ==, 1);
+	g_clear_pointer(&unit, venture_money_free); unit = venture_money_new_for_currency(9999, "USD");
+	g_object_set(price, "unit-price", unit, NULL); save(f, price);
+	g_clear_pointer(&total, venture_money_free); total = venture_forms_price_total(fields, answers, NULL, &error);
+	g_assert_no_error(error); g_assert_cmpint(venture_money_get_amount(total), ==, 375);
+	g_clear_pointer(&total, venture_money_free);
+	json_object_set_double_member(answers, "quantity", 1.5);
+	total = venture_forms_price_total(fields, answers, NULL, &error); g_assert_null(total); g_assert_nonnull(error); g_clear_error(&error);
+	json_object_set_int_member(answers, "quantity", 1000001);
+	total = venture_forms_price_total(fields, answers, NULL, &error); g_assert_null(total); g_assert_nonnull(error); g_clear_error(&error);
+	json_object_set_int_member(answers, "quantity", 1); json_object_set_string_member(answers, "ticket", "standard");
+	total = venture_forms_price_total(fields, answers, NULL, &error); g_assert_null(total); g_assert_nonnull(error); g_clear_error(&error);
+	{
+		g_autoptr(JsonObject) malformed = json_object_new();
+		g_assert_false(venture_forms_price_restore(fields, malformed, &error)); g_assert_nonnull(error); g_clear_error(&error);
+	}
+	/* A second currency and a deleted/unknown choice cannot be published. */
+	g_clear_pointer(&unit, venture_money_free); unit = venture_money_new_for_currency(100, "EUR");
+	{
+		g_autoptr(VentureEntity) second = g_object_new(VENTURE_TYPE_FORM_PRICE, "organization-id", f->org, "form-id", venture_entity_get_id(form),
+			"name", "Fee", "key", "fee", "product-id", venture_entity_get_id(product), "unit-price", unit, NULL);
+		g_autoptr(VentureEntity) refused_version = NULL;
+		save(f, second); refused_version = venture_forms_publish(f->db, form, NULL, &error);
+		g_assert_null(refused_version); g_assert_nonnull(error); g_clear_error(&error);
+	}
+}
+
 /* Two completed intakes can carry the same offered slot. Availability must
  * be decided under the final write lock, before any contact or meeting. */
 static void test_booking_form(Fixture *f, gconstpointer data)
@@ -4461,6 +4517,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/quiz-validation", Fixture, NULL, setup, test_quiz_validation, teardown);
 	g_test_add("/forms/quiz-score-key", Fixture, NULL, setup, test_quiz_score_and_key, teardown);
 	g_test_add("/forms/quiz-hidden-repeated", Fixture, NULL, setup, test_quiz_hidden_and_repeated, teardown);
+	g_test_add("/forms/payment-pricing", Fixture, NULL, setup, test_payment_pricing, teardown);
 	g_test_add("/forms/booking", Fixture, NULL, setup, test_booking_form, teardown);
 	g_test_add("/forms/quiz-redirect", Fixture, NULL, setup, test_quiz_redirect, teardown);
 	g_test_add("/forms/quiz-version-privacy", Fixture, NULL, setup, test_quiz_version_privacy, teardown);

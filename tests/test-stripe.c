@@ -1047,6 +1047,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
 
+#include "test-stripe-forms.inc"
 #include "test-stripe-settings.inc"
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
@@ -1057,6 +1058,17 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/stripe/records", test_records);
+	g_test_add("/stripe/forms/expired-paid", Fixture, "expired-paid", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/uncertain", Fixture, "uncertain", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/paid", Fixture, "paid", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/erased", Fixture, "erased", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/limits", Fixture, "limits", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/delayed", Fixture, "delayed", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/expired", Fixture, "expired", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-paid", Fixture, "booking-paid", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-expired", Fixture, "booking-expired", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-failed", Fixture, "booking-failed", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-late", Fixture, "booking-late", set_up, test_paid_form, tear_down);
 	g_test_add("/stripe/payment-link/basic", Fixture, NULL, set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/authorization", Fixture, "authorization", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/changed", Fixture, "changed", set_up, test_payment_link, tear_down);

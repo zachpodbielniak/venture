@@ -303,6 +303,7 @@ venture_forms_field_free(gpointer data)
 	g_clear_pointer(&field->booking_slots, json_node_unref);
 	g_free(field->scoring);
 	g_clear_pointer(&field->quiz, json_object_unref);
+	g_clear_pointer(&field->payment, json_object_unref);
 	g_free(field);
 }
 
@@ -384,6 +385,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 	if (!venture_forms_groups_load(database, form, fields, error) ||
 	    !venture_forms_rules_load(database, form, fields, error) ||
 	    !venture_forms_quiz_load(database, form, fields, error) ||
+	    !venture_forms_price_load(database, form, fields, error) ||
 	    !venture_forms_booking_definition(database, form, fields, error) ||
 	    !venture_forms_translations_load(database, form, fields, error))
 	{
@@ -403,6 +405,12 @@ venture_forms_definition_to_json(GPtrArray *fields)
 	guint i, j;
 
 	json_builder_begin_object(builder);
+	if (venture_forms_payment(fields) != NULL)
+	{
+		JsonNode *payment = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(payment, venture_forms_payment(fields));
+		json_builder_set_member_name(builder, "payment"); json_builder_add_value(builder, payment);
+	}
 	if (venture_forms_quiz(fields) != NULL)
 	{
 		JsonNode *quiz = json_node_new(JSON_NODE_OBJECT);
@@ -651,6 +659,12 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		}
 	}
 	for (i = 0; i < fields->len; i++) if (!venture_forms_quiz_field_valid(g_ptr_array_index(fields, i), error)) return NULL;
+	if (json_object_has_member(json_node_get_object(root), "payment"))
+	{
+		JsonNode *payment = json_object_get_member(json_node_get_object(root), "payment");
+		if (!JSON_NODE_HOLDS_OBJECT(payment)) goto broken;
+		if (!venture_forms_price_restore(fields, json_node_get_object(payment), error)) return NULL;
+	}
 	if (json_object_has_member(json_node_get_object(root), "quiz"))
 	{
 		JsonNode *quiz = json_object_get_member(json_node_get_object(root), "quiz");

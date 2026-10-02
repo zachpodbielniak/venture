@@ -49,6 +49,11 @@ forms_optin_definition(VentureDatabase *database, VentureEntity *form, GPtrArray
 	gboolean consent = FALSE;
 	guint i;
 	if (!venture_forms_get_bool(form, "double-opt-in")) return TRUE;
+	if (venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	{
+		venture_set_error_validation(error, "Signup", "paid intake and double opt-in signup use separate forms");
+		return FALSE;
+	}
 	email = venture_forms_definition_find(fields, key);
 	if (email == NULL || email->kind != VENTURE_FORM_FIELD_EMAIL || !email->required ||
 	    email->sensitive || email->group_key != NULL)

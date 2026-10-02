@@ -10,6 +10,13 @@
  * an author. A translation can never change a stable key, choice id or rule. */
 typedef struct { const gchar *key; const gchar *text; } FormsMessage;
 static const FormsMessage messages[] = {
+	{ "payment_retry", "Payment needs attention. Retry this form without changing its answers, or contact us." },
+	{ "checkout", "Continue to Checkout" },
+	{ "payment_continue", "Continue to secure Checkout. Your response completes after payment settles." },
+	{ "payment_quantity", "Choose a positive order with whole quantities within the allowed range." },
+	{ "payment_reload", "Reload the form before starting payment." },
+	{ "payment_used", "This payment intake has already been used. Start a fresh form for a new order." },
+	{ "payment_pending", "A payment for this response is already pending." },
 	{ "score", "Score" }, { "correct_answers", "Correct answers" },
 	{ "save", "Save and continue later" },
 	{ "resume_email", "Email the resume link (optional)" },

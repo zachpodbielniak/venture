@@ -33,7 +33,7 @@ VentureEntity *venture_booking_service_reserve(VentureBookingService *self, Vent
 	Page shape;
 	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_BOOKING_PAGE(page), NULL);
-	if (seconds == 0 || seconds > 900) return refuse(error, VENTURE_ERROR_VALIDATION, "A hold lasts between 1 and 900 seconds"), NULL;
+	if (seconds == 0 || seconds > 2700) return refuse(error, VENTURE_ERROR_VALIDATION, "A hold lasts between 1 and 2700 seconds"), NULL;
 	when = venture_string_is_empty(start) ? NULL : venture_time_from_string(start, NULL);
 	if (when == NULL) return refuse(error, VENTURE_ERROR_VALIDATION, "A start time is required"), NULL;
 	if (self->database == NULL || !venture_database_begin(self->database, error)) return NULL;

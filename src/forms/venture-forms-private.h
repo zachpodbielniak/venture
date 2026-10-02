@@ -80,6 +80,7 @@ typedef struct
 	JsonNode		*booking_slots;
 	gchar			*scoring;
 	JsonObject		*quiz;
+	JsonObject		*payment;
 	JsonObject		*catalog;
 	gchar			*language;
 } VentureFormsField;
@@ -250,6 +251,19 @@ gboolean venture_forms_booking_prepare(VentureDatabase *database, VentureEntity 
 	GDateTime *now, VentureEntity **hold, JsonObject *errors, GError **error);
 gboolean venture_forms_booking_finish(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, JsonObject *answers,
 	VentureEntity *hold, VentureEntity *response, GDateTime *now, JsonObject *errors, GError **error);
+JsonObject *venture_forms_payment(GPtrArray *fields);
+gboolean venture_forms_price_load(VentureDatabase *database, VentureEntity *form, GPtrArray *fields, GError **error);
+gboolean venture_forms_price_restore(GPtrArray *fields, JsonObject *payment, GError **error);
+gboolean venture_forms_price_validate(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error);
+VentureMoney *venture_forms_price_total(GPtrArray *fields, JsonObject *answers, JsonArray **invoice_lines, GError **error);
 G_END_DECLS
+
+
+#define VENTURE_FORMS_PAYMENT_NONCE "_vf_payment"
+#define VENTURE_FORMS_PAYMENT_WRITE "venture-forms-payment-write"
+#define VENTURE_FORMS_PAYMENT_SETTLING "venture-forms-payment-settling"
+#define VENTURE_FORMS_PAYMENT_REDIRECT "venture-forms-payment-redirect"
+gchar *venture_forms_payment_nonce(VentureEntity *form);
+gboolean venture_forms_payment_nonce_valid(VentureEntity *form, const gchar *nonce);
 
 #endif /* VENTURE_FORMS_PRIVATE_H */

@@ -1965,3 +1965,25 @@ The public schema exposes current `slots`; final submit rechecks capacity.
 service-owned link to the meeting. Do not write `booking_reservation` records:
 they are private working copies. Signed management links go through the private
 outbox body; opening one never cancels or reschedules a booking.
+
+### Paid forms
+
+Use `form.payment_enabled=true` and `form_price` declarations (`form_id`,
+`key`, `name`, `product_id`, exact `unit_price`, optional `choice_field` /
+`choice_id` / `quantity_field`), then publish. Read `describe form_price`;
+all prices share one currency and quantities are bounded whole counts.
+Required payer name/email keys default to `name`/`email`. Stripe Checkout
+uses the server-computed invoice, never a posted amount. Paid intake and
+newsletter double opt-in are separate forms.
+
+Do not create or edit `form_payment`: it is a private working copy until
+settlement creates the ordinary `form_submission` with `invoice_id`. Form
+response automation and confirmation wait for settlement. Paid booking holds
+last 45 minutes and use cards; ordinary paid forms retain configured ACH.
+An owner can run `act form ID reconcile_payment invoice_id=N` after repairing
+a failed follow-up. For `paid_needs_booking`, add `booking_start=ISO_TIMESTAMP`
+for a replacement arranged with the customer. This action cannot be staged;
+use invoice refund/dispute operations for the financial outcome. A payment
+retry must reuse its signed intake nonce and original answers, never create a
+second invoice. Pending payment answers participate in owner export/erasure;
+financial and guest CRM records retain their independent policies.
