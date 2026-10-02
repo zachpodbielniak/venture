@@ -143,7 +143,8 @@ are you to recommend us (0-10)?". So a form has versions.
   sensitive column: never in the API's JSON, the assistant's view,
   webhooks, notifications, search or the audit log. The summary names the
   question only. The response's own page shows it. A sensitive question
-  cannot fill a lead.
+  cannot fill a lead. =/webhook/form-sensitive-delivery= checks actual
+  outgoing HTTP create/update bodies and an emitted inbox notification.
 - *The audit log holds no answers.* A response's audit entries are
   labelled "Form response #N", and changes to its name, answers, summary,
   notes and origin are recorded as changed and redacted.

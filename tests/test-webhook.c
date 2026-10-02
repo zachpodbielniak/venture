@@ -929,6 +929,86 @@ static void test_webhook_organization_and_privacy(Fixture *f, gconstpointer data
 	}
 }
 
+/* Exercise the actual outgoing HTTP body and inbox serializer, not just
+ * the record serializer: an audit label or diff can leak independently. */
+static void
+test_form_sensitive_delivery(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) hook = create_webhook(f, "form_submission.*", "forms-secret");
+	g_autoptr(VentureEntity) form = VENTURE_ENTITY(venture_form_new());
+	g_autoptr(VentureEntity) field = VENTURE_ENTITY(venture_form_field_new());
+	g_autoptr(VentureEntity) version = NULL, submission = NULL;
+	g_autoptr(VentureEntity) watcher = VENTURE_ENTITY(venture_user_new());
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(GPtrArray) notifications = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureFormsOutcome outcome;
+	VentureActor actor;
+	gint64 form_id;
+	guint i;
+	(void)data;
+
+	g_object_set(hook, "include-record", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, hook, NULL, &error));
+	g_assert_no_error(error);
+	file_under_default(f, form);
+	g_object_set(form, "name", "Private intake", "state", VENTURE_FORM_LIVE, NULL);
+	g_assert_true(venture_database_save(f->database, form, NULL, &error));
+	g_assert_no_error(error);
+	form_id = venture_entity_get_id(form);
+	file_under_default(f, field);
+	g_object_set(field, "form-id", form_id, "key", "private_answer", "label", "Private answer",
+		"kind", VENTURE_FORM_FIELD_LONG_TEXT, "sensitive", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error));
+	g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(version);
+	g_clear_object(&form);
+	form = venture_database_get(f->database, VENTURE_TYPE_FORM, form_id, &error);
+	g_assert_no_error(error);
+	venture_forms_answers_add(answers, "private_answer", "FORM-PRIVATE-DELIVERY-MARKER");
+	g_assert_true(venture_forms_submit(f->database, form, answers, NULL, now,
+		&outcome, &submission, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	settle(f, 1);
+	g_assert_cmpuint(f->received, ==, 1);
+	g_assert_nonnull(strstr(f->last_body, "form_submission"));
+	g_assert_null(strstr(f->last_body, "FORM-PRIVATE-DELIVERY-MARKER"));
+
+	file_under_default(f, watcher);
+	g_object_set(watcher, "username", "form-watcher", "active", TRUE,
+		"role", VENTURE_USER_ROLE_OWNER, NULL);
+	g_assert_true(venture_database_save(f->database, watcher, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_notify_watch(f->context, venture_entity_get_id(watcher),
+		"form_submission", venture_entity_get_id(submission), &error));
+	g_assert_no_error(error);
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "form-reviewer";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_object_set(submission, "reviewed", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, submission, &actor, &error));
+	g_assert_no_error(error);
+	settle(f, 2);
+	g_assert_cmpuint(f->received, ==, 2);
+	g_assert_null(strstr(f->last_body, "FORM-PRIVATE-DELIVERY-MARKER"));
+	notifications = venture_notify_list(f->context, venture_entity_get_id(watcher), FALSE, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(notifications->len, >, 0);
+	for (i = 0; i < notifications->len; i++)
+	{
+		g_autoptr(JsonNode) json = venture_notify_to_json(g_ptr_array_index(notifications, i));
+		g_autofree gchar *text = json_to_string(json, FALSE);
+
+		g_assert_null(strstr(text, "FORM-PRIVATE-DELIVERY-MARKER"));
+	}
+}
+
 int
 main(
 	int	 argc,
@@ -943,6 +1023,7 @@ main(
 #define ADD(path, func) \
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
+	ADD("/webhook/form-sensitive-delivery", test_form_sensitive_delivery);
 	ADD("/webhook/delivers-signed", test_webhook_delivers_signed);
 	ADD("/webhook/scope-and-payload", test_webhook_scope_and_payload);
 	ADD("/webhook/failures-switch-it-off",
