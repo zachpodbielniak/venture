@@ -632,17 +632,15 @@ static void
 start_http(Fixture *f)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) reservation = g_socket_listener_new();
 	f->state_dir = g_dir_make_tmp("venture-lead-routing-XXXXXX", NULL);
-	f->port = g_socket_listener_add_any_inet_port(reservation, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(reservation);
+	f->port = 0;
 	g_object_set(f->config, "state-dir", f->state_dir, "server-port", (gint64)f->port,
 		"server-bind-address", "127.0.0.1", "security-require-auth", FALSE, NULL);
 	f->server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	f->port = venture_web_server_get_port(f->server);
 }
 
 typedef struct { gboolean done; gchar *out; gchar *err; GError *error; } CliReply;

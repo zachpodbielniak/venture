@@ -35,6 +35,6 @@ lives on =/tax-filings=.
 
 * Scope and source
 
-This CSV is a bookkeeping review pack, not an IRS e-filing format or a determination of filing obligations. Totals currently include the vendor's recorded bill payments; an operator must review reportability, payment-method exclusions and backup-withholding exceptions separately. Currency must be USD. CSV fields quote commas, quotation marks and line breaks so names preserve their original content.
+This CSV is a bookkeeping review pack, not an IRS e-filing format or a determination of filing obligations. Totals currently include the vendor's recorded bill payments; an operator must review reportability, payment-method exclusions and backup-withholding exceptions separately. Currency must be USD: 1099-NEC is a US form and its thresholds are dollars, so payments in any other currency -- a euro organization's -- are refused by name rather than compared with a dollar threshold. CSV fields quote commas, quotation marks and line breaks so names preserve their original content.
 
 Threshold verified on 2026-09-15 against [[https://www.irs.gov/faqs/small-business-self-employed-other-business/form-1099-nec-and-independent-contractors][IRS Form 1099-NEC and independent contractors]] and [[https://www.irs.gov/instructions/i1099mec][IRS instructions for Forms 1099-MISC and 1099-NEC]], which describe inflation adjustments beginning in 2027.

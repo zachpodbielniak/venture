@@ -434,6 +434,40 @@ venture_entity_get_field(
 );
 
 /**
+ * venture_entity_has_bare_money:
+ * @self: a #VentureEntity
+ *
+ * Returns: %TRUE if a money field was written through a generic decoder
+ *   without naming its currency, and not yet resolved
+ */
+gboolean
+venture_entity_has_bare_money(VentureEntity *self);
+
+/**
+ * venture_entity_resolve_bare_money:
+ * @self: a #VentureEntity
+ * @currency: the currency an amount that named none is in -- the
+ *   organization's book currency
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The generic decoders (venture_serializable_from_json() and
+ * venture_entity_set_field_from_string()) read a money value that names no
+ * currency in the install's default, because a record does not know its
+ * organization's book currency, and remember that they did. This reads
+ * each such field again in @currency, unless the field has been set to
+ * something else since. The marks are cleared either way. The database
+ * calls it on save and on staging; nothing else needs to.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_entity_resolve_bare_money(
+	VentureEntity	 *self,
+	const gchar	 *currency,
+	GError		**error
+);
+
+/**
  * venture_entity_set_field_from_string:
  * @self: a #VentureEntity
  * @name: the property name

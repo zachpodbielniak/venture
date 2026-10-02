@@ -162,6 +162,7 @@ venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organiz
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
 	g_autofree gchar *name = NULL;
+	g_autofree gchar *book = NULL;
 	VentureTaxFilingAdapter *adapter;
 	const gchar *place;
 	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
@@ -196,12 +197,16 @@ venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organiz
 		g_autofree gchar *stamp = g_date_time_format(start, "%Y-%m");
 		name = g_strdup_printf("%s %s", place, stamp != NULL ? stamp : "");
 	}
+	/* The adapter sets the currency its return is filed in (the US one
+	 * sets USD); until then the filing is in the organization's book
+	 * currency, not a guessed "USD" a plugin adapter would inherit. */
+	book = venture_database_get_book_currency(db, organization_id);
 	filing = VENTURE_ENTITY(venture_tax_filing_new());
 	g_object_set(filing, "name", name, "country", country,
 		"jurisdiction", jurisdiction != NULL && *jurisdiction != '\0' ? jurisdiction : country,
 		"fiscal-period-id", fiscal_period_id, "period-start", start, "period-end", end,
 		"adapter", country, "rule-id", venture_tax_filing_adapter_get_rule_id(adapter),
-		"status", "draft", "currency", "USD", NULL);
+		"status", "draft", "currency", book, NULL);
 	venture_entity_set_organization_id(filing, organization_id);
 	if (!venture_tax_filing_adapter_prepare(adapter, db, filing, error) ||
 		!save_internal(self, db, filing, actor, error))
@@ -475,12 +480,20 @@ venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 or
 		return refuse(error, VENTURE_ERROR_NOT_FOUND,
 			"A contractor tax form is required before preparing 1099-NEC"), NULL;
 	paid = paid_in_year(db, organization_id, vendor_id, year, error);
+	/* USD on purpose throughout: 1099-NEC is a US form and its thresholds
+	 * are dollars. Payments in another currency are refused by name, never
+	 * compared against a dollar threshold. */
 	if (paid == NULL && (error == NULL || *error == NULL))
 		paid = venture_money_from_string("0 USD", "USD", NULL);
 	if (paid == NULL)
 		return NULL;
 	if (g_strcmp0(venture_money_get_currency(paid), "USD") != 0)
-		return refuse(error, VENTURE_ERROR_VALIDATION, "1099-NEC bookkeeping totals must be in USD"), NULL;
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"VentureTaxFilingService: 1099-NEC is a US form reported in USD; payments to this vendor are in %s",
+			venture_money_get_currency(paid));
+		return NULL;
+	}
 	threshold = venture_money_from_string(year == 2026 ? "2000 USD" : "600 USD", "USD", error);
 	if (threshold == NULL)
 		return NULL;

@@ -660,6 +660,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_journal_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_journal_line_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_exchange_rate_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_holding_txn_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_tax_category_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_tax_code_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_contact_get_type, VENTURE_DATA_CLASS_TENANT },

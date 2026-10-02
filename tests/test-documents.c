@@ -380,12 +380,11 @@ test_http_compose_approval(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autoptr(VentureEntity) company = NULL;
 	g_autofree gchar *dir = g_dir_make_tmp("venture-document-approval-XXXXXX", NULL);
 	g_autofree gchar *alice = NULL, *bob = NULL, *body = NULL, *reply = NULL;
 	g_autofree gchar *reason = NULL, *certificate = NULL;
-	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	guint16 port = 0;
 	gboolean exempt = FALSE;
 	gboolean remember = data == NULL;
 	guint i;
@@ -393,7 +392,6 @@ test_http_compose_approval(Fixture *f, gconstpointer data)
 
 	(void)data;
 	g_assert_no_error(error);
-	g_socket_listener_close(listener);
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
 		g_autoptr(VentureUser) user = venture_user_new();
@@ -407,6 +405,7 @@ test_http_compose_approval(Fixture *f, gconstpointer data)
 		"server-port", (gint64)port, "security-require-auth", TRUE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	g_assert_cmpuint(http_request_full(server, "POST", "/login", "username=alice&password=correct-horse-battery",
 		NULL, &alice, NULL), ==, 302);
 	g_assert_nonnull(alice);
@@ -451,19 +450,17 @@ test_http_compose(Fixture *f, gconstpointer data)
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autofree gchar *dir = g_dir_make_tmp("venture-documents-XXXXXX", NULL);
 	g_autofree gchar *body = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	guint16 port;
 	g_autoptr(JsonObject) spec = invoice_spec(f, FALSE);
 	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 	g_autofree gchar *json = NULL;
 	(void)data;
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	json_node_take_object(node, json_object_ref(spec));
 	json = venture_json_to_string(node, FALSE);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/invoices/compose", json, NULL), ==, 200);
@@ -525,7 +522,6 @@ test_http_compose_guards(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autofree gchar *dir = g_dir_make_tmp("venture-documents-XXXXXX", NULL);
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autoptr(VentureOrganization) other = venture_organization_new();
 	g_autoptr(VentureCompany) stranger = venture_company_new();
 	g_autoptr(VentureEntity) reread = NULL;
@@ -538,13 +534,12 @@ test_http_compose_guards(Fixture *f, gconstpointer data)
 	venture_entity_set_organization_id(VENTURE_ENTITY(stranger), venture_entity_get_id(VENTURE_ENTITY(other)));
 	save(f, VENTURE_ENTITY(stranger));
 
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 
 	{
 		g_autofree gchar *form = g_strdup_printf("compose-form=1&company-id=%" G_GINT64_FORMAT

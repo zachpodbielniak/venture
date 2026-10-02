@@ -14,6 +14,7 @@
 
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <gio/gio.h>
 
 #include <stdlib.h>
 
@@ -157,4 +158,61 @@ venture_test_remove_tree(
 		return;
 
 	venture_test_remove_within(real_root, real_root);
+}
+
+/*
+ * How many fresh ports a test tries before it gives up on starting a
+ * server it had to name a port for in advance. Bounded, because a test
+ * that can hang is worse than one that fails.
+ */
+#define VENTURE_TEST_PORT_ATTEMPTS (5)
+
+/*
+ * A loopback TCP port nothing was listening on a moment ago.
+ *
+ * Only for a server that has to be *told* its port before it starts -- a
+ * subprocess given --port or $PORT. An in-process VentureWebServer never
+ * needs this: configure it with port 0 and read the kernel's choice back
+ * with venture_web_server_get_port(), which leaves no window at all.
+ *
+ * This one has a window. The socket is closed before the caller's server
+ * binds, and anything may take the port in between, so the caller must
+ * retry with a fresh port when the start fails because the port was taken
+ * -- up to VENTURE_TEST_PORT_ATTEMPTS times.
+ *
+ * It is still far better than what it replaced. Ports used to be derived
+ * from the pid, which collided with other suites running in other
+ * worktrees or PID namespaces (equal pids, equal ports), with every other
+ * listener on the machine, with sockets in TIME_WAIT and with a second
+ * server started by the same process; the kernel's choice avoids all of
+ * those, and SO_REUSEADDR is left off so a port with a lingering
+ * connection is not the one handed back.
+ */
+static inline guint16
+venture_test_free_port(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GSocket) socket = NULL;
+	g_autoptr(GInetAddress) loopback = NULL;
+	g_autoptr(GSocketAddress) any = NULL;
+	g_autoptr(GSocketAddress) bound = NULL;
+	guint16 port;
+
+	socket = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_STREAM,
+		G_SOCKET_PROTOCOL_TCP, &error);
+	g_assert_no_error(error);
+
+	loopback = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+	any = g_inet_socket_address_new(loopback, 0);
+	g_assert_true(g_socket_bind(socket, any, FALSE, &error));
+	g_assert_no_error(error);
+
+	bound = g_socket_get_local_address(socket, &error);
+	g_assert_no_error(error);
+	port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(bound));
+	g_assert_cmpuint(port, >, 0);
+
+	g_socket_close(socket, NULL);
+
+	return port;
 }

@@ -96,6 +96,7 @@ venture_stripe_service_authorize_subscription(VentureStripeService *self,
 		deadline = g_date_time_add_hours(now, 23);
 		formatted = venture_money_to_string(limit);
 		consent = g_strdup_printf("Authorize recurring invoices for this subscription, up to %s per invoice, using the saved payment method while authorization remains enabled. Changes to the plan or seat count require new authorization.", formatted);
+		/* ach-enabled is USD on purpose: ACH is a US bank rail. */
 		g_object_set(authorization, "connection-id", self->connection_id, "subscription-id", subscription_id,
 			"company-id", company_id, "plan-price-id", price_id, "price-version", venture_entity_get_version(price),
 			"seats", seats, "limit", limit, "consent-text", consent, "enabled", TRUE, "status", "pending", "next-check-at", now,

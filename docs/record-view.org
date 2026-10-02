@@ -166,6 +166,10 @@ Every route reports a failure as JSON, and a person never sees it:
   not an alternative: it hides the =Location= of every same-origin
   post-redirect-get.
 - An htmx request's refusal is a toast.
+- A refusal always says why. A save that fails names the field it could
+  not accept (an invoice line with no invoice is a 422 naming
+  =invoice_id=), and a check that refuses without a reason -- a bug --
+  becomes an internal error naming the record, never "Unknown error".
 - With scripting off, a browser (=Accept: text/html=) is answered with a
   page saying what to fix and a button back to the form. A signed-in
   person gets it in the app; anybody else -- a customer on a portal or

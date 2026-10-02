@@ -29,16 +29,12 @@ static void
 setup(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureCompany) company = venture_company_new();
 	g_autoptr(VenturePlan) plan = venture_plan_new();
 	g_autoptr(VenturePlanPrice) price = venture_plan_price_new();
 	g_autoptr(VentureBillingRequest) action = venture_billing_request_new();
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
-	g_assert_no_error(error);
-	g_clear_object(&probe);
+	guint port = 0;
 	f->state_dir = g_dir_make_tmp("venture-billing-surfaces-XXXXXX", NULL);
-	f->url = g_strdup_printf("http://127.0.0.1:%u", port);
 	f->config = venture_config_new();
 	g_object_set(f->config, "state-dir", f->state_dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
@@ -63,6 +59,8 @@ setup(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(f->server);
+	f->url = g_strdup_printf("http://127.0.0.1:%u", port);
 	f->session = soup_session_new();
 }
 

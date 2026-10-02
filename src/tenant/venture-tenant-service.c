@@ -712,6 +712,47 @@ venture_tenant_service_status(VentureTenantService *self, GError **error)
 	return node;
 }
 
+JsonNode *
+venture_tenant_service_account_identity(VentureTenantService *self,
+	gint64 organization_id, GError **error)
+{
+	static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+	VentureAccessPolicy *policy;
+	const VentureAuthPrincipal *actor;
+	g_autoptr(VentureEntity) organization = NULL;
+	JsonNode *node;
+	JsonObject *object;
+	gboolean active = FALSE;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
+	if (!self->database || !self->enabled || !self->initialized || organization_id <= 0 ||
+	    venture_tenant_service_get_support_organization(self) > 0) {
+		tenant_fail(error, "account validation requires an initialized hosted workspace");
+		return NULL;
+	}
+	policy = venture_database_get_access_policy(self->database);
+	actor = venture_access_policy_get_actor(policy);
+	if (!venture_tenant_service_check_principal(self, actor, error) ||
+	    !venture_tenant_service_check_operation(self, TRUE, error)) return NULL;
+	if (!venture_access_policy_has_organization_role(policy, actor, organization_id, roles, G_N_ELEMENTS(roles))) {
+		tenant_fail(error, "organization owner or administrator authority is required");
+		return NULL;
+	}
+	organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, error);
+	if (organization) g_object_get(organization, "active", &active, NULL);
+	if (!organization || venture_entity_is_deleted(organization) || !active) {
+		if (!error || !*error) tenant_fail(error, "organization is unavailable");
+		return NULL;
+	}
+	object = json_object_new();
+	json_object_set_string_member(object, "origin", self->origin);
+	json_object_set_string_member(object, "workspace_id", self->workspace_id);
+	json_object_set_int_member(object, "organization_id", organization_id);
+	json_object_set_string_member(object, "state", "active");
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(node, object);
+	return node;
+}
+
 gboolean
 venture_tenant_service_set_membership(VentureTenantService *self, gint64 user_id,
 	const gchar *role, gboolean active, const gchar *reason, GError **error)

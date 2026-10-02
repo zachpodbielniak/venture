@@ -916,6 +916,204 @@ test_taxonomy_sales_off(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * A currency defined before book treatment existed has a NULL column once
+ * reconciliation adds it; 000705 makes it valued, which is what every
+ * currency behaved as, and a restart runs nothing twice. If this regresses
+ * an upgraded currency reads a treatment nobody chose -- or the column
+ * holds a value the ledger does not know.
+ */
+static void
+test_currency_book_treatment(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO currencies (uuid, organization_id, created_at, updated_at, version, code, name, exponent) "
+		"VALUES ('cur-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'TICKET', 'Ticket', 0);"
+		"UPDATE currencies SET book_treatment = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 705", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *nulls = NULL;
+		g_autofree gchar *value = NULL;
+
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		nulls = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM currencies WHERE book_treatment IS NULL");
+		g_assert_cmpstr(nulls, ==, "0");
+		value = query_text(database,
+			"SELECT CAST(book_treatment AS TEXT) FROM currencies WHERE code = 'TICKET'");
+		g_assert_cmpstr(value, ==, "0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+/*
+ * An account written before holdings existed has a NULL allow_negative
+ * once reconciliation adds the column; 000710 makes it FALSE, the safe
+ * value, and a restart runs nothing twice. It has no location either, so
+ * the floor never judges it. If this regresses the column holds a value
+ * the ledger does not read, or a restart fails on the history.
+ */
+static void
+test_account_holdings(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO accounts (uuid, organization_id, created_at, updated_at, version, code, name, kind) "
+		"VALUES ('acct-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'OLD-1', 'Cash', 0);"
+		"UPDATE accounts SET allow_negative = NULL, location_id = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 710", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *nulls = NULL;
+		g_autofree gchar *value = NULL;
+
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		nulls = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM accounts WHERE allow_negative IS NULL");
+		g_assert_cmpstr(nulls, ==, "0");
+		value = query_text(database,
+			"SELECT CAST(allow_negative AS TEXT) FROM accounts WHERE code = 'OLD-1'");
+		g_assert_cmpstr(value, ==, "0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+/*
+ * 000710 where the accounts table is absent: accounts belong to the
+ * finance module, and reconciliation never creates a hidden type's table.
+ * The script declares the one table it backfills, so the runner records it
+ * as done instead of failing on UPDATE accounts -- an absent table held no
+ * rows to backfill -- and a table that arrives later gets the column's
+ * FALSE default from its field table. Run through the migrator itself:
+ * startup's seeds after it are a separate matter. If this regresses, the
+ * upgrade refuses on a database whose books were never kept.
+ */
+static void
+test_account_holdings_without_accounts(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *recorded = NULL;
+	gboolean migrated;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE accounts;"
+		"DELETE FROM schema_migrations WHERE version >= 710", NULL, &error));
+	g_assert_no_error(error);
+
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	migrated = orm_migrator_up(runner, 0, &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	g_assert_false(table_exists(database, "accounts"));
+	recorded = query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 710");
+	g_assert_cmpstr(recorded, ==, "1");
+	g_clear_object(&runner);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
+/*
+ * A fresh install that never had finance on: accounts and tax_categories
+ * are finance's, and reconciliation never creates a hidden type's table,
+ * so the seeds after the migrations must skip what is not there instead
+ * of counting rows in a table that does not exist. Then the same database
+ * with finance switched on: reconciliation creates the tables whole and
+ * the next start seeds the chart of accounts and the tax categories, as a
+ * fresh install with finance on would have had them. If this regresses, a
+ * server configured without the books refuses to start at all -- or,
+ * with the seed skipped for good, the books arrive empty.
+ */
+static void
+test_fresh_without_finance(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean migrated;
+
+	venture_config_set_module_enabled(config, "finance", FALSE);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	/* Everything built on finance goes with it, and resolving says so. */
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*requires \"finance\"*");
+	context = venture_context_new(config, database);
+	g_test_assert_expected_messages();
+	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"account"), ==, G_TYPE_INVALID);
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	g_assert_false(table_exists(database, "accounts"));
+	g_assert_false(table_exists(database, "tax_categories"));
+	/* A restart with finance still off is the same start. */
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+
+	venture_config_set_module_enabled(config, "finance", TRUE);
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	{
+		g_autofree gchar *accounts = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM accounts WHERE code IN ('1000', '4000', '7600')");
+		g_autofree gchar *categories = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM tax_categories WHERE code = 'MEALS'");
+
+		g_assert_cmpstr(accounts, ==, "3");
+		g_assert_cmpstr(categories, ==, "1");
+	}
+	g_clear_object(&context);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
 /* How many times @version is recorded as applied. */
 static gint64
 applied(VentureDatabase *database, gint64 version)
@@ -928,7 +1126,7 @@ applied(VentureDatabase *database, gint64 version)
 }
 
 /*
- * 000710 and 000720 pin what the forms module relies on: a question's key unique per
+ * 000711 and 000720 pin what the forms module relies on: a question's key unique per
  * form, deleted questions included, and the columns the public door reads.
  * With forms switched off the tables are absent and the script passes and
  * is recorded; switched on later, reconciliation makes the tables with the
@@ -956,7 +1154,7 @@ test_forms_schema(void)
 	g_assert_no_error(error);
 	g_assert_false(table_exists(database, "form_fields"));
 	g_assert_false(table_exists(database, "form_versions"));
-	g_assert_cmpint(applied(database, 710), ==, 1);
+	g_assert_cmpint(applied(database, 711), ==, 1);
 	g_assert_cmpint(applied(database, 720), ==, 1);
 	g_assert_cmpint(applied(database, 730), ==, 1);
 	g_assert_cmpint(applied(database, 740), ==, 1);
@@ -974,7 +1172,7 @@ test_forms_schema(void)
 		g_assert_no_error(error);
 		g_assert_true(table_exists(database, "form_fields"));
 		g_assert_true(table_exists(database, "form_versions"));
-		g_assert_cmpint(applied(database, 710), ==, 1);
+		g_assert_cmpint(applied(database, 711), ==, 1);
 		g_assert_cmpint(applied(database, 720), ==, 1);
 		g_assert_cmpint(applied(database, 730), ==, 1);
 		g_assert_cmpint(applied(database, 740), ==, 1);
@@ -990,7 +1188,7 @@ test_forms_schema(void)
 	}
 
 	/* The script itself refuses a schema without the index. */
-	g_assert_true(g_file_get_contents("migrations/sqlite/000710_forms.sql", &script, NULL, &error));
+	g_assert_true(g_file_get_contents("migrations/sqlite/000711_forms.sql", &script, NULL, &error));
 	g_assert_no_error(error);
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
@@ -1033,10 +1231,15 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
-	g_test_add_func("/migrations/forms-schema", test_forms_schema);
+	g_test_add_func("/migrations/account-holdings", test_account_holdings);
+	g_test_add_func("/migrations/account-holdings-without-accounts",
+	                test_account_holdings_without_accounts);
+	g_test_add_func("/migrations/fresh-without-finance", test_fresh_without_finance);
+	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);
 	g_test_add_func("/migrations/nested-refused", test_nested_refused);
+	g_test_add_func("/migrations/forms-schema", test_forms_schema);
 	return g_test_run();
 }

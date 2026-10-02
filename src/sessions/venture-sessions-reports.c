@@ -428,6 +428,10 @@ typedef struct
 	gint64		 organization_id;
 	gboolean	 market;
 	const gchar	*source;
+	/* The currency to value in: only prices in it when @strict (the
+	 * currency option), else the book currency where seen in it. */
+	const gchar	*currency;
+	gboolean	 strict;
 	GDateTime	*as_of;
 	GHashTable	*products;
 } SessionsPricing;
@@ -469,9 +473,14 @@ sessions_unit_value(
 
 	if (pricing->market)
 	{
-		if (!venture_market_latest_price(pricing->database, pricing->organization_id,
-		                                 product_id, pricing->source, at, out_price,
-		                                 NULL, error))
+		if (pricing->strict
+		    ? !venture_market_latest_price(pricing->database, pricing->organization_id,
+		                                   product_id, pricing->source, pricing->currency,
+		                                   at, out_price, NULL, error)
+		    : !venture_market_price_preferring(pricing->database,
+		                                       pricing->organization_id, product_id,
+		                                       pricing->source, pricing->currency, at,
+		                                       out_price, NULL, error))
 			return FALSE;
 
 		*out_method = venture_string_is_empty(pricing->source)
@@ -785,6 +794,7 @@ venture_sessions_performance(
 	g_autoptr(GHashTable) products = NULL;
 	g_autoptr(GDateTime) as_of = NULL;
 	g_autoptr(GError) as_of_error = NULL;
+	g_autofree gchar *currency = NULL;
 	VentureDatabase *database;
 	SessionsPricing pricing;
 	SessionsGroup group;
@@ -795,6 +805,7 @@ venture_sessions_performance(
 	gint64 organization_id;
 	gint64 venture_id;
 	gboolean market;
+	gboolean strict;
 	GHashTableIter iter;
 	gpointer value;
 	guint i;
@@ -902,6 +913,10 @@ venture_sessions_performance(
 		return NULL;
 	}
 
+	if (!venture_market_valuing_currency(database, organization_id, options,
+	                                     &currency, &strict, error))
+		return NULL;
+
 	venture_id = (NULL != options)
 		? venture_json_object_get_int(options, "venture_id", 0) : 0;
 
@@ -909,7 +924,7 @@ venture_sessions_performance(
 
 	query = venture_query_new(VENTURE_TYPE_SESSION);
 	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
 
 	if ((NULL != period) &&
 	    !venture_query_set_date_range(query, "started-at", period, error))
@@ -930,11 +945,11 @@ venture_sessions_performance(
 
 	/* Refused rather than truncated: fewer sessions presented as all of
 	 * them is the failure this avoids. */
-	if (sessions->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (sessions->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "More than %d sessions match; narrow the period or the venture",
-		            VENTURE_AGGREGATE_MAX_ROWS);
+		            venture_aggregate_get_max_rows());
 		return NULL;
 	}
 
@@ -949,6 +964,8 @@ venture_sessions_performance(
 	pricing.organization_id = organization_id;
 	pricing.market = market;
 	pricing.source = source;
+	pricing.currency = currency;
+	pricing.strict = strict;
 	pricing.as_of = as_of;
 	pricing.products = products;
 
@@ -1122,6 +1139,9 @@ venture_sessions_register_reports(VentureReportRegistry *registry)
 		"module\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Value every yield "
 		"at this date instead of at the end of its session\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Only prices "
+		"observed in this currency count; by default the book currency's price "
+		"wins wherever the product was seen in it, else the latest in any\"},"
 		"\"venture_id\":{\"type\":\"integer\",\"description\":\"Only this "
 		"venture's sessions\"},"
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal "

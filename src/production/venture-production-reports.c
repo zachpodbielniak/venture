@@ -139,6 +139,8 @@ production_unit_price(
 	gint64		  product_id,
 	gboolean	  market,
 	const gchar	 *source,
+	const gchar	 *currency,
+	gboolean	  strict,
 	GDateTime	 *as_of,
 	gboolean	  as_output,
 	VentureMoney	**out_price,
@@ -148,9 +150,17 @@ production_unit_price(
 
 	*out_price = NULL;
 
-	if (market)
+	/* Asked for a currency, only prices seen in it count; otherwise the
+	 * book currency's price wins wherever there is one, so a margin is
+	 * not computed in whichever currency was observed last. */
+	if (market && strict)
 		return venture_market_latest_price(database, organization_id, product_id,
-		                                   source, as_of, out_price, NULL, error);
+		                                   source, currency, as_of, out_price, NULL, error);
+
+	if (market)
+		return venture_market_price_preferring(database, organization_id, product_id,
+		                                       source, currency, as_of, out_price, NULL,
+		                                       error);
 
 	if (!as_output)
 	{
@@ -229,6 +239,8 @@ production_margin_row(
 	gint64			  organization_id,
 	gboolean		  market,
 	const gchar		 *source,
+	const gchar		 *value_in,
+	gboolean		  strict,
 	GDateTime		 *as_of,
 	GError			**error
 ){
@@ -326,7 +338,8 @@ production_margin_row(
 		}
 
 		if (!production_unit_price(database, organization_id, product_id, market,
-		                           source, as_of, FALSE, &price, error))
+		                           source, value_in, strict, as_of, FALSE, &price,
+		                           error))
 			return FALSE;
 
 		if (NULL == price)
@@ -369,7 +382,8 @@ production_margin_row(
 	/* --- The output: valued the same way --- */
 
 	if (!production_unit_price(database, organization_id, output_id, market,
-	                           source, as_of, TRUE, &output_price, error))
+	                           source, value_in, strict, as_of, TRUE, &output_price,
+	                           error))
 		return FALSE;
 
 	if (NULL == output_price)
@@ -499,12 +513,14 @@ venture_production_recipe_margin(
 	g_autoptr(GArray) categories = NULL;
 	g_autoptr(GDateTime) as_of = NULL;
 	g_autoptr(GError) as_of_error = NULL;
+	g_autofree gchar *currency = NULL;
 	VentureDatabase *database;
 	const gchar *source;
 	gint64 organization_id;
 	gint64 venture_id;
 	gint64 category_id;
 	gboolean market;
+	gboolean strict;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -539,6 +555,10 @@ venture_production_recipe_margin(
 		return NULL;
 	}
 
+	if (!venture_market_valuing_currency(database, organization_id, options,
+	                                     &currency, &strict, error))
+		return NULL;
+
 	venture_id = (NULL != options)
 		? venture_json_object_get_int(options, "venture_id", 0) : 0;
 	category_id = (NULL != options)
@@ -557,9 +577,39 @@ venture_production_recipe_margin(
 
 	/* --- The recipes --- */
 
+	/*
+	 * Every narrowing is part of the query, so the bound below counts the
+	 * recipes the question is about. Filtering in C after the fetch
+	 * counted every recipe in the organization instead: past the bound a
+	 * narrowed question was refused, and told to narrow.
+	 */
 	query = venture_query_new(VENTURE_TYPE_RECIPE);
 	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
+
+	if (!venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
+	                                     "true", error))
+		return NULL;
+
+	if ((0 != venture_id) &&
+	    !venture_query_add_filter_int(query, "venture-id", VENTURE_FILTER_OP_EQ,
+	                                  venture_id, error))
+		return NULL;
+
+	if (NULL != categories)
+	{
+		g_autoptr(GPtrArray) filed = NULL;
+
+		filed = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < categories->len; i++)
+			g_ptr_array_add(filed, g_strdup_printf("%" G_GINT64_FORMAT,
+				g_array_index(categories, gint64, i)));
+
+		if (!venture_query_add_filter(query, "category-id", VENTURE_FILTER_OP_IN,
+		                              filed, error))
+			return NULL;
+	}
 
 	if (!venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, error) ||
 	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
@@ -572,11 +622,11 @@ venture_production_recipe_margin(
 
 	/* Refused rather than truncated: fewer rows presented as all of them
 	 * is the failure this avoids. */
-	if (recipes->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (recipes->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "More than %d recipes match; narrow by venture_id or category_id",
-		            VENTURE_AGGREGATE_MAX_ROWS);
+		            "More than %d active recipes match; narrow by venture_id "
+		            "or category_id", venture_aggregate_get_max_rows());
 		return NULL;
 	}
 
@@ -597,36 +647,11 @@ venture_production_recipe_margin(
 	for (i = 0; i < recipes->len; i++)
 	{
 		VentureEntity *recipe;
-		gboolean active;
-		gint64 owner;
-		gint64 filed;
 
 		recipe = g_ptr_array_index(recipes, i);
-		g_object_get(recipe, "active", &active, "venture-id", &owner,
-		             "category-id", &filed, NULL);
-
-		if (!active)
-			continue;
-
-		if ((0 != venture_id) && (owner != venture_id))
-			continue;
-
-		if (NULL != categories)
-		{
-			gboolean inside;
-			guint j;
-
-			inside = FALSE;
-
-			for (j = 0; (j < categories->len) && !inside; j++)
-				inside = (g_array_index(categories, gint64, j) == filed);
-
-			if (!inside)
-				continue;
-		}
 
 		if (!production_margin_row(database, result, recipe, organization_id,
-		                           market, source, as_of, error))
+		                           market, source, currency, strict, as_of, error))
 			return NULL;
 	}
 
@@ -634,7 +659,9 @@ venture_production_recipe_margin(
 		venture_report_result_append_note(result,
 			"Components and output are priced at the latest price seen at or "
 			"before the cutoff, from the named source (any source when none is "
-			"named). A product never seen priced is named in the note and its "
+			"named), in the currency option's currency when one is given and "
+			"otherwise in the book currency wherever the product was seen priced "
+			"in it. A product never seen priced is named in the note and its "
 			"figures are left blank, not read as zero.");
 	else
 		venture_report_result_append_note(result,
@@ -729,6 +756,9 @@ venture_production_register_reports(VentureReportRegistry *registry)
 		"value; any source by default. Needs the market module\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Prices and stock as "
 		"they stood at this date; now by default\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Only prices "
+		"observed in this currency count; by default the book currency's price "
+		"wins wherever the product was seen in it, else the latest in any\"},"
 		"\"venture_id\":{\"type\":\"integer\",\"description\":\"Only this "
 		"venture's recipes\"},"
 		"\"category_id\":{\"type\":\"integer\",\"description\":\"Only recipes "

@@ -83,23 +83,6 @@ goals_report_int(
 	return value;
 }
 
-/* Whether @id is in @ids; NULL @ids holds everything. */
-static gboolean
-goals_report_in(
-	GHashTable	*ids,
-	gint64		 id
-){
-	return (NULL == ids) || g_hash_table_contains(ids, &id);
-}
-
-static void
-goals_report_set_add(
-	GHashTable	*set,
-	gint64		 id
-){
-	g_hash_table_add(set, g_memdup2(&id, sizeof(id)));
-}
-
 /* A goal that must exist, live, in @organization_id -- asked for by id,
  * so a missing one is refused rather than answered as an empty list. */
 static gboolean
@@ -124,31 +107,42 @@ goals_report_require_goal(
 	return TRUE;
 }
 
-/* The ids in @tree as a set. */
-static GHashTable *
-goals_report_set_from(GArray *tree)
+/* @ids as the text operands an IN filter takes. */
+static GPtrArray *
+goals_report_operands(GArray *ids)
 {
-	GHashTable *set;
+	GPtrArray *operands;
 	guint i;
 
-	set = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	operands = g_ptr_array_new_with_free_func(g_free);
 
-	for (i = 0; i < tree->len; i++)
-		goals_report_set_add(set, g_array_index(tree, gint64, i));
+	for (i = 0; i < ids->len; i++)
+		g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT,
+			g_array_index(ids, gint64, i)));
 
-	return set;
+	return operands;
 }
 
 /*
- * The live goals of the organisation, bounded like every report here and
- * refused past the bound rather than truncated: fewer goals presented as
- * all of them is the failure this avoids.
+ * The live goals of the organisation, narrowed in the query to @venture_id,
+ * to goals filed in @categories, to the goals in @ids and to the statuses
+ * @statuses marks (each %NULL or 0 for no narrowing), bounded like every
+ * report here and refused past the bound rather than truncated: fewer
+ * goals presented as all of them is the failure this avoids.
+ *
+ * Every narrowing is in the query, never applied to the rows afterwards:
+ * the bound counts what was fetched, so a filter run in C after it let
+ * an organisation past the bound be refused even when the question was
+ * narrowed -- by a refusal that advised narrowing.
  */
 static GPtrArray *
 goals_report_goals(
 	VentureDatabase	 *database,
 	gint64		  organization_id,
 	gint64		  venture_id,
+	GArray		 *categories,
+	GArray		 *ids,
+	const gboolean	 *statuses,
 	GError		**error
 ){
 	g_autoptr(VentureQuery) query = NULL;
@@ -156,12 +150,64 @@ goals_report_goals(
 
 	query = venture_query_new(VENTURE_TYPE_GOAL);
 	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
 
 	if ((0 != venture_id) &&
 	    !venture_query_add_filter_int(query, "venture-id", VENTURE_FILTER_OP_EQ,
 	                                  venture_id, error))
 		return NULL;
+
+	if (NULL != categories)
+	{
+		g_autoptr(GPtrArray) operands = NULL;
+
+		/* An empty set asked for is nothing, never everything. */
+		if (0 == categories->len)
+			return g_ptr_array_new_with_free_func(g_object_unref);
+
+		operands = goals_report_operands(categories);
+
+		if (!venture_query_add_filter(query, "category-id", VENTURE_FILTER_OP_IN,
+		                              operands, error))
+			return NULL;
+	}
+
+	if (NULL != ids)
+	{
+		g_autoptr(GPtrArray) operands = NULL;
+
+		/* An empty set asked for is nothing, never everything. */
+		if (0 == ids->len)
+			return g_ptr_array_new_with_free_func(g_object_unref);
+
+		operands = goals_report_operands(ids);
+
+		if (!venture_query_add_filter(query, "id", VENTURE_FILTER_OP_IN,
+		                              operands, error))
+			return NULL;
+	}
+
+	if (NULL != statuses)
+	{
+		g_autoptr(GPtrArray) operands = NULL;
+		gint status;
+
+		operands = g_ptr_array_new_with_free_func(g_free);
+
+		for (status = 0; status <= VENTURE_GOAL_STATUS_ABANDONED; status++)
+			if (statuses[status])
+				g_ptr_array_add(operands, g_strdup(venture_enum_to_nick(
+					VENTURE_TYPE_GOAL_STATUS, status)));
+
+		/* No status at all asked for ("status=,") matches no goal,
+		 * and IN cannot be given an empty list to say so. */
+		if (0 == operands->len)
+			return g_ptr_array_new_with_free_func(g_object_unref);
+
+		if (!venture_query_add_filter(query, "status", VENTURE_FILTER_OP_IN,
+		                              operands, error))
+			return NULL;
+	}
 
 	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
@@ -171,11 +217,11 @@ goals_report_goals(
 	if (NULL == goals)
 		return NULL;
 
-	if (goals->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (goals->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "More than %d goals match; narrow by venture_id, category_id "
-		            "or goal_id", VENTURE_AGGREGATE_MAX_ROWS);
+		            "or goal_id", venture_aggregate_get_max_rows());
 		return NULL;
 	}
 
@@ -538,7 +584,7 @@ venture_goals_progress(
 	g_autoptr(GPtrArray) steps = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GHashTable) counts = NULL;
-	g_autoptr(GHashTable) categories = NULL;
+	g_autoptr(GArray) categories = NULL;
 	g_autoptr(GDateTime) as_of = NULL;
 	g_autoptr(GDateTime) day = NULL;
 	g_autoptr(GError) as_of_error = NULL;
@@ -585,20 +631,17 @@ venture_goals_progress(
 	 * "professions" when the tree has Professions / Alchemy under it. */
 	if (0 != category_id)
 	{
-		g_autoptr(GArray) tree = NULL;
+		categories = venture_category_descendants(database, VENTURE_TYPE_CATEGORY,
+		                                          category_id, TRUE, error);
 
-		tree = venture_category_descendants(database, VENTURE_TYPE_CATEGORY,
-		                                    category_id, TRUE, error);
-
-		if (NULL == tree)
+		if (NULL == categories)
 			return NULL;
-
-		categories = goals_report_set_from(tree);
 	}
 
 	/* --- The goals, and their steps --- */
 
-	goals = goals_report_goals(database, organization_id, venture_id, error);
+	goals = goals_report_goals(database, organization_id, venture_id, categories,
+	                           NULL, every_status ? NULL : wanted, error);
 
 	if (NULL == goals)
 		return NULL;
@@ -609,17 +652,8 @@ venture_goals_progress(
 	{
 		VentureEntity *goal;
 		GoalsProgressRow *row;
-		VentureGoalStatus status;
-		gint64 filed;
 
 		goal = g_ptr_array_index(goals, i);
-		g_object_get(goal, "status", &status, "category-id", &filed, NULL);
-
-		if (!every_status && !wanted[status])
-			continue;
-
-		if ((NULL != categories) && !goals_report_in(categories, filed))
-			continue;
 
 		row = g_new0(GoalsProgressRow, 1);
 		row->goal = g_object_ref(goal);
@@ -946,6 +980,8 @@ goals_materials_price(
 	GPtrArray	 *items,
 	gboolean	  market,
 	const gchar	 *source,
+	const gchar	 *currency,
+	gboolean	  strict,
 	GDateTime	 *as_of,
 	VentureMoney	**out_price,
 	GError		**error
@@ -954,10 +990,18 @@ goals_materials_price(
 
 	*out_price = NULL;
 
-	if (market)
+	/* Only prices in the currency option's currency when one is named;
+	 * otherwise the book currency's wherever the product was seen in it,
+	 * so the list is not priced in whichever currency was seen last. */
+	if (market && strict)
 		return venture_market_latest_price(database, organization_id,
 		                                   venture_entity_get_id(product), source,
-		                                   as_of, out_price, NULL, error);
+		                                   currency, as_of, out_price, NULL, error);
+
+	if (market)
+		return venture_market_price_preferring(database, organization_id,
+		                                       venture_entity_get_id(product), source,
+		                                       currency, as_of, out_price, NULL, error);
 
 	for (i = 0; (i < items->len) && (NULL == *out_price); i++)
 		g_object_get(g_ptr_array_index(items, i), "unit-cost", out_price, NULL);
@@ -1000,9 +1044,9 @@ goals_materials_total(
 /*
  * The goals whose steps count: every goal in the organisation, narrowed to
  * @goal_id and its sub-goals and to @venture_id. Achieved and abandoned
- * goals are dropped -- their steps are not ahead of anybody. NULL
- * *out_goals means every goal and is never returned: the set is always
- * explicit, so a step of a closed goal is never counted.
+ * goals are dropped -- their steps are not ahead of anybody. The set is
+ * always explicit, never "every goal", so a step of a closed goal is never
+ * counted. *@out_ids holds the goals in id order, for the steps' query.
  */
 static gboolean
 goals_materials_goals(
@@ -1010,63 +1054,59 @@ goals_materials_goals(
 	gint64		  organization_id,
 	gint64		  goal_id,
 	gint64		  venture_id,
-	GHashTable	**out_goals,
+	GArray		**out_ids,
 	GHashTable	**out_names,
 	GError		**error
 ){
-	g_autoptr(GHashTable) subtree = NULL;
+	g_autoptr(GArray) subtree = NULL;
 	g_autoptr(GPtrArray) goals = NULL;
-	g_autoptr(GHashTable) chosen = NULL;
+	g_autoptr(GArray) ids = NULL;
 	g_autoptr(GHashTable) names = NULL;
+	gboolean open[VENTURE_GOAL_STATUS_ABANDONED + 1];
+	gint status;
 	guint i;
 
 	if (0 != goal_id)
 	{
-		g_autoptr(GArray) tree = NULL;
-
 		if (!goals_report_require_goal(database, organization_id, goal_id, error))
 			return FALSE;
 
-		tree = venture_category_descendants(database, VENTURE_TYPE_GOAL, goal_id,
-		                                    TRUE, error);
+		subtree = venture_category_descendants(database, VENTURE_TYPE_GOAL, goal_id,
+		                                       TRUE, error);
 
-		if (NULL == tree)
+		if (NULL == subtree)
 			return FALSE;
-
-		subtree = goals_report_set_from(tree);
 	}
 
-	goals = goals_report_goals(database, organization_id, venture_id, error);
+	/* Every status but the two that close a goal, so a status added
+	 * later is counted as open until somebody says otherwise. */
+	for (status = 0; status <= VENTURE_GOAL_STATUS_ABANDONED; status++)
+		open[status] = (VENTURE_GOAL_STATUS_ACHIEVED != status) &&
+		               (VENTURE_GOAL_STATUS_ABANDONED != status);
+
+	goals = goals_report_goals(database, organization_id, venture_id, NULL,
+	                           subtree, open, error);
 
 	if (NULL == goals)
 		return FALSE;
 
-	chosen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
 	names = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
 
 	for (i = 0; i < goals->len; i++)
 	{
 		VentureEntity *goal;
-		VentureGoalStatus status;
 		gint64 id;
 
 		goal = g_ptr_array_index(goals, i);
 		id = venture_entity_get_id(goal);
-		g_object_get(goal, "status", &status, NULL);
 
-		if ((VENTURE_GOAL_STATUS_ACHIEVED == status) ||
-		    (VENTURE_GOAL_STATUS_ABANDONED == status))
-			continue;
-
-		if (!goals_report_in(subtree, id))
-			continue;
-
-		goals_report_set_add(chosen, id);
+		g_array_append_val(ids, id);
 		g_hash_table_insert(names, g_memdup2(&id, sizeof(id)),
 		                    venture_entity_get_display_name(goal));
 	}
 
-	*out_goals = g_steal_pointer(&chosen);
+	*out_ids = g_steal_pointer(&ids);
 	*out_names = g_steal_pointer(&names);
 
 	return TRUE;
@@ -1083,6 +1123,8 @@ goals_materials_line(
 	gboolean		  include_on_hand,
 	gboolean		  market,
 	const gchar		 *source,
+	const gchar		 *currency,
+	gboolean		  strict,
 	GDateTime		 *as_of,
 	GHashTable		 *totals,
 	GString			 *unpriced,
@@ -1137,7 +1179,7 @@ goals_materials_line(
 
 	if ((NULL != product) &&
 	    !goals_materials_price(database, organization_id, product, items, market,
-	                           source, as_of, &price, error))
+	                           source, currency, strict, as_of, &price, error))
 		return FALSE;
 
 	if (NULL == price)
@@ -1178,6 +1220,95 @@ goals_materials_line(
 	}
 }
 
+/* Orders steps by id, so the report reads the same whatever order the
+ * batches came back in. */
+static gint
+goals_step_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	gint64 left;
+	gint64 right;
+
+	left = venture_entity_get_id(*(VentureEntity *const *)a);
+	right = venture_entity_get_id(*(VentureEntity *const *)b);
+
+	return (left > right) - (left < right);
+}
+
+/*
+ * The steps not yet done that craft something, of the goals in @goal_ids,
+ * read in batches by goal id. Every narrowing is in the query -- the goal,
+ * done, a recipe and a count -- so the bound counts the steps the question
+ * is about: filtered in C after one capped fetch of the organisation's
+ * steps, goal_id and venture_id could not get a large install under it.
+ */
+static GPtrArray *
+goals_materials_steps(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	GArray		 *goal_ids,
+	GError		**error
+){
+	g_autoptr(GPtrArray) steps = NULL;
+	guint max_rows;
+	guint offset;
+
+	max_rows = (guint)venture_aggregate_get_max_rows();
+	steps = g_ptr_array_new_with_free_func(g_object_unref);
+
+	for (offset = 0; offset < goal_ids->len; offset += GOALS_IN_BATCH)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) ids = NULL;
+		g_autoptr(GPtrArray) found = NULL;
+		guint i;
+
+		ids = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = offset; (i < goal_ids->len) && (i < offset + GOALS_IN_BATCH); i++)
+			g_ptr_array_add(ids, g_strdup_printf("%" G_GINT64_FORMAT,
+				g_array_index(goal_ids, gint64, i)));
+
+		query = venture_query_new(VENTURE_TYPE_GOAL_STEP);
+		venture_query_set_organization(query, organization_id);
+
+		/* Past the bound across every batch, not per batch. */
+		venture_query_set_limit(query, max_rows + 1 - steps->len);
+
+		if (!venture_query_add_filter(query, "goal-id", VENTURE_FILTER_OP_IN, ids,
+		                              error) ||
+		    !venture_query_add_filter_string(query, "done", VENTURE_FILTER_OP_EQ,
+		                                     "false", error) ||
+		    !venture_query_add_filter_int(query, "recipe-id", VENTURE_FILTER_OP_GT, 0,
+		                                  error) ||
+		    !venture_query_add_filter_int(query, "repetitions", VENTURE_FILTER_OP_GT, 0,
+		                                  error) ||
+		    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+			return NULL;
+
+		found = venture_database_find(database, query, error);
+
+		if (NULL == found)
+			return NULL;
+
+		for (i = 0; i < found->len; i++)
+			g_ptr_array_add(steps, g_object_ref(g_ptr_array_index(found, i)));
+
+		if (steps->len > max_rows)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "More than %u recipe steps match; narrow by goal_id or "
+			            "venture_id", max_rows);
+			return NULL;
+		}
+	}
+
+	g_ptr_array_sort(steps, goals_step_compare);
+
+	return g_steal_pointer(&steps);
+}
+
 VentureReportResult *
 venture_goals_materials(
 	VentureContext		 *context,
@@ -1186,10 +1317,9 @@ venture_goals_materials(
 	GError			**error
 ){
 	g_autoptr(VentureReportResult) result = NULL;
-	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) steps = NULL;
 	g_autoptr(GPtrArray) ordered = NULL;
-	g_autoptr(GHashTable) goals = NULL;
+	g_autoptr(GArray) goal_ids = NULL;
 	g_autoptr(GHashTable) goal_names = NULL;
 	g_autoptr(GHashTable) needs = NULL;
 	g_autoptr(GHashTable) components = NULL;
@@ -1199,10 +1329,12 @@ venture_goals_materials(
 	g_autoptr(GString) unpriced = NULL;
 	g_autoptr(GString) skipped = NULL;
 	g_autoptr(GList) currencies = NULL;
+	g_autofree gchar *currency = NULL;
 	VentureDatabase *database;
 	const gchar *source;
 	gboolean include_on_hand;
 	gboolean market;
+	gboolean strict;
 	gint64 organization_id;
 	gint64 goal_id;
 	gint64 venture_id;
@@ -1254,36 +1386,23 @@ venture_goals_materials(
 		return NULL;
 	}
 
+	if (!venture_market_valuing_currency(database, organization_id, options,
+	                                     &currency, &strict, error))
+		return NULL;
+
 	goal_id = (NULL != options) ? venture_json_object_get_int(options, "goal_id", 0) : 0;
 	venture_id = (NULL != options) ? venture_json_object_get_int(options, "venture_id", 0) : 0;
 
-	if (!goals_materials_goals(database, organization_id, goal_id, venture_id, &goals,
-	                           &goal_names, error))
+	if (!goals_materials_goals(database, organization_id, goal_id, venture_id,
+	                           &goal_ids, &goal_names, error))
 		return NULL;
 
 	/* --- The steps still ahead that craft something --- */
 
-	query = venture_query_new(VENTURE_TYPE_GOAL_STEP);
-	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
-
-	if (!venture_query_add_filter_int(query, "recipe-id", VENTURE_FILTER_OP_GT, 0, error) ||
-	    !venture_query_add_filter_int(query, "repetitions", VENTURE_FILTER_OP_GT, 0, error) ||
-	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
-		return NULL;
-
-	steps = venture_database_find(database, query, error);
+	steps = goals_materials_steps(database, organization_id, goal_ids, error);
 
 	if (NULL == steps)
 		return NULL;
-
-	if (steps->len > VENTURE_AGGREGATE_MAX_ROWS)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "More than %d recipe steps match; narrow by goal_id or venture_id",
-		            VENTURE_AGGREGATE_MAX_ROWS);
-		return NULL;
-	}
 
 	needs = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, goals_need_free);
 	components = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
@@ -1296,17 +1415,12 @@ venture_goals_materials(
 		VentureEntity *step;
 		g_autoptr(VentureEntity) recipe = NULL;
 		GPtrArray *lines;
-		gboolean done;
 		gint64 recipe_id;
 		gint64 repetitions;
 		guint j;
 
 		step = g_ptr_array_index(steps, i);
-		g_object_get(step, "done", &done, "recipe-id", &recipe_id,
-		             "repetitions", &repetitions, NULL);
-
-		if (done || !goals_report_in(goals, goals_report_int(step, "goal-id")))
-			continue;
+		g_object_get(step, "recipe-id", &recipe_id, "repetitions", &repetitions, NULL);
 
 		recipe = venture_database_get(database, VENTURE_TYPE_RECIPE, recipe_id, NULL);
 
@@ -1425,7 +1539,7 @@ venture_goals_materials(
 	{
 		if (!goals_materials_line(context, result, g_ptr_array_index(ordered, i),
 		                          organization_id, include_on_hand, market, source,
-		                          as_of, totals, unpriced, error))
+		                          currency, strict, as_of, totals, unpriced, error))
 			return NULL;
 	}
 
@@ -1618,6 +1732,9 @@ venture_goals_register_reports(VentureReportRegistry *registry)
 		"stock on hand in every location off what is needed; true by default\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Count stock and "
 		"read prices at this date instead of now\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Only prices "
+		"observed in this currency count; by default the book currency's price "
+		"wins wherever the product was seen in it, else the latest in any\"},"
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal "
 		"entity; defaults to the default organization\"}}}");
 }

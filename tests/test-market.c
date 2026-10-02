@@ -738,7 +738,7 @@ test_latest_price(
 	g_clear_pointer(&price, venture_money_free); \
 	g_clear_pointer(&shown, g_free); \
 	g_assert_true(venture_market_latest_price(fixture->database, \
-		fixture->organization_id, herb, source, at, &price, NULL, &error)); \
+		fixture->organization_id, herb, source, NULL, at, &price, NULL, &error)); \
 	g_assert_no_error(error); \
 	g_assert_nonnull(price); \
 	shown = venture_money_to_string(price); \
@@ -755,7 +755,7 @@ test_latest_price(
 	early = time_of("2026-02-01T00:00:00Z");
 	g_clear_pointer(&price, venture_money_free);
 	g_assert_true(venture_market_latest_price(fixture->database,
-		fixture->organization_id, herb, NULL, early, &price, &observation, &error));
+		fixture->organization_id, herb, NULL, NULL, early, &price, &observation, &error));
 	g_assert_no_error(error);
 	g_assert_null(price);
 	g_assert_null(observation);
@@ -784,12 +784,85 @@ test_latest_price(
 	tied = observe(fixture, herb, "market value", "4.00 USD", "2026-03-10T00:00:00Z", 0);
 	LATEST("market value", march, "4.00 USD");
 	g_assert_true(venture_market_latest_price(fixture->database,
-		fixture->organization_id, herb, "market value", march, NULL,
+		fixture->organization_id, herb, "market value", NULL, march, NULL,
 		&observation, &error));
 	g_assert_nonnull(observation);
 	g_assert_cmpint(venture_entity_get_id(observation), ==, tied);
 
 #undef LATEST
+}
+
+/*
+ * The same product and source seen in two currencies. With no currency the
+ * newest wins whatever it is in -- the old behaviour, still what an
+ * unqualified question gets; asked for one, only prices in it count, and
+ * one never seen in it is unpriced, not priced in another; preferring one
+ * falls back to any only when the product was never seen in it. The
+ * currency is matched by reading rows newest first a page at a time, so a
+ * USD price behind more than a page of EUR ones must still be found. What
+ * breaks: a GOLD valuation reading last night's TICKET price as gold.
+ */
+static void
+test_latest_price_currency(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) price = NULL;
+	g_autofree gchar *shown = NULL;
+	gint64 herb;
+	guint i;
+
+	(void)user_data;
+
+	herb = product(fixture, "Herb", 0);
+	observe(fixture, herb, "market value", "2.00 USD", "2026-03-01T00:00:00Z", 0);
+	observe(fixture, herb, "market value", "5.00 EUR", "2026-03-10T00:00:00Z", 0);
+
+#define PRICED(currency, expected) G_STMT_START { \
+	g_clear_pointer(&price, venture_money_free); \
+	g_clear_pointer(&shown, g_free); \
+	g_assert_true(venture_market_latest_price(fixture->database, \
+		fixture->organization_id, herb, "market value", currency, NULL, &price, \
+		NULL, &error)); \
+	g_assert_no_error(error); \
+	shown = (NULL != price) ? venture_money_to_string(price) : NULL; \
+	g_assert_cmpstr(shown, ==, expected); \
+} G_STMT_END
+
+#define PREFERRING(currency, expected) G_STMT_START { \
+	g_clear_pointer(&price, venture_money_free); \
+	g_clear_pointer(&shown, g_free); \
+	g_assert_true(venture_market_price_preferring(fixture->database, \
+		fixture->organization_id, herb, "market value", currency, NULL, &price, \
+		NULL, &error)); \
+	g_assert_no_error(error); \
+	shown = (NULL != price) ? venture_money_to_string(price) : NULL; \
+	g_assert_cmpstr(shown, ==, expected); \
+} G_STMT_END
+
+	PRICED(NULL, "5.00 EUR");
+	PRICED("", "5.00 EUR");
+	PRICED("USD", "2.00 USD");
+	PRICED("EUR", "5.00 EUR");
+	PRICED("GBP", NULL);
+	PREFERRING("USD", "2.00 USD");
+	PREFERRING("GBP", "5.00 EUR");
+	PREFERRING(NULL, "5.00 EUR");
+
+	/* More than a page of newer EUR prices in front of the USD one. */
+	for (i = 0; i < 205; i++)
+	{
+		g_autofree gchar *when = g_strdup_printf("2026-04-01T00:%02u:%02uZ", i / 60, i % 60);
+
+		observe(fixture, herb, "market value", "6.00 EUR", when, 0);
+	}
+
+	PRICED("USD", "2.00 USD");
+	PRICED(NULL, "6.00 EUR");
+
+#undef PRICED
+#undef PREFERRING
 }
 
 /* ==========================================================================
@@ -1025,6 +1098,133 @@ test_listing_performance_category(
 	              "group_by", "colour", NULL);
 	g_assert_null(refused);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
+/*
+ * The row bound counts the listings asked about: venture_id is part of the
+ * query, through the venture's products, so a venture's listings are
+ * answered when the organization's are past the bound, and a venture that
+ * sells nothing has none. What breaks: the venture filter applied to the
+ * rows after a capped fetch, so narrowing never gets a large organization
+ * under the bound the refusal tells it to narrow for. The bound is
+ * lowered rather than seeding twenty thousand listings.
+ */
+static void
+test_listing_performance_bound(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) narrowed = NULL;
+	g_autoptr(VentureReportResult) empty = NULL;
+	g_autoptr(VentureReportResult) refused = NULL;
+	g_autoptr(VentureVenture) second = NULL;
+	g_autoptr(VentureVenture) idle = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *workshop = NULL;
+	g_autofree gchar *nothing = NULL;
+	guint i;
+
+	(void)user_data;
+
+	second = venture_venture_new();
+	g_object_set(second, "name", "Other stall", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(second), fixture->organization_id);
+	save(fixture, second);
+	idle = venture_venture_new();
+	g_object_set(idle, "name", "Idle stall", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(idle), fixture->organization_id);
+	save(fixture, idle);
+
+	/* Two of this venture's listings, three of the other's. */
+	for (i = 0; i < 2; i++)
+		listing(fixture, product(fixture, "Peacebloom", 0), "auction", 1, "1.00 USD",
+		        "2026-03-01T00:00:00Z", VENTURE_LISTING_OUTCOME_SOLD, 0,
+		        "2026-03-02T00:00:00Z", NULL, NULL);
+
+	for (i = 0; i < 3; i++)
+		listing(fixture, product_in(fixture, 0, ID(second), "Silverleaf", 0), "auction",
+		        1, "1.00 USD", "2026-03-01T00:00:00Z", VENTURE_LISTING_OUTCOME_SOLD, 0,
+		        "2026-03-02T00:00:00Z", NULL, NULL);
+
+	venture_aggregate_set_max_rows(2);
+
+	refused = run(fixture, "listing_performance", "2026-03", &error,
+	              "group_by", "channel", NULL);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	workshop = g_strdup_printf("%" G_GINT64_FORMAT, fixture->venture_id);
+	narrowed = RUN(fixture, "listing_performance", "2026-03", "group_by", "channel",
+	               "venture_id", workshop);
+	g_assert_cmpfloat(number(narrowed, row_where(narrowed, "group", "auction"),
+	                         "units_listed"), ==, 2);
+
+	nothing = g_strdup_printf("%" G_GINT64_FORMAT, ID(idle));
+	empty = RUN(fixture, "listing_performance", "2026-03", "group_by", "channel",
+	            "venture_id", nothing);
+	g_assert_cmpuint(venture_report_result_get_row_count(empty), ==, 0);
+
+	venture_aggregate_set_max_rows(0);
+}
+
+/*
+ * A venture's product count is not the question: only its listings are
+ * held to the bound. A venture with more products than the bound, and
+ * more than one batch of product ids (501), with a listing on the first
+ * product and one on the last, is answered -- both listings counted, the
+ * second batch included -- and a third listing puts the listings, summed
+ * across batches, past the bound. What breaks: the venture's products
+ * fetched under the bound, which refused a large catalogue with two
+ * sales; or a bound applied per batch, which let any number of listings
+ * through a batch at a time.
+ */
+static void
+test_listing_performance_large_venture(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) narrowed = NULL;
+	g_autoptr(VentureReportResult) refused = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *workshop = NULL;
+	gint64 first;
+	gint64 last;
+	guint i;
+
+	(void)user_data;
+
+	first = product(fixture, "Catalogue 0", 0);
+	last = first;
+
+	for (i = 1; i < 501; i++)
+	{
+		g_autofree gchar *name = g_strdup_printf("Catalogue %u", i);
+
+		last = product(fixture, name, 0);
+	}
+
+	listing(fixture, first, "auction", 1, "1.00 USD", "2026-03-01T00:00:00Z",
+	        VENTURE_LISTING_OUTCOME_SOLD, 0, "2026-03-02T00:00:00Z", NULL, NULL);
+	listing(fixture, last, "auction", 3, "1.00 USD", "2026-03-01T00:00:00Z",
+	        VENTURE_LISTING_OUTCOME_SOLD, 0, "2026-03-02T00:00:00Z", NULL, NULL);
+
+	venture_aggregate_set_max_rows(2);
+
+	workshop = g_strdup_printf("%" G_GINT64_FORMAT, fixture->venture_id);
+	narrowed = RUN(fixture, "listing_performance", "2026-03", "group_by", "channel",
+	               "venture_id", workshop);
+	g_assert_cmpfloat(number(narrowed, row_where(narrowed, "group", "auction"),
+	                         "units_listed"), ==, 4);
+
+	listing(fixture, first, "auction", 1, "1.00 USD", "2026-03-01T00:00:00Z",
+	        VENTURE_LISTING_OUTCOME_SOLD, 0, "2026-03-02T00:00:00Z", NULL, NULL);
+	refused = run(fixture, "listing_performance", "2026-03", &error,
+	              "group_by", "channel", "venture_id", workshop, NULL);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+
+	venture_aggregate_set_max_rows(0);
 }
 
 /*
@@ -1442,7 +1642,8 @@ server_fixture_set_up(
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "market-test-secret", TRUE);
 
 	fixture->state_dir = g_dir_make_tmp("venture-market-XXXXXX", NULL);
-	fixture->port = (guint16)(20000 + ((getpid() + 7937) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	fixture->port = 0;
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config,
@@ -1465,6 +1666,7 @@ server_fixture_set_up(
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new();
 
@@ -1640,12 +1842,15 @@ main(
 	ADD("/market/listing/closed-at", test_listing_closed_at);
 	ADD("/market/listing/one-currency", test_listing_one_currency);
 	ADD("/market/latest-price", test_latest_price);
+	ADD("/market/latest-price-currency", test_latest_price_currency);
 	ADD("/market/listing-performance/sale-rate", test_listing_performance_sale_rate);
 	ADD("/market/listing-performance/rounding-and-empty-rate",
 	    test_listing_performance_rounding_and_empty_rate);
 	ADD("/market/listing-performance/currencies", test_listing_performance_currencies);
 	ADD("/market/listing-performance/category", test_listing_performance_category);
 	ADD("/market/listing-performance/organization", test_listing_performance_organization);
+	ADD("/market/listing-performance/bound", test_listing_performance_bound);
+	ADD("/market/listing-performance/large-venture", test_listing_performance_large_venture);
 	ADD("/market/cross-organization-references", test_cross_organization_references);
 	ADD("/market/price-history/buckets", test_price_history_buckets);
 	ADD("/market/price-history/refusals", test_price_history_refusals);

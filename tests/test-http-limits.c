@@ -101,15 +101,10 @@ static gchar *probe(Fixture *f, const gchar *request, guint seconds)
 static void setup(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocket) reserve = g_socket_new(G_SOCKET_FAMILY_IPV4, G_SOCKET_TYPE_STREAM, G_SOCKET_PROTOCOL_TCP, &error);
-	g_autoptr(GInetAddress) address = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
-	g_autoptr(GSocketAddress) requested = g_inet_socket_address_new(address, 0), actual = NULL;
 	(void)data;
-	g_assert_no_error(error);
-	g_assert_true(g_socket_bind(reserve, requested, FALSE, &error));
-	actual = g_socket_get_local_address(reserve, &error); g_assert_no_error(error);
-	f->port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(actual));
-	g_assert_true(g_socket_close(reserve, &error));
+	/* Port 0: the kernel picks, read back after the start. A reserved and
+	 * closed socket's port can be taken before the server binds it. */
+	f->port = 0;
 	f->owner = g_main_context_ref_thread_default();
 	f->state = g_dir_make_tmp("venture-http-limits-XXXXXX", &error); g_assert_no_error(error);
 	f->config = venture_config_new();
@@ -130,6 +125,7 @@ static void setup(Fixture *f, gconstpointer data)
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_POST, "/fixture/write", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, write_handler, f);
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_GET, "/fixture/error", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, error_handler, f);
 	g_assert_true(venture_web_server_start(f->server, &error)); g_assert_no_error(error);
+	f->port = venture_web_server_get_port(f->server);
 }
 static void teardown(Fixture *f, gconstpointer data)
 {
@@ -327,6 +323,25 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(response, " 200 "));
 	g_assert_cmpuint(f->writes, ==, settled + 1);
 }
+static void test_nested_rejection(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *response = NULL;
+	const gchar *ordinary = "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+	(void)data;
+	f->nested_request = "POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n";
+	response = exchange(f, ordinary);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_nonnull(f->nested_response);
+	if (*f->nested_response) g_assert_nonnull(strstr(f->nested_response, " 413 "));
+	pump();
+	/* An oversized nested body never reaches application dispatch, even if
+	 * the nested context serves its socket before the outer handler exits. */
+	g_assert_cmpuint(f->writes, ==, 1);
+	g_clear_pointer(&response, g_free);
+	response = exchange(f, ordinary);
+	g_assert_nonnull(strstr(response, " 200 "));
+	g_assert_cmpuint(f->writes, ==, 2);
+}
 static void test_active_teardown(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GSocketClient) client = g_socket_client_new();
@@ -418,6 +433,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/aggregate-release", Fixture, GINT_TO_POINTER(2), setup, test_aggregate, teardown);
 	g_test_add("/http-limits/timeout-budget-release", Fixture, NULL, setup, test_timeout_budget, teardown);
 	g_test_add("/http-limits/nested-dispatch", Fixture, NULL, setup, test_nested_dispatch, teardown);
+	g_test_add("/http-limits/nested-rejection", Fixture, NULL, setup, test_nested_rejection, teardown);
 	g_test_add("/http-limits/active-teardown", Fixture, NULL, setup, test_active_teardown, teardown);
 	g_test_add("/http-limits/negative-length", Fixture, NULL, setup, test_negative_length, teardown);
 	g_test_add_func("/http-limits/private-context", test_private_context);

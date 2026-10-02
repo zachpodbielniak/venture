@@ -21,11 +21,6 @@
 #define ESCPOS_PAGE_CP858 19
 
 
-/**
- * venture_escpos_document_init:
- * @document: document to initialize
- * @printer: (nullable): configured defaults, or Bash defaults when NULL
- */
 void
 venture_escpos_document_init(
 	VentureEscposDocument	*document,
@@ -428,12 +423,6 @@ format_text(
 	}
 }
 
-/**
- * venture_escpos_render:
- * @document: text and layout
- * @error: (out) (optional): return location for an error
- * Returns: (transfer full) (nullable): ESC/POS bytes, suitable for a dry run
- */
 GBytes *
 venture_escpos_render(
 	VentureEscposDocument	*document,

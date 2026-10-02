@@ -679,10 +679,7 @@ static void
 server_setup(ServerFixture *s, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
-	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	guint16 port = 0;
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "backup-test-secret", TRUE);
 	setup(&s->base, data);
 	g_object_set(s->base.config, "server-bind-address", "127.0.0.1", "server-port", (gint64)port,
@@ -691,6 +688,7 @@ server_setup(ServerFixture *s, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(s->server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(s->server);
 	s->owner = issue_token(s, "owner", VENTURE_USER_ROLE_OWNER);
 	s->editor = issue_token(s, "accountant", VENTURE_USER_ROLE_EDITOR);
 	s->viewer = issue_token(s, "reader", VENTURE_USER_ROLE_VIEWER);

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * Stock that becomes other stock
@@ -193,8 +193,17 @@ their cost layers:
   output still gets a zero-cost layer (in its item's unit-cost currency,
   else the organization's book currency) -- an issue refuses units with no
   layer, so without one the made units could never be sold.
-- *One currency.* Inputs whose costs are in two currencies are refused:
-  a made unit's cost is one number and no rate was given to make it one.
+- *Every currency the inputs cost.* Inputs costing GOLD and TICKET make
+  units that cost both, never one number added across them (no rate was
+  given to make it one). The output gets *sibling layers*, the exact split
+  of each currency, all naming the craft's output transaction as their
+  lot; selling a made unit later takes its share of every currency at
+  once, so 3 charms from 1 GOLD and 50 TICKET sell for 0.3334 GOLD + 17
+  TICKET, then 0.6666 GOLD + 33 TICKET. Zero-cost inputs (a posted
+  session's goods) add no layer beside costed ones. The output transaction
+  shows no unit cost when it cost several currencies; its notes say what
+  each came to. See [[file:inventory.org][Inventory]], "Costing in several
+  currencies". (Before lots, such a craft was refused.)
 - *Without the goods module* there are no cost layers: a craft moves
   quantities only, as every other stock movement does on such an install.
 
@@ -225,13 +234,17 @@ source.
 |-------------------+----------------------------------------------------------------------------------|
 | =price_source=    | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
 | =as_of=           | prices and stock as they stood at this date; now by default                     |
+| =currency=        | only prices observed in this currency count; left out, the book currency's price wins wherever the product was seen in it, else the newest in any. See [[file:market.org][Market]] |
 | =venture_id=      | only this venture's recipes                                                      |
 | =category_id=     | only recipes filed in this category *or beneath it*                             |
 | =organization_id= | the legal entity; the default organization otherwise                             |
 
 *Pricing.* With the market module on, every figure comes from
 =venture_market_latest_price()= -- the newest observation at or before
-=as_of= from =price_source=. Nothing else: falling back to a recorded cost
+=as_of= from =price_source=, in the =currency= option's currency when one
+is named and otherwise in the book currency wherever the product was seen
+priced in it (=venture_market_price_preferring()=), so a gold organization's
+margin is not worked out in tickets because tickets were seen last. Nothing else: falling back to a recorded cost
 for a product the source never priced would mix two kinds of number in one
 margin without saying which. With the market module off, the recorded
 figures: a component at its first inventory item's =unit_cost=, else the
@@ -289,8 +302,15 @@ potions:
 and MCP's =venture_report= tool. =price_source= and =category_id= were
 added to all five doors in the same change.
 
-It refuses, naming the bound, an organization with more than
-=VENTURE_AGGREGATE_MAX_ROWS= recipes rather than answering for some.
+It refuses, naming the bound, more than =VENTURE_AGGREGATE_MAX_ROWS=
+active recipes rather than answering for some. The bound counts the
+question, not the organization: =active=, =venture_id= and =category_id=
+(as an =IN= over =venture_category_descendants()=) are filters in the
+query, so an organization with more recipes than the bound is answered
+once it is narrowed under it. They once ran in C over a capped fetch of
+every recipe, and a large organization was refused whatever it asked --
+told to narrow what it had narrowed. =/production/margin/bound= pins this
+with the bound lowered through =venture_aggregate_set_max_rows()=.
 
 * API and CLI
 
@@ -338,7 +358,9 @@ The sidebar files *Recipes* under Operations.
   posts cost of goods sold for stock that is still on the shelf, as a
   potion.
 - *The output's layers are split exactly.* Never replace them with one
-  layer at the rounded average.
+  layer at the rounded average, and never add two currencies into one
+  layer: a two-currency craft's layers share =lot_txn_id=, and FIFO takes
+  a lot's units out of every currency together.
 - *The craft does not create the output's inventory item.* It refuses and
   says what to create.
 - *=recipe_margin= never falls back.* Market on means observed prices

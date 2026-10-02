@@ -266,6 +266,99 @@ test_unmatched_bank_blocks(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(error->message, "bank"));
 }
 
+/*
+ * A bank account kept in a currency the ledger holds apart -- a separate
+ * book -- with an unmatched line used to refuse the whole USD close
+ * ("Unmatched bank transactions in another currency remain"). It is not
+ * this close's book: the check passes and its task names what it left
+ * out, and the trial-balance task says which books it did not tie out.
+ * Once the same currency is valued with a rate it is in these books, and
+ * the unmatched line stops the close again.
+ */
+static void
+test_foreign_book_left_out(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	VentureActor actor = actor_named("closer");
+	g_autoptr(VentureEntity) workspace = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(VentureEntity) currency = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_CURRENCY, NULL));
+	g_autoptr(VentureEntity) bank = VENTURE_ENTITY(venture_bank_account_new());
+	g_autoptr(JsonObject) args = json_object_new();
+	g_autoptr(VentureEntity) imported = NULL;
+	g_autoptr(VentureQuery) tasks_query = venture_query_new(VENTURE_TYPE_CLOSE_TASK);
+	g_autoptr(GPtrArray) tasks = NULL;
+	gboolean noted = FALSE;
+	guint i;
+
+	venture_currency_clear_registered();
+	venture_entity_set_organization_id(currency, f->org);
+	g_object_set(currency, "code", "TICKET", "name", "Ticket", "exponent", (gint64)0, NULL);
+	g_assert_true(venture_entity_set_field_from_string(currency, "book-treatment", "separate_book", &error));
+	save(f, currency);
+	venture_query_set_organization(query, f->org);
+	g_assert_true(venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "1000", &error));
+	accounts = venture_database_find(f->db, query, &error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	venture_entity_set_organization_id(bank, f->org);
+	g_object_set(bank, "name", "Ticket pouch", "currency", "TICKET",
+		"account-id", venture_entity_get_id(g_ptr_array_index(accounts, 0)),
+		"date-column", "date", "amount-column", "amount", "description-column", "memo",
+		"reference-column", "ref", "external-id-column", "id", "date-format", "%Y-%m-%d",
+		"sign-convention", "normal", NULL);
+	save(f, bank);
+	json_object_set_string_member(args, "format", "csv");
+	json_object_set_string_member(args, "data", "id,date,amount,memo,ref\n1,2026-01-15,10,Faire,r1\n");
+	json_object_set_string_member(args, "period_start", "2026-01-01");
+	json_object_set_string_member(args, "period_end", "2026-01-31");
+	json_object_set_string_member(args, "opening_balance", "0 TICKET");
+	json_object_set_string_member(args, "closing_balance", "10 TICKET");
+	imported = venture_bank_match_service_execute(venture_database_get_bank_match_service(f->db),
+		"import", venture_entity_get_id(bank), args, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(imported);
+	workspace = venture_close_service_open(venture_close_service_get(f->db),
+		f->period, "USD", &actor, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_close_service_run_checks(venture_close_service_get(f->db),
+		workspace, &actor, &error));
+	g_assert_no_error(error);
+	venture_query_set_organization(tasks_query, f->org);
+	venture_query_add_filter_string(tasks_query, "kind", VENTURE_FILTER_OP_EQ, "bank_recon", NULL);
+	tasks = venture_database_find(f->db, tasks_query, &error);
+	g_assert_no_error(error);
+	for (i = 0; i < tasks->len; i++)
+	{
+		g_autofree gchar *notes = NULL;
+		g_object_get(g_ptr_array_index(tasks, i), "notes", &notes, NULL);
+		if (notes != NULL && strstr(notes, "left out 1 unmatched TICKET") != NULL &&
+			strstr(notes, "Separate book: TICKET") != NULL)
+			noted = TRUE;
+	}
+	g_assert_true(noted);
+	g_assert_cmpint(count_type(f, "close_discrepancy"), ==, 0);
+
+	/* Valued with a rate, TICKET is converted into these books: an
+	 * unmatched line in it is this close's business again. */
+	g_assert_true(venture_entity_set_field_from_string(currency, "book-treatment", "valued", &error));
+	save(f, currency);
+	{
+		g_autoptr(VentureEntity) rate = VENTURE_ENTITY(venture_exchange_rate_new());
+		g_autoptr(GDateTime) effective = g_date_time_new_utc(2025, 1, 1, 0, 0, 0);
+		venture_entity_set_organization_id(rate, f->org);
+		g_object_set(rate, "from-currency", "TICKET", "to-currency", "USD",
+			"rate-numerator", (gint64)1, "rate-denominator", (gint64)10, "effective-at", effective,
+			"source", "manual", "reason", "test", NULL);
+		save(f, rate);
+	}
+	g_assert_false(venture_close_service_run_checks(venture_close_service_get(f->db),
+		workspace, &actor, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "another currency"));
+	venture_currency_clear_registered();
+}
+
 static void
 test_generic_signoff_refused(Fixture *f, gconstpointer unused)
 {
@@ -540,6 +633,7 @@ main(int argc, char **argv)
 	g_test_add("/close/empty-tie-out", Fixture, NULL, setup, test_empty_books_tie_out, teardown);
 	g_test_add("/close/signoff-complete", Fixture, NULL, setup, test_signoff_and_complete, teardown);
 	g_test_add("/close/unmatched-bank", Fixture, NULL, setup, test_unmatched_bank_blocks, teardown);
+	g_test_add("/close/foreign-book-left-out", Fixture, NULL, setup, test_foreign_book_left_out, teardown);
 	g_test_add("/close/generic-signoff", Fixture, NULL, setup, test_generic_signoff_refused, teardown);
 	g_test_add("/close/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/close/tax-control", Fixture, NULL, setup, test_tax_control_is_sales_tax, teardown);

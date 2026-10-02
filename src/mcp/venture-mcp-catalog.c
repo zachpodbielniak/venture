@@ -799,7 +799,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "customer_id", "Customer for a statement.");
 		venture_mcp_catalog_add_integer_property(builder, "vendor_id", "Supplier for a vendor statement.");
 		venture_mcp_catalog_add_integer_property(builder, "organization_id", "Legal entity to report.");
-		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report.");
+		venture_mcp_catalog_add_string_property(builder, "currency", "Book currency to report. recipe_margin, session_performance, goal_materials: only prices observed in this currency count; the book currency is preferred when omitted.");
 		venture_mcp_catalog_add_string_property(builder, "as_of", "Inclusive historical cutoff.");
 		/* The aggregate report's question; the report's own schema in
 		 * venture_reports describes each in full. */
@@ -822,6 +822,8 @@ venture_mcp_catalog_add_tool_extras(
 		/* The goals reports' questions. */
 		venture_mcp_catalog_add_string_property(builder, "status", "goal_progress: active, paused, achieved or abandoned, or several comma separated.");
 		venture_mcp_catalog_add_integer_property(builder, "goal_id", "goal_materials: only this goal and its sub-goals.");
+		/* The ledger's holdings. */
+		venture_mcp_catalog_add_integer_property(builder, "location_id", "holdings: only this location and every location beneath it.");
 		venture_mcp_catalog_add_boolean_property(builder, "include_on_hand", "goal_materials: true (default) takes stock on hand off what is needed; false does not.");
 		/* The forms report's question. */
 		venture_mcp_catalog_add_integer_property(builder, "form_id", "form_summary: the form whose answers to count (required).");

@@ -323,20 +323,19 @@ test_web_claims(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autofree gchar *state_dir = NULL;
 	g_autofree gchar *body = NULL;
 	g_autoptr(VentureEntity) claim = make_claim(f, "CLM-WEB", "2026-02-06T00:00:00Z");
 	guint16 port;
 	(void)unused;
 	state_dir = g_dir_make_tmp("venture-claims-XXXXXX", &error);
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	g_assert_cmpuint(http_request(server, "/claims", &body), ==, 200);
 	g_assert_nonnull(strstr(body, "Claims"));
 	g_assert_nonnull(strstr(body, "CLM-WEB"));

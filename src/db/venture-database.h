@@ -135,6 +135,26 @@ OrmConnection *
 venture_database_get_connection(VentureDatabase *self);
 
 /**
+ * venture_database_resolve_bare_money:
+ * @self: a #VentureDatabase
+ * @entity: a record about to be saved or staged
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Reads every money field @entity was given without a currency in its
+ * organization's book currency (venture_entity_resolve_bare_money()).
+ * venture_database_save() and staging call it; a generic writer needs
+ * nothing else.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_database_resolve_bare_money(
+	VentureDatabase	 *self,
+	VentureEntity	 *entity,
+	GError		**error
+);
+
+/**
  * venture_database_migrate:
  * @self: a #VentureDatabase
  * @registry: the record types to create tables for

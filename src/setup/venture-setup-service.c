@@ -135,9 +135,10 @@ kind_for(const gchar *classification)
 	if (g_str_equal(classification, "payables") || g_str_equal(classification, "tax") ||
 		g_str_equal(classification, "deferred") || g_str_equal(classification, "loans"))
 		return VENTURE_ACCOUNT_KIND_LIABILITY;
-	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws"))
+	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws") ||
+		g_str_equal(classification, "currency_clearing"))
 		return VENTURE_ACCOUNT_KIND_EQUITY;
-	if (g_str_equal(classification, "income"))
+	if (g_str_equal(classification, "income") || g_str_equal(classification, "session_income"))
 		return VENTURE_ACCOUNT_KIND_INCOME;
 	if (g_str_equal(classification, "expense"))
 		return VENTURE_ACCOUNT_KIND_EXPENSE;
@@ -161,6 +162,10 @@ label_for(const gchar *classification)
 		return "clearing";
 	if (g_str_equal(classification, "inventory"))
 		return "inventory";
+	if (g_str_equal(classification, "currency_clearing"))
+		return "currency clearing";
+	if (g_str_equal(classification, "session_income"))
+		return "session income";
 	if (g_str_equal(classification, "income"))
 		return "income";
 	if (g_str_equal(classification, "expense"))
@@ -630,7 +635,12 @@ venture_setup_service_preview(VentureSetupService *self, gint64 organization_id,
 		}
 		if (cash != NULL && cash[0] != '\0')
 		{
-			g_autoptr(VentureMoney) amount = venture_money_from_string(cash, payload_str(payload, "book_currency", NULL), error);
+			/* A bare opening cash is in the book currency the setup will
+			 * keep: the one it names, else the organization's. */
+			g_autofree gchar *book = venture_database_get_book_currency(self->database, organization_id);
+			const gchar *named = payload_str(payload, "book_currency", NULL);
+			g_autoptr(VentureMoney) amount = venture_money_from_string(cash,
+				venture_string_is_empty(named) ? book : named, error);
 			if (amount == NULL)
 				return NULL;
 			g_object_set(setup, "opening-cash", amount, NULL);
@@ -733,8 +743,12 @@ venture_setup_service_complete_impl(VentureSetupService *self, VentureAccounting
 	if (!venture_database_begin(self->database, error))
 		return FALSE;
 	{
+		/* A setup that names no book currency keeps the organization's:
+		 * completing it writes this onto the organization, and "USD"
+		 * here re-denominated a euro organization's books in dollars. */
+		g_autofree gchar *book = venture_database_get_book_currency(self->database, organization_id);
 		const gchar *legal = payload_str(payload, "legal_name", NULL);
-		const gchar *currency = payload_str(payload, "book_currency", "USD");
+		const gchar *currency = payload_str(payload, "book_currency", book);
 		const gchar *basis = payload_str(payload, "basis", "accrual");
 		const gchar *bank_name = payload_str(payload, "bank_name", "Operating account");
 		const gchar *length_nick = payload_str(payload, "period_length", "monthly");

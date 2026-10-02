@@ -58,32 +58,151 @@ market_organization(
 /*
  * Runs @query, refusing a set larger than the aggregate report's bound
  * rather than totalling a truncated one: a smaller number presented as
- * the same one is the failure this avoids.
+ * the same one is the failure this avoids. @advice says how to get under
+ * it, and every narrowing it names must already be in @query -- a filter
+ * applied after this has not made the set any smaller.
  */
 static GPtrArray *
 market_fetch(
 	VentureDatabase	 *database,
 	VentureQuery	 *query,
 	const gchar	 *what,
+	const gchar	 *advice,
 	GError		**error
 ){
 	g_autoptr(GPtrArray) rows = NULL;
 
-	venture_query_set_limit(query, VENTURE_AGGREGATE_MAX_ROWS + 1);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
 	rows = venture_database_find(database, query, error);
 
 	if (NULL == rows)
 		return NULL;
 
-	if (rows->len > VENTURE_AGGREGATE_MAX_ROWS)
+	if (rows->len > (guint)venture_aggregate_get_max_rows())
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "More than %d %s match; narrow the period",
-		            VENTURE_AGGREGATE_MAX_ROWS, what);
+		            "More than %d %s match; %s",
+		            venture_aggregate_get_max_rows(), what, advice);
 		return NULL;
 	}
 
 	return g_steal_pointer(&rows);
+}
+
+/* How many product ids one listing query names: a bounded IN list, so a
+ * venture of any size is read in a handful of queries. */
+#define MARKET_IN_BATCH (500)
+
+/* Orders listings by id, so the report reads the same whatever order the
+ * batches came back in. */
+static gint
+market_listing_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	gint64 left;
+	gint64 right;
+
+	left = venture_entity_get_id(*(VentureEntity *const *)a);
+	right = venture_entity_get_id(*(VentureEntity *const *)b);
+
+	return (left > right) - (left < right);
+}
+
+/*
+ * The listings opened in @period of the products @venture_id sells. A
+ * venture is the product's: a listing belongs to whatever venture sells
+ * the thing it offers. The venture's products are paged through by id,
+ * a batch at a time, and each batch's listings read with an IN, so only
+ * the listings -- what the question is about -- are held to the bound:
+ * a venture with more products than the bound and a few listings is
+ * answered. Narrowing after the fetch, as this once did, refused a
+ * narrowed question whenever the whole organization was past the bound.
+ */
+static GPtrArray *
+market_venture_listings(
+	VentureDatabase		 *database,
+	gint64			  organization_id,
+	gint64			  venture_id,
+	VentureDateRange	 *period,
+	GError			**error
+){
+	g_autoptr(GPtrArray) listings = NULL;
+	guint max_rows;
+	guint offset;
+
+	max_rows = (guint)venture_aggregate_get_max_rows();
+	listings = g_ptr_array_new_with_free_func(g_object_unref);
+
+	for (offset = 0; ; offset += MARKET_IN_BATCH)
+	{
+		g_autoptr(VentureQuery) owned = NULL;
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) products = NULL;
+		g_autoptr(GPtrArray) ids = NULL;
+		g_autoptr(GPtrArray) found = NULL;
+		guint i;
+
+		owned = venture_query_new(VENTURE_TYPE_PRODUCT);
+		venture_query_set_organization(owned, organization_id);
+		venture_query_set_limit(owned, MARKET_IN_BATCH);
+		venture_query_set_offset(owned, offset);
+
+		if (!venture_query_add_filter_int(owned, "venture-id", VENTURE_FILTER_OP_EQ,
+		                                  venture_id, error) ||
+		    !venture_query_add_order(owned, "id", VENTURE_SORT_ASCENDING, error))
+			return NULL;
+
+		products = venture_database_find(database, owned, error);
+
+		if (NULL == products)
+			return NULL;
+
+		/* A venture that sells nothing has no listings. */
+		if (0 == products->len)
+			break;
+
+		ids = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < products->len; i++)
+			g_ptr_array_add(ids, g_strdup_printf("%" G_GINT64_FORMAT,
+				venture_entity_get_id(g_ptr_array_index(products, i))));
+
+		query = venture_query_new(VENTURE_TYPE_LISTING);
+		venture_query_set_organization(query, organization_id);
+
+		/* Past the bound across every batch, not per batch. */
+		venture_query_set_limit(query, max_rows + 1 - listings->len);
+
+		if (((NULL != period) &&
+		     !venture_query_set_date_range(query, "listed-at", period, error)) ||
+		    !venture_query_add_filter(query, "product-id", VENTURE_FILTER_OP_IN,
+		                              ids, error) ||
+		    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+			return NULL;
+
+		found = venture_database_find(database, query, error);
+
+		if (NULL == found)
+			return NULL;
+
+		for (i = 0; i < found->len; i++)
+			g_ptr_array_add(listings, g_object_ref(g_ptr_array_index(found, i)));
+
+		if (listings->len > max_rows)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "More than %u listings match; narrow the period", max_rows);
+			return NULL;
+		}
+
+		if (products->len < MARKET_IN_BATCH)
+			break;
+	}
+
+	g_ptr_array_sort(listings, market_listing_compare);
+
+	return g_steal_pointer(&listings);
 }
 
 /* Adds @value into *@total, taking a copy the first time. */
@@ -557,20 +676,32 @@ venture_market_listing_performance(
 
 	/* --- The listings: opened in the period --- */
 
-	query = venture_query_new(VENTURE_TYPE_LISTING);
-	venture_query_set_organization(query, organization_id);
+	if (0 != venture_id)
+	{
+		listings = market_venture_listings(database, organization_id, venture_id,
+		                                   period, error);
 
-	if ((NULL != period) &&
-	    !venture_query_set_date_range(query, "listed-at", period, error))
-		return NULL;
+		if (NULL == listings)
+			return NULL;
+	}
+	else
+	{
+		query = venture_query_new(VENTURE_TYPE_LISTING);
+		venture_query_set_organization(query, organization_id);
 
-	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
-		return NULL;
+		if ((NULL != period) &&
+		    !venture_query_set_date_range(query, "listed-at", period, error))
+			return NULL;
 
-	listings = market_fetch(database, query, "listings", error);
+		if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+			return NULL;
 
-	if (NULL == listings)
-		return NULL;
+		listings = market_fetch(database, query, "listings",
+		                        "narrow the period or the venture", error);
+
+		if (NULL == listings)
+			return NULL;
+	}
 
 	/* --- Grouped per group and currency --- */
 
@@ -594,21 +725,6 @@ venture_market_listing_performance(
 		g_object_get(listing, "product-id", &product_id,
 		             "unit-price", &unit_price, NULL);
 		product = market_product(database, products, product_id);
-
-		/* A venture is the product's: a listing belongs to whatever
-		 * venture sells the thing it offers. */
-		if (0 != venture_id)
-		{
-			gint64 owner;
-
-			owner = 0;
-
-			if (NULL != product)
-				g_object_get(product, "venture-id", &owner, NULL);
-
-			if (owner != venture_id)
-				continue;
-		}
 
 		if (!listing_group_of(database, group, category_depth, listing, product,
 		                      paths, &group_key, &label, error))
@@ -890,7 +1006,8 @@ venture_market_price_history(
 	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 
-	observations = market_fetch(database, query, "price observations", error);
+	observations = market_fetch(database, query, "price observations",
+	                            "narrow the period or the source", error);
 
 	if (NULL == observations)
 		return NULL;

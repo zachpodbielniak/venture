@@ -682,10 +682,12 @@ server_fixture_set_up(
 	fixture->state_dir = g_dir_make_tmp("venture-routes-XXXXXX", NULL);
 
 	/*
-	 * A port in the ephemeral range, derived from the pid so that two
-	 * suites running at once do not collide.
+	 * Port 0: the kernel picks a free one and the fixture reads it back
+	 * after the start. A port derived from the pid collided with other
+	 * suites, other listeners and sockets in TIME_WAIT, and the fixture
+	 * then failed to start for no reason of the test's.
 	 */
-	fixture->port = (guint16)(20000 + (getpid() % 20000));
+	fixture->port = 0;
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config,
@@ -710,6 +712,8 @@ server_fixture_set_up(
 
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new();
 }
@@ -1104,6 +1108,8 @@ test_auth_pages_refuse_anonymous_requests(
 	 */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account"),
 	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/account-identity/1"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),
 	                 ==, SOUP_STATUS_FOUND);
 
@@ -1789,6 +1795,19 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/session/1/actions/post", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Holdings likewise: the memo movements, the report, and the
+	 * transfer action, which moves money between two holdings. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/holding_txn"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/holdings"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/holdings"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/holding_txn"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/location/1/actions/transfer", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	/* Goals likewise: their records and both reports. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/goal"),
@@ -4388,6 +4407,244 @@ test_orgaccess_widget(ServerFixture *fixture, gconstpointer user_data)
 	g_assert_null(strstr(body, "PrivateBoundaryMarker"));
 }
 
+/* A saved record in @organization_id, for the report boundary below. */
+static gint64
+orgaccess_report_save(
+	ServerFixture	*fixture,
+	gpointer	 record,
+	gint64		 organization_id
+){
+	g_autoptr(GError) error = NULL;
+
+	venture_entity_set_organization_id(VENTURE_ENTITY(record), organization_id);
+
+	if (!venture_database_save(fixture->database, VENTURE_ENTITY(record), NULL, &error))
+		g_error("save refused: %s", error->message);
+
+	return venture_entity_get_id(VENTURE_ENTITY(record));
+}
+
+/* One goal, recipe, product and location in @organization_id, each named
+ * with @marker so a page or an answer that leaks it can be found. */
+static void
+orgaccess_report_records(
+	ServerFixture	*fixture,
+	gint64		 organization_id,
+	const gchar	*marker,
+	gint64		*out_product,
+	gint64		*out_recipe,
+	gint64		*out_location
+){
+	g_autoptr(VentureEntity) product = NULL;
+	g_autoptr(VentureEntity) recipe = NULL;
+	g_autoptr(VentureEntity) goal = NULL;
+	g_autoptr(VentureEntity) location = NULL;
+	g_autoptr(VentureEntity) herb = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autofree gchar *herb_name = g_strdup_printf("%sHerb", marker);
+	g_autofree gchar *product_name = g_strdup_printf("%sProduct", marker);
+	g_autofree gchar *recipe_name = g_strdup_printf("%sRecipe", marker);
+	g_autofree gchar *goal_name = g_strdup_printf("%sGoal", marker);
+	g_autofree gchar *location_name = g_strdup_printf("%sLocation", marker);
+
+	product = VENTURE_ENTITY(venture_product_new());
+	g_object_set(product, "name", product_name, NULL);
+	*out_product = orgaccess_report_save(fixture, product, organization_id);
+
+	recipe = VENTURE_ENTITY(venture_recipe_new());
+	g_object_set(recipe, "name", recipe_name, "output-product-id", *out_product,
+	             "output-quantity", (gint64)1, "active", TRUE, NULL);
+	*out_recipe = orgaccess_report_save(fixture, recipe, organization_id);
+
+	/* Something to take, so a craft reaches the question of where. */
+	herb = VENTURE_ENTITY(venture_product_new());
+	g_object_set(herb, "name", herb_name, NULL);
+	orgaccess_report_save(fixture, herb, organization_id);
+	line = VENTURE_ENTITY(venture_recipe_component_new());
+	g_object_set(line, "recipe-id", *out_recipe, "product-id",
+	             venture_entity_get_id(herb), "quantity", (gint64)1, NULL);
+	orgaccess_report_save(fixture, line, organization_id);
+
+	goal = VENTURE_ENTITY(venture_goal_new());
+	g_object_set(goal, "name", goal_name, "metric", "level", "unit", "skill",
+	             "start-value", 1.0, "current-value", 1.0, "target-value", 300.0, NULL);
+	orgaccess_report_save(fixture, goal, organization_id);
+
+	location = VENTURE_ENTITY(venture_location_new());
+	g_object_set(location, "name", location_name, "active", TRUE, NULL);
+	*out_location = orgaccess_report_save(fixture, location, organization_id);
+}
+
+/*
+ * organization_id on a report is a question, never a grant. A member of
+ * one organization naming another in the query string -- on the API, on
+ * the report page, or on the page's product and goal pickers -- is told
+ * the organization is not found and is shown none of its records' names;
+ * the same member asking about their own organization is answered, so
+ * the absence is not an empty page. A craft naming another
+ * organization's location is refused without naming it.
+ *
+ * Sound by construction, and pinned here: every request runs under the
+ * member's access scope (venture_orgaccess_web_dispatch()), so each
+ * report's own existence check of the organization, and every read it
+ * makes, is refused a row the member may not read. What breaks: a report
+ * that reads its organization or its picker's rows under an internal
+ * scope, which would answer for any organization a member names.
+ */
+static void
+test_orgaccess_report_organization(ServerFixture *fixture, gconstpointer user_data)
+{
+	static const gchar *const reports[] = {
+		"recipe_margin", "goal_progress", "goal_materials", "listing_performance",
+		"session_performance", NULL
+	};
+	g_autoptr(VentureEntity) other = NULL;
+	g_autoptr(VentureEntity) member = NULL;
+	g_autofree gchar *cookie = NULL;
+	gint64 home = venture_context_get_default_organization_id(fixture->context);
+	gint64 foreign;
+	gint64 user;
+	gint64 home_product;
+	gint64 home_recipe;
+	gint64 home_location;
+	gint64 foreign_product;
+	gint64 foreign_recipe;
+	gint64 foreign_location;
+	guint i;
+
+	(void)user_data;
+
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Foreign organization", "slug", "foreign", NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, NULL));
+	foreign = venture_entity_get_id(other);
+
+	orgaccess_report_records(fixture, home, "Home", &home_product, &home_recipe,
+	                         &home_location);
+	orgaccess_report_records(fixture, foreign, "Foreign", &foreign_product,
+	                         &foreign_recipe, &foreign_location);
+
+	server_fixture_create_user(fixture, "report-member", "password",
+	                           VENTURE_USER_ROLE_EDITOR, &user);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user,
+		"organization-id", home, "role", VENTURE_ORGANIZATION_ROLE_EDITOR,
+		"active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+	cookie = server_fixture_login(fixture, "report-member", "password");
+
+	/* Every new report, over the API: the other organization is not
+	 * found, and nothing of it is named. */
+	for (i = 0; NULL != reports[i]; i++)
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *body = NULL;
+
+		path = g_strdup_printf("/api/v1/reports/%s?period=all&organization_id=%"
+		                       G_GINT64_FORMAT, reports[i], foreign);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie, NULL,
+		                                        &body, NULL), ==, 404);
+		g_assert_null(strstr(body, "Foreign"));
+	}
+
+	/* price_history names a product: another organization's, asked
+	 * about as the member's own, is not found either. */
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *body = NULL;
+
+		path = g_strdup_printf("/api/v1/reports/price_history?period=all&product_id=%"
+		                       G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT,
+		                       foreign_product, foreign);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie, NULL,
+		                                        &body, NULL), ==, 404);
+		g_assert_null(strstr(body, "Foreign"));
+		g_clear_pointer(&path, g_free);
+		g_clear_pointer(&body, g_free);
+
+		path = g_strdup_printf("/api/v1/reports/price_history?period=all&product_id=%"
+		                       G_GINT64_FORMAT, foreign_product);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie, NULL,
+		                                        &body, NULL), ==, 404);
+		g_assert_null(strstr(body, "Foreign"));
+	}
+
+	/* The generic aggregate has no existence check to refuse with: it
+	 * answers, and counts none of the other organization's goals. */
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *body = NULL;
+
+		path = g_strdup_printf("/api/v1/reports/aggregate?period=all&type=goal"
+		                       "&group_by=name&organization_id=%" G_GINT64_FORMAT,
+		                       foreign);
+		server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL);
+		g_assert_null(strstr(body, "Foreign"));
+	}
+
+	/* The pages and their pickers. The member's own organization is
+	 * answered with its names, so their absence below means something. */
+	{
+		g_autofree gchar *body = NULL;
+
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/reports/goal_materials?period=all", cookie, NULL, &body, NULL), ==, 200);
+		g_assert_nonnull(strstr(body, "HomeGoal"));
+		g_clear_pointer(&body, g_free);
+		/* Refused for want of a product, and drawn with its picker. */
+		server_fixture_request(fixture, "GET", "/reports/price_history?period=all",
+		                       cookie, NULL, &body, NULL);
+		g_assert_nonnull(strstr(body, "HomeProduct"));
+		g_clear_pointer(&body, g_free);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/api/v1/reports/recipe_margin?period=all", cookie, NULL, &body, NULL), ==, 200);
+		g_assert_nonnull(strstr(body, "HomeRecipe"));
+	}
+
+	for (i = 0; NULL != reports[i]; i++)
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *body = NULL;
+
+		path = g_strdup_printf("/reports/%s?period=all&organization_id=%"
+		                       G_GINT64_FORMAT, reports[i], foreign);
+		server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL);
+		g_assert_nonnull(body);
+		g_assert_null(strstr(body, "Foreign"));
+	}
+
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *body = NULL;
+
+		path = g_strdup_printf("/reports/price_history?period=all&organization_id=%"
+		                       G_GINT64_FORMAT, foreign);
+		server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL);
+		g_assert_nonnull(body);
+		g_assert_null(strstr(body, "Foreign"));
+	}
+
+	/* A craft of the member's own recipe at the other organization's
+	 * location: refused, and the location is a number, not a name. */
+	{
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *json = NULL;
+		g_autofree gchar *body = NULL;
+		g_autofree gchar *number = NULL;
+		guint status;
+
+		path = g_strdup_printf("/api/v1/recipe/%" G_GINT64_FORMAT "/actions/craft",
+		                       home_recipe);
+		json = g_strdup_printf("{\"times\":1,\"location_id\":%" G_GINT64_FORMAT "}",
+		                       foreign_location);
+		status = server_fixture_json(fixture, "POST", path, cookie, json, &body);
+		g_assert_cmpuint(status, >=, 400);
+		g_assert_nonnull(body);
+		g_assert_null(strstr(body, "ForeignLocation"));
+		number = g_strdup_printf("location #%" G_GINT64_FORMAT, foreign_location);
+		g_assert_nonnull(strstr(body, number));
+	}
+}
+
 static GError *
 orgaccess_proposal_veto(VentureAccessPolicy *policy, gpointer actor, const gchar *action, VentureEntity *entity, gpointer data)
 {
@@ -5504,6 +5761,7 @@ main(
 	g_test_add("/orgaccess/wrong-role", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_wrong_role, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/report", ServerFixture, "report", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/widget", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_widget, server_fixture_tear_down);
+	g_test_add("/orgaccess/report-organization", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_report_organization, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-proposal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/queue", ServerFixture, "queue", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/export-signal", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_export_signal, server_fixture_tear_down);

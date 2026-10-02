@@ -195,6 +195,18 @@ add_amounts(VentureMoney **slot, const VentureMoney *add, const gchar *currency,
 			venture_money_get_currency(add));
 		return FALSE;
 	}
+	/* And this return is filed in @currency. A euro organization's
+	 * amounts all added up fine among themselves, and the pack then
+	 * called euro totals dollars; converting them is the preparer's
+	 * decision, not this adapter's guess. */
+	if (g_strcmp0(venture_money_get_currency(add), currency) != 0)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"The US sales-tax return is filed in %s; %s amounts cannot be reported "
+			"on it without a conversion the preparer makes",
+			currency, venture_money_get_currency(add));
+		return FALSE;
+	}
 	if (*slot == NULL)
 	{
 		*slot = venture_money_copy(add);
@@ -203,7 +215,6 @@ add_amounts(VentureMoney **slot, const VentureMoney *add, const gchar *currency,
 	next = venture_money_add(*slot, add, error);
 	if (next == NULL)
 		return FALSE;
-	(void)currency;
 	venture_money_free(*slot);
 	*slot = g_steal_pointer(&next);
 	return TRUE;
@@ -229,6 +240,7 @@ us_prepare(VentureTaxFilingAdapter *self, VentureDatabase *database, VentureEnti
 	g_autofree gchar *json = NULL;
 	GHashTableIter iter;
 	TaxLine *row;
+	/* USD on purpose: a US sales-tax return is filed in dollars. */
 	const gchar *currency = "USD";
 	gint64 org;
 	guint i;

@@ -161,10 +161,10 @@ test_fifo_and_gl(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GDateTime) date = venture_time_from_string("2026-04-02", NULL);
-	g_autoptr(VentureMoney) valuation = NULL;
+	g_autoptr(GPtrArray) valuation = NULL;
 	gint64 first = po_line(f, 2, "PO-A", "10 USD");
 	gint64 second = po_line(f, 3, "PO-B", "12 USD");
-	g_autoptr(VentureMoney) cogs = NULL;
+	g_autoptr(GPtrArray) cogs = NULL;
 	(void)unused;
 
 	g_assert_true(venture_purchasing_service_receive_line(venture_purchasing_service_get(f->db),
@@ -174,18 +174,21 @@ test_fifo_and_gl(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(venture_inventory_service_on_hand(venture_inventory_service_get(f->db), f->item, NULL, &error), ==, 5);
 	valuation = venture_inventory_service_valuation(venture_inventory_service_get(f->db), f->org, NULL, &error);
 	g_assert_no_error(error);
-	g_assert_cmpint(venture_money_get_amount(valuation), ==, 2 * 1000 + 3 * 1200);
-	g_assert_cmpint(balance(f, "1200"), ==, venture_money_get_amount(valuation));
+	g_assert_cmpuint(valuation->len, ==, 1);
+	g_assert_cmpint(venture_money_get_amount(g_ptr_array_index(valuation, 0)), ==, 2 * 1000 + 3 * 1200);
+	g_assert_cmpint(balance(f, "1200"), ==, venture_money_get_amount(g_ptr_array_index(valuation, 0)));
 
 	g_assert_true(venture_inventory_service_issue(venture_inventory_service_get(f->db),
 		f->item, 3, date, "inventory_txn", 0, NULL, &cogs, &error));
 	g_assert_no_error(error);
 	/* FIFO: 2 @ 10.00 then 1 @ 12.00 */
-	g_assert_cmpint(venture_money_get_amount(cogs), ==, 2000 + 1200);
+	g_assert_cmpuint(cogs->len, ==, 1);
+	g_assert_cmpint(venture_money_get_amount(g_ptr_array_index(cogs, 0)), ==, 2000 + 1200);
 	g_assert_cmpint(balance(f, "5000"), ==, 3200);
+	g_clear_pointer(&valuation, g_ptr_array_unref);
 	valuation = venture_inventory_service_valuation(venture_inventory_service_get(f->db), f->org, NULL, &error);
-	g_assert_cmpint(venture_money_get_amount(valuation), ==, 2 * 1200);
-	g_assert_cmpint(balance(f, "1200"), ==, venture_money_get_amount(valuation));
+	g_assert_cmpint(venture_money_get_amount(g_ptr_array_index(valuation, 0)), ==, 2 * 1200);
+	g_assert_cmpint(balance(f, "1200"), ==, venture_money_get_amount(g_ptr_array_index(valuation, 0)));
 }
 
 static void

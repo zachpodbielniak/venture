@@ -549,6 +549,30 @@ venture_date_range_parse(
 		return venture_date_range_new_labelled(start, end, label);
 	}
 
+	/* A bare ISO day is a one-day range, which is what someone asking for
+	 * "2026-03-14" almost certainly means. It is tried before the month
+	 * form, which sscanf would otherwise match on its first seven
+	 * characters: "2026-03-14" read as all of March, silently, so a P&L
+	 * for one day reported the whole month. */
+	{
+		g_autoptr(GDateTime) day = NULL;
+		gint day_of_month;
+
+		day = venture_date_range_parse_iso_day(text, utc);
+
+		if (NULL != day)
+			return venture_date_range_new_day(day, utc);
+
+		/* Shaped like a day but not one (2026-02-31): refused, not
+		 * read as the month it starts with. */
+		if (3 == sscanf(text, "%4d-%2d-%2d", &year, &month, &day_of_month))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\" is not a calendar date", text);
+			return NULL;
+		}
+	}
+
 	if (2 == sscanf(normalised, "%4d_q%1d", &year, &quarter))
 		return venture_date_range_new_quarter(year, quarter, utc);
 
@@ -557,17 +581,6 @@ venture_date_range_parse(
 
 	if ((4 == strlen(normalised)) && (1 == sscanf(normalised, "%4d", &year)))
 		return venture_date_range_new_year(year, utc);
-
-	/* A bare ISO day is a one-day range, which is what someone asking for
-	 * "2026-03-14" almost certainly means. */
-	{
-		g_autoptr(GDateTime) day = NULL;
-
-		day = venture_date_range_parse_iso_day(text, utc);
-
-		if (NULL != day)
-			return venture_date_range_new_day(day, utc);
-	}
 
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 	            "\"%s\" is not a period I recognise. Try one of: today, "

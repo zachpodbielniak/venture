@@ -28,6 +28,29 @@
 #
 # See `make help` for the full list.
 
+# `make -j clean all` updates every goal at once. clean's rm -rf then races
+# the generators that redirect into that same directory, and the shell fails
+# with "No such file or directory" on venture-assets.h and the other
+# generated headers. A clean goal paired with anything else finishes in its
+# own sub-make before the rest starts; the sub-make's command line has no
+# clean goal, so this block does not apply again and the build keeps -j.
+# Clean goals run first whichever order they were named in, matching the
+# vendored libraries. `@:` is a recipe on purpose: an empty one makes make
+# print "Nothing to be done" after the sub-make has already built everything.
+ifneq ($(filter clean clean-all clean-deps,$(MAKECMDGOALS)),)
+ifneq ($(filter-out clean clean-all clean-deps,$(MAKECMDGOALS)),)
+.PHONY: $(MAKECMDGOALS) __serialize
+$(MAKECMDGOALS): __serialize
+	@:
+__serialize:
+	$(MAKE) --no-print-directory $(filter clean clean-all clean-deps,$(MAKECMDGOALS))
+	$(MAKE) --no-print-directory $(filter-out clean clean-all clean-deps,$(MAKECMDGOALS))
+__MIXED := 1
+endif
+endif
+
+ifndef __MIXED
+
 .DEFAULT_GOAL := all
 
 .PHONY: all lib shared binaries plugins pod-modules deps test check-deps help
@@ -460,6 +483,7 @@ test: $(TEST_BINS) plugins
 	bash $(TOOLSDIR)/venture-test-litter.sh check $(OUTDIR)/test-litter || exit 1; \
 	bash $(TOOLSDIR)/check-versions.sh || exit 1; \
 	bash tests/demo-foreground.sh || exit 1; \
+	bash tests/demo-clock.sh || exit 1; \
 	rmdir "$$TMPDIR" 2>/dev/null || true; \
 	echo "All $$total test binaries passed"
 
@@ -693,3 +717,5 @@ $(OUTDIR)/tests/test-cli-session: $(OUTDIR)/venturectl
 
 # This regression invokes the actual offline command dispatcher.
 $(OUTDIR)/tests/test-hosted-maintenance: | $(OUTDIR)/venture
+
+endif # __MIXED

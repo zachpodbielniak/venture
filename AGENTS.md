@@ -23,6 +23,10 @@ make compose-up              # rebuild the image and recreate the local stack
 first, because the suite loads the example plugin for real; without them that
 test skips itself rather than failing.
 
+`make -j clean all` is safe: a clean goal beside any other goal finishes in
+a sub-make before the build starts. The generators write into the directory
+`clean` removes, so the two goals must not run at once.
+
 Zero warnings, always. `-Werror` is on with a wide warning set, and a warning
 is a latent bug. Never silence one by lowering the warning level.
 
@@ -255,6 +259,14 @@ first seven columns were empty.
   thinks stale ones are current and re-archives them: the link fails on a
   symbol in neither version, or worse, succeeds against half-stale objects.
   `clean-all` now removes every dep build tree for this reason.
+- **A report's narrowing belongs in the query its row bound counts.**
+  Reports that total in C fetch at most `venture_aggregate_get_max_rows()`
+  rows and refuse past it. A filter applied to the rows *after* that
+  fetch -- venture, category, status, active -- leaves an organization
+  past the bound refused however narrowly it asks, by a message telling
+  it to narrow. Push it into the `VentureQuery` (an `IN` over
+  `venture_category_descendants()` for "this category and beneath"), and
+  test with `venture_aggregate_set_max_rows()` rather than 20 000 rows.
 - **SQL that aggregates must say what type it wants.** SQLite returns
   `SUM(integer)` as an integer; PostgreSQL widens it to numeric, and the
   typed accessor asserts. Cast aggregates explicitly — `CAST(SUM(x) AS
@@ -401,6 +413,21 @@ fails a **green** run that left one, comparing the run against itself — a
 *failing* run's directories are evidence and must stay, which is also why the
 teardown never runs on that path: `g_assert` aborts the process.
 
+**Never derive a test port from the pid, and never probe one and close
+it.** A test server is configured with `server-port` 0 and reads the
+kernel's choice back with `venture_web_server_get_port()` (or the base
+URL) after `venture_web_server_start()`. `20000 + (getpid() + K) % 20000`
+collided with suites in other worktrees and PID namespaces, with every
+other listener, with TIME_WAIT and with a second server in the same
+process; a probed-and-closed port can be taken before the bind. Both
+failed a fixture now and then and passed on a rerun. Only a subprocess
+that must be told `--port` picks one in advance, through
+`venture_test_free_port()`, and retries on "Cannot listen on" with a
+fresh port, bounded by `VENTURE_TEST_PORT_ATTEMPTS`. A hosted origin is
+not a listening port: fix it and send its authority as `Host`.
+`test-ports` greps the tests for the pid arithmetic. See
+`docs/testing.org` "Server ports".
+
 It found a second thing worth knowing: **a test that starts a coding run must
 drain it before returning.** `venture_work_service`'s worker was still creating
 the run's workspace while the teardown removed the directory above it.
@@ -544,6 +571,107 @@ than one that fails.
   currency back out), and after `venture_database_migrate()` -- the context
   is built before the schema exists. A scratch database with no context
   leaves the registry alone. Tests that register a currency clear it.
+- **Which book a currency posts to is decided once, in the posting
+  service.** `venture_posting_service_route_currency()` reads the
+  currency's `book-treatment` (`valued`=0, `separate_book`, `memo`) and
+  the organization's rate table: memo never posts, the book currency and a
+  valued currency *with a rate on the date* go to one book-currency
+  journal (the line keeps `amount`, `book-amount` is the valuation), a
+  separate-book currency or a valued one with no rate gets a journal of
+  its own. `venture_posting_service_post_by_currency()` applies it and
+  balances a document spanning journals through currency clearing
+  (`currency_clearing` control map, else `<org>:3900`, made on first
+  use). Every automatic journal -- sale, expense, refund, inventory pair,
+  `create_and_post` -- goes through it; do not post a document with
+  `venture_posting_service_post()` and a NULL policy, and do not repeat
+  the rule in a report or module: ask the route. The core `post` refuses
+  a memo line and any conversion into or out of a separate book whatever
+  policy it is handed; reversals are exempt.
+- **Recording a rate converts fiat too.** A EUR expense in a USD
+  organization with a EUR-to-USD `exchange_rate` now posts one USD journal
+  valued at that rate (functional-currency accounting), not a EUR
+  journal. Only new postings: a re-save with the same original amounts is
+  not reposted because a rate or a treatment changed since -- keep it
+  that way, or recording one rate rewrites every past period the next
+  time a note is edited. `venture_ledger_save_source()` decides "changed"
+  by building the *previous* version's lines under today's rule and
+  comparing them (`same_posting()`: accounts, sides, original amounts,
+  date) with the new version's, never by comparing the new plan with the
+  posted journals: a plan can split into a different number of journals
+  after a rate or treatment change, and a plan with no journals at all
+  (every amount memo) is still a change to reverse.
+- **A document line is in its document's currency.** Purchase order lines
+  and vendor bill lines are held to their order's or bill's `currency` by
+  save validators (`venture_purchasing_install_validators()`), and the
+  document cannot move to a currency its lines are not in. An automatic
+  sale's cost-of-goods pair is the exception by design: it balances by
+  itself in the product cost's currency.
+- **Operational reports anchor on the book currency and keep one figure
+  per currency.** `pnl`, `ventures` and `monthly` total with
+  `venture_money_totals_*` and show a block/row per currency, the book
+  currency (`venture_posting_service_book_currency()`) always and first;
+  its metrics keep the plain key (`revenue`) and every other currency's
+  adds `_<CODE>` (`revenue_TICKET`) -- the headline and dashboard widgets
+  read the plain key, so never put a non-book figure under it. Do not
+  bring back "the currency most records use": it dropped a gold sale
+  among ticket ones, and an empty total made in `NULL`/USD blanked a gold
+  organization's profit. A report that still shows one figure per column
+  anchors it on the book currency and says in a note what it left out.
+- **Statements label a section, they never re-decide it.** The `books`
+  column and the section order (book first) come from
+  `venture_posting_service_book_label()` and the book currency; a
+  converted amount is already in the book section. The close leaves an
+  unmatched bank line in a kept-apart currency out with a note, and a
+  consolidation leaves out a memo, separate-book or rate-less member book
+  with a note -- both used to refuse. Ask the route; do not compare codes
+  against the organization's currency and refuse.
+- **A market price answers only in its own currency.**
+  `venture_market_latest_price()` takes a `currency` (NULL: whatever was
+  seen last). The valuing reports read their `currency` option through
+  `venture_market_valuing_currency()` and price with
+  `venture_market_price_preferring()` (book currency wherever seen, else
+  any) or strictly in the named one. The query cannot filter on a money
+  field's currency, so the lookup pages newest-first; keep it paged.
+- **A holding has one truth per currency.** A holding is an `account`
+  with `location_id`. A posted currency's holding is the account's journal
+  lines (original `amount`, never `book-amount`); a memo currency's is
+  `holding_txn` rows, which `venture_holdings_record_memo()` writes from the
+  memo lines `post_by_currency_full()` would have dropped. Never write a
+  movement beside a journal line for the same money: the validator refuses
+  a hand movement in a posted currency, and `venture_ledger_save_source()`
+  leaves an *unchanged* document an earlier treatment journaled alone
+  (no movement beside its journal); a changed one is reversed and written
+  under today's treatment, journals and movements together. Re-saves
+  *replace* a document's movements (unchanged ones kept), session yields and
+  transfers *append* -- pick the right one or an edited expense spends twice.
+- **Deleting a document keeps its holding movements, as it keeps its
+  journal.** Deletion is not a financial correction (`docs/ledger.org`);
+  the holdings report notes the deleted documents it still counts. Do not
+  make a delete remove or reverse a memo movement unless deleting a posted
+  sale reverses its journal too -- one rule for both halves of a holding.
+- **The holding floor lives in two places, both before any write.** A memo
+  movement is judged by the `holding_txn` save validator, a journal by the
+  posting service's `posting` signal (`holdings_posting_guard()`), per
+  holding account and original currency. Only accounts with a location are
+  judged -- an overdraft on 1000 Cash is a real balance -- and
+  `allow-negative` (FALSE, the zero value) lifts it. Reversals are exempt.
+  Do not add a third check in a handler or a page. Both judge the
+  *running* balance from the change's date on (`holdings_check_floor()`),
+  never the all-time total: a back-dated spend that passes today's balance
+  is exactly the case to refuse. The rule is "no moment below zero that
+  was not, and none deeper than it was", so a dip a reversal or an
+  allowed overdraft left behind does not block unrelated changes.
+- **A sale honours `cash-account-id` like an expense.** The autojournal's
+  `use_cash_account()` swaps the profile's cash account for the document's
+  on the sale, refund and expense legs. It sets it on the profile object
+  the rule fetched for this call, never on a saved profile.
+- **A session money yield posts only into a location's holding.** No
+  location, or the ledger off, skips it (not a refusal -- the goods post
+  must still work) and it stays unposted for a later post. Either stamp
+  (`journal-id`, `holding-txn-id`) makes it posted and frozen; adding a
+  third form of posting means adding its stamp to `sessions_yield_posted()`
+  and the removal query. Existing sessions' money yields post on their next
+  post -- a behaviour change, documented in docs/sessions.org.
 - **A word beside a number is a code only if it is three letters or
   registered.** Widening the parser to every short word would read
   `100.00 CR` as a hundred of "CR"; `venture_money_word_is_code()` is the
@@ -625,6 +753,20 @@ than one that fails.
   are and treats the rest as uncosted, because stock typed in by hand has
   no layer and must still be usable; and it always gives the output a
   layer, even a zero one, or `consume_fifo()` would refuse to sell it.
+- **Stock cost is a total per currency, never one `VentureMoney`.** A cost
+  layer holds one currency; an issue, a craft, a transfer, the valuation
+  and the `inventory` report sum layers with `venture_money_totals_add()`
+  and hand every currency on (issue: one pair each, in *one*
+  `post_by_currency()` call; memo layers post nothing). Summing into one
+  amount is what refused a GOLD+TICKET issue and failed the valuation for
+  the whole organization. A zero total is a zero, not a clash.
+- **Sibling layers are one lot; FIFO walks lots.** A unit made from GOLD
+  and TICKET inputs gets one exact split per currency, all with the same
+  `lot_txn_id` (the arrival movement). `consume_layers()` takes a lot's
+  units out of every currency together; treat siblings as separate layers
+  and the first sale takes only the gold. `lot_txn_id` 0 (every older
+  layer) is a lot of its own, so no migration was needed. A transfer
+  re-splits each currency exactly at the destination.
 - **`reusable` is the flag, and a tool must really be there.** A boolean
   has no default, so the zero value is the safe one: unticked means
   consumed. A reusable component is needed once per craft, not per batch,
@@ -705,6 +847,22 @@ than one that fails.
   save validator runs, so a validator's own "module is off" refusal for a
   newly written reference is a backstop. Tests should match on the module
   name, not on either sentence.
+- **A currency nobody named is the book currency, never "USD".**
+  `venture_database_get_book_currency()` is the organization's book
+  currency, or the install's default with no organization; it never
+  returns NULL. A literal "USD" fallback passes every USD test and writes
+  dollars into a euro or gold organization -- budgets, payroll, quotes,
+  capture, documents, setup and an action's bare money parameter all did.
+  What is USD by law (the US sales-tax adapter, 1099-NEC, Stripe ACH) says
+  so in a comment and refuses other currencies by name. The generic
+  decoders read a bare amount in the install default and *mark* it; the
+  save (and staging) re-reads marked fields in the record's book currency
+  via `venture_database_resolve_bare_money()` -- in the record's own
+  `currency`, else a referenced document's, else the book currency. A
+  service that decodes a body and then does arithmetic before saving must
+  resolve first; the posting service does so on entry, which is what
+  keeps a bare-amount `create_and_post` from planning a USD journal with
+  EUR lines.
 - **Sum run costs with `venture_money_sum_dominant()`.** `venture_money_sum()`
   refuses mixed currencies and returns NULL, which silently blanked the
   totals the day one run was priced in another currency.
@@ -728,6 +886,21 @@ than one that fails.
   from the caller -- the sidebar picker on a page, `?organization_id=` on
   the API, nothing for the assistant -- so one widget answers about the
   same rows through every door. `{me}` is the scope's username.
+- **Before a sidebar pick, a dashboard page opens in the organization the
+  dashboard is filed under.** `venture_web_dashboard_unpicked_organization()`
+  is the page choosing the scope per request, not the widget scoping
+  itself; a pick (the `venture_entity` cookie, `all` included) is always
+  authoritative, and the API still scopes by `?organization_id=` alone.
+  File a business's dashboard under that business's organization rather
+  than telling people to switch the sidebar first.
+- **A report widget gets the scope as report options.**
+  `venture_widget_run_report()` hands the report `organization_id` (the
+  scope's first entity) and `venture_id`; a new kind that runs a report
+  must go through it, or its card answers for the default organization
+  beside cards that answer for the page's. Widget `options` reach the
+  report only when the report's parameter schema declares them, and the
+  save refuses the rest -- `organization_id`/`venture_id` always. A report
+  that needs a widget option must declare it in `describe_parameters`.
 - **Dashboards and widgets are checked at the save, like everything.**
   Slug uniqueness and the single home page live in the dashboard's save
   validator, which writes the other dashboards from inside the lock (it is
@@ -901,6 +1074,17 @@ than one that fails.
   returns, `wait` returns 127 at once, and the EXIT trap then kills the
   instance. `make demo` would print a port and leave nothing listening.
   `tests/demo-foreground.sh` is the check.
+- **Relative dates count from one anchor, never from the clock each time.**
+  `at_hour` and `at_minute` used to read the wall clock and round their
+  own answers, so a spend at "26 hours ago, on the hour" fell before the
+  session "1610 minutes ago" that funded it in the last ten minutes of
+  every hour, and the purse refused to go below zero. They now count from
+  `set_economy_clock`'s anchor (the current UTC hour, or
+  `VENTURE_DEMO_ECONOMY_NOW`), so the order of two dates is the order of
+  their offsets. `tests/demo-clock.sh` replays the economy at awkward
+  clock times and checks every purse is funded before it is spent. The
+  same class of bug hid in the bank feed: a statement ending five days ago
+  refused a row dated the first of the month on the 1st to 5th.
 - **The enum values are checked against `venturectl describe`, not
   guessed.** Four of them were wrong on the first run: a campaign is
   `running` not `active`, an idea is `researching` not `exploring`, a
@@ -1001,6 +1185,14 @@ than one that fails.
   `X-Venture-Inline` and shows the refusal above the form. Do not add a
   per-route HTML error path; `tests/test-record-view.c` pins all three
   answers.
+- **A refused save always says why.** `venture_database_get()` answers a
+  missing row with NULL and *no* error, so a check that does
+  `x = get(...); if (!x) return FALSE;` refuses without a reason, and the
+  person saw a 500 "Unknown error" (an invoice line with no invoice did
+  this). Name the field with `venture_set_error_validation()`.
+  `venture_database_save()` now turns a FALSE with no error into
+  `VENTURE_ERROR_FAILED` naming the record, plus a `g_warning` -- fatal in
+  tests, so the check that did it is found; `/record-view/save-refusal-says-why`.
 - **"Attention of" is a flag, not a check in a handler.**
   `VENTURE_COLUMN_FLAG_SAME_PARENT` on a reference makes the save refuse a
   target under another parent and the form narrow its options; the parent
@@ -1159,7 +1351,7 @@ than one that fails.
 
 ## Versioned database migrations
 
-Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Reconciliation also updates the existing tables of a disabled module (it never creates them): a module switched off after use still holds rows, and a script that read a column its hidden table never gained would refuse startup, or, skipped, never backfill once the module came back. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.
+Every database feature ships paired, append-only SQL in `migrations/sqlite/` and `migrations/postgresql/`, meaningful upgrade/restart/failure tests, and docs in the same change. Read `docs/migrations.org` before editing persistent fields or storage behavior. Keep the GObject field table authoritative; the SQL expresses backfills and backend-specific invariants, and runs after additive schema reconciliation but before seeds. Never edit an applied script or manage transactions/history inside it. Test representative old data and affected disabled-module configurations; do not infer historical accounting events from current status. `OrmMigrator` validates checksums and unknown versions before schema reconciliation and applies each SQL batch atomically. Reconciliation also updates the existing tables of a disabled module (it never creates them): a module switched off after use still holds rows, and a script that read a column its hidden table never gained would refuse startup, or, skipped, never backfill once the module came back. Seeds after the scripts run only for a registered type (`venture_entity_registry_is_type_enabled()`): an install that never had finance on has no `accounts` table, and a seed that counted it refused startup. A skipped seed is caught up by its own empty-table test on the first start with the module on. Build embeds the complete script history into the server. Run DEBUG build/tests and ShellCheck for generator changes.
 
 ## Federation
 
@@ -1272,6 +1464,8 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   required or invalid answer, a summary that cannot take focus, a positive
   tabindex or a style attribute. A new question kind must pass it: add the
   kind and the test renders it automatically.
-- **The forms epic's migrations start at 000710.** 000700 was taken by
-  product categories before the epic started; each child takes the next
-  multiple of ten in delivery order (the table is on the epic issue).
+- **The forms baseline migration is 000711.** Master used 000710 for
+  account holdings while the forms epic was in draft. Later forms children
+  retain 000720 onward in delivery order (the table is on the epic PR).
+  Databases made with the unreleased 000710_forms branch are not release
+  upgrade sources; rebuild those disposable fixtures.

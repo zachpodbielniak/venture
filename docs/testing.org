@@ -313,6 +313,66 @@ What it cannot see is a directory whose name is not a =g_dir_make_tmp()= string 
 
 One more thing it surfaced, which was not litter: =test-work-service= started a coding run and returned without waiting for it, so the service's worker thread was still calling =g_mkdir_with_parents()= for the run's workspace while the teardown was removing the directory above it. =strace= shows the =mkdir= and the =rmdir= interleaved. =settle_runs()= drains the live set first. A test that starts background work and walks away leaves a thread writing into a directory nobody owns any more, whoever wins the race.
 
+** Server ports
+:PROPERTIES:
+:CUSTOM_ID: server-ports
+:END:
+
+A test that starts a =VentureWebServer= configures =server.port= as =0= and reads the port back after the start. The kernel binds whatever is free, and the server reports it:
+
+#+begin_src C
+g_object_set(fixture->config,
+             "server-bind-address", "127.0.0.1",
+             "server-port", (gint64)0,
+             NULL);
+fixture->server = venture_web_server_new(fixture->context, &error);
+g_assert_true(venture_web_server_start(fixture->server, &error));
+g_assert_no_error(error);
+fixture->port = venture_web_server_get_port(fixture->server);
+/* or: venture_web_server_get_base_url(fixture->server), "http://127.0.0.1:<port>" */
+#+end_src
+
+=venture_web_server_get_port()= and the base URL both name the port actually bound: after the start the server asks its listening socket (=g_socket_get_local_address()= on the first libsoup listener) rather than the configuration, which still says =0=. Before the start they say what was configured. There is no window between choosing the port and binding it, so nothing else on the machine can take it first.
+
+*** Why not choose one in advance
+
+About twenty fixtures used to pick =20000 + (getpid() + K) % 20000=, and roughly fifty more bound a probe socket to port 0, read its port and closed it. Both fail the same way, now and then, for reasons that have nothing to do with the test -- and pass on a rerun, which is what made them expensive:
+
+- two suites running at once, in two worktrees or two PID namespaces, have equal or neighbouring pids, so =pid + K= for one test lands on =pid' + K'= for another;
+- the arithmetic cannot see any other listener on the machine: a demo on 87xx, somebody else's server, a squatter in the 20000--50999 range;
+- a server stopped a moment ago leaves the port in =TIME_WAIT=;
+- a test that starts two servers in one process derives the same port twice;
+- a probed-and-closed port is free only until somebody else binds it, and the kernel hands the same ephemeral ports to outbound connections.
+
+The symptom was a fixture failing its =venture_web_server_start()= assertion with "Cannot listen on http://127.0.0.1:NNNNN" -- seen in =test-oidc= =/oidc/browser-workflow= and =test-goals=.
+
+*** When the port has to be known first
+
+A subprocess has to be told its port: =test-docs= runs =tests/docs-quickstart.sh=, which starts the real =venture= binary with =--port=. That is the one place a port is chosen in advance, and it does two things:
+
+- =venture_test_free_port()= from =tests/venture-test-util.h= asks the kernel for a free loopback port (bind =127.0.0.1:0=, read it, close);
+- the caller retries with a fresh port when the start fails *because the port was taken* -- the demo script's "something is already answering on", or the server's "Cannot listen on" -- at most =VENTURE_TEST_PORT_ATTEMPTS= (5) times. Any other failure is the test's and is reported at once. Every retry and every wait is bounded: a test that can hang is worse than one that fails.
+
+A value that only has to *look* like a public origin is not a listening port. A hosted workspace pins =hosted.origin= before the server exists, so =test-account-identity= and =test-attribution= fix the origin at =http://127.0.0.1:8443=, bind port 0, and send the origin's authority as the =Host= of every request -- exactly what a TLS terminator in front of the server does. Where =server.base_url= has to match the listening address, set it after the start: it is read per request (and bound into the dunning and sequence services), so setting it then is setting it.
+
+Fakes the tests talk *to* -- an SMTP or IMAP stub, an OIDC provider, a receipt printer -- already keep their listener open on port 0 and read the port from it; they never had the race.
+
+*** What pins it
+
+=test-ports= starts a port-0 server and requires =get_port()= and the base URL to name the bound port and =/api/v1/health= to answer there; starts two port-0 servers in one process and requires two ports; occupies a port and requires a server told that port to fail with "Cannot listen on" (the phrase the subprocess retry keys on) while a port-0 server beside it starts; requires =venture_test_free_port()= never to return a held port and always to return a bindable one; and reads every file under =tests/= for a line that calls =getpid()= and mentions a port, so a fixture copied from an old one cannot bring the arithmetic back.
+
+** The demo's clock
+:PROPERTIES:
+:CUSTOM_ID: demo-clock
+:END:
+
+=tools/venture-demo.sh= seeds through the API and dates much of what it makes relative to the present, and the server refuses a holding spent below zero, a bank line outside its statement and anything dated in the future. A relative date that is rounded independently of its neighbours can therefore fail the seed at some times of day and pass at others; test-docs' quickstart runs the whole seed, so it inherits the flake.
+
+- The game economy (=seed_virtual_economy=) dates everything with =at_hour= and =at_minute=, which count from one anchor fixed per seed by =set_economy_clock= -- the start of the current UTC hour, or =VENTURE_DEMO_ECONOMY_NOW= when set (it is refused if it is in the future). They used to read the wall clock and round each answer separately, and in the last ten minutes of every hour the six-token Brewfest spend at "26 hours ago, on the hour" fell before the session ending 1610 minutes ago that earned the tokens.
+- The bank feed's statement ends today. It ended five days ago, and on the 1st to the 5th of a month the hosting line dated the first of the month fell outside it.
+
+=tests/demo-clock.sh=, run by =make test= after the binaries, sources the demo with the server calls replaced by recorders and runs the economy's seed with the clock pinned on the hour, five minutes past, five minutes to, a second to, just before midnight at a month's end, on a leap day, a second before a new year, and at the real present. Each run must date nothing in the future, place every timestamp at the same offset from the anchor as every other run, and -- replaying the TICKET and BREWFEST movements in date order -- never spend a purse before it was funded, a spend at the same instant as its income counting as too early; the transfers between characters must stay undated. With the old helpers it fails at 12:05 (the offsets moved) and, run alone at 12:55, with the exact refusal the server gave: "BREWFEST is spent at ... before it was earned".
+
 * Standalone CLI dependency boundary
 
 The CLI must build without the mail server's GMime development package. Run =make DEBUG=1 -W src/cli/main.c venturectl= without any temporary server dependency prefix to compile and relink the CLI. Server-only pkg-config queries are deferred until a server or test recipe expands its flags; a successful CLI build that still emits missing server-package diagnostics fails this boundary.

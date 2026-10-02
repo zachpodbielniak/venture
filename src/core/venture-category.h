@@ -159,8 +159,8 @@ venture_category_check_applies_to(
  *   reference naming its own type, and a `name`
  * @error: (out) (optional): return location for a #GError
  *
- * The rules every node of a self-referencing tree meets, whatever the
- * type: its parent is not itself or anything beneath it, is in the same
+ * Every node of a self-referencing tree follows the same rules. Its
+ * parent is not itself or anything beneath it, is in the same
  * organization, and the tree is no deeper than
  * %VENTURE_CATEGORY_MAX_DEPTH. Categories and locations are checked with
  * it by the validators this file installs; any other type that nests

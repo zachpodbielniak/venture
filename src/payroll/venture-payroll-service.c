@@ -160,8 +160,11 @@ add_entry(GPtrArray *entries, gint64 org, const gchar *transaction, gint64 accou
 	return TRUE;
 }
 
+/* A bare amount on a pay line is in the run's currency: the line is
+ * summed into the run, and the install's default made a euro run's
+ * "100" a dollar line that then refused to add. */
 static VentureMoney *
-money_member(JsonObject *object, const gchar *name, GError **error)
+money_member(JsonObject *object, const gchar *name, const gchar *currency, GError **error)
 {
 	const gchar *text = venture_json_object_get_string(object, name, NULL);
 	if (text == NULL)
@@ -169,7 +172,7 @@ money_member(JsonObject *object, const gchar *name, GError **error)
 		refuse(error, VENTURE_ERROR_VALIDATION, "Each pay line needs gross, employer_cost, deductions, net and liabilities");
 		return NULL;
 	}
-	return venture_money_from_string(text, NULL, error);
+	return venture_money_from_string(text, currency, error);
 }
 
 static gboolean
@@ -245,13 +248,15 @@ add_line(VenturePayrollService *self, VentureEntity *run, JsonObject *object,
 	g_autoptr(VentureMoney) expected_net = NULL;
 	g_autoptr(VentureEntity) line = NULL;
 	g_autoptr(VentureMoney) line_cost = NULL;
+	g_autofree gchar *currency = NULL;
 	const gchar *employee;
+	g_object_get(run, "currency", &currency, NULL);
 	/* Stop at the first parse failure rather than overwriting an existing GError. */
-	if ((gross = money_member(object, "gross", error)) == NULL ||
-		(employer = money_member(object, "employer_cost", error)) == NULL ||
-		(deductions = money_member(object, "deductions", error)) == NULL ||
-		(line_net = money_member(object, "net", error)) == NULL ||
-		(liabilities = money_member(object, "liabilities", error)) == NULL)
+	if ((gross = money_member(object, "gross", currency, error)) == NULL ||
+		(employer = money_member(object, "employer_cost", currency, error)) == NULL ||
+		(deductions = money_member(object, "deductions", currency, error)) == NULL ||
+		(line_net = money_member(object, "net", currency, error)) == NULL ||
+		(liabilities = money_member(object, "liabilities", currency, error)) == NULL)
 		return FALSE;
 	if (gross->amount < 0 || employer->amount < 0 || deductions->amount < 0 ||
 		line_net->amount < 0 || liabilities->amount < 0)
@@ -320,14 +325,21 @@ import_object(VenturePayrollService *self, gint64 organization_id, JsonObject *p
 	g_autoptr(VentureMoney) net = NULL;
 	g_autoptr(VentureMoney) liab = NULL;
 	JsonArray *lines;
+	g_autofree gchar *currency = NULL;
 	const gchar *key;
-	const gchar *currency;
 	guint i;
 
 	if (!begin_op(self, error))
 		return NULL;
 	key = venture_json_object_get_string(payload, "run_key", NULL);
-	currency = venture_json_object_get_string(payload, "currency", "USD");
+	/* A run that names no currency is in the organization's book
+	 * currency, the one its journal posts in -- not "USD". */
+	currency = g_strdup(venture_json_object_get_string(payload, "currency", NULL));
+	if (venture_string_is_empty(currency))
+	{
+		g_free(currency);
+		currency = venture_database_get_book_currency(self->database, organization_id);
+	}
 	if (key == NULL || key[0] == '\0')
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "An imported pay run needs a run_key");
@@ -428,8 +440,13 @@ venture_payroll_service_import_csv_impl(VenturePayrollService *self, gint64 orga
 	json_builder_add_string_value(builder, period_start);
 	json_builder_set_member_name(builder, "period_end");
 	json_builder_add_string_value(builder, period_end);
-	json_builder_set_member_name(builder, "currency");
-	json_builder_add_string_value(builder, currency != NULL ? currency : "USD");
+	/* No currency given leaves the member out, so the import decides it
+	 * from the organization rather than this reading "USD" into it. */
+	if (!venture_string_is_empty(currency))
+	{
+		json_builder_set_member_name(builder, "currency");
+		json_builder_add_string_value(builder, currency);
+	}
 	json_builder_set_member_name(builder, "lines");
 	json_builder_begin_array(builder);
 	rows = g_strsplit(csv, "\n", 0);

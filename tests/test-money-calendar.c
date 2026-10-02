@@ -659,10 +659,7 @@ static void
 server_setup(ServerFixture *s, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
-	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	guint16 port = 0;
 	s->directory = g_dir_make_tmp("venture-money-calendar-XXXXXX", &error);
 	g_assert_no_error(error);
 	setup(&s->base, unused);
@@ -672,6 +669,7 @@ server_setup(ServerFixture *s, gconstpointer unused)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(s->server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(s->server);
 }
 
 static void

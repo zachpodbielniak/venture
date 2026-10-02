@@ -37,10 +37,17 @@ VENTURE_DECLARE_ENTITY(VentureJournal, venture_journal, JOURNAL)
 VENTURE_DECLARE_ENTITY(VentureJournalLine, venture_journal_line, JOURNAL_LINE)
 #define VENTURE_TYPE_EXCHANGE_RATE (venture_exchange_rate_get_type())
 VENTURE_DECLARE_ENTITY(VentureExchangeRate, venture_exchange_rate, EXCHANGE_RATE)
+#define VENTURE_TYPE_HOLDING_TXN (venture_holding_txn_get_type())
+VENTURE_DECLARE_ENTITY(VentureHoldingTxn, venture_holding_txn, HOLDING_TXN)
 
 /**
  * venture_exchange_rate_new:
  * Returns: (transfer full): a dated exact rate from one currency into another
+ */
+
+/**
+ * venture_holding_txn_new:
+ * Returns: (transfer full): an unsaved movement of a memo-currency holding
  */
 
 /**

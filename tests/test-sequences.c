@@ -484,7 +484,6 @@ check_cli(const gchar *base, const gchar *verb, const gchar *arg, const gchar *v
 static void
 test_surfaces(Fixture *f, gconstpointer unused)
 {
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(SoupSession) session = soup_session_new();
 	g_autoptr(GError) error = NULL;
@@ -493,17 +492,17 @@ test_surfaces(Fixture *f, gconstpointer unused)
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *payload = NULL;
 	g_autofree gchar *reply = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
+	guint port = 0;
 	(void)unused;
 	g_assert_no_error(error);
-	g_clear_object(&probe);
-	base = g_strdup_printf("http://127.0.0.1:%u", port);
 	g_object_set(f->config, "state-dir", state, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
+	base = g_strdup_printf("http://127.0.0.1:%u", port);
 	path = g_strdup_printf("/api/v1/sequence/%" G_GINT64_FORMAT "/enroll", venture_entity_get_id(f->sequence));
 	payload = g_strdup_printf("{\"contact_id\":%" G_GINT64_FORMAT ",\"enrolled_at\":\"2026-09-11T22:00:00Z\"}", venture_entity_get_id(f->contact));
 	g_assert_cmpuint(http(session, base, "POST", path, payload, &reply), ==, 201);

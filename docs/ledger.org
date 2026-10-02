@@ -64,8 +64,8 @@ draft, pass that header and NULL for =lines=: the service posts all its saved,
 live lines. Its version must still match. Do not pass replacement lines for a
 saved header. Generic CRUD remains the editor for drafts.
 
-The header needs =organization-id=, =occurred-at=, an uppercase three-letter
-=currency=, =source-type= and =source-id=. An original source must exist, be
+The header needs =organization-id=, =occurred-at=, a valid =currency= code
+(see [[file:currencies.org][Currencies]]), =source-type= and =source-id=. An original source must exist, be
 live and belong to the same organization. Lines need a live account from that
 organization and a nonnegative amount; zero is allowed. At least two lines
 are required. A zero line organization inherits the header's organization;
@@ -196,10 +196,19 @@ from the service registry at the database save boundary. Records whose amount
 has not yet been supplied remain operational records without a journal.
 If a source date is missing, its creation time supplies the stable accounting
 date. Metadata-only changes that produce the same accounts, sides, amounts
-and date do not post again. Financial changes reverse the earlier journal
-and post its replacement atomically. Clearing an existing amount is refused.
+and date do not post again. "The same" is decided between the previous
+version of the document and this one, both built under today's rule, so
+a rate recorded, a treatment changed or a product cost edited since the
+first posting does not by itself repost a document whose own figures did
+not move -- whether it posted one journal or split into several. A
+document that left no trace yet (saved while the ledger was off) posts on
+its next save. Financial changes reverse the earlier journals and post
+their replacement atomically, including a change into a memo currency,
+which leaves nothing posted but the reversal. Clearing an existing amount is refused.
 Deleting a source leaves its posted journal intact; deleting is not a
-financial correction.
+financial correction. The same holds for the holding movements a memo
+line wrote (below): the movement stays, still counts in the holding, and
+the holdings report names the deleted documents it is counting.
 
 The native example plugin registers =subscription-renewal= through the same
 interface. Its rule reuses the installation's expense account policy while
@@ -207,8 +216,8 @@ retaining the subscription source link. It is invoked explicitly when a
 renewal is recorded, never when merely saving the standing commitment.
 =test-plugin= loads its real shared object and posts through that rule.
 
-Mixed original currencies are refused unless the caller passes a
-=VentureExchangePolicy= object. That GInterface identifies the rate set and
+Mixed original currencies in one journal are refused unless the caller
+passes a =VentureExchangePolicy= object. That GInterface identifies the rate set and
 converts amounts into the header's book currency with exact money. The service
 still requires balanced valued debits and credits, and checks that every
 valuation has the requested currency and is nonnegative. The policy cannot
@@ -221,6 +230,399 @@ looks up the latest rate on or before the accounting date for that pair.
 Missing pairs, including the inverse of a stored pair, are refused. When a
 policy is supplied, the journal's book currency is the organization's
 =default-currency=.
+
+* Currencies in the books
+
+One organization may deal in several currencies: dollars and euros, or a
+game's gold, its fair tickets and its festival tokens. What each one does
+in the ledger is decided in one place, the posting service, from the
+currency's *book treatment* (a field on the =currency= record, see
+[[file:currencies.org][Currencies]]) and the organization's exchange-rate
+table. Every built-in ISO code, and any code nobody defined, is =valued=.
+
+** The rule
+
+For an amount in currency /C/, posted by an organization whose book
+currency (its =default-currency=, else the install's) is /B/, on
+accounting date /D/:
+
+| /C/ is                                  | Route       | Where the line goes                                                   |
+|-----------------------------------------+-------------+-----------------------------------------------------------------------|
+| =memo=                                  | =memo=      | nowhere: never posted to the ledger                                   |
+| /B/ itself                              | =book=      | the book-currency journal, as it is                                   |
+| =separate_book= (or /B/ is)             | =separate=  | a balanced journal in /C/ of its own; never converted, even with a rate |
+| =valued=, with a /C/ to /B/ rate on /D/ | =converted= | the book-currency journal; =amount= stays /C/, =book-amount= is /B/   |
+| =valued=, with no rate on /D/           | =separate=  | a balanced journal in /C/ of its own -- a rate is never invented       |
+
+=venture_posting_service_route_currency()= answers this for one
+organization, currency and date, and returns the book currency with it.
+=venture_posting_service_book_currency()= answers the book currency alone.
+Both are the hooks reports, holdings (below) and inventory call rather than
+repeating the rule.
+
+A rate is the latest =exchange_rate= row of that organization from /C/ to /B/
+effective on or before /D/ (=venture_rate_table_policy_new()=). A converted
+line keeps its original amount in =amount=, its valuation in
+=book-amount=, and the journal records =exchange-policy= =exchange_rate=.
+The policy's name is recorded only when it actually valued a line.
+
+** One call for every automatic journal
+
+=venture_posting_service_post_by_currency()= takes an unsaved header
+(organization, date, source, memo, rule name and an optional posting key;
+its currency is ignored) and unsaved lines in any currencies, and posts, in
+one transaction:
+
+- the book-currency and converted lines as one journal in /B/, valued by the
+  organization's rate table;
+- each separate currency's lines as a journal in that currency;
+- nothing for memo lines.
+
+It returns the posted journals, the book journal first and the others by
+code; an empty array means every line was memo. Every journal names the
+same source. The first keeps the posting key; each other one adds =:CODE= to
+it, because the key is unique.
+
+The document rules (=sale=, =expense=, =sale_refund=), a source save and a
+backfill, the inventory service's journal pairs and the =create_and_post=
+action all go through it. A saved draft is one journal record and posts as
+one journal (see below).
+
+** Clearing a document that spans journals
+
+A document whose lines land in two or more journals need not balance in
+each: a manual journal paying 10 GOLD for 50 TICKET, with no TICKET rate,
+has a GOLD credit and a TICKET debit and nothing else. Each journal is then
+balanced by a line to the *currency clearing* account in its own currency:
+
+| Journal | Debit                    | Credit                   |
+|---------+--------------------------+--------------------------|
+| GOLD    | Currency clearing 10 GOLD | Gold purse 10 GOLD       |
+| TICKET  | Ticket holdings 50 TICKET | Currency clearing 50 TICKET |
+
+The clearing account is the control map's =currency_clearing= account when
+one is mapped, otherwise an equity account named "Currency clearing" with
+the scoped code =<organization>:3900=, made on first use. Its balance is kept
+per book currency like any account's, so it is one clearing account per
+currency in effect: its GOLD balance is the gold given for tickets, its
+TICKET balance the tickets received for gold. A trial balance shows each
+currency's section balanced.
+
+A single journal must still balance by itself: clearing never absorbs a
+one-currency imbalance. When memo lines were dropped and the one journal
+left does not balance, the refusal names the memo currency.
+
+A document whose lines each balance within their currency -- a gold sale of
+an item whose cost was paid in tickets -- needs no clearing: it posts GOLD
+cash and sales, and TICKET cost of goods sold against TICKET inventory.
+
+** Manual journals
+
+- =create_and_post= applies the rule: a journal mixing GOLD and a valued
+  TICKET with a rate is one GOLD journal; with no rate, or with TICKET kept
+  as a separate book, it is a GOLD and a TICKET journal balanced through
+  currency clearing. A line in a memo currency is refused. The action
+  answers with the first journal; =find_source= lists them all.
+- =post= on a saved draft passes the organization's rate table, so a draft
+  whose lines are valued currencies with rates posts converted into the
+  draft's currency. A line the rule keeps apart is refused with the reason
+  -- no rate on that date, or a separate book -- and the pointer to
+  =create_and_post=. A memo line is refused.
+- The core service refuses any memo line or memo journal currency, and
+  refuses to convert into or out of a separate-book currency whatever
+  policy the caller passes. A reversal copies the original's valuations and
+  is exempt, so changing a treatment never makes history unreversible.
+
+** History is not rewritten
+
+Only new postings follow the rule. A source re-saved with the same
+accounts, sides, original amounts and date is not re-posted, even if a rate
+was recorded or a treatment changed since: the journal already posted
+stays the evidence. A financial change reverses every journal the document
+posted under that rule and posts the plan again, under today's rule. A
+source whose amounts are all in a memo currency posts nothing and leaves
+any earlier journal alone. The autojournal backlog never lists a source
+whose amount is memo.
+
+** A behaviour change for fiat books
+
+A foreign-currency document in an ordinary install is valued the same way:
+a EUR expense in a USD organization with a EUR-to-USD =exchange_rate= on
+file now posts one USD journal whose lines keep 80 EUR and carry 88 USD,
+where it used to post a separate EUR journal. That is functional-currency
+accounting, and it is what receivables already did for invoices. Without a
+rate nothing changes. Journals posted before the change stay as they were.
+
+** In the statements, the close and the group
+
+Everything that reads the books asks the same rule rather than restating
+it:
+
+- *Statements* (=trial_balance=, =balance_sheet=, =income_statement=,
+  =cash_flow=, =general_ledger=, =account_balances=, =pnl_reconciliation=)
+  keep one section per currency, the book currency's first and the rest by
+  code, and every row carries a =books= column naming its section by
+  =venture_posting_service_book_label()=:
+
+  | Section                                        | Label                                     |
+  |------------------------------------------------+-------------------------------------------|
+  | the book currency                              | =Book currency: GOLD=                     |
+  | a =separate_book= currency (or /B/ is one)     | =Separate book: TICKET=                   |
+  | a =valued= currency with no rate at the period end | =Own book: EUR (no rate to GOLD)=     |
+  | a =valued= currency that has a rate now, holding journals posted before it | =Own book: EUR (posted before a rate to GOLD)= |
+  | a =memo= currency (only journals older than the treatment) | =Memo: X (posted before it was memo)= |
+
+  Converted amounts are already in the book currency's section, so no
+  section says "valued into GOLD", and a memo currency never has one of its
+  own because it never posts. A statement with more than one section adds a
+  note listing them. An empty ledger is zero in the book currency, not the
+  install's.
+- The *close* ties out the workspace's currency (the book currency by
+  default, by =venture_posting_service_book_currency()=, not USD). An
+  unmatched bank line in a currency the rule keeps apart -- a separate
+  book, a valued currency with no rate, or memo -- is left out of the bank
+  reconciliation and named in the task's notes ("left out 1 unmatched
+  TICKET transaction(s), Separate book: TICKET") instead of refusing the
+  close. One in a currency the rule converts is in these books, so it still
+  stops the close. The trial-balance task names the other books the close
+  did not tie out. See [[file:close.org][Close]].
+- *Consolidation* reads every book each member keeps, not only its book
+  currency's. The group's currency joins as it is; a =valued= currency joins
+  at the parent's rate on the period end; a =memo= or =separate_book=
+  currency never joins, rate or not; a =valued= one with no rate is left
+  out. What is left out is named in a note ("organization 4's GOLD book (no
+  rate to USD)") where a missing rate used to refuse the whole report and a
+  member's non-book sections were silently absent. The consolidated
+  reports default to the parent's book currency. See [[file:group.org][Group]].
+
+* Holdings: what each wallet, till or character holds
+
+A *holding* is an =account= that carries a =location_id=: a wallet, a
+till, a petty-cash tin, a game character's purse. It holds any number of
+currencies at once -- one character's purse holds gold, fair tickets and
+festival tokens -- and the =holdings= report says, per location and
+currency, what came in, what went out and what is left. Nothing about it
+is specific to games: a market stall's till is a holding at the stall.
+
+** One truth per currency
+
+What a holding holds in a currency comes from exactly one place, decided
+by the currency's book treatment through the posting rule above:
+
+| Currency is                     | Its movements on the holding are                      |
+|---------------------------------+-------------------------------------------------------|
+| the book currency, =valued= or =separate_book= | the account's posted journal lines, in their original =amount= |
+| =memo=                          | =holding_txn= rows, because a memo line never posts   |
+
+The ledger is not duplicated for a posted currency: a gold sale paid into a
+purse is the journal line debiting that purse and nothing else. A memo
+currency has no journal, so the posting service writes each memo line
+whose account carries a location as a =holding_txn= *movement* instead,
+in the same transaction as whatever the document did post. A memo line
+on an ordinary account (the memo sale's income, a cost of goods sold)
+is dropped as it always was.
+
+The balance of a holding in a currency is the sum of both sources
+(=venture_holdings_balance()=): posted journal lines (=posted= or
+=reversed= journals, never tax-book ones) signed debit-positive in their
+original currency, plus the live movements. A currency whose treatment
+changes keeps its history on either side of the change. Original amounts
+are read, never =book-amount=: a valued currency converted into gold still
+sits in the purse as the currency it is.
+
+** The movement record: =holding_txn=
+
+| Field         | Kind      | For                                                              |
+|---------------+-----------+------------------------------------------------------------------|
+| =account_id=  | reference | the holding account; must carry a location, in the row's organization |
+| =amount=      | money     | signed, in a memo currency: more held is positive                |
+| =kind=        | enum      | =adjust= (zero value: typed by hand), =earn=, =spend=, =transfer= |
+| =occurred_at= | datetime  | when; now when left empty                                        |
+| =source_type=, =source_id=, =rule_name= | technical | set by the ledger: the document and rule it came from |
+| =notes=       | text      | the document's memo, or the person's                             |
+
+It belongs to the =ledger= module. Its save validator
+(=src/ledger/venture-holdings.c=) holds for every writer:
+
+- the source fields are the ledger's. A row the ledger derived from a
+  document is frozen but for its notes ("came from session #12; change that
+  record and the ledger rewrites this") and cannot be deleted by hand.
+  Deleting the document does not remove it either -- a posted journal is
+  not reversed by a deletion, and a movement is treated the same, so a
+  holding never counts a sale's gold but forgets its tickets. To take one
+  back, record an adjustment (memo) or a journal (posted currency);
+- a person writes adjustments (and =earn=/=spend=, signed to match) in a
+  *memo* currency only. A posted currency's holding is its journal lines,
+  and a movement beside them would be a second truth ("is in GOLD, which
+  the ledger posts ...");
+- =transfer= is never written by hand: it has two sides, and the transfer
+  action writes both;
+- nothing takes a holding below zero (below).
+
+** Where movements come from
+
+=venture_posting_service_post_by_currency_full()= is
+=post_by_currency()= plus the memo movements: it writes them for memo lines
+on holding accounts and hands them back. Callers choose append or replace:
+
+- *Append* -- each session yield, each transfer is a new event.
+- *Replace* -- a sale or expense saved again (=venture_ledger_save_source()=)
+  and a sale's refund replace the movements that document and rule wrote
+  before; unchanged ones are left exactly as they were, so editing a note
+  does not churn history, and an edited amount moves the holding once. A
+  refund taken back to zero removes its movement. A document an earlier
+  treatment already posted keeps its journal as its only truth while it is
+  unchanged: no movement is added beside it. Once its amounts change it is
+  reversed and written under today's treatment -- a sale moved from 40 GOLD
+  to 40 TICKET (memo) reverses its GOLD journal and earns 40 TICKET in the
+  purse, and a document that posts a journal and a memo movement keeps
+  both in step on every edit.
+
+The doors that move a holding:
+
+| Door                                           | Posted currency                        | Memo currency                    |
+|------------------------------------------------+----------------------------------------+----------------------------------|
+| a =sale= with =cash_account_id= = a holding    | cash leg debits the holding            | an =earn= movement               |
+| an =expense= with =cash_account_id= = a holding | cash leg credits the holding           | a =spend= movement               |
+| a session's money yield (=session post=)       | holding debited, session income credited | an =earn= movement             |
+| the =transfer= action on =location=            | one journal, rule =holding_transfer=   | two =transfer= movements         |
+| a manual journal on the holding account        | as posted                              | refused, as every memo line is   |
+| a =holding_txn= by hand                        | refused                                | an adjustment                    |
+
+A =sale= honours =cash_account_id= the way an =expense= always has: its
+cash leg (and a refund's) posts to that account instead of the posting
+profile's. Empty is the profile's account, as before.
+
+** The floor: never below zero, unless allowed
+
+A holding may not go below zero in any currency. The account's
+=allow_negative= (false by default -- the safe value, and the one
+migration =000710= writes on every existing account) lifts it. The rule
+reads only accounts that carry a location, so every existing bank and
+cash account is untouched: an overdraft is a real balance, and a bank
+account is not a holding unless someone gives its ledger account a
+location.
+
+*The balance judged is the running one.* A change is judged on every
+moment from its date onward -- the balance after each instant at which
+the holding moved, the change included -- never only on today's total. A
+spend dated 15 February against tickets won on 1 March is refused even
+though the purse holds plenty now, because on 15 February it held none.
+Movements at the same instant count together, so a document dated the
+second its takings landed is judged against them. The rule is "no moment
+below zero that was not below it before, and none deeper than it was":
+a moment already short -- left by a reversal (never refused, below) or by
+a period when the account allowed overdrafts -- does not block a change
+that leaves it as it was, only one that deepens it. A weaker all-time rule
+was the first version and let a back-dated purchase spend what the
+character did not yet have.
+
+- A memo movement is judged by the =holding_txn= save validator. Its
+  stored value stops counting and the new one starts, each at its own
+  date, so moving a spend earlier or an earning later is judged like a new
+  one; a move to another holding or currency judges both. Only a change
+  to the holding, amount or date is judged, so editing an old movement's
+  notes never fails because of a later one. Deleting a hand adjustment
+  (an earning taken out) and restoring one (a spend put back) are judged
+  the same way, from the movement's date.
+- A journal is judged on the posting service's =posting= signal, after
+  validation and before anything is written: the journal's net on each
+  holding, per original currency, at the journal's date. A reversal is
+  never refused -- it corrects evidence already posted, and the shortfall
+  it leaves is the truth. A document saved again reverses its old journal
+  first (dated no earlier than the original), so the replacement is judged
+  against a timeline that no longer counts the old one.
+
+A refusal names the holding, what it held on the first moment that would
+go short, that date, and what the change takes ("Characters / Aria holds
+0 TICKET on 2026-02-15 and this takes 5 TICKET, which would leave it below
+zero then ..."), and it refuses the whole document: an expense that would
+overspend a purse is not saved.
+
+** Holding accounts
+
+=venture_holdings_account_for_location()= finds the one account held at a
+location; with =create= it makes one on first use -- an asset coded
+=<organization>:holding:<location>=, named "Holding: <location path>" -- so
+a session or a transfer never needs one made first. A location with two
+holding accounts is refused rather than guessed between; name the account
+itself (a sale's or expense's =cash_account_id=) instead. Creating the
+account by hand first, with a code and name of your choosing, is the usual
+way; the lookup then finds it.
+
+=bank_account= gets no location of its own. A bank account already names
+its ledger account, and giving that account a location makes the bank
+account a holding: one mechanism, not two that could disagree.
+
+** Transfers
+
+=transfer= is a record action on =location=, the place the money leaves:
+
+#+begin_src sh
+venturectl act location 12 transfer to_location_id=13 amount="5 TICKET" notes="for the games"
+venturectl act location 12 transfer to_location_id=13 amount="4 BREWFEST"
+curl -X POST .../api/v1/location/12/actions/transfer \
+    -d '{"to_location_id": 13, "amount": "25 GOLD"}'
+#+end_src
+
+One currency per transfer. A bare number is in the book currency. Both
+locations must be in one organization; either holding account is made on
+first use. A posted currency moves by one journal (debit the destination,
+credit the source, rule =holding_transfer=, source =location:<from>=); a
+memo one by a =transfer= movement on each side. The source may not go below
+zero. Stageable: approval performs the transfer afresh against the balance
+then. It returns the source location.
+
+** The =holdings= report
+
+One row per location and currency:
+
+| Column        | Meaning                                                              |
+|---------------+----------------------------------------------------------------------|
+| =location=    | the location's path ("Characters / Aria")                             |
+| =currency=    | the currency; the book currency first under each location, then by code |
+| =books=       | how it reaches the books: =venture_posting_service_book_label()= for a posted currency, "Memo: TICKET (counted here, never posted)" for a memo one |
+| =earned=      | what came in during the period, transfers aside                       |
+| =spent=       | what went out during the period, transfers aside                      |
+| =transfers=   | net moved in (+) or out (-) by transfers during the period            |
+| =net=         | earned - spent + transfers                                           |
+| =balance=     | what it holds at the period's end (or =as_of=, when earlier)           |
+
+Metrics carry the totals per currency: =held= in the book currency and
+=held_<CODE>= for every other, the rule every per-currency report follows.
+
+A reversal takes back what it reverses instead of counting on the other
+side: a sale corrected from 10 to 12 gold shows 12 earned, not 22 earned
+and 10 spent. A reversed transfer is still a transfer.
+
+A deleted document still counts -- its journal and its movements are
+evidence, and deletion is not a correction -- so the report says which it
+is counting rather than leaving a reader hunting for a sale that is no
+longer listed: "2 deleted documents still count here (sale #12, expense
+#4): deleting a document keeps what it moved, as it keeps its journal. To
+take it back, record an adjustment for a memo currency or a journal for a
+posted one." Transfers name a location, not a document, and are never
+listed. =/holdings/deleted-document= pins it.
+
+Options, forwarded by every door (API, report page, =venturectl report=,
+MCP and the assistant's =venture_report=): =organization_id= (the default
+organization when omitted), =location_id= (that location and every
+location beneath it), =currency= (one currency) and =as_of=. It belongs to
+the =ledger= module and is hidden with it.
+
+#+begin_src sh
+venturectl report holdings all organization_id=2
+venturectl report holdings this_month organization_id=2 location_id=12
+venturectl report holdings all organization_id=2 currency=TICKET as_of=2026-03-31
+#+end_src
+
+On a dashboard, a =report= widget runs it in the page's organization --
+the one picked, or the one the dashboard is filed under -- like every
+widget, and passes its declared options: ={"currency": "TICKET"}= or
+={"location_id": 12}=. The demo's Evermoor dashboard carries one. A =sum=
+widget over =holding_txn= =amount= still totals memo movements alone;
+posted currencies are journal lines, whose amounts are unsigned, so their
+holdings are only ever read from this report.
 
 * Reading the books
 
@@ -275,6 +677,13 @@ currency policy, overflow, duplicates, atomic failures and outer rollback,
 posting and date vetoes, plugin rules, immutable projections, and re-entrant
 callback attacks. The native plugin test exercises an actual loaded rule;
 the HTTP auth test refuses both direct and staged generic ledger writes.
+=test-currency-books= pins the currency rule: the treatment registry and
+the route helper, a valued currency without and with a rate, a separate
+book that never converts, memo that never posts, a gold sale of a
+ticket-bought product, book-currency zeros, a ticket expense taking its
+cash negative, a re-save that does not rewrite history, purchase-order and
+bill line currencies, manual journals through clearing and as drafts, the
+inventory pairs call, and the fiat behaviour change.
 
 Build and run with =make DEBUG=1 -j8 test=. On a sandbox with a read-only
 =/run/user/.../dconf=, set =GSETTINGS_BACKEND=memory= in the environment first;

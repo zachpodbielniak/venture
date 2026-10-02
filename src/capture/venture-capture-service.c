@@ -258,6 +258,7 @@ venture_capture_service_convert(VentureCaptureService *self, VentureEntity *item
 		gint64 company_id = options != NULL ? venture_json_object_get_int(options, "company_id", 0) : 0;
 		g_autoptr(VentureEntity) line = NULL;
 		g_autofree gchar *number = NULL;
+		g_autofree gchar *currency = NULL;
 		company_id = find_vendor(db, org, vendor, company_id);
 		if (company_id == 0)
 		{
@@ -265,10 +266,13 @@ venture_capture_service_convert(VentureCaptureService *self, VentureEntity *item
 			return finish_op(self, db, FALSE, error), NULL;
 		}
 		number = g_strdup_printf("CAP-%" G_GINT64_FORMAT, venture_entity_get_id(item));
+		/* A capture with no amount yet becomes a bill in the
+		 * organization's book currency, not a dollar bill. */
+		currency = amount != NULL ? g_strdup(venture_money_get_currency(amount)) :
+			venture_database_get_book_currency(db, org);
 		result = VENTURE_ENTITY(venture_vendor_bill_new());
 		g_object_set(result, "company-id", company_id, "number", number, "currency",
-			amount != NULL ? venture_money_get_currency(amount) : "USD",
-			"status", "draft", "memo", title, NULL);
+			currency, "status", "draft", "memo", title, NULL);
 		if (when == NULL)
 			when = venture_time_now();
 		g_object_set(result, "bill-date", when, NULL);

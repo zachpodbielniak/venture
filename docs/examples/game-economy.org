@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
-#+version: 0.1.0
+#+updated: [2026-09-28]
+#+version: 0.2.0
 
 * What this is
 
@@ -29,6 +29,8 @@ mapping:
 | the whole enterprise                | a second =organization=, book currency =GOLD=          | [[file:../orgaccess.org][Organization access]] |
 | "an auction-house trade"            | a =venture= of type =virtual_economy=                  | [[file:../extending.org][Extending]]      |
 | characters and the guild bank       | =location= records, =kind= character and bank          | [[file:../taxonomy.org][Taxonomy]]        |
+| each character's purse              | an =account= with =location_id=: a holding, in every currency | [[file:../ledger.org][General journal]] |
+| fair tickets, festival tokens       | more =currency= records, =memo= and =separate_book=    | [[file:../currencies.org][Currencies]]    |
 | a trading addon's item groups       | a =category= tree that applies to =product=            | [[file:../taxonomy.org][Taxonomy]]        |
 | items                               | =product= records, with =inventory_item= stock         | [[file:../inventory.org][Inventory]]      |
 | price feeds (market value, region)  | =price_observation= rows from named sources            | [[file:../market.org][Market]]            |
@@ -287,14 +289,15 @@ new session_yield organization_id=$ORG session_id=$RUN product_id=$SILVERLEAF qu
 new session_yield organization_id=$ORG session_id=$RUN product_id=$DUSKROOT quantity=16 unit_value="42s"
 new session_yield organization_id=$ORG session_id=$RUN amount="2g 28s" notes="Vendor sales"
 
-venturectl act session $RUN post     # the herbs arrive in Brisk's bags, once
+venturectl act session $RUN post     # the herbs arrive in Brisk's bags, the gold in his purse
 #+end_src
 
 =minutes= is worked out from the two times. Posting puts every goods yield
 into stock in one transaction, as a =production= movement referenced
-=session:<id>= with a zero-cost layer; a posted yield is never posted
-again, and a posted session cannot be deleted (correct stock with an
-adjustment). An ore route is the same with ore. Then:
+=session:<id>= with a zero-cost layer, and every money yield into the
+holding at the session's location -- Brisk's purse (section 14), debited
+against session income; a posted yield is never posted again, and a
+posted session cannot be deleted (correct stock with an adjustment). An ore route is the same with ore. Then:
 
 #+begin_src sh
 venturectl report session_performance all group_by=activity organization_id=$ORG
@@ -457,14 +460,23 @@ new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=sum span=norma
     title="Minutes farmed, 30 days" entity_type=session field=minutes \
     period=last_30_days options='{"date_field": "started_at"}'
 new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=report span=wide \
-    title="Sale rate" report_name=listing_performance period=last_90_days
+    title="Sale rate" report_name=listing_performance period=last_90_days \
+    options='{"group_by": "category"}'
+new dashboard_widget organization_id=$ORG dashboard_id=$DASH kind=report span=full \
+    title="Held per character" report_name=holdings period=all \
+    options='{"tiles": false}'
 #+end_src
+
+A =report= widget passes the options its report declares -- =group_by=
+above -- and runs in the dashboard's organization like the rest; naming
+=organization_id= in its options is refused at the save.
 
 A =sum= totals a money or number field per currency ("30g 18s 10c"); a
 =progress= with =start_field= draws the same fraction =goal_progress= does.
 A widget never scopes itself: on the page it answers for the entity picked
-in the sidebar, so pick /Evermoor Trading/ there; over the API pass
-=?organization_id=$ORG=:
+in the sidebar, and until something is picked the page opens in the
+organization the dashboard is filed under -- Evermoor Trading, since it was
+made with =organization_id=$ORG=. Over the API pass =?organization_id=$ORG=:
 
 #+begin_src sh
 curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
@@ -500,6 +512,111 @@ venturectl report aggregate all type=product group_by=category_id \
 =date_field= is what the period bounds; without it every matching record
 is counted and the notes say so. See [[file:../reporting.org][Reporting]].
 
+* 14. Several currencies: gold, tickets and tokens
+
+Gold is not the only thing a character carries. A travelling faire pays
+out prize tickets, a seasonal festival pays out tokens, and each buys
+things the other cannot. They are more currencies in the same
+organization, each with a /book treatment/ that says what the ledger does
+with it (see [[file:../currencies.org][Currencies]], "Several currencies in
+one organization"):
+
+| Currency   | Treatment       | Why                                                                    |
+|------------+-----------------+------------------------------------------------------------------------|
+| =GOLD=     | the book currency (=valued=) | the organization's money; everything else is kept beside it |
+| =TICKET=   | =memo=          | only ever counted -- how many each character holds; no price in gold  |
+| =BREWFEST= | =separate_book= | wanted in books of its own: a BREWFEST trial balance, never converted |
+
+#+begin_src sh
+new currency code=TICKET name="Darkmoon ticket" kind=virtual exponent=0 book_treatment=memo
+new currency code=BREWFEST name="Brewfest token" kind=virtual exponent=0 book_treatment=separate_book
+#+end_src
+
+** A purse per character
+
+What a character holds is a /holding/: an =account= that carries the
+character's =location_id=. One purse holds every currency. Make them right
+after the characters, so everything below lands in them:
+
+#+begin_src sh
+BRISK_PURSE=$(new account organization_id=$ORG code=EVM-1101 name="Brisk's purse" \
+    kind=asset location_id=$BRISK active=true)
+TALLOW_PURSE=$(new account organization_id=$ORG code=EVM-1102 name="Tallow's purse" \
+    kind=asset location_id=$TALLOW active=true)
+#+end_src
+
+A purse may not be spent below zero -- spending tickets you do not have,
+or did not have yet on the date the spend is written for, is refused, and
+the whole document with it -- unless =allow_negative= is
+ticked on its account. A location with no purse of its own gets one made
+the first time something lands there.
+
+** Earning: sessions
+
+A night at the faire and a day at the festival are sessions whose yields
+are money in the other currencies. Posting puts each into the purse of
+the character who was there: the tickets as memo movements (=holding_txn=
+rows, since a memo currency never posts), the tokens as a balanced
+BREWFEST journal.
+
+#+begin_src sh
+FAIRE=$(new session organization_id=$ORG venture_id=$VENTURE name="Darkmoon Faire games" \
+    activity="darkmoon faire" location_id=$TALLOW \
+    started_at=2026-09-20T19:00:00Z ended_at=2026-09-20T21:00:00Z)
+new session_yield organization_id=$ORG session_id=$FAIRE amount="35 TICKET"
+venturectl act session $FAIRE post
+
+BREW=$(new session organization_id=$ORG venture_id=$VENTURE name="Brewfest barking" \
+    activity=brewfest location_id=$BRISK \
+    started_at=2026-09-21T18:00:00Z ended_at=2026-09-21T19:30:00Z)
+new session_yield organization_id=$ORG session_id=$BREW amount="18 BREWFEST"
+venturectl act session $BREW post
+#+end_src
+
+** Spending, and selling for gold
+
+A prize bought with tickets is an expense paid out of the purse; its
+=cash_account_id= names the purse. Sold at the auction house for gold, the
+sale names the purse too, and the gold arrives there. The prize is not
+stocked, so the sale's cost of goods is its =cost= in tickets -- memo, so it
+posts nothing -- while the gold sale posts to the gold books as ever.
+
+#+begin_src sh
+WHISTLE=$(new product organization_id=$ORG venture_id=$VENTURE name="Whistle of the Faire" \
+    cost="20 TICKET" list_price="45g" active=true)
+new expense organization_id=$ORG venture_id=$VENTURE description="Darkmoon prize: Whistle" \
+    amount="20 TICKET" cash_account_id=$TALLOW_PURSE category=SUPPLIES
+new sale organization_id=$ORG venture_id=$VENTURE product_id=$WHISTLE quantity=1 \
+    gross="45g" channel="auction house" cash_account_id=$TALLOW_PURSE
+#+end_src
+
+** Moving between characters
+
+#+begin_src sh
+venturectl act location $TALLOW transfer to_location_id=$BRISK amount="5 TICKET"
+venturectl act location $BRISK transfer to_location_id=$TALLOW amount="4 BREWFEST"
+#+end_src
+
+One currency per transfer, never leaving the source below zero. The report
+counts a transfer as moved, not as earned by one and spent by the other.
+
+** Who holds what
+
+#+begin_src sh
+venturectl report holdings all organization_id=$ORG
+venturectl report holdings all organization_id=$ORG location_id=$TALLOW
+venturectl report pnl this_month organization_id=$ORG    # GOLD first, then a block per other currency
+venturectl report trial_balance this_month organization_id=$ORG   # a "Separate book: BREWFEST" section
+#+end_src
+
+=holdings= has one row per character and currency -- gold first --
+with what was earned, spent and transferred, the balance, and how that
+currency reaches the books ("Book currency: GOLD", "Separate book:
+BREWFEST", "Memo: TICKET"). On the dashboard a =sum= of =holding_txn=
+=amount= shows the tickets held between the characters; the posted
+currencies are read from the report. See [[file:../ledger.org][the
+general journal]], "Holdings".
+
 * What does not map, and what to do instead
 
 Honest limits, so nobody builds on a feature that is not there:
@@ -511,9 +628,6 @@ Honest limits, so nobody builds on a feature that is not there:
 - *Mail and expiry timers.* A listing's =closed_at= is when it ended; there
   is no reminder that an auction is about to expire. An automation rule
   (see [[file:../automation.org][Automation]]) can make one.
-- *Per-character gold.* Money is not stock: gold on hand per character is
-  not tracked. Keep a =location= per character for goods, and treat gold
-  as the organization's.
 - *Importing an addon's export.* There is no parser for any game's
   files. Convert the export to rows and loop =venturectl create= over them,
   or post them to the REST API.

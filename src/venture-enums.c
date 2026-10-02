@@ -1195,3 +1195,38 @@ static const GEnumValue venture_symbol_position_values[] = {
 VENTURE_DEFINE_ENUM_TYPE(venture_symbol_position_get_type,
                          "VentureSymbolPosition",
                          venture_symbol_position_values)
+
+static const GEnumValue venture_book_treatment_values[] = {
+	VE(VENTURE_BOOK_TREATMENT_VALUED,        "valued"),
+	VE(VENTURE_BOOK_TREATMENT_SEPARATE_BOOK, "separate_book"),
+	VE(VENTURE_BOOK_TREATMENT_MEMO,          "memo"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_book_treatment_get_type,
+                         "VentureBookTreatment",
+                         venture_book_treatment_values)
+
+static const GEnumValue venture_book_route_values[] = {
+	VE(VENTURE_BOOK_ROUTE_BOOK,      "book"),
+	VE(VENTURE_BOOK_ROUTE_CONVERTED, "converted"),
+	VE(VENTURE_BOOK_ROUTE_SEPARATE,  "separate"),
+	VE(VENTURE_BOOK_ROUTE_MEMO,      "memo"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_book_route_get_type,
+                         "VentureBookRoute",
+                         venture_book_route_values)
+
+static const GEnumValue venture_holding_kind_values[] = {
+	VE(VENTURE_HOLDING_KIND_ADJUST,   "adjust"),
+	VE(VENTURE_HOLDING_KIND_EARN,     "earn"),
+	VE(VENTURE_HOLDING_KIND_SPEND,    "spend"),
+	VE(VENTURE_HOLDING_KIND_TRANSFER, "transfer"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_holding_kind_get_type,
+                         "VentureHoldingKind",
+                         venture_holding_kind_values)

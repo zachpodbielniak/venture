@@ -11,6 +11,9 @@ approved JSON or CSV pay run is the input.
 are refused. =payroll_line= stores gross, employer cost, deductions, net and
 liabilities. Gross plus employer cost must equal net plus liabilities.
 
+A run that names no =currency= is in the organization's book currency, and
+a line's bare amount ("2000.00") is in the run's currency.
+
 All imported amounts must be nonnegative, and gross less deductions must equal net. Malformed line objects and incomplete money fields are rejected before posting; failed imports leave no partial run. Disbursement accepts only =all=, =net= or =tax=.
 
 Import posts wages expense against tax payable and net-pay liability through

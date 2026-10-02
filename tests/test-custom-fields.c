@@ -182,7 +182,6 @@ test_settings_fields_page(Fixture *f, gconstpointer data)
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autofree gchar *dir = NULL;
 	g_autofree gchar *body = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	guint16 port;
 	VentureActor actor;
 	(void)data;
@@ -191,12 +190,12 @@ test_settings_fields_page(Fixture *f, gconstpointer data)
 		f->org, "vendor_bill", "job_code", "string", FALSE, NULL, &actor, &error));
 	dir = g_dir_make_tmp("venture-fields-XXXXXX", &error);
 	g_assert_no_error(error);
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	g_assert_cmpuint(http_request(server, "GET", "/settings/fields", NULL, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "job_code"));
 	g_assert_cmpuint(http_request(server, "POST", "/settings/fields",
@@ -244,7 +243,6 @@ test_form_shows_layout_field(Fixture *f, gconstpointer data)
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autofree gchar *dir = NULL;
 	g_autofree gchar *body = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	guint16 port;
 	VentureActor actor;
 	(void)data;
@@ -255,12 +253,12 @@ test_form_shows_layout_field(Fixture *f, gconstpointer data)
 		f->org, "company", "[\"po_number\",\"name\"]", &actor, &error));
 	dir = g_dir_make_tmp("venture-fields-form-XXXXXX", &error);
 	g_assert_no_error(error);
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	g_assert_cmpuint(http_request(server, "GET", "/e/company/new", NULL, NULL, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "po_number"));
 	g_assert_nonnull(strstr(body, "name=\"po_number\""));

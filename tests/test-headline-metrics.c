@@ -533,10 +533,10 @@ test_cac(Fixture *f, gconstpointer unused)
 /*
  * A new customer is the company's first cash, not an invoice status.
  *
- * January: $1,000 of acquisition spend; A pays a $2,000 invoice; B's $5,000
+ * January: $50 of acquisition spend; A pays a $2,000 invoice; B's $5,000
  * invoice is written off. The first version counted invoices that reached
  * "paid" by their paid_at, and a write-off makes an invoice paid: two new
- * customers and a CAC of $500. Only A paid anything: one, and $1,000.
+ * customers and a CAC of $500. Only A paid anything: one, and $50.
  *
  * A $50 refund to A in March cleared A's paid_at, and the first version
  * moved A out of January after the fact. First cash, once received, stays.
@@ -2039,7 +2039,8 @@ server_setup(ServerFixture *f, gconstpointer unused)
 	g_autoptr(VentureUser) user = NULL;
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "headline-test-secret", TRUE);
 	f->state_dir = g_dir_make_tmp("venture-headline-XXXXXX", NULL);
-	f->port = (guint16)(20000 + ((getpid() + 14071) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	f->port = 0;
 	f->config = venture_config_new();
 	g_object_set(f->config, "state-dir", f->state_dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)f->port, "security-session-secret-env", "VENTURE_TEST_SESSION_SECRET",
@@ -2054,6 +2055,7 @@ server_setup(ServerFixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	f->port = venture_web_server_get_port(f->server);
 	f->session = soup_session_new();
 	user = venture_user_new();
 	g_object_set(user, "username", "owner", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);

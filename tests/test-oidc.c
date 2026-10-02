@@ -756,7 +756,7 @@ static void test_browser_workflow(Fixture *f, gconstpointer data)
 	g_autoptr(SoupMessage) message = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *local = NULL, *local_header = NULL, *uuid = NULL, *form = NULL, *browser = NULL, *callback = NULL, *cookies = NULL, *path = NULL, *signed_in = NULL, *cleared = NULL;
-	guint port_number = 41000 + ((guint)getpid() % 10000);
+	guint port_number = 0;	/* the kernel picks; read back after the start */
 	gboolean real_provider = GPOINTER_TO_INT(data);
 	if (real_provider) {
 		const gchar *issuer = g_getenv("VENTURE_TEST_OIDC_KEYCLOAK_ISSUER");
@@ -768,6 +768,7 @@ static void test_browser_workflow(Fixture *f, gconstpointer data)
 	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)port_number, NULL);
 	server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	port_number = venture_web_server_get_port(server);
 	g_assert_true(venture_auth_login(auth, "local-member", "fixture-password", "fixture-peer", &local, &error)); g_assert_no_error(error);
 	local_header = g_strndup(local, strcspn(local, ";"));
 	message = web_request(session, port_number, "/account/oidc", local_header, NULL); g_assert_cmpuint(soup_message_get_status(message), ==, 200);

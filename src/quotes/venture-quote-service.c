@@ -478,6 +478,18 @@ save_draft(VentureQuoteService *self, VentureEntity *r, const VentureActor *acto
 		}
 		if (previous == NULL)
 		{
+			g_autofree gchar *currency = NULL;
+			/* A new quote that names no currency is in the organization's
+			 * book currency, as every other amount that names none is. It
+			 * used to be refused outright, and every caller then guessed
+			 * "USD" to get past that. */
+			g_object_get(r, "currency", &currency, NULL);
+			if (venture_string_is_empty(currency))
+			{
+				g_autofree gchar *book = venture_database_get_book_currency(self->database,
+					venture_entity_get_organization_id(r));
+				g_object_set(r, "currency", book, NULL);
+			}
 			g_object_set(r, "revision", (gint64)1, "parent-id", (gint64)0,
 				"invoice-id", (gint64)0, "subscription-id", (gint64)0, "acceptance-token", NULL, "issued-at", NULL, NULL);
 		}

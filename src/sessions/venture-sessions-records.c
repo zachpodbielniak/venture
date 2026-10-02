@@ -93,6 +93,15 @@ static const VentureFieldDecl venture_session_yield_fields[] = {
 	VENTURE_FIELD_REF("inventory-txn-id", "Stock movement",
 	                  "Set by Post: the movement that put it into stock",
 	                  "inventory_txn", VENTURE_COLUMN_FLAG_TECHNICAL),
+	/* Money's two stamps, one per kind of currency: a posted currency
+	 * lands as a journal, a memo one as a holding movement. Either one
+	 * set is what makes a money yield posted. */
+	VENTURE_FIELD_REF("journal-id", "Journal",
+	                  "Set by Post: the journal that put the money into the holding",
+	                  "journal", VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_REF("holding-txn-id", "Holding movement",
+	                  "Set by Post: the memo movement that put the money into the holding",
+	                  "holding_txn", VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 

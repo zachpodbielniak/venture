@@ -362,22 +362,32 @@ test_report_pnl_totals_in_the_records_currency(
 ){
 	g_autoptr(VentureReportResult) result = NULL;
 	VentureMetric *revenue;
+	VentureMetric *euros;
 
-	/* Books kept entirely in EUR. The totals used to anchor on the
-	 * process default currency, so every one of these failed to add and
-	 * the P&L reported $0.00 revenue -- silently. If this regresses, an
-	 * all-foreign portfolio reads as earning nothing. */
+	/* Sales kept entirely in EUR by a USD organization. The totals once
+	 * anchored on the process default and every one failed to add, so the
+	 * P&L reported $0.00 revenue -- silently. They are now kept per
+	 * currency: "revenue" is the book currency's (nothing in USD, so
+	 * zero, and still a USD figure), and the euros are "revenue_EUR",
+	 * exact. If this regresses, an all-foreign portfolio reads as
+	 * earning nothing, or its figure lands under the book's key. */
 	add_sale(fixture, 0, "60.00 EUR", "7.50 EUR", 1);
 	add_sale(fixture, 0, "40.00 EUR", "5.00 EUR", 1);
 
 	result = run_report(fixture, "pnl", NULL);
 	revenue = find_metric(result, "revenue");
+	euros = find_metric(result, "revenue_EUR");
 
 	g_assert_nonnull(revenue);
 	g_assert_cmpstr(
 		venture_money_get_currency(venture_metric_get_money(revenue)),
+		==, "USD");
+	g_assert_true(venture_money_is_zero(venture_metric_get_money(revenue)));
+	g_assert_nonnull(euros);
+	g_assert_cmpstr(
+		venture_money_get_currency(venture_metric_get_money(euros)),
 		==, "EUR");
-	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(revenue)),
+	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(euros)),
 	                ==, 8750);
 }
 
@@ -389,24 +399,30 @@ test_report_pnl_notes_excluded_currencies(
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autofree gchar *rendered = NULL;
 	VentureMetric *revenue;
+	VentureMetric *euros;
 
-	/* A EUR sale among USD ones cannot join the totals, and that used to
-	 * happen without a word: the out-parameter carrying the skip count
-	 * had NULL passed at every call site. The number being incomplete is
-	 * tolerable; the report not saying so is not. */
+	/* A EUR sale among USD ones used to be left out of the totals
+	 * without a word, then left out with a note. It is now a figure of
+	 * its own: the USD total is exact and unpolluted by a guessed
+	 * conversion, the euros are revenue_EUR, and the report says the two
+	 * were kept apart rather than that anything was dropped. */
 	add_sale(fixture, 0, "60.00", "7.50", 1);
 	add_sale(fixture, 0, "40.00", "5.00", 1);
 	add_sale(fixture, 0, "10.00 EUR", NULL, 1);
 
 	result = run_report(fixture, "pnl", NULL);
 	revenue = find_metric(result, "revenue");
+	euros = find_metric(result, "revenue_EUR");
 
-	/* The USD total is exact, not polluted by a guessed conversion. */
 	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(revenue)),
 	                ==, 8750);
+	g_assert_nonnull(euros);
+	g_assert_cmpint(venture_money_get_amount(venture_metric_get_money(euros)),
+	                ==, 1000);
 
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_TABLE);
-	g_assert_nonnull(g_strstr_len(rendered, -1, "could not be included"));
+	g_assert_null(g_strstr_len(rendered, -1, "could not be included"));
+	g_assert_nonnull(g_strstr_len(rendered, -1, "never converted"));
 }
 
 static void
@@ -662,7 +678,7 @@ test_report_pipeline_weights_by_probability(
 	venture_entity_set_organization_id(VENTURE_ENTITY(open_deal),
 	                                   fixture->organization_id);
 	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(open_deal),
-		"value", "1000.00", NULL));
+		"value", "50.00", NULL));
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(open_deal), NULL, NULL));
 

@@ -101,6 +101,9 @@ Options:
 Environment:
   PORT                Same as --port
   VENTURE_DEMO_STATE  Same as --state
+  VENTURE_DEMO_ECONOMY_NOW
+                      Pin the game economy's clock to this instant (not in
+                      the future); its records are dated back from it
   BUILD_TYPE          debug (default) or release -- which build tree to run
 
 Examples:
@@ -901,6 +904,12 @@ seed_banking () {
     # days, exactly one candidate each. The bank charge matches nothing,
     # which is the interesting row -- a demo should show the one that
     # still needs a person.
+    #
+    # The statement ends today, not five days ago. The hosting row is
+    # dated the first of this month, like the expense it matches, and on
+    # the first five days of any month that is after "five days ago": the
+    # import refused it as outside the statement and the demo died on
+    # those days only.
     feed="${state}/bank-feed.json"
 
     python3 -c 'import json, sys
@@ -914,8 +923,8 @@ data = "Date,Amount,Description,Reference,FitID\n" + \
 print(json.dumps({
     "format": "csv", "data": data,
     "period_start": sys.argv[4], "period_end": sys.argv[5],
-    "opening_balance": "1000.00", "closing_balance": "2125.00",
-}))' "$(day -19)" "$(month_start 0)" "$(day -8)" "$(day -35)" "$(day -5)" \
+    "opening_balance": "50.00", "closing_balance": "2125.00",
+}))' "$(day -19)" "$(month_start 0)" "$(day -8)" "$(day -35)" "$(day 0)" \
         > "${feed}" || die "could not write the bank feed"
 
     statement="$(ctl --format json bank import "${bank}" "@${feed}" 2>/dev/null \
@@ -1636,19 +1645,65 @@ gold () {
     printf '%sGOLD' "${text}"
 }
 
-# A timestamp N hours from now (negative is the past), for the records a
-# game economy dates to the hour: listings, sales, price checks.
-at_hour () {
-    date -u -d "$1 hours" +%Y-%m-%dT%H:00:00Z
+# The economy's clock: one instant, fixed once per seed, that every
+# at_hour and at_minute below counts from.
+#
+# Each helper used to read the wall clock and round its own answer --
+# at_hour to the hour, at_minute to the minute -- so two offsets 50
+# minutes apart swapped places whenever the seed ran in the last ten
+# minutes of an hour. A festival-token spend dated "26 hours ago, on the
+# hour" then landed before the session that earned the tokens ended, and
+# the holding refused to go below zero. Counting every offset from one
+# anchor, rounded once, makes the order of any two timestamps the order
+# of their offsets, whatever the time of day.
+#
+# The anchor is the start of the current UTC hour, so it is never in the
+# future and every negative offset is in the past. VENTURE_DEMO_ECONOMY_NOW
+# pins it instead -- any instant `date -d` reads, not in the future --
+# which is how tests/demo-clock.sh replays the seed at awkward times.
+economy_anchor=""
+
+set_economy_clock () {
+    local now
+    local present
+
+    present="$(date -u +%s)"
+
+    if [[ -n "${VENTURE_DEMO_ECONOMY_NOW:-}" ]]
+    then
+        now="$(date -u -d "${VENTURE_DEMO_ECONOMY_NOW}" +%s 2>/dev/null)" \
+            || die "VENTURE_DEMO_ECONOMY_NOW=\"${VENTURE_DEMO_ECONOMY_NOW}\" is not a time date can read"
+        (( now <= present )) \
+            || die "VENTURE_DEMO_ECONOMY_NOW is in the future, and the server refuses records dated there"
+    else
+        now="${present}"
+    fi
+
+    economy_anchor=$(( now / 3600 * 3600 ))
 }
 
-# The same to the minute, for a session's start and end.
+# Seconds from the anchor as a timestamp, failing loudly without one:
+# a silent fallback to the wall clock is exactly the bug above.
+economy_time () {
+    [[ -n "${economy_anchor}" ]] || die "the economy's clock is not set; call set_economy_clock"
+    date -u -d "@$(( economy_anchor + $1 ))" "${2:-+%Y-%m-%dT%H:%M:%SZ}"
+}
+
+# A timestamp N hours from the anchor (negative is the past), for the
+# records a game economy dates to the hour: listings, sales, price checks.
+at_hour () {
+    economy_time $(( $1 * 3600 ))
+}
+
+# The same in minutes, for a session's start and end.
 at_minute () {
-    date -u -d "$1 minutes" +%Y-%m-%dT%H:%M:00Z
+    economy_time $(( $1 * 60 ))
 }
 
 seed_virtual_economy () {
     step "A second organization: an auction-house trade kept in gold"
+
+    set_economy_clock
 
     local org
     local venture
@@ -1659,6 +1714,7 @@ seed_virtual_economy () {
     local goal
     local dashboard
     local item
+    local brisk_purse tallow_purse
 
     # The unit of account first: every money field below is written in it,
     # and the organization names it as its book currency. Four digits of
@@ -1708,6 +1764,26 @@ seed_virtual_economy () {
         description="The crafter: alchemy.")"
     bank="$(make_record location organization_id="${org}" name="Guild bank" kind=bank active=true \
         description="Finished goods waiting to be listed.")"
+
+    # Gold is not the only thing a character carries. Faire tickets are
+    # counted and never priced (memo: holdings only, nothing posted), and
+    # festival tokens keep a small book of their own (separate_book: a
+    # balanced BREWFEST trial balance, never converted into gold).
+    add currency code=TICKET name="Darkmoon ticket" kind=virtual exponent=0 \
+        book_treatment=memo \
+        description="Prize tickets from the travelling faire. Counted per character, never valued."
+    add currency code=BREWFEST name="Brewfest token" kind=virtual exponent=0 \
+        book_treatment=separate_book \
+        description="Festival tokens: their own small book, never converted into gold."
+
+    # A purse per character: an account with a location is a holding, and
+    # everything a character earns or spends in any currency lands in it --
+    # the vendor gold from the farming runs below included. It may not be
+    # spent below zero; allow_negative would say otherwise.
+    brisk_purse="$(make_record account organization_id="${org}" code=EVM-1101 \
+        name="Brisk's purse" kind=asset location_id="${brisk}" active=true)"
+    tallow_purse="$(make_record account organization_id="${org}" code=EVM-1102 \
+        name="Tallow's purse" kind=asset location_id="${tallow}" active=true)"
 
     silverleaf="$(make_record product organization_id="${org}" venture_id="${venture}" \
         name=Silverleaf sku=HERB-SL category_id="${herbs}" tags=herb,farmable \
@@ -1774,7 +1850,7 @@ ${flask} ${bank} 0"
     do
         n=$(( n + 1 ))
         session="$(make_record session organization_id="${org}" venture_id="${venture}" \
-            name="${route//_/ } $(date -u -d "${start} hours" +%m-%d)" activity="${route//_/ }" \
+            name="${route//_/ } $(economy_time $(( start * 3600 )) +%m-%d)" activity="${route//_/ }" \
             location_id="${brisk}" started_at="$(at_minute $(( start * 60 )))" \
             ended_at="$(at_minute $(( start * 60 + minutes )))" \
             cost="$(gold 1500)" notes="Repairs and a flight")"
@@ -1806,6 +1882,90 @@ ore_route -360 60
 herb_route -240 90
 ore_route -144 55
 herb_route -48 80"
+
+    step "Faire tickets and festival tokens, held per character"
+
+    # A night at the faire and a day at the festival: money yields in the
+    # two other currencies, posted into each character's purse like the
+    # vendor gold above -- the tickets as memo movements, the tokens as a
+    # BREWFEST journal.
+    local faire brewfest whistle
+    faire="$(make_record session organization_id="${org}" venture_id="${venture}" \
+        name="Darkmoon Faire games" activity="darkmoon faire" location_id="${tallow}" \
+        started_at="$(at_minute -2000)" ended_at="$(at_minute -1880)")"
+    add session_yield organization_id="${org}" session_id="${faire}" amount="35 TICKET" \
+        notes="Ring toss and the shooting gallery"
+    brewfest="$(make_record session organization_id="${org}" venture_id="${venture}" \
+        name="Brewfest barking" activity="brewfest" location_id="${brisk}" \
+        started_at="$(at_minute -1700)" ended_at="$(at_minute -1610)")"
+    add session_yield organization_id="${org}" session_id="${brewfest}" amount="18 BREWFEST" \
+        notes="Barking quests"
+    ctl act session "${faire}" post > /dev/null || die "could not post the faire session"
+    ctl act session "${brewfest}" post > /dev/null || die "could not post the brewfest session"
+
+    # A prize bought with tickets out of Tallow's purse, then sold for gold
+    # into the same purse. The prize is not stocked, so the sale's cost of
+    # goods is its cost in tickets -- memo, so it posts nothing -- while the
+    # gold sale posts to the gold books as ever.
+    whistle="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Whistle of the Faire" sku=FAIRE-WHISTLE category_id="${crafted}" \
+        tags=prize,faire cost="20 TICKET" list_price="$(gold 450000)" active=true)"
+    add expense organization_id="${org}" venture_id="${venture}" \
+        description="Darkmoon prize: Whistle of the Faire" vendor="Faire prize booth" \
+        amount="20 TICKET" cash_account_id="${tallow_purse}" occurred_at="$(at_hour -30)" \
+        category=SUPPLIES
+    add sale organization_id="${org}" venture_id="${venture}" product_id="${whistle}" \
+        quantity=1 gross="$(gold 450000)" occurred_at="$(at_hour -20)" \
+        channel="auction house" buyer_name="Auction house" cash_account_id="${tallow_purse}"
+    add expense organization_id="${org}" venture_id="${venture}" \
+        description="Brewfest ram racing reins" vendor="Festival vendor" \
+        amount="6 BREWFEST" cash_account_id="${brisk_purse}" occurred_at="$(at_hour -26)" \
+        category=SUPPLIES
+
+    # Stock bought with tickets, the way any stock is bought: a purchase
+    # order in TICKET, approved, sent and received with `venturectl
+    # purchase`, which lands two lanterns on the guild bank's shelf as a
+    # TICKET cost layer. Receiving writes no journal (memo never posts),
+    # and paying the booth is the tickets leaving Tallow's purse -- a memo
+    # spend typed by hand, since a purchase order is not a payment. One
+    # lantern is sold for gold: revenue in GOLD, its cost of goods in
+    # TICKET. The other stays, and is the TICKET row of the
+    # inventory_valuation report.
+    local booth lantern lantern_item faire_po faire_line
+    booth="$(make_record company organization_id="${org}" name="Faire prize booth" \
+        kind=supplier)"
+    lantern="$(make_record product organization_id="${org}" venture_id="${venture}" \
+        name="Darkmoon lantern" sku=FAIRE-LANTERN category_id="${crafted}" \
+        tags=prize,faire list_price="$(gold 380000)" active=true)"
+    lantern_item="$(make_record inventory_item organization_id="${org}" \
+        product_id="${lantern}" venture_id="${venture}" location_id="${bank}")"
+    faire_po="$(make_record purchase_order organization_id="${org}" number=FAIRE-1 \
+        vendor_id="${booth}" currency=TICKET status=draft ordered_at="$(at_hour -29)")"
+    faire_line="$(make_record purchase_order_line organization_id="${org}" \
+        purchase_order_id="${faire_po}" product_id="${lantern}" \
+        inventory_item_id="${lantern_item}" description="Darkmoon lantern" \
+        quantity=2 position=1 unit_price="4 TICKET")"
+    ctl purchase approve "${faire_po}" date="$(at_hour -29)" > /dev/null \
+        || die "could not approve the faire purchase order"
+    ctl purchase send "${faire_po}" date="$(at_hour -29)" > /dev/null \
+        || die "could not send the faire purchase order"
+    ctl purchase receive "${faire_po}" line_id="${faire_line}" quantity=2 \
+        date="$(at_hour -28)" > /dev/null \
+        || die "could not receive the lanterns"
+    add holding_txn organization_id="${org}" account_id="${tallow_purse}" kind=spend \
+        amount="-8 TICKET" occurred_at="$(at_hour -28)" \
+        notes="Paid the prize booth for two lanterns (FAIRE-1)"
+    add sale organization_id="${org}" venture_id="${venture}" product_id="${lantern}" \
+        quantity=1 gross="$(gold 380000)" occurred_at="$(at_hour -18)" \
+        channel="auction house" buyer_name="Auction house" cash_account_id="${tallow_purse}"
+
+    # Moves between characters: the transfer action, one currency at a time.
+    ctl act location "${tallow}" transfer to_location_id="${brisk}" amount="5 TICKET" \
+        notes="Tickets for Brisk's turn at the games" > /dev/null \
+        || die "could not move tickets between characters"
+    ctl act location "${brisk}" transfer to_location_id="${tallow}" amount="4 BREWFEST" \
+        notes="Tokens for Tallow's ram" > /dev/null \
+        || die "could not move tokens between characters"
 
     step "Two recipes, and the potions and flasks crafted from the harvest"
 
@@ -1967,7 +2127,7 @@ ${flask} 68000"
 
     dashboard="$(make_record dashboard organization_id="${org}" name="Evermoor" slug=evermoor \
         purpose=overview layout=three_columns venture_id="${venture}" position=20 \
-        description="The auction-house trade: what sold, what it cost, how far the profession has to go. Pick Evermoor Trading in the sidebar to see it.")"
+        description="The auction-house trade: what sold, what it cost, how far the profession has to go.")"
 
     add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=sum \
         title="Auction house gross, 30 days" entity_type=sale field=gross \
@@ -1987,6 +2147,14 @@ ${flask} 68000"
     add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
         title="Gold per hour" report_name=session_performance period=last_90_days \
         span=full position=6
+    # What each character holds, in every currency and whatever its
+    # treatment: gold and tokens from their journal lines, tickets from
+    # their memo movements. The widget names no organization -- the page
+    # scopes it to the one this dashboard is filed under -- and its tiles
+    # (one "held" figure per currency) are left to the table.
+    add dashboard_widget organization_id="${org}" dashboard_id="${dashboard}" kind=report \
+        title="Held per character" report_name=holdings period=all \
+        options='{"tiles": false}' span=full position=7
 }
 
 seed_dashboards () {
@@ -2034,7 +2202,7 @@ except Exception:
     say "${counts} tickets on a desk with service levels, a sprint, a release"
     say "and an incident. Money, sales and the books are all seeded."
     say "A second organization, Evermoor Trading, runs an auction-house"
-    say "trade in a game world's gold: pick it in the sidebar.${OFF}"
+    say "trade in a game world's gold; its dashboard opens in it.${OFF}"
     say ""
     say "  Today             ${base_url}/            ${DIM}(the home dashboard)${OFF}"
     say "  The desk          ${base_url}/dashboards/desk"
@@ -2044,7 +2212,7 @@ except Exception:
     say "  Sprints           ${base_url}/sprints"
     say "  Factory           ${base_url}/factory"
     say "  Reports           ${base_url}/reports"
-    say "  The gold trade    ${base_url}/dashboards/evermoor  ${DIM}(pick Evermoor Trading first)${OFF}"
+    say "  The gold trade    ${base_url}/dashboards/evermoor"
     say "  Every record type ${base_url}/entities        ${DIM}(leads, quotes, bills, journals…)${OFF}"
     say ""
     say "${DIM}From the command line:"

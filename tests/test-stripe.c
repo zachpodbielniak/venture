@@ -243,23 +243,20 @@ run_cli(const gchar *const *argv, const gchar *input, gboolean success)
 static VentureWebServer *
 start_server(Fixture *f, gchar **state_dir)
 {
-	g_autoptr(GSocketListener) listener = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureWebServer *server;
 	guint16 port;
 
 	*state_dir = g_dir_make_tmp("venture-stripe-XXXXXX", &error);
 	g_assert_no_error(error);
-	listener = g_socket_listener_new();
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", *state_dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
 	return server;
 }
 

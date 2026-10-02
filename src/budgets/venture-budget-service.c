@@ -269,11 +269,10 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 	lines = active_lines(self, organization_id, period, dimension, error);
 	if (lines == NULL)
 		return NULL;
-	{
-		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
-		if (org != NULL)
-			g_object_get(org, "default-currency", &book_currency, NULL);
-	}
+	/* The organization's book currency, or the install's when it names
+	 * none -- never "USD", which anchored a euro install's budget on
+	 * dollars and then refused to add its first euro line. */
+	book_currency = venture_database_get_book_currency(self->database, organization_id);
 	cached = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
 	result = venture_report_result_new("Budget vs actual", range);
 	venture_report_result_add_column(result, "key", "Code", VENTURE_REPORT_COLUMN_TEXT);
@@ -282,14 +281,8 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 	venture_report_result_add_column(result, "budget", "Budget", VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "actual", "Actual", VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "variance", "Variance", VENTURE_REPORT_COLUMN_MONEY);
-	{
-		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
-		g_autofree gchar *currency = NULL;
-		if (org != NULL)
-			g_object_get(org, "default-currency", &currency, NULL);
-		budget_total = venture_money_new_zero(book_currency && book_currency[0] ? book_currency : "USD");
-		actual_total = venture_money_new_zero(book_currency && book_currency[0] ? book_currency : "USD");
-	}
+	budget_total = venture_money_new_zero(book_currency);
+	actual_total = venture_money_new_zero(book_currency);
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
@@ -316,15 +309,14 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 		balances = g_hash_table_lookup(cached, scope);
 		if (balances == NULL)
 		{
-			balances = balances_for(self, organization_id, period,
-				book_currency && book_currency[0] ? book_currency : "USD",
+			balances = balances_for(self, organization_id, period, book_currency,
 				scope[0] ? scope : NULL, error);
 			if (balances == NULL)
 				return NULL;
 			g_hash_table_insert(cached, g_strdup(scope), balances);
 		}
 		actual = venture_money_new_for_currency(actual_for(balances, account_id, kind),
-			planned != NULL ? planned->currency : (book_currency && book_currency[0] ? book_currency : "USD"));
+			planned != NULL ? planned->currency : book_currency);
 		variance = venture_money_subtract(actual, planned, error);
 		if (variance == NULL)
 			return NULL;
@@ -372,11 +364,8 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 	if (range == NULL)
 		return NULL;
 	{
-		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
-		g_autofree gchar *currency = NULL;
-		if (org != NULL)
-			g_object_get(org, "default-currency", &currency, NULL);
-		balances = balances_for(self, organization_id, period, currency && currency[0] ? currency : "USD", NULL, error);
+		g_autofree gchar *currency = venture_database_get_book_currency(self->database, organization_id);
+		balances = balances_for(self, organization_id, period, currency, NULL, error);
 	}
 	if (balances == NULL)
 		return NULL;
@@ -392,12 +381,7 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 	if (cash_id < 0 || ar_id < 0 || ap_id < 0)
 		return NULL;
 	{
-		g_autoptr(VentureEntity) org = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
-		g_autofree gchar *currency = NULL;
-		if (org != NULL)
-			g_object_get(org, "default-currency", &currency, NULL);
-		if (currency == NULL || currency[0] == '\0')
-			currency = g_strdup("USD");
+		g_autofree gchar *currency = venture_database_get_book_currency(self->database, organization_id);
 		ar = venture_money_new_for_currency(ar_id > 0 ? closing_for(balances, ar_id) : 0, currency);
 		ap = venture_money_new_for_currency(ap_id > 0 ? -closing_for(balances, ap_id) : 0, currency);
 		budget_in = venture_money_new_zero(currency);

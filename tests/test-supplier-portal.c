@@ -201,7 +201,6 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_autofree gchar *print_path = NULL;
 	g_autofree gchar *body = NULL;
 	g_autofree gchar *print_body = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	guint16 port;
 	VentureActor actor;
 	(void)data;
@@ -214,15 +213,14 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_object_get(access, "token", &token, NULL);
 	dir = g_dir_make_tmp("venture-supplier-portal-XXXXXX", &error);
 	g_assert_no_error(error);
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_assert_no_error(error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
 	g_assert_cmpuint(http_request(server, "GET", "/supplier/deadbeef", NULL, NULL, NULL), ==, 404);
 	path = g_strdup_printf("/supplier/%s", token);
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);

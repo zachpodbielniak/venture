@@ -110,6 +110,7 @@ typedef struct
 	const gchar		*symbol;
 	gboolean		symbol_suffix;
 	gboolean		registered;
+	VentureBookTreatment	treatment;
 	guint			n_units;
 	VentureCurrencyUnit	units[VENTURE_CURRENCY_MAX_DENOMINATIONS];
 } VentureCurrencyEntry;
@@ -1016,6 +1017,125 @@ venture_money_sum_dominant(
 		*out_skipped = skipped;
 
 	return venture_money_sum(chosen, currency, NULL);
+}
+
+/* --- Totals per currency ------------------------------------------------- */
+
+GPtrArray *
+venture_money_totals_new(void)
+{
+	return g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+}
+
+gboolean
+venture_money_totals_add(
+	GPtrArray		 *totals,
+	const VentureMoney	 *amount,
+	GError			**error
+){
+	guint i;
+
+	g_return_val_if_fail(NULL != totals, FALSE);
+
+	if (NULL == amount)
+		return TRUE;
+
+	/* Like to like only: the index is the currency, so no code below
+	 * this point can be asked to add two of them. */
+	for (i = 0; i < totals->len; i++)
+	{
+		VentureMoney *total;
+		VentureMoney *next;
+
+		total = g_ptr_array_index(totals, i);
+
+		if (0 != g_strcmp0(venture_money_get_currency(total),
+		                   venture_money_get_currency(amount)))
+			continue;
+
+		next = venture_money_add(total, amount, error);
+
+		if (NULL == next)
+			return FALSE;
+
+		venture_money_free(total);
+		g_ptr_array_index(totals, i) = next;
+		return TRUE;
+	}
+
+	g_ptr_array_add(totals, venture_money_copy(amount));
+	return TRUE;
+}
+
+const VentureMoney *
+venture_money_totals_lookup(
+	GPtrArray	*totals,
+	const gchar	*currency
+){
+	guint i;
+
+	if (NULL == totals)
+		return NULL;
+
+	for (i = 0; i < totals->len; i++)
+	{
+		if (0 == g_strcmp0(venture_money_get_currency(g_ptr_array_index(totals, i)),
+		                   currency))
+			return g_ptr_array_index(totals, i);
+	}
+
+	return NULL;
+}
+
+static gint
+venture_money_totals_compare(
+	gconstpointer	a,
+	gconstpointer	b,
+	gpointer	user_data
+){
+	const gchar *first;
+	const gchar *left;
+	const gchar *right;
+
+	first = user_data;
+	left = venture_money_get_currency(*(VentureMoney *const *)a);
+	right = venture_money_get_currency(*(VentureMoney *const *)b);
+
+	if ((NULL != first) && (0 == g_strcmp0(left, first)))
+		return (0 == g_strcmp0(right, first)) ? 0 : -1;
+
+	if ((NULL != first) && (0 == g_strcmp0(right, first)))
+		return 1;
+
+	return g_strcmp0(left, right);
+}
+
+void
+venture_money_totals_sort(
+	GPtrArray	*totals,
+	const gchar	*first
+){
+	g_return_if_fail(NULL != totals);
+
+	g_ptr_array_sort_with_data(totals, venture_money_totals_compare,
+	                           (gpointer)first);
+}
+
+gboolean
+venture_money_totals_has_value(GPtrArray *totals)
+{
+	guint i;
+
+	if (NULL == totals)
+		return FALSE;
+
+	for (i = 0; i < totals->len; i++)
+	{
+		if (!venture_money_is_zero(g_ptr_array_index(totals, i)))
+			return TRUE;
+	}
+
+	return FALSE;
 }
 
 /* --- Comparison ---------------------------------------------------------- */
@@ -2451,11 +2571,74 @@ venture_currency_register(
 		venture_currency_registry = g_hash_table_new_full(g_str_hash,
 			g_str_equal, NULL, g_free);
 
+	/* A reload re-registers every row and only then sets its treatment.
+	 * Carrying the old one over means a currency never reads as valued
+	 * for the moment in between -- a posting that looked then would put
+	 * a separate-book amount into the book currency. */
+	{
+		VentureCurrencyEntry *previous;
+
+		previous = g_hash_table_lookup(venture_currency_registry, entry->code);
+
+		if (NULL != previous)
+			entry->treatment = previous->treatment;
+	}
+
 	/* The key lives inside the value, so the two go together. */
 	g_hash_table_replace(venture_currency_registry, entry->code, entry);
 	g_rw_lock_writer_unlock(&venture_currency_registry_lock);
 
 	return TRUE;
+}
+
+gboolean
+venture_currency_set_book_treatment(
+	const gchar		*currency,
+	VentureBookTreatment	 treatment
+){
+	gchar key[VENTURE_MONEY_CURRENCY_LEN];
+	VentureCurrencyEntry *entry;
+	gboolean found;
+
+	if ((NULL == currency) || ('\0' == currency[0]) ||
+	    !venture_money_store_currency(key, currency))
+		return FALSE;
+
+	g_rw_lock_writer_lock(&venture_currency_registry_lock);
+	entry = (NULL != venture_currency_registry)
+		? g_hash_table_lookup(venture_currency_registry, key) : NULL;
+	found = (NULL != entry);
+
+	if (found)
+		entry->treatment = treatment;
+
+	g_rw_lock_writer_unlock(&venture_currency_registry_lock);
+
+	return found;
+}
+
+VentureBookTreatment
+venture_currency_get_book_treatment(const gchar *currency)
+{
+	gchar key[VENTURE_MONEY_CURRENCY_LEN];
+	VentureCurrencyEntry *entry;
+	VentureBookTreatment treatment;
+
+	/* Anything the registry does not hold -- every ISO code, and a code
+	 * nobody defined -- is valued: converted when a rate exists, kept
+	 * apart when none does. That is what every currency did before a
+	 * treatment could be chosen. */
+	if ((NULL == currency) || ('\0' == currency[0]) ||
+	    !venture_money_store_currency(key, currency))
+		return VENTURE_BOOK_TREATMENT_VALUED;
+
+	g_rw_lock_reader_lock(&venture_currency_registry_lock);
+	entry = (NULL != venture_currency_registry)
+		? g_hash_table_lookup(venture_currency_registry, key) : NULL;
+	treatment = (NULL != entry) ? entry->treatment : VENTURE_BOOK_TREATMENT_VALUED;
+	g_rw_lock_reader_unlock(&venture_currency_registry_lock);
+
+	return treatment;
 }
 
 void

@@ -595,15 +595,16 @@ workshop(
 static gint64
 inventory_balance(Fixture *fixture)
 {
-	g_autoptr(VentureMoney) value = NULL;
+	g_autoptr(GPtrArray) value = NULL;
 	g_autoptr(GError) error = NULL;
 
 	value = venture_inventory_service_valuation(
 		venture_inventory_service_get(fixture->database), fixture->organization_id,
 		NULL, &error);
 	g_assert_no_error(error);
+	g_assert_cmpuint(value->len, ==, 1);
 
-	return venture_money_get_amount(value);
+	return venture_money_get_amount(g_ptr_array_index(value, 0));
 }
 
 /*
@@ -624,7 +625,7 @@ test_craft_success(
 	g_autoptr(VentureEntity) txn = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) txns = NULL;
-	g_autoptr(VentureMoney) cogs = NULL;
+	g_autoptr(GPtrArray) cogs = NULL;
 	g_autoptr(VentureMoney) unit = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *reference = NULL;
@@ -686,7 +687,8 @@ test_craft_success(
 		venture_inventory_service_get(fixture->database), shop.potion_item, 6, NULL,
 		"test", 0, NULL, &cogs, &error));
 	g_assert_no_error(error);
-	cogs_text = venture_money_to_string(cogs);
+	g_assert_cmpuint(cogs->len, ==, 1);
+	cogs_text = venture_money_to_string(g_ptr_array_index(cogs, 0));
 	g_assert_cmpstr(cogs_text, ==, "10.00 USD");
 }
 
@@ -898,8 +900,10 @@ test_craft_rollback(
 }
 
 /*
- * Inputs whose FIFO costs are in two currencies cannot be one made
- * unit's cost; the craft is refused and nothing moves. What breaks: a
+ * Inputs whose FIFO costs are in two currencies make a unit that costs
+ * both: the output gets sibling layers, one per currency, sharing its
+ * lot, and selling it later gives up both at once. What breaks: the old
+ * refusal (a gold-and-dollar craft could not be made at all), or a
  * potion whose cost is gold and dollars added as though they were one.
  */
 static void
@@ -908,7 +912,11 @@ test_craft_mixed_currency(
 	gconstpointer	 user_data
 ){
 	Workshop shop;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(GPtrArray) cogs = NULL;
+	g_autoptr(GError) error = NULL;
 	gint64 gold_item;
+	gint64 alloy_item;
 	gint64 gold;
 	gint64 alloy;
 	gint64 mix;
@@ -919,16 +927,26 @@ test_craft_mixed_currency(
 	gold = product(fixture, "Gold Dust");
 	alloy = product(fixture, "Alloy");
 	gold_item = item(fixture, gold);
-	item(fixture, alloy);
+	alloy_item = item(fixture, alloy);
 	receive(fixture, gold_item, 3, "1.0000 GOLD");
 
 	mix = recipe(fixture, "Alloy", alloy, 1);
 	component(fixture, mix, shop.herb, 1, FALSE);
 	component(fixture, mix, gold, 1, FALSE);
 
-	craft_refused(fixture, mix, 1, 0, "two currencies");
-	g_assert_cmpint(on_hand(fixture, shop.herb_item), ==, 10);
-	g_assert_cmpint(on_hand(fixture, gold_item), ==, 3);
+	txn = craft(fixture, mix, 1, 0);
+	g_assert_nonnull(txn);
+	g_assert_cmpint(on_hand(fixture, shop.herb_item), ==, 9);
+	g_assert_cmpint(on_hand(fixture, gold_item), ==, 2);
+	g_assert_cmpint(on_hand(fixture, alloy_item), ==, 1);
+
+	g_assert_true(venture_inventory_service_issue(
+		venture_inventory_service_get(fixture->database), alloy_item, 1, NULL,
+		"test", 0, NULL, &cogs, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(cogs->len, ==, 2);
+	g_assert_cmpint(venture_money_get_amount(venture_money_totals_lookup(cogs, "USD")), ==, 100);
+	g_assert_cmpint(venture_money_get_amount(venture_money_totals_lookup(cogs, "GOLD")), ==, 10000);
 }
 
 /*
@@ -1351,6 +1369,118 @@ test_margin_market_off(
 	g_assert_cmpstr(cell_text(filtered, 0, "recipe"), ==, "Healing Potion");
 }
 
+/* recipe_margin narrowed by venture and category, as the options say. */
+static VentureReportResult *
+margin_narrowed(
+	Fixture		 *fixture,
+	gint64		  venture_id,
+	gint64		  category_id,
+	GError		**error
+){
+	g_autoptr(JsonObject) options = NULL;
+	VentureReport *report;
+
+	options = json_object_new();
+
+	if (0 != venture_id)
+		json_object_set_int_member(options, "venture_id", venture_id);
+
+	if (0 != category_id)
+		json_object_set_int_member(options, "category_id", category_id);
+
+	report = venture_report_registry_lookup(
+		venture_context_get_report_registry(fixture->context), "recipe_margin");
+	g_assert_nonnull(report);
+
+	return venture_report_generate(report, fixture->context, NULL, options, error);
+}
+
+/*
+ * The row bound counts the recipes asked about. venture_id, category_id
+ * and "active only" are part of the query, so an organization past the
+ * bound is refused only when the question itself is: narrowed under it,
+ * the report answers. What breaks: the three filters run in C after a
+ * capped fetch, so every question in a large organization is refused --
+ * by a message that tells the operator to narrow the question they just
+ * narrowed. The bound is lowered to two rather than seeding twenty
+ * thousand recipes.
+ */
+static void
+test_margin_bound(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureReportResult) everything = NULL;
+	g_autoptr(VentureReportResult) by_venture = NULL;
+	g_autoptr(VentureReportResult) by_category = NULL;
+	g_autoptr(VentureReportResult) active_only = NULL;
+	g_autoptr(VentureVenture) other = NULL;
+	g_autoptr(VentureEntity) alchemy = NULL;
+	g_autoptr(VentureEntity) healing = NULL;
+	g_autoptr(VentureEntity) filed = NULL;
+	g_autoptr(VentureEntity) elsewhere = NULL;
+	g_autoptr(VentureEntity) retired = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 potions;
+
+	(void)user_data;
+
+	other = venture_venture_new();
+	g_object_set(other, "name", "Elsewhere", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(other), fixture->organization_id);
+	save(fixture, other);
+
+	alchemy = VENTURE_ENTITY(venture_category_new());
+	g_object_set(alchemy, "name", "Alchemy", "applies-to", "recipe", NULL);
+	venture_entity_set_organization_id(alchemy, fixture->organization_id);
+	save(fixture, alchemy);
+	healing = VENTURE_ENTITY(venture_category_new());
+	g_object_set(healing, "name", "Healing", "applies-to", "recipe",
+	             "parent-id", ID(alchemy), NULL);
+	venture_entity_set_organization_id(healing, fixture->organization_id);
+	save(fixture, healing);
+
+	/* Two active recipes in the workshop, one filed beneath Alchemy;
+	 * one active in another venture; one retired in the workshop. */
+	potions = recipe(fixture, "Healing Potion", product(fixture, "Healing Potion"), 1);
+	filed = venture_database_get(fixture->database, VENTURE_TYPE_RECIPE, potions, NULL);
+	g_object_set(filed, "category-id", ID(healing), NULL);
+	save(fixture, filed);
+	recipe(fixture, "Plain", product(fixture, "Plain thing"), 1);
+	elsewhere = recipe_new_in(fixture, 0, "Elsewhere", product(fixture, "Far thing"), 1);
+	g_object_set(elsewhere, "venture-id", ID(other), NULL);
+	save(fixture, elsewhere);
+	retired = recipe_new_in(fixture, 0, "Retired", product(fixture, "Old thing"), 1);
+	g_object_set(retired, "venture-id", fixture->venture_id, "active", FALSE, NULL);
+	save(fixture, retired);
+
+	/* Three active of four: the retired one is not counted. */
+	venture_aggregate_set_max_rows(3);
+	active_only = margin_narrowed(fixture, 0, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(active_only), ==, 3);
+
+	/* Past two, the whole organization is refused... */
+	venture_aggregate_set_max_rows(2);
+	everything = margin_narrowed(fixture, 0, 0, &error);
+	g_assert_null(everything);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* ...and the workshop's two, or Alchemy's one, are answered. */
+	by_venture = margin_narrowed(fixture, fixture->venture_id, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(by_venture), ==, 2);
+
+	by_category = margin_narrowed(fixture, 0, ID(alchemy), &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(by_category), ==, 1);
+	g_assert_cmpstr(cell_text(by_category, 0, "recipe"), ==, "Healing Potion");
+
+	venture_aggregate_set_max_rows(0);
+	g_assert_cmpint(venture_aggregate_get_max_rows(), ==, VENTURE_AGGREGATE_MAX_ROWS);
+}
+
 /* ==========================================================================
  * The module
  * ========================================================================== */
@@ -1520,7 +1650,8 @@ server_fixture_set_up(
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "production-test-secret", TRUE);
 
 	fixture->state_dir = g_dir_make_tmp("venture-production-XXXXXX", NULL);
-	fixture->port = (guint16)(20000 + ((getpid() + 8123) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	fixture->port = 0;
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config,
@@ -1543,6 +1674,7 @@ server_fixture_set_up(
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new();
 
@@ -1767,6 +1899,7 @@ main(
 	ADD("/production/margin/market", test_margin_market);
 	ADD("/production/margin/currencies-and-tools", test_margin_currencies_and_tools);
 	ADD("/production/margin/market-off", test_margin_market_off);
+	ADD("/production/margin/bound", test_margin_bound);
 	ADD("/production/module-off", test_module_off);
 	g_test_add("/production/http", ServerFixture, NULL, server_fixture_set_up,
 	           test_http, server_fixture_tear_down);

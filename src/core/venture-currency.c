@@ -60,7 +60,6 @@ venture_currency_validate(
 	gint64 exponent;
 	gsize i;
 
-	(void)database;
 	(void)user_data;
 
 	g_object_get(entity, "code", &code, "exponent", &exponent,
@@ -132,7 +131,90 @@ venture_currency_validate(
 		return FALSE;
 	}
 
-	return venture_currency_check_denominations(denominations, error);
+	if (!venture_currency_check_denominations(denominations, error))
+		return FALSE;
+
+	/*
+	 * A book currency is always posted: memo would make every sale and
+	 * expense of the organization that keeps its books in it save with
+	 * no journal and no error. Treatment is per code, process-wide, so
+	 * every organization is asked, whoever is saving.
+	 */
+	{
+		gint treatment = VENTURE_BOOK_TREATMENT_VALUED;
+
+		g_object_get(entity, "book-treatment", &treatment, NULL);
+
+		if (VENTURE_BOOK_TREATMENT_MEMO == treatment)
+		{
+			g_autoptr(VentureAccessScope) internal = NULL;
+			g_autoptr(VentureQuery) query = NULL;
+			g_autoptr(VentureEntity) keeper = NULL;
+			g_autoptr(GError) local = NULL;
+
+			internal = venture_access_policy_enter(
+				venture_database_get_access_policy(database), NULL);
+			query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+
+			if (!venture_query_add_filter_string(query, "default-currency",
+			                                     VENTURE_FILTER_OP_EQ, code, error))
+				return FALSE;
+
+			keeper = venture_database_find_one(database, query, &local);
+
+			if (NULL != local)
+			{
+				g_propagate_error(error, g_steal_pointer(&local));
+				return FALSE;
+			}
+
+			if (NULL != keeper)
+			{
+				g_autofree gchar *name = venture_entity_get_display_name(keeper);
+
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "%s is the book currency of %s, and a book currency is "
+				            "always posted: memo would stop its books without a "
+				            "word. Choose valued or separate_book, or change that "
+				            "organization's default currency first", code, name);
+				return FALSE;
+			}
+		}
+	}
+
+	return TRUE;
+}
+
+/*
+ * The other half of the rule above: an organization may not keep its
+ * books in a memo currency.
+ */
+static gboolean
+venture_currency_validate_organization(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autofree gchar *code = NULL;
+
+	(void)database;
+	(void)previous;
+	(void)user_data;
+
+	g_object_get(entity, "default-currency", &code, NULL);
+
+	if ((NULL != code) && ('\0' != *code) &&
+	    (VENTURE_BOOK_TREATMENT_MEMO == venture_currency_get_book_treatment(code)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s is a memo currency, which is never posted, so it cannot be "
+		            "the currency the books are kept in", code);
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 /* --- The registry ------------------------------------------------------------ */
@@ -175,11 +257,13 @@ venture_currency_load_registry(
 		g_autoptr(GError) refused = NULL;
 		gint64 exponent;
 		gint position;
+		gint treatment;
 
 		row = g_ptr_array_index(rows, i);
 		g_object_get(row, "code", &code, "exponent", &exponent,
 		             "symbol", &symbol, "symbol-position", &position,
-		             "denominations", &denominations, NULL);
+		             "denominations", &denominations,
+		             "book-treatment", &treatment, NULL);
 
 		if ((exponent < 0) || (exponent > VENTURE_MONEY_MAX_EXPONENT) ||
 		    !venture_currency_register(code, (guint8)exponent, symbol,
@@ -194,6 +278,7 @@ venture_currency_load_registry(
 			continue;
 		}
 
+		venture_currency_set_book_treatment(code, (VentureBookTreatment)treatment);
 		g_ptr_array_add(codes, g_steal_pointer(&code));
 	}
 
@@ -284,6 +369,9 @@ venture_currency_install(VentureContext *context)
 
 		venture_database_add_save_validator(database, VENTURE_TYPE_CURRENCY,
 		                                    venture_currency_validate, NULL, NULL);
+		venture_database_add_save_validator(database, VENTURE_TYPE_ORGANIZATION,
+		                                    venture_currency_validate_organization,
+		                                    NULL, NULL);
 
 		/* The state lives exactly as long as the database that emits
 		 * these, so it needs no reference of its own. */

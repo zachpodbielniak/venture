@@ -397,6 +397,9 @@ venture_confirmation_store_stage(
 		return NULL;
 
 	if (!venture_orgaccess_check_proposal(self->database, staged, action, via, error)) return NULL;
+	/* The approver reads the diff: a bare amount must show in the book
+	 * currency it will be saved in, not in the install's. */
+	if (!venture_database_resolve_bare_money(self->database, staged, error)) return NULL;
 
 	venture_confirmation_store_sweep(self);
 

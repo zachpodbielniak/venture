@@ -18,6 +18,16 @@ G_DECLARE_FINAL_TYPE(VenturePurchasingService, venture_purchasing_service, VENTU
  */
 VenturePurchasingService *venture_purchasing_service_get(VentureDatabase *database);
 /**
+ * venture_purchasing_install_validators:
+ * @database: the database to guard
+ *
+ * Installs the save validators that keep a purchase order's lines, and a
+ * vendor bill's, in the currency their document states -- and refuse
+ * moving a document to a currency its lines are not in. Idempotent per
+ * database; the context calls it.
+ */
+void venture_purchasing_install_validators(VentureDatabase *database);
+/**
  * venture_purchasing_service_approve:
  * @self: the service or registry instance
  * @purchase_order_id: purchase order id

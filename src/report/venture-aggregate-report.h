@@ -42,6 +42,32 @@ G_BEGIN_DECLS
 #define VENTURE_AGGREGATE_MAX_ROWS (20000)
 
 /**
+ * venture_aggregate_get_max_rows:
+ *
+ * The bound every aggregation and every report that totals fetched rows
+ * refuses past: %VENTURE_AGGREGATE_MAX_ROWS unless a test lowered it.
+ * Read it rather than the macro, so that the refusal a report gives past
+ * the bound -- and that narrowing gets under it -- can be tested without
+ * seeding twenty thousand rows.
+ *
+ * Returns: the most rows one aggregation reads
+ */
+gint
+venture_aggregate_get_max_rows(void);
+
+/**
+ * venture_aggregate_set_max_rows:
+ * @max_rows: the new bound, or 0 to restore %VENTURE_AGGREGATE_MAX_ROWS
+ *
+ * Lowers the bound for a test. Process-wide, like the registries, so a
+ * test that lowers it restores it before it returns. Nothing outside the
+ * test suite calls this: an install that wants a different bound is asking
+ * for a different memory ceiling, which is a build decision.
+ */
+void
+venture_aggregate_set_max_rows(gint max_rows);
+
+/**
  * VENTURE_AGGREGATE_MAX_GROUPS:
  *
  * How many `group_by` fields one aggregation takes. Past three a table is

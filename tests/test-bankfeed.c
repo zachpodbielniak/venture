@@ -435,7 +435,6 @@ test_async_health_stays_responsive(Fixture *f, gconstpointer data)
 	g_autoptr(GCancellable) cancel = g_cancellable_new();
 	g_autofree gchar *dir = NULL;
 	g_autofree gchar *url = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	SlowTransport *transport;
 	SyncDone sync = { FALSE, -1, NULL };
 	HealthDone health = { FALSE, 0, NULL, 0, 0 };
@@ -444,12 +443,12 @@ test_async_health_stays_responsive(Fixture *f, gconstpointer data)
 	(void)data;
 	dir = g_dir_make_tmp("venture-bankfeed-XXXXXX", &error);
 	g_assert_no_error(error);
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
-	g_socket_listener_close(listener);
+	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	transport = g_object_new(slow_transport_get_type(), NULL);
 	service = venture_bankfeed_service_new(f->db, f->org, VENTURE_BANK_FEED_TRANSPORT(transport), &error);
 	g_assert_no_error(error);

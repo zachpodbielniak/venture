@@ -1290,7 +1290,8 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_projects_check_write,
 		venture_oidc_check_write,
 		venture_forge_check_write,
-		venture_sessions_check_write
+		venture_sessions_check_write,
+		venture_holdings_check_write
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(guards); i++)
@@ -1472,6 +1473,100 @@ accounting_save_needs_scope(VentureDatabase *database, VentureEntity *entity)
 	return FALSE;
 }
 
+/*
+ * The currency a record's own "currency" field names, if the type declares
+ * one as text and it is set. A vendor bill, a quote, a payroll run or a
+ * budget says which money its amounts are in.
+ */
+static gchar *
+venture_database_document_currency(VentureEntity *entity)
+{
+	GParamSpec *pspec;
+	gchar *currency = NULL;
+
+	pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(entity), "currency");
+	if (NULL == pspec || G_TYPE_STRING != G_PARAM_SPEC_VALUE_TYPE(pspec))
+		return NULL;
+	g_object_get(entity, "currency", &currency, NULL);
+	if (!venture_currency_is_valid(currency))
+	{
+		g_free(currency);
+		return NULL;
+	}
+	return currency;
+}
+
+/*
+ * What a bare amount on @entity is in. A document that names its currency
+ * decides for its own amounts, and for the amounts of a record that
+ * references it -- a bill line or a payment against the bill, a quote
+ * line, a pay line -- found through the field table's references, never a
+ * list of types. Anything else is in its organization's book currency.
+ */
+static gchar *
+venture_database_bare_currency(VentureDatabase *self, VentureEntity *entity)
+{
+	VentureEntityClass *klass;
+	g_autofree GParamSpec **properties = NULL;
+	gchar *currency;
+	guint n_properties;
+	guint i;
+
+	currency = venture_database_document_currency(entity);
+	if (NULL != currency)
+		return currency;
+	klass = VENTURE_ENTITY_GET_CLASS(entity);
+	properties = venture_entity_class_list_persistent_properties(klass, &n_properties);
+	for (i = 0; i < n_properties; i++)
+	{
+		g_autoptr(VentureEntity) target = NULL;
+		const gchar *target_name;
+		GType target_type;
+		gint64 target_id = 0;
+
+		target_name = venture_entity_class_get_reference(klass, properties[i]->name);
+		if (NULL == target_name || G_TYPE_INT64 != G_PARAM_SPEC_VALUE_TYPE(properties[i]))
+			continue;
+		g_object_get(entity, properties[i]->name, &target_id, NULL);
+		target_type = venture_entity_registry_lookup(venture_entity_registry_get_default(), target_name);
+		if (target_id <= 0 || G_TYPE_INVALID == target_type)
+			continue;
+		{
+			GObjectClass *target_class = g_type_class_ref(target_type);
+			gboolean has_currency = NULL != g_object_class_find_property(target_class, "currency");
+
+			g_type_class_unref(target_class);
+			if (!has_currency)
+				continue;
+		}
+		/* A missing target is the reference check's refusal to make. */
+		target = venture_database_get(self, target_type, target_id, NULL);
+		if (NULL == target)
+			continue;
+		currency = venture_database_document_currency(target);
+		if (NULL != currency)
+			return currency;
+	}
+	return venture_database_get_book_currency(self, venture_entity_get_organization_id(entity));
+}
+
+gboolean
+venture_database_resolve_bare_money(VentureDatabase *self, VentureEntity *entity, GError **error)
+{
+	g_autofree gchar *currency = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	if (!venture_entity_has_bare_money(entity))
+		return TRUE;
+	/* The organization the record is being written to: whatever the body
+	 * or the stored row set, or the one each generic writer has placed it
+	 * in by now. An organization of 0 reads as the install's default,
+	 * which is exactly what the decoder already used. */
+	currency = venture_database_bare_currency(self, entity);
+	return venture_entity_resolve_bare_money(entity, currency, error);
+}
+
 /* The generic writer is itself a business command: source hooks can generate
  * postings before the ordinary row save. Scope it before dispatching any hook. */
 gboolean
@@ -1492,6 +1587,10 @@ venture_database_save(VentureDatabase *self, VentureEntity *entity,
 		return FALSE;
 	}
 	g_rec_mutex_unlock(&self->lock);
+	/* Before anything reads an amount: a validator, a hook or a posting
+	 * must see "12.50" as the organization's money, not the install's. */
+	if (!venture_database_resolve_bare_money(self, entity, error))
+		return FALSE;
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "write", error) ||
 		!venture_orgaccess_prepare(self, entity, error))
 		return FALSE;
@@ -1504,8 +1603,29 @@ venture_database_save(VentureDatabase *self, VentureEntity *entity,
 		if (operation == NULL)
 			return FALSE;
 	}
-	ok = database_save_dispatch(self, entity, actor, error);
-	return ok && (operation == NULL || venture_accounting_operation_finish(operation, error));
+	{
+		GError *local = NULL;
+
+		ok = database_save_dispatch(self, entity, actor, &local) &&
+			(operation == NULL || venture_accounting_operation_finish(operation, &local));
+		/* Every refusal must say why. A check that returns FALSE without
+		 * an error is a bug in that check; it used to reach a person as
+		 * "Unknown error". Name the record, and warn so a test catches the
+		 * check that did it. */
+		if (!ok && NULL == local)
+		{
+			g_warning("Saving %s #%" G_GINT64_FORMAT " failed without saying why",
+			          venture_entity_get_entity_name(entity), venture_entity_get_id(entity));
+			g_set_error(&local, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+			            "Saving the %s failed without saying why; this is a bug, and the record was not saved",
+			            venture_entity_get_entity_name(entity));
+		}
+		if (ok)
+			g_clear_error(&local);
+		else
+			g_propagate_error(error, local);
+		return ok;
+	}
 }
 
 static gboolean
@@ -2427,15 +2547,33 @@ venture_database_seed_default_organization(
 }
 
 /*
+ * Whether a seed may write @type_name's rows. A seed belongs to a module's
+ * type, and a hidden type's table is never created by reconciliation: on
+ * an install that never had the module on, counting its rows is a query
+ * against a table that does not exist and startup refuses. Skipping is
+ * what makes the seed happen later rather than never -- the start that
+ * finds the module on has just created the table empty, and the seed's own
+ * empty-table test fills it then.
+ */
+static gboolean
+venture_database_seed_wanted(
+	VentureEntityRegistry	*registry,
+	const gchar		*type_name
+){
+	return venture_entity_registry_is_type_enabled(registry, type_name);
+}
+
+/*
  * A minimal chart of accounts. Enough to post a sale and an expense without
  * the operator having to invent an accounting structure before recording
  * anything, and conventional enough that an accountant will recognise it.
  */
 static gboolean
 venture_database_seed_accounts(
-	VentureDatabase	 *self,
-	gint64		  organization_id,
-	GError		**error
+	VentureDatabase		 *self,
+	VentureEntityRegistry	 *registry,
+	gint64			  organization_id,
+	GError			**error
 ){
 	static const struct
 	{
@@ -2472,6 +2610,9 @@ venture_database_seed_accounts(
 	g_autoptr(VentureQuery) query = NULL;
 	gint64 existing;
 	gsize i;
+
+	if (!venture_database_seed_wanted(registry, "account"))
+		return TRUE;
 
 	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	existing = venture_database_count(self, query, error);
@@ -2516,9 +2657,10 @@ venture_database_seed_accounts(
  */
 static gboolean
 venture_database_seed_tax_categories(
-	VentureDatabase	 *self,
-	gint64		  organization_id,
-	GError		**error
+	VentureDatabase		 *self,
+	VentureEntityRegistry	 *registry,
+	gint64			  organization_id,
+	GError			**error
 ){
 	static const struct
 	{
@@ -2557,6 +2699,9 @@ venture_database_seed_tax_categories(
 	g_autoptr(VentureQuery) query = NULL;
 	gint64 existing;
 	gsize i;
+
+	if (!venture_database_seed_wanted(registry, "tax_category"))
+		return TRUE;
 
 	query = venture_query_new(VENTURE_TYPE_TAX_CATEGORY);
 	existing = venture_database_count(self, query, error);
@@ -2619,8 +2764,9 @@ venture_database_migrate(
 		return FALSE;
 
 	organization_id = venture_database_seed_default_organization(self, error);
-	if (organization_id == 0 || !venture_database_seed_accounts(self, organization_id, error) ||
-		!venture_database_seed_tax_categories(self, organization_id, error) ||
+	if (organization_id == 0 ||
+		!venture_database_seed_accounts(self, registry, organization_id, error) ||
+		!venture_database_seed_tax_categories(self, registry, organization_id, error) ||
 		!venture_setup_seed_defaults(self, organization_id, NULL, error) ||
 		!venture_pipelines_migrate(self, error))
 		return FALSE;

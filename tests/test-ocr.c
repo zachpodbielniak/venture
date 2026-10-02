@@ -402,7 +402,6 @@ static void test_action_forms(Fixture *f, gconstpointer data)
 	g_autoptr(GPtrArray) fields = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
 	g_autoptr(VentureAction) action = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
 	g_autoptr(SoupSession) session = soup_session_new();
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *path = NULL, *body = NULL;
@@ -421,10 +420,11 @@ static void test_action_forms(Fixture *f, gconstpointer data)
 		gboolean registered = venture_action_registry_register(venture_database_get_action_registry(f->database), action, form_allowed, form_invoke, NULL, NULL, &error);
 		g_assert_no_error(error); g_assert_true(registered);
 	}
-	port = g_socket_listener_add_any_inet_port(listener, NULL, &error); g_assert_no_error(error); g_clear_object(&listener);
+	port = 0;
 	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)port, "security-require-auth", FALSE, NULL);
 	server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
+	port = venture_web_server_get_port(server);
 	path = g_strdup_printf("/e/document/%" G_GINT64_FORMAT, venture_entity_get_id(document)); body = http_get(session, port, path);
 	g_assert_nonnull(strstr(body, "<textarea name=\"notes\"")); g_assert_nonnull(strstr(body, "<select name=\"choice\""));
 	g_assert_nonnull(strstr(body, "<option value=\"second\"")); g_assert_nonnull(strstr(body, "<select name=\"document_id\""));

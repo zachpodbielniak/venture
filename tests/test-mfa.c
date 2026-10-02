@@ -55,7 +55,8 @@ fixture_set_up(Fixture *fixture, gconstpointer user_data)
 	if (with_server)
 	{
 		fixture->state_dir = g_dir_make_tmp("venture-mfa-XXXXXX", NULL);
-		fixture->port = (guint16)(20000 + ((getpid() + 7) % 20000));
+		/* 0: the kernel picks a free port, read back after the start. */
+		fixture->port = 0;
 		g_object_set(fixture->config,
 		             "state-dir", fixture->state_dir,
 		             "server-bind-address", "127.0.0.1",
@@ -79,6 +80,7 @@ fixture_set_up(Fixture *fixture, gconstpointer user_data)
 		g_assert_no_error(error);
 		g_assert_true(venture_web_server_start(fixture->server, &error));
 		g_assert_no_error(error);
+		fixture->port = venture_web_server_get_port(fixture->server);
 		fixture->session = soup_session_new();
 	}
 }

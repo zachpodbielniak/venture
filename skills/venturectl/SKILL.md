@@ -100,7 +100,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `forge settings ID` | encrypted configure/test/disconnect/import operation, JSON from stdin |
 | `forge set-token ID` / `forge set-secret ID` | retired; refuse with encrypted-settings guidance |
 | `forge verify ID` | record which account the token belongs to |
-| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width; `report aggregate PERIOD type=… measure=… group_by=…` totals any type (see *Aggregating any record type*) |
+| `report [NAME] [PERIOD] [as_of=DATE] [organization_id=ID] [customer_id=ID] [currency=CODE] [compare_to=PERIOD] [account_id=ID] [basis=cash\|accrual] [dimension=VALUE] [band_size=N] [location_id=ID]` | list reports, or run one with an optional historical cutoff, legal entity, accounting basis, dimension and score-band width; the period may be left out before options (`report holdings organization_id=2` is `this_month`); `report aggregate PERIOD type=… measure=… group_by=…` totals any type (see *Aggregating any record type*) |
 | `links TYPE ID` | every link touching a record, read from it |
 | `link TYPE ID TYPE ID [kind=K] [note=T]` | link two records; kinds: related, blocks, blocked_by, depends_on, required_by, parent_of, child_of, duplicates, causes, caused_by, produces, produced_by, references, referenced_by, supersedes, superseded_by; unlink with `delete record_link ID` |
 | `reconcile suggest TYPE ID [--matcher NAME] [--threshold N]` | rank matching book records; scores above the threshold (default 80) stage bank transaction action confirmations when banking is installed; never applies |
@@ -319,8 +319,20 @@ an organization. Correcting financial values creates reversal and replacement
 journals. Deleting a source record does not erase its journal.
 
 Use **report trial_balance PERIOD** for posted account balances at the period's
-end. It reports book currencies separately. The existing P&L still reads
+end. It reports book currencies separately, the organization's book currency
+first, each row labelled in `books` (`Book currency: GOLD`, `Separate book:
+TICKET`, `Own book: EUR (no rate to GOLD)`). The existing P&L still reads
 operational sales and expenses; it is not the authoritative journal balance.
+
+**`pnl`, `ventures` and `monthly` keep one figure per currency, never a
+converted total.** The book currency always comes first (zero when nothing
+is in it) and keeps the plain metric keys (`revenue`, `expenses`,
+`profit`); any other currency adds its code: `revenue_TICKET`,
+`profit_EUR`. Rows carry a `currency` column — `pnl` repeats its eight
+lines per currency, `ventures` is a row per venture per currency, `monthly`
+a row per month per currency. Read `revenue_<CODE>` for another currency's
+figure; do not add a TICKET row to a GOLD one. A bare date is one day:
+`report pnl 2026-03-14` is the fourteenth only.
 
 **`venturectl mcp` stages writes rather than applying them**, unless started
 with `--apply-writes`. A staged write sends the request with `?stage=1`, and
@@ -859,7 +871,9 @@ the `customer_health` and `activities` modules. See `docs/reporting.org`.
 
 `report balance_sheet`, `income_statement`, `cash_flow`, `general_ledger`,
 `account_balances` and `pnl_reconciliation` read posted evidence per exact
-organization and currency. Pass `compare_to=2026-07` after the selected period
+organization and currency, book currency first, with a `books` label per row
+(a separate book or a currency with no rate is its own section; memo never
+appears). Pass `compare_to=2026-07` after the selected period
 for prior/delta columns; general ledger also accepts `account_id=ID`.
 For example: `venturectl -f csv report balance_sheet 2026-08 organization_id=1 currency=USD compare_to=2026-07`.
 Synthetic totals have no single account ID; actual account/journal IDs link
@@ -1197,6 +1211,14 @@ account. These transactional actions cannot be staged. Organization finance,
 owner or administrator membership is required; signed/closed task evidence
 must be reopened before completion or waiver can change it.
 
+A close ties out one currency (the workspace's; the book currency when
+omitted). An unmatched bank line in a separate-book, rate-less or memo
+currency is left out and named in the `bank_recon` task's notes rather than
+refusing; one in a currency with a rate still refuses. Consolidated reports
+(`consolidated_*`, group module) default to the parent's book currency and
+leave out — naming in a note — a member book with no rate or in a
+separate-book/memo currency, instead of refusing.
+
 ### Customer retainer actions
 
 `act company ID collect_retainer 'amount=250 USD' liability_account_id=N`
@@ -1240,7 +1262,7 @@ business execution. See `docs/configuration.org` for gateway responsibilities.
 - `currency` is a record type: `code`, `name`, `kind`
   (`virtual|points|commodity|other`), `exponent` (0–6), `symbol`,
   `symbol_position` (`prefix|suffix`), `denominations` (a JSON **string**),
-  `description`. Check with `venturectl describe currency`.
+  `book_treatment` (`valued|separate_book|memo`), `description`. Check with `venturectl describe currency`.
 - Creating, editing or deleting one needs the `admin` or `owner` role;
   reading is open. An editor's write is refused with 403.
 - `code` and `exponent` cannot change once saved, and a built-in ISO code
@@ -1263,6 +1285,96 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
   refuse a user-defined currency (even a registered three-letter code).
 - Value one in another with an ordinary `exchange_rate`
   (`from_currency=GOLD to_currency=USD rate_numerator=15 rate_denominator=1000`).
+- `book_treatment` says what the ledger does with it: `valued` (default;
+  converted into the organization's book currency when an `exchange_rate`
+  to it exists on the date, else posted as its own balanced journal),
+  `separate_book` (always its own journal, never converted) or `memo`
+  (never posted). It may change; only later postings follow it. An
+  organization's `default_currency` can never be `memo` (refused both
+  ways: on the currency record and on the organization).
+- Posting follows the rule for every currency, ISO included: once a
+  `EUR`→`USD` rate is recorded, a EUR expense in a USD organization posts a
+  USD journal whose lines keep the EUR amount. `report trial_balance`
+  still shows each separate book as its own balanced section.
+- Stock bought in several currencies keeps them apart: an issue posts one
+  cost-of-goods-sold pair per currency its FIFO layers cost (each by its
+  treatment; memo posts nothing), and `report inventory_valuation` and
+  `report inventory` give one row per currency (`currency`, and on the
+  valuation `books`: book currency / valued into the book currency /
+  separate book / memo, not posted). Their metrics are `valuation` /
+  `value` for the book currency and `valuation_<CODE>` / `value_<CODE>`
+  for the others. `report inventory` shows the location's path and the
+  average unit cost of the units carrying each currency.
+- A manual journal may mix currencies through `act journal 0
+  create_and_post 'journal={...}'`: kept-apart currencies each get a
+  journal balanced through the "Currency clearing" equity account.
+  `act journal ID post` on a saved draft cannot split, and refuses a line
+  the rule keeps apart, saying why. A memo-currency line is refused.
+- A purchase order line and a vendor bill line must be in their order's or
+  bill's `currency`; the save is refused otherwise.
+- **Stock priced in another currency comes in through a purchase order**,
+  which is not a record action but its own command (`POST
+  /api/v1/purchase_order/:id/:action`). Create the `purchase_order`
+  (`status=draft`, `currency=TICKET`, `vendor_id` a supplier company) and
+  its `purchase_order_line` (`inventory_item_id`, `quantity`,
+  `unit_price="4 TICKET"`) with `create`, then:
+
+  ```sh
+  venturectl purchase approve 7
+  venturectl purchase send 7
+  venturectl purchase receive 7 line_id=12 quantity=2 date=2026-03-02T10:00:00Z
+  ```
+
+  The receipt is a FIFO cost layer in the order's currency, journalled
+  Inventory against GRNI by its treatment (memo: none). Selling the item
+  for gold posts GOLD revenue and a TICKET cost of goods. A purchase order
+  is not a payment: a memo currency paid out of a purse is a `holding_txn`
+  `kind=spend` (negative), a posted one is the vendor bill.
+
+## Holdings: what each wallet, till or character holds
+
+Module `ledger`. A **holding** is an `account` with `location_id` set (a
+purse, a till, a petty-cash tin). It holds every currency. What moves it:
+
+- a `sale` or `expense` whose `cash_account_id` is the holding account
+  (sales honour it now, like expenses always did);
+- `act session ID post`: each money yield goes into the holding at the
+  session's `location_id` (credit: `session_income` control-map account,
+  else `<org>:4900` "Session income"); no location, or ledger off → the
+  money yield stays unposted (skipped, not refused);
+- `act location FROM transfer to_location_id=TO amount="5 TICKET"
+  [occurred_at=…] [notes=…]` — one currency per transfer, a bare number is
+  in the book currency, both locations in one organization;
+- a `holding_txn` by hand — **memo currencies only** (`amount` signed;
+  `kind` `adjust` default, `earn` positive, `spend` negative; `transfer`
+  refused by hand).
+
+Posted currencies (book, `valued`, `separate_book`) are held as the
+account's journal lines; memo currencies as `holding_txn` rows the ledger
+writes. **Never create a `holding_txn` in a posted currency** (refused) and
+never edit or delete one whose `source_type` is set (refused: change the
+sale/expense/session instead). **A holding cannot go below zero at any
+moment** — the document that would do it is refused whole ("… holds 12
+TICKET on 2026-03-02 and this takes 50 TICKET …") — unless the account has
+`allow_negative=true`. It is the balance *on the document's date*, not
+today's: a spend back-dated to before the takings it needs is refused, so
+record (or date) what came in first.
+Accounts with no location are never judged. A location with two holding
+accounts makes `transfer` and `session post` refuse; name the account.
+One is made on first use (`<org>:holding:<location>`) when there is none.
+
+```sh
+venturectl create account code=EVM-1101 name="Aria's purse" kind=asset location_id=12 organization_id=2
+venturectl create expense venture_id=3 amount="20 TICKET" cash_account_id=40 description=Prize organization_id=2
+venturectl act location 12 transfer to_location_id=13 amount="5 TICKET"
+venturectl report holdings all organization_id=2 [location_id=12] [currency=TICKET] [as_of=DATE]
+```
+
+`report holdings`: one row per location path **and currency**, book
+currency first: `location`, `currency`, `books` (how it reaches the books,
+e.g. `Memo: TICKET (counted here, never posted)`), `earned`, `spent`,
+`transfers` (net), `net`, `balance`. Metrics `held` (book currency) and
+`held_<CODE>`. `location_id` includes every location beneath it.
 
 ## Categories, locations and tags
 
@@ -1362,6 +1474,18 @@ Dashboards have the same arithmetic as widgets: `sum` (a money/number
 `options={"target_field":"budget"}`, of one `record_id` or summed over a
 filter). Their fields are checked when the widget is saved.
 
+`report`, `chart` and `metric` widgets run their report in the page's
+organization (the one picked, or the one the dashboard is filed under) --
+never put `organization_id` or `venture_id` in their `options`, the save
+refuses it. Their `options` pass the report's **declared** parameters
+only (what `GET /api/v1/reports` lists for that report), type-checked at
+the save; `tiles`/`table` are the report kind's own switches:
+
+```sh
+venturectl create dashboard_widget dashboard_id=4 kind=report \
+    report_name=holdings period=all options='{"currency": "TICKET", "tiles": false}'
+```
+
 ## Market: price observations and listings
 
 Module `market` (requires `sales`). Check `venturectl describe listing`
@@ -1448,20 +1572,27 @@ venturectl list inventory_txn reference=recipe:3  # everything the recipe made o
   inventory transaction (quantity × times), the output arrives as one, and
   the made units carry the consumed FIFO cost exactly. Any refusal writes
   nothing. No journal is posted (inventory to inventory).
+- Inputs costed in two currencies (GOLD dust, TICKET tokens) are **not**
+  refused: the output gets one set of cost layers per currency sharing a
+  lot (`lot_txn_id`), and a later sale of a made unit gives up its share of
+  each. Such a transaction has no `unit_cost`; its `notes` say what each
+  currency came to.
 - Refusals (exit 2) say what to do: `Short of <product>` (unless its item
   allows negative stock), a reusable component not on hand (allow-negative
   does **not** apply to tools), a product kept in several places ("name
   the location_id to use"), no inventory item for the output
   ("create an inventory item for it there (product_id=… location_id=…)"),
-  an inactive recipe, no components, inputs costed in two currencies.
+  an inactive recipe, no components.
 - `location_id` means exactly that location for every component and the
   output, not its children. The craft never creates the output's
   inventory item.
 - It returns the output's `inventory_txn`.
 
 Report `recipe_margin` — `price_source` (exact; needs the market module,
-refused without it), `as_of`, `venture_id`, `category_id` (and everything
-beneath it), `organization_id`. One row per active recipe: `cost`,
+refused without it), `currency` (only prices observed in it count; left
+out, the book currency's price wins wherever the product was seen in it,
+else the newest in any; not a code is refused), `as_of`, `venture_id`,
+`category_id` (and everything beneath it), `organization_id`. One row per active recipe: `cost`,
 `value`, `profit`, `margin`, `cost_per_unit`, `craftable_now`,
 `priced_by`, `note`. Market on: latest observed prices only; a product
 never priced is named in `note` and its figures are blank, **not zero**.
@@ -1471,6 +1602,7 @@ the output. Two currencies in one recipe: a note and no money figures.
 ```sh
 venturectl report recipe_margin all price_source="market value"
 venturectl report recipe_margin all category_id=4 as_of=2026-03-01
+venturectl report recipe_margin all currency=TICKET
 ```
 
 ## Sessions: runs of effort and what they yielded
@@ -1491,12 +1623,14 @@ Check `venturectl describe session` and `describe session_yield`.
 - `session_yield`: **goods** (`product_id` + `quantity` ≥ 1, optional
   `unit_value`, optional `inventory_item_id`) **or money** (`amount` > 0),
   never both, never neither. `unit_value` is a valuation, not a cost.
-  `inventory_txn_id` is set by posting only (writing it is refused).
-  Goods need the sales module; money does not.
-- A **posted** yield (it has `inventory_txn_id`) cannot change product,
-  quantity, stock or session, and cannot be deleted; nor can a session
-  with posted yields. `unit_value` and `notes` stay editable. Correct
-  stock with an adjustment.
+  `inventory_txn_id`, `journal_id` and `holding_txn_id` are set by posting
+  only (writing them is refused). Goods need the sales module; money does
+  not.
+- A **posted** yield (any of those three set) cannot change product,
+  quantity, amount, stock or session, and cannot be deleted; nor can a
+  session with posted yields. `unit_value` and `notes` stay editable.
+  Correct stock with an adjustment, money with an expense or a
+  `holding_txn` adjustment.
 
 Posting is the `post` action on a session; it takes no arguments:
 
@@ -1513,8 +1647,11 @@ venturectl list inventory_txn reference=session:8
 - One transaction: each unposted goods yield arrives as a positive
   `production` inventory transaction (reference `session:<id>`, dated the
   session's end) with a **zero-cost** layer, and is stamped with it and
-  the stock it landed in; the session gets `posted_at`. Money yields are
-  left alone. Any refusal writes nothing.
+  the stock it landed in; each unposted money yield lands in the holding
+  at the session's location (see *Holdings*) as a journal (posted
+  currency, `journal_id`) or a holding movement (memo, `holding_txn_id`);
+  the session gets `posted_at`. Any refusal writes nothing. **Posting
+  counts money yields now**: a session with a location posts them too.
 - **Idempotent**: posting again posts only yields added since; nothing
   new is a success that changes nothing. Retrying is safe.
 - Stock: the yield's `inventory_item_id`, else the one item for the
@@ -1526,6 +1663,7 @@ venturectl list inventory_txn reference=session:8
 Report `session_performance` — `group_by` (`activity` default, `category`,
 `location`, `venture`), `category_depth` (category/location only),
 `price_source` (exact; needs the market module, refused without it),
+`currency` (as recipe_margin: which observations count),
 `as_of` (value every yield at that date instead of its session's end),
 `venture_id`, `organization_id`; the period bounds `started_at`. One row
 per group **and currency**: `sessions`, `open`, `hours` (finished
@@ -1589,7 +1727,7 @@ overdue), `forecast` (straight line from `start_value` at creation to
 
 Report `goal_materials` — `goal_id` (with its sub-goals; every active or
 paused goal by default), `venture_id`, `price_source` (market module
-only), `include_on_hand` (`true` default / `false`), `as_of`,
+only), `currency` (as recipe_margin), `include_on_hand` (`true` default / `false`), `as_of`,
 `organization_id`. Reads steps **not done** with a recipe and
 `repetitions` > 0: consumed components × repetitions summed per product;
 **reusable components once, at the largest single step's need** (never

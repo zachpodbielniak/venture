@@ -394,12 +394,16 @@ venture_market_install(VentureContext *context)
  * The latest price
  * ========================================================================== */
 
+/* How many observations a currency-filtered lookup reads at a time. */
+#define VENTURE_MARKET_PRICE_PAGE (200)
+
 gboolean
 venture_market_latest_price(
 	VentureDatabase	 *database,
 	gint64		  organization_id,
 	gint64		  product_id,
 	const gchar	 *source,
+	const gchar	 *currency,
 	GDateTime	 *at,
 	VentureMoney	**out_price,
 	VentureEntity	**out_observation,
@@ -449,23 +453,152 @@ venture_market_latest_price(
 	    !venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, error))
 		return FALSE;
 
-	venture_query_set_limit(query, 1);
+	/* The query cannot filter on a money field's currency -- a filter on
+	 * a money field is on its amount -- so the newest rows are read a
+	 * page at a time and the first priced in @currency wins. With no
+	 * currency the first row does, which is one row read, as before. A
+	 * price seen in TICKET never answers a question asked in GOLD. */
+	latest = NULL;
 
-	rows = venture_database_find(database, query, error);
+	{
+		guint offset;
 
-	if (NULL == rows)
-		return FALSE;
+		for (offset = 0; NULL == latest; offset += VENTURE_MARKET_PRICE_PAGE)
+		{
+			guint i;
 
-	if (0 == rows->len)
+			g_clear_pointer(&rows, g_ptr_array_unref);
+			venture_query_set_limit(query, venture_string_is_empty(currency)
+			                               ? 1 : VENTURE_MARKET_PRICE_PAGE);
+			venture_query_set_offset(query, offset);
+
+			rows = venture_database_find(database, query, error);
+
+			if (NULL == rows)
+				return FALSE;
+
+			if (0 == rows->len)
+				return TRUE;
+
+			for (i = 0; (i < rows->len) && (NULL == latest); i++)
+			{
+				g_autoptr(VentureMoney) price = NULL;
+
+				g_object_get(g_ptr_array_index(rows, i), "price", &price, NULL);
+
+				if (venture_string_is_empty(currency) ||
+				    ((NULL != price) &&
+				     (0 == g_strcmp0(venture_money_get_currency(price), currency))))
+					latest = g_ptr_array_index(rows, i);
+			}
+
+			if (venture_string_is_empty(currency) ||
+			    (rows->len < VENTURE_MARKET_PRICE_PAGE))
+				break;
+		}
+	}
+
+	if (NULL == latest)
 		return TRUE;
-
-	latest = g_ptr_array_index(rows, 0);
 
 	if (NULL != out_price)
 		g_object_get(latest, "price", out_price, NULL);
 
 	if (NULL != out_observation)
 		*out_observation = g_object_ref(latest);
+
+	return TRUE;
+}
+
+gboolean
+venture_market_price_preferring(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	gint64		  product_id,
+	const gchar	 *source,
+	const gchar	 *prefer,
+	GDateTime	 *at,
+	VentureMoney	**out_price,
+	VentureEntity	**out_observation,
+	GError		**error
+){
+	g_autoptr(VentureMoney) price = NULL;
+	g_autoptr(VentureEntity) observation = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+
+	if (NULL != out_price)
+		*out_price = NULL;
+
+	if (NULL != out_observation)
+		*out_observation = NULL;
+
+	if (!venture_string_is_empty(prefer) &&
+	    !venture_market_latest_price(database, organization_id, product_id, source,
+	                                 prefer, at, &price, &observation, error))
+		return FALSE;
+
+	/* Seen in the preferred currency: that is the answer, however much
+	 * newer an observation in another currency is. */
+	if (NULL == observation &&
+	    !venture_market_latest_price(database, organization_id, product_id, source,
+	                                 NULL, at, &price, &observation, error))
+		return FALSE;
+
+	if (NULL != out_price)
+		*out_price = g_steal_pointer(&price);
+
+	if (NULL != out_observation)
+		*out_observation = g_steal_pointer(&observation);
+
+	return TRUE;
+}
+
+gboolean
+venture_market_valuing_currency(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	JsonObject	 *options,
+	gchar		**out_currency,
+	gboolean	 *out_strict,
+	GError		**error
+){
+	const gchar *named;
+	gchar *book;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(NULL != out_currency, FALSE);
+	g_return_val_if_fail(NULL != out_strict, FALSE);
+
+	*out_currency = NULL;
+	*out_strict = FALSE;
+
+	named = (NULL != options)
+		? venture_json_object_get_string(options, "currency", NULL) : NULL;
+
+	if (!venture_string_is_empty(named))
+	{
+		g_autofree gchar *code = g_ascii_strup(named, -1);
+
+		if (!venture_currency_is_valid(code))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "currency \"%s\" is not a currency code", named);
+			return FALSE;
+		}
+
+		*out_currency = g_steal_pointer(&code);
+		*out_strict = TRUE;
+		return TRUE;
+	}
+
+	book = venture_posting_service_book_currency(
+		venture_database_get_posting_service(database), organization_id, error);
+
+	if (NULL == book)
+		return FALSE;
+
+	*out_currency = book;
 
 	return TRUE;
 }

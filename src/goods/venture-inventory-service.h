@@ -32,13 +32,40 @@ gint64 venture_inventory_service_on_hand(VentureInventoryService *self, gint64 i
  * venture_inventory_service_valuation:
  * @self: the service or registry instance
  * @organization_id: target legal entity ID
- * @as_of: (nullable): cutoff time; NULL uses the service default
+ * @as_of: (nullable): count only layers received at or before this time
  * @error: (out) (optional): return location for an error
  *
- * Returns: (transfer full) (nullable): owned result
+ * What the FIFO cost layers still on hand cost, one amount per currency --
+ * never added across currencies, so layers bought in GOLD and in TICKET
+ * give two figures rather than refusing the organization. The book
+ * currency (venture_posting_service_book_currency()) comes first, then the
+ * rest by code. Nothing on hand is one zero in the book currency. A memo
+ * currency's layers are counted here although they post nothing.
+ *
+ * Returns: (transfer full) (element-type VentureMoney) (nullable): the
+ *   values, or %NULL with @error set
  */
-VentureMoney *venture_inventory_service_valuation(VentureInventoryService *self, gint64 organization_id,
+GPtrArray *venture_inventory_service_valuation(VentureInventoryService *self, gint64 organization_id,
 	GDateTime *as_of, GError **error);
+/**
+ * venture_inventory_service_item_value:
+ * @self: the service
+ * @inventory_item_id: inventory item id
+ * @as_of: (nullable): count only layers received at or before this time
+ * @out_unit_costs: (out) (optional) (transfer full) (element-type VentureMoney):
+ *   the average cost of the units carrying a cost in each currency, in the
+ *   same order as the result
+ * @error: (out) (optional): return location for an error
+ *
+ * What one item's remaining cost layers cost, per currency, book currency
+ * first. Empty when the item has no costed layer left (or the goods module
+ * is off): the caller falls back to the item's typed unit cost.
+ *
+ * Returns: (transfer full) (element-type VentureMoney) (nullable): the
+ *   values, or %NULL with @error set
+ */
+GPtrArray *venture_inventory_service_item_value(VentureInventoryService *self, gint64 inventory_item_id,
+	GDateTime *as_of, GPtrArray **out_unit_costs, GError **error);
 /**
  * venture_inventory_service_receive:
  * @self: the service or registry instance
@@ -65,14 +92,23 @@ gboolean venture_inventory_service_receive(VentureInventoryService *self, gint64
  * @source_type: registered source entity name
  * @source_id: source record ID
  * @actor: (nullable): audit actor; NULL for internal service work
- * @cogs: (out) (transfer full) (optional): cost of the issued inventory
+ * @costs: (out) (transfer full) (optional) (element-type VentureMoney): cost
+ *   of the issued inventory, one amount per currency its layers were in
+ *   (zero-cost layers give a zero); empty when no layer was consumed
  * @error: (out) (optional): return location for an error
+ *
+ * Takes @quantity units out FIFO and posts cost of goods sold against
+ * inventory. The layers consumed may cost several currencies; each is
+ * posted as its own balanced pair through
+ * venture_posting_service_post_by_currency() in one call, so a valued
+ * currency with a rate lands in the book journal, a separate one in its
+ * own and a memo one nowhere. Nothing is refused for mixing currencies.
  *
  * Returns: TRUE on success, FALSE on failure
  */
 gboolean venture_inventory_service_issue(VentureInventoryService *self, gint64 inventory_item_id,
 	gint64 quantity, GDateTime *date, const gchar *source_type, gint64 source_id,
-	const VentureActor *actor, VentureMoney **cogs, GError **error);
+	const VentureActor *actor, GPtrArray **costs, GError **error);
 /**
  * venture_inventory_service_restore:
  * @self: the service or registry instance
@@ -128,9 +164,9 @@ typedef struct
  * @reference: (nullable): what made them, e.g. "recipe:12"
  * @actor: (nullable): audit actor; NULL for internal service work
  * @out_txn: (out) (optional) (transfer full): the output's transaction
- * @out_cost: (out) (optional) (nullable) (transfer full): the FIFO cost of
- *   everything consumed, which is the cost the made units carry; NULL when
- *   nothing consumed carried a cost
+ * @out_costs: (out) (optional) (nullable) (transfer full) (element-type VentureMoney):
+ *   the FIFO cost of everything consumed, one amount per currency, which is
+ *   the cost the made units carry; NULL when no cost layer was consumed
  * @error: (out) (optional): return location for an error
  *
  * Turns stock into other stock, in one transaction: each draw leaves as a
@@ -140,18 +176,24 @@ typedef struct
  * unit to what was consumed and the cost of goods sold later is right.
  * Posts no journal: stock moved from inventory to inventory.
  *
+ * Inputs that cost two currencies give the output sibling layers, one set
+ * per currency, all naming the output transaction as their lot; FIFO takes
+ * a unit out of every sibling at once, so selling a made unit later posts
+ * its GOLD and its TICKET cost together. Zero-cost inputs add no layer
+ * beside costed ones; with no cost at all the output still gets one zero
+ * layer, in the item's unit-cost currency or the book currency.
+ *
  * A draw that would take an item below zero is refused unless the item
  * allows negative stock. Units with no cost layer (typed in by hand) are
- * consumed at no cost. Consumed costs in two currencies are refused. With
- * the goods module off there are no cost layers, and only quantities move.
- * Any failure rolls every write back.
+ * consumed at no cost. With the goods module off there are no cost layers,
+ * and only quantities move. Any failure rolls every write back.
  *
  * Returns: TRUE on success, FALSE on failure
  */
 gboolean venture_inventory_service_produce(VentureInventoryService *self,
 	const VentureInventoryDraw *draws, guint n_draws, gint64 output_item_id,
 	gint64 output_quantity, GDateTime *date, const gchar *reference,
-	const VentureActor *actor, VentureEntity **out_txn, VentureMoney **out_cost,
+	const VentureActor *actor, VentureEntity **out_txn, GPtrArray **out_costs,
 	GError **error);
 /**
  * venture_inventory_product_is_stocked:

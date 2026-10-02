@@ -137,18 +137,6 @@ connected(
 	}
 }
 
-/**
- * venture_printer_exchange:
- * @printer: trusted configuration, never request-derived host/port
- * @bytes: (transfer none) (nullable): bytes to send; NULL queries real-time status
- * @error: (out) (optional): return location for an error
- *
- * Uses asynchronous GIO under a nested main loop on the calling context.
- * No database transaction may be held across this reentrant call. A single
- * cancellable deadline bounds DNS, connection, writes and status reads.
- * Returns: (transfer full) (nullable): empty bytes on send, two status bytes
- *   on query, or NULL on failure (delivery may already be partial)
- */
 GBytes *
 venture_printer_exchange(
 	const VenturePrinter	*printer,

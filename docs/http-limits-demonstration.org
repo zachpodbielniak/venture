@@ -61,6 +61,10 @@ dispatched later or dropped. Both outcomes must release the receive budget and
 connection slot, and a subsequent full-size request must be served exactly
 once. No application feature depends on issuing a request to its own server.
 
+The =nested-rejection= case also proves that an oversized nested request never
+reaches a handler and, when a response arrives, receives HTTP 413. The transport
+suite contains 21 cases.
+
 A complete rerun under a private TMPDIR passed the litter check and removed its
 directory.
 

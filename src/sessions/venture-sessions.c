@@ -59,6 +59,38 @@ sessions_sales_enabled(void)
 		venture_entity_registry_get_default(), "inventory_item");
 }
 
+/*
+ * Whether the ledger module is on. A money yield lands in a holding --
+ * an account with the session's location -- which is the ledger's, and
+ * with it off a money yield stays a record the report counts, as it
+ * always was.
+ */
+static gboolean
+sessions_ledger_enabled(void)
+{
+	return G_TYPE_INVALID != venture_entity_registry_lookup(
+		venture_entity_registry_get_default(), "holding_txn");
+}
+
+/* Whether @yield has been posted, in either form: goods are in stock, or
+ * money is in a holding (a journal for a posted currency, a movement for
+ * a memo one). */
+static gboolean
+sessions_yield_posted(VentureEntity *yield)
+{
+	gint64 txn;
+	gint64 journal;
+	gint64 movement;
+
+	if (NULL == yield)
+		return FALSE;
+
+	g_object_get(yield, "inventory-txn-id", &txn, "journal-id", &journal,
+	             "holding-txn-id", &movement, NULL);
+
+	return (txn > 0) || (journal > 0) || (movement > 0);
+}
+
 static gboolean
 sessions_permitted(
 	VentureDatabase	*database,
@@ -350,18 +382,22 @@ venture_sessions_validate_yield(
 	             "inventory-txn-id", &txn_id, NULL);
 	was_txn = sessions_int(previous, "inventory-txn-id");
 
-	/* --- The post's stamp --- */
+	/* --- The post's stamps --- */
 
-	if ((txn_id != was_txn) && !sessions_permitted(database, entity))
+	if (((txn_id != was_txn) ||
+	     (sessions_int(entity, "journal-id") != sessions_int(previous, "journal-id")) ||
+	     (sessions_int(entity, "holding-txn-id") != sessions_int(previous, "holding-txn-id"))) &&
+	    !sessions_permitted(database, entity))
 	{
-		venture_set_error_validation(error, "Stock movement",
-			"is set by posting the session, not by hand");
+		venture_set_error_validation(error, "Posted",
+			"stock movements, journals and holding movements are set by posting "
+			"the session, not by hand");
 		return FALSE;
 	}
 
 	/* --- Frozen once posted --- */
 
-	if (was_txn > 0)
+	if (sessions_yield_posted(previous))
 	{
 		g_autoptr(VentureMoney) was_amount = NULL;
 
@@ -373,10 +409,16 @@ venture_sessions_validate_yield(
 		    (sessions_int(previous, "session-id") != session_id) ||
 		    sessions_money_differs(was_amount, amount))
 		{
-			venture_set_error_validation(error, "Yield",
-				"is posted: its units are in stock as movement #%" G_GINT64_FORMAT
-				", so its product, quantity, stock and session cannot change. "
-				"Record a correction as a stock adjustment", was_txn);
+			if (was_txn > 0)
+				venture_set_error_validation(error, "Yield",
+					"is posted: its units are in stock as movement #%" G_GINT64_FORMAT
+					", so its product, quantity, stock and session cannot change. "
+					"Record a correction as a stock adjustment", was_txn);
+			else
+				venture_set_error_validation(error, "Yield",
+					"is posted: its money is in the session location's holding, so "
+					"its amount and session cannot change. Record a correction as a "
+					"holding movement or an expense from that holding");
 			return FALSE;
 		}
 	}
@@ -524,24 +566,36 @@ sessions_has_posted_yields(
 	gboolean	 *out_posted,
 	GError		**error
 ){
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) posted = NULL;
+	static const gchar *const stamps[] = {
+		"inventory-txn-id", "journal-id", "holding-txn-id"
+	};
+	guint i;
 
-	query = venture_query_new(VENTURE_TYPE_SESSION_YIELD);
-	venture_query_set_limit(query, 1);
+	*out_posted = FALSE;
 
-	if (!venture_query_add_filter_int(query, "session-id", VENTURE_FILTER_OP_EQ,
-	                                  session_id, error) ||
-	    !venture_query_add_filter_int(query, "inventory-txn-id", VENTURE_FILTER_OP_GT,
-	                                  0, error))
-		return FALSE;
+	/* One query per stamp: the query has no OR, and three bounded lookups
+	 * are cheaper than reading every yield of a long session. */
+	for (i = 0; (i < G_N_ELEMENTS(stamps)) && !*out_posted; i++)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) posted = NULL;
 
-	posted = venture_database_find(database, query, error);
+		query = venture_query_new(VENTURE_TYPE_SESSION_YIELD);
+		venture_query_set_limit(query, 1);
 
-	if (NULL == posted)
-		return FALSE;
+		if (!venture_query_add_filter_int(query, "session-id", VENTURE_FILTER_OP_EQ,
+		                                  session_id, error) ||
+		    !venture_query_add_filter_int(query, stamps[i], VENTURE_FILTER_OP_GT,
+		                                  0, error))
+			return FALSE;
 
-	*out_posted = (posted->len > 0);
+		posted = venture_database_find(database, query, error);
+
+		if (NULL == posted)
+			return FALSE;
+
+		*out_posted = (posted->len > 0);
+	}
 
 	return TRUE;
 }
@@ -586,6 +640,16 @@ venture_sessions_check_write(
 			return FALSE;
 		}
 
+		if (sessions_yield_posted(stored))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "This yield is posted: its money is in the session "
+			                    "location's holding, and deleting it would leave it "
+			                    "there with no record of where it came from. Take it "
+			                    "out with an expense or a holding movement instead");
+			return FALSE;
+		}
+
 		return TRUE;
 	}
 
@@ -601,9 +665,9 @@ venture_sessions_check_write(
 		if (posted)
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			                    "This session has yields in stock; deleting it "
-			                    "would leave them there with no record of where "
-			                    "they came from");
+			                    "This session has posted yields, in stock or in a "
+			                    "holding; deleting it would leave them there with no "
+			                    "record of where they came from");
 			return FALSE;
 		}
 	}
@@ -673,6 +737,169 @@ sessions_yield_stock(
 		            local_error->message);
 		return FALSE;
 	}
+
+	return TRUE;
+}
+
+/*
+ * The income account a session's money is credited to: the control map's
+ * `session_income` when one is set, else one income account per
+ * organization made on first use under a scoped code -- the way the
+ * currency clearing account is found -- so it can never take a number a
+ * chart of accounts already uses.
+ */
+static gint64
+sessions_income_account(
+	VentureDatabase		 *database,
+	gint64			  organization_id,
+	GDateTime		 *when,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(GError) local_error = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) found = NULL;
+	g_autoptr(VentureAccount) created = NULL;
+	g_autofree gchar *code = NULL;
+	gint64 id;
+
+	id = venture_setup_resolve_account(database, organization_id, "session_income",
+	                                   "organization", 0, when, &local_error);
+
+	if (NULL != local_error)
+	{
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return 0;
+	}
+
+	if (id > 0)
+		return id;
+
+	code = g_strdup_printf("%" G_GINT64_FORMAT ":4900", organization_id);
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	venture_query_set_organization(query, organization_id);
+
+	if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
+		return 0;
+
+	found = venture_database_find_one(database, query, error);
+
+	if (NULL != found)
+		return venture_entity_get_id(found);
+
+	if ((NULL != error) && (NULL != *error))
+		return 0;
+
+	created = venture_account_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(created), organization_id);
+	g_object_set(created, "code", code, "name", "Session income",
+	             "kind", VENTURE_ACCOUNT_KIND_INCOME, "active", TRUE, NULL);
+
+	if (!venture_database_save(database, VENTURE_ENTITY(created), actor, error))
+		return 0;
+
+	return venture_entity_get_id(VENTURE_ENTITY(created));
+}
+
+/*
+ * Posts one money yield into the session location's holding: debit the
+ * holding, credit session income, in the yield's own currency. The
+ * posting service decides the rest -- a posted currency is a journal (its
+ * own book for a separate one, converted for a valued one with a rate), a
+ * memo currency a holding movement -- and the yield is stamped with
+ * whichever it made. A session with no location has no holding to land
+ * in, and its money yields stay records the report counts, as they were;
+ * @out_posted says which happened.
+ */
+static gboolean
+sessions_post_money(
+	VentureDatabase		 *database,
+	VentureEntity		 *session,
+	VentureEntity		 *yield,
+	GDateTime		 *when,
+	const VentureActor	 *actor,
+	gboolean		 *out_posted,
+	GError			**error
+){
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureJournal) header = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	g_autoptr(GPtrArray) movements = NULL;
+	g_autofree gchar *memo = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *session_name = NULL;
+	VentureJournalLine *line;
+	gint64 organization_id;
+	gint64 location_id;
+	gint64 holding;
+	gint64 income;
+
+	*out_posted = FALSE;
+	location_id = sessions_int(session, "location-id");
+
+	if (!sessions_ledger_enabled() || (location_id <= 0))
+		return TRUE;
+
+	organization_id = venture_entity_get_organization_id(session);
+	g_object_get(yield, "amount", &amount, NULL);
+
+	if (!venture_holdings_account_for_location(database, organization_id, location_id,
+	                                           TRUE, actor, &holding, error))
+		return FALSE;
+
+	income = sessions_income_account(database, organization_id, when, actor, error);
+
+	if (income <= 0)
+		return FALSE;
+
+	session_name = venture_entity_get_display_name(session);
+	memo = g_strdup_printf("Session yield: %s", session_name);
+	/* One key per yield: a retried post that somehow got past the stamp
+	 * is refused by the journal's unique posting key. */
+	key = g_strdup_printf("session_yield:%" G_GINT64_FORMAT, venture_entity_get_id(yield));
+
+	header = venture_journal_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(header), organization_id);
+	g_object_set(header, "occurred-at", when, "source-type", "session",
+	             "source-id", venture_entity_get_id(session),
+	             "rule-name", VENTURE_HOLDINGS_SESSION_RULE, "memo", memo,
+	             "posting-key", key, NULL);
+
+	lines = g_ptr_array_new_with_free_func(g_object_unref);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", holding, "amount", amount, "organization-id",
+	             organization_id, "side", VENTURE_LEDGER_SIDE_DEBIT, "memo", memo, NULL);
+	g_ptr_array_add(lines, line);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", income, "amount", amount, "organization-id",
+	             organization_id, "side", VENTURE_LEDGER_SIDE_CREDIT, "memo", memo, NULL);
+	g_ptr_array_add(lines, line);
+
+	journals = venture_posting_service_post_by_currency_full(
+		venture_database_get_posting_service(database), header, lines, FALSE, actor,
+		&movements, error);
+
+	if (NULL == journals)
+		return FALSE;
+
+	if (journals->len > 0)
+		g_object_set(yield, "journal-id",
+		             venture_entity_get_id(g_ptr_array_index(journals, 0)), NULL);
+	else if ((NULL != movements) && (movements->len > 0))
+		g_object_set(yield, "holding-txn-id",
+		             venture_entity_get_id(g_ptr_array_index(movements, 0)), NULL);
+	else
+	{
+		/* Neither: the holding is an account with a location, so a memo
+		 * line on it always makes a movement. Saying so beats stamping
+		 * nothing and posting the same money again next time. */
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "The money yield posted nothing to the holding");
+		return FALSE;
+	}
+
+	*out_posted = TRUE;
 
 	return TRUE;
 }
@@ -764,11 +991,28 @@ venture_sessions_post(
 
 		yield = g_ptr_array_index(yields, i);
 
-		/* Money never touches stock; a posted yield is never posted
-		 * twice -- that is the whole of the idempotency. */
-		if ((sessions_int(yield, "product-id") <= 0) ||
-		    (sessions_int(yield, "inventory-txn-id") > 0))
+		/* A posted yield is never posted twice -- that is the whole of
+		 * the idempotency. */
+		if (sessions_yield_posted(yield))
 			continue;
+
+		/* Money goes to the location's holding, not to stock. */
+		if (sessions_int(yield, "product-id") <= 0)
+		{
+			gboolean landed;
+
+			if (!sessions_post_money(database, session, yield, when, actor, &landed, error))
+				goto fail;
+
+			if (!landed)
+				continue;
+
+			if (!sessions_save_permitted(database, yield, actor, error))
+				goto fail;
+
+			posted++;
+			continue;
+		}
 
 		item_id = 0;
 
@@ -903,9 +1147,9 @@ sessions_register_post(VentureDatabase *database)
 	 * whatever is unposted then.
 	 */
 	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
-		"type-name", "session", "name", "post", "label", "Post to stock",
-		"description", "Put this session's goods yields into stock, each once, "
-		"at no cost, in one transaction; money yields are left as they are",
+		"type-name", "session", "name", "post", "label", "Post yields",
+		"description", "Put this session's goods yields into stock at no cost, and "
+		"its money yields into the location's holding, each once, in one transaction",
 		"parameters", parameters, "stageable", TRUE,
 		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 

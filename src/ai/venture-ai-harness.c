@@ -280,7 +280,7 @@ venture_ai_harness_value(JsonNode *value)
 			money = venture_money_new(
 				venture_json_object_get_int(object, "amount", 0),
 				venture_json_object_get_string(object, "currency",
-				                               "USD"),
+				                               venture_money_get_default_currency()),
 				(guint)venture_json_object_get_int(object,
 					"exponent", 2));
 

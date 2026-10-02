@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * Units of account beyond ISO 4217
@@ -56,6 +56,7 @@ a registered three-letter code stops counting as ISO money (see below).
 | =symbol=          | string  | shown with an amount, at most 16 bytes; blank shows the code             |
 | =symbol_position= | enum    | =prefix= (the default, "$12.50") or =suffix= ("12.50 pts")               |
 | =denominations=   | JSON    | optional coins, largest first; see below                                |
+| =book_treatment=  | enum    | =valued= (the default), =separate_book= or =memo=; see below             |
 | =description=     | text    | what it is and where it is used                                         |
 
 ** Why the code and exponent are fixed
@@ -145,6 +146,128 @@ letters (the ISO shape, as always) or names a registered currency. Any
 other word is still refused, which is what keeps "100.00 CR" -- a credit --
 from becoming a hundred units of "CR".
 
+* In the books: the book treatment
+
+What an amount in a currency does when the ledger posts it is the
+currency's =book_treatment=. It is the one thing about a currency that may
+change after it has amounts, and changing it changes only postings made
+afterwards.
+
+| Treatment       | What the ledger does                                                              |
+|-----------------+-----------------------------------------------------------------------------------|
+| =valued=        | converted into the organization's book currency when an =exchange_rate= to it exists on the accounting date; with no rate, kept in balanced books of its own, exactly as before the choice existed |
+| =separate_book= | always kept in balanced books of its own, never converted, even when a rate exists |
+| =memo=          | never posted: tracked as quantities and holdings only                             |
+
+=valued= is the zero value and the default, and every built-in ISO code is
+treated as valued. An upgraded install sets =valued= on every existing
+currency (migration =000705=), which is what they all behaved as.
+
+*A book currency is never memo.* An organization's =default_currency= is
+the currency its books are kept in, and it is always posted: a currency
+record is refused =memo= while any organization keeps its books in it
+("GOLD is the book currency of Evermoor Trading, and a book currency is
+always posted ..."), and an organization is refused a =default_currency=
+whose treatment is =memo=. Without the rule one edit to the currency
+record made every sale and expense save with no journal and no error.
+=separate_book= is allowed for a book currency -- it is still a book.
+
+A game economy is the worked case. Its book currency is =GOLD=. Fair
+tickets are only ever counted -- how many each character holds -- and have
+no price in gold: =memo= keeps them out of the ledger entirely, a sale for
+them saves with no journal, and the holdings report counts them per
+character. Festival tokens are something the business wants in books of
+their own: =separate_book= keeps a BREWFEST trial balance, and a
+token-bought prize sold for gold posts gold sales and token cost of goods
+sold side by side. A currency that trades against gold at a known rate is
+=valued= with an =exchange_rate=, and posts into the gold books at that
+rate with its own amount kept on every line.
+
+#+begin_src sh
+venturectl create currency code=TICKET name='Darkmoon ticket' exponent=0 book_treatment=memo
+venturectl create currency code=BREWFEST name='Brewfest token' exponent=0 book_treatment=separate_book
+venturectl update currency 3 book_treatment=valued   # from the next posting on
+#+end_src
+
+The rule itself -- which journal a line goes to, how a document spanning
+two currencies is balanced through currency clearing, what a manual journal
+may mix -- is written once, in the posting service. See
+[[file:ledger.org][the general journal]], section "Currencies in the books".
+Code that needs the answer asks =venture_currency_get_book_treatment()= for
+the treatment alone, or =venture_posting_service_route_currency()= for what
+an organization would do with an amount on a date.
+
+In the reports the treatment shows as follows. =pnl=, =ventures= and
+=monthly= read sales and expenses, not the ledger, so every currency --
+memo included -- appears as figures of its own beside the book currency's,
+never added to them (see [[file:reporting.org][Reporting]]). The ledger
+statements have one section per currency that posted, labelled "Separate
+book: TICKET" and the like, and a memo currency has none. A close and a
+consolidation leave a separate, memo or rate-less book out and say so,
+rather than refusing.
+
+* Several currencies in one organization
+
+A guide for the case the treatments exist for: one organization, one book
+currency, and other currencies beside it that often have no rate to it at
+all -- a game's gold with its fair tickets and festival tokens, a shop's
+dollars with its loyalty points and gift-card credit, a club's dues with
+its raffle tickets. Nothing below is specific to any of them.
+
+** Choosing a treatment
+
+| If the currency ...                                               | Choose          |
+|-------------------------------------------------------------------+-----------------|
+| is the organization's own money                                   | the book currency (=default_currency= on the organization) |
+| has a price in the book currency you are willing to record         | =valued=, plus an =exchange_rate= |
+| has no price, but you want its trial balance and statements        | =separate_book= |
+| is only ever counted -- who holds how many                         | =memo=          |
+
+A =valued= currency with no rate on file behaves like a separate book
+until one is recorded, and is converted from then on; the books are never
+rewritten backwards. Changing a treatment later changes only what is
+posted afterwards.
+
+** Where each currency is held
+
+Give every wallet, till or character a =location=, and each one an
+account with that =location_id= -- a *holding*. A holding holds every
+currency at once. Everything that pays into or out of one moves it:
+
+#+begin_src sh
+venturectl create location name=Aria kind=character
+venturectl create account code=EVM-1101 name="Aria's purse" kind=asset location_id=12
+venturectl create sale venture_id=3 gross="45 GOLD" cash_account_id=40      # into the purse
+venturectl create expense venture_id=3 amount="20 TICKET" cash_account_id=40 \
+    description="Prize from the faire"                                     # out of it
+venturectl act location 12 transfer to_location_id=13 amount="5 TICKET"     # to Bram
+venturectl report holdings all location_id=12
+#+end_src
+
+A session's money yield lands in the holding at the session's location
+when the session is posted. A holding may not be spent below zero -- on
+the date of the spend, not only today -- unless its account's
+=allow_negative= is ticked; an ordinary account with no location is
+never judged.
+
+** What posts where
+
+| Treatment       | A sale or expense in it                          | Its holdings are                  | Statements                              |
+|-----------------+--------------------------------------------------+-----------------------------------+-----------------------------------------|
+| book currency   | the book journal                                 | the holding account's journal lines | the book section                       |
+| =valued=, rate  | the book journal, converted; =amount= kept        | journal lines, in the currency itself | the book section                      |
+| =valued=, none  | a journal of its own                             | journal lines                     | "Own book: EUR (no rate to GOLD)"       |
+| =separate_book= | a journal of its own, never converted            | journal lines                     | "Separate book: BREWFEST"               |
+| =memo=          | nothing                                          | =holding_txn= movements           | none                                    |
+
+A document mixing currencies posts each by its treatment; when its lines
+land in two journals, each is balanced through the currency clearing
+account. =pnl=, =ventures= and =monthly= read the documents, not the
+ledger, so every currency -- memo included -- has figures of its own there,
+the book currency first. See [[file:ledger.org][the general journal]]
+("Currencies in the books" and "Holdings") and
+[[file:reporting.org][Reporting]].
+
 * Symbols
 
 A registered currency with a symbol shows it where =symbol_position= says:
@@ -193,6 +316,75 @@ The assistant may propose a currency like any other record; under the
 default confirmation policy the change is staged and an administrator
 approves it.
 
+* An amount that names no currency
+
+An amount, a document or a run that names no currency is in the
+organization's book currency: its =default_currency=, or the install's
+=locale.default_currency= when the organization names none or there is no
+organization at all. =venture_database_get_book_currency()= is that answer
+and never returns =NULL=; it is =venture_posting_service_book_currency()=
+with the install's default standing in for a missing organization. Nothing
+falls back to a literal "USD": on a USD install that reads as correct in
+every test, and on a euro or gold install it quietly writes dollars.
+
+| Writer                                       | A missing currency is                                   |
+|----------------------------------------------+---------------------------------------------------------|
+| any record through the generic machinery: REST create and update, the record form, =venturectl create/update=, the assistant's record tools, CSV import | the book currency of the organization the record is written to |
+| a record action's bare money parameter       | the organization's book currency (a retainer release: the retainer's own) |
+| a Stripe authorization's bare limit          | the organization's book currency                        |
+| a payroll run, and its lines' bare amounts   | the run's currency, itself the book currency by default |
+| a quote saved with no currency               | the book currency (it used to be refused)               |
+| a quote or invoice composed from a document  | the book currency, for the header and bare unit prices  |
+| a captured supplier invoice with no amount   | a draft bill in the book currency                       |
+| the capture API's bare =amount=              | the active organization's book currency                 |
+| budget vs actual and the cash forecast       | anchored on the book currency                           |
+| the =quotes= report's cohort                 | the book currency unless =currency= is given            |
+| accounting setup's =book_currency=           | the organization's current one, and so is the form's default |
+| opening a close workspace over the API       | the period's organization's book currency               |
+| group consolidation page and API             | the parent's book currency unless =currency= is given   |
+| the vendor-bill sheet                        | the book currency                                       |
+
+The generic record path is one mechanism, not a rule per type. The
+decoders (=venture_serializable_from_json()= and
+=venture_entity_set_field_from_string()=) cannot know the book currency --
+a record does not know its organization's settings, and the body may name
+the organization after the amount -- so they read a bare amount in the
+install's default and mark the field. =venture_database_save()= and
+staging call =venture_database_resolve_bare_money()=, which reads each
+marked field again in the book currency of the organization the record is
+now in: the body's =organization_id=, the stored row's, or the default one
+each generic writer fills in. A record that names its own =currency=
+(a vendor bill, a quote, a payroll run, a budget, a journal header) is
+the exception, and so is a record that references one through its field
+table (a bill line, a payment against a bill, a quote line): a bare "25"
+on a dollar bill of a euro organization is 25 USD. "12.50" on an invoice
+line in a euro organization is therefore 12.50 EUR; "20" in an update of a stored line is
+20.00 EUR; a bare integer is minor units of the book currency. A field set
+to anything else before the save -- by a service, a validator or an
+explicit value -- keeps that value, and an amount that names its currency
+("7 USD", or an object with =currency=) is never marked. A staged write is
+resolved before its diff is shown, so the approver sees euros too. The
+posting service resolves every line it is handed on entry, before it
+splits, balances or values anything: =journal create_and_post=, a
+recurring journal and a posted batch would otherwise plan a USD journal
+whose lines were saved as EUR.
+
+A record action's parameters are checked before the organization is known,
+so the check is a shape check in the install's default; the handler then
+reads the bare number in the book currency.
+
+** USD on purpose
+
+Three things are USD because the thing they serve is: the US sales-tax
+adapter (a US return is filed in dollars), the 1099-NEC pack (a US form
+with dollar thresholds -- 600 USD, 2000 USD from 2026) and Stripe's ACH
+debit (a US bank rail). Each says so in a comment and none guesses: the US
+adapter refuses an amount in any other currency by name ("the US
+sales-tax return is filed in USD; EUR ..."), the 1099 pack refuses payments
+in any other currency, and ACH is simply not offered for a non-USD invoice.
+The =locale.default_currency= default of USD is the install default, not a
+fallback.
+
 * Doors that take ISO money only
 
 Some destinations can only settle real money. They ask
@@ -204,8 +396,8 @@ a registered =GLD= is not ISO money.
 | Door                      | What happens to a user-defined currency                       |
 |---------------------------+----------------------------------------------------------------|
 | Stripe checkout and charges | refused before a pay button is offered and before any call   |
-| Tax filing adapter (US)   | refused while the return is prepared                            |
-| 1099-NEC pack             | already USD only                                                |
+| Tax filing adapter (US)   | refused while the return is prepared; so is ISO money other than USD |
+| 1099-NEC pack             | USD only                                                        |
 | Shopify order import      | refused like a missing currency                                 |
 
 Everything else -- invoices, the ledger, statements, quotes, projects,
@@ -215,7 +407,8 @@ cutover payloads, CRM import -- accepts any valid code.
 
 Exchange rates already work between any valid codes. Record an
 =exchange_rate= from =GOLD= to =USD= and the rate-table policy values gold
-in dollars exactly as it values euros:
+in dollars exactly as it values euros -- unless GOLD is a =separate_book=
+or =memo= currency, which the ledger never converts:
 
 #+begin_src sh
 venturectl create exchange_rate from_currency=GOLD to_currency=USD \
@@ -240,6 +433,13 @@ exchange_rate=.
   "GOL".
 - *An ISO door must ask =venture_currency_is_iso()=,* not "is it three
   letters" -- a registered three-letter code is not money Stripe can take.
+- *The treatment lives in the registry too.* The loader sets it after
+  registering each row, and a re-registration keeps the treatment the
+  entry had, so a reload never shows a separate-book currency as valued
+  for a moment. A code the registry does not hold is valued.
+- *Never fall back to "USD".* A default currency is
+  =venture_database_get_book_currency()=; a feature that is USD by law
+  says why in a comment and refuses other currencies by name.
 - *Tests share the process-wide registry.* A test that registers a
   currency clears it (=venture_currency_clear_registered()=) before it
   returns.

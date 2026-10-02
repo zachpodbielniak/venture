@@ -426,7 +426,7 @@ venturectl list form_submission form_id=3
 
 * Upgrading
 
-Migration =000710_forms= pins the schema the module relies on --- the
+Migration =000711_forms= pins the schema the module relies on --- the
 per-form key index and the columns the door reads --- on SQLite and
 PostgreSQL. =000720_form_versions= pins the version table and the columns
 that tie a form and a response to a version. With forms switched off the

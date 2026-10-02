@@ -474,7 +474,7 @@ test_tenant_http(TenantFixture *f, gconstpointer data)
 	g_autoptr(SoupSession) session = soup_session_new();
 	g_autofree gchar *state_dir = g_dir_make_tmp("venture-tenant-http-XXXXXX", &error);
 	g_autofree gchar *cookie = NULL;
-	guint port = 43000 + (getpid() % 10000);
+	guint port = 0;	/* the kernel picks; read back after the start */
 	(void)data;
 	g_assert_no_error(error);
 	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", "127.0.0.1",
@@ -484,6 +484,7 @@ test_tenant_http(TenantFixture *f, gconstpointer data)
 	venture_web_server_add_classified_route(server, HTMX_METHOD_GET, "/fixture/concurrent-suspension",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tenant_suspend_during_response, f);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
 	soup_session_set_timeout(session, 15);
 	g_assert_cmpuint(tenant_http(session, port, "GET", "/api/v1/health", NULL, NULL, NULL, NULL), ==, 200);
 	g_assert_cmpuint(tenant_http(session, port, "GET", "/login", "other.example.test", NULL, NULL, NULL), ==, 403);
@@ -587,7 +588,7 @@ test_tenant_http_admission(TenantFixture *f, gconstpointer data)
 	AdmissionFixture fixture;
 	gboolean nested = GPOINTER_TO_INT(data) != 0;
 	g_assert_no_error(error);
-	fixture.session = session; fixture.port = 44000 + (getpid() % 10000);
+	fixture.session = session; fixture.port = 0;	/* the kernel picks; read back after the start */
 	fixture.writes = 0; fixture.nested = nested;
 	g_object_set(session, "timeout", 5, NULL);
 	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", "127.0.0.1",
@@ -598,6 +599,7 @@ test_tenant_http_admission(TenantFixture *f, gconstpointer data)
 	venture_web_server_add_classified_route(server, HTMX_METHOD_POST, "/fixture/admission",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tenant_admission_callback, &fixture);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	fixture.port = venture_web_server_get_port(server);
 	/* Host refusal happens before admission and cannot spend its two tokens. */
 	g_assert_cmpuint(tenant_http(session, fixture.port, "POST", "/fixture/admission", "neighbor.example.test", NULL, "", NULL), ==, 403);
 	g_assert_cmpuint(tenant_http(session, fixture.port, "POST", "/fixture/admission", "tenant.example.test", NULL, "", NULL), ==, 200);

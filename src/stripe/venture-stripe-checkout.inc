@@ -141,6 +141,8 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 			goto fail;
 		}
 		if (!to_stripe_amount(expected, &amount, error)) goto fail;
+		/* USD on purpose: ACH debit is a US bank rail and Stripe offers it
+		 * for dollar invoices only; any other currency gets cards. */
 		ach = self->ach_enabled && !g_strcmp0(venture_money_get_currency(expected), "USD") && amount >= 50;
 		checkout = venture_stripe_checkout_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(checkout), self->organization_id);

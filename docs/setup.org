@@ -16,7 +16,12 @@ and posts opening cash against retained earnings. Amounts are =VentureMoney=.
 
 Control maps name a semantic classification (=cash=, =receivables=,
 =payables=, =tax=, =retained_earnings=, =clearing=, =inventory=, =income=,
-=expense=) and an account in the same legal entity. The account class must
+=expense=, =currency_clearing=, =session_income=) and an account in the
+same legal entity. =currency_clearing= must be an equity account; when it
+is not mapped the posting service makes one on first use (see
+[[file:ledger.org][the general journal]]). =session_income= is the income
+account a session's money yield is credited to; unmapped, one coded
+=<organization>:4900= is made on first use (see [[file:sessions.org][Sessions]]). The account class must
 match the role: cash is an asset, tax payable a liability, and so on. Bank
 and item overrides use =subject-type= / =subject-id=. Dated restatements use
 =effective-from=; changing an existing map restates the current default.
@@ -33,4 +38,4 @@ The Setup nav item opens =/setup=, which redirects to the legal entity's
 venturectl action accounting_setup complete 1
 #+end_src
 
-Completion restores the caller's setup state and version when any final write fails, so the same preview can be retried safely. Bare opening-cash amounts inherit the chosen book currency; unknown currency codes are refused.
+Completion restores the caller's setup state and version when any final write fails, so the same preview can be retried safely. Bare opening-cash amounts inherit the chosen book currency; unknown currency codes are refused. A setup that names no =book_currency= keeps the organization's current one (never USD), and the form offers that one as its default: completing writes it onto the organization, so a guessed default would re-denominate the books.

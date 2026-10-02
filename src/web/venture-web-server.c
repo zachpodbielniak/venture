@@ -360,6 +360,8 @@ venture_web_set_module_disabled_error(
 	            "(modules.%s.enabled)", module_name, module_name);
 }
 
+#include "venture-web-account-identity.inc"
+
 /*
  * Refuses an API request into a module that is off.
  *
@@ -3209,6 +3211,7 @@ venture_web_api_report(
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "form_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -6777,6 +6780,10 @@ venture_web_production_controls(
 		g_string_append(content, "<div class=\"field\"><label>Price source<input name=\"price_source\" value=\"");
 		venture_html_escape_append(content, (NULL != source) ? source : "");
 		g_string_append(content, "\" placeholder=\"any source\"></label></div>");
+		source = htmx_request_get_query_param(request, "currency");
+		g_string_append(content, "<div class=\"field\"><label>Priced in<input name=\"currency\" value=\"");
+		venture_html_escape_append(content, (NULL != source) ? source : "");
+		g_string_append(content, "\" placeholder=\"book currency first\"></label></div>");
 	}
 
 	as_of = htmx_request_get_query_param(request, "as_of");
@@ -6841,6 +6848,10 @@ venture_web_sessions_controls(
 		g_string_append(content, "<div class=\"field\"><label>Price source<input name=\"price_source\" value=\"");
 		venture_html_escape_append(content, (NULL != value) ? value : "");
 		g_string_append(content, "\" placeholder=\"any source\"></label></div>");
+		value = htmx_request_get_query_param(request, "currency");
+		g_string_append(content, "<div class=\"field\"><label>Priced in<input name=\"currency\" value=\"");
+		venture_html_escape_append(content, (NULL != value) ? value : "");
+		g_string_append(content, "\" placeholder=\"book currency first\"></label></div>");
 	}
 
 	value = htmx_request_get_query_param(request, "as_of");
@@ -6971,8 +6982,12 @@ venture_web_goals_controls(
 		g_string_append(content, "</select></label></div>");
 
 		if (venture_web_module_enabled(self, "market"))
+		{
 			venture_web_goals_input(request, content, "Price source", "price_source",
 			                        "any source");
+			venture_web_goals_input(request, content, "Priced in", "currency",
+			                        "book currency first");
+		}
 
 		include = htmx_request_get_query_param(request, "include_on_hand");
 		g_string_append_printf(content,
@@ -6984,6 +6999,78 @@ venture_web_goals_controls(
 
 	venture_web_goals_input(request, content, "Venture", "venture_id", "id; any venture");
 	venture_web_goals_input(request, content, "As of", "as_of", "today");
+	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
+/*
+ * holdings' questions, as a form: which location (and everything beneath
+ * it) as a picker showing each place's path, which currency, the date the
+ * balances are read at and the period earned and spent are counted in.
+ * All are query parameters the API takes too.
+ */
+static void
+venture_web_holdings_controls(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureReport		*report,
+	GString			*content
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) locations = NULL;
+	VentureDatabase *database;
+	const gchar *organization;
+	const gchar *chosen;
+	gint64 organization_id;
+	guint i;
+
+	if (0 != g_strcmp0(venture_report_get_name(report), "holdings"))
+		return;
+
+	database = venture_context_get_database(self->context);
+	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
+		venture_html_escape_append(content, organization);
+		g_string_append(content, "\">");
+	}
+
+	organization_id = venture_string_is_empty(organization)
+		? venture_context_get_default_organization_id(self->context)
+		: g_ascii_strtoll(organization, NULL, 10);
+	query = venture_query_new(VENTURE_TYPE_LOCATION);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	/* A picker, not a catalogue: past this a person types the id. */
+	venture_query_set_limit(query, 500);
+	locations = venture_database_find(database, query, NULL);
+	chosen = htmx_request_get_query_param(request, "location_id");
+
+	g_string_append(content, "<div class=\"field\"><label>Held at<select name=\"location_id\">"
+	                         "<option value=\"\">every location</option>");
+
+	for (i = 0; (NULL != locations) && (i < locations->len); i++)
+	{
+		VentureEntity *location;
+		g_autofree gchar *path = NULL;
+		gint64 id;
+
+		location = g_ptr_array_index(locations, i);
+		id = venture_entity_get_id(location);
+		path = venture_category_path(database, VENTURE_TYPE_LOCATION, id, NULL);
+		g_string_append_printf(content, "<option value=\"%" G_GINT64_FORMAT "\"%s>", id,
+		                       ((NULL != chosen) && (g_ascii_strtoll(chosen, NULL, 10) == id))
+		                       ? " selected" : "");
+		venture_html_escape_append(content, (NULL != path) ? path : "");
+		g_string_append(content, "</option>");
+	}
+
+	g_string_append(content, "</select></label></div>");
+	venture_web_goals_input(request, content, "Currency", "currency", "every currency");
+	venture_web_goals_input(request, content, "As of", "as_of", "the period's end");
+	venture_web_goals_input(request, content, "Period", "period", "all");
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
@@ -7047,6 +7134,7 @@ venture_web_ui_report(
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "form_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7084,6 +7172,7 @@ venture_web_ui_report(
 		venture_web_production_controls(self, request, report, form);
 		venture_web_sessions_controls(self, request, report, form);
 		venture_web_goals_controls(self, request, report, form);
+		venture_web_holdings_controls(self, request, report, form);
 		body = g_strdup_printf("%s<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       form->str, words);
 		return venture_web_html_response(
@@ -7095,6 +7184,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
 		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "form_id", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -7159,6 +7249,7 @@ venture_web_ui_report(
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
 				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "form_id", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -7182,6 +7273,7 @@ venture_web_ui_report(
 	venture_web_production_controls(self, request, report, content);
 	venture_web_sessions_controls(self, request, report, content);
 	venture_web_goals_controls(self, request, report, content);
+	venture_web_holdings_controls(self, request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 
@@ -8386,6 +8478,21 @@ venture_web_active_organization(
 		return 0;
 
 	return g_ascii_strtoll(selected, NULL, 10);
+}
+
+/*
+ * Whether the viewer has picked an entity in the sidebar at all -- "all"
+ * included. Before a pick, a page that belongs to one business may choose
+ * the scope it opens in; after one, the pick is what every page shows.
+ */
+static gboolean
+venture_web_entity_picked(HtmxRequest *request)
+{
+	g_autofree gchar *selected = NULL;
+
+	selected = venture_web_read_cookie(request, VENTURE_WEB_ENTITY_COOKIE);
+
+	return (NULL != selected);
 }
 
 /*
@@ -10923,7 +11030,7 @@ venture_web_ui_detail(
 		venture_web_append_record_actions(self, actions, record, principal);
 		venture_bank_append_actions(actions, record);
 		venture_cutover_append_actions(actions, record);
-		venture_setup_append_actions(actions, record);
+		venture_setup_append_actions(actions, record, venture_context_get_database(self->context));
 		if (venture_context_module_enabled(self->context, "backup"))
 			venture_backup_append_actions(actions, record);
 
@@ -17513,7 +17620,7 @@ venture_web_json_to_display(JsonNode *value)
 			money = venture_money_new(
 				venture_json_object_get_int(object, "amount", 0),
 				venture_json_object_get_string(object,
-					"currency", "USD"),
+					"currency", venture_money_get_default_currency()),
 				(guint)venture_json_object_get_int(object,
 					"exponent", 2));
 
@@ -24420,9 +24527,39 @@ venture_web_dashboard_load(
 }
 
 /*
+ * The entity a dashboard page opens in when the viewer has picked none in
+ * the sidebar: the organization the dashboard is filed under, or the
+ * default entity for one filed under none. 0 once a pick has been made,
+ * which is then authoritative.
+ *
+ * The page decides this per request, never the widget: a widget still
+ * answers for whatever scope it is handed, and the API, which has no
+ * sidebar, still scopes by ?organization_id= alone. Without it a second
+ * business's dashboard opened empty until somebody knew to switch the
+ * sidebar to that business first.
+ */
+static gint64
+venture_web_dashboard_unpicked_organization(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureDashboard	*dashboard
+){
+	gint64 filed;
+
+	if (venture_web_entity_picked(request))
+		return 0;
+
+	filed = venture_entity_get_organization_id(VENTURE_ENTITY(dashboard));
+
+	return (filed > 0) ? filed
+	                   : venture_context_get_default_organization_id(self->context);
+}
+
+/*
  * Fills the scope a page renders under: the viewer, and the entity they
- * have picked in the sidebar, with everything beneath it. @tree is owned
- * by the caller and must outlive @scope.
+ * have picked in the sidebar -- or, before any pick, the one the dashboard
+ * is filed under -- with everything beneath it. @tree is owned by the
+ * caller and must outlive @scope.
  */
 static void
 venture_web_dashboard_scope(
@@ -24442,7 +24579,11 @@ venture_web_dashboard_scope(
 	scope->venture_id = 0;
 	g_object_get(dashboard, "venture-id", &scope->venture_id, NULL);
 
-	active = venture_web_active_organization(self, request);
+	active = venture_web_dashboard_unpicked_organization(self, request, dashboard);
+
+	if (0 == active)
+		active = venture_web_active_organization(self, request);
+
 	*tree = NULL;
 
 	if (0 != active)
@@ -24625,6 +24766,39 @@ venture_web_append_dashboard_grid(
 	columns = venture_dashboard_layout_get_columns(layout);
 	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
 	                            &tree);
+
+	/*
+	 * The sidebar names the default entity until something is picked, so
+	 * a page that opened in another says which one, and how to change it
+	 * -- otherwise the figures sit under a name that is not theirs.
+	 */
+	{
+		gint64 unpicked;
+
+		unpicked = venture_web_dashboard_unpicked_organization(self, request,
+		                                                       dashboard);
+
+		if ((0 != unpicked) &&
+		    (unpicked != venture_context_get_default_organization_id(self->context)))
+		{
+			g_autoptr(VentureEntity) organization = NULL;
+			g_autofree gchar *label = NULL;
+
+			organization = venture_database_get(
+				venture_context_get_database(self->context),
+				VENTURE_TYPE_ORGANIZATION, unpicked, NULL);
+
+			if (NULL != organization)
+			{
+				label = venture_entity_get_display_name(organization);
+				g_string_append(content, "<p class=\"muted small dash-scope\">Showing ");
+				venture_html_escape_append(content, label);
+				g_string_append(content, ", the organization this dashboard is "
+				                         "filed under. Pick an entity in the sidebar "
+				                         "to see another.</p>");
+			}
+		}
+	}
 
 	placements = venture_dashboard_layout(
 		venture_context_get_database(self->context), dashboard, NULL);
@@ -31494,6 +31668,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/builds/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_build_ticket, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/post/backfill", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_autojournal_backfill, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/inbox", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-identity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_identity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox_read, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watch, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/watching/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watching, self);
@@ -31709,6 +31884,49 @@ venture_document_web_register(router, self);
 	return g_steal_pointer(&self);
 }
 
+/*
+ * Reads back the port the kernel actually bound and rebuilds the base URL
+ * around it.
+ *
+ * A configured port of 0 asks the kernel for any free one. That is how the
+ * test suite starts its servers: a port chosen in advance -- from the pid,
+ * or by probing and closing a socket -- can be taken by somebody else before
+ * the listen, and the fixture then fails to start for a reason that has
+ * nothing to do with the test. Asking for 0 has no such window, but only if
+ * the answer is read back from the socket rather than from the
+ * configuration, which still says 0.
+ *
+ * Every listener shares the one port (libsoup binds the IPv6 loopback to
+ * the port the IPv4 one was given), so the first is the answer.
+ */
+static void
+venture_web_server_adopt_bound_port(
+	VentureWebServer	*self,
+	const gchar			*scheme,
+	const gchar			*host
+){
+	GSList *listeners;
+	g_autoptr(GSocketAddress) local = NULL;
+	guint16 bound;
+
+	listeners = soup_server_get_listeners(htmx_server_get_soup_server(self->server));
+	if (NULL == listeners)
+		return;
+
+	local = g_socket_get_local_address((GSocket *)listeners->data, NULL);
+	g_slist_free(listeners);
+	if (NULL == local || !G_IS_INET_SOCKET_ADDRESS(local))
+		return;
+
+	bound = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(local));
+	if (0 == bound || bound == self->port)
+		return;
+
+	self->port = bound;
+	g_free(self->base_url);
+	self->base_url = g_strdup_printf("%s://%s:%u", scheme, host, (guint)bound);
+}
+
 gboolean
 venture_web_server_start(
 	VentureWebServer	 *self,
@@ -31751,6 +31969,7 @@ venture_web_server_start(
 			uris = soup_server_get_uris(server);
 			g_free(self->base_url);
 			self->base_url = g_uri_to_string((GUri *)uris->data);
+			self->port = (guint16)g_uri_get_port((GUri *)uris->data);
 			g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
 			venture_federation_sync_start(self->context);
 			venture_stripe_collection_start(self->context);
@@ -31765,6 +31984,14 @@ venture_web_server_start(
 		            (NULL != local_error) ? local_error->message
 		                                  : "unknown failure");
 		return FALSE;
+	}
+
+	{
+		g_autofree gchar *bind = NULL;
+
+		g_object_get(venture_context_get_config(self->context),
+			"server-bind-address", &bind, NULL);
+		venture_web_server_adopt_bound_port(self, "http", bind);
 	}
 
 	venture_federation_sync_start(self->context);
@@ -31789,4 +32016,12 @@ venture_web_server_get_base_url(VentureWebServer *self)
 	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
 
 	return self->base_url;
+}
+
+guint16
+venture_web_server_get_port(VentureWebServer *self)
+{
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), 0);
+
+	return self->port;
 }

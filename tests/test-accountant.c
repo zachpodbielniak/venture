@@ -556,11 +556,8 @@ server_set_up(ServerFixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureUser) owner = venture_user_new();
 	g_autoptr(VentureEntity) second = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Client B", "slug", "client-b", NULL);
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "accountant-test-secret", TRUE);
-	f->port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
-	g_assert_no_error(error);
-	g_clear_object(&probe);
+	f->port = 0;
 	f->state_dir = g_dir_make_tmp("venture-accountant-XXXXXX", NULL);
 	f->config = venture_config_new();
 	g_object_set(f->config, "state-dir", f->state_dir, "server-bind-address", "127.0.0.1",
@@ -582,6 +579,7 @@ server_set_up(ServerFixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	f->port = venture_web_server_get_port(f->server);
 	f->session = soup_session_new();
 }
 

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include <string.h>
 #include "venture-test-util.h"
 
 typedef struct
@@ -309,6 +310,64 @@ test_elimination_credit_income(Fixture *f, gconstpointer data)
 	g_assert_cmpint(cell_key(income, "income", "current"), ==, 20000);
 }
 
+/*
+ * A member's book with no rate to the group currency, and a separate-book
+ * currency the parent keeps, used to refuse the whole consolidation (the
+ * first) or vanish from it without a word (the second, which was never
+ * read). Both are now left out and named; everything else is consolidated.
+ * A memo or separate-book currency is never converted, rate or not.
+ */
+static void
+test_consolidation_leaves_out(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) link = VENTURE_ENTITY(venture_intercompany_link_new());
+	g_autoptr(VentureEntity) ticket = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_CURRENCY, NULL));
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureReportResult) income = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autofree gchar *parent_label = g_strdup_printf("%" G_GINT64_FORMAT, f->parent);
+	g_autofree gchar *child_label = g_strdup_printf("%" G_GINT64_FORMAT, f->child);
+	g_autofree gchar *rendered = NULL;
+	g_autofree gchar *euro = NULL;
+	(void)data;
+	venture_currency_clear_registered();
+	g_object_set(link, "organization-id", f->parent, "child-organization-id", f->child, NULL);
+	g_assert_true(venture_database_save(f->db, link, NULL, &error));
+	g_assert_no_error(error);
+	venture_entity_set_organization_id(ticket, f->parent);
+	g_object_set(ticket, "code", "TICKET", "name", "Ticket", "exponent", (gint64)0, NULL);
+	g_assert_true(venture_entity_set_field_from_string(ticket, "book-treatment", "separate_book", &error));
+	g_assert_true(venture_database_save(f->db, ticket, NULL, &error));
+	g_assert_no_error(error);
+	/* A rate for tickets does not make a separate book convertible. */
+	{
+		g_autoptr(VentureEntity) rate = VENTURE_ENTITY(venture_exchange_rate_new());
+		g_autoptr(GDateTime) effective = g_date_time_new_utc(2026, 1, 1, 0, 0, 0);
+		g_object_set(rate, "organization-id", f->parent, "from-currency", "TICKET", "to-currency", "USD",
+			"rate-numerator", (gint64)1, "rate-denominator", (gint64)1, "effective-at", effective,
+			"source", "manual", "reason", "test", NULL);
+		g_assert_true(venture_database_save(f->db, rate, NULL, &error));
+		g_assert_no_error(error);
+	}
+	post_in(f, f->parent, "USD", "2026-08-10T00:00:00Z", "1000", "4000", 10000);
+	post_in(f, f->parent, "TICKET", "2026-08-11T00:00:00Z", "1000", "4000", 50);
+	post_in(f, f->child, "EUR", "2026-08-10T00:00:00Z", "1000", "4000", 5000);
+	period = venture_context_parse_period(f->context, "2026-08", &error);
+	g_assert_no_error(error);
+	income = venture_group_service_consolidated(venture_group_service_get(f->db),
+		f->parent, "consolidated_income_statement", period, "USD", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(income);
+	g_assert_cmpint(cell_org(income, "4000", parent_label, "current"), ==, 10000);
+	g_assert_false(has_org_key(income, "4000", child_label));
+	g_assert_cmpint(cell_key(income, "income", "current"), ==, 10000);
+	rendered = venture_report_result_render(income, VENTURE_OUTPUT_FORMAT_TEXT);
+	euro = g_strdup_printf("organization %s's EUR book (no rate to USD)", child_label);
+	g_assert_nonnull(strstr(rendered, euro));
+	g_assert_nonnull(strstr(rendered, "TICKET book (a separate book)"));
+	venture_currency_clear_registered();
+}
+
 int
 main(int argc, char **argv)
 {
@@ -318,5 +377,6 @@ main(int argc, char **argv)
 	g_test_add("/group/consolidated-fx", Fixture, NULL, setup, test_consolidated_and_fx, teardown);
 	g_test_add("/group/elimination", Fixture, NULL, setup, test_elimination, teardown);
 	g_test_add("/group/elimination-credit-income", Fixture, NULL, setup, test_elimination_credit_income, teardown);
+	g_test_add("/group/consolidation-leaves-out", Fixture, NULL, setup, test_consolidation_leaves_out, teardown);
 	return g_test_run();
 }

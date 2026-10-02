@@ -7,6 +7,7 @@ group_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_autoptr(VentureDateRange) period = NULL;
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GString) content = NULL;
+	g_autofree gchar *book = NULL;
 	const gchar *label = htmx_request_get_query_param(request, "period");
 	HtmxResponse *gate = venture_web_ui_require_session(self, request);
 	(void)params;
@@ -20,9 +21,11 @@ group_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	period = venture_context_parse_period(self->context, label, &error);
 	if (period == NULL)
 		return venture_web_error_response(error);
+	book = venture_database_get_book_currency(venture_context_get_database(self->context),
+		venture_context_get_default_organization_id(self->context));
 	result = venture_group_service_consolidated(venture_group_service_get(venture_context_get_database(self->context)),
 		venture_context_get_default_organization_id(self->context), "consolidated_income_statement",
-		period, "USD", &error);
+		period, book, &error);
 	if (result == NULL)
 		return venture_web_error_response(error);
 	content = g_string_new("<div class=\"page-head\"><h1>Group consolidation</h1>"
@@ -41,6 +44,8 @@ group_api(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_autoptr(VentureReportResult) result = NULL;
 	const gchar *label = htmx_request_get_query_param(request, "period");
 	const gchar *name = htmx_request_get_query_param(request, "report");
+	const gchar *currency = htmx_request_get_query_param(request, "currency");
+	g_autofree gchar *book = NULL;
 	HtmxResponse *gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 	(void)params;
 	if (gate != NULL)
@@ -55,8 +60,16 @@ group_api(HtmxRequest *request, GHashTable *params, gpointer data)
 	period = venture_context_parse_period(self->context, label, &error);
 	if (period == NULL)
 		return venture_web_error_response(error);
+	/* The parent's book currency unless the caller names another, as the
+	 * consolidated reports do -- not "USD" for a group kept in euros. */
+	if (venture_string_is_empty(currency))
+	{
+		book = venture_database_get_book_currency(venture_context_get_database(self->context),
+			venture_context_get_default_organization_id(self->context));
+		currency = book;
+	}
 	result = venture_group_service_consolidated(venture_group_service_get(venture_context_get_database(self->context)),
-		venture_context_get_default_organization_id(self->context), name, period, "USD", &error);
+		venture_context_get_default_organization_id(self->context), name, period, currency, &error);
 	if (result == NULL)
 		return venture_web_error_response(error);
 	return venture_web_json_response(venture_report_result_to_json(result), 200);

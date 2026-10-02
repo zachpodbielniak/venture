@@ -1014,7 +1014,8 @@ server_fixture_set_up(
 
 	/* A different offset from test-auth's, so the two suites can run at
 	 * once without colliding. */
-	fixture->port = (guint16)(20000 + ((getpid() + 4099) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	fixture->port = 0;
 
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config,
@@ -1070,6 +1071,7 @@ server_fixture_set_up(
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new();
 

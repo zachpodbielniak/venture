@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
+#+updated: [2026-09-28]
 #+version: 0.1.0
 
 * What a sale record cannot tell you
@@ -89,6 +89,7 @@ venture_market_latest_price(
 	gint64		  organization_id,
 	gint64		  product_id,
 	const gchar	 *source,	/* NULL or "" for any source */
+	const gchar	 *currency,	/* NULL or "" for any currency */
 	GDateTime	 *at,		/* NULL for now, unbounded */
 	VentureMoney	**out_price,	/* NULL when nothing was seen */
 	VentureEntity	**out_observation,
@@ -109,6 +110,52 @@ when one is named. Rules:
 - The cutoff compares correctly whatever the fraction digits: the query
   emitter pads every date-time operand (see the time-comparison trap in
   =AGENTS.md=).
+- With =currency= named, only observations priced in it count: a product
+  seen in GOLD last week and TICKET yesterday is 2 GOLD when asked in GOLD,
+  and unpriced when asked in a currency it was never seen in -- never
+  priced in another. With no currency the newest wins whatever it is in,
+  which is the old behaviour. A query cannot filter on a money field's
+  currency (a filter on a money field is on its amount), so the newest
+  rows are read 200 at a time and the first in the currency wins; with no
+  currency it is still one row.
+
+** Preferring a currency, and the =currency= option
+
+#+begin_src C
+gboolean
+venture_market_price_preferring(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	gint64		  product_id,
+	const gchar	 *source,
+	const gchar	 *prefer,	/* usually the book currency */
+	GDateTime	 *at,
+	VentureMoney	**out_price,
+	VentureEntity	**out_observation,
+	GError		**error
+);
+#+end_src
+
+The newest price in =prefer=, and only when the product was never seen in
+it at or before =at=, the newest in any currency. It never converts.
+
+The three valuing reports -- =recipe_margin=, =session_performance= and
+=goal_materials= -- read their =currency= option through one function,
+=venture_market_valuing_currency()=, so they cannot disagree:
+
+| =currency=  | Prices that count                                                                  |
+|-------------+------------------------------------------------------------------------------------|
+| absent      | the organization's book currency wherever the product was seen in it, else the newest in any currency |
+| =TICKET=    | only observations priced in TICKET; a product never seen in TICKET is unpriced (named, never zero) |
+| not a code  | refused (400)                                                                      |
+
+Before the option, a margin in a gold organization whose herb and potion
+were last seen in tickets was worked out in tickets. The option reaches the
+reports through all five doors: the report pages (a "Priced in" field beside
+the price source), =GET /api/v1/reports/<name>?currency=…=, =venturectl
+report … currency=TICKET=, and the assistant's and MCP's =venture_report=
+tool. It picks observations only; recorded costs (the market module off)
+are what they are.
 
 * Listings
 
@@ -289,6 +336,19 @@ mask) and total in C, and both refuse -- naming the bound -- a question
 matching more than =VENTURE_AGGREGATE_MAX_ROWS= (20 000) records rather
 than totalling a truncated set.
 
+Every narrowing option is part of that query, never a filter over the
+fetched rows: the bound counts what was fetched, so a filter applied
+afterwards let an organization past the bound be refused even when the
+question was narrowed -- by a refusal that said to narrow it.
+=listing_performance='s =venture_id= belongs to the product, not the
+listing, so the venture's products are paged through by id, 500 at a
+time, and each batch's listings read with an =IN=; only the listings,
+summed across the batches, are held to the bound, so a venture with more
+products than the bound and a few listings is answered. A venture that
+sells nothing has no listings. =/market/listing-performance/bound= and
+=/market/listing-performance/large-venture= pin this with the bound
+lowered through =venture_aggregate_set_max_rows()=.
+
 * API and CLI
 
 #+begin_src sh
@@ -331,5 +391,10 @@ The sidebar files *Listings* and *Prices seen* under Money in.
   anything.
 - *Sources match exactly.* =venture_market_latest_price()= and
   =price_history= filter with equality, not a search.
+- *A price is only an answer in its own currency.* Pass the currency the
+  caller is comparing in, or use =venture_market_price_preferring()= with
+  the book currency; the unqualified call returns whatever was seen last,
+  which in an organization dealing in several currencies flips between
+  them.
 - *Observations are per organization.* A product id is not a scope: always
   pass the organization the valuation is for.

@@ -20,11 +20,9 @@ typedef struct {
 static void setup(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GSocketListener) listener = g_socket_listener_new();
-	guint16 port = g_socket_listener_add_any_inet_port(listener, NULL, &error);
+	guint16 port = 0;
 	(void)unused;
 	g_assert_no_error(error);
-	g_socket_listener_close(listener);
 	f->directory = g_dir_make_tmp("venture-calendar-surfaces-XXXXXX", &error);
 	g_assert_no_error(error);
 	f->config = venture_config_new();
@@ -39,6 +37,7 @@ static void setup(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(f->server);
 }
 static void teardown(Fixture *f, gconstpointer unused)
 {

@@ -88,3 +88,40 @@ static const VentureFieldDecl exchange_rate_fields[] = {
 	VENTURE_FIELD_TEXT("reason", "Reason", "Required for a manual override")
 };
 VENTURE_DEFINE_ENTITY(VentureExchangeRate, venture_exchange_rate, exchange_rate_fields)
+
+/*
+ * A movement of a holding kept in a memo currency. A holding is an account
+ * that carries a location -- a wallet, a till, a petty-cash tin, a game
+ * character's purse -- and in a currency the ledger posts, its movements
+ * are the account's journal lines and nothing else. A memo currency never
+ * posts, so its movements are these rows instead: one truth per currency,
+ * never two. The posting service writes them where it would have written a
+ * memo line on a holding account (a session's yield, a sale or expense
+ * naming the holding, a transfer); a person writes the adjustments. The
+ * source fields say which document a derived row came from and are the
+ * service's to write (see src/ledger/venture-holdings.c).
+ */
+static const VentureFieldDecl holding_txn_fields[] = {
+	VENTURE_FIELD_REF("account-id", "Holding",
+		"The account whose holding moved; it carries a location", "account",
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_MONEY("amount", "Amount",
+		"Signed, in a memo currency: more held is positive, less is negative"),
+	VENTURE_FIELD_ENUM("kind", "Kind",
+		"adjust (by hand), earn, spend or transfer",
+		venture_holding_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("occurred-at", "Date", NULL,
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("source-type", "Source type",
+		"Set by the ledger: the record this movement came from",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("source-id", "Source ID", NULL,
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("rule-name", "Posting rule",
+		"Set by the ledger: the rule that would have posted it",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureHoldingTxn, venture_holding_txn, holding_txn_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Holding movement", NULL);)

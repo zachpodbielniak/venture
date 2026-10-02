@@ -79,7 +79,52 @@ typedef struct
 	 * A subclass built from a #VentureFieldDecl table has no instance
 	 * struct of its own; its values live here. */
 	GHashTable	*fields;
+
+	/* Money fields written without a currency, keyed by property name:
+	 * what was written and what it was read as in the install's default.
+	 * The entity cannot know its organization's book currency -- that
+	 * takes the database -- so the save reads these again in it
+	 * (venture_entity_resolve_bare_money()). NULL until one is written. */
+	GHashTable	*bare_money;
 } VentureEntityPrivate;
+
+/* One money field as written, before its currency was known. */
+typedef struct
+{
+	JsonNode	*node;
+	VentureMoney	*decoded;
+} VentureEntityBareMoney;
+
+static void
+venture_entity_bare_money_free(gpointer data)
+{
+	VentureEntityBareMoney *bare = data;
+
+	json_node_unref(bare->node);
+	venture_money_free(bare->decoded);
+	g_free(bare);
+}
+
+/*
+ * Whether @node leaves its currency to the reader: a plain number, a
+ * string with no code, or an object with no "currency" member. Asked by
+ * reading it under two different defaults -- a node that names its
+ * currency, or whose coins name it, reads the same under both.
+ */
+static gboolean
+venture_entity_money_node_is_bare(JsonNode *node)
+{
+	g_autoptr(VentureMoney) first = NULL;
+	g_autoptr(VentureMoney) second = NULL;
+	const gchar *install;
+
+	install = venture_money_get_default_currency();
+	first = venture_money_from_json(node, install, NULL);
+	second = venture_money_from_json(node, g_strcmp0(install, "XTS") != 0 ? "XTS" : "XXX", NULL);
+	return NULL != first && NULL != second &&
+		0 != g_strcmp0(venture_money_get_currency(first), venture_money_get_currency(second));
+}
+
 
 enum
 {
@@ -120,6 +165,37 @@ G_DEFINE_ABSTRACT_TYPE_WITH_CODE(VentureEntity, venture_entity, G_TYPE_OBJECT,
 	G_ADD_PRIVATE(VentureEntity)
 	G_IMPLEMENT_INTERFACE(VENTURE_TYPE_SERIALIZABLE,
 	                      venture_entity_serializable_init))
+
+/*
+ * Remembers, or forgets, that @name was just written from @node without a
+ * currency. Called by both generic decoders right after they set a money
+ * property, so every generic writer -- REST, the form, the CLI, the AI,
+ * CSV import -- is covered by the one mark.
+ */
+static void
+venture_entity_note_money(VentureEntity *self, const gchar *name, JsonNode *node, const GValue *value)
+{
+	VentureEntityPrivate *priv;
+	VentureEntityBareMoney *bare;
+	const VentureMoney *decoded;
+
+	priv = venture_entity_get_instance_private(self);
+	decoded = g_value_get_boxed(value);
+	if (NULL == node || JSON_NODE_HOLDS_NULL(node) || NULL == decoded ||
+	    !venture_entity_money_node_is_bare(node))
+	{
+		if (NULL != priv->bare_money)
+			g_hash_table_remove(priv->bare_money, name);
+		return;
+	}
+	if (NULL == priv->bare_money)
+		priv->bare_money = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		                                         venture_entity_bare_money_free);
+	bare = g_new0(VentureEntityBareMoney, 1);
+	bare->node = json_node_copy(node);
+	bare->decoded = venture_money_copy((VentureMoney *)decoded);
+	g_hash_table_replace(priv->bare_money, g_strdup(name), bare);
+}
 
 /* --- Per-class metadata -------------------------------------------------- */
 
@@ -1287,6 +1363,9 @@ venture_entity_serializable_from_json(
 		}
 
 		g_object_set_property(G_OBJECT(self), properties[i]->name, &value);
+
+		if (VENTURE_TYPE_MONEY == properties[i]->value_type)
+			venture_entity_note_money(self, properties[i]->name, member_node, &value);
 	}
 
 	if (json_object_has_member(object, "attributes"))
@@ -1866,6 +1945,63 @@ venture_entity_set_field_from_string(
 
 	g_object_set_property(G_OBJECT(self), name, &value);
 
+	if (VENTURE_TYPE_MONEY == pspec->value_type)
+		venture_entity_note_money(self, name, node, &value);
+
+	return TRUE;
+}
+
+gboolean
+venture_entity_has_bare_money(VentureEntity *self)
+{
+	VentureEntityPrivate *priv;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY(self), FALSE);
+	priv = venture_entity_get_instance_private(self);
+	return NULL != priv->bare_money && g_hash_table_size(priv->bare_money) > 0;
+}
+
+gboolean
+venture_entity_resolve_bare_money(
+	VentureEntity	 *self,
+	const gchar	 *currency,
+	GError		**error
+){
+	VentureEntityPrivate *priv;
+	g_autoptr(GHashTable) pending = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY(self), FALSE);
+	g_return_val_if_fail(NULL != currency, FALSE);
+	priv = venture_entity_get_instance_private(self);
+	if (NULL == priv->bare_money)
+		return TRUE;
+
+	/* Taken first: a resolution is done once, and a failure below is the
+	 * caller's refusal, not a mark to retry on the next save. */
+	pending = g_steal_pointer(&priv->bare_money);
+	g_hash_table_iter_init(&iter, pending);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		VentureEntityBareMoney *bare = value;
+		g_autoptr(VentureMoney) current = NULL;
+		g_autoptr(VentureMoney) money = NULL;
+
+		/* Something set the field since it was decoded -- a service, a
+		 * validator, a later explicit value -- and that value stands. */
+		g_object_get(self, key, &current, NULL);
+		if (NULL == current || !venture_money_equal(current, bare->decoded))
+			continue;
+		money = venture_money_from_json(bare->node, currency, error);
+		if (NULL == money)
+		{
+			g_prefix_error(error, "%s: ", (const gchar *)key);
+			return FALSE;
+		}
+		g_object_set(self, key, money, NULL);
+	}
 	return TRUE;
 }
 
@@ -1884,6 +2020,7 @@ venture_entity_finalize(GObject *object)
 	g_clear_pointer(&priv->deleted_at, g_date_time_unref);
 	g_clear_pointer(&priv->attributes, g_hash_table_unref);
 	g_clear_pointer(&priv->fields, g_hash_table_unref);
+	g_clear_pointer(&priv->bare_money, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_entity_parent_class)->finalize(object);
 }

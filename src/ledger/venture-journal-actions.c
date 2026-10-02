@@ -14,12 +14,24 @@ journal_allowed(VentureAction *action, VentureEntity *entity, const VentureActor
 		"VenturePostingService requires a draft for post, or a posted journal for a single reversal");
 	return FALSE;
 }
+/* A saved draft is one journal record, so it posts as one journal: lines in
+ * a valued currency with a rate are valued into the draft's currency by the
+ * organization's rate table, and anything the rule keeps apart is refused
+ * with the reason. create_and_post is the door that splits by currency. */
 static VentureEntity *
 journal_post(VentureAction *action, VentureEntity *entity, GHashTable *params,
 	const VentureActor *actor, GError **error)
 {
-	return VENTURE_ENTITY(venture_posting_service_post(venture_action_get_data(action),
-		VENTURE_JOURNAL(entity), NULL, NULL, actor, error));
+	VenturePostingService *service = venture_action_get_data(action);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureExchangePolicy) policy = NULL;
+
+	(void)params;
+	g_object_get(service, "database", &database, NULL);
+	if (database != NULL)
+		policy = venture_rate_table_policy_new(database, venture_entity_get_organization_id(entity));
+	return VENTURE_ENTITY(venture_posting_service_post(service,
+		VENTURE_JOURNAL(entity), NULL, policy, actor, error));
 }
 static VentureEntity *
 journal_reverse(VentureAction *action, VentureEntity *entity, GHashTable *params,
@@ -76,9 +88,23 @@ journal_create_post(VentureAction *action, VentureEntity *entity, GHashTable *pa
 		g_ptr_array_add(rows, g_steal_pointer(&line));
 	}
 	/* The posting service owns the single transaction, validation, period
-	 * guard, journal evidence and compatibility projections. */
-	return VENTURE_ENTITY(venture_posting_service_post(venture_action_get_data(action),
-		journal, rows, NULL, actor, error));
+	 * guard, journal evidence and compatibility projections -- and the
+	 * currency rule: lines in several currencies post one journal per book
+	 * the rule gives them, each balanced through currency clearing. */
+	{
+		g_autoptr(GPtrArray) posted = venture_posting_service_post_by_currency(
+			venture_action_get_data(action), journal, rows, actor, error);
+
+		if (posted == NULL)
+			return NULL;
+		if (posted->len == 0)
+		{
+			venture_set_error_validation(error, "lines",
+				"Every line is in a memo currency, which is never posted to the ledger");
+			return NULL;
+		}
+		return g_object_ref(g_ptr_array_index(posted, 0));
+	}
 }
 void
 venture_journal_actions_register(VentureDatabase *database)

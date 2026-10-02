@@ -415,7 +415,6 @@ test_http(gconstpointer data)
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(SoupSession) session = soup_session_new();
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureEntity) transaction = record(0, 10000, "USD", 5, "coffee");
 	g_autoptr(VentureEntity) candidate = record(0, 10000, "USD", 5, "coffee");
 	g_autoptr(GError) error = NULL;
@@ -426,10 +425,9 @@ test_http(gconstpointer data)
 	g_autoptr(GBytes) bytes = NULL;
 	g_autoptr(GBytes) response = NULL;
 	g_autoptr(GPtrArray) pending = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error);
+	guint port = 0;
 	gboolean stage = GPOINTER_TO_INT(data);
 	g_assert_no_error(error);
-	g_clear_object(&probe);
 	if (stage && venture_entity_registry_lookup(venture_entity_registry_get_default(), "bank_match") == G_TYPE_INVALID)
 		g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(), venture_bank_match_get_type(), NULL));
 	g_object_set(config, "state-dir", state, "server-bind-address", "127.0.0.1", "server-port", (gint64)port, "security-require-auth", FALSE, NULL);
@@ -445,6 +443,7 @@ test_http(gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
 	g_assert_no_error(error);
+	port = venture_web_server_get_port(server);
 	url = g_strdup_printf("http://127.0.0.1:%u/api/v1/reconciliation/suggest", port);
 	payload = g_strdup_printf("{\"type\":\"%s\",\"id\":%" G_GINT64_FORMAT "}", venture_entity_get_entity_name(transaction), venture_entity_get_id(transaction));
 	message = soup_message_new("POST", url);

@@ -266,6 +266,7 @@
 #include "activities/venture-activity-reports.h"
 #include "core/venture-action.h"
 #include "ledger/venture-journal-actions.h"
+#include "ledger/venture-holdings.h"
 #include "recurring/venture-recurring-service.h"
 
 /* Auth comes before the AI service, which names VentureAuthPrincipal in its

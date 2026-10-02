@@ -61,7 +61,15 @@ static const VentureFieldDecl inventory_cost_layer_fields[] = {
 	VENTURE_FIELD("original-qty", "Original quantity", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("remaining-qty", "Remaining quantity", "Unconsumed FIFO quantity",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_MONEY("unit-cost", "Unit cost", NULL)
+	VENTURE_FIELD_MONEY("unit-cost", "Unit cost", NULL),
+	/* A made unit whose inputs cost two currencies carries a cost in each,
+	 * and a layer holds one currency. Its layers are siblings: they share
+	 * the movement that brought the units in, and FIFO takes a unit out of
+	 * every sibling at once, so each currency's cost leaves exactly. Empty
+	 * on older layers, each of which is a lot of its own. */
+	VENTURE_FIELD_REF("lot-txn-id", "Lot",
+		"The movement that brought these units in; layers sharing it are one lot",
+		"inventory_txn", VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY(VentureInventoryCostLayer, venture_inventory_cost_layer, inventory_cost_layer_fields)
 

@@ -148,6 +148,9 @@ venture_context_new(
 	/* The currencies this install defined, into the registry every
 	 * formatter reads, and kept there as the table changes. */
 	venture_currency_install(self);
+	/* A purchase order's and a vendor bill's lines are in their
+	 * document's currency. */
+	venture_purchasing_install_validators(self->database);
 
 	/* Category and location trees: no loops, no parent in another
 	 * organization, and a category used only by the records it groups. */
@@ -169,6 +172,11 @@ venture_context_new(
 	 * or money and never both, and the post action that puts goods into
 	 * stock once. */
 	venture_sessions_install(self);
+
+	/* Holdings: memo movements only the ledger derives, and no holding
+	 * spent below zero unless its account allows it; the transfer action
+	 * between two locations. */
+	venture_holdings_install(self);
 
 	/* Goals whose target differs from their start, sub-goals that do not
 	 * loop, and achieved and done times that follow the status. */

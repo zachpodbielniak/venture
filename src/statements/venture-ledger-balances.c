@@ -25,6 +25,14 @@ typedef struct
 	GHashTable *defaults;
 	gchar *currency;
 	gchar *dimension;
+	/* The organization's book currency, whose section comes first, and
+	 * each section's label ("Separate book: TICKET"), made on first use
+	 * from the posting service's rule. The database is borrowed: Books
+	 * never outlives the call that read it. */
+	VentureDatabase *db;
+	gint64 org;
+	gchar *book;
+	GHashTable *labels;
 } Books;
 
 struct _VentureLedgerBalances
@@ -119,8 +127,10 @@ books_free(Books *books)
 	g_clear_pointer(&books->end, g_date_time_unref);
 	g_clear_pointer(&books->roles, g_hash_table_unref);
 	g_clear_pointer(&books->defaults, g_hash_table_unref);
+	g_clear_pointer(&books->labels, g_hash_table_unref);
 	g_free(books->currency);
 	g_free(books->dimension);
+	g_free(books->book);
 	g_free(books);
 }
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(Books, books_free)
@@ -167,10 +177,68 @@ belongs(Books *books, gint64 child, gint64 ancestor)
 	return FALSE;
 }
 
+/* The book currency's section first, then the others by code: a reader
+ * of a GOLD organization's statement meets GOLD before EUR, which the
+ * alphabet alone would put ahead of it. */
 static gint
-compare_currency(gconstpointer a, gconstpointer b)
+compare_currency(gconstpointer a, gconstpointer b, gpointer user_data)
 {
-	return g_strcmp0(*(gchar * const *)a, *(gchar * const *)b);
+	const gchar *left = *(gchar * const *)a;
+	const gchar *right = *(gchar * const *)b;
+	const gchar *book = user_data;
+	gboolean left_book = g_strcmp0(left, book) == 0;
+	gboolean right_book = g_strcmp0(right, book) == 0;
+
+	if (left_book != right_book)
+		return left_book ? -1 : 1;
+	return g_strcmp0(left, right);
+}
+
+static void
+sort_currencies(Books *books)
+{
+	g_ptr_array_sort_with_data(books->currencies, compare_currency, books->book);
+}
+
+/* What a section of these books is: the book currency, a separate book, or
+ * a currency kept apart for want of a rate. The rule is the posting
+ * service's (venture_posting_service_book_label()), read as of the end of
+ * the period, and never restated here. A label that cannot be made falls
+ * back to the bare code: it names a section, it never moves an amount. */
+static const gchar *
+book_label(Books *books, const gchar *currency)
+{
+	const gchar *label = g_hash_table_lookup(books->labels, currency);
+	g_autoptr(GDateTime) when = NULL;
+	gchar *made = NULL;
+
+	if (label != NULL)
+		return label;
+	when = books->end != NULL ? g_date_time_add(books->end, -1) : NULL;
+	made = venture_posting_service_book_label(venture_database_get_posting_service(books->db),
+		books->org, currency, when, NULL);
+	if (made == NULL)
+		made = g_strdup(currency);
+	g_hash_table_insert(books->labels, g_strdup(currency), made);
+	return made;
+}
+
+/* A statement with more than one section says what each one is, once, so
+ * nobody reads a separate TICKET book as part of the GOLD figures. */
+static void
+note_sections(VentureReportResult *r, Books *books)
+{
+	g_autoptr(GString) note = NULL;
+	guint i;
+
+	if (books->currencies->len < 2)
+		return;
+	note = g_string_new("Each currency is its own set of books, balanced on its own and never added to another: ");
+	for (i = 0; i < books->currencies->len; i++)
+		g_string_append_printf(note, "%s%s", i > 0 ? "; " : "",
+			book_label(books, g_ptr_array_index(books->currencies, i)));
+	g_string_append(note, ". Amounts converted into the book currency are in its section already.");
+	venture_report_result_append_note(r, note->str);
 }
 
 static void
@@ -205,6 +273,12 @@ read_books(VentureDatabase *db, gint64 org, const gchar *currency,
 	}
 	books->currency = g_strdup(currency);
 	books->dimension = g_strdup(dimension);
+	books->db = db;
+	books->org = org;
+	books->labels = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	books->book = venture_posting_service_book_currency(venture_database_get_posting_service(db), org, error);
+	if (books->book == NULL)
+		return NULL;
 	books->start = g_date_time_ref(venture_date_range_get_start(period));
 	books->end = g_date_time_ref(venture_date_range_get_end(period));
 	if (as_of != NULL && g_date_time_compare(as_of, books->end) < 0)
@@ -327,9 +401,11 @@ read_books(VentureDatabase *db, gint64 org, const gchar *currency,
 			g_ptr_array_add(books->entries, e);
 		}
 	}
+	/* Empty books are the book currency's, not the install's: a GOLD
+	 * organization with nothing posted shows 0 GOLD. */
 	if (currency != NULL || books->currencies->len == 0)
-		add_currency(books, currency != NULL ? currency : venture_money_get_default_currency());
-	g_ptr_array_sort(books->currencies, compare_currency);
+		add_currency(books, currency != NULL ? currency : books->book);
+	sort_currencies(books);
 	return g_steal_pointer(&books);
 }
 
@@ -380,7 +456,7 @@ set_id(VentureReportResult *r, const gchar *key, gint64 id)
 }
 
 static void
-account_row(VentureReportResult *r, VentureEntity *account, const gchar *currency)
+account_row(VentureReportResult *r, Books *books, VentureEntity *account, const gchar *currency)
 {
 	g_autofree gchar *code = NULL;
 	g_autofree gchar *name = NULL;
@@ -389,6 +465,7 @@ account_row(VentureReportResult *r, VentureEntity *account, const gchar *currenc
 	venture_report_result_set_text(r, "key", code);
 	venture_report_result_set_text(r, "name", name);
 	venture_report_result_set_text(r, "currency", currency);
+	venture_report_result_set_text(r, "books", book_label(books, currency));
 	set_id(r, "account_id", venture_entity_get_id(account));
 }
 
@@ -401,6 +478,7 @@ balance_rows(Books *books, VentureDateRange *period, gboolean rollup, GError **e
 	text_column(r, "name", "Account");
 	text_column(r, "account_id", "Account ID");
 	text_column(r, "currency", "Currency");
+	text_column(r, "books", "Books");
 	money_column(r, "opening", "Opening");
 	money_column(r, "debits", "Debits");
 	money_column(r, "credits", "Credits");
@@ -414,13 +492,14 @@ balance_rows(Books *books, VentureDateRange *period, gboolean rollup, GError **e
 			g_autoptr(VentureMoney) opening = NULL, debits = NULL, credits = NULL, closing = NULL;
 			if (!measure(books, venture_entity_get_id(a), currency, rollup, &opening, &debits, &credits, &closing, error))
 				return NULL;
-			account_row(r, a, currency);
+			account_row(r, books, a, currency);
 			venture_report_result_set_money(r, "opening", opening);
 			venture_report_result_set_money(r, "debits", debits);
 			venture_report_result_set_money(r, "credits", credits);
 			venture_report_result_set_money(r, "closing", closing);
 		}
 	}
+	note_sections(r, books);
 	return g_steal_pointer(&r);
 }
 
@@ -453,11 +532,12 @@ statement_columns(VentureReportResult *r)
 	text_column(r, "name", "Line");
 	text_column(r, "account_id", "Account ID");
 	text_column(r, "currency", "Currency");
+	text_column(r, "books", "Books");
 	money_column(r, "current", "Current");
 }
 
 static void
-summary_row(VentureReportResult *r, const gchar *key, const gchar *name,
+summary_row(VentureReportResult *r, Books *books, const gchar *key, const gchar *name,
 	const VentureMoney *amount)
 {
 	venture_report_result_begin_row(r);
@@ -465,6 +545,7 @@ summary_row(VentureReportResult *r, const gchar *key, const gchar *name,
 	venture_report_result_set_text(r, "name", name);
 	venture_report_result_set_text(r, "account_id", "");
 	venture_report_result_set_text(r, "currency", amount->currency);
+	venture_report_result_set_text(r, "books", book_label(books, amount->currency));
 	venture_report_result_set_money(r, "current", amount);
 }
 
@@ -543,7 +624,7 @@ financial_statement(Books *books, VentureDateRange *period, gboolean balance_she
 				}
 				if (display == NULL)
 					return NULL;
-				account_row(r, a, currency);
+				account_row(r, books, a, currency);
 				venture_report_result_set_text(r, "section", section);
 				venture_report_result_set_money(r, "current", display);
 			}
@@ -555,11 +636,11 @@ financial_statement(Books *books, VentureDateRange *period, gboolean balance_she
 		{
 			if (!add(&equity, retained, FALSE, error) || !add(&equity, net, FALSE, error))
 				return NULL;
-			summary_row(r, "retained_income", "Prior-period unclosed earnings", retained);
-			summary_row(r, "net_income", "Current-period net income", net);
-			summary_row(r, "assets", "Total assets", assets);
-			summary_row(r, "liabilities", "Total liabilities", liabilities);
-			summary_row(r, "equity", "Total equity including earnings", equity);
+			summary_row(r, books, "retained_income", "Prior-period unclosed earnings", retained);
+			summary_row(r, books, "net_income", "Current-period net income", net);
+			summary_row(r, books, "assets", "Total assets", assets);
+			summary_row(r, books, "liabilities", "Total liabilities", liabilities);
+			summary_row(r, books, "equity", "Total equity including earnings", equity);
 			difference = venture_money_subtract(assets, liabilities, error);
 			if (difference == NULL || !add(&difference, equity, TRUE, error))
 				return NULL;
@@ -568,15 +649,16 @@ financial_statement(Books *books, VentureDateRange *period, gboolean balance_she
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE, "Assets do not equal liabilities plus equity");
 				return NULL;
 			}
-			summary_row(r, "difference", "Assets less liabilities and equity", difference);
+			summary_row(r, books, "difference", "Assets less liabilities and equity", difference);
 		}
 		else
 		{
-			summary_row(r, "income", "Total income", income);
-			summary_row(r, "expenses", "Total expenses", expenses);
-			summary_row(r, "net_income", "Net income", net);
+			summary_row(r, books, "income", "Total income", income);
+			summary_row(r, books, "expenses", "Total expenses", expenses);
+			summary_row(r, books, "net_income", "Net income", net);
 		}
 	}
+	note_sections(r, books);
 	venture_report_result_append_note(r, "Account rows include descendants; section totals count each posted line once. Earnings are ledger income less ledger expenses for the selected period.");
 	return g_steal_pointer(&r);
 }
@@ -728,17 +810,17 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 				}
 				/* Direct account adjustments expose the evidence, including
 				 * investing/financing balances instead of a balancing plug. */
-				account_row(r, a, currency);
+				account_row(r, books, a, currency);
 				venture_report_result_set_money(r, "current", change);
 			}
 		}
-		summary_row(r, "net_income", "Net income", net);
+		summary_row(r, books, "net_income", "Net income", net);
 		for (k = 0; k < G_N_ELEMENTS(keys); k++)
-			summary_row(r, keys[k], labels[k], g_ptr_array_index(controls, k));
-		summary_row(r, "operating", "Operating cash flow", operating);
-		summary_row(r, "investing", "Investing cash flow", investing);
-		summary_row(r, "financing", "Financing cash flow", financing);
-		summary_row(r, "adjustments", "Total non-cash balance movements", adjustments);
+			summary_row(r, books, keys[k], labels[k], g_ptr_array_index(controls, k));
+		summary_row(r, books, "operating", "Operating cash flow", operating);
+		summary_row(r, books, "investing", "Investing cash flow", investing);
+		summary_row(r, books, "financing", "Financing cash flow", financing);
+		summary_row(r, books, "adjustments", "Total non-cash balance movements", adjustments);
 		calculated = venture_money_add(net, adjustments, error);
 		movement = venture_money_subtract(end, start, error);
 		if (calculated == NULL || movement == NULL)
@@ -751,11 +833,12 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE, "Indirect cash flow does not tie to Cash");
 			return NULL;
 		}
-		summary_row(r, "cash_start", "Cash at start", start);
-		summary_row(r, "cash_end", "Cash at end", end);
-		summary_row(r, "cash_movement", "Net cash movement", calculated);
-		summary_row(r, "difference", "Difference from Cash movement", difference);
+		summary_row(r, books, "cash_start", "Cash at start", start);
+		summary_row(r, books, "cash_end", "Cash at end", end);
+		summary_row(r, books, "cash_movement", "Net cash movement", calculated);
+		summary_row(r, books, "difference", "Difference from Cash movement", difference);
 	}
+	note_sections(r, books);
 	venture_report_result_append_note(r, "Indirect method: net income plus credit-minus-debit movements in every non-cash balance-sheet account. Cash includes accounts marked cash-equivalent. Movements are classified operating, investing or financing from cash-flow-class or the account class. Control lines remain subtotals, not additional flows.");
 	return g_steal_pointer(&r);
 }
@@ -799,7 +882,7 @@ general_ledger(Books *books, VentureDateRange *period, gint64 requested, GError 
 					continue;
 				if (!add(&running, e->amount, e->side == VENTURE_LEDGER_SIDE_CREDIT, error))
 					return NULL;
-				account_row(r, a, currency);
+				account_row(r, books, a, currency);
 				set_id(r, "journal_id", e->journal_id);
 				set_id(r, "source_id", e->source_id);
 				venture_report_result_set_text(r, "source_type", e->source_type);
@@ -811,6 +894,7 @@ general_ledger(Books *books, VentureDateRange *period, gint64 requested, GError 
 			}
 		}
 	}
+	note_sections(r, books);
 	venture_report_result_append_note(r, "Running balances are debit minus credit, ordered by accounting date, journal ID and line ID within each account and currency.");
 	return g_steal_pointer(&r);
 }
@@ -936,7 +1020,7 @@ reconciliation(Books *books, VentureDatabase *db, gint64 org,
 			return NULL;
 		if (difference->amount == 0)
 			continue;
-		summary_row(r, s->key, s->key, difference);
+		summary_row(r, books, s->key, s->key, difference);
 		venture_report_result_set_text(r, "source_type", s->type);
 		set_id(r, "source_id", s->id);
 		venture_report_result_set_money(r, "ledger", s->ledger);
@@ -1475,8 +1559,8 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 			add_currency(books, g_ptr_array_index(previous->currencies, i));
 		for (i = 0; i < books->currencies->len; i++)
 			add_currency(previous, g_ptr_array_index(books->currencies, i));
-		g_ptr_array_sort(books->currencies, compare_currency);
-		g_ptr_array_sort(previous->currencies, compare_currency);
+		sort_currencies(books);
+		sort_currencies(previous);
 	}
 	result = generate_one(name, books, db, org, period, options, error);
 	if (result == NULL)

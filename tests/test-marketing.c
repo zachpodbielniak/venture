@@ -611,7 +611,6 @@ static gchar *marketing_cli(const gchar *base, const gchar *secret, const gchar 
 /* Link scanners must not unsubscribe on GET; the one-click POST is cookie-free. */
 static void test_http(Fixture *f, gconstpointer data)
 {
-	g_autoptr(GSocketListener) probe = g_socket_listener_new();
 	g_autoptr(VentureConfig) config = venture_config_new();
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
@@ -623,13 +622,15 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_autoptr(GPtrArray) rows = NULL, suppressions = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *directory = g_dir_make_tmp("venture-marketing-web-XXXXXX", NULL), *base = NULL, *url = NULL, *text = NULL, *path = NULL;
-	guint port = g_socket_listener_add_any_inet_port(probe, NULL, &error); g_assert_no_error(error); g_clear_object(&probe);
-	base = g_strdup_printf("http://127.0.0.1:%u", port);
-	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)port,
-		"security-require-auth", TRUE, "server-base-url", base, NULL);
+	/* Port 0: the kernel picks, and the base URL -- read per request --
+	 * follows it once the server has started. */
+	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
+		"security-require-auth", TRUE, NULL);
 	context = venture_context_new(config, f->db); venture_context_set_mailer(context, VENTURE_MAILER(f->mailer));
 	server = venture_web_server_new(context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	base = g_strdup(venture_web_server_get_base_url(server));
+	g_object_set(config, "server-base-url", base, NULL);
 	persist(f, user);
 	g_object_set(token, "name", "Marketing demonstration", "user-id", venture_entity_get_id(user), "role", VENTURE_USER_ROLE_OWNER, NULL);
 	secret = venture_api_token_generate(token); persist(f, VENTURE_ENTITY(token));

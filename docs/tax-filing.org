@@ -26,7 +26,12 @@ A missing country, or a country with no adapter, is refused and names the
 jurisdiction. The US adapter reads frozen invoice-event tax and invoice
 lines that name a =tax_code=, grouped the same way as =tax_liability=.
 A tax code used in the period without a country in its jurisdiction is
-refused by name.
+refused by name. A US return is filed in dollars, so the adapter refuses
+any amount it would report in another currency and names it ("the US
+sales-tax return is filed in USD; EUR ..."): an organization keeping its
+books in euros used to get a pack of euro totals labelled USD. A filing is
+created in the organization's book currency and the adapter sets its own;
+the US adapter sets USD.
 
 States are =draft= then =reviewed= then =submitted= then =acknowledged=.
 Submit keeps the JSON and CSV bytes already on the pack. Acknowledge

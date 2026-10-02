@@ -660,6 +660,7 @@ server_fixture_start(
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(fixture->server, &error));
 	g_assert_no_error(error);
+	fixture->port = venture_web_server_get_port(fixture->server);
 
 	fixture->session = soup_session_new_with_options("timeout", 15, NULL);
 }
@@ -676,7 +677,8 @@ server_fixture_set_up(
 	g_assert_no_error(error);
 
 	fixture->state_dir = g_dir_make_tmp("venture-docs-srv-XXXXXX", NULL);
-	fixture->port = (guint16)(20000 + ((getpid() + 7) % 20000));
+	/* 0: the kernel picks a free port, read back after the start. */
+	fixture->port = 0;
 
 	server_fixture_start(fixture, GPOINTER_TO_INT(user_data));
 }
@@ -877,11 +879,10 @@ test_quickstart(void)
 	g_autofree gchar *server = g_canonicalize_filename("build/debug/venture", NULL);
 	g_autofree gchar *out = NULL;
 	g_autofree gchar *err = NULL;
-	g_autofree gchar *port = g_strdup_printf("%u", 20000 + ((getpid() + 11) % 20000));
 	g_autofree gchar *state = g_dir_make_tmp("venture-quickstart-XXXXXX", NULL);
 	g_autoptr(GError) error = NULL;
 	const gchar *argv[] = { "bash", NULL, NULL };
-	gchar **envp;
+	guint attempt;
 	gint status = -1;
 
 	if (!g_file_test(cli, G_FILE_TEST_IS_EXECUTABLE) ||
@@ -893,15 +894,40 @@ test_quickstart(void)
 	}
 
 	argv[1] = script;
-	envp = g_get_environ();
-	envp = g_environ_setenv(envp, "PORT", port, TRUE);
-	envp = g_environ_setenv(envp, "VENTURE_DEMO_STATE", state, TRUE);
-	envp = g_environ_setenv(envp, "BUILD_TYPE", "debug", TRUE);
 
-	g_assert_true(g_spawn_sync(NULL, (gchar **)argv, envp, G_SPAWN_SEARCH_PATH,
-		NULL, NULL, &out, &err, &status, &error));
-	g_assert_no_error(error);
-	g_strfreev(envp);
+	/*
+	 * The script starts the real server as a subprocess, so it has to be
+	 * told a port up front, and the port can be taken between choosing it
+	 * and the server binding it. That -- and only that -- is retried, with
+	 * a fresh port each time and a bounded number of attempts: the demo
+	 * script says "something is already answering" when an HTTP server
+	 * holds the port, and the server says "Cannot listen on" when anything
+	 * else does. Any other failure is the test's and is reported at once.
+	 */
+	for (attempt = 0; attempt < VENTURE_TEST_PORT_ATTEMPTS; attempt++)
+	{
+		g_autofree gchar *port = g_strdup_printf("%u", (guint)venture_test_free_port());
+		gchar **envp;
+
+		g_clear_pointer(&out, g_free);
+		g_clear_pointer(&err, g_free);
+		envp = g_get_environ();
+		envp = g_environ_setenv(envp, "PORT", port, TRUE);
+		envp = g_environ_setenv(envp, "VENTURE_DEMO_STATE", state, TRUE);
+		envp = g_environ_setenv(envp, "BUILD_TYPE", "debug", TRUE);
+
+		g_assert_true(g_spawn_sync(NULL, (gchar **)argv, envp, G_SPAWN_SEARCH_PATH,
+			NULL, NULL, &out, &err, &status, &error));
+		g_assert_no_error(error);
+		g_strfreev(envp);
+
+		if (WIFEXITED(status) && 0 == WEXITSTATUS(status))
+			break;
+		if (NULL == strstr(err, "something is already answering on") &&
+		    NULL == strstr(err, "Cannot listen on"))
+			break;
+		g_test_message("port %s was taken before the server bound it; retrying", port);
+	}
 
 	if (!WIFEXITED(status) || 0 != WEXITSTATUS(status))
 	{

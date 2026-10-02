@@ -361,7 +361,12 @@ venture_action_validate_parameters(VentureAction *self, GHashTable *params, GErr
 			}
 			if (valid && VENTURE_FIELD_KIND_MONEY == spec->kind)
 			{
-				g_autoptr(VentureMoney) money = venture_money_from_string(json_node_get_string(node), "USD", NULL);
+				/* A shape check only: the organization is not placed
+				 * yet, and the handler reads a bare number in its book
+				 * currency (venture_database_get_book_currency()). The
+				 * install's default stands in here -- never "USD",
+				 * which judged a gold install's "3g 5s" as dollars. */
+				g_autoptr(VentureMoney) money = venture_money_from_string(json_node_get_string(node), NULL, NULL);
 				valid = NULL != money;
 			}
 		}

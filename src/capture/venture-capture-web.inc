@@ -35,7 +35,12 @@ capture_api(HtmxRequest *request, GHashTable *params, gpointer data)
 		}
 		amount_text = venture_json_object_get_string(object, "amount", NULL);
 		if (amount_text != NULL)
-			amount = venture_money_from_string(amount_text, NULL, NULL);
+		{
+			/* A bare amount is in the organization's book currency. */
+			g_autofree gchar *book = venture_database_get_book_currency(
+				venture_context_get_database(self->context), venture_web_active_organization(self, request));
+			amount = venture_money_from_string(amount_text, book, NULL);
+		}
 		if (venture_json_object_get_string(object, "occurred_at", NULL) != NULL)
 			when = g_date_time_new_from_iso8601(venture_json_object_get_string(object, "occurred_at", NULL), NULL);
 		item = venture_capture_service_ingest_for_organization(service, venture_web_active_organization(self, request),
