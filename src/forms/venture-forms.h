@@ -575,6 +575,50 @@ JsonNode *venture_forms_summarize(VentureContext *context, gint64 organization,
 	gint64 form_id, gint64 first_version, gint64 last_version, const gchar *question,
 	VentureDateRange *period, guint limit, GError **error);
 
+/**
+ * venture_forms_export_definition:
+ * @database: storage
+ * @form: saved form whose editable definition is exported
+ * @error: (out) (optional): error location
+ *
+ * Excludes responses, identities and credentials. External references become
+ * symbolic bindings that must be mapped explicitly on import.
+ * Returns: (transfer full) (nullable): portable version-1 JSON definition
+ */
+JsonNode *venture_forms_export_definition(VentureDatabase *database, VentureEntity *form, GError **error);
+
+/**
+ * venture_forms_definition_format:
+ * @definition: portable definition
+ * @format: (nullable): json (default) or yaml
+ * @error: (out) (optional): error location
+ * Returns: (transfer full) (nullable): serialized definition
+ */
+gchar *venture_forms_definition_format(JsonNode *definition, const gchar *format, GError **error);
+
+/**
+ * venture_forms_import_definition:
+ * @context: services and storage
+ * @organization: destination organization; zero uses the default
+ * @text: bounded JSON or YAML portable definition
+ * @bindings: (nullable): symbolic binding names mapped to destination record IDs
+ * @actor: (nullable): audited actor
+ * @error: (out) (optional): error location
+ *
+ * Creates a draft with fresh identity and capabilities. Definition records
+ * share one transaction; no response or publication is imported.
+ * Returns: (transfer full) (nullable): the saved draft form
+ */
+VentureEntity *venture_forms_import_definition(VentureContext *context, gint64 organization,
+	const gchar *text, JsonObject *bindings, const VentureActor *actor, GError **error);
+
+/**
+ * venture_forms_templates:
+ *
+ * Returns: (transfer full): array of names and portable template definitions
+ */
+JsonNode *venture_forms_templates(void);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

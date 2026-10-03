@@ -4446,6 +4446,161 @@ static void test_booking_form(Fixture *f, gconstpointer data)
 
 }
 
+/* Every shipped template goes through the public validator, not just the
+ * JSON parser. Newsletter intake must remain pending until inbox ownership. */
+static void
+test_portable_templates(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonNode) templates = venture_forms_templates();
+	guint i;
+	(void)data;
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(templates)), ==, 8);
+	for (i = 0; i < json_array_get_length(json_node_get_array(templates)); i++)
+	{
+		JsonObject *item = json_array_get_object_element(json_node_get_array(templates), i);
+		g_autofree gchar *text = json_to_string(json_object_get_member(item, "definition"), FALSE), *html = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) form = venture_forms_import_definition(f->context, f->org, text, NULL, NULL, &error);
+		g_autoptr(GPtrArray) fields = NULL, pairs = g_ptr_array_new();
+		guint j;
+		g_assert_no_error(error); g_assert_nonnull(form);
+		g_assert_cmpint(venture_forms_get_int(form, "state"), ==, VENTURE_FORM_DRAFT);
+		g_assert_cmpint(venture_forms_get_int(form, "retention-days"), ==, 90);
+		g_object_set(form, "state", VENTURE_FORM_LIVE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+		g_object_unref(publish(f, form)); html = render(f, form, VENTURE_FORMS_RENDER_FRAGMENT); g_assert_nonnull(strstr(html, "vf-form"));
+		{ g_autofree gchar *problems = a11y_check(html); g_assert_cmpstr(problems, ==, ""); }
+		fields = venture_forms_definition_from_records(f->db, form, &error); g_assert_no_error(error);
+		for (j = 0; j < fields->len; j++)
+		{
+			VentureFormsField *field = g_ptr_array_index(fields, j);
+			const gchar *answer = "A useful answer";
+			switch (field->kind)
+			{
+			case VENTURE_FORM_FIELD_EMAIL: answer = "applicant@example.test"; break;
+			case VENTURE_FORM_FIELD_RATING: case VENTURE_FORM_FIELD_NUMBER: answer = "3"; break;
+			case VENTURE_FORM_FIELD_DATE: answer = "2027-01-15"; break;
+			case VENTURE_FORM_FIELD_URL: answer = "https://example.test/resume"; break;
+			case VENTURE_FORM_FIELD_CONSENT: answer = "on"; break;
+			default: break;
+			}
+			g_ptr_array_add(pairs, field->key); g_ptr_array_add(pairs, (gpointer)answer);
+		}
+		g_ptr_array_add(pairs, NULL);
+		if (venture_forms_get_bool(form, "double-opt-in"))
+		{
+			g_autofree gchar *token = NULL;
+			g_autoptr(VentureEntity) response = NULL;
+			g_autoptr(GDateTime) now = venture_time_now();
+			g_assert_cmpint(submit_pairs(f, form, (const gchar *const *)pairs->pdata, NULL), ==, VENTURE_FORMS_PENDING);
+			token = optin_latest_token(f); response = venture_forms_confirm_signup(f->db, form, token, now, TRUE, &error);
+			g_assert_no_error(error); g_assert_nonnull(response);
+		}
+		else g_assert_cmpint(submit_pairs(f, form, (const gchar *const *)pairs->pdata, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	}
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 8);
+}
+
+static void
+test_portable_roundtrip(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "portable-source", VENTURE_FORM_DRAFT), group = NULL, field = NULL, rule = NULL, translation = NULL, copied = NULL;
+	g_autoptr(JsonNode) exported = NULL, second = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *json = NULL, *yaml = NULL, *again = NULL, *source_token = NULL, *target_token = NULL;
+	(void)data;
+	add_field(f, form, "gate", "Show details?", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "page2", "Details", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 2);
+	group = g_object_new(VENTURE_TYPE_FORM_GROUP, "organization-id", f->org, "form-id", venture_entity_get_id(form), "key", "people", "label", "People", "max-rows", (gint64)3, NULL); save(f, group);
+	field = make_field(f, form, "person", "Person", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 3);
+	g_object_set(field, "group-id", venture_entity_get_id(group), NULL); save(f, field);
+	rule = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "person", "[{\"field\":\"gate\",\"operator\":\"equals\",\"value\":\"yes\"}]"); save(f, rule);
+	translation = make_translation(f, form, "fr", "field.person.label", "Personne"); save(f, translation);
+	exported = venture_forms_export_definition(f->db, form, &error); g_assert_no_error(error);
+	json = venture_forms_definition_format(exported, "json", &error); g_assert_no_error(error);
+	yaml = venture_forms_definition_format(exported, "yaml", &error); g_assert_no_error(error);
+	g_assert_null(strstr(json, "portable-source")); g_assert_null(strstr(json, "ticket_key")); g_assert_null(strstr(json, "organization_id"));
+	copied = venture_forms_import_definition(f->context, f->org, yaml, NULL, NULL, &error); g_assert_no_error(error); g_assert_nonnull(copied);
+	second = venture_forms_export_definition(f->db, copied, &error); g_assert_no_error(error);
+	again = venture_forms_definition_format(second, "json", &error); g_assert_no_error(error); g_assert_cmpstr(json, ==, again);
+	source_token = venture_forms_get_string(form, "public-token"); target_token = venture_forms_get_string(copied, "public-token"); g_assert_cmpstr(source_token, !=, target_token);
+	g_clear_object(&copied); copied = venture_forms_import_definition(f->context, f->org, json, NULL, NULL, &error); g_assert_no_error(error); g_assert_nonnull(copied);
+	g_object_unref(publish(f, copied));
+}
+
+static void
+test_portable_refusals(Fixture *f, gconstpointer data)
+{
+	static const gchar *const bad[] = {
+		"&root {self: *root}", "---\na: 1\n---\nb: 2", "[]",
+		"{\"format\":\"venture-form\",\"version\":2,\"form\":{\"name\":\"Bad\"}}",
+		"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Bad\",\"ticket_key\":\"forged\"}}",
+		"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Bad\",\"state\":\"live\"}}",
+		"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Bad\",\"retention_days\":\"forever\"}}",
+		"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Bad\"},\"fields\":[{\"key\":\"x\",\"label\":\"X\",\"kind\":\"made_up\"}]}",
+		"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Bad\"},\"fields\":[{\"key\":\"x\",\"label\":\"X\",\"group\":\"missing\"}]}", NULL
+	};
+	guint i;
+	(void)data;
+	for (i = 0; bad[i] != NULL; i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) form = venture_forms_import_definition(f->context, f->org, bad[i], NULL, NULL, &error);
+		g_assert_null(form); g_assert_nonnull(error); g_assert_cmpint(count(f, VENTURE_TYPE_FORM), ==, 0);
+	}
+}
+
+static void
+test_portable_bindings(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "binding-source", VENTURE_FORM_DRAFT), venture = g_object_new(VENTURE_TYPE_VENTURE, "organization-id", f->org, "name", "Destination", NULL), copied = NULL;
+	g_autoptr(JsonNode) exported = NULL;
+	g_autoptr(JsonObject) bindings = json_object_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL, *binding = NULL;
+	(void)data;
+	save(f, venture); g_object_set(form, "venture-id", venture_entity_get_id(venture), NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	exported = venture_forms_export_definition(f->db, form, &error); g_assert_no_error(error); text = json_to_string(exported, FALSE);
+	copied = venture_forms_import_definition(f->context, f->org, text, NULL, NULL, &error); g_assert_null(copied); g_assert_nonnull(error); g_clear_error(&error);
+	binding = g_strdup_printf("venture:%" G_GINT64_FORMAT, venture_entity_get_id(venture)); json_object_set_int_member(bindings, binding, venture_entity_get_id(venture));
+	copied = venture_forms_import_definition(f->context, f->org, text, bindings, NULL, &error); g_assert_no_error(error); g_assert_nonnull(copied);
+	g_assert_cmpint(venture_forms_get_int(copied, "venture-id"), ==, venture_entity_get_id(venture));
+	g_clear_object(&copied); copied = venture_forms_import_definition(f->context, f->org + 1, text, bindings, NULL, &error); g_assert_null(copied); g_assert_nonnull(error);
+}
+
+static void
+test_portable_prices(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "price-portable", VENTURE_FORM_DRAFT), product = g_object_new(VENTURE_TYPE_PRODUCT, "organization-id", f->org, "name", "Workshop", NULL), price = NULL, copied = NULL;
+	g_autoptr(VentureMoney) unit = venture_money_new(12345, "USD", 2);
+	g_autoptr(JsonNode) exported = NULL, again = NULL;
+	g_autoptr(JsonObject) bindings = json_object_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL, *binding = NULL;
+	(void)data;
+	save(f, product);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 2);
+	price = g_object_new(VENTURE_TYPE_FORM_PRICE, "organization-id", f->org, "form-id", venture_entity_get_id(form), "product-id", venture_entity_get_id(product), "key", "seat", "name", "Seat", "unit-price", unit, NULL); save(f, price);
+	g_object_set(form, "payment-enabled", TRUE, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	exported = venture_forms_export_definition(f->db, form, &error); g_assert_no_error(error);
+	text = venture_forms_definition_format(exported, "yaml", &error); g_assert_no_error(error);
+	binding = g_strdup_printf("product:%" G_GINT64_FORMAT, venture_entity_get_id(product)); json_object_set_int_member(bindings, binding, venture_entity_get_id(product));
+	copied = venture_forms_import_definition(f->context, f->org, text, bindings, NULL, &error); g_assert_no_error(error); g_assert_nonnull(copied);
+	again = venture_forms_export_definition(f->db, copied, &error); g_assert_no_error(error);
+	{
+		JsonObject *line = json_array_get_object_element(json_object_get_array_member(json_node_get_object(again), "prices"), 0);
+		JsonObject *money = json_object_get_object_member(line, "unit_price");
+		g_assert_cmpint(json_object_get_int_member(money, "amount"), ==, 12345);
+		g_assert_cmpstr(json_object_get_string_member(money, "currency"), ==, "USD");
+	}
+	/* A decimal cannot be rounded silently into the invoice's minor units. */
+	g_clear_object(&copied); g_clear_pointer(&text, g_free);
+	json_object_set_double_member(json_object_get_object_member(json_array_get_object_element(json_object_get_array_member(json_node_get_object(exported), "prices"), 0), "unit_price"), "amount", 12.345);
+	text = json_to_string(exported, FALSE); copied = venture_forms_import_definition(f->context, f->org, text, bindings, NULL, &error);
+	g_assert_null(copied); g_assert_nonnull(error);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -4533,5 +4688,10 @@ main(int argc, char **argv)
 	g_test_add("/forms/languages-optin", Fixture, NULL, setup, test_languages_optin, teardown);
 	g_test_add("/forms/optin-personal-state", Fixture, NULL, setup, test_optin_personal_state, teardown);
 	g_test_add("/forms/languages-confirmation", Fixture, NULL, setup, test_languages_confirmation, teardown);
+	g_test_add("/forms/portable-templates", Fixture, NULL, setup, test_portable_templates, teardown);
+	g_test_add("/forms/portable-roundtrip", Fixture, NULL, setup, test_portable_roundtrip, teardown);
+	g_test_add("/forms/portable-refusals", Fixture, NULL, setup, test_portable_refusals, teardown);
+	g_test_add("/forms/portable-bindings", Fixture, NULL, setup, test_portable_bindings, teardown);
+	g_test_add("/forms/portable-prices", Fixture, NULL, setup, test_portable_prices, teardown);
 	return g_test_run();
 }

@@ -1,0 +1,44 @@
+#+title: Form templates and portability demonstration
+
+* Built-server walkthrough
+
+Ran the actual DEBUG server library in a disposable SQLite acceptance fixture
+on a kernel-assigned loopback port. Used ordinary generated action and record
+endpoints, then submitted every template in a JavaScript-disabled Chromium
+browser. The binary SHA-256 was
+=2037dafd5a68c6e8bc0b6fa7ba3fabf64e0f1769b5a7d507855896e8836ccfcb=.
+
+The browser printed:
+
+#+begin_example
+DEBUG acceptance fixture SHA256: 2037dafd5a68c6e8bc0b6fa7ba3fabf64e0f1769b5a7d507855896e8836ccfcb
+PASS: contact imported, rendered and submitted with JavaScript disabled.
+PASS: feedback imported, rendered and submitted with JavaScript disabled.
+PASS: nps imported, rendered and submitted with JavaScript disabled.
+PASS: event-signup imported, rendered and submitted with JavaScript disabled.
+PASS: job-application imported, rendered and submitted with JavaScript disabled.
+PASS: newsletter imported, rendered and submitted with JavaScript disabled (awaiting email confirmation).
+PASS: appointment-request imported, rendered and submitted with JavaScript disabled.
+PASS: order imported, rendered and submitted with JavaScript disabled.
+PASS: YAML export/import preserved pages, rules and repeat groups; new draft has a fresh public token.
+PASS: definitions contain no response data; newsletter remains a private pending signup.
+#+end_example
+
+The newsletter submission deliberately stops at the inbox confirmation step;
+the suite also follows its confirmation capability and verifies an ordinary
+response is created only then. Appointment and order templates explicitly
+collect requests, without promising a reservation or charging a card.
+
+* Regression evidence
+
+All 88 forms tests pass. Every template imports, renders through the shared
+accessibility checker and accepts a valid answer. Tests cover JSON and YAML
+round trips with pages, rules, repeat groups and translations; reference
+bindings and organization boundaries; exact monetary prices; and refusal of
+aliases, multiple YAML documents, unknown fields/kinds, forged identities,
+wrong value types and missing groups. Refused imports leave no form behind.
+
+The round-trip test initially failed because a shallow JSON-node copy shared
+the original object and removed the repeat-group binding. Owning the outer
+mapping before converting portable controls fixed that failure. Decimal
+minor-unit amounts are refused rather than silently rounded.

@@ -1004,6 +1004,60 @@ forms_summary_invoke(VentureAction *action, VentureEntity *form, GHashTable *par
 	return g_steal_pointer(&result);
 }
 
+static VentureEntity *
+forms_definition_invoke(VentureAction *action, VentureEntity *form, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	VentureDatabase *database = venture_action_get_data(action);
+	GWeakRef *reference = g_object_get_data(G_OBJECT(database), "venture-forms-payment-context");
+	g_autoptr(VentureContext) context = reference != NULL ? g_weak_ref_get(reference) : NULL;
+	g_autoptr(JsonNode) definition = NULL;
+	g_autofree gchar *text = NULL, *name = NULL;
+	JsonNode *input = g_hash_table_lookup(params, "definition"), *chosen = g_hash_table_lookup(params, "template"), *format = g_hash_table_lookup(params, "format"), *bindings = g_hash_table_lookup(params, "bindings");
+	VentureEntity *result;
+	g_object_get(action, "name", &name, NULL);
+	if (context == NULL) { venture_set_error_validation(error, "Form", "context unavailable"); return NULL; }
+	if (g_str_equal(name, "import_definition"))
+	{
+		const gchar *source = input != NULL && !JSON_NODE_HOLDS_NULL(input) ? json_node_get_string(input) : NULL;
+		const gchar *template_name = chosen != NULL && !JSON_NODE_HOLDS_NULL(chosen) ? json_node_get_string(chosen) : NULL;
+		guint i;
+		if (bindings != NULL && !JSON_NODE_HOLDS_NULL(bindings) && !JSON_NODE_HOLDS_OBJECT(bindings))
+		{ venture_set_error_validation(error, "Bindings", "expected an object of destination IDs"); return NULL; }
+		if (venture_string_is_empty(source) == venture_string_is_empty(template_name))
+		{ venture_set_error_validation(error, "Definition", "provide either definition text or a template name"); return NULL; }
+		if (!venture_string_is_empty(template_name))
+		{
+			definition = venture_forms_templates();
+			for (i = 0; i < json_array_get_length(json_node_get_array(definition)); i++)
+			{
+				JsonObject *item = json_array_get_object_element(json_node_get_array(definition), i);
+				if (g_strcmp0(template_name, json_object_get_string_member(item, "name")) == 0)
+				{ text = json_to_string(json_object_get_member(item, "definition"), FALSE); break; }
+			}
+			if (text == NULL) { venture_set_error_validation(error, "Template", "unknown form template"); return NULL; }
+			source = text;
+		}
+		return venture_forms_import_definition(context, venture_entity_get_organization_id(form), source,
+			bindings != NULL && JSON_NODE_HOLDS_OBJECT(bindings) ? json_node_get_object(bindings) : NULL, actor, error);
+	}
+	if (g_str_equal(name, "templates")) definition = venture_forms_templates();
+	else
+	{
+		g_autoptr(JsonNode) exported = venture_forms_export_definition(database, form, error);
+		JsonObject *object;
+		if (exported == NULL) return NULL;
+		text = venture_forms_definition_format(exported, format != NULL && !JSON_NODE_HOLDS_NULL(format) ? json_node_get_string(format) : "json", error);
+		if (text == NULL) return NULL;
+		definition = json_node_new(JSON_NODE_OBJECT); object = json_object_new();
+		json_object_set_string_member(object, "text", text); json_object_set_member(object, "definition", g_steal_pointer(&exported));
+		json_node_take_object(definition, object); g_clear_pointer(&text, g_free);
+	}
+	text = json_to_string(definition, FALSE); result = VENTURE_ENTITY(venture_form_new());
+	venture_entity_set_organization_id(result, venture_entity_get_organization_id(form));
+	g_object_set(result, "name", "Form definition", "result", text, NULL); return result;
+}
+
 static void
 forms_register_actions(VentureDatabase *database)
 {
@@ -1094,6 +1148,33 @@ forms_register_actions(VentureDatabase *database)
 	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 		forms_publish_allowed, forms_summary_invoke, database, NULL, &error))
 		g_error("Form summary registration: %s", error->message);
+
+	g_clear_object(&action); g_ptr_array_set_size(parameters, 0);
+	g_ptr_array_add(parameters, venture_field_spec_new("format", "Format", VENTURE_FIELD_KIND_STRING));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "export_definition", "label", "Export form definition",
+		"description", "Export editable structure as portable JSON or YAML without responses or tokens",
+		"parameters", parameters, "stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed, forms_definition_invoke, database, NULL, &error)) g_error("Form export registration: %s", error->message);
+	g_clear_object(&action); g_ptr_array_set_size(parameters, 0);
+	g_ptr_array_add(parameters, venture_field_spec_new("organization_id", "Organization", VENTURE_FIELD_KIND_INTEGER));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "templates", "label", "List form templates",
+		"description", "Show the built-in portable form templates",
+		"parameters", parameters, "stageable", FALSE, "type-level", TRUE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed_type, forms_definition_invoke, database, NULL, &error)) g_error("Form templates registration: %s", error->message);
+	g_clear_object(&action);
+	g_ptr_array_add(parameters, venture_field_spec_new("definition", "JSON or YAML definition", VENTURE_FIELD_KIND_TEXT));
+	g_ptr_array_add(parameters, venture_field_spec_new("template", "Template name", VENTURE_FIELD_KIND_STRING));
+	g_ptr_array_add(parameters, venture_field_spec_new("bindings", "Destination reference bindings", VENTURE_FIELD_KIND_JSON));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "import_definition", "label", "Import form definition",
+		"description", "Create a draft from portable JSON/YAML or a built-in template; map external record references explicitly",
+		"parameters", parameters, "stageable", TRUE, "type-level", TRUE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed_type, forms_definition_invoke, database, NULL, &error)) g_error("Form import registration: %s", error->message);
 
 }
 

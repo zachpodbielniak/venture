@@ -2002,3 +2002,16 @@ Only nonsensitive short/long text answers are sent to the organization-bound
 toolless model. Theme counts use cited answer IDs and quotes are checked against
 the input. Nothing is saved back to responses. Excessive/empty input is refused;
 narrow the scope. This action is nonstageable and requires an editor.
+
+Form templates and portability use generic actions:
+`act form 0 templates organization_id=1`,
+`act form 0 import_definition organization_id=1 template=contact`, and
+`act form 12 export_definition format=yaml`. Export returns `result.text`
+and `result.definition`; import accepts `definition=<JSON-or-YAML text>` or
+one template name. The eight names are contact, feedback, nps, event-signup,
+job-application, newsletter, appointment-request and order. Imports stay draft
+with fresh tokens; newsletter needs its real `public_origin` before publish.
+External record references require `bindings={"product:17":42}` (same-org
+existing destination IDs). Responses and signing keys never travel with a
+form definition. Appointment/order templates collect requests until an author
+adds a booking question or payment prices. See `docs/forms.org`.

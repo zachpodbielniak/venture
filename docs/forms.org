@@ -1208,3 +1208,71 @@ invalid references are dropped. A malformed output format is refused. No tools
 are offered to the model, and no form, response, score or note is updated.
 The action is not stageable. A person may copy the proposal into their own
 ordinary saved note; there is no automatic summary persistence.
+
+* Templates and portable definitions
+
+Use the generic =form= actions from the record UI, REST, CLI or MCP. The
+=templates= type action lists the same portable definitions that
+=import_definition= uses; there is no second template construction path.
+
+| Template | Starting questions and behavior |
+|----------+---------------------------------|
+| =contact= | Name, email and message |
+| =feedback= | A 1–5 rating and comments |
+| =nps= | A 0–10 recommendation question and reason |
+| =event-signup= | Name, email and a sensitive accessibility request |
+| =job-application= | Name, email, experience and a portfolio/resume link |
+| =newsletter= | Email and explicit required permission; double opt-in |
+| =appointment-request= | Name, email, preferred date and details |
+| =order= | Name, email, requested item and quantity |
+
+Templates start as drafts, with labelled questions, no prechecked consent,
+and a 90-day purge policy. Review the wording, privacy notice and retention
+for your use before publishing. Set the newsletter's =public_origin= to the
+real HTTPS form origin before publishing; it never substitutes a fake mail
+link. Appointment and order templates collect requests: their wording says
+that the team must confirm them. Add a =booking= question or published price
+declarations to use actual reservations or payment collection.
+
+#+begin_src sh
+venturectl act form 0 templates organization_id=1
+venturectl act form 0 import_definition organization_id=1 template=contact
+venturectl act form 12 export_definition format=yaml
+#+end_src
+
+=export_definition= returns both a portable =definition= object and =text=
+in the requested =json= or =yaml= format. The type action
+=import_definition= accepts that text in its =definition= parameter, or a
+built-in =template= name, but not both. It creates a new form, never updates
+an existing one. The generic CLI =act= schema types the parameters; a REST
+caller sends definition text as a JSON string, for example:
+
+#+begin_src json
+{"organization_id":1,"definition":"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Contact\"},\"fields\":[{\"key\":\"message\",\"label\":\"Message\",\"kind\":\"long_text\"}]}"}
+#+end_src
+
+The version-1 envelope contains =form= and arrays =groups=, =fields=,
+=rules=, =translations=, =result_bands= and =prices=. Field settings come
+from the ordinary record metadata and use the JSON underscore spelling.
+A question names its repeat group with =group: "stable_group_key"=, not a
+database ID. Pages, conditional rules, translations, quiz bands and exact
+minor-unit prices survive JSON and YAML round trips.
+
+External references become symbolic objects, such as
+=product_id: {binding: "product:17"}=. Supply an explicit =bindings= object
+mapping that symbol to the destination ID, for example
+={"product:17":42}=. Each target must exist, be enabled, and belong to the
+destination organization. Numeric IDs from another install are never reused
+implicitly. This applies equally to ventures, campaigns, booking pages and
+marketing lists. The original symbolic name is just a mapping key, not a
+claim that destination record 17 exists.
+
+Exports contain the editable definition, including internal author notes,
+but no responses, drafts, published history, public tokens or signing keys.
+Sensitive question defaults are omitted. An import gets fresh tokens and a
+fresh slug, stays draft, and uses one transaction for its definition records.
+Unknown or forbidden fields, wrong value types, unresolved groups and bad
+references are refused. Inputs are bounded to 1 MiB, 2,000 definition records,
+32 nesting levels and one JSON/YAML document. YAML aliases are refused before
+node expansion. Review imported origins, redirects, notices and mail wording
+before making the draft live.
