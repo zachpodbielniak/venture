@@ -46,6 +46,19 @@ Observed results:
 The demonstrated DEBUG binary's SHA-256 was
 =5245bea4ee4de9b60059ca5066f4f6571166ca896dc2cf96b8475b294e7b9da8=.
 
+* Final validation
+
+Fixed implementation commit =faa80b417a5070c773016530cafd264a195907c2=
+passed a warning-free DEBUG build and all 153 test binaries in one complete
+run. This includes all 105 forms tests, 108 authentication tests, 37 attribution
+tests and 21 migration tests, with an owned PostgreSQL 18 fixture enabled.
+The litter, version, foreground-demo and clock-demo post-checks also passed.
+
+The GTest output contains 2664 cases, of which 22 explicitly skip separately
+configured optional integrations (embedding, accounting PostgreSQL isolation,
+authenticated TLS mail, OCR, Keycloak and PostgreSQL process leases). The
+remaining 2642 cases passed. No failed test needed a rerun in this full run.
+
 * Integration boundary
 
 Lightsite/libresite must render the published definition, preserve its version,
