@@ -498,7 +498,7 @@ static void test_booking_bound_ignores_tasks(Fixture *f, gconstpointer data)
 	(void)data;
 	/* These valid task rows must be narrowed out before the 10,000-row
 	 * availability bound, rather than refused and then ignored in C. */
-	sql = g_strdup_printf("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<10001) INSERT INTO activities(uuid, subject, owner, organization_id, kind, status, version) SELECT 'bounded-task-' || CAST(n AS TEXT), 'Unscheduled task', 'ben', %" G_GINT64_FORMAT ", %d, %d, 1 FROM numbers", f->org, VENTURE_ACTIVITY_KIND_TASK, VENTURE_ACTIVITY_STATUS_PLANNED);
+	sql = g_strdup_printf("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<10001) INSERT INTO activities(uuid, subject, owner, organization_id, kind, status, version) SELECT 'bounded-task-' || CAST(n AS TEXT), 'Unscheduled task', 'ben', %" G_GINT64_FORMAT ", 'task', 'planned', 1 FROM numbers", f->org);
 	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
 	slots = venture_booking_service_slots(f->booking, booking_page, now, &error); g_assert_no_error(error); g_assert_nonnull(slots);
 	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
