@@ -1,0 +1,335 @@
+#+title: Plugins: runtimes, manifests and exec
+#+description: How VENTURE loads plugins, the manifest format, the exec runtime, the JSON-lines protocol and the security model
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-03]
+#+updated: [2026-10-03]
+#+version: 0.1.0
+
+* Plugins
+
+This page is the reference for how a plugin is loaded. [[file:extending.org][Extending VENTURE]] is the tour: what a plugin can register and why everything it registers behaves like a built-in. Read that first if you are writing your first plugin; come here for the loader's rules, the manifest format, exec plugins and the protocol they speak.
+
+** The short version
+
+- Every plugin is loaded by a *runtime*. Four ship: =native= (a =.so=), =crispy= (a =.c= compiled on demand), =declarative= (a =.yaml= venture type) and =exec= (a program run as a subprocess).
+- A bare file in a plugin directory is loaded by the runtime that claims its extension, exactly as before runtimes existed.
+- A =*.plugin.yaml= *manifest* names a plugin, its runtime and its entry file, and can list what the plugin *provides*. A manifest is the only way to load an exec plugin.
+- A plugin may register a new runtime. A file nothing claims yet is held, and loads the moment a runtime for it is registered.
+- Exec plugins are off unless =plugins.allow_exec= is on. They run as the server's user; the rules below keep the server from handing them more than they ask for, but they are not a sandbox.
+
+* Runtimes
+
+A runtime is a =VenturePluginRuntime= (=src/plugin/venture-plugin-runtime.h=): a name, the file extensions it claims, and a =load= that turns a file into a loaded plugin.
+
+| Runtime       | Extensions      | Loads                                                         | Switch                           |
+|---------------+-----------------+---------------------------------------------------------------+----------------------------------|
+| =native=      | =.so=           | a compiled library, through GModule, never unloaded           | =plugins.enabled=                |
+| =crispy=      | =.c=            | C source compiled by crispy and cached by content hash        | =plugins.allow_crispy= (on)      |
+| =declarative= | =.yaml=, =.yml= | a declarative venture type                                    | =plugins.enabled=                |
+| =exec=        | none            | a program beside a manifest, spoken to in JSON lines          | =plugins.allow_exec= (off)       |
+
+=native= and =crispy= share the entry point =venture_plugin_register(VentureContext *, GError **)= and the optional =venture_plugin_info()=. Their behaviour is unchanged from before runtimes existed; it moved behind the interface, nothing more.
+
+** Registering a runtime
+
+A plugin adds a runtime from inside its own registration. An embedded interpreter is the motivating case: a =.so= that registers a =lua= runtime claiming =.lua=.
+
+#+begin_src C
+static gboolean
+lua_load(VenturePluginManager *manager, VentureContext *context,
+         const gchar *path, VenturePluginManifest *manifest,
+         VenturePluginRecord *record, gpointer user_data, GError **error)
+{
+	venture_plugin_record_set_kind(record, VENTURE_PLUGIN_KIND_OTHER);
+	/* ... run the script, let it register into the context ... */
+	return TRUE;
+}
+
+gboolean
+venture_plugin_register(VentureContext *context, GError **error)
+{
+	static const gchar *const extensions[] = { ".lua", NULL };
+	g_autoptr(VenturePluginRuntime) runtime = NULL;
+
+	runtime = venture_func_plugin_runtime_new("lua", extensions, lua_load,
+	                                          NULL, NULL);
+
+	return venture_plugin_manager_add_runtime(
+		venture_context_get_plugin_manager(context), runtime, error);
+}
+#+end_src
+
+=venture_func_plugin_runtime_new()= spares a crispy script the GObject boilerplate; a compiled plugin can implement the interface on a type of its own instead.
+
+The rules:
+
+- *One name, one runtime; one extension, one runtime.* A second runtime called =native=, or a second one claiming =.so=, is refused. Either would make what loads a file depend on which plugin happened to load first, which is file naming.
+- *=.plugin.yaml= belongs to manifests* and cannot be claimed. An extension starts with a dot.
+- *A runtime that does not set a kind reports =other=.* =VenturePluginKind= stays a closed list (=native=, =crispy=, =declarative=, =exec=, =other=); the =runtime= string is the open one.
+- *Held files load after the registering plugin finishes, never during.* A plugin adds a runtime from inside its own =venture_plugin_register()=; loading other plugins from there would interleave two registrations. The manager waits until the current load returns, then retries every held file in the order it was met.
+
+** Held (deferred) files
+
+A file no runtime claims -- =script.lua= before the =lua= runtime exists, a =README.org= beside the plugins -- is *held* rather than refused. It is retried each time a runtime is registered, in the order it was met, which is sorted order within each directory, so the outcome never depends on timing.
+
+- A directory scan holds files quietly (a debug line), because a README in a plugin directory is normal.
+- =venture_plugin_manager_load_file()= on a held file returns an error -- the caller asked for it now -- and still holds it.
+- A name with no extension at all (=Makefile=, =LICENSE=) is skipped outright.
+- =venture_plugin_manager_list_deferred()= lists what is held.
+- A file named in =plugins.required= that is still held when loading finishes is fatal, with the reason "no runtime loads it".
+
+* Scanning
+
+The directories, in order: the install prefix (=VENTURE_PLUGINDIR=), each directory in =VENTURE_PLUGIN_PATH=, then =plugins.paths=. Within a directory, entries are loaded in sorted order.
+
+- A *file* is loaded if it is a manifest or some runtime claims its extension; otherwise it is held.
+- A *subdirectory* is a plugin's own directory. Its =*.plugin.yaml= manifests are loaded, in sorted order, and nothing else in it is: a plugin's helper scripts, data files and READMEs are never mistaken for plugins. The scan descends *exactly one level*; nothing below a plugin's directory is read.
+- The same path is loaded once, however many configured directories overlap.
+
+A plugin that fails to load is skipped with a warning (=Skipping plugin: ...=) and the rest still load: one broken extension must not cost the operator access to their data. A plugin named in =plugins.required= -- by its manifest =name=, its file name or its full path -- that did not load stops startup, and the message gives the reason it failed.
+
+* Manifests
+
+A manifest is a YAML file whose name ends in =.plugin.yaml=. It is recognised by that suffix before any runtime is consulted, so the =declarative= runtime never mistakes it for a venture type.
+
+#+begin_src yaml
+name: supplier-csv                 # required
+runtime: exec                      # optional for native, crispy, declarative
+description: Prices from a supplier's CSV export
+entry: fetch.sh                    # required, relative to this file
+protocol: 1                        # required for exec
+exec:                              # the runtime's own section
+  args: [--format, jsonl]
+  env: [SUPPLIER_REGION]
+  timeout: 30
+  max_output: 16777216
+  max_stderr: 65536
+provides:
+  - kind: data_source_provider
+    name: supplier_csv
+#+end_src
+
+| Key           | Required          | Meaning                                                                                                    |
+|---------------+-------------------+------------------------------------------------------------------------------------------------------------|
+| =name=        | yes               | The plugin's name: lower-case letters and digits, then those and =.=, =_=, =-=; at most 64 bytes.         |
+| =entry=       | yes               | The file the runtime loads, relative to the manifest (or absolute -- but see below).                      |
+| =runtime=     | for exec          | Which runtime loads the entry. Omitted, the entry's extension picks one.                                  |
+| =description= | no                | One line for the plugin list, used when the plugin does not describe itself.                              |
+| =protocol=    | for exec          | The JSON-lines protocol version the plugin speaks. Only =1= exists.                                       |
+| =provides=    | no                | A list of mappings, each with a =kind=; see "What a plugin provides" below.                             |
+| /runtime name/ | no               | A mapping of settings for that runtime: =exec:= for exec, =lua:= for a =lua= runtime.                     |
+
+Any other top-level key is refused. A misspelt key that silently does nothing is the hardest manifest bug to find, so there are none.
+
+** The name
+
+The name is the plugin's identity everywhere: the =/plugins= page, the =plugin_config= record its settings are stored on, =plugins.required=, and -- for exec -- the program's registration. Two loaded plugins may not share one; the second is refused, naming the first's manifest. A bare file's name is still its basename (=royalties.c=), so nothing about existing plugins changes.
+
+** The entry stays inside the plugin's directory
+
+=entry= is resolved with =realpath()= -- following every symlink -- and must then sit strictly inside the manifest's own directory, compared against the directory *plus a trailing separator*. So all of these are refused, for every runtime, with =VENTURE_ERROR_PERMISSION_DENIED=:
+
+- =entry: ../../elsewhere/lib.so= (out by =..=);
+- =entry: /usr/lib/libsomething.so= (absolute, elsewhere);
+- =entry: inside.so= where =inside.so= is a symlink to a file elsewhere;
+- =entry: ../plug-evil/run.sh= from a directory called =plug=: =/srv/plug-evil= starts with =/srv/plug=, and only the separator makes the difference.
+
+A manifest cannot point a native loader at a library somewhere else on the machine any more than it can point exec at =/bin/sh=.
+
+** Runtime resolution
+
+If =runtime= is given and registered, it loads the entry. If it is given and *not* registered, the manifest is held, exactly like a bare file nobody claims, and loads when that runtime appears. If it is omitted, the runtime claiming the entry's extension loads it; if none does, the manifest is held.
+
+* What a plugin provides
+
+A manifest's =provides= list says what the plugin offers to the rest of VENTURE. Each entry is a mapping with a =kind=; the rest of the entry belongs to that kind.
+
+Kinds are registered by the subsystem that understands them, on the context:
+
+#+begin_src C
+venture_plugin_provides_registry_add(
+	venture_context_get_plugin_provides(context),
+	"data_source_provider", "A source of market data for feeds",
+	accept_provider, NULL, NULL, error);
+#+end_src
+
+When a plugin with a manifest loads, the manager hands each entry, in order, to its kind's handler, with the plugin's manifest. The plugin is already loaded at that point -- an exec plugin's program can be looked up with =venture_plugin_manager_lookup_exec()= -- so the handler can register whatever the entry describes.
+
+- An entry naming a kind nobody registered *fails the plugin's load*, naming the kinds that exist. A typo must not load a plugin that quietly provides nothing.
+- A handler that refuses its entry fails the load too.
+- When a load fails at this stage, an exec plugin's program is withdrawn, so nothing can run a plugin that did not load. Native and crispy code has already run and cannot be withdrawn; keep their =provides= lists to things a handler can check before it registers anything.
+- A kind registered twice is refused: two handlers would each believe they own the plugins that name it.
+
+The runtime never needs to know what a kind is. That is what lets later kinds -- data-source providers for feeds, and whatever follows -- arrive without touching the loader. This release ships the registry and no built-in kinds; the first arrives with the feeds module. A kind belonging to a module that can be switched off should stay registered and *skip* its entries while the module is off, rather than leave the plugin to fail with an unknown kind on every start.
+
+* Exec plugins
+
+An exec plugin is a program in its own directory, beside a manifest with =runtime: exec= and =protocol: 1=. It can be written in anything that can read a line from standard input and write lines to standard output: a bash script, a Python script with only the standard library, a compiled binary.
+
+** Turning it on
+
+#+begin_src yaml
+plugins:
+  allow_exec: true
+#+end_src
+
+=plugins.allow_exec= is *off* by default, and it is checked twice: when the plugin loads, and again at every run. Switching it off on a running install stops the programs at the next run without a restart. Turn it on only where nobody but the operator can write the plugin directories: on an install where somebody else can drop a directory into =plugins.paths=, this is how their program would run as you.
+
+** What happens at load
+
+Loading reads the manifest and the =exec:= section, resolves the program, checks it is an executable regular file inside the plugin's directory, and registers it under the plugin's name. *Nothing runs at load.* A program is started when something it provides is used, so a slow or broken one cannot hold up startup.
+
+The =exec:= section:
+
+| Key          | Default             | Limit         | Meaning                                                                                   |
+|--------------+---------------------+---------------+-------------------------------------------------------------------------------------------|
+| =args=       | none                | 64 entries    | Fixed arguments after the program. Public: never put a setting or a secret here.          |
+| =env=        | none                | 64 names      | Environment variables passed through from the server, by name.                            |
+| =timeout=    | 60                  | 1 to 3600     | Seconds the whole run may take.                                                           |
+| =max_output= | 16777216 (16 MiB)   | 256 MiB       | Bytes of standard output accepted. More fails the run.                                    |
+| =max_stderr= | 65536 (64 KiB)      | 4 MiB         | Bytes of standard error kept. More is read and dropped.                                   |
+
+Any other key is refused.
+
+** How a run is made
+
+- *argv, never a shell.* The program is started directly with =GSubprocess= and an argv array -- the resolved program, then =args= -- so nothing is word-split and nothing is interpreted. A shebang line is honoured by the kernel, as for any program.
+- *Resolved again on every run.* The program's path is put through =realpath()= and the inside-the-directory check at every run, not only at load: the file can be replaced, or a directory on its path swapped for a symlink, at any time after load. A program swapped for a link to one elsewhere is refused at its next run.
+- *A cleared environment.* The program gets =PATH=, =LANG= and =HOME= (each only if the server has it; =PATH= falls back to =/usr/local/bin:/usr/bin:/bin=) plus the names its manifest lists in =env=. Nothing else: not the database URI, not a token the operator exported to start the server. Values are captured when the plugin loads.
+- *Its own directory.* The working directory is the plugin's directory.
+- *Its own process group.* The program leads a new process group, and every way a run can end early kills the whole group, so a =sleep= or a curl a script left behind dies with it rather than holding the output pipe open.
+- *No other file descriptors.* =GSubprocess= closes everything but standard input, output and error in the child, so the database file and the listening socket are not inherited.
+- *One deadline.* =timeout= covers the whole run: starting, reading the request, writing the answer, exiting.
+- *Caps in bytes.* Standard output past =max_output= *fails* the run: a batch cut at the cap reads exactly like a complete one to whatever consumes it. Standard error past =max_stderr= is drained and dropped, and the result says it was truncated, so a chatty program is neither blocked on a full pipe nor failed for logging.
+- *Standard input is a socket.* The request is written to one end of a Unix socket pair rather than a pipe. A program that exits without reading its request is allowed to; through a pipe that write would raise =SIGPIPE= and kill the server, through the socket it is an error code the run ignores.
+- *Cancellable.* A run takes a =GCancellable=; cancelling it from any thread stops the run promptly with =G_IO_ERROR_CANCELLED=.
+- *A private main context.* The calling thread blocks, iterating a main context of the run's own and never the thread's default one, so no unrelated source -- the web server, the automation engine -- runs nested inside a plugin call.
+
+** The request
+
+The program reads exactly one line on standard input, followed by end-of-file:
+
+#+begin_src json
+{"protocol": 1,
+ "plugin": "supplier-csv",
+ "command": "fetch",
+ "settings": {"region": "eu", "rate": 65},
+ "params": {"page": 2},
+ "secrets": {"token": "..."}}
+#+end_src
+
+| Member     | Meaning                                                                                                                    |
+|------------+----------------------------------------------------------------------------------------------------------------------------|
+| =protocol= | Always =1=.                                                                                                                |
+| =plugin=   | The plugin's name.                                                                                                         |
+| =command=  | What the caller wants done. The provides kind that runs the plugin defines its commands; =run= when the caller names none. |
+| =settings= | The plugin's stored configuration from the =/plugins= page, read at the run, so an edit there reaches the very next run. |
+| =params=   | The command's parameters.                                                                                                  |
+| =secrets=  | Credentials for this run, supplied by the caller -- for feeds, sealed in the integration store. Always present, possibly empty. |
+
+*Settings and secrets travel only here.* Never in argv, which any user on the machine can read through =/proc=; never in the environment, which a program's own children inherit.
+
+** Redaction
+
+Every string a run hands back -- every member of every message, standard error, the text of a failure -- has each secret value of six bytes or more replaced with =[redacted]=. A program that echoes its request into a log line, a record or an error therefore cannot carry its secret into the store, a log or a page. Shorter values are left alone: replacing every =abc= in a price feed would mangle the data to hide nothing worth hiding.
+
+** The result
+
+A run that *completes* returns a result, even when the program exited non-zero or reported an =error= message: a partial batch may still be worth reading, and that is the consumer's call. The result carries every message in order, the exit status (minus the signal number if a signal ended it), standard error up to its cap, whether it was truncated, the bytes of output read, and the first =error= message's text and =retry_after=. =venture_exec_result_check()= turns a non-zero exit or an =error= message into a =VENTURE_ERROR_PLUGIN= that quotes the tail of standard error.
+
+A run that *does not complete* returns no result:
+
+| Cause                                    | Error                          |
+|------------------------------------------+--------------------------------|
+| the program cannot be started            | =VENTURE_ERROR_PLUGIN=         |
+| the program moved outside its directory  | =VENTURE_ERROR_PERMISSION_DENIED= |
+| the deadline passed                      | =VENTURE_ERROR_TIMEOUT=        |
+| standard output passed =max_output=      | =VENTURE_ERROR_PLUGIN=         |
+| a line broke the protocol                | =VENTURE_ERROR_PLUGIN=, naming the line |
+| the caller cancelled                     | =G_IO_ERROR_CANCELLED=         |
+| =plugins.allow_exec= is off              | =VENTURE_ERROR_PLUGIN=         |
+
+In each case the whole process group is killed first.
+
+** The C API
+
+Two layers, so that later subsystems can run a plugin from a worker thread:
+
+- =venture_plugin_manager_run_exec(manager, name, command, params, secrets, cancellable, error)= -- main thread. Checks =allow_exec=, builds the request (reading =settings= from the database) and runs the program.
+- =venture_plugin_manager_lookup_exec(manager, name)= returns the plugin's =VentureExecSpec=, and =venture_plugin_manager_build_exec_request()= builds its request; both on the main thread. The spec is frozen, reference-counted plain data, and =venture_exec_run(spec, request, secrets, cancellable, error)= touches neither the database nor the configuration, so a worker can be handed a referenced spec and a finished request and run it on its own thread.
+
+=VentureExecSpec= can also be built directly with =venture_exec_spec_new()= for a program that is not a plugin; the same rules apply.
+
+* The JSON-lines protocol (version 1)
+
+One JSON object per line, UTF-8, each naming its =type=. An exec plugin writes these on standard output; a =file_jsonl= data source reads the same lines from a file. Defined here once, for both. The parser lives in =src/plugin/venture-jsonl.c= and needs neither the database nor the configuration, so it runs on any thread.
+
+** General rules
+
+- *One object per line.* Lines end with =\n=; a =\r= before it is dropped. Blank lines are skipped. A last line without a newline is read.
+- *=type= is required*, a string, matched exactly and case-sensitively. An unknown type is refused: the vocabulary below is the whole of protocol 1.
+- *Unknown members are ignored*, so a later revision can add optional members without breaking an older reader. =null= is read as absent everywhere.
+- *Money and odds are decimal strings, never JSON numbers*: ="12.50"=, not =12.5=. A JSON number is a double on the way in, and money is never a double. The grammar is digits, optionally a point and more digits, optionally a leading minus where a member allows one; no exponent, no leading plus, no bare point, at most 40 bytes. A price is interpreted in the message's =currency=, else the venue's, else the source's; converting to minor units is the consumer's job, at that currency's exponent.
+- *Counts are JSON integers.* =2.5= units is refused, not truncated.
+- *Times are ISO 8601 with a zone*: ="2026-10-03T12:00:00Z"= or ="2026-10-03T14:00:00+02:00"=. A time with no zone means whatever the reader's clock means, and is refused.
+- *Currencies* match =[A-Za-z][A-Za-z0-9_]{1,14}= (VENTURE's currency grammar: =GOLD= and =TICKET= are fine).
+- *Lengths are bounded*: keys and names 512 bytes, free text 16 KiB, a whole line the reader's cap (an exec run uses =max_output=).
+- *The first line that breaks a rule fails the run.* The error names the line number, the type and the member, and never quotes the line, which may carry anything.
+
+** Messages
+
+| =type=         | Required                         | Optional                                                                                       | Means                                                       |
+|----------------+----------------------------------+------------------------------------------------------------------------------------------------+-------------------------------------------------------------|
+| =venue=        | =key=                            | =name=, =kind=, =group=, =currency=, =attrs= (object)                                          | A place that quotes prices: a realm, a marketplace, a bookmaker. |
+| =instrument=   | =key=                            | =name=, =kind=, =category= (=/=-separated path), =parent= (instrument key), =attrs= (object)  | A thing that is priced: an item, a SKU, an event's outcome. |
+| =snapshot=     | =venue=, =taken_at=              | =complete= (boolean)                                                                           | The start of one venue's snapshot; listings and stats that follow belong to it. |
+| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id=, =side= (=sell= or =buy=), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots. |
+| =stat=         | =venue=, =instrument=, one figure | =min=, =market=, =mean=, =median=, =sale_avg= (decimals); =quantity=, =listings=, =sold= (integers, at least 0); =currency=, =taken_at= | Precomputed figures when there are no individual listings. At least one figure is required. |
+| =quote=        | =venue=, =instrument=, exactly one of =price= or =odds= | =format= (=decimal=, =american=, =fractional=), =side= (=back=, =lay=, =bid=, =ask=), =liquidity= (decimal), =currency=, =taken_at= | A price or odds. Decimal odds must exceed 1; American odds are =+150= or =-200= with a magnitude of at least 100; fractional are =5/2=. |
+| =entry=        | =key=, =title=                   | =url= (http or https only), =summary=, =published_at=, =venue=, =instrument=                   | A non-price item: a feed article, a notice. |
+| =record=       | =record_type=, =fields= (object) | =match= (list of field names)                                                                  | An upsert of a main-database record, matched on =match=. =record_type= is a lower-case type name; the consumer decides which types it accepts. |
+| =cursor=       | =value=                          |                                                                                                | Where the next request should resume; handed back in =params= by the consumer that stores it. |
+| =not_modified= |                                  | =venue=                                                                                        | Nothing changed since last time, for one venue or the whole unit. |
+| =log=          | =message=                        | =level= (=debug=, =info=, =warning=; default =info=)                                          | A diagnostic line. Never a reason to fail a run. |
+| =error=        | =message=                        | =retry_after= (integer seconds, at least 0)                                                    | The producer could not do what was asked. Earlier messages are kept; =retry_after= asks the consumer to back off. |
+
+A minimal exec plugin in bash:
+
+#+begin_src bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+IFS= read -r request || true   # one JSON line; parse it with whatever you have
+
+printf '{"type":"venue","key":"supplier","name":"Acme Wholesale","currency":"USD"}\n'
+printf '{"type":"instrument","key":"sku-1001","name":"Widget"}\n'
+printf '{"type":"quote","venue":"supplier","instrument":"sku-1001","price":"4.20","side":"ask"}\n'
+#+end_src
+
+=tests/fixtures/exec/probe.sh= is a fuller example: every way a plugin can go wrong, one mode each.
+
+* Security model
+
+What the loader promises, and what it does not:
+
+- *A manifest cannot reach outside its directory.* Entries and exec programs are =realpath()='d and compared against the directory plus a separator, at load and -- for exec -- at every run.
+- *Exec is opt-in per install.* =plugins.allow_exec= is off by default and is re-checked at every run.
+- *An exec program gets only what it is given*: its argv from the manifest, a cleared environment plus declared names, its request on a socket, its own directory as working directory. Secrets never appear in argv or the environment, and are redacted out of everything that comes back.
+- *An exec program cannot hold the server.* One deadline, byte caps on both outputs, the whole process group killed on any early end, and a private main context so nothing else runs nested inside the call.
+- *It is not a sandbox.* An exec program runs as the server's user and can read whatever that user can, including the database file and =/proc= entries of the server process. The rules keep the server from *handing* it more than it asked for, which is a different promise from containing it. Treat a plugin directory with exec enabled as you would =~/bin=: only what you trust goes there.
+- *Native and crispy code is fully trusted.* It runs inside the server process with the full API; =plugins.allow_crispy= exists because crispy runs a compiler over whatever is in the directory.
+
+* Where things live
+
+| File                                         | What                                                                  |
+|----------------------------------------------+-----------------------------------------------------------------------|
+| =src/plugin/venture-plugin-manager.{h,c}=    | Scanning, dispatch, deferral, records, required plugins, the exec registry |
+| =src/plugin/venture-plugin-runtime.{h,c}=    | The runtime interface, manifests, function runtimes, the provides registry |
+| =src/plugin/venture-plugin-runtimes.c=       | native, crispy, declarative and exec                                  |
+| =src/plugin/venture-exec.{h,c}=              | Running a program: the spec, the run, redaction, the result           |
+| =src/plugin/venture-jsonl.{h,c}=             | The protocol: message validation and the incremental reader           |
+| =tests/test-plugin-runtime.c=                | Runtimes, manifests, exec and the protocol                            |
+| =tests/fixtures/exec/probe.sh=               | The misbehaving exec plugin the tests drive                           |
+
+In the source tree, =plugins/exec/= holds exec plugins and is not compiled; =plugins/blizzard-auctions/= is a native plugin built into =$(OUTDIR)/plugins-optional/= rather than =$(OUTDIR)/plugins/=, so that it does not load into every test fixture through =VENTURE_PLUGIN_PATH=. The Makefile keeps both out of the generic one-directory-one-=.so= rule.

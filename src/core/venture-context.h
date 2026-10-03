@@ -357,6 +357,20 @@ VenturePluginManager *
 venture_context_get_plugin_manager(VentureContext *self);
 
 /**
+ * venture_context_get_plugin_provides:
+ * @self: a #VentureContext
+ *
+ * The kinds a plugin manifest's `provides` list may name. A subsystem that
+ * can take something from a plugin -- a data-source provider, say --
+ * registers its kind here, and the plugin manager hands it each entry that
+ * names it.
+ *
+ * Returns: (transfer none): the registry, created on first use
+ */
+VenturePluginProvidesRegistry *
+venture_context_get_plugin_provides(VentureContext *self);
+
+/**
  * venture_context_get_stripe_service:
  * @self: context
  * Returns: (transfer none) (nullable): explicitly injected provider; NULL in production or when switched off

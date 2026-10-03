@@ -10,27 +10,75 @@
 #include <string.h>
 #include <yaml-glib.h>
 
-typedef struct
+struct _VenturePluginRecord
 {
 	gchar			*name;
 	gchar			*path;
+	gchar			*runtime;
 	gchar			*description;
 	VenturePluginKind	 kind;
-} VenturePluginRecord;
+	GStrv			 provides;	/* the kinds, in manifest order */
+};
+
+/*
+ * A load that failed, kept so that a required plugin's refusal can say why
+ * rather than only that it is missing.
+ */
+typedef struct
+{
+	gchar	*name;
+	gchar	*path;
+	gchar	*message;
+} VenturePluginFailure;
 
 struct _VenturePluginManager
 {
 	GObject parent_instance;
 
 	VentureContext			*context;
-	VentureCrispyHost		*crispy;
 	VentureVentureTypeRegistry	*venture_types;
 
+	GPtrArray			*runtimes;	/* VenturePluginRuntime */
 	GPtrArray			*loaded;	/* VenturePluginRecord */
 	GHashTable			*seen;		/* path -> NULL */
+	GPtrArray			*deferred;	/* gchar *path, in order met */
+	GPtrArray			*failures;	/* VenturePluginFailure */
+	GHashTable			*exec;		/* name -> VentureExecSpec */
+
+	guint				 load_depth;
+	gboolean			 retry_pending;
+	gboolean			 retrying;
 };
 
 G_DEFINE_FINAL_TYPE(VenturePluginManager, venture_plugin_manager, G_TYPE_OBJECT)
+
+typedef enum
+{
+	MANAGER_LOADED,
+	MANAGER_FAILED,
+	MANAGER_DEFERRED
+} ManagerOutcome;
+
+/* ==========================================================================
+ * Records
+ * ========================================================================== */
+
+static VenturePluginRecord *
+venture_plugin_record_new(
+	const gchar	*name,
+	const gchar	*path,
+	const gchar	*runtime
+){
+	VenturePluginRecord *record;
+
+	record = g_new0(VenturePluginRecord, 1);
+	record->name = g_strdup(name);
+	record->path = g_strdup(path);
+	record->runtime = g_strdup(runtime);
+	record->kind = VENTURE_PLUGIN_KIND_OTHER;
+
+	return record;
+}
 
 static void
 venture_plugin_record_free(gpointer data)
@@ -41,9 +89,89 @@ venture_plugin_record_free(gpointer data)
 
 	g_free(record->name);
 	g_free(record->path);
+	g_free(record->runtime);
 	g_free(record->description);
+	g_strfreev(record->provides);
 	g_free(record);
 }
+
+const gchar *
+venture_plugin_record_get_name(VenturePluginRecord *self)
+{
+	g_return_val_if_fail(NULL != self, NULL);
+
+	return self->name;
+}
+
+const gchar *
+venture_plugin_record_get_path(VenturePluginRecord *self)
+{
+	g_return_val_if_fail(NULL != self, NULL);
+
+	return self->path;
+}
+
+const gchar *
+venture_plugin_record_get_runtime(VenturePluginRecord *self)
+{
+	g_return_val_if_fail(NULL != self, NULL);
+
+	return self->runtime;
+}
+
+VenturePluginKind
+venture_plugin_record_get_kind(VenturePluginRecord *self)
+{
+	g_return_val_if_fail(NULL != self, VENTURE_PLUGIN_KIND_OTHER);
+
+	return self->kind;
+}
+
+void
+venture_plugin_record_set_kind(
+	VenturePluginRecord	*self,
+	VenturePluginKind	 kind
+){
+	g_return_if_fail(NULL != self);
+
+	self->kind = kind;
+}
+
+const gchar *
+venture_plugin_record_get_description(VenturePluginRecord *self)
+{
+	g_return_val_if_fail(NULL != self, NULL);
+
+	return self->description;
+}
+
+void
+venture_plugin_record_set_description(
+	VenturePluginRecord	*self,
+	const gchar		*description
+){
+	g_return_if_fail(NULL != self);
+
+	g_free(self->description);
+	self->description = g_strdup(description);
+}
+
+static void
+venture_plugin_failure_free(gpointer data)
+{
+	VenturePluginFailure *failure;
+
+	failure = data;
+
+	g_free(failure->name);
+	g_free(failure->path);
+	g_free(failure->message);
+	g_free(failure);
+}
+
+/* ==========================================================================
+ * The object
+ * ========================================================================== */
 
 static void
 venture_plugin_manager_finalize(GObject *object)
@@ -53,10 +181,13 @@ venture_plugin_manager_finalize(GObject *object)
 	self = VENTURE_PLUGIN_MANAGER(object);
 
 	g_clear_object(&self->context);
-	g_clear_object(&self->crispy);
 	g_clear_object(&self->venture_types);
+	g_clear_pointer(&self->runtimes, g_ptr_array_unref);
 	g_clear_pointer(&self->loaded, g_ptr_array_unref);
 	g_clear_pointer(&self->seen, g_hash_table_unref);
+	g_clear_pointer(&self->deferred, g_ptr_array_unref);
+	g_clear_pointer(&self->failures, g_ptr_array_unref);
+	g_clear_pointer(&self->exec, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_plugin_manager_parent_class)->finalize(object);
 }
@@ -94,14 +225,22 @@ venture_plugin_manager_class_init(VenturePluginManagerClass *klass)
 static void
 venture_plugin_manager_init(VenturePluginManager *self)
 {
+	self->runtimes = g_ptr_array_new_with_free_func(g_object_unref);
 	self->loaded = g_ptr_array_new_with_free_func(venture_plugin_record_free);
 	self->seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	self->deferred = g_ptr_array_new_with_free_func(g_free);
+	self->failures = g_ptr_array_new_with_free_func(
+		venture_plugin_failure_free);
+	self->exec = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                   (GDestroyNotify)venture_exec_spec_unref);
 }
 
 VenturePluginManager *
 venture_plugin_manager_new(VentureContext *context)
 {
 	VenturePluginManager *self;
+	VenturePluginRuntime *builtins[4];
+	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
@@ -117,6 +256,19 @@ venture_plugin_manager_new(VentureContext *context)
 	self->venture_types = g_object_ref(
 		venture_context_get_venture_types(context));
 
+	/* The built-ins, in the order a runtime listing shows them. They
+	 * claim distinct extensions, so none of these can be refused. */
+	builtins[0] = venture_plugin_runtime_native_new();
+	builtins[1] = venture_plugin_runtime_crispy_new();
+	builtins[2] = venture_plugin_runtime_declarative_new();
+	builtins[3] = venture_plugin_runtime_exec_new();
+
+	for (i = 0; i < G_N_ELEMENTS(builtins); i++)
+	{
+		venture_plugin_manager_add_runtime(self, builtins[i], NULL);
+		g_object_unref(builtins[i]);
+	}
+
 	return self;
 }
 
@@ -128,6 +280,14 @@ venture_plugin_manager_get_venture_types(VenturePluginManager *self)
 	return self->venture_types;
 }
 
+VentureContext *
+venture_plugin_manager_get_context(VenturePluginManager *self)
+{
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+
+	return self->context;
+}
+
 guint
 venture_plugin_manager_get_count(VenturePluginManager *self)
 {
@@ -136,182 +296,525 @@ venture_plugin_manager_get_count(VenturePluginManager *self)
 	return self->loaded->len;
 }
 
+/* ==========================================================================
+ * Runtimes
+ * ========================================================================== */
+
+VenturePluginRuntime *
+venture_plugin_manager_lookup_runtime(
+	VenturePluginManager	*self,
+	const gchar		*name
+){
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+
+	if (NULL == name)
+		return NULL;
+
+	for (i = 0; i < self->runtimes->len; i++)
+	{
+		VenturePluginRuntime *runtime;
+
+		runtime = g_ptr_array_index(self->runtimes, i);
+
+		if (0 == g_strcmp0(venture_plugin_runtime_get_name(runtime), name))
+			return runtime;
+	}
+
+	return NULL;
+}
+
 /*
- * Records a successfully loaded extension so the plugin list can report it.
+ * The runtime whose extension the path ends with, longest extension first,
+ * or NULL. Extensions are unique across runtimes, so there is no tie.
+ */
+static VenturePluginRuntime *
+manager_runtime_for_path(
+	VenturePluginManager	*self,
+	const gchar		*path
+){
+	VenturePluginRuntime *best;
+	gsize best_length;
+	gsize path_length;
+	guint i;
+
+	best = NULL;
+	best_length = 0;
+	path_length = strlen(path);
+
+	for (i = 0; i < self->runtimes->len; i++)
+	{
+		VenturePluginRuntime *runtime;
+		const gchar *const *extensions;
+		gsize j;
+
+		runtime = g_ptr_array_index(self->runtimes, i);
+		extensions = venture_plugin_runtime_get_extensions(runtime);
+
+		for (j = 0; NULL != extensions[j]; j++)
+		{
+			gsize length;
+
+			length = strlen(extensions[j]);
+
+			/* A file called exactly ".so" has no name to load. */
+			if ((length < path_length) && (length > best_length) &&
+			    g_str_has_suffix(path, extensions[j]))
+			{
+				best = runtime;
+				best_length = length;
+			}
+		}
+	}
+
+	return best;
+}
+
+static ManagerOutcome manager_load(VenturePluginManager *self,
+                                   const gchar *path, GError **error);
+
+/*
+ * Gives every deferred file another chance, now that a runtime has been
+ * added. Runs only between loads, never inside one: a plugin that registers
+ * a runtime does so from inside its own registration, and loading other
+ * plugins from there would interleave two registrations.
+ *
+ * Deferred files are retried in the order they were met, which is sorted
+ * order within each directory, so the outcome does not depend on hash
+ * order or timing. A load that adds yet another runtime asks for one more
+ * round rather than recursing.
  */
 static void
-venture_plugin_manager_record(
-	VenturePluginManager	*self,
-	const gchar		*path,
-	VenturePluginKind	 kind,
-	const gchar		*description
+manager_retry_deferred(VenturePluginManager *self)
+{
+	if (self->retrying || (0 != self->load_depth))
+		return;
+
+	self->retrying = TRUE;
+
+	while (self->retry_pending)
+	{
+		g_autoptr(GPtrArray) pending = NULL;
+		guint i;
+
+		self->retry_pending = FALSE;
+		pending = g_steal_pointer(&self->deferred);
+		self->deferred = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < pending->len; i++)
+		{
+			g_autoptr(GError) load_error = NULL;
+			const gchar *path;
+
+			path = g_ptr_array_index(pending, i);
+
+			/* A deferred file that still has no runtime puts
+			 * itself back on the list. */
+			if (MANAGER_FAILED == manager_load(self, path, &load_error))
+				g_warning("Skipping plugin: %s", load_error->message);
+		}
+	}
+
+	self->retrying = FALSE;
+}
+
+gboolean
+venture_plugin_manager_add_runtime(
+	VenturePluginManager	 *self,
+	VenturePluginRuntime	 *runtime,
+	GError			**error
 ){
-	VenturePluginRecord *record;
+	const gchar *const *extensions;
+	const gchar *name;
+	gsize i;
 
-	record = g_new0(VenturePluginRecord, 1);
-	record->name = g_path_get_basename(path);
-	record->path = g_strdup(path);
-	record->kind = kind;
-	record->description = g_strdup(description);
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_RUNTIME(runtime), FALSE);
 
-	g_ptr_array_add(self->loaded, record);
+	name = venture_plugin_runtime_get_name(runtime);
+
+	if ((NULL == name) || ('\0' == name[0]))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A plugin runtime needs a name");
+		return FALSE;
+	}
+
+	if (NULL != venture_plugin_manager_lookup_runtime(self, name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+		            "A plugin runtime called \"%s\" is already registered",
+		            name);
+		return FALSE;
+	}
+
+	/*
+	 * An extension belongs to one runtime. Letting a second claim ".so"
+	 * would make which one loads a library depend on registration order,
+	 * which is plugin load order, which is file names.
+	 */
+	extensions = venture_plugin_runtime_get_extensions(runtime);
+
+	for (i = 0; NULL != extensions[i]; i++)
+	{
+		guint j;
+
+		if (('.' != extensions[i][0]) || ('\0' == extensions[i][1]) ||
+		    (0 == g_strcmp0(extensions[i], VENTURE_PLUGIN_MANIFEST_SUFFIX)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "The runtime \"%s\" cannot claim \"%s\": an extension "
+			            "starts with '.', and %s is reserved for manifests",
+			            name, extensions[i], VENTURE_PLUGIN_MANIFEST_SUFFIX);
+			return FALSE;
+		}
+
+		for (j = 0; j < self->runtimes->len; j++)
+		{
+			VenturePluginRuntime *other;
+
+			other = g_ptr_array_index(self->runtimes, j);
+
+			if (g_strv_contains(venture_plugin_runtime_get_extensions(other),
+			                    extensions[i]))
+			{
+				g_set_error(error, VENTURE_ERROR,
+				            VENTURE_ERROR_ALREADY_EXISTS,
+				            "The runtime \"%s\" cannot claim \"%s\": \"%s\" "
+				            "already loads it", name, extensions[i],
+				            venture_plugin_runtime_get_name(other));
+				return FALSE;
+			}
+		}
+	}
+
+	g_ptr_array_add(self->runtimes, g_object_ref(runtime));
+
+	if (self->deferred->len > 0)
+	{
+		self->retry_pending = TRUE;
+		manager_retry_deferred(self);
+	}
+
+	return TRUE;
+}
+
+gchar **
+venture_plugin_manager_list_runtimes(VenturePluginManager *self)
+{
+	GPtrArray *names;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+
+	names = g_ptr_array_new();
+
+	for (i = 0; i < self->runtimes->len; i++)
+	{
+		g_ptr_array_add(names, g_strdup(venture_plugin_runtime_get_name(
+			g_ptr_array_index(self->runtimes, i))));
+	}
+
+	g_ptr_array_add(names, NULL);
+
+	return (gchar **)g_ptr_array_free(names, FALSE);
+}
+
+gchar **
+venture_plugin_manager_list_deferred(VenturePluginManager *self)
+{
+	GPtrArray *paths;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+
+	paths = g_ptr_array_new();
+
+	for (i = 0; i < self->deferred->len; i++)
+		g_ptr_array_add(paths, g_strdup(g_ptr_array_index(self->deferred, i)));
+
+	g_ptr_array_add(paths, NULL);
+
+	return (gchar **)g_ptr_array_free(paths, FALSE);
+}
+
+/* ==========================================================================
+ * Loading
+ * ========================================================================== */
+
+static void
+manager_note_failure(
+	VenturePluginManager	*self,
+	const gchar		*name,
+	const gchar		*path,
+	const gchar		*message
+){
+	VenturePluginFailure *failure;
+
+	failure = g_new0(VenturePluginFailure, 1);
+	failure->name = g_strdup(name);
+	failure->path = g_strdup(path);
+	failure->message = g_strdup(message);
+
+	g_ptr_array_add(self->failures, failure);
+}
+
+static void
+manager_defer(
+	VenturePluginManager	*self,
+	const gchar		*path
+){
+	guint i;
+
+	for (i = 0; i < self->deferred->len; i++)
+	{
+		if (0 == g_strcmp0(g_ptr_array_index(self->deferred, i), path))
+			return;
+	}
+
+	g_ptr_array_add(self->deferred, g_strdup(path));
 }
 
 /*
- * Calls a resolved entry point and records the result.
- *
- * The context is handed over whole: a plugin gets the same registries the
- * core uses, because an extension that could only do less than a built-in
- * would not be worth the mechanism.
+ * Hands one plugin to its runtime and, if it loads, to the kinds it
+ * provides. The record is kept only when both succeed.
  */
 static gboolean
-venture_plugin_manager_invoke(
+manager_dispatch(
 	VenturePluginManager	 *self,
-	const gchar		 *path,
-	VenturePluginKind	  kind,
-	gpointer		  register_symbol,
-	gpointer		  describe_symbol,
+	VenturePluginRuntime	 *runtime,
+	const gchar		 *load_path,
+	VenturePluginManifest	 *manifest,
+	const gchar		 *name,
+	const gchar		 *record_path,
 	GError			**error
 ){
-	VenturePluginRegisterFunc register_func;
-	VenturePluginDescribeFunc describe_func;
-	const gchar *description = NULL;
+	VenturePluginRecord *record;
 	g_autoptr(GError) local_error = NULL;
+	gboolean ok;
 
-	register_func = (VenturePluginRegisterFunc)register_symbol;
-	describe_func = (VenturePluginDescribeFunc)describe_symbol;
+	record = venture_plugin_record_new(name, record_path,
+	                                   venture_plugin_runtime_get_name(runtime));
 
-	if (NULL != describe_func)
-		description = describe_func();
+	self->load_depth++;
 
-	if (!register_func(self->context, &local_error))
+	ok = venture_plugin_runtime_load(runtime, self, self->context, load_path,
+	                                 manifest, record, &local_error);
+
+	if (ok && (NULL != manifest))
 	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
-		            "%s refused to register: %s", path,
-		            (NULL != local_error) ? local_error->message
-		                                  : "no reason given");
+		ok = venture_plugin_provides_registry_dispatch(
+			venture_context_get_plugin_provides(self->context), self,
+			manifest, &local_error);
+
+		/* An exec plugin registered its program before its provides
+		 * were judged; a refused plugin must not leave one behind for
+		 * a later lookup to run. */
+		if (!ok)
+			g_hash_table_remove(self->exec, name);
+	}
+
+	self->load_depth--;
+
+	if (!ok)
+	{
+		if (NULL == local_error)
+			local_error = g_error_new(VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			                          "%s did not load, and its runtime gave "
+			                          "no reason", record_path);
+
+		manager_note_failure(self, name, record_path, local_error->message);
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		venture_plugin_record_free(record);
+		manager_retry_deferred(self);
 		return FALSE;
 	}
 
-	venture_plugin_manager_record(self, path, kind, description);
-	g_message("Loaded plugin %s", path);
+	if ((NULL == record->description) && (NULL != manifest))
+		venture_plugin_record_set_description(record,
+			venture_plugin_manifest_get_description(manifest));
+
+	if ((NULL != manifest) &&
+	    (NULL != venture_plugin_manifest_get_provides(manifest)))
+	{
+		JsonArray *provides;
+		GPtrArray *kinds;
+		guint i;
+
+		provides = venture_plugin_manifest_get_provides(manifest);
+		kinds = g_ptr_array_new();
+
+		for (i = 0; i < json_array_get_length(provides); i++)
+		{
+			g_ptr_array_add(kinds, g_strdup(json_object_get_string_member(
+				json_array_get_object_element(provides, i), "kind")));
+		}
+
+		g_ptr_array_add(kinds, NULL);
+		record->provides = (GStrv)g_ptr_array_free(kinds, FALSE);
+	}
+
+	g_ptr_array_add(self->loaded, record);
+	g_message("Loaded plugin %s", record_path);
+
+	manager_retry_deferred(self);
 
 	return TRUE;
 }
 
-static gboolean
-venture_plugin_manager_load_native(
+static const gchar *const manager_manifest_keys[] = {
+	"name", "runtime", "entry", "description", "protocol", "provides", NULL
+};
+
+static ManagerOutcome
+manager_load_manifest(
 	VenturePluginManager	 *self,
 	const gchar		 *path,
 	GError			**error
 ){
-	GModule *module;
-	gpointer register_symbol = NULL;
-	gpointer describe_symbol = NULL;
+	g_autoptr(VenturePluginManifest) manifest = NULL;
+	g_autoptr(GError) local_error = NULL;
+	VenturePluginRuntime *runtime;
+	const gchar *runtime_name;
+	const gchar *name;
+	guint i;
 
-	/* BIND_LAZY so an unused symbol does not fail the load; deliberately
-	 * not BIND_LOCAL, because the plugin must see the executable's
-	 * exported venture_* symbols. */
-	module = g_module_open(path, G_MODULE_BIND_LAZY);
+	manifest = venture_plugin_manifest_new_from_file(path, &local_error);
 
-	if (NULL == module)
+	if (NULL == manifest)
 	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
-		            "Cannot load %s: %s", path, g_module_error());
-		return FALSE;
+		g_autofree gchar *basename = NULL;
+
+		basename = g_path_get_basename(path);
+		g_hash_table_add(self->seen, g_strdup(path));
+		manager_note_failure(self, basename, path, local_error->message);
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return MANAGER_FAILED;
 	}
 
-	if (!g_module_symbol(module, "venture_plugin_register", &register_symbol) ||
-	    (NULL == register_symbol))
+	name = venture_plugin_manifest_get_name(manifest);
+	runtime_name = venture_plugin_manifest_get_runtime(manifest);
+
+	runtime = (NULL != runtime_name)
+		? venture_plugin_manager_lookup_runtime(self, runtime_name)
+		: manager_runtime_for_path(self,
+		                           venture_plugin_manifest_get_entry(manifest));
+
+	/* A runtime a plugin has not registered yet: held, and loaded the
+	 * moment one is. Not seen, so the retry is not mistaken for a
+	 * duplicate. */
+	if (NULL == runtime)
 	{
-		g_module_close(module);
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
-		            "%s exports no venture_plugin_register()", path);
-		return FALSE;
+		manager_defer(self, path);
+
+		if (NULL != runtime_name)
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			            "%s asks for the runtime \"%s\", which is not "
+			            "registered; it is held and loads if one is", path,
+			            runtime_name);
+		else
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			            "%s names no runtime, and none loads its entry; it "
+			            "is held and loads if one is", path);
+
+		return MANAGER_DEFERRED;
 	}
 
-	g_module_symbol(module, "venture_plugin_info", &describe_symbol);
+	runtime_name = venture_plugin_runtime_get_name(runtime);
+	g_hash_table_add(self->seen, g_strdup(path));
 
-	/* Never unloaded: the plugin may have registered a GType. */
-	g_module_make_resident(module);
+	/*
+	 * Unknown top-level keys are refused. The runtime's own section is
+	 * the one allowed addition, so a later runtime brings its settings
+	 * without this list knowing it.
+	 */
+	{
+		JsonObjectIter iter;
+		JsonNode *member;
+		const gchar *key;
 
-	return venture_plugin_manager_invoke(self, path,
-	                                     VENTURE_PLUGIN_KIND_NATIVE,
-	                                     register_symbol, describe_symbol,
-	                                     error);
+		json_object_iter_init(&iter, venture_plugin_manifest_get_object(manifest));
+
+		while (json_object_iter_next(&iter, &key, &member))
+		{
+			if (g_strv_contains(manager_manifest_keys, key) ||
+			    (0 == g_strcmp0(key, runtime_name)))
+				continue;
+
+			local_error = g_error_new(VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			                          "%s: \"%s\" is not a manifest key", path,
+			                          key);
+			manager_note_failure(self, name, path, local_error->message);
+			g_propagate_error(error, g_steal_pointer(&local_error));
+			return MANAGER_FAILED;
+		}
+	}
+
+	/* One name, one plugin: the name keys its configuration record and
+	 * its program, and two plugins sharing one would share both. */
+	for (i = 0; i < self->loaded->len; i++)
+	{
+		const VenturePluginRecord *record;
+
+		record = g_ptr_array_index(self->loaded, i);
+
+		if (0 == g_strcmp0(record->name, name))
+		{
+			local_error = g_error_new(VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+			                          "%s: a plugin named \"%s\" is already "
+			                          "loaded from %s", path, name,
+			                          record->path);
+			manager_note_failure(self, name, path, local_error->message);
+			g_propagate_error(error, g_steal_pointer(&local_error));
+			return MANAGER_FAILED;
+		}
+	}
+
+	return manager_dispatch(self, runtime,
+	                        venture_plugin_manifest_get_entry(manifest),
+	                        manifest, name, path, error)
+		? MANAGER_LOADED : MANAGER_FAILED;
 }
 
-static gboolean
-venture_plugin_manager_load_crispy(
+static ManagerOutcome
+manager_load(
 	VenturePluginManager	 *self,
 	const gchar		 *path,
 	GError			**error
 ){
-	gpointer register_symbol = NULL;
-	gpointer describe_symbol = NULL;
-	gboolean allow_crispy;
+	VenturePluginRuntime *runtime;
+	g_autofree gchar *basename = NULL;
 
-	g_object_get(venture_context_get_config(self->context),
-	             "plugins-allow-crispy", &allow_crispy, NULL);
+	/* Loading the same file twice would register its types twice, which
+	 * the entity registry would then refuse; skipping is the right
+	 * answer when two configured directories overlap. */
+	if (g_hash_table_contains(self->seen, path))
+		return MANAGER_LOADED;
 
-	if (!allow_crispy)
+	/* Before any extension: a manifest is also a .yaml, and the
+	 * declarative runtime would take it for a venture type. */
+	if (g_str_has_suffix(path, VENTURE_PLUGIN_MANIFEST_SUFFIX))
+		return manager_load_manifest(self, path, error);
+
+	runtime = manager_runtime_for_path(self, path);
+
+	if (NULL == runtime)
 	{
+		manager_defer(self, path);
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
-		            "%s is a crispy plugin but plugins.allow_crispy is off",
-		            path);
-		return FALSE;
+		            "%s is not a plugin any runtime loads: expected .so, .c, "
+		            ".yaml, .yml or a %s manifest; it is held and loads if a "
+		            "runtime for it is registered", path,
+		            VENTURE_PLUGIN_MANIFEST_SUFFIX);
+		return MANAGER_DEFERRED;
 	}
 
-	if (NULL == self->crispy)
-	{
-		g_autofree gchar *cache_dir = NULL;
+	g_hash_table_add(self->seen, g_strdup(path));
+	basename = g_path_get_basename(path);
 
-		cache_dir = g_build_filename(
-			venture_config_get_state_dir(
-				venture_context_get_config(self->context)),
-			"crispy-cache", NULL);
-
-		self->crispy = venture_crispy_host_new(cache_dir, error);
-
-		if (NULL == self->crispy)
-			return FALSE;
-	}
-
-	if (!venture_crispy_host_lookup(self->crispy, path,
-	                                "venture_plugin_register",
-	                                &register_symbol, NULL, error))
-		return FALSE;
-
-	/* The descriptor is optional, so a failure to find it is not an
-	 * error -- the plugin simply has no description. */
-	venture_crispy_host_lookup(self->crispy, path, "venture_plugin_info",
-	                           &describe_symbol, NULL, NULL);
-
-	return venture_plugin_manager_invoke(self, path,
-	                                     VENTURE_PLUGIN_KIND_CRISPY,
-	                                     register_symbol, describe_symbol,
-	                                     error);
-}
-
-static gboolean
-venture_plugin_manager_load_venture_type(
-	VenturePluginManager	 *self,
-	const gchar		 *path,
-	GError			**error
-){
-	g_autoptr(VentureVentureType) type = NULL;
-
-	type = venture_venture_type_new_from_file(path, error);
-
-	if (NULL == type)
-		return FALSE;
-
-	venture_plugin_manager_record(self, path, VENTURE_PLUGIN_KIND_DECLARATIVE,
-	                              venture_venture_type_get_description(type));
-	venture_venture_type_registry_add(self->venture_types,
-	                                  g_steal_pointer(&type));
-
-	return TRUE;
+	return manager_dispatch(self, runtime, path, NULL, basename, path, error)
+		? MANAGER_LOADED : MANAGER_FAILED;
 }
 
 gboolean
@@ -323,44 +826,52 @@ venture_plugin_manager_load_file(
 	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), FALSE);
 	g_return_val_if_fail(NULL != path, FALSE);
 
-	/* Loading the same file twice would register its types twice, which
-	 * the entity registry would then refuse; skipping is the right
-	 * answer when two configured directories overlap. */
-	if (g_hash_table_contains(self->seen, path))
-		return TRUE;
-
-	g_hash_table_add(self->seen, g_strdup(path));
-
-	if (g_str_has_suffix(path, ".so"))
-		return venture_plugin_manager_load_native(self, path, error);
-
-	if (g_str_has_suffix(path, ".c"))
-		return venture_plugin_manager_load_crispy(self, path, error);
-
-	if (g_str_has_suffix(path, ".yaml") || g_str_has_suffix(path, ".yml"))
-		return venture_plugin_manager_load_venture_type(self, path, error);
-
-	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
-	            "%s is not a plugin: expected .so, .c, .yaml or .yml", path);
-
-	return FALSE;
+	return MANAGER_LOADED == manager_load(self, path, error);
 }
 
-guint
-venture_plugin_manager_load_directory(
-	VenturePluginManager	 *self,
-	const gchar		 *path,
-	GError			**error
+/*
+ * Loads what one scanned path holds, and reports a failure the way every
+ * directory does: one broken plugin must not stop the server, because the
+ * operator still needs their data, and a warning they can act on beats a
+ * refusal to start.
+ */
+static guint
+manager_scan_one(
+	VenturePluginManager	*self,
+	const gchar		*path
 ){
+	g_autoptr(GError) load_error = NULL;
+
+	switch (manager_load(self, path, &load_error))
+	{
+	case MANAGER_LOADED:
+		return 1;
+
+	case MANAGER_FAILED:
+		g_warning("Skipping plugin: %s", load_error->message);
+		return 0;
+
+	case MANAGER_DEFERRED:
+	default:
+		/* A README beside the plugins is deferred too, harmlessly:
+		 * no runtime will ever claim it, and it says nothing. */
+		g_debug("venture_plugin_manager: %s", load_error->message);
+		return 0;
+	}
+}
+
+/*
+ * The names in a directory, sorted, so load order is deterministic and a
+ * plugin that depends on another loading first can rely on naming to
+ * arrange it.
+ */
+static GPtrArray *
+manager_sorted_entries(const gchar *path)
+{
 	g_autoptr(GDir) directory = NULL;
 	g_autoptr(GError) local_error = NULL;
-	g_autoptr(GPtrArray) entries = NULL;
+	GPtrArray *entries;
 	const gchar *entry;
-	guint loaded;
-	guint i;
-
-	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), 0);
-	g_return_val_if_fail(NULL != path, 0);
 
 	directory = g_dir_open(path, 0, &local_error);
 
@@ -369,7 +880,7 @@ venture_plugin_manager_load_directory(
 		/* A configured directory that does not exist is normal on a
 		 * fresh install, not a failure. */
 		g_debug("venture_plugin_manager: %s", local_error->message);
-		return 0;
+		return NULL;
 	}
 
 	entries = g_ptr_array_new_with_free_func(g_free);
@@ -377,38 +888,83 @@ venture_plugin_manager_load_directory(
 	while (NULL != (entry = g_dir_read_name(directory)))
 		g_ptr_array_add(entries, g_strdup(entry));
 
-	/* Sorted, so load order is deterministic and a plugin that depends on
-	 * another loading first can rely on naming to arrange it. */
 	g_ptr_array_sort_values(entries, (GCompareFunc)g_strcmp0);
+
+	return entries;
+}
+
+guint
+venture_plugin_manager_load_directory(
+	VenturePluginManager	 *self,
+	const gchar		 *path,
+	GError			**error
+){
+	g_autoptr(GPtrArray) entries = NULL;
+	guint loaded;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), 0);
+	g_return_val_if_fail(NULL != path, 0);
+
+	(void)error;
+
+	entries = manager_sorted_entries(path);
+
+	if (NULL == entries)
+		return 0;
 
 	loaded = 0;
 
 	for (i = 0; i < entries->len; i++)
 	{
 		g_autofree gchar *full_path = NULL;
-		g_autoptr(GError) load_error = NULL;
 		const gchar *name;
 
 		name = g_ptr_array_index(entries, i);
-
-		if (!g_str_has_suffix(name, ".so") && !g_str_has_suffix(name, ".c") &&
-		    !g_str_has_suffix(name, ".yaml") && !g_str_has_suffix(name, ".yml"))
-			continue;
-
 		full_path = g_build_filename(path, name, NULL);
 
-		if (!venture_plugin_manager_load_file(self, full_path, &load_error))
+		/*
+		 * A subdirectory is a plugin's own directory -- a program and
+		 * its manifest, a library and its data -- and only its
+		 * manifests are read. Exactly one level: nothing below it is
+		 * scanned, and nothing in it but a manifest is loaded, so a
+		 * plugin's helper scripts are never mistaken for plugins.
+		 */
+		if (g_file_test(full_path, G_FILE_TEST_IS_DIR))
 		{
-			/*
-			 * One broken plugin must not stop the server. The
-			 * operator still needs their data, and a warning they
-			 * can act on beats a refusal to start.
-			 */
-			g_warning("Skipping plugin: %s", load_error->message);
+			g_autoptr(GPtrArray) inner = NULL;
+			guint j;
+
+			inner = manager_sorted_entries(full_path);
+
+			for (j = 0; (NULL != inner) && (j < inner->len); j++)
+			{
+				g_autofree gchar *manifest_path = NULL;
+				const gchar *inner_name;
+
+				inner_name = g_ptr_array_index(inner, j);
+
+				if (!g_str_has_suffix(inner_name,
+				                      VENTURE_PLUGIN_MANIFEST_SUFFIX))
+					continue;
+
+				manifest_path = g_build_filename(full_path, inner_name,
+				                                 NULL);
+
+				if (g_file_test(manifest_path, G_FILE_TEST_IS_REGULAR))
+					loaded += manager_scan_one(self, manifest_path);
+			}
+
 			continue;
 		}
 
-		loaded++;
+		/* A name with no extension -- a Makefile, a LICENSE -- is not
+		 * something any runtime could ever claim. */
+		if ((NULL == strchr(name, '.')) ||
+		    !g_file_test(full_path, G_FILE_TEST_IS_REGULAR))
+			continue;
+
+		loaded += manager_scan_one(self, full_path);
 	}
 
 	return loaded;
@@ -506,36 +1062,80 @@ venture_plugin_manager_load_configured(
 	/*
 	 * A required plugin that did not load IS fatal. That is the whole
 	 * point of the list: an install that depends on a plugin should not
-	 * start half-configured and quietly behave differently.
+	 * start half-configured and quietly behave differently. The refusal
+	 * says why when the plugin was found and failed, because "did not
+	 * load" alone sends the operator looking for a file that is there.
 	 */
 	for (i = 0; (NULL != required) && (NULL != required[i]); i++)
 	{
+		const gchar *reason;
 		gboolean found;
 		guint j;
 
 		found = FALSE;
+		reason = NULL;
 
 		for (j = 0; j < self->loaded->len; j++)
 		{
 			const VenturePluginRecord *record;
+			g_autofree gchar *basename = NULL;
 
 			record = g_ptr_array_index(self->loaded, j);
+			basename = g_path_get_basename(record->path);
 
+			/* By name, by file name or by path: a manifest's file
+			 * name is not its plugin's name, and an operator may
+			 * write either. */
 			if ((0 == g_strcmp0(record->name, required[i])) ||
-			    (0 == g_strcmp0(record->path, required[i])))
+			    (0 == g_strcmp0(record->path, required[i])) ||
+			    (0 == g_strcmp0(basename, required[i])))
 			{
 				found = TRUE;
 				break;
 			}
 		}
 
-		if (!found)
+		if (found)
+			continue;
+
+		for (j = 0; j < self->failures->len; j++)
 		{
+			const VenturePluginFailure *failure;
+			g_autofree gchar *basename = NULL;
+
+			failure = g_ptr_array_index(self->failures, j);
+			basename = g_path_get_basename(failure->path);
+
+			if ((0 == g_strcmp0(failure->name, required[i])) ||
+			    (0 == g_strcmp0(failure->path, required[i])) ||
+			    (0 == g_strcmp0(basename, required[i])))
+				reason = failure->message;
+		}
+
+		for (j = 0; (NULL == reason) && (j < self->deferred->len); j++)
+		{
+			const gchar *deferred;
+			g_autofree gchar *basename = NULL;
+
+			deferred = g_ptr_array_index(self->deferred, j);
+			basename = g_path_get_basename(deferred);
+
+			if ((0 == g_strcmp0(deferred, required[i])) ||
+			    (0 == g_strcmp0(basename, required[i])))
+				reason = "no runtime loads it";
+		}
+
+		if (NULL != reason)
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			            "The required plugin \"%s\" did not load: %s. Fix "
+			            "it, or remove it from plugins.required.",
+			            required[i], reason);
+		else
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
 			            "The required plugin \"%s\" did not load. Fix it, "
 			            "or remove it from plugins.required.", required[i]);
-			return FALSE;
-		}
+
+		return FALSE;
 	}
 
 	return TRUE;
@@ -568,6 +1168,9 @@ venture_plugin_manager_list(VenturePluginManager *self)
 			venture_enum_to_nick(VENTURE_TYPE_PLUGIN_KIND,
 			                     (gint)record->kind));
 
+		json_builder_set_member_name(builder, "runtime");
+		json_builder_add_string_value(builder, record->runtime);
+
 		json_builder_set_member_name(builder, "path");
 		json_builder_add_string_value(builder, record->path);
 
@@ -577,6 +1180,19 @@ venture_plugin_manager_list(VenturePluginManager *self)
 			json_builder_add_string_value(builder, record->description);
 		}
 
+		if (NULL != record->provides)
+		{
+			gsize j;
+
+			json_builder_set_member_name(builder, "provides");
+			json_builder_begin_array(builder);
+
+			for (j = 0; NULL != record->provides[j]; j++)
+				json_builder_add_string_value(builder, record->provides[j]);
+
+			json_builder_end_array(builder);
+		}
+
 		json_builder_end_object(builder);
 	}
 
@@ -584,6 +1200,137 @@ venture_plugin_manager_list(VenturePluginManager *self)
 
 	return json_builder_get_root(builder);
 }
+
+/* ==========================================================================
+ * Exec plugins
+ * ========================================================================== */
+
+gboolean
+venture_plugin_manager_add_exec(
+	VenturePluginManager	 *self,
+	VentureExecSpec		 *spec,
+	GError			**error
+){
+	const gchar *name;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), FALSE);
+	g_return_val_if_fail(NULL != spec, FALSE);
+
+	name = venture_exec_spec_get_name(spec);
+
+	if (g_hash_table_contains(self->exec, name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+		            "An exec plugin named \"%s\" is already registered", name);
+		return FALSE;
+	}
+
+	g_hash_table_insert(self->exec, g_strdup(name),
+	                    venture_exec_spec_ref(spec));
+
+	return TRUE;
+}
+
+VentureExecSpec *
+venture_plugin_manager_lookup_exec(
+	VenturePluginManager	*self,
+	const gchar		*name
+){
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+
+	if (NULL == name)
+		return NULL;
+
+	return g_hash_table_lookup(self->exec, name);
+}
+
+JsonObject *
+venture_plugin_manager_build_exec_request(
+	VenturePluginManager	*self,
+	const gchar		*name,
+	const gchar		*command,
+	JsonObject		*params
+){
+	g_autoptr(JsonNode) settings = NULL;
+	JsonObject *request;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+	g_return_val_if_fail(NULL != name, NULL);
+
+	request = json_object_new();
+	json_object_set_string_member(request, "plugin", name);
+	json_object_set_string_member(request, "command",
+	                              (NULL != command) ? command : "run");
+
+	/*
+	 * The settings the /plugins page stores for it, read now so that an
+	 * edit there reaches the very next run. They travel on standard input
+	 * with everything else; an argv carrying them would show them to every
+	 * user on the machine.
+	 */
+	settings = venture_plugin_manager_get_config(self, name);
+
+	if ((NULL != settings) && JSON_NODE_HOLDS_OBJECT(settings))
+		json_object_set_member(request, "settings",
+		                       g_steal_pointer(&settings));
+	else
+		json_object_set_object_member(request, "settings", json_object_new());
+
+	if (NULL != params)
+		json_object_set_object_member(request, "params",
+		                              json_object_ref(params));
+	else
+		json_object_set_object_member(request, "params", json_object_new());
+
+	return request;
+}
+
+VentureExecResult *
+venture_plugin_manager_run_exec(
+	VenturePluginManager	 *self,
+	const gchar		 *name,
+	const gchar		 *command,
+	JsonObject		 *params,
+	JsonObject		 *secrets,
+	GCancellable		 *cancellable,
+	GError			**error
+){
+	g_autoptr(JsonObject) request = NULL;
+	VentureExecSpec *spec;
+	gboolean allow_exec;
+
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_MANAGER(self), NULL);
+	g_return_val_if_fail(NULL != name, NULL);
+
+	/* Asked again at every run, not only at load: switching it off on a
+	 * running install must stop the programs now, not at the next
+	 * restart. */
+	g_object_get(venture_context_get_config(self->context),
+	             "plugins-allow-exec", &allow_exec, NULL);
+
+	if (!allow_exec)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		            "The exec plugin %s cannot run: plugins.allow_exec is off",
+		            name);
+		return NULL;
+	}
+
+	spec = venture_plugin_manager_lookup_exec(self, name);
+
+	if (NULL == spec)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No exec plugin named \"%s\" is loaded", name);
+		return NULL;
+	}
+
+	request = venture_plugin_manager_build_exec_request(self, name, command,
+	                                                    params);
+
+	return venture_exec_run(spec, request, secrets, cancellable, error);
+}
+
 
 /* ==========================================================================
  * Plugin configuration

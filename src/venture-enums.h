@@ -931,17 +931,58 @@ typedef enum
  * @VENTURE_PLUGIN_KIND_NATIVE: a compiled .so loaded with GModule
  * @VENTURE_PLUGIN_KIND_CRISPY: a C source file compiled on demand by crispy
  * @VENTURE_PLUGIN_KIND_DECLARATIVE: a YAML definition with no code at all
+ * @VENTURE_PLUGIN_KIND_EXEC: an external program run as a subprocess,
+ *   speaking the JSON-lines protocol
+ * @VENTURE_PLUGIN_KIND_OTHER: loaded by a runtime a plugin registered
  *
- * How a plugin was supplied. All three end up implementing the same
- * #VenturePlugin interface, so nothing downstream needs to care which is
- * which.
+ * How a plugin was supplied. Which runtime loaded it is a separate string
+ * (see #VenturePluginRuntime): a runtime registered by a plugin reports
+ * %VENTURE_PLUGIN_KIND_OTHER unless it says otherwise, so the kind stays a
+ * closed list while the runtimes do not.
  */
 typedef enum
 {
 	VENTURE_PLUGIN_KIND_NATIVE = 0,
 	VENTURE_PLUGIN_KIND_CRISPY,
-	VENTURE_PLUGIN_KIND_DECLARATIVE
+	VENTURE_PLUGIN_KIND_DECLARATIVE,
+	VENTURE_PLUGIN_KIND_EXEC,
+	VENTURE_PLUGIN_KIND_OTHER
 } VenturePluginKind;
+
+/**
+ * VentureJsonlMessageKind:
+ * @VENTURE_JSONL_MESSAGE_VENUE: a place that quotes prices
+ * @VENTURE_JSONL_MESSAGE_INSTRUMENT: a thing that is priced
+ * @VENTURE_JSONL_MESSAGE_SNAPSHOT: the start of one venue's snapshot
+ * @VENTURE_JSONL_MESSAGE_LISTING: one order or listing at a venue
+ * @VENTURE_JSONL_MESSAGE_STAT: precomputed figures for a venue and instrument
+ * @VENTURE_JSONL_MESSAGE_QUOTE: a price or odds quoted for an instrument
+ * @VENTURE_JSONL_MESSAGE_ENTRY: a non-price item, such as a feed article
+ * @VENTURE_JSONL_MESSAGE_RECORD: an upsert of a record in the main database
+ * @VENTURE_JSONL_MESSAGE_CURSOR: where the next request should resume
+ * @VENTURE_JSONL_MESSAGE_NOT_MODIFIED: nothing changed since last time
+ * @VENTURE_JSONL_MESSAGE_LOG: a diagnostic line
+ * @VENTURE_JSONL_MESSAGE_ERROR: the producer could not do what was asked
+ *
+ * The message vocabulary of protocol 1 of the JSON-lines protocol spoken by
+ * exec plugins and read from `file_jsonl` sources. The nick is the
+ * message's `type` member; docs/plugins.org documents each one.
+ */
+typedef enum
+{
+	VENTURE_JSONL_MESSAGE_VENUE = 0,
+	VENTURE_JSONL_MESSAGE_INSTRUMENT,
+	VENTURE_JSONL_MESSAGE_SNAPSHOT,
+	VENTURE_JSONL_MESSAGE_LISTING,
+	VENTURE_JSONL_MESSAGE_STAT,
+	VENTURE_JSONL_MESSAGE_QUOTE,
+	VENTURE_JSONL_MESSAGE_ENTRY,
+	VENTURE_JSONL_MESSAGE_RECORD,
+	VENTURE_JSONL_MESSAGE_CURSOR,
+	VENTURE_JSONL_MESSAGE_NOT_MODIFIED,
+	VENTURE_JSONL_MESSAGE_LOG,
+	VENTURE_JSONL_MESSAGE_ERROR
+} VentureJsonlMessageKind;
 
 /**
  * VentureColumnFlags:
@@ -1074,6 +1115,7 @@ typedef enum
 #define VENTURE_TYPE_OUTPUT_FORMAT		(venture_output_format_get_type())
 #define VENTURE_TYPE_DATABASE_BACKEND		(venture_database_backend_get_type())
 #define VENTURE_TYPE_PLUGIN_KIND		(venture_plugin_kind_get_type())
+#define VENTURE_TYPE_JSONL_MESSAGE_KIND		(venture_jsonl_message_kind_get_type())
 #define VENTURE_TYPE_COLUMN_FLAGS		(venture_column_flags_get_type())
 
 GType venture_field_role_get_type		(void) G_GNUC_CONST;
@@ -1117,6 +1159,7 @@ GType venture_sort_direction_get_type		(void) G_GNUC_CONST;
 GType venture_output_format_get_type		(void) G_GNUC_CONST;
 GType venture_database_backend_get_type		(void) G_GNUC_CONST;
 GType venture_plugin_kind_get_type		(void) G_GNUC_CONST;
+GType venture_jsonl_message_kind_get_type	(void) G_GNUC_CONST;
 GType venture_column_flags_get_type		(void) G_GNUC_CONST;
 
 /* --- Nick conversion helpers --------------------------------------------- */

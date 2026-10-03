@@ -637,6 +637,14 @@ main(
 	{
 		plugins = venture_plugin_manager_new(context);
 
+		/*
+		 * On the context before anything loads. A plugin reaches the
+		 * manager through the context from inside its own registration
+		 * -- to read its configuration, or to add a runtime -- and
+		 * setting it afterwards handed every one of them NULL.
+		 */
+		venture_context_set_plugin_manager(context, plugins);
+
 		if (!venture_plugin_manager_load_configured(plugins, &error))
 		{
 			/* Only a plugin listed in plugins.required gets here, and
@@ -644,8 +652,6 @@ main(
 			g_printerr("Plugins: %s\n", error->message);
 			return venture_error_to_exit_code(VENTURE_ERROR_PLUGIN);
 		}
-
-		venture_context_set_plugin_manager(context, plugins);
 
 		if (venture_plugin_manager_get_count(plugins) > 0)
 		{

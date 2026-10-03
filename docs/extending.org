@@ -1,19 +1,25 @@
 #+title: Extending VENTURE
-#+description: Plugins, crispy scripts and declarative venture types
+#+description: Plugins, crispy scripts, declarative venture types and exec plugins
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-10-03]
+#+version: 0.6.0
 
 * Extending VENTURE
 
-Four mechanisms, in ascending order of effort.
+Four mechanisms, in ascending order of effort, plus a fifth for code that
+is not C at all.
 
-All four are loaded by =VenturePluginManager= at startup, from the
+All of them are loaded by =VenturePluginManager= at startup, from the
 directories named by =plugins.paths= and =plugins.venture_type_paths=, plus
-the compiled-in =VENTURE_PLUGINDIR=. It dispatches on the file's extension:
-=.so= is a native plugin, =.c= is a crispy script, =.yaml= is a venture type.
+the compiled-in =VENTURE_PLUGINDIR=. Each file goes to a /runtime/: =.so=
+to =native=, =.c= to =crispy=, =.yaml= to =declarative=. A directory holding
+a =*.plugin.yaml= manifest is a plugin of its own, and a manifest is how an
+=exec= plugin -- a program in any language -- is loaded. A plugin can add a
+runtime, and a file nothing claims yet waits for one. The loader's rules,
+the manifest format, exec plugins and the protocol they speak are in
+[[file:plugins.org][Plugins: runtimes, manifests and exec]].
 
 A plugin that fails to load is skipped with a warning rather than stopping
 the server, because one broken extension should not cost you access to your
@@ -177,7 +183,27 @@ That registers the types, resolves the module against the running configuration 
 
 A record type whose invariants span rows -- "both ends of this must exist" -- registers a /save validator/ with =venture_database_add_save_validator()=. It runs inside the database lock before every write of that type, from every writer, and may fill derived fields. =record_link= is the worked example.
 
-* 4. A record type in C
+* 4. An exec plugin
+
+A program in its own directory, beside a manifest:
+
+#+begin_src yaml
+name: supplier-csv
+runtime: exec
+protocol: 1
+entry: fetch.sh
+exec:
+  timeout: 30
+#+end_src
+
+It reads one JSON request on standard input and answers in JSON lines on
+standard output; settings and secrets arrive on stdin only. Off unless
+=plugins.allow_exec= is on, and run with an argv array, a cleared
+environment, a deadline and byte caps -- but as the server's user, so it
+is not a sandbox. What it can be used for comes from its manifest's
+=provides= list; see [[file:plugins.org][Plugins]] for all of it.
+
+* 5. A record type in C
 
 The most powerful and still small. See [[file:data-model.org][the data model]] — a field table and a
 registration is the whole type, and it becomes a database table, a REST
@@ -288,6 +314,12 @@ on_config_changed(manager, "myplugin.c", NULL);   /* initial read */
 g_signal_connect(manager, "config-changed",
                  G_CALLBACK(on_config_changed), NULL);
 #+end_src
+
+The manager is on the context before any plugin loads, so the lookup in
+=venture_plugin_register()= finds it. (Before plugin runtimes it was set
+only after loading, and this lookup quietly returned =NULL= at startup.)
+An exec plugin gets the same configuration as the =settings= member of its
+request, read at each run.
 
 The signal fires the moment the page saves, so the plugin follows its
 settings live — no restart, no polling. =plugins/scripts/royalties.c= is the

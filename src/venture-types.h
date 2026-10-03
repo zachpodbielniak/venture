@@ -161,6 +161,7 @@ typedef struct _VentureAutomation		VentureAutomation;
 /* --- Plugins ------------------------------------------------------------- */
 
 typedef struct _VenturePluginManager		VenturePluginManager;
+typedef struct _VenturePluginProvidesRegistry	VenturePluginProvidesRegistry;
 typedef struct _VenturePluginInfo		VenturePluginInfo;
 
 /* --- Web ----------------------------------------------------------------- */

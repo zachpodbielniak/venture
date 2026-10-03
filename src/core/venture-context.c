@@ -21,6 +21,7 @@ struct _VentureContext
 	VentureAiHarness	*harness;
 	VentureAutomation	*automation;
 	VenturePluginManager	*plugins;
+	VenturePluginProvidesRegistry	*plugin_provides;
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
@@ -62,6 +63,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->harness);
 	g_clear_object(&self->automation);
 	g_clear_object(&self->plugins);
+	g_clear_object(&self->plugin_provides);
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
@@ -583,6 +585,23 @@ venture_context_get_plugin_manager(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->plugins;
+}
+
+VenturePluginProvidesRegistry *
+venture_context_get_plugin_provides(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	/*
+	 * On the context, not the plugin manager: the subsystem that
+	 * understands a kind registers it when it is built, which is before
+	 * main() makes a manager -- and a test may make several managers over
+	 * one context.
+	 */
+	if (NULL == self->plugin_provides)
+		self->plugin_provides = venture_plugin_provides_registry_new();
+
+	return self->plugin_provides;
 }
 
 VentureReconciliationRegistry *

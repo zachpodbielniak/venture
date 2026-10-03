@@ -291,6 +291,14 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STRV("plugins-paths", "plugins", "paths", "Native plugin directories"),
 	VC_BOOL("plugins-allow-crispy", "plugins", "allow_crispy", TRUE,
 	        "Compile and load .c plugins on demand"),
+	/*
+	 * Off by default. An exec plugin is a program in a plugin directory
+	 * run as the server's user; an install where anyone but the operator
+	 * can write a plugin directory must not have that happen because a
+	 * manifest appeared.
+	 */
+	VC_BOOL("plugins-allow-exec", "plugins", "allow_exec", FALSE,
+	        "Run exec plugins: programs named by a *.plugin.yaml manifest"),
 	VC_STRV("plugins-venture-type-paths", "plugins", "venture_type_paths",
 	        "Directories of declarative venture-type definitions"),
 	VC_STRV("plugins-required", "plugins", "required",

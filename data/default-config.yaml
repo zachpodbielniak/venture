@@ -309,6 +309,12 @@ plugins:
   # what is in them -- which, for a personal install, you do.
   allow_crispy: true
 
+  # Run exec plugins: programs beside a *.plugin.yaml manifest, started as
+  # this server's user and spoken to in JSON lines on stdin and stdout.
+  # Off by default -- turn it on only where nobody but you can write the
+  # plugin directories. See docs/plugins.org.
+  allow_exec: false
+
   # Directories scanned for YAML venture-type definitions. These add new
   # kinds of venture with their own fields, metrics and report columns
   # without any code at all.

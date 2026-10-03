@@ -350,6 +350,34 @@ first seven columns were empty.
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
   while the tests pass against this hour's.
+- **Plugins load through runtimes, and a manifest never leaves its
+  directory.** `native`/`crispy`/`declarative`/`exec` are
+  `VenturePluginRuntime`s; a plugin may add one, and a file nothing claims
+  is held and retried -- after the registering plugin's load returns, never
+  inside it. `*.plugin.yaml` is matched before any extension (it is also a
+  `.yaml`). Every manifest `entry` and every exec program goes through
+  `venture_exec_resolve_within()`: realpath, then compared against
+  `root + "/"`, and for exec again at every run. The manager must be on
+  the context *before* loading (`main.c` set it afterwards, and every
+  plugin's `venture_context_get_plugin_manager()` got NULL).
+- **Exec plugins: argv, a socket, a cleared environment, and stdin only.**
+  `venture_exec_run()` spawns with an argv array (never a shell), a fresh
+  process group (every early end kills the group, or a script's `sleep`
+  keeps stdout open), the environment cleared to PATH/LANG/HOME plus the
+  manifest's `env` names, and stdin on a socket pair -- a pipe to a program
+  that exits unread raises SIGPIPE and kills the server. Settings and
+  secrets go in the stdin request only, never argv (`/proc`) or the
+  environment (inherited), and secret values are redacted out of every
+  string handed back. It iterates a *private* main context, so it may run
+  on a worker; `plugins.allow_exec` (off by default) is checked at load
+  and at every run. Money in the JSON-lines protocol is a decimal
+  *string*; a JSON number is refused. `docs/plugins.org` is the protocol's
+  one definition -- `file_jsonl` reads the same vocabulary.
+- **What a plugin provides is a registered kind, not a case in the
+  loader.** `venture_context_get_plugin_provides()` holds the kinds; a new
+  one is registered by the subsystem that understands it, and an unknown
+  kind fails the plugin's load. A kind whose module can be switched off
+  stays registered and skips while off.
 
 ## The CLI, and its skill
 

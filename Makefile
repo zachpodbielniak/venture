@@ -362,12 +362,20 @@ $(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
 # ---------------------------------------------------------------------------
 
 #
-# One subdirectory of plugins/ becomes one .so -- except plugins/scripts/,
-# which holds crispy sources. Those are deliberately never built: the server
-# compiles them on demand, and building them here would both defeat the
-# demonstration and link several independent `venture_plugin_register`
-# definitions into one object.
-PLUGIN_DIRS := $(filter-out plugins/scripts, \
+# One subdirectory of plugins/ becomes one .so -- except three:
+#
+#   - plugins/scripts/ holds crispy sources. Those are deliberately never
+#     built: the server compiles them on demand, and building them here
+#     would both defeat the demonstration and link several independent
+#     `venture_plugin_register` definitions into one object.
+#   - plugins/exec/ holds exec plugins -- programs and their manifests --
+#     with no C to compile at all.
+#   - plugins/blizzard-auctions/ is a native plugin that must not land in
+#     $(OUTDIR)/plugins, because VENTURE_PLUGIN_PATH loads everything there
+#     into every test fixture. It is built into $(OUTDIR)/plugins-optional/
+#     by its own rule, added with the plugin.
+PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec plugins/blizzard-auctions
+PLUGIN_DIRS := $(filter-out $(PLUGIN_EXCLUDED_DIRS), \
                  $(patsubst %/,%,$(sort $(dir $(wildcard plugins/*/)))))
 PLUGIN_SOS := $(patsubst plugins/%,$(OUTDIR)/plugins/%.so,$(PLUGIN_DIRS))
 

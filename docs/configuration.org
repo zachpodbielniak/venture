@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-10-03]
+#+version: 0.5.1
 
 * Configuration
 
@@ -229,7 +229,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *ai* — provider, model, policy, auto-approved tools, prompt extras, and
   the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
-- *plugins* — paths, crispy, declarative venture types
+- *plugins* — paths, crispy (=allow_crispy=, on), exec plugins (=allow_exec=, *off*: programs named by a =*.plugin.yaml= manifest, run as the server's user; see [[file:plugins.org][Plugins]]), declarative venture types, required plugins
 - *ui* — look (=classic= or =industrial=, the two designs; the default
   until a person picks one with the switch in the sidebar), theme
   (=system=, =light=, =dark= or =mocha=, the Catppuccin palette; the

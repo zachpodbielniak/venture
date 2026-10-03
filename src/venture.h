@@ -180,6 +180,9 @@
 #include "periods/venture-period-service.h"
 #include "periods/venture-period-guard.h"
 
+#include "plugin/venture-jsonl.h"
+#include "plugin/venture-exec.h"
+#include "plugin/venture-plugin-runtime.h"
 #include "plugin/venture-plugin-manager.h"
 
 #include "automation/venture-automation.h"

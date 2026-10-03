@@ -616,6 +616,28 @@ static const GEnumValue venture_plugin_kind_values[] = {
 	VE(VENTURE_PLUGIN_KIND_NATIVE,      "native"),
 	VE(VENTURE_PLUGIN_KIND_CRISPY,      "crispy"),
 	VE(VENTURE_PLUGIN_KIND_DECLARATIVE, "declarative"),
+	VE(VENTURE_PLUGIN_KIND_EXEC,        "exec"),
+	VE(VENTURE_PLUGIN_KIND_OTHER,       "other"),
+	VE_END
+};
+
+/* The nick is the wire spelling of a message's `type`, so it is matched
+ * exactly by the parser rather than through venture_enum_from_nick()'s
+ * forgiving lookup: a producer that writes "Listing" is wrong, and saying
+ * so is cheaper than every consumer guessing. */
+static const GEnumValue venture_jsonl_message_kind_values[] = {
+	VE(VENTURE_JSONL_MESSAGE_VENUE,        "venue"),
+	VE(VENTURE_JSONL_MESSAGE_INSTRUMENT,   "instrument"),
+	VE(VENTURE_JSONL_MESSAGE_SNAPSHOT,     "snapshot"),
+	VE(VENTURE_JSONL_MESSAGE_LISTING,      "listing"),
+	VE(VENTURE_JSONL_MESSAGE_STAT,         "stat"),
+	VE(VENTURE_JSONL_MESSAGE_QUOTE,        "quote"),
+	VE(VENTURE_JSONL_MESSAGE_ENTRY,        "entry"),
+	VE(VENTURE_JSONL_MESSAGE_RECORD,       "record"),
+	VE(VENTURE_JSONL_MESSAGE_CURSOR,       "cursor"),
+	VE(VENTURE_JSONL_MESSAGE_NOT_MODIFIED, "not_modified"),
+	VE(VENTURE_JSONL_MESSAGE_LOG,          "log"),
+	VE(VENTURE_JSONL_MESSAGE_ERROR,        "error"),
 	VE_END
 };
 
@@ -876,6 +898,10 @@ venture_link_kind_to_label(VentureLinkKind kind)
 VENTURE_DEFINE_ENUM_TYPE(venture_plugin_kind_get_type,
                          "VenturePluginKind",
                          venture_plugin_kind_values)
+
+VENTURE_DEFINE_ENUM_TYPE(venture_jsonl_message_kind_get_type,
+                         "VentureJsonlMessageKind",
+                         venture_jsonl_message_kind_values)
 
 static const GFlagsValue venture_column_flags_values[] = {
 	VE(VENTURE_COLUMN_FLAG_NONE,        "none"),

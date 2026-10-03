@@ -4832,9 +4832,10 @@ venture_web_ui_plugins(
 						 )
 						 "</span>"
 		                         "<h3>No plugins loaded</h3>"
-		                         "<p class=\"muted\">Drop a .so or a crispy "
-		                         ".c file into a configured plugin directory "
-		                         "and restart.</p></div>");
+		                         "<p class=\"muted\">Drop a .so, a crispy "
+		                         ".c file or a directory with a "
+		                         ".plugin.yaml manifest into a configured "
+		                         "plugin directory and restart.</p></div>");
 
 	for (i = 0; (NULL != plugins) && (i < json_array_get_length(plugins));
 	     i++)
@@ -4851,9 +4852,12 @@ venture_web_ui_plugins(
 		g_string_append(content, "<div class=\"card plugin-card\">"
 		                         "<div class=\"card-head\"><h2>");
 		venture_html_escape_append(content, name);
+		/* The runtime, not the kind: for a runtime a plugin added, the
+		 * kind is only "other", and which runtime is the useful fact. */
 		g_string_append(content, "</h2><span class=\"badge\">");
 		venture_html_escape_append(content,
-			venture_json_object_get_string(plugin, "kind", ""));
+			venture_json_object_get_string(plugin, "runtime",
+				venture_json_object_get_string(plugin, "kind", "")));
 		g_string_append(content, "</span></div><div class=\"card-body\">");
 
 		{
