@@ -88,7 +88,12 @@ static gchar *run_exchange(Fixture *f, const gchar *request, guint seconds, GErr
 static gchar *exchange(Fixture *f, const gchar *request)
 {
 	g_autoptr(GError) error = NULL;
-	gchar *response = run_exchange(f, request, 5, &error);
+	gchar *response;
+	gint64 server_timeout = 0;
+	/* The aggregate fixture deliberately waits five seconds for a 408.
+	 * An identical client deadline races the response it is asserting. */
+	g_object_get(f->config, "server-request-timeout", &server_timeout, NULL);
+	response = run_exchange(f, request, (guint)MAX((gint64)5, server_timeout + 3), &error);
 	g_assert_no_error(error);
 	return response;
 }
@@ -438,6 +443,32 @@ static void test_private_context(void)
 	g_assert_nonnull(strstr(response, " 408 ")); g_assert_cmpuint(f.writes, ==, 0);
 	teardown(&f, NULL);
 }
+/* The public form bound is chosen at headers, not after Soup has buffered
+ * an anonymous body's bytes. Both framing methods must enforce it. */
+static void test_form_upload_bounds(Fixture *f, gconstpointer data)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org, "name", "Files", "public-token", "file-limit", "state", VENTURE_FORM_LIVE, NULL), field = NULL, version = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *response = NULL, *body = g_strnfill(65537, 'x');
+	g_autoptr(GString) request = g_string_new("POST /pub/form/missing HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n10001\r\n");
+	(void)data;
+	response = exchange(f, "POST /pub/form/missing HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65537\r\nConnection: close\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 413 ")); g_clear_pointer(&response, g_free);
+	g_string_append(request, body); g_string_append(request, "\r\n0\r\n\r\n");
+	response = exchange(f, request->str); g_assert_nonnull(strstr(response, " 413 ")); g_clear_pointer(&response, g_free);
+	g_assert_true(venture_database_save(f->database, form, NULL, &error)); g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "file", "label", "File", "kind", VENTURE_FORM_FIELD_FILE, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error); g_assert_no_error(error);
+	/* A file field raises the route bound; the configured 1 MiB global
+	 * bound still wins. No body is needed to prove the early rejection. */
+	response = exchange(f, "POST /pub/form/file-limit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 413 ")); g_clear_pointer(&response, g_free);
+	response = exchange(f, "POST /pub/form/file-limit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65537\r\nConnection: close\r\n\r\nx");
+	g_assert_nonnull(strstr(response, " 408 "));
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -463,5 +494,6 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/active-teardown", Fixture, NULL, setup, test_active_teardown, teardown);
 	g_test_add("/http-limits/negative-length", Fixture, NULL, setup, test_negative_length, teardown);
 	g_test_add_func("/http-limits/private-context", test_private_context);
+	g_test_add("/http-limits/form-upload-bounds", Fixture, NULL, setup, test_form_upload_bounds, teardown);
 	return g_test_run();
 }

@@ -74,6 +74,9 @@ typedef struct
 	GPtrArray		*choices;
 	/* Each question owns a reference to its version's immutable rule array. */
 	JsonArray		*rules;
+	gint64			 file_max_bytes;
+	guint			 file_max_count;
+	gchar			*file_types;
 	gint64			 booking_page_id;
 	gchar			*booking_name_field;
 	gchar			*booking_email_field;
@@ -256,6 +259,31 @@ gboolean venture_forms_price_load(VentureDatabase *database, VentureEntity *form
 gboolean venture_forms_price_restore(GPtrArray *fields, JsonObject *payment, GError **error);
 gboolean venture_forms_price_validate(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error);
 VentureMoney *venture_forms_price_total(GPtrArray *fields, JsonObject *answers, JsonArray **invoice_lines, GError **error);
+/* --- Private attachment lifecycle --- */
+typedef struct {
+	gchar *key;
+	gchar *filename;
+	GBytes *bytes;
+} VentureFormsUploadPart;
+void venture_forms_upload_part_free(gpointer data);
+gboolean venture_forms_upload_field_validate(VentureEntity *entity, GError **error);
+gboolean venture_forms_upload_definition(GPtrArray *fields, GError **error);
+gboolean venture_forms_upload_check_write(VentureEntity *entity, GError **error);
+void venture_forms_upload_normalize(GPtrArray *fields, GHashTable *answers);
+void venture_forms_upload_check(VentureDatabase *database, VentureEntity *form, GDateTime *now,
+	const VentureFormsField *field, GPtrArray *values, JsonObject *answers, JsonObject *errors, GString *summary);
+gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity *form, VentureEntity *version,
+	GPtrArray *fields, GHashTable *answers, GPtrArray *parts, const gchar *client, GDateTime *now, GError **error);
+gsize venture_forms_upload_body_limit(VentureDatabase *database, const gchar *token);
+gboolean venture_forms_upload_claim(VentureDatabase *database, VentureEntity *form, VentureEntity *response,
+	GPtrArray *fields, GDateTime *now, GPtrArray **claimed, GError **error);
+gboolean venture_forms_upload_bind_response(VentureDatabase *database, VentureEntity *response, GPtrArray *claimed, GError **error);
+gboolean venture_forms_upload_bind_source(VentureDatabase *database, VentureEntity *form, VentureEntity *source,
+	JsonObject *values, GDateTime *expires, GError **error);
+gboolean venture_forms_upload_purge_source(VentureDatabase *database, VentureEntity *source, GError **error);
+gint64 venture_forms_upload_sweep(VentureDatabase *database, gint64 organization, guint limit, GDateTime *now, GError **error);
+GBytes *venture_forms_upload_read(VentureDatabase *database, VentureEntity *upload, GError **error);
+
 G_END_DECLS
 
 

@@ -1847,6 +1847,7 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_version"),
 		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/forms/uploads/1"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forms/1/publish", NULL, "", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/form/1/actions/publish", NULL, "{}", NULL, NULL),
@@ -4807,6 +4808,48 @@ test_orgaccess_public_capabilities(ServerFixture *fixture, gconstpointer unused)
  * post. A signed-in user with no membership gets exactly what a guest
  * gets; the capability is the token, never the cookie. Anything past the
  * documented shapes is not public. */
+/* A file ID is a reference, not a download capability. Authority comes
+ * from the actual response, including organization and sensitive ownership. */
+static void
+test_forms_upload_authority(ServerFixture *f, gconstpointer data)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org, "name", "Files", "public-token", "auth-files", "state", VENTURE_FORM_LIVE, NULL), field = NULL, version = NULL, upload = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), then = g_date_time_add_seconds(now, -60);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_UPLOAD);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *ticket = NULL, *body = NULL, *url = NULL, *viewer = NULL, *owner = NULL, *outsider = NULL, *text = NULL;
+	gint64 id;
+	(void)data;
+	g_assert_true(venture_database_save(f->database, form, NULL, &error)); g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "file", "label", "File", "kind", VENTURE_FORM_FIELD_FILE, "sensitive", data != NULL, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error); g_assert_no_error(error);
+	id = venture_entity_get_id(form); g_clear_object(&form); form = venture_database_get(f->database, VENTURE_TYPE_FORM, id, NULL);
+	ticket = venture_forms_ticket_new(form, then);
+	body = g_strdup_printf("--files\r\nContent-Disposition: form-data; name=\"_vf_t\"\r\n\r\n%s\r\n--files\r\nContent-Disposition: form-data; name=\"file\"; filename=\"private.txt\"\r\nContent-Type: image/png\r\n\r\nPrivate resume bytes\r\n--files--\r\n", ticket);
+	bytes = g_bytes_new(body, strlen(body));
+	g_assert_cmpuint(server_fixture_post_raw(f, "/pub/form/auth-files", NULL, "multipart/form-data; boundary=files", bytes, NULL), ==, 200);
+	upload = venture_database_find_one(f->database, query, &error); g_assert_no_error(error); g_assert_nonnull(upload);
+	url = g_strdup_printf("/forms/uploads/%" G_GINT64_FORMAT, venture_entity_get_id(upload));
+	server_fixture_create_member(f, "file-viewer", "password", VENTURE_USER_ROLE_VIEWER, NULL);
+	server_fixture_create_member(f, "file-owner", "password", VENTURE_USER_ROLE_OWNER, NULL);
+	server_fixture_create_user(f, "file-outsider", "password", VENTURE_USER_ROLE_EDITOR, &id);
+	{
+		g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other uploads organization", NULL), membership = NULL;
+		g_assert_true(venture_database_save(f->database, other, NULL, &error)); g_assert_no_error(error);
+		membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", venture_entity_get_id(other), "user-id", id, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
+		g_assert_true(venture_database_save(f->database, membership, NULL, &error)); g_assert_no_error(error);
+	}
+	viewer = server_fixture_login(f, "file-viewer", "password"); owner = server_fixture_login(f, "file-owner", "password"); outsider = server_fixture_login(f, "file-outsider", "password");
+	g_assert_cmpuint(server_fixture_get_anonymous(f, url), ==, 302);
+	g_assert_cmpuint(server_fixture_request(f, "GET", url, outsider, NULL, NULL, NULL), ==, 404);
+	g_assert_cmpuint(server_fixture_request(f, "GET", url, viewer, NULL, NULL, NULL), ==, data != NULL ? 404 : 200);
+	g_assert_cmpuint(server_fixture_request(f, "GET", url, owner, NULL, &text, NULL), ==, 200);
+	g_assert_cmpstr(text, ==, "Private resume bytes");
+}
+
 static void
 test_forms_public_door(ServerFixture *fixture, gconstpointer unused)
 {
@@ -5801,5 +5844,7 @@ main(
 	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
 	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);
 	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
+	g_test_add("/auth/forms-upload-authority", ServerFixture, GINT_TO_POINTER(1), server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
+	g_test_add("/auth/forms-upload-viewer", ServerFixture, NULL, server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	return g_test_run();
 }

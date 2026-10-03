@@ -298,6 +298,7 @@ venture_forms_field_free(gpointer data)
 	g_clear_pointer(&field->rules, json_array_unref);
 	g_clear_pointer(&field->catalog, json_object_unref);
 	g_free(field->language);
+	g_free(field->file_types);
 	g_free(field->booking_name_field);
 	g_free(field->booking_email_field);
 	g_clear_pointer(&field->booking_slots, json_node_unref);
@@ -347,6 +348,9 @@ venture_forms_field_from_record(VentureEntity *row)
 	VentureFormsField *field = g_new0(VentureFormsField, 1);
 	g_autofree gchar *choices = venture_forms_get_string(row, "choices");
 
+	field->file_max_bytes = venture_forms_get_int(row, "file-max-bytes");
+	field->file_max_count = (guint)venture_forms_get_int(row, "file-max-count");
+	field->file_types = venture_forms_get_string(row, "file-types");
 	g_object_get(row, "booking-page-id", &field->booking_page_id, "booking-name-field", &field->booking_name_field,
 		"booking-email-field", &field->booking_email_field, "scoring", &field->scoring, "key", &field->key, "label", &field->label, "kind", &field->kind,
 	             "required", &field->required, "sensitive", &field->sensitive,
@@ -382,7 +386,7 @@ venture_forms_definition_from_records(VentureDatabase *database, VentureEntity *
 		VentureFormsField *field = venture_forms_field_from_record(row);
 		g_ptr_array_add(fields, field);
 	}
-	if (!venture_forms_groups_load(database, form, fields, error) ||
+	if (!venture_forms_upload_definition(fields, error) || !venture_forms_groups_load(database, form, fields, error) ||
 	    !venture_forms_rules_load(database, form, fields, error) ||
 	    !venture_forms_quiz_load(database, form, fields, error) ||
 	    !venture_forms_price_load(database, form, fields, error) ||
@@ -439,6 +443,12 @@ venture_forms_definition_to_json(GPtrArray *fields)
 		VentureFormsField *field = g_ptr_array_index(fields, i);
 
 		json_builder_begin_object(builder);
+		if (field->kind == VENTURE_FORM_FIELD_FILE)
+		{
+			json_builder_set_member_name(builder, "file_max_bytes"); json_builder_add_int_value(builder, field->file_max_bytes);
+			json_builder_set_member_name(builder, "file_max_count"); json_builder_add_int_value(builder, field->file_max_count);
+			json_builder_set_member_name(builder, "file_types"); json_builder_add_string_value(builder, field->file_types != NULL ? field->file_types : "");
+		}
 		if (field->kind == VENTURE_FORM_FIELD_BOOKING)
 		{
 			json_builder_set_member_name(builder, "booking_page_id"); json_builder_add_int_value(builder, field->booking_page_id);
@@ -596,9 +606,12 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		kind = forms_member_string(object, "kind");
 		if (NULL == field->key || NULL == kind || !forms_kind_from_nick(kind, &field->kind))
 			goto broken;
+		field->file_max_bytes = json_object_get_int_member_with_default(object, "file_max_bytes", 0);
+		field->file_max_count = (guint)json_object_get_int_member_with_default(object, "file_max_count", 0);
+		field->file_types = forms_member_string(object, "file_types");
 		field->booking_page_id = json_object_get_int_member_with_default(object, "booking_page_id", 0);
-		field->booking_name_field = g_strdup(forms_member_string(object, "booking_name_field"));
-		field->booking_email_field = g_strdup(forms_member_string(object, "booking_email_field"));
+		field->booking_name_field = forms_member_string(object, "booking_name_field");
+		field->booking_email_field = forms_member_string(object, "booking_email_field");
 		if (json_object_has_member(object, "scoring")) field->scoring = json_to_string(json_object_get_member(object, "scoring"), FALSE);
 		field->required = json_object_get_boolean_member_with_default(object, "required", FALSE);
 		field->marketing_consent = json_object_get_boolean_member_with_default(object, "marketing_consent", FALSE);

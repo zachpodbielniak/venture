@@ -31383,7 +31383,7 @@ venture_web_server_new(
 	htmx_config_set_port(config, (guint16)port);
 
 	self->server = htmx_server_new_with_config(config);
-	venture_http_limits_install(htmx_server_get_soup_server(self->server), venture_context_get_config(context));
+	venture_http_limits_install(htmx_server_get_soup_server(self->server), venture_context_get_config(context), venture_web_forms_body_limit, self);
 	self->classified_routes = htmx_router_new();
 	router = htmx_server_get_router(self->server);
 
@@ -31649,6 +31649,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/fragment", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_fragment, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_schema, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/forms/uploads/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_download, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forms/:id/publish", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_publish, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);

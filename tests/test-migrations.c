@@ -1164,6 +1164,7 @@ test_forms_schema(void)
 	g_assert_false(table_exists(database, "form_result_bands"));
 	g_assert_false(table_exists(database, "form_prices"));
 	g_assert_false(table_exists(database, "form_payments"));
+	g_assert_false(table_exists(database, "form_uploads"));
 	g_assert_cmpint(applied(database, 711), ==, 1);
 	g_assert_cmpint(applied(database, 720), ==, 1);
 	g_assert_cmpint(applied(database, 730), ==, 1);
@@ -1184,6 +1185,8 @@ test_forms_schema(void)
 	g_assert_cmpint(applied(database, 850), ==, 1);
 	g_assert_cmpint(applied(database, 851), ==, 1);
 	g_assert_cmpint(applied(database, 860), ==, 1);
+	g_assert_cmpint(applied(database, 900), ==, 1);
+	g_assert_cmpint(applied(database, 901), ==, 1);
 	g_clear_object(&context);
 	g_clear_object(&database);
 
@@ -1207,6 +1210,7 @@ test_forms_schema(void)
 		g_assert_true(table_exists(database, "form_result_bands"));
 		g_assert_true(table_exists(database, "form_prices"));
 		g_assert_true(table_exists(database, "form_payments"));
+		g_assert_true(table_exists(database, "form_uploads"));
 		g_assert_cmpint(applied(database, 711), ==, 1);
 		g_assert_cmpint(applied(database, 720), ==, 1);
 		g_assert_cmpint(applied(database, 730), ==, 1);
@@ -1227,6 +1231,8 @@ test_forms_schema(void)
 		g_assert_cmpint(applied(database, 850), ==, 1);
 		g_assert_cmpint(applied(database, 851), ==, 1);
 	g_assert_cmpint(applied(database, 860), ==, 1);
+	g_assert_cmpint(applied(database, 900), ==, 1);
+	g_assert_cmpint(applied(database, 901), ==, 1);
 		{
 			g_autofree gchar *index = query_text(database,
 				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "

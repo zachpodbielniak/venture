@@ -4,5 +4,6 @@
 #include <venture.h>
 gboolean venture_http_limits_validate(VentureConfig *config, GError **error);
 void venture_http_limits_shutdown(SoupServer *server);
-void venture_http_limits_install(SoupServer *server, VentureConfig *config);
+typedef gsize (*VentureHttpBodyLimit)(SoupServerMessage *message, gpointer data);
+void venture_http_limits_install(SoupServer *server, VentureConfig *config, VentureHttpBodyLimit body_limit, gpointer data);
 #endif

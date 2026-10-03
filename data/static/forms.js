@@ -231,6 +231,33 @@
 		form.addEventListener("input", update); form.addEventListener("change", update); update();
 	}
 
+	function sendForm(form, body, files) {
+		var progress = form.querySelector(".vf-upload-progress");
+		if (files && !progress) {
+			progress = document.createElement("progress");
+			progress.className = "vf-upload-progress";
+			progress.setAttribute("aria-label", "File upload progress");
+			form.appendChild(progress);
+		}
+		if (progress) { progress.hidden = false; progress.removeAttribute("value"); }
+		/* Upload progress listeners require a CORS preflight. Cross-origin
+		 * embeds keep a simple multipart request and show indeterminate
+		 * progress; same-origin uploads can report the transferred bytes. */
+		if (!files || new URL(form.action, window.location.href).origin !== window.location.origin) {
+			return fetch(form.action, { method: "POST", mode: "cors", credentials: "omit", headers: { "Accept": "application/json" }, body: body });
+		}
+		return new Promise(function (resolve, reject) {
+			var xhr = new XMLHttpRequest();
+			xhr.open("POST", form.action); xhr.setRequestHeader("Accept", "application/json");
+			xhr.upload.onprogress = function (event) {
+				if (event.lengthComputable) { progress.max = event.total; progress.value = event.loaded; }
+			};
+			xhr.onerror = reject; xhr.onabort = reject;
+			xhr.onload = function () { resolve({ json: function () { return Promise.resolve().then(function () { return JSON.parse(xhr.responseText); }); } }); };
+			xhr.send(body);
+		});
+	}
+
 	function wire(form) {
 		if (form.ventureFormWired) {
 			return;
@@ -238,10 +265,22 @@
 		form.ventureFormWired = true;
 		wireRules(form);
 		wirePiping(form);
+		form.addEventListener("change", function (event) { if (event.target.type === "file") { event.target.setCustomValidity(""); } });
 
 		form.addEventListener("submit", function (event) {
 			var button = form.querySelector(".vf-submit");
-			var body = new URLSearchParams(new FormData(form));
+			var files = form.querySelectorAll('input[type="file"]');
+			var body = files.length ? new FormData(form) : new URLSearchParams(new FormData(form));
+			var invalid = false;
+			files.forEach(function (input) {
+				input.setCustomValidity("");
+				var maximum = Number(input.getAttribute("data-vf-max-bytes"));
+				var count = Number(input.getAttribute("data-vf-max-count"));
+				if (input.files.length > count || Array.from(input.files).some(function (file) { return file.size > maximum || file.size === 0; })) {
+					input.setCustomValidity("Choose files within the displayed size and count limits."); invalid = true;
+				}
+			});
+			if (invalid) { event.preventDefault(); form.reportValidity(); return; }
 			if (event.submitter && event.submitter.name) {
 				body.append(event.submitter.name, event.submitter.value);
 			}
@@ -255,13 +294,7 @@
 				button.disabled = true;
 			}
 
-			fetch(form.action, {
-				method: "POST",
-				mode: "cors",
-				credentials: "omit",
-				headers: { "Accept": "application/json" },
-				body: body
-			}).then(function (response) {
+			sendForm(form, body, files.length > 0).then(function (response) {
 				return response.json().catch(function () {
 					return { ok: false, message: "The form could not be sent. Please try again." };
 				});
@@ -291,6 +324,7 @@
 				showErrors(form, null, "The form could not be sent. Check your connection and try again.");
 			}).then(function () {
 				form.ventureSending = false;
+				var progress = form.querySelector(".vf-upload-progress"); if (progress) { progress.hidden = true; }
 				if (button) {
 					button.disabled = false;
 				}

@@ -53,6 +53,7 @@ venture_form_field_kind_get_type(void)
 			{ VENTURE_FORM_FIELD_CONSENT, "VENTURE_FORM_FIELD_CONSENT", "consent" },
 			{ VENTURE_FORM_FIELD_PAGE_BREAK, "VENTURE_FORM_FIELD_PAGE_BREAK", "page_break" },
 			{ VENTURE_FORM_FIELD_BOOKING, "VENTURE_FORM_FIELD_BOOKING", "booking" },
+			{ VENTURE_FORM_FIELD_FILE, "VENTURE_FORM_FIELD_FILE", "file" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureFormFieldKind", values);
@@ -99,6 +100,8 @@ static const VentureFieldDecl venture_form_fields[] = {
 	VENTURE_FIELD("redirect-url", "Redirect to",
 	              "Optional: an https:// page to send people to instead of the message",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("upload-quota-bytes", "Stored upload quota", "Total retained bytes for this form; zero uses 100 MiB", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("upload-client-hourly-bytes", "Upload bytes per client per hour", "Zero uses 20 MiB; the client identity is private", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("allow-resume", "Save and continue later", "Offer a private expiring resume link on multi-page forms", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("resume-days", "Saved draft lifetime", "Days before a saved link expires; 0 uses 7, maximum 30", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("draft-minutes", "Draft lifetime", "Minutes before an unfinished form expires; 0 uses 60",
@@ -237,6 +240,9 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("pattern", "Pattern", "Text: a regular expression the whole answer must match",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("file-max-bytes", "Maximum file size", "Bytes per file; zero uses 5 MiB, at most 20 MiB", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("file-max-count", "Maximum files", "Zero uses one; at most ten per question", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("file-types", "Allowed file types", "Comma-separated MIME types: application/pdf, image/png, image/jpeg, text/plain; empty allows all four", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("booking-page-id", "Booking target", "Existing calendar booking page for a booking question", "booking_page", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("booking-name-field", "Name question", "Stable question key; empty uses name", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("booking-email-field", "Email question", "Stable question key; empty uses email", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
@@ -522,3 +528,28 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormPayment, venture_form_payment, ventur
 	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Pending form payment", NULL);
 	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "nonce-hash", "form-id", NULL);)
+
+/* Bytes never enter business signals. The generated file identity, original
+ * filename, client identity and bearer digest remain service-private. */
+static const VentureFieldDecl venture_form_upload_fields[] = {
+	VENTURE_FIELD_NAME("name", "Upload", "Service-owned form attachment"),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("version-id", "Form version", NULL, "form_version", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("response-id", "Response", NULL, "form_submission", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("document-id", "Document", NULL, "document", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("field-key", "Question", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("filename", "Original filename", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("path", "Private storage path", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("token-hash", "Upload digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_UNIQUE),
+	VENTURE_FIELD("client-hash", "Client digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("size-bytes", "Size", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("mime-type", "Content type", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("sensitive", "Sensitive question", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("source-type", "Private intake type", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("source-id", "Private intake ID", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("expires-at", "Unclaimed expiry", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("generation", "Internal revision", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormUpload, venture_form_upload, venture_form_upload_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Private form upload", NULL);
+	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));)

@@ -195,6 +195,9 @@ forms_validate_form(
 			return FALSE;
 		}
 	}
+	if (venture_forms_get_int(entity, "upload-quota-bytes") < 0 || venture_forms_get_int(entity, "upload-quota-bytes") > G_GINT64_CONSTANT(1099511627776) ||
+	    venture_forms_get_int(entity, "upload-client-hourly-bytes") < 0 || venture_forms_get_int(entity, "upload-client-hourly-bytes") > G_GINT64_CONSTANT(1099511627776))
+	{ venture_set_error_validation(error, "Upload quota", "must be 0..1 TiB"); return FALSE; }
 	if (venture_forms_get_int(entity, "resume-days") < 0 || venture_forms_get_int(entity, "resume-days") > 30)
 	{
 		venture_set_error_validation(error, "Saved draft lifetime", "must be 0..30 days");
@@ -630,7 +633,7 @@ forms_validate_field(
 		venture_forms_field_free(field);
 		if (!valid) return FALSE;
 	}
-	return venture_forms_validate_piping(database, entity, error);
+	return venture_forms_upload_field_validate(entity, error) && venture_forms_validate_piping(database, entity, error);
 }
 
 static gboolean
@@ -1765,7 +1768,7 @@ forms_refuse(JsonObject *errors, const gchar *key, const gchar *message)
  * for the person filling the form in, so they say what to do.
  */
 static void
-forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject *answers,
+forms_check_field(VentureDatabase *database, VentureEntity *form, GDateTime *now, const VentureFormsField *field, GPtrArray *values, JsonObject *answers,
 	JsonObject *errors, GString *summary)
 {
 	const gchar *key = field->key;
@@ -1799,6 +1802,10 @@ forms_check_field(const VentureFormsField *field, GPtrArray *values, JsonObject 
 	{
 		if (values != NULL && values->len > 0) forms_refuse(errors, key, "A page heading does not accept an answer.");
 		return;
+	}
+	if (kind == VENTURE_FORM_FIELD_FILE)
+	{
+		venture_forms_upload_check(database, form, now, field, values, answers, errors, summary); return;
 	}
 	if (max_length <= 0)
 		max_length = forms_default_max_length(kind);
@@ -2069,9 +2076,9 @@ venture_forms_pipe_values(GPtrArray *fields, JsonObject *raw)
 		VentureFormsField field = *source;
 		g_autofree gchar *text = NULL;
 		if (field.sensitive || field.group_boundary != VENTURE_FORMS_GROUP_NONE ||
-		    field.kind == VENTURE_FORM_FIELD_PAGE_BREAK || g_hash_table_contains(hidden, field.key)) continue;
+		    field.kind == VENTURE_FORM_FIELD_PAGE_BREAK || field.kind == VENTURE_FORM_FIELD_FILE || g_hash_table_contains(hidden, field.key)) continue;
 		if (!venture_forms_field_active(source, visible, &field.required)) continue;
-		forms_check_field(&field, g_hash_table_lookup(answers, field.key), checked, errors, summary);
+		forms_check_field(NULL, NULL, NULL, &field, g_hash_table_lookup(answers, field.key), checked, errors, summary);
 		if (json_object_has_member(errors, field.key)) continue;
 		text = venture_forms_pipe_answer(&field, json_object_get_member(checked, field.key));
 		json_object_set_string_member(values, field.key, text);
@@ -2116,7 +2123,7 @@ venture_forms_prefill_values(VentureDatabase *database, VentureEntity *form,
 		g_autoptr(GString) summary = g_string_new(NULL);
 		JsonNode *node;
 		if (field->sensitive || field->kind == VENTURE_FORM_FIELD_CONSENT ||
-		    field->kind == VENTURE_FORM_FIELD_PAGE_BREAK || field->group_key != NULL) continue;
+		    field->kind == VENTURE_FORM_FIELD_PAGE_BREAK || field->kind == VENTURE_FORM_FIELD_FILE || field->group_key != NULL) continue;
 		if (field->allow_prefill && query != NULL) value = g_hash_table_lookup(query, field->key);
 		if (contact != NULL && !venture_string_is_empty(field->contact_field))
 		{
@@ -2127,7 +2134,7 @@ venture_forms_prefill_values(VentureDatabase *database, VentureEntity *form,
 		}
 		if (value == NULL || strlen(value) > 32768) continue;
 		g_ptr_array_add(raw, (gpointer)value);
-		forms_check_field(field, raw, checked, refused, summary);
+		forms_check_field(database, form, now, field, raw, checked, refused, summary);
 		node = json_object_get_member(checked, field->key);
 		if (node != NULL && json_object_get_size(refused) == 0)
 		{
@@ -2392,6 +2399,7 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 {
 	g_autofree gchar *note = NULL;
 	g_autoptr(VentureEntity) booking_hold = NULL;
+	g_autoptr(GPtrArray) uploads = NULL;
 
 	if (!venture_database_begin(database, error))
 		return FALSE;
@@ -2475,8 +2483,9 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 
 	if (!venture_forms_booking_finish(database, form, fields, answers, booking_hold, submission, now, refused, error)) goto fail;
 
-	if (!venture_database_save(database, submission, NULL, error))
-		goto fail;
+	if (!venture_forms_upload_claim(database, form, submission, fields, now, &uploads, error)) goto fail;
+	if (!venture_database_save(database, submission, NULL, error)) goto fail;
+	if (!venture_forms_upload_bind_response(database, submission, uploads, error)) goto fail;
 	return venture_database_commit(database, error);
 
 fail:
@@ -2624,12 +2633,12 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		{
 			g_autoptr(GString) hidden = g_string_new(NULL);
 
-			forms_check_field(field, g_hash_table_lookup(answers, field->key), secret, refused, hidden);
+			forms_check_field(database, form, now, field, g_hash_table_lookup(answers, field->key), secret, refused, hidden);
 			if (hidden->len > 0)
 				g_string_append_printf(summary, "%s: (sensitive)\n", field->label);
 			continue;
 		}
-		forms_check_field(field, g_hash_table_lookup(answers, field->key), stored, refused, summary);
+		forms_check_field(database, form, now, field, g_hash_table_lookup(answers, field->key), stored, refused, summary);
 	}
 
 	venture_forms_translation_errors(fields, refused);
@@ -2973,7 +2982,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(VentureQuery) forms = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
-	gint64 anonymised = 0, purged = 0, drafts = 0, pending = 0, payment_payloads = 0;
+	gint64 anonymised = 0, purged = 0, drafts = 0, pending = 0, payment_payloads = 0, files = 0;
 	guint budget, i;
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
@@ -3012,7 +3021,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		{
 			VentureEntity *response = g_ptr_array_index(expired, j);
 
-			if (!forms_payment_forget_response(database, response, error)) return NULL;
+			if (!venture_forms_upload_purge_source(database, response, error) || !forms_payment_forget_response(database, response, error)) return NULL;
 			if (purge ? !venture_database_purge(database, response, actor, error)
 			          : !forms_anonymise(database, response, now, actor, error))
 				return NULL;
@@ -3074,6 +3083,13 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 	}
 
 	json_builder_begin_object(builder);
+	if (budget > 0)
+	{
+		files = venture_forms_upload_sweep(database, organization_id, budget, now, error);
+		if (files < 0) return NULL;
+		budget -= (guint)files;
+	}
+	json_builder_set_member_name(builder, "expired_uploads"); json_builder_add_int_value(builder, files);
 	json_builder_set_member_name(builder, "expired_payment_payloads");
 	json_builder_add_int_value(builder, payment_payloads);
 	json_builder_set_member_name(builder, "expired_signups");
@@ -3213,7 +3229,7 @@ venture_forms_erase_person(VentureDatabase *database, gint64 organization_id, co
 			}
 		}
 		if (!forms_payment_forget_response(database, response, error)) goto fail;
-		if (!venture_database_purge(database, response, actor, error))
+		if (!venture_forms_upload_purge_source(database, response, error) || !venture_database_purge(database, response, actor, error))
 			goto fail;
 		erased++;
 	}

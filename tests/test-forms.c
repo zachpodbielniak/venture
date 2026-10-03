@@ -637,6 +637,7 @@ request(Fixture *f, const gchar *path, const gchar *content_type, const gchar *b
 	{
 		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
 		soup_message_set_request_body_from_bytes(msg, content_type, bytes);
+		if (strlen(body) > VENTURE_FORMS_MAX_BODY) soup_message_headers_set_expectations(soup_message_get_request_headers(msg), SOUP_EXPECTATION_CONTINUE);
 	}
 	if (origin != NULL) soup_message_headers_replace(soup_message_get_request_headers(msg), "Origin", origin);
 	if (accept != NULL) soup_message_headers_replace(soup_message_get_request_headers(msg), "Accept", accept);
@@ -4474,6 +4475,7 @@ test_portable_templates(Fixture *f, gconstpointer data)
 		{
 			VentureFormsField *field = g_ptr_array_index(fields, j);
 			const gchar *answer = "A useful answer";
+			if (field->kind == VENTURE_FORM_FIELD_FILE) continue;
 			switch (field->kind)
 			{
 			case VENTURE_FORM_FIELD_EMAIL: answer = "applicant@example.test"; break;
@@ -4601,6 +4603,240 @@ test_portable_prices(Fixture *f, gconstpointer data)
 	g_assert_null(copied); g_assert_nonnull(error);
 }
 
+
+/* Multipart bodies are binary and may repeat keys: a URL-encoded helper
+ * would hide both classes of upload regression. */
+static guint
+upload_post(Fixture *f, VentureEntity *form, const gchar *contents, gsize size,
+	const gchar *filename, guint copies, gchar **response_body)
+{
+	g_autofree gchar *token = venture_forms_get_string(form, "public-token");
+	g_autofree gchar *uri = g_strdup_printf("http://127.0.0.1:%u/pub/form/%s", f->port, token);
+	g_autoptr(SoupMessage) message = soup_message_new("POST", uri);
+	g_autoptr(SoupMultipart) multipart = soup_multipart_new("multipart/form-data");
+	g_autoptr(GDateTime) now = venture_time_now(), issued = g_date_time_add_seconds(now, -60);
+	g_autofree gchar *ticket = venture_forms_ticket_new(form, issued), *content_type = NULL;
+	g_autoptr(GBytes) file = g_bytes_new(contents, size), body = NULL;
+	Pending pending = { FALSE, NULL, NULL };
+	guint i;
+	gsize length;
+	const gchar *bytes;
+	soup_multipart_append_form_string(multipart, VENTURE_FORMS_TICKET, ticket);
+	soup_multipart_append_form_string(multipart, "email", "files@example.test");
+	for (i = 0; i < copies; i++) soup_multipart_append_form_file(multipart, "attachment", filename, "image/png", file);
+	soup_multipart_to_message(multipart, soup_message_get_request_headers(message), &body);
+	content_type = g_strdup(soup_message_headers_get_one(soup_message_get_request_headers(message), "Content-Type"));
+	soup_message_set_request_body_from_bytes(message, content_type, body);
+	soup_message_headers_replace(soup_message_get_request_headers(message), "Accept", "application/json");
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_session_send_and_read_async(f->session, message, G_PRIORITY_DEFAULT, NULL, received, &pending);
+	while (!pending.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(pending.error);
+	bytes = g_bytes_get_data(pending.body, &length);
+	if (response_body != NULL) *response_body = g_strndup(bytes, length);
+	g_bytes_unref(pending.body);
+	return soup_message_get_status(message);
+}
+
+static VentureEntity *
+upload_form(Fixture *f)
+{
+	VentureEntity *form = make_form(f, "upload-form", VENTURE_FORM_LIVE);
+	add_field(f, form, "attachment", "Attachment", VENTURE_FORM_FIELD_FILE, TRUE, 1);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 2);
+	g_object_unref(publish(f, form));
+	return form;
+}
+
+static void
+test_upload_http(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = upload_form(f), upload = NULL, document = NULL, response = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_UPLOAD);
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(JsonNode) erased = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL, *path = NULL, *url = NULL, *root = NULL, *answers = NULL, *hash = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	f->open = TRUE; start_http(f);
+	request(f, "/pub/form/upload-form", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "multipart/form-data"));
+	g_assert_nonnull(strstr(reply.body, "type=\"file\"")); reply_clear(&reply);
+	g_assert_cmpuint(upload_post(f, form, "private file body\n", 18, "../../<resume>.txt", 1, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "true"));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_DOCUMENT), ==, 1);
+	upload = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_nonnull(upload);
+	path = venture_forms_get_string(upload, "path"); hash = venture_forms_get_string(upload, "token-hash");
+	g_assert_true(g_file_test(path, G_FILE_TEST_IS_REGULAR)); g_assert_null(strstr(path, "resume")); g_assert_true(venture_string_is_empty(hash));
+	g_assert_cmpstr(venture_forms_get_string(upload, "mime-type"), ==, "text/plain");
+	response = venture_database_get(f->db, VENTURE_TYPE_FORM_SUBMISSION, venture_forms_get_int(upload, "response-id"), &error); g_assert_no_error(error);
+	answers = venture_forms_get_string(response, "answers"); g_assert_nonnull(strstr(answers, "document_id")); g_assert_null(strstr(answers, "private file body"));
+	document = venture_database_get(f->db, VENTURE_TYPE_DOCUMENT, venture_forms_get_int(upload, "document-id"), &error); g_assert_no_error(error);
+	root = g_build_filename(f->state_dir, "attachments", NULL);
+	/* Generic attachment consumers include AI image and OCR tools. They must
+	 * not turn a guessed document ID into an alternative download door. */
+	bytes = venture_document_service_read_attachment(venture_document_service_get(f->db), document, root, 1000, &error);
+	g_assert_null(bytes); g_assert_nonnull(error); g_clear_error(&error);
+	url = g_strdup_printf("/forms/uploads/%" G_GINT64_FORMAT, venture_entity_get_id(upload));
+	request(f, url, NULL, NULL, NULL, NULL, &reply); g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_cmpstr(reply.body, ==, "private file body\n"); g_assert_nonnull(strstr(reply.content_type, "text/plain")); reply_clear(&reply);
+	g_object_set(document, "form-upload-id", (gint64)0, NULL); refuse(f, document, "identities");
+	erased = venture_forms_erase_person(f->db, f->org, "files@example.test", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(erased); g_assert_false(g_file_test(path, G_FILE_TEST_EXISTS));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0); g_assert_cmpint(count(f, VENTURE_TYPE_DOCUMENT), ==, 0);
+	request(f, url, NULL, NULL, NULL, NULL, &reply); g_assert_cmpuint(reply.status, ==, 404); reply_clear(&reply);
+}
+
+static gboolean
+upload_scanner_refuse(GBytes *bytes, const gchar *mime, gpointer data, GError **error)
+{
+	guint *calls = data;
+	(void)error;
+	g_assert_cmpuint(g_bytes_get_size(bytes), >, 0); g_assert_cmpstr(mime, ==, "text/plain"); (*calls)++;
+	return FALSE;
+}
+
+static void
+test_upload_refusals(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = upload_form(f), field = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_FIELD);
+	g_autofree gchar *oversize = g_strnfill(5 * 1024 * 1024 + 1, 'a');
+	const gchar *bad[] = { "MZpretend executable", "\177ELFrenamed", "<html>not a photo", "<svg>not a photo", "#!/bin/sh\nexit" };
+	guint i, calls = 0;
+	(void)data;
+	start_http(f);
+	for (i = 0; i < G_N_ELEMENTS(bad); i++) g_assert_cmpuint(upload_post(f, form, bad[i], strlen(bad[i]), "photo.png", 1, NULL), ==, 422);
+	g_assert_cmpuint(upload_post(f, form, oversize, strlen(oversize), "large.txt", 1, NULL), ==, 422);
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 2, NULL), ==, 422);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0); g_assert_cmpint(count(f, VENTURE_TYPE_DOCUMENT), ==, 0);
+	g_object_set(form, "upload-quota-bytes", (gint64)4, NULL); save(f, form);
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 422);
+	g_object_set(form, "upload-quota-bytes", (gint64)1000, "upload-client-hourly-bytes", (gint64)4, NULL); save(f, form);
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 422);
+	g_object_set(form, "upload-client-hourly-bytes", (gint64)1000, NULL); save(f, form);
+	venture_forms_set_upload_scanner(f->db, upload_scanner_refuse, &calls, NULL);
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 422); g_assert_cmpuint(calls, ==, 1);
+	venture_forms_set_upload_scanner(f->db, NULL, NULL, NULL);
+	venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, "attachment", NULL); field = venture_database_find_one(f->db, query, NULL);
+	g_object_set(field, "file-types", "application/pdf", NULL); save(f, field); g_object_unref(publish(f, form));
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "pretend.pdf", 1, NULL), ==, 422);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0); g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+}
+
+static void
+upload_receive(Fixture *f, VentureEntity *form, VentureEntity *version, GHashTable *answers,
+	const gchar *key, GDateTime *now)
+{
+	g_autoptr(GPtrArray) fields = venture_forms_definition_for(f->db, form, version, NULL);
+	g_autoptr(GPtrArray) parts = g_ptr_array_new_with_free_func(venture_forms_upload_part_free);
+	g_autoptr(GError) error = NULL;
+	VentureFormsUploadPart *part = g_new0(VentureFormsUploadPart, 1);
+	part->key = g_strdup(key); part->filename = g_strdup("resume.txt"); part->bytes = g_bytes_new_static("resume\n", 7);
+	g_ptr_array_add(parts, part);
+	g_assert_true(venture_forms_receive_uploads(f->db, form, version, fields, answers, parts, "127.0.0.1", now, &error)); g_assert_no_error(error);
+}
+
+/* Files remain private while paging, survive a back/next round-trip, and
+ * disappear with expired drafts instead of becoming permanent orphans. */
+static void
+test_upload_drafts(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "file-pages", VENTURE_FORM_LIVE), version = NULL, upload = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_UPLOAD);
+	g_autoptr(GDateTime) now = venture_time_now(), issued = g_date_time_add_seconds(now, -60), later = g_date_time_add_hours(now, 2);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) step = NULL;
+	g_autoptr(JsonNode) sweep = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL, *draft = NULL, *capability = NULL, *path = NULL;
+	guint round;
+	(void)data;
+	add_field(f, form, "attachment", "Resume", VENTURE_FORM_FIELD_FILE, TRUE, 1);
+	add_field(f, form, "next", "Contact", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 2);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 3);
+	version = publish(f, form); start_http(f); ticket = venture_forms_ticket_new(form, issued);
+	for (round = 0; round < 2; round++)
+	{
+		g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+		upload_receive(f, form, version, answers, "attachment", now);
+		g_clear_pointer(&capability, g_free); capability = g_strdup(g_ptr_array_index((GPtrArray *)g_hash_table_lookup(answers, "attachment"), 0));
+		g_clear_pointer(&step, venture_forms_step_free); step = venture_forms_step(f->db, form, answers, NULL, now, &error); g_assert_no_error(error); g_assert_nonnull(step);
+		g_assert_cmpuint(step->page, ==, 1); g_assert_cmpuint(json_object_get_size(step->errors), ==, 0);
+		g_clear_pointer(&draft, g_free); draft = g_strdup(step->token);
+		g_clear_object(&upload); venture_query_add_filter_int(query, "response-id", VENTURE_FILTER_OP_EQ, 0, NULL);
+		upload = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_nonnull(upload);
+		g_clear_pointer(&path, g_free); path = venture_forms_get_string(upload, "path");
+		g_assert_cmpint(venture_forms_get_int(upload, "source-id"), >, 0);
+		if (round == 1)
+		{
+			sweep = venture_forms_retention_sweep(f->db, f->org, 10, later, NULL, &error); g_assert_no_error(error);
+			g_assert_nonnull(sweep); g_assert_false(g_file_test(path, G_FILE_TEST_EXISTS));
+			break;
+		}
+		g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, draft); venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "back");
+		g_clear_pointer(&step, venture_forms_step_free); step = venture_forms_step(f->db, form, answers, NULL, now, &error); g_assert_no_error(error); g_assert_cmpuint(step->page, ==, 0);
+		g_clear_pointer(&draft, g_free); draft = g_strdup(step->token);
+		g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, draft); venture_forms_answers_add(answers, "attachment", capability);
+		g_clear_pointer(&step, venture_forms_step_free); step = venture_forms_step(f->db, form, answers, NULL, now, &error); g_assert_no_error(error); g_assert_cmpuint(step->page, ==, 1);
+		g_clear_pointer(&draft, g_free); draft = g_strdup(step->token);
+		g_hash_table_remove_all(answers); venture_forms_answers_add(answers, VENTURE_FORMS_DRAFT_TOKEN, draft); venture_forms_answers_add(answers, "email", "files@example.test");
+		g_clear_pointer(&step, venture_forms_step_free); step = venture_forms_step(f->db, form, answers, NULL, now, &error); g_assert_no_error(error); g_assert_true(step->complete);
+		g_assert_nonnull(step->submission); g_assert_true(g_file_test(path, G_FILE_TEST_EXISTS));
+	}
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 1); g_assert_cmpint(count(f, VENTURE_TYPE_DOCUMENT), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
+}
+
+static void
+test_upload_groups(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "group-files", VENTURE_FORM_LIVE), group = NULL, field = NULL, version = NULL, response = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), issued = g_date_time_add_seconds(now, -60);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL, *stored = NULL;
+	VentureFormsOutcome outcome;
+	(void)data;
+	group = g_object_new(VENTURE_TYPE_FORM_GROUP, "organization-id", f->org, "form-id", venture_entity_get_id(form), "key", "people", "label", "People", "min-rows", (gint64)1, "max-rows", (gint64)2, NULL); save(f, group);
+	field = make_field(f, form, "cv", "Resume", VENTURE_FORM_FIELD_FILE, TRUE, 1);
+	g_object_set(field, "group-id", venture_entity_get_id(group), "sensitive", TRUE, NULL); save(f, field);
+	version = publish(f, form); start_http(f); ticket = venture_forms_ticket_new(form, issued);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	upload_receive(f, form, version, answers, "people[0][cv]", now);
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, &errors, &error)); g_assert_no_error(error);
+	g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED); g_assert_nonnull(response);
+	stored = venture_forms_get_string(response, "answers"); g_assert_null(strstr(stored, "resume.txt")); g_clear_pointer(&stored, g_free);
+	stored = venture_forms_get_string(response, "sensitive-answers"); g_assert_nonnull(strstr(stored, "resume.txt")); g_assert_nonnull(strstr(stored, "document_id"));
+	g_assert_cmpint(count(f, VENTURE_TYPE_DOCUMENT), ==, 1);
+}
+
+/* Adopting an old upload on a newer form version must not retain the old,
+ * weaker download policy when the question has become sensitive. */
+static void
+test_upload_version_privacy(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "file-version", VENTURE_FORM_LIVE), field = NULL, version = NULL, response = NULL, upload = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_UPLOAD);
+	g_autoptr(GDateTime) now = venture_time_now(), issued = g_date_time_add_seconds(now, -60);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL;
+	VentureFormsOutcome outcome;
+	(void)data;
+	field = make_field(f, form, "attachment", "Attachment", VENTURE_FORM_FIELD_FILE, TRUE, 1); save(f, field);
+	version = publish(f, form); start_http(f); upload_receive(f, form, version, answers, "attachment", now);
+	g_object_set(field, "sensitive", TRUE, NULL); save(f, field);
+	g_clear_object(&version); version = publish(f, form); ticket = venture_forms_ticket_new(form, issued);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, &errors, &error)); g_assert_no_error(error); g_assert_nonnull(response);
+	upload = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_true(venture_forms_get_bool(upload, "sensitive"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -4693,5 +4929,10 @@ main(int argc, char **argv)
 	g_test_add("/forms/portable-refusals", Fixture, NULL, setup, test_portable_refusals, teardown);
 	g_test_add("/forms/portable-bindings", Fixture, NULL, setup, test_portable_bindings, teardown);
 	g_test_add("/forms/portable-prices", Fixture, NULL, setup, test_portable_prices, teardown);
+	g_test_add("/forms/upload-http", Fixture, NULL, setup, test_upload_http, teardown);
+	g_test_add("/forms/upload-refusals", Fixture, NULL, setup, test_upload_refusals, teardown);
+	g_test_add("/forms/upload-drafts", Fixture, NULL, setup, test_upload_drafts, teardown);
+	g_test_add("/forms/upload-groups", Fixture, NULL, setup, test_upload_groups, teardown);
+	g_test_add("/forms/upload-version-privacy", Fixture, NULL, setup, test_upload_version_privacy, teardown);
 	return g_test_run();
 }

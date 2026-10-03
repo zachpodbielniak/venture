@@ -212,7 +212,7 @@ venture_forms_resume(VentureDatabase *database, VentureEntity *form, const gchar
 			VentureFormsField effective = *field;
 			if (g_hash_table_contains(hidden, field->key)) continue;
 			venture_forms_field_active(field, step->values, &effective.required);
-			forms_check_field(&effective, g_hash_table_lookup(answers, field->key), checked, errors, summary);
+			forms_check_field(database, fresh, now, &effective, g_hash_table_lookup(answers, field->key), checked, errors, summary);
 		}
 		if (json_object_get_size(errors) > 0) break;
 		next = venture_forms_next_page(expanded, step->page, step->values);

@@ -647,7 +647,9 @@ swapped within an existing draft. The final save checks the personal
 token again. Custom clients receive the same validated values and control
 fields in the public schema's =prefill= object. The loader and HTML
 renderer use the ordinary inputs and styling hooks. Public form responses
-set =Referrer-Policy: no-referrer= and are not cacheable.
+set =Referrer-Policy: strict-origin= and are not cacheable. Only the origin
+is sent as a referrer, never a capability path or prefill query. This also
+preserves a native hosted POST's Origin header when an embed allow-list is set.
 
 A hidden opted-in question can retain UTM or campaign text in the answer
 object. That text does not replace an attribution visitor identity,
@@ -1221,7 +1223,7 @@ Use the generic =form= actions from the record UI, REST, CLI or MCP. The
 | =feedback= | A 1–5 rating and comments |
 | =nps= | A 0–10 recommendation question and reason |
 | =event-signup= | Name, email and a sensitive accessibility request |
-| =job-application= | Name, email, experience and a portfolio/resume link |
+| =job-application= | Name, email, experience, portfolio link and optional sensitive resume file |
 | =newsletter= | Email and explicit required permission; double opt-in |
 | =appointment-request= | Name, email, preferred date and details |
 | =order= | Name, email, requested item and quantity |
@@ -1276,3 +1278,72 @@ references are refused. Inputs are bounded to 1 MiB, 2,000 definition records,
 32 nesting levels and one JSON/YAML document. YAML aliases are refused before
 node expansion. Review imported origins, redirects, notices and mail wording
 before making the draft live.
+
+* File uploads
+
+A =file= question accepts attachments through the same native form and script
+loader. Enable both =forms= and =documents=. Set =file_max_bytes= (default
+5 MiB, at most 20 MiB), =file_max_count= (default 1, at most 10), and
+=file_types=, a comma-separated subset of =application/pdf,image/png,image/jpeg,text/plain=.
+The default permits all four. The limits are frozen with each published
+version. The job-application template includes an optional sensitive resume
+attachment restricted to PDF or plain text.
+
+The renderer uses =multipart/form-data= and works without JavaScript. Back and
+Next retain private upload capabilities; the visitor can remove an attachment
+with its checkbox. Repeat groups and sensitive questions use the same path.
+The loader checks size/count as a courtesy and adds an accessible progress
+indicator. Same-origin uploads show transferred bytes; cross-origin embeds show
+indeterminate progress so they remain simple requests without a CORS preflight.
+Validation on the server is authoritative. File answers cannot be defaults,
+prefills, lead mappings, rule conditions or answer-piping sources.
+
+The HTTP transport enforces the body bound before retaining a complete body,
+for both Content-Length and chunked requests. Only a live form with a retained
+published file question receives the larger 32 MiB route bound; ordinary and
+unknown forms keep 64 KiB. The operator's =server.max_request_size_mb= and
+aggregate buffered-body limits still apply and can be smaller. Multipart text
+is separately bounded to 64 KiB, with at most 100 files and 1000 parts per
+request. Per-file limits apply before bytes reach disk.
+
+Content is sniffed; neither the browser's MIME header nor an extension grants
+permission. Executables, scripts, HTML and SVG are refused even when renamed.
+Files use generated names under the existing private attachment directory,
+exclusive creation and mode 0600. Original names are data, escaped on response
+pages and encoded in the download header. File bodies are never extracted,
+audited, sent to AI, included in webhooks or placed in notifications. Ordinary
+response metadata contains only upload/document references, name, type and
+size; sensitive metadata stays in the private answer column.
+
+=form.upload_quota_bytes= bounds retained bytes (default 100 MiB per form).
+=upload_client_hourly_bytes= bounds bytes from a client in the last hour
+(default 20 MiB). Both accept 0 for the default or a positive limit, at most
+1 TiB. Client identity is a form-specific HMAC of the remote address; the raw
+address is not retained with the upload. These quotas include unclaimed files,
+in addition to the existing request rate limits. At most 10,000 private upload
+records are retained per form. Erasure frees the bytes and their identity.
+
+An upload is a private =form_upload= working copy until a valid submission
+claims it as an ordinary =document=. Only =/forms/uploads/ID= downloads bytes:
+it requires a user session, read access to the actual response and, for a
+sensitive question, owner authority. Anonymous capability URLs never download
+files. Generic document/image/OCR consumers refuse form attachment bytes.
+Responses use =Content-Disposition: attachment=, =X-Content-Type-Options: nosniff=
+and private, non-cacheable headers; files never render inline.
+
+Unbound uploads expire after an hour. Drafts and pending opt-in submissions
+bind files to their own expiry; a pending payment retains its private intake
+for the existing bounded recovery window. The ordinary retention sweep removes
+expired orphan files, and erasure/retention removes a response's files and
+documents. A failed file removal keeps its row and quota so cleanup can be
+retried. No background upload-cleanup thread is introduced.
+
+A host may install a synchronous optional scanner with
+=venture_forms_set_upload_scanner()=. It runs after size/type checks and before
+disk writes; refusal or scanner error refuses the file. The callback must not
+run a nested main loop. No scanner is bundled, and the ordinary content and
+quota checks always run. Migrations 000900 and 000901 pin the forms and document
+metadata on SQLite and PostgreSQL.
+
+The [[file:evidence/forms-uploads.org][built-server upload demonstration]] records native and loader flows,
+download headers and erasure, with links to the refusal and authority tests.

@@ -1441,7 +1441,7 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   byte-identical 404. The state and the cap are checked again under the
   lock at the save.
 - **Nothing public may need a preflight.** The server answers no
-  `OPTIONS`. The loader posts form-encoded with only `Accept`; a site
+  `OPTIONS`. The loader posts form-encoded or multipart with only `Accept`; a site
   posting JSON cross-origin sends it as `text/plain`, which the door
   parses as JSON. Do not add a custom request header to forms.js.
 - **A robot is told it succeeded.** A filled `_vf_hp`, a missing, forged
@@ -1557,3 +1557,12 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   A response retry never repeats a debit; a late booking payment needs a new
   available hold, never resurrection of expired capacity. Erasure marks the
   intake terminal so a later webhook cannot recreate personal answers.
+
+- **Form attachments are private until a response claims them.** `form_upload`
+  is a guarded working copy; its bearer, path and original name are sensitive.
+  Claiming files creates documents with an immutable `form-upload-id`. Generic
+  attachment readers refuse them: only the response-authorized download route
+  may read their bytes. Never extract their text for OCR or AI. Streaming body
+  limits run at HTTP headers/chunks, before multipart parsing; a handler-only
+  check is too late. Erasure/retention unlinks bytes before dropping metadata
+  so a failed unlink remains retryable and continues to count against quota.

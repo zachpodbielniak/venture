@@ -10,6 +10,7 @@ gboolean
 venture_forms_check_write(VentureDatabase *database, VentureEntity *entity, gboolean removal, GError **error)
 {
 	(void)database;
+	if (!venture_forms_upload_check_write(entity, error)) return FALSE;
 	if (!VENTURE_IS_FORM_PAYMENT(entity)) return TRUE;
 	if (removal || g_object_get_data(G_OBJECT(entity), VENTURE_FORMS_PAYMENT_WRITE) == NULL)
 	{
@@ -268,6 +269,17 @@ static gboolean forms_payment_begin(VentureDatabase *database, VentureEntity *fo
 		g_object_set(pending, "email-hash", email_hash, "personal-hash", personal, NULL);
 	}
 	if (!forms_payment_save(database, pending, error)) goto fail;
+	{
+		const gchar *columns[] = { "answers", "sensitive-answers" };
+		g_autoptr(GDateTime) file_expiry = g_date_time_add_days(now, 30);
+		guint c;
+		for (c = 0; c < G_N_ELEMENTS(columns); c++)
+		{
+			g_autofree gchar *text = venture_forms_get_string(response, columns[c]);
+			g_autoptr(JsonNode) values = text != NULL ? json_from_string(text, NULL) : NULL;
+			if (values != NULL && JSON_NODE_HOLDS_OBJECT(values) && !venture_forms_upload_bind_source(database, form, pending, json_node_get_object(values), file_expiry, error)) goto fail;
+		}
+	}
 	if (!venture_database_commit(database, error)) return FALSE;
 	return forms_payment_continue(database, pending, response, refused);
 fail:
@@ -462,6 +474,7 @@ fail:
 static gboolean forms_payment_forget(VentureDatabase *database, VentureEntity *pending, GError **error)
 {
 	gint64 id = venture_forms_get_int(pending, "reservation-id");
+	if (!venture_forms_upload_purge_source(database, pending, error)) return FALSE;
 	if (id > 0)
 	{
 		g_autoptr(VentureBookingService) service = venture_booking_service_new(database);

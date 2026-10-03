@@ -619,6 +619,33 @@ VentureEntity *venture_forms_import_definition(VentureContext *context, gint64 o
  */
 JsonNode *venture_forms_templates(void);
 
+/**
+ * VentureFormsUploadScanner:
+ * @bytes: bounded candidate file bytes
+ * @mime_type: content-sniffed MIME type
+ * @user_data: registration data
+ * @error: (out) (optional): rejection reason
+ *
+ * Optional synchronous scanner invoked before a public upload reaches disk.
+ * The callback must not retain borrowed arguments or run a nested main loop.
+ * Returns: whether the candidate is accepted
+ */
+typedef gboolean (*VentureFormsUploadScanner)(GBytes *bytes, const gchar *mime_type,
+	gpointer user_data, GError **error);
+
+/**
+ * venture_forms_set_upload_scanner:
+ * @database: storage owning this registration
+ * @callback: (scope notified) (nullable): optional file scanner
+ * @user_data: (closure callback): registration data
+ * @destroy: (destroy user_data) (nullable): registration cleanup
+ *
+ * Replaces the optional scanner. Size and content-type checks always run,
+ * including when no scanner is registered. The database owns the registration.
+ */
+void venture_forms_set_upload_scanner(VentureDatabase *database, VentureFormsUploadScanner callback,
+	gpointer user_data, GDestroyNotify destroy);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

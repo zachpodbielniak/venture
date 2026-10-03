@@ -122,7 +122,7 @@ venture_forms_pipe_validate_text(const gchar *text, GPtrArray *fields, const Ven
 		else
 		{
 			const VentureFormsField *source = pipe_source(fields, key, target);
-			if (source == NULL || source->sensitive || source->kind == VENTURE_FORM_FIELD_PAGE_BREAK ||
+			if (source == NULL || source->sensitive || source->kind == VENTURE_FORM_FIELD_FILE || source->kind == VENTURE_FORM_FIELD_PAGE_BREAK ||
 			    (target != NULL && !pipe_precedes(fields, source, target))) goto invalid;
 		}
 	}
@@ -207,7 +207,7 @@ venture_forms_pipe_answer(const VentureFormsField *field, JsonNode *answer)
 	g_autoptr(GString) text = g_string_new(NULL);
 	JsonArray *array = answer != NULL && JSON_NODE_HOLDS_ARRAY(answer) ? json_node_get_array(answer) : NULL;
 	guint i, length = array != NULL ? json_array_get_length(array) : 1;
-	if (answer == NULL || field->sensitive) return g_strdup("");
+	if (answer == NULL || field->sensitive || field->kind == VENTURE_FORM_FIELD_FILE) return g_strdup("");
 	if (field->kind == VENTURE_FORM_FIELD_CONSENT) return g_strdup(venture_forms_field_text(field, "message.given", "Given"));
 	for (i = 0; i < length; i++)
 	{
@@ -308,7 +308,7 @@ venture_forms_pipe_stored_values(GPtrArray *fields, JsonObject *answers)
 		const VentureFormsField *field = g_ptr_array_index(fields, i);
 		JsonArray *rows = NULL;
 		guint row, length = 1;
-		if (field->sensitive) continue;
+		if (field->sensitive || field->kind == VENTURE_FORM_FIELD_FILE) continue;
 		if (field->group_key != NULL)
 		{
 			JsonNode *group = json_object_get_member(answers, field->group_key);

@@ -72,6 +72,7 @@ rule_from_record(VentureEntity *record, GPtrArray *fields, GError **error)
 		{
 			VentureFormsField *source = g_ptr_array_index(fields, index);
 			VentureFormsField *destination = target_index >= 0 ? g_ptr_array_index(fields, target_index) : NULL;
+			if (source->kind == VENTURE_FORM_FIELD_FILE) goto invalid;
 			/* A repeated answer has a meaning within its row, not an arbitrary
 			 * first or last row that could select navigation for everybody. */
 			if (!venture_string_is_empty(source->group_key) &&

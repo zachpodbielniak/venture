@@ -371,6 +371,33 @@ forms_render_field(GString *html, const gchar *prefix, const VentureFormsField *
 	forms_render_label_text(html, field->label, label, required);
 	g_string_append(html, "</label>");
 
+	if (kind == VENTURE_FORM_FIELD_FILE)
+	{
+		JsonNode *retained = options->values != NULL ? json_object_get_member(options->values, key) : NULL;
+		guint count = retained != NULL && JSON_NODE_HOLDS_ARRAY(retained) ? json_array_get_length(json_node_get_array(retained)) : retained != NULL && JSON_NODE_HOLDS_VALUE(retained) ? 1 : 0;
+		guint i, maximum = field->file_max_count > 0 ? MIN(field->file_max_count, 10) : 1;
+		gint64 bytes = field->file_max_bytes > 0 ? field->file_max_bytes : 5 * 1024 * 1024;
+		g_string_append_printf(html, "<input class=\"vf-input vf-file\" id=\"%s\" name=\"%s\" type=\"file\" data-vf-max-bytes=\"%" G_GINT64_FORMAT "\" data-vf-max-count=\"%u\" accept=\"", id, key, bytes, maximum);
+		forms_escape(html, venture_string_is_empty(field->file_types) ? "application/pdf,image/png,image/jpeg,text/plain" : field->file_types);
+		g_string_append_c(html, '"');
+		if (maximum > 1) g_string_append(html, " multiple");
+		if (required && count == 0) g_string_append(html, " required aria-required=\"true\"");
+		if (!active) g_string_append(html, " disabled");
+		forms_described(html, id, has_help, message != NULL); g_string_append_c(html, '>');
+		for (i = 0; i < count; i++)
+		{
+			JsonNode *node = JSON_NODE_HOLDS_ARRAY(retained) ? json_array_get_element(json_node_get_array(retained), i) : retained;
+			const gchar *token;
+			if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING) continue;
+			token = json_node_get_string(node);
+			g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" value=\"", key); forms_escape(html, token); g_string_append(html, "\">");
+			g_string_append_printf(html, "<label class=\"vf-file-retained\"><input type=\"checkbox\" name=\"%s\" value=\"!", key); forms_escape(html, token);
+			g_string_append_printf(html, "\"> Remove attached file %u</label>", i + 1);
+		}
+		g_string_append_printf(html, "<p class=\"vf-file-limits\">Up to %u file(s), %" G_GINT64_FORMAT " bytes each.</p>", maximum, bytes);
+		forms_render_help_and_error(html, id, field->help, help, message); g_string_append(html, "</div>"); return;
+	}
+
 	if (VENTURE_FORM_FIELD_LONG_TEXT == kind)
 	{
 		g_string_append_printf(html, "<textarea class=\"vf-input\" id=\"%s\" name=\"%s\" rows=\"5\"", id, key);
@@ -632,6 +659,9 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 
 	g_string_append_printf(html, "<form class=\"vf-form\" id=\"%s\" data-vf-form=\"%s\" "
 	                       "method=\"post\" accept-charset=\"utf-8\"", prefix, token != NULL ? token : "");
+	for (i = 0; i < fields->len; i++)
+		if (((VentureFormsField *)g_ptr_array_index(fields, i))->kind == VENTURE_FORM_FIELD_FILE)
+		{ g_string_append(html, " enctype=\"multipart/form-data\""); break; }
 	g_string_append(html, " lang=\""); forms_escape(html, venture_forms_language(fields)); g_string_append_c(html, '"');
 	g_string_append(html, " data-vf-error-title=\""); forms_escape(html, venture_forms_text(fields, "message.errors", "Please check these answers.")); g_string_append_c(html, '"');
 	if (json_array_get_length(render_rules) > 0)
@@ -1021,6 +1051,12 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 		json_builder_add_string_value(builder, field->label != NULL ? field->label : "");
 		json_builder_set_member_name(builder, "kind");
 		json_builder_add_string_value(builder, venture_forms_kind_nick(field->kind));
+		if (field->kind == VENTURE_FORM_FIELD_FILE)
+		{
+			json_builder_set_member_name(builder, "file_max_bytes"); json_builder_add_int_value(builder, field->file_max_bytes > 0 ? field->file_max_bytes : 5 * 1024 * 1024);
+			json_builder_set_member_name(builder, "file_max_count"); json_builder_add_int_value(builder, field->file_max_count > 0 ? field->file_max_count : 1);
+			json_builder_set_member_name(builder, "file_types"); json_builder_add_string_value(builder, venture_string_is_empty(field->file_types) ? "application/pdf,image/png,image/jpeg,text/plain" : field->file_types);
+		}
 		if (field->kind == VENTURE_FORM_FIELD_BOOKING)
 		{
 			json_builder_set_member_name(builder, "slots");
@@ -1288,7 +1324,7 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 				row = json_node_get_object(item);
 			}
 			if (!json_object_has_member(row, field->key)) continue;
-			shown = field->kind == VENTURE_FORM_FIELD_CONSENT ? g_strdup(venture_forms_field_text(field, "message.given", "Given")) :
+			shown = field->kind == VENTURE_FORM_FIELD_FILE ? g_strdup("") : field->kind == VENTURE_FORM_FIELD_CONSENT ? g_strdup(venture_forms_field_text(field, "message.given", "Given")) :
 				forms_answer_text(field, json_object_get_member(row, field->key));
 			g_string_append(html, "<dt>");
 			if (rows != NULL)
@@ -1300,7 +1336,27 @@ venture_forms_render_answers(VentureDatabase *database, VentureEntity *submissio
 			label = venture_forms_pipe_text(field->label, fields, &target, pipe_values);
 			forms_escape(html, label);
 			g_string_append(html, "</dt><dd>");
-			forms_paragraphs(html, shown);
+			if (field->kind == VENTURE_FORM_FIELD_FILE)
+			{
+				JsonNode *files = json_object_get_member(row, field->key);
+				guint k;
+				if (files != NULL && JSON_NODE_HOLDS_ARRAY(files))
+				{
+					g_string_append(html, "<ul class=\"form-attachments\">");
+					for (k = 0; k < json_array_get_length(json_node_get_array(files)); k++)
+					{
+						JsonNode *file = json_array_get_element(json_node_get_array(files), k);
+						JsonObject *metadata;
+						if (!JSON_NODE_HOLDS_OBJECT(file)) continue;
+						metadata = json_node_get_object(file);
+						g_string_append_printf(html, "<li><a href=\"/forms/uploads/%" G_GINT64_FORMAT "\">", json_object_get_int_member_with_default(metadata, "upload_id", 0));
+						forms_escape(html, json_object_get_string_member_with_default(metadata, "name", "Attachment"));
+						g_string_append_printf(html, "</a> (%" G_GINT64_FORMAT " bytes)</li>", json_object_get_int_member_with_default(metadata, "size", 0));
+					}
+					g_string_append(html, "</ul>");
+				}
+			}
+			else forms_paragraphs(html, shown);
 			g_string_append(html, "</dd>");
 		}
 

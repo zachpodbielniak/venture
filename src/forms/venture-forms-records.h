@@ -59,6 +59,7 @@ GType venture_form_state_get_type(void) G_GNUC_CONST;
  * @VENTURE_FORM_FIELD_CHECKBOX: one yes-or-no box
  * @VENTURE_FORM_FIELD_RATING: a whole number on a scale
  * @VENTURE_FORM_FIELD_HIDDEN: a value the page supplies, not the person
+ * @VENTURE_FORM_FIELD_FILE: bounded private file attachments
  * @VENTURE_FORM_FIELD_BOOKING: selects a live slot from an existing booking page
  * @VENTURE_FORM_FIELD_PAGE_BREAK: starts a new page, with a heading and introduction
  * @VENTURE_FORM_FIELD_CONSENT: one box that records a permission: the
@@ -86,7 +87,8 @@ typedef enum
 	VENTURE_FORM_FIELD_HIDDEN,
 	VENTURE_FORM_FIELD_CONSENT,
 	VENTURE_FORM_FIELD_PAGE_BREAK,
-	VENTURE_FORM_FIELD_BOOKING
+	VENTURE_FORM_FIELD_BOOKING,
+	VENTURE_FORM_FIELD_FILE
 } VentureFormFieldKind;
 
 /**
@@ -221,6 +223,12 @@ VENTURE_DECLARE_ENTITY(VentureFormPrice, venture_form_price, FORM_PRICE)
 /**
  * venture_form_price_new:
  * Returns: (transfer full): an unsaved server price declaration
+ */
+#define VENTURE_TYPE_FORM_UPLOAD (venture_form_upload_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormUpload, venture_form_upload, FORM_UPLOAD)
+/**
+ * venture_form_upload_new:
+ * Returns: (transfer full): an unsaved service-owned private upload
  */
 G_END_DECLS
 

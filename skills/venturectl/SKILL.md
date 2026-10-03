@@ -2015,3 +2015,18 @@ External record references require `bindings={"product:17":42}` (same-org
 existing destination IDs). Responses and signing keys never travel with a
 form definition. Appointment/order templates collect requests until an author
 adds a booking question or payment prices. See `docs/forms.org`.
+
+File questions use `kind=file`, `file_max_bytes` (default 5 MiB; max 20 MiB),
+`file_max_count` (default 1; max 10), and `file_types` (PDF, PNG, JPEG and/or
+plain-text MIME names, comma separated). Publish after editing limits.
+`form.upload_quota_bytes` and `upload_client_hourly_bytes` default to 100 MiB
+and 20 MiB/hour when zero. The documents module must be enabled.
+
+Upload through the public multipart form, not generic record creation.
+`form_upload` is a private service-owned working copy. A completed response
+contains file name/size/type and document references; sensitive file metadata
+is omitted from ordinary reads. Download bytes only through the authenticated
+`/forms/uploads/ID` route with response read authority (owner for sensitive
+files). Generic document/AI attachment readers refuse these bytes. Erasure and
+the forms retention sweep remove their files; neither CLI output nor an AI
+summary contains file contents.

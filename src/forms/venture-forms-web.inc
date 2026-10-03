@@ -89,7 +89,10 @@ forms_web_common(HtmxResponse *response, const gchar *allow_origin)
 {
 	htmx_response_add_header(response, "Cache-Control", "no-store, private");
 	htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
-	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
+	/* An origin-only referrer never exposes capability paths or prefill.
+	 * no-referrer makes native POST Origin null in Chromium and breaks
+	 * this very hosted form when an embed allow-list is configured. */
+	htmx_response_add_header(response, "Referrer-Policy", "strict-origin");
 	if (NULL != allow_origin)
 	{
 		htmx_response_add_header(response, "Access-Control-Allow-Origin", allow_origin);
@@ -419,7 +422,7 @@ forms_web_accepted(VentureDatabase *database, VentureEntity *form, VentureEntity
  * because that is the one JSON a cross-origin fetch can send with no
  * preflight, and this server answers none. */
 static GHashTable *
-forms_web_answers(HtmxRequest *request, gboolean *json_body, guint *status, GError **error)
+forms_web_answers(HtmxRequest *request, GPtrArray *parts, gboolean *json_body, guint *status, GError **error)
 {
 	GBytes *bytes = htmx_request_get_body_bytes(request);
 	const gchar *type = htmx_request_get_content_type(request);
@@ -454,10 +457,48 @@ forms_web_answers(HtmxRequest *request, gboolean *json_body, guint *status, GErr
 		}
 		return venture_forms_answers_from_json(json_node_get_object(root), error);
 	}
+	if (type != NULL && g_str_has_prefix(type, "multipart/form-data"))
+	{
+		g_autoptr(SoupMultipart) multipart = bytes != NULL ? soup_multipart_new_from_message(soup_server_message_get_request_headers(htmx_request_get_message(request)), bytes) : NULL;
+		g_autoptr(GHashTable) answers = venture_forms_answers_new();
+		gsize text_bytes = 0;
+		gint i;
+		if (multipart == NULL || soup_multipart_get_length(multipart) > 1000) goto malformed_multipart;
+		for (i = 0; i < soup_multipart_get_length(multipart); i++)
+		{
+			SoupMessageHeaders *headers;
+			GBytes *part;
+			g_autofree gchar *disposition = NULL;
+			g_autoptr(GHashTable) parameters = NULL;
+			const gchar *key, *filename, *content;
+			gsize size;
+			if (!soup_multipart_get_part(multipart, i, &headers, &part) || !soup_message_headers_get_content_disposition(headers, &disposition, &parameters) || g_strcmp0(disposition, "form-data") != 0) goto malformed_multipart;
+			key = g_hash_table_lookup(parameters, "name"); filename = g_hash_table_lookup(parameters, "filename");
+			if (venture_string_is_empty(key) || strlen(key) > 256 || !g_utf8_validate(key, -1, NULL)) goto malformed_multipart;
+			content = g_bytes_get_data(part, &size);
+			if (filename != NULL)
+			{
+				VentureFormsUploadPart *upload;
+				if (*filename == '\0' && size == 0) continue;
+				if (parts->len >= 100) goto malformed_multipart;
+				upload = g_new0(VentureFormsUploadPart, 1); upload->key = g_strdup(key); upload->filename = g_strdup(filename); upload->bytes = g_bytes_ref(part);
+				g_ptr_array_add(parts, upload);
+			}
+			else
+			{
+				g_autofree gchar *value = NULL;
+				if (size > VENTURE_FORMS_MAX_BODY - text_bytes || memchr(content, '\0', size) != NULL || !g_utf8_validate(content, (gssize)size, NULL)) goto malformed_multipart;
+				text_bytes += size; value = g_strndup(content, size); venture_forms_answers_add(answers, key, value);
+			}
+		}
+		return g_steal_pointer(&answers);
+	}
 	*status = 415;
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 	                    "Send the answers as a form post or as JSON");
 	return NULL;
+malformed_multipart:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "The multipart form data is invalid or exceeds its text/file count bound"); return NULL;
 }
 
 static gboolean
@@ -582,6 +623,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	VentureDatabase *database = venture_context_get_database(self->context);
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(VentureEntity) form = NULL, submission = NULL;
+	g_autoptr(GPtrArray) parts = g_ptr_array_new_with_free_func(venture_forms_upload_part_free);
 	g_autoptr(GHashTable) answers = NULL;
 	g_autoptr(JsonObject) errors = NULL;
 	g_autoptr(GError) error = NULL;
@@ -625,7 +667,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	/* Refuse the expensive things before doing them: size before parsing,
 	 * the door before the rate, the rate before the database write. */
 	bytes = htmx_request_get_body_bytes(request);
-	if (NULL != bytes && g_bytes_get_size(bytes) > VENTURE_FORMS_MAX_BODY)
+	if (NULL != bytes && g_bytes_get_size(bytes) > venture_forms_upload_body_limit(database, token))
 		return forms_web_status(413, "Too much data for one response.");
 	form = forms_web_live(self, params, now);
 	if (NULL == form)
@@ -642,7 +684,7 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		return response;
 	}
 
-	answers = forms_web_answers(request, &json_body, &status, &error);
+	answers = forms_web_answers(request, parts, &json_body, &status, &error);
 	json = forms_web_wants_json(request, json_body);
 	if (NULL == answers)
 	{
@@ -654,6 +696,20 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 			return forms_web_json_result(FALSE, error->message, NULL, problem, status, allow_origin);
 		}
 		return forms_web_status(status, error->message);
+	}
+
+	{
+		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
+		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, &error);
+		if (fields == NULL) return forms_web_missing();
+		venture_forms_upload_normalize(fields, answers);
+		if (parts->len > 0 && !venture_forms_screen(form, answers, now)) return forms_web_accepted(database, form, NULL, json, allow_origin);
+		if (!venture_forms_receive_uploads(database, form, version, fields, answers, parts, address, now, &error))
+		{
+			g_autoptr(JsonObject) problem = json_object_new();
+			json_object_set_string_member(problem, "_form", error != NULL ? error->message : "The attachment could not be accepted.");
+			return json ? forms_web_json_result(FALSE, "Check the uploaded files.", NULL, problem, 422, allow_origin) : forms_web_status(422, error != NULL ? error->message : "The attachment could not be accepted.");
+		}
 	}
 
 	if (g_hash_table_contains(answers, VENTURE_FORMS_PERSONAL))
@@ -988,4 +1044,62 @@ venture_web_forms_publish(HtmxRequest *request, GHashTable *params, gpointer dat
 		return venture_web_error_response(error);
 	path = g_strdup_printf("/e/form/%" G_GINT64_FORMAT, id);
 	return venture_web_redirect_to(path);
+}
+
+/* Bytes are downloaded through the response's authority, never an anonymous
+ * capability or a generic document/image attachment path. */
+static HtmxResponse *
+venture_web_forms_download(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) upload = NULL, submission = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *name = NULL, *escaped = NULL, *disposition = NULL, *mime = NULL;
+	HtmxResponse *response = venture_web_ui_require_session(self, request);
+	if (response != NULL) return response;
+	response = venture_web_require_module_ui(self, request, "forms"); if (response != NULL) return response;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER, &error) ||
+	    !venture_web_require_for_type(self, principal, VENTURE_TYPE_FORM_SUBMISSION, VENTURE_USER_ROLE_VIEWER, &error)) return venture_web_error_response(error);
+	upload = venture_database_get(database, VENTURE_TYPE_FORM_UPLOAD, g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), NULL);
+	if (upload == NULL) return forms_web_missing();
+	submission = venture_database_get(database, VENTURE_TYPE_FORM_SUBMISSION, venture_forms_get_int(upload, "response-id"), NULL);
+	if (submission == NULL || venture_entity_get_organization_id(upload) != venture_entity_get_organization_id(submission) ||
+	    !venture_access_policy_check_read(venture_database_get_access_policy(database), submission, NULL)) return forms_web_missing();
+	if (venture_forms_get_bool(upload, "sensitive") && !venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER, NULL)) return forms_web_missing();
+	bytes = venture_forms_upload_read(database, upload, &error); if (bytes == NULL) return forms_web_missing();
+	name = venture_forms_get_string(upload, "filename"); escaped = g_uri_escape_string(name != NULL ? name : "attachment", NULL, FALSE);
+	disposition = g_strdup_printf("attachment; filename=\"attachment\"; filename*=UTF-8''%s", escaped);
+	mime = venture_forms_get_string(upload, "mime-type"); response = htmx_response_new(); htmx_response_set_bytes(response, bytes);
+	htmx_response_set_content_type(response, mime); htmx_response_add_header(response, "Content-Disposition", disposition);
+	htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+	htmx_response_add_header(response, "Cache-Control", "no-store, private");
+	htmx_response_add_header(response, "Referrer-Policy", "no-referrer"); return response;
+}
+
+/* Runs at got-headers, before Soup retains a body. Other routes keep the
+ * operator's global bound. The ordinary hosted/auth checks still run later. */
+static gsize
+venture_web_forms_body_limit(SoupServerMessage *message, gpointer data)
+{
+	VentureWebServer *self = data;
+	GUri *uri = soup_server_message_get_uri(message);
+	const gchar *path = uri != NULL ? g_uri_get_path(uri) : NULL;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAccessScope) boundary = NULL;
+	g_autoptr(HtmxRequest) request = NULL;
+	VentureTenantService *service;
+	if (path == NULL || !g_str_has_prefix(path, "/pub/form/")) return G_MAXSIZE;
+	if (g_strcmp0(soup_server_message_get_method(message), "POST") != 0 || path[10] == '\0' || strchr(path + 10, '/') != NULL) return VENTURE_FORMS_MAX_BODY;
+	boundary = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	service = venture_tenant_service_get(database);
+	if (venture_tenant_service_is_enabled(service))
+	{
+		request = htmx_request_new_from_message(message);
+		if (!venture_web_host_matches(service, request, FALSE)) return VENTURE_FORMS_MAX_BODY;
+	}
+	return venture_forms_upload_body_limit(database, path + 10);
 }

@@ -11,7 +11,7 @@ typedef struct {
 	SoupServerMessage *first, *current;
 	GSource *deadline;
 	gboolean headers, dispatching, rejecting;
-	gsize buffered;
+	gsize buffered, maximum_body;
 } Connection;
 struct _Limits {
 	grefcount refs;
@@ -19,6 +19,8 @@ struct _Limits {
 	GHashTable *connections;
 	gsize maximum_body, maximum_buffered, buffered;
 	guint maximum_connections, timeout, rejecting;
+	VentureHttpBodyLimit body_limit;
+	gpointer body_limit_data;
 };
 typedef struct {
 	Limits *limits;
@@ -144,13 +146,15 @@ static void got_headers(SoupServerMessage *message, gpointer data)
 	Connection *connection = data;
 	SoupMessageHeaders *headers = soup_server_message_get_request_headers(message);
 	connection->headers = TRUE;
+	connection->maximum_body = connection->limits->maximum_body;
+	if (connection->limits->body_limit != NULL) connection->maximum_body = MIN(connection->maximum_body, connection->limits->body_limit(message, connection->limits->body_limit_data));
 	if (soup_server_message_get_http_version(message) >= SOUP_HTTP_2_0)
 	{ connection_reject(connection, 503); return; }
 	if (soup_message_headers_get_encoding(headers) == SOUP_ENCODING_CONTENT_LENGTH)
 	{
 		goffset length = soup_message_headers_get_content_length(headers);
 		if (length < 0) connection_reject(connection, 400);
-		else if (length > (goffset)connection->limits->maximum_body) connection_reject(connection, 413);
+		else if (length > (goffset)connection->maximum_body) connection_reject(connection, 413);
 	}
 }
 static void got_chunk(SoupServerMessage *message, GBytes *chunk, gpointer data)
@@ -158,7 +162,7 @@ static void got_chunk(SoupServerMessage *message, GBytes *chunk, gpointer data)
 	Connection *connection = data;
 	SoupMessageBody *body = soup_server_message_get_request_body(message);
 	gsize length = g_bytes_get_size(chunk);
-	if (length > connection->limits->maximum_body - (gsize)body->length)
+	if (length > connection->maximum_body - (gsize)body->length)
 	{ connection_reject(connection, 413); return; }
 	if (length > connection->limits->maximum_buffered - connection->limits->buffered)
 	{ connection_reject(connection, 503); return; }
@@ -299,7 +303,7 @@ gboolean venture_http_limits_validate(VentureConfig *config, GError **error)
 	}
 	return TRUE;
 }
-void venture_http_limits_install(SoupServer *server, VentureConfig *config)
+void venture_http_limits_install(SoupServer *server, VentureConfig *config, VentureHttpBodyLimit body_limit, gpointer data)
 {
 	Limits *limits = g_new0(Limits, 1);
 	gint64 size, timeout, connections, buffered;
@@ -307,6 +311,7 @@ void venture_http_limits_install(SoupServer *server, VentureConfig *config)
 		"server-max-connections", &connections, "server-max-buffered-request-mb", &buffered, NULL);
 	g_ref_count_init(&limits->refs); limits->context = g_main_context_ref_thread_default();
 	limits->maximum_body = (gsize)size * 1024 * 1024;
+	limits->body_limit = body_limit; limits->body_limit_data = data;
 	limits->maximum_buffered = (gsize)buffered * 1024 * 1024;
 	limits->timeout = (guint)timeout; limits->maximum_connections = (guint)connections;
 	limits->connections = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, connection_free);

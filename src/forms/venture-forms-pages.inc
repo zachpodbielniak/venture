@@ -79,7 +79,14 @@ forms_draft_save(VentureDatabase *database, VentureEntity *draft, VentureFormsSt
 	g_object_set(draft, "contact-id", step->contact_id, "answers", text, "page", (gint64)step->page, "finishing", finishing,
 		"generation", venture_forms_get_int(draft, "generation") + 1, NULL);
 	g_object_set_data(G_OBJECT(draft), VENTURE_FORMS_DRAFT_WRITE, GINT_TO_POINTER(1));
-	return venture_database_save(database, draft, NULL, error);
+	if (!venture_database_save(database, draft, NULL, error)) return FALSE;
+	{
+		g_autoptr(VentureEntity) form = venture_database_get(database, VENTURE_TYPE_FORM, venture_forms_get_int(draft, "form-id"), error);
+		g_autoptr(GDateTime) expires = NULL;
+		if (form == NULL) return FALSE;
+		g_object_get(draft, "expires-at", &expires, NULL);
+		return venture_forms_upload_bind_source(database, form, draft, step->values, expires, error);
+	}
 }
 
 VentureFormsStep *
@@ -212,7 +219,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 		VentureFormsField effective = *source;
 		if (g_hash_table_contains(not_shown, source->key)) continue;
 		venture_forms_field_active(source, step->values, &effective.required);
-		forms_check_field(&effective, g_hash_table_lookup(answers, source->key), checked, step->errors, summary);
+		forms_check_field(database, fresh, now, &effective, g_hash_table_lookup(answers, source->key), checked, step->errors, summary);
 	}
 	if (!save && !row_operation && json_object_get_size(step->errors) == 0)
 	{

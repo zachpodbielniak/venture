@@ -18,7 +18,16 @@ forms_pending_save(VentureDatabase *database, VentureEntity *pending, GError **e
 {
 	g_object_set_data(G_OBJECT(pending), VENTURE_FORMS_PENDING_WRITE, GINT_TO_POINTER(1));
 	g_object_set(pending, "generation", venture_forms_get_int(pending, "generation") + 1, NULL);
-	return venture_database_save(database, pending, NULL, error);
+	if (!venture_database_save(database, pending, NULL, error)) return FALSE;
+	{
+		g_autoptr(VentureEntity) form = venture_database_get(database, VENTURE_TYPE_FORM, venture_forms_get_int(pending, "form-id"), error);
+		g_autoptr(GDateTime) expires = NULL;
+		g_autofree gchar *text = venture_forms_get_string(pending, "answers");
+		g_autoptr(JsonNode) values = text != NULL ? json_from_string(text, NULL) : NULL;
+		if (form == NULL) return FALSE;
+		g_object_get(pending, "expires-at", &expires, NULL);
+		return values == NULL || !JSON_NODE_HOLDS_OBJECT(values) || venture_forms_upload_bind_source(database, form, pending, json_node_get_object(values), expires, error);
+	}
 }
 
 static gboolean
@@ -158,7 +167,7 @@ forms_working_copy_purge(VentureDatabase *database, VentureEntity *pending, cons
 			if (cancelled != NULL) (*cancelled)++;
 		}
 	}
-	return venture_database_purge(database, pending, actor, error);
+	return venture_forms_upload_purge_source(database, pending, error) && venture_database_purge(database, pending, actor, error);
 }
 
 static gboolean
