@@ -64,8 +64,16 @@ and removal of the exception before later transport preparation.
 
 Targeted: the account HTTP authority test, all 25 mail tests, eight routing tests
 and six mail-surface tests pass. The real Mailpit demonstration passes. The
-single final full DEBUG run is recorded here when complete. Raw local logs and
-owned demonstration fixtures are retained under
+single full DEBUG run built all 153 binaries without warnings on
+=cc62e6d110cde378e252e37e20a2dbd196e63ec2=. 152 passed in that run;
+the tenant-lifecycle subprocess hit its existing 30-second alarm under parallel
+disk load. Its 31 checks passed unchanged on isolated reruns: 1.8 seconds on
+/tmp and 12.2 seconds on the same disk. The failed fixture is preserved.
+All 153 binaries therefore have passing results without a second full run.
+Live PostgreSQL migration coverage passed; 22 optional checks skipped.
+The litter check (with the failed fixture preserved outside the run directory),
+version check and both foreground/clock demonstrations passed.
+Raw local logs and owned demonstration fixtures are retained under
 =/home/user/venture-wt/lightsite-authority-notes/=.
 
 * Integration responsibilities
