@@ -1378,3 +1378,9 @@ The loader never automatically resends an uncertain POST. Paid forms retain
 the same invoice/Checkout identity when retried unchanged. Ordinary forms do
 not promise general exactly-once delivery after a lost final response; use
 the configured email/contact limits where a second response is forbidden.
+
+A failed Checkout attempt records one server log line with its local invoice
+ID and a cause category (transport, provider availability/rate limit, or local
+error domain/code). Customer answers, provider response text, Checkout URLs
+and bearer links are excluded. The visitor keeps the generic retry message;
+operators can use the invoice ID to find retained reconciliation evidence.

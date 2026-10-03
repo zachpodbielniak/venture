@@ -202,7 +202,17 @@ static gboolean forms_payment_continue(VentureDatabase *database, VentureEntity 
 	VentureEntity *response, JsonObject *refused)
 {
 	g_autoptr(GError) error = NULL;
+	const gchar *cause;
 	if (forms_payment_checkout(database, pending, response, &error)) return TRUE;
+	cause = g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_TRANSPORT) ? "provider transport failure" :
+		g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_RATE_LIMIT) ? "provider rate limit" :
+		g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_SERVER) ? "provider unavailable" :
+		error != NULL && error->domain == VENTURE_ERROR ? venture_error_get_slug(error->code) : "provider or storage failure";
+	/* Provider messages may contain customer data. The retained invoice is
+	 * enough to find reconciliation evidence without logging its payload. */
+	g_message("Form payment checkout failed: invoice=%" G_GINT64_FORMAT " cause=%s domain=%s code=%d",
+		venture_forms_get_int(pending, "invoice-id"), cause,
+		error != NULL ? g_quark_to_string(error->domain) : "unknown", error != NULL ? error->code : 0);
 	forms_refuse(refused, "_form", "Payment needs attention. Retry this form without changing its answers, or contact us.");
 	return FALSE;
 }

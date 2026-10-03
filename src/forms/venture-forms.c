@@ -19,6 +19,7 @@
 #include "venture-forms-private.h"
 
 #include <math.h>
+#include <stripe-glib.h>
 #include <string.h>
 
 #define VENTURE_FORMS_STATE_KEY "venture-forms-installed"

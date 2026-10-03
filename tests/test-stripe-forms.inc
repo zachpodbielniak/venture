@@ -88,7 +88,12 @@ static void test_paid_form(Fixture *f, gconstpointer data)
 		g_autoptr(GPtrArray) invoices = NULL;
 		fake->checkout_drop = TRUE;
 		g_clear_pointer(&errors, json_object_unref);
+		/* A retained retry identity is useful only if an operator can also
+		 * distinguish provider uncertainty from invalid customer answers. */
+		g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+			"Form payment checkout failed: invoice=* cause=provider transport failure*");
 		ok = venture_forms_submit(f->database, form, answers, NULL, now, &outcome, &response, &errors, &error);
+		g_test_assert_expected_messages();
 		g_assert_no_error(error); g_assert_true(ok); g_assert_cmpint(outcome, ==, VENTURE_FORMS_INVALID);
 		g_assert_nonnull(json_object_get_member(errors, "_form")); g_assert_cmpuint(saved, ==, 0);
 		invoices = rows(f, "invoice"); g_assert_cmpuint(invoices->len, ==, 1);
