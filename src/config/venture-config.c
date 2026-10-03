@@ -176,6 +176,22 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("kb-max-archive-entries", "kb", "max_archive_entries", 2000,
 	        "Most files taken from a single uploaded archive"),
 
+	/*
+	 * Market data series stores (docs/market-data.org). Read on the main
+	 * thread and handed to the store as plain numbers: the store's writer
+	 * runs on a worker and must never read the configuration itself.
+	 * Hourly history is what fills a disk -- one blob per venue,
+	 * instrument and day -- so it is the one with a finite default; daily
+	 * history is the one that cannot be fetched again.
+	 */
+	VC_INT ("series-hourly-days", "series", "hourly_days", 14,
+	        "Days of hourly market history kept; 0 keeps it forever"),
+	VC_INT ("series-daily-days", "series", "daily_days", 0,
+	        "Days of daily market history kept; 0 keeps it forever"),
+	VC_INT ("series-max-store-mb", "series", "max_store_mb", 0,
+	        "Size in MiB past which a store refuses new instruments; "
+	        "0 for no cap"),
+
 	VC_STR ("locale-default-currency", "locale", "default_currency", "USD",
 	        "Currency assumed when an amount does not name one"),
 	VC_STR ("locale-timezone", "locale", "timezone", "America/New_York",
@@ -1687,6 +1703,32 @@ venture_config_validate(
 		            "followed by 1 to 14 letters, digits or underscores, such as "
 		            "USD or GOLD), not \"%s\"", currency);
 		return FALSE;
+	}
+
+	{
+		gint64 hourly_days;
+		gint64 daily_days;
+		gint64 max_store_mb;
+
+		g_object_get(self,
+		             "series-hourly-days", &hourly_days,
+		             "series-daily-days", &daily_days,
+		             "series-max-store-mb", &max_store_mb,
+		             NULL);
+
+		/*
+		 * The store takes these as unsigned counts; a negative one would
+		 * arrive as a retention of four billion days, which is "forever"
+		 * spelt in a way nobody meant.
+		 */
+		if ((hourly_days < 0) || (daily_days < 0) || (max_store_mb < 0) ||
+		    (hourly_days > G_MAXINT32) || (daily_days > G_MAXINT32))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "series.hourly_days, series.daily_days and "
+			                    "series.max_store_mb must be zero or more");
+			return FALSE;
+		}
 	}
 
 	if ((fiscal_month < 1) || (fiscal_month > 12))

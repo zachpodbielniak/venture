@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-10-03]
-#+version: 0.5.1
+#+version: 0.5.2
 
 * Configuration
 
@@ -244,6 +244,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *kb* — knowledge base chunking, search and import limits; the
   =embedding_*= keys are legacy hints, organizations bind providers
   explicitly
+- *series* — market data history: =hourly_days= (14; 0 keeps forever), =daily_days= (0, forever) and =max_store_mb= (0, no cap; past it a store refuses new instruments but keeps updating known ones); all three must be zero or more. See [[file:market-data.org][Market data]]
 - *backup* — where scheduled backups go and how many are kept; see below
 - *stripe*, *payroll*, *bankfeed*, *commerce*, *group* — one =enabled=
   switch each, off by default, equivalent to the =modules= entry

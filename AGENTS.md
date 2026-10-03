@@ -54,6 +54,38 @@ its own order, not the declared one. Both were lost at some point, and the
 symptoms were a Notes field rendering as a one-line box and a list whose
 first seven columns were empty.
 
+## The series store is the exception, and it stays one
+
+`src/series/` is the one place VENTURE hand-writes SQL for data: one SQLite
+file per market data source, `<state_dir>/series/<source-uuid>/store.db`,
+outside `VentureDatabase`. Its rows are derived, append-heavy and
+high-volume -- ten thousand instruments a venue an hour -- closer to the
+audit log than to a record, and nobody edits one; the field table's
+audit, versions and validators per row would cost more than the data.
+`docs/market-data.org` has the schema and every formula.
+
+- **It never touches `VentureDatabase`, the entity registry or the
+  configuration.** Its writer runs on the feeds worker thread. Limits
+  (the size cap, retention days) are read on the main thread and handed
+  in as numbers. It logs with `g_debug`/`g_message`, never `g_warning`,
+  which the harness makes fatal from any thread.
+- **One writer handle, any number of readers, one connection each, one
+  thread each.** Every cached statement goes back reset
+  (`SeriesCachedStmt`): a SELECT left mid-step pins a reader's WAL
+  snapshot and the page shows the same prices forever.
+- **The schema steps are append-only**, like `migrations/`: never edit a
+  shipped one; add a step and bump nothing else -- `user_version` is the
+  count. A newer file is refused, and a foreign SQLite file is refused
+  before even its journal mode is touched.
+- **Do not add a record type for anything in it.** What belongs in the
+  main database (a venue someone trades at, an instrument someone
+  watches) is promoted into ordinary records by the marketdata module;
+  the store never writes back. And do not grow the store into a second
+  record system: if a person edits it, it is a record.
+- **Money in it is still never a double**, and SQLite turns an integer sum
+  that overflows into a REAL: sums in its SQL saturate (`SERIES_SAT_ADD`),
+  and sums in C are checked or 128-bit (`venture-series-math.c`).
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.

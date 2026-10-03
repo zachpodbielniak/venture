@@ -193,6 +193,13 @@ CORE_SRCS += src/sessions/venture-sessions-records.c
 SERVER_ONLY_SRCS += $(filter-out src/sessions/venture-sessions-records.c,$(wildcard src/sessions/*.c))
 CORE_SRCS += src/goals/venture-goals-records.c
 SERVER_ONLY_SRCS += $(filter-out src/goals/venture-goals-records.c,$(wildcard src/goals/*.c))
+# The series store is SQLite by design (one file per data source, outside
+# the main database), so a SQLITE=0 build leaves it out; its arithmetic
+# needs no database and is always built.
+SERVER_ONLY_SRCS += src/series/venture-series-math.c
+ifeq ($(SQLITE),1)
+SERVER_ONLY_SRCS += src/series/venture-series-store.c
+endif
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -307,6 +314,10 @@ PUBLIC_HDRS += $(wildcard src/market/*.h)
 PUBLIC_HDRS += $(wildcard src/production/*.h)
 PUBLIC_HDRS += $(wildcard src/sessions/*.h)
 PUBLIC_HDRS += $(wildcard src/goals/*.h)
+PUBLIC_HDRS += src/series/venture-series-math.h
+ifeq ($(SQLITE),1)
+PUBLIC_HDRS += src/series/venture-series-store.h
+endif
 PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;

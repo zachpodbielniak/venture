@@ -430,6 +430,57 @@ test_config_validate_rejects_bad_fiscal_month(void)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
 }
 
+/*
+ * The series store's retention: 14 days of hourly history, daily kept
+ * forever, no size cap -- the same in the compiled table and the shipped
+ * YAML, because the store reads neither and is handed whatever these say.
+ * A negative value would reach the store as an unsigned count of billions
+ * of days, so it is refused here.
+ */
+static void
+test_config_series_retention(void)
+{
+	g_autoptr(VentureConfig) config = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 hourly_days;
+	gint64 daily_days;
+	gint64 max_store_mb;
+	guint pass;
+
+	for (pass = 0; pass < 2; pass++)
+	{
+		g_clear_object(&config);
+		config = venture_config_new();
+
+		if (1 == pass)
+		{
+			g_assert_true(venture_config_apply_yaml_string(
+				config, venture_config_get_default_yaml(), &error));
+			g_assert_no_error(error);
+		}
+
+		g_object_get(config,
+		             "series-hourly-days", &hourly_days,
+		             "series-daily-days", &daily_days,
+		             "series-max-store-mb", &max_store_mb,
+		             NULL);
+
+		g_assert_cmpint(hourly_days, ==, 14);
+		g_assert_cmpint(daily_days, ==, 0);
+		g_assert_cmpint(max_store_mb, ==, 0);
+	}
+
+	g_object_set(config, "series-hourly-days", (gint64)-1, NULL);
+	g_assert_false(venture_config_validate(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_clear_error(&error);
+
+	g_object_set(config, "series-hourly-days", (gint64)0,
+	             "series-max-store-mb", (gint64)-5, NULL);
+	g_assert_false(venture_config_validate(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+}
+
 /* --- Derived behaviour --------------------------------------------------- */
 
 static void
@@ -776,6 +827,7 @@ main(
 	                test_config_validate_rejects_bad_currency);
 	g_test_add_func("/config/validate-rejects-bad-fiscal-month",
 	                test_config_validate_rejects_bad_fiscal_month);
+	g_test_add_func("/config/series-retention", test_config_series_retention);
 
 	g_test_add_func("/config/database-backend-from-uri",
 	                test_config_database_backend_from_uri);

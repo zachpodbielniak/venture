@@ -1,0 +1,282 @@
+#+title: Market data: the series store
+#+description: Where outside market data lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-03]
+#+updated: [2026-10-03]
+#+version: 0.1.0
+
+* Market data
+
+A market data source -- an auction house API, a bookmaker's odds feed, a supplier's price list -- returns far more than the main database is for. One World of Warcraft region is some 186 realms times ten thousand items, every hour, out of a hundred thousand listings per realm. VENTURE keeps all of it, reduced to compact figures as it arrives, in a *series store*: one SQLite file per data source, outside the main database.
+
+This page documents the store itself: its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract. The feeds that fill it, the pages that browse it and the price oracle that reads it are built on top of it and documented where they live. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]].
+
+** Why it is not entity tables
+
+Everywhere else in VENTURE a record type is a field table and a registration, and the database table, the REST routes, the forms and the audit diff all derive from it. The series store is the one documented exception: it hand-writes its SQL. The rows here are not records.
+
+- *Derived.* Every row is computed from what a source returned, and can be computed again. Nobody edits one.
+- *Append-heavy and high-volume.* Ten thousand instruments a venue an hour is two million row writes an hour for one region. An audit entry, a version bump, a save validator and a signal per row would cost more than the data.
+- *Closer to the audit log than to a record.* Nothing here is shown in a generic form, audited, staged or federated.
+
+So the store owns its schema, prepares each statement once per connection, and writes one transaction per snapshot. It never touches =VentureDatabase=: the two are different files with different rules. What /does/ belong in the main database -- a venue or an instrument somebody watches, trades or links to a product -- is promoted into ordinary records by the marketdata module, which reads the store; the store never writes back.
+
+** Layout
+
+A store is the file =store.db= in a directory the caller names. The feeds module derives that directory as =<state_dir>/series/<data-source-uuid>/= every time it needs it; the path is never stored in a record, so moving a state directory moves its stores with it and no record can point a store at an arbitrary file.
+
+The writer creates the directory (mode 0700) and the file. The file runs in WAL mode, so readers never wait on the writer; with =synchronous = NORMAL=, because everything in it can be fetched or derived again and losing the last snapshot to a power cut is a better trade than syncing a hundred times an hour; and with incremental auto-vacuum, so a purge hands space back to the file system.
+
+** Threading
+
+- A handle is one SQLite connection and belongs to the thread using it. Connections are opened without SQLite's own mutexes: one thread per connection makes them pointless.
+- There is one *writer*, =venture_series_store_open()=, owned by whatever drives ingestion -- the feeds worker thread. A second writer would only wait on the first's transactions.
+- Any number of *readers*, =venture_series_store_open_reader()=, can run at the same time on other threads; the web pages read from the main thread. A reader sees whole snapshots: WAL gives it the last committed state, and every cached statement is reset after use so a reader never pins an old one.
+- Nothing in the store touches =VentureDatabase=, the entity registry, the configuration or anything else that is not thread-safe. Limits arrive as arguments (=venture_series_store_set_max_bytes()=, the purge's day counts), read from the configuration on the main thread by the caller.
+- The store logs with =g_debug()= and =g_message()= only. =g_warning()= is fatal in the test harness from any thread, and a store failure is a =GError= for the caller to record in its run.
+
+** Opening and versions
+
+The schema is a list of append-only steps embedded in the server; =PRAGMA user_version= records how many have run. Opening a writer runs the missing steps, each in its own transaction with its version bump, so a crash between steps leaves a store at a version that exists. A shipped step is never edited.
+
+| The file                                   | Writer                                         | Reader                                           |
+|--------------------------------------------+------------------------------------------------+--------------------------------------------------|
+| missing                                    | created at the current version                 | =VENTURE_ERROR_NOT_FOUND=; nothing is created     |
+| at an older version                        | upgraded                                       | =VENTURE_ERROR_MIGRATION= (the writer upgrades)  |
+| at a newer version than this build knows   | =VENTURE_ERROR_MIGRATION=, nothing written     | =VENTURE_ERROR_MIGRATION=                        |
+| not an SQLite database                     | =VENTURE_ERROR_DATABASE= naming the file       | =VENTURE_ERROR_DATABASE= naming the file         |
+| an SQLite database with tables, version 0  | =VENTURE_ERROR_DATABASE= ("not a series store") | =VENTURE_ERROR_MIGRATION=                        |
+
+The last row matters: a store pointed at some other database by mistake is refused before anything -- not even the journal mode -- is written into it.
+
+A reader is opened read-write without =CREATE= and then made =query_only=: a WAL database opened strictly read-only cannot create its shared-memory index, and the first reader after the writer closed would fail for that alone.
+
+** Units and conventions
+
+- *Times* are Unix seconds, UTC. A *day* is days since 1970-01-01 UTC, so a day starts at midnight UTC like every other period boundary in VENTURE.
+- *Prices* are integer minor units, never a double, with the currency beside them. Currency codes are checked with =venture_currency_is_valid()= -- pure string work, safe on the worker -- and stored upper-cased.
+- *Odds* are decimal odds times =VENTURE_SERIES_ODDS_SCALE= (1 000 000): 2.15 is 2150000. Odds are a ratio, not money, but an integer keeps two sources quoting the same odds equal.
+- *Nothing* is =VENTURE_SERIES_NONE= (the most negative 64-bit integer) in the API and NULL in the file -- never zero, which is a real price.
+- *Ratios* (percent of the region median, sale rate) are doubles; NAN means none.
+- *Keys.* A venue or instrument is addressed by the source's key, unique within the store, at most 512 bytes of UTF-8. A store belongs to one data source, so the source's namespace is recorded on each row (for promotion to form =namespace:key=) but is not part of the key; a source with two kinds of thing whose keys collide prefixes them.
+
+** Schema
+
+Version 2. Step 1 is the price data; step 2 adds quotes and entries.
+
+*** =meta=
+
+Source-level state: a cursor, a quota. =key= (primary), =value=. Step 1 writes =created_at=.
+
+*** =venues=
+
+| Column       | Meaning                                                                 |
+|--------------+-------------------------------------------------------------------------|
+| =id=         | row id, referenced by every other table                                 |
+| =key=        | the source's key, unique                                                |
+| =namespace=  | the source's namespace for it                                           |
+| =name=       | readable name                                                           |
+| =kind=       | free-form: realm, marketplace, bookmaker                                |
+| =group_key=  | the group it is priced against (a region); ='' for none                  |
+| =currency=   | its currency, used when a snapshot names none                           |
+| =attrs=      | a JSON object of anything else                                          |
+| =first_seen=, =last_seen= | when the store first and last heard of it                  |
+
+Indexed on =group_key=.
+
+*** =instruments=
+
+=id=, =key= (unique), =namespace=, =name=, =name_fold= (the name case-folded, for search), =kind=, =category= (a =/=-separated path), =parent_key= (an event for an outcome), =attrs=, =first_seen=, =last_seen=. Indexed on =category= and (partially) =parent_key=.
+
+An upsert with a =NULL= member keeps what is stored, so a listing that names only a key never blanks a name a lookup filled in. A bare key only moves =last_seen=, and only forward.
+
+*** =snapshots=
+
+The log of applied snapshots, and what makes re-applying one a no-op. Primary key (=venue_id=, =taken_at=); also =fetched_at=, =currency=, =listings=, =instruments=, =complete=, =late=. Indexed on =taken_at= for the purge.
+
+*** =current=
+
+The latest figures for each venue and instrument -- what browsing sorts and filters. One row per (=venue_id=, =instrument_id=), unique.
+
+| Column            | Meaning                                                                                  |
+|-------------------+------------------------------------------------------------------------------------------|
+| =currency=        | the currency of every price in the row                                                  |
+| =taken_at=        | the snapshot the row reflects                                                           |
+| =seen_at=         | the last snapshot that listed the instrument here                                       |
+| =quantity=        | units offered; 0 out of stock; NULL when a source's figures did not say                  |
+| =listings=        | sell listings                                                                           |
+| =min_price=       | lowest price                                                                            |
+| =market_value=    | market value (below)                                                                    |
+| =median=, =p15=, =mean=, =stddev= | unit-price statistics (below)                                           |
+| =bid_price=, =bid_quantity= | best buy order and units wanted                                               |
+| =tiers=           | the 64 cheapest prices with their quantities, packed (below)                            |
+| =region_median=   | the group's median of minimums, from the last region recompute                          |
+| =deal_price=      | the group's deal price, from the last region recompute                                  |
+| =pct_vs_region=   | =min_price= as a percent of =region_median= (80 is 20% cheaper); NULL out of stock       |
+
+Indexes: (=instrument_id=, =min_price=) for "other venues"; (=venue_id=, =min_price=), (=venue_id=, =market_value=), (=venue_id=, =pct_vs_region=) for one venue's page; =pct_vs_region= and =deal_price= alone (partial, non-NULL) for deals across every venue.
+
+=pct_vs_region= is refreshed against the stored =region_median= at every snapshot, so a sort by it is right between recomputes; the median itself only moves when the region is recomputed.
+
+*** =hourly=
+
+One row per (=venue_id=, =instrument_id=, =day=), unique, with =currency= and =points=: a packed blob of up to 24 points. Each point is the *last snapshot taken in its hour*: minimum price, quantity, market value and listings. Indexed on =day= for the purge. An instrument absent from a snapshot gets no point; a day whose currency changes starts again, because two currencies' prices in one series would read as a price movement.
+
+*** =daily=
+
+One row per (=venue_id=, =instrument_id=, =day=, =currency=) -- the currency is in the key, so a mid-day currency change is two rows, never a mixed one.
+
+| Column             | Meaning                                                                       |
+|--------------------+-------------------------------------------------------------------------------|
+| =snapshots=        | snapshots folded into the day (0 for a row that holds only sales)             |
+| =min_price=        | the lowest price seen all day                                                 |
+| =max_quantity=     | the most units on offer in any one snapshot                                   |
+| =price_at_max=, =market_value=, =mean=, =listings= | that fullest snapshot's figures                 |
+| =sold_estimate=    | units estimated sold (below), or reported sold by a source                    |
+| =sold_value=       | what they sold for, summed                                                    |
+| =expired_estimate= | units that vanished when they may have expired                                |
+| =sale_avg=         | an average sale price a source reported outright                              |
+
+The day keeps the snapshot with the most units on offer, as Undermine Exchange does: the fullest market of the day says most about its prices. A strictly larger quantity takes over; a tie keeps the first. Sums saturate at the 64-bit maximum rather than letting SQLite turn an overflowing integer sum into a floating-point one.
+
+The reported average sale price is =sold_value / sold_estimate= rounded half to even when there were sales, else =sale_avg=.
+
+*** =region=
+
+Per (=group_key=, =instrument_id=, =currency=): =computed_at=, =venues_offering=, =total_quantity=, =median_min=, =p33=, =deal_price=, =market_avg=. Indexed on =instrument_id=. Rebuilt whole for the groups a recompute covers.
+
+*** =venue_state=
+
+Per venue: =last_taken_at=, =last_fetched_at=, =gaps= (the last 36 gaps between snapshots, packed), =interval_seconds= (learned from them), =listing_set= (the listings of the last complete snapshot, packed) with =listing_set_at=, and =cursor= (where the venue's next fetch resumes).
+
+*** =quotes= and =quote_history=
+
+=quotes= holds the latest quote per (=venue_id=, =instrument_id=, =side=): =taken_at=, =value= (odds times the scale, or a price in minor units), =currency= (NULL for odds), =liquidity=. A quote older than the stored one does not replace it. =quote_history= keeps every quote, keyed by (venue, instrument, side, =taken_at=), so the same quote twice is written once. Sides: back, lay, bid, ask.
+
+*** =entries=
+
+Non-price items, matched on =key= (an RSS guid): =venue_id=, =instrument_id=, =published_at=, =fetched_at=, =title=, =url= (http or https only -- only a web address is a link), =summary=, =attrs=.
+
+** Packed blobs
+
+Every blob starts with a format byte (1 today) and stores integers as unsigned LEB128: seven bits a byte, so a quantity of 20 is one byte and a price of 300 000 000 is five. A blob that does not decode is reported as a corrupt store, never guessed at.
+
+- *Hourly points:* per present hour, ascending: the hour (0-23), the seconds into the hour of the snapshot it came from, then minimum, quantity and market value each as 0 for none or value + 1, then listings.
+- *Tiers:* the count, then per tier the rise in price from the tier before (prices ascend) and the quantity.
+- *Gaps:* the count, then each gap in seconds.
+- *Listing set:* the count, then per listing, sorted by id: the rise in id from the one before, the instrument's row id, the unit price, the quantity, and the expiry hint plus one.
+
+** Ingesting a snapshot
+
+A snapshot is assembled in memory and applied in one transaction:
+
+1. =venture_series_store_begin_snapshot(store, venue, currency, taken_at, fetched_at, complete)=. With no currency, the venue's. =complete= says the snapshot lists everything at the venue, so an instrument missing from it is out of stock there.
+2. =venture_series_snapshot_add_listing()= per listing -- instrument key, optional listing id, unit price, quantity, side, and the least time the listing has left (=expires_in_min=, -1 when unknown) -- or =venture_series_snapshot_add_stats()= per instrument a source has already summarised. One instrument cannot have both in one snapshot. A listing whose quantity would take its instrument's total past 64 bits is refused alone, leaving the snapshot as it was.
+3. =venture_series_store_commit_snapshot()=.
+
+The commit:
+
+- *Finds a duplicate first.* The same venue and =taken_at= applied twice is reported as =duplicate= and writes nothing -- a retried fetch must not count a snapshot twice or double its sales.
+- *Resolves instruments*, creating unknown ones -- unless the store is past its cap (below).
+- *Computes each instrument's figures* (below) and upserts =current=, folds the hour into =hourly= and the day into =daily=.
+- *Marks what a complete snapshot left out* as out of stock in =current=: quantity 0, prices NULL. Rows already at nothing are left alone, so an item that sold out a week ago is not rewritten every hour since.
+- *Estimates sales* between this complete snapshot and the venue's last complete one (below), and stores this one's listing set.
+- *Learns the interval* from the new gap.
+
+A snapshot older than the venue's newest is *late*: its hourly and daily history is written, and nothing a newer snapshot already decided -- =current=, the listing set, the gaps -- is touched. A backfill must not roll a browse page back an hour.
+
+=venture_series_store_begin()= / =_commit()= / =_rollback()= batch many writes (ten thousand instrument upserts are ten thousand transactions otherwise). Calls nest; inner levels are savepoints, so a snapshot that fails inside a batch takes back only its own writes.
+
+** The figures
+
+All of these are pure functions in =src/series/venture-series-math.c=, with no database, and pinned by =tests/test-series-math.c=. "Rounded" always means half to even, applied once, to an exact integer quotient.
+
+*** Per snapshot, per instrument
+
+The listings are sorted by price and merged into tiers. With Q units in total:
+
+- *Minimum, maximum*: the first and last tier's price.
+- *Mean*: Σ pᵢqᵢ / Q, rounded. The sum is formed in 128-bit arithmetic: a commodity of forty million units at three hundred million copper is past 64 bits, and the result still fits.
+- *Standard deviation*: the quantity-weighted population deviation around the exact mean, computed in long double (it is a statistic, not money) and rounded once to minor units.
+- *Median*: the price of the middle unit; with an even Q, the mean of the two middle units, rounded.
+- *p15*: the price of the unit at nearest rank ⌈0.15 Q⌉.
+- *Market value*, the way TradeSkillMaster's AuctionDB computes one snapshot's:
+  1. Take the first max(1, ⌈0.15 Q⌉) units unconditionally.
+  2. Keep taking, up to ⌊0.30 Q⌋ units, until a unit's price is at least 20% above the unit before it (5(p − p_prev) ≥ p_prev); that unit and everything after are left out. A jump inside the first 15% cuts nothing.
+  3. Over the units taken, compute the mean m and population standard deviation s, and drop every unit with |p − m| > 1.5 s.
+  4. The market value is the exact mean of the units left, rounded.
+- *Tiers kept*: the 64 cheapest (=VENTURE_SERIES_MAX_TIERS=). A buyer walking deeper than that is past where anyone prices from, and the bulk calculator says it ran out rather than guess.
+
+Precomputed figures from a source are stored as given; what it did not give is NULL.
+
+*** Bulk cost
+
+Walk the tiers from the cheapest, buying min(tier, remaining) at each price until the units are bought or the tiers run out. The answer is the units filled, the cost, the worst price paid, the average (cost / filled, rounded) and whether it was complete. A cost past 64 bits is refused.
+
+*** Sale estimate
+
+The listing set of each complete snapshot is kept: every listing with an id, sorted by id. Between two complete snapshots of a venue, elapsed seconds apart, a merge over the two sorted lists finds:
+
+- *Vanished, and could not have expired* -- its =expires_in_min= exceeds the elapsed time, or the source gives no expiry at all (-1): *sold*, all of its quantity at its price.
+- *Vanished, and might have expired*: *expired*.
+- *Still there with less quantity*: sold the difference.
+
+The sales land on the later snapshot's day in =daily=. A cancelled listing looks exactly like a sale; that is the estimate's known bias, and why it is called one. Sales are estimated only when both snapshots are complete (an incomplete one's missing listings say nothing), and only when the later one carries ids at all -- otherwise a source that stopped sending ids would read as every listing at the venue selling at once. A source whose ids are text uses =venture_series_listing_id_from_string()=, a 64-bit FNV-1a hash that is never zero.
+
+*** Interval learning
+
+The venue's last 36 gaps between snapshots, oldest first, gaps of zero or less ignored. The interval is the median, over every window of three consecutive gaps, of the window's maximum -- so one early double update does not halve it and one outage does not double it -- capped at two hours (=VENTURE_SERIES_INTERVAL_CAP=). With fewer than three gaps it is their maximum; with none, an hour. The feeds module schedules the venue's next check from it.
+
+*** Region
+
+=venture_series_store_recompute_region(store, group, now, deal_min_value, deal_min_currency)= streams =current= sorted by group, instrument and currency, and for each combination takes the venues *offering* it -- a minimum price, and a quantity that is not known to be zero:
+
+- =venues_offering=: how many.
+- =total_quantity=: their quantities summed (saturating).
+- =median_min=: the median of their minimums.
+- =p33=: the minimum at index ⌊n / 3⌋ of the sorted list, counted from zero.
+- =deal_price=: =median_min=, or =p33= when at least 15 venues offer it -- Undermine Exchange's rule: with that many, a third of the market being cheaper is a fact about the market rather than one venue. An instrument whose median is below =deal_min_value= gets no deal price (a 40% discount on something worth a copper is not a deal); the bound is in one currency and says nothing about rows in another.
+- =market_avg=: the mean of their market values, rounded.
+
+Then, in two set-based statements, every =current= row gets its group's median, deal price and percent, and rows whose group no longer offers the instrument lose them. Only rows whose figures changed are written. One transaction; readers see the old figures or the new, never half.
+
+The pass is linear in =current=: a million venue-instrument rows take about three seconds in a debug build.
+
+*** Reference figures
+
+=venture_series_store_reference(store, venue or group, instrument, now)= reads the last 60 days of =daily=, keeping only the newest day's currency. For a group, each day's market value is the mean of its venues' and sales are summed across them. With d the days before today:
+
+- *market_14d*: Σ w_d v_d / Σ w_d over the days 0-13 that have a value, rounded, where the weights are round(1 000 000 × 0.5^(d / 2.1)) -- a half-life of 2.1 days -- fixed as the table 1000000, 718873, 516779, 371499, 267060, 191983, 138011, 99213, 71321, 51271, 36857, 26496, 19047, 13692. A missing day is left out of both sums, never read as zero.
+- *historical_60d*: the unweighted mean of the daily market values over 60 days, rounded.
+- *sale_avg*: Σ sold value / Σ sold units over 14 days, rounded.
+- *sale_rate*: Σ sold / (Σ sold + Σ expired) over 14 days.
+- *sold_per_day*: Σ sold over 14 days divided by the days in that window that have data.
+
+*** Heat map
+
+=venture_series_store_heat()= buckets the hourly minimum prices from a time on by the weekday (Monday first) and hour they fall on in a zone, given as seconds east of UTC, and averages each cell, rounded. Only points in the newest point's currency count.
+
+** Browsing
+
+=venture_series_store_list_current(store, filter)= returns plain rows (=VentureSeriesRow=) with the venue's and instrument's names. The filter narrows by a set of venues (at most 512), a group, one instrument, a search (case-folded, matching the name or the key), a category and the ones beneath it (=herbs= matches =herbs= and =herbs/rare=, never =herbsx=), a minimum value (the market value, else the minimum, in a named currency -- a bound with no currency is refused), and in-stock only. Every value reaches SQL as a parameter, and a search for =%= finds a literal percent sign.
+
+Sorts come from an allowlist -- =min_price=, =market_value=, =quantity=, =listings=, =pct_vs_region=, =deal_price=, =region_median=, =name=, =updated=, =venue= -- so a sort named in a query string never reaches SQL as text. Unknown values sort last whichever way the sort runs, ties break on venue and instrument so paging is stable, and a page is at most 1000 rows (50 by default). =venture_series_store_count_current()= counts the same filter.
+
+Also: =_get_current()=, =_other_venues()= (every venue's row for one instrument, cheapest first), =_hourly()=, =_daily()=, =_get_tiers()=, =_bulk_cost()=, =_get_region()=, =_venue_index()= (per venue: instruments compared with the region, how many are cheaper, equal and dearer, the mean ratio, listings, last snapshot and learned interval), =_get_venue_state()=, =_list_venues()=, =_get_instrument()=, =_list_quotes()= (by instrument or by parent), =_list_entries()=.
+
+** Retention and the cap
+
+| Setting               | Default | Meaning                                                                                   |
+|-----------------------+---------+-------------------------------------------------------------------------------------------|
+| =series.hourly_days=  | 14      | days of hourly history, quote history and snapshot log kept, today included; 0 forever      |
+| =series.daily_days=   | 0       | days of daily history and entries kept; 0 forever -- it cannot be fetched again               |
+| =series.max_store_mb= | 0       | size past which a store refuses new instruments; 0 for no cap                               |
+
+The store reads none of these: the caller hands them over. =venture_series_store_purge(store, now, hourly_days, daily_days)= deletes everything before day /today − N + 1/ -- keeping N days counting today -- for good, then runs an incremental vacuum.
+
+The cap counts pages that hold data. Past it, snapshots of known instruments carry on -- the history being paid for keeps arriving -- but an instrument the store has never seen is refused and counted in the commit's =instruments_refused= and =listings_refused=, which the feeds run records. Hourly history is what grows: as measured, one snapshot of a million venue-instrument rows (100 venues × 10 000 instruments, 50 000 listings each) makes a 350 MB store, of which =current= and its indexes are about 190 MB, a day's =daily= and =hourly= rows with their indexes about 120 MB and the hundred listing sets about 40 MB; each further hour adds roughly ten to fifteen bytes per row to =hourly=. At a full World of Warcraft region that is gigabytes a fortnight, which is what =hourly_days= is for.
+
+** Builds without SQLite
+
+A =SQLITE=0= build has no store: =venture-series-store.c= is left out by the Makefile and its header is not included by =<venture.h>=, so nothing can call it. The math (=venture-series-math.c=) has no database and is always built. =tests/test-series-store.c= becomes an empty plan.

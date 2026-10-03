@@ -335,6 +335,10 @@
 #include "production/venture-production.h"
 #include "sessions/venture-sessions.h"
 #include "goals/venture-goals.h"
+#include "series/venture-series-math.h"
+#ifdef VENTURE_HAVE_SQLITE
+#include "series/venture-series-store.h"
+#endif
 
 #endif /* VENTURE_SERVER_BUILD */
 

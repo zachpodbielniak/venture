@@ -481,6 +481,24 @@ kb:
   max_upload_mb: 64
   max_archive_entries: 2000
 
+# Market data series stores: one SQLite file per data source under
+# <state_dir>/series/<source>/, holding everything the source returns.
+# See docs/market-data.org.
+series:
+  # Days of hourly history kept (one point per instrument, venue and hour),
+  # today included. 0 keeps it forever. Hourly history is what grows: a
+  # large source can add gigabytes a fortnight.
+  hourly_days: 14
+
+  # Days of daily history kept (the day's fullest snapshot, sales and
+  # minimum). 0 keeps it forever -- it cannot be fetched again.
+  daily_days: 0
+
+  # Size in MiB past which a store refuses instruments it has never seen.
+  # Snapshots of known instruments carry on, and each run says how many it
+  # refused. 0 for no cap.
+  max_store_mb: 0
+
 # Scheduled backups. See docs/backup.org.
 backup:
   # Where scheduled backups are written when a schedule names no
