@@ -22,6 +22,8 @@ struct _VentureContext
 	VentureAutomation	*automation;
 	VenturePluginManager	*plugins;
 	VenturePluginProvidesRegistry	*plugin_provides;
+	VentureAutomationHandlerRegistry	*automation_handlers;
+	GPtrArray		*web_extensions;	/* VentureWebExtension */
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
@@ -64,6 +66,8 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->automation);
 	g_clear_object(&self->plugins);
 	g_clear_object(&self->plugin_provides);
+	g_clear_object(&self->automation_handlers);
+	g_clear_pointer(&self->web_extensions, g_ptr_array_unref);
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
@@ -599,9 +603,112 @@ venture_context_get_plugin_provides(VentureContext *self)
 	 * one context.
 	 */
 	if (NULL == self->plugin_provides)
+	{
 		self->plugin_provides = venture_plugin_provides_registry_new();
 
+		/* The kinds core understands, before any plugin can name one. */
+		venture_automation_register_provides(self->plugin_provides);
+	}
+
 	return self->plugin_provides;
+}
+
+VentureAutomationHandlerRegistry *
+venture_context_get_automation_handlers(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	/* Built-ins first, so no plugin can take one of their names. */
+	if (NULL == self->automation_handlers)
+	{
+		self->automation_handlers = venture_automation_handler_registry_new();
+		venture_automation_register_builtins(self->automation_handlers);
+	}
+
+	return self->automation_handlers;
+}
+
+typedef struct
+{
+	VentureWebExtensionFunc	 func;
+	gpointer		 user_data;
+	GDestroyNotify		 destroy;
+} VentureWebExtension;
+
+static void
+venture_web_extension_free(gpointer data)
+{
+	VentureWebExtension *extension;
+
+	extension = data;
+
+	if (NULL != extension->destroy)
+		extension->destroy(extension->user_data);
+
+	g_free(extension);
+}
+
+void
+venture_context_add_web_extension(
+	VentureContext		*self,
+	VentureWebExtensionFunc	 func,
+	gpointer		 user_data,
+	GDestroyNotify		 destroy
+){
+	VentureWebExtension *extension;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(self));
+	g_return_if_fail(NULL != func);
+
+	if (NULL == self->web_extensions)
+		self->web_extensions = g_ptr_array_new_with_free_func(
+			venture_web_extension_free);
+
+	extension = g_new0(VentureWebExtension, 1);
+	extension->func = func;
+	extension->user_data = user_data;
+	extension->destroy = destroy;
+
+	g_ptr_array_add(self->web_extensions, extension);
+}
+
+guint
+venture_context_run_web_extensions(
+	VentureContext		*self,
+	VentureWebServer	*server
+){
+	guint succeeded;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), 0);
+
+	succeeded = 0;
+
+	for (i = 0; (NULL != self->web_extensions) &&
+	            (i < self->web_extensions->len); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		VentureWebExtension *extension;
+
+		extension = g_ptr_array_index(self->web_extensions, i);
+
+		/*
+		 * One broken extension must not cost the operator the rest of
+		 * the server -- the same rule a broken plugin follows at load.
+		 * The routes it added before failing cannot be taken back out
+		 * of the router, so the warning says so.
+		 */
+		if (extension->func(server, extension->user_data, &error))
+		{
+			succeeded++;
+			continue;
+		}
+
+		g_warning("Skipping the rest of a web extension: %s",
+		          (NULL != error) ? error->message : "it gave no reason");
+	}
+
+	return succeeded;
 }
 
 VentureReconciliationRegistry *

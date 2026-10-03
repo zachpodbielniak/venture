@@ -196,6 +196,167 @@ void venture_web_server_add_classified_route(VentureWebServer *self, HtmxMethod 
 	const gchar *pattern, VentureDataClass classification, VentureHostedRouteFlags flags,
 	HtmxRouteCallback callback, gpointer user_data);
 
+/* ==========================================================================
+ * For plugins' web extensions
+ * ========================================================================== */
+
+/**
+ * venture_web_server_add_nav_link:
+ * @self: a #VentureWebServer
+ * @path: the page the row opens: absolute, at most 256 bytes, with no
+ *   quote, angle bracket, backslash, backtick, whitespace, control byte,
+ *   query, fragment, `.` or `..` segment, and not starting `//`
+ * @label: the visible text, 1 to 64 bytes of UTF-8 with no control
+ *   characters; escaped when drawn
+ * @icon: (nullable): the name of a built-in sidebar icon (see
+ *   venture_web_server_nav_icon_names()); %NULL is "plug"
+ * @module: (nullable): the module the row belongs to; while it is off the
+ *   row is not drawn. %NULL is no module
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds a plugin's page to the sidebar, under a "Plugins" heading that is
+ * drawn only when at least one such row is. For a web extension only
+ * (see #VentureWebExtensionFunc): built-in pages belong in the static
+ * navigation table, and a call from anywhere else is refused.
+ *
+ * Refused with %VENTURE_ERROR_INVALID_ARGUMENT for a bad path, label,
+ * unknown icon or unknown module; %VENTURE_ERROR_ALREADY_EXISTS for a path
+ * the built-in sidebar or an earlier row already has; and
+ * %VENTURE_ERROR_NOT_FOUND when no GET route registered through
+ * venture_web_server_add_classified_route() serves @path -- add the route
+ * first. An icon is a name and never markup, because the sidebar is drawn
+ * into every page every signed-in person sees.
+ *
+ * An accountant-only sidebar shows a plugin's row only when @module is a
+ * module that sidebar already offers.
+ *
+ * Returns: %TRUE if the row was added
+ */
+gboolean
+venture_web_server_add_nav_link(
+	VentureWebServer	 *self,
+	const gchar		 *path,
+	const gchar		 *label,
+	const gchar		 *icon,
+	const gchar		 *module,
+	GError			**error
+);
+
+/**
+ * venture_web_server_get_plugin_navigation:
+ * @self: a #VentureWebServer
+ *
+ * The rows plugins added, in the order added, each with the section
+ * "Plugins". Exposed so the test suite can hold them to the rules the
+ * static table is held to.
+ *
+ * Returns: (transfer none) (array zero-terminated=1): the rows,
+ *   terminated by one with a %NULL path
+ */
+const VentureWebNavLink *
+venture_web_server_get_plugin_navigation(VentureWebServer *self);
+
+/**
+ * venture_web_server_nav_icon_names:
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the icon names
+ *   venture_web_server_add_nav_link() accepts
+ */
+gchar **
+venture_web_server_nav_icon_names(void);
+
+/**
+ * venture_web_server_get_context:
+ * @self: a #VentureWebServer
+ *
+ * Returns: (transfer none): the context the server was built over
+ */
+VentureContext *
+venture_web_server_get_context(VentureWebServer *self);
+
+/**
+ * venture_web_server_require_page:
+ * @self: a #VentureWebServer
+ * @request: the request
+ * @role: the least role the page needs
+ *
+ * The guard for an extension's page. Anonymous requests are redirected to
+ * the login page and a signed-in person without @role is refused (403),
+ * exactly as a built-in page treats them. Every route needs its own
+ * guard: a missing one looks exactly like nothing.
+ *
+ * Returns: (transfer full) (nullable): a response to return instead, or
+ *   %NULL when the request may proceed
+ */
+HtmxResponse *
+venture_web_server_require_page(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureUserRole		 role
+);
+
+/**
+ * venture_web_server_require_module:
+ * @self: a #VentureWebServer
+ * @request: the request
+ * @module: the module the page belongs to
+ *
+ * The page a request into a switched-off module gets: the module named,
+ * with the switch that turns it back on, as a 404. Call it before
+ * venture_web_server_require_page() on a page that belongs to a module.
+ *
+ * Returns: (transfer full) (nullable): a response to return instead, or
+ *   %NULL when the module is on
+ */
+HtmxResponse *
+venture_web_server_require_module(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	const gchar		*module
+);
+
+/**
+ * venture_web_server_require_api:
+ * @self: a #VentureWebServer
+ * @request: the request
+ * @role: the least role the endpoint needs
+ *
+ * The guard for an extension's API endpoint: 401 when anonymous, 403
+ * without @role, as JSON.
+ *
+ * Returns: (transfer full) (nullable): a response to return instead, or
+ *   %NULL when the request may proceed
+ */
+HtmxResponse *
+venture_web_server_require_api(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureUserRole		 role
+);
+
+/**
+ * venture_web_server_render_page:
+ * @self: a #VentureWebServer
+ * @request: the request
+ * @active: (nullable): the sidebar path to mark as current
+ * @title: the page title
+ * @content: (nullable): the page body, already-escaped HTML
+ *
+ * Wraps @content in the page every built-in page uses -- head, sidebar,
+ * assistant dock -- and answers 200. @content is written as given: escape
+ * anything a person typed with venture_html_escape_append().
+ *
+ * Returns: (transfer full): the response
+ */
+HtmxResponse *
+venture_web_server_render_page(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	const gchar		*active,
+	const gchar		*title,
+	const gchar		*content
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_WEB_SERVER_H */

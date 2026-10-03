@@ -150,6 +150,28 @@ struct _VentureWebServer
 	guint workspace_http_active;
 	guint workspace_http_concurrency;
 	guint workspace_http_retry_after;
+
+	/*
+	 * Every GET pattern registered through
+	 * venture_web_server_add_classified_route(), core and extension
+	 * alike. A plugin's sidebar row must name a path one of these
+	 * matches: a row with no route behind it is a 404 the operator finds
+	 * by clicking, and the static table is held to the same rule by
+	 * test-plugin.
+	 */
+	GPtrArray	*get_patterns;		/* gchar * */
+
+	/*
+	 * The sidebar rows plugins added, as a zero-terminated table in the
+	 * static table's own shape so one renderer draws both. The strings
+	 * the table points at are owned by nav_strings.
+	 */
+	GArray		*plugin_nav;		/* VentureWebNavLink */
+	GPtrArray	*nav_strings;		/* gchar * */
+
+	/* Set while web extensions run: venture_web_server_add_nav_link()
+	 * is for them, and refuses to be called at any other time. */
+	gboolean	 extending;
 };
 
 G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
@@ -183,6 +205,9 @@ venture_web_server_finalize(GObject *object)
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 	g_clear_object(&self->lead_limiter);
 	g_clear_object(&self->workspace_limiter);
+	g_clear_pointer(&self->get_patterns, g_ptr_array_unref);
+	g_clear_pointer(&self->plugin_nav, g_array_unref);
+	g_clear_pointer(&self->nav_strings, g_ptr_array_unref);
 
 	G_OBJECT_CLASS(venture_web_server_parent_class)->finalize(object);
 }
@@ -200,6 +225,10 @@ venture_web_server_init(VentureWebServer *self)
 	                                      (GDestroyNotify)venture_web_reveal_free);
 	self->chat_turns = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 		(GDestroyNotify)venture_web_chat_turn_free);
+	self->get_patterns = g_ptr_array_new_with_free_func(g_free);
+	self->plugin_nav = g_array_new(TRUE, TRUE, sizeof(VentureWebNavLink));
+	self->nav_strings = g_ptr_array_new_with_free_func(g_free);
+	self->extending = FALSE;
 }
 
 /* ==========================================================================
@@ -1812,9 +1841,13 @@ venture_web_append_nav_item(
 	const VentureWebNavLink	*link,
 	const gchar		*active
 ){
-	g_string_append_printf(html, "<a class=\"nav-item%s\" href=\"%s\">",
-		(0 == g_strcmp0(active, link->path)) ? " active" : "",
-		link->path);
+	/* Escaped although every path is checked: a plugin's row is one of
+	 * these, and the check is not the only thing that should stand
+	 * between a string and an attribute. */
+	g_string_append_printf(html, "<a class=\"nav-item%s\" href=\"",
+		(0 == g_strcmp0(active, link->path)) ? " active" : "");
+	venture_html_escape_append(html, link->path);
+	g_string_append(html, "\">");
 	g_string_append(html, "<span class=\"icon\">");
 	g_string_append(html, link->icon);
 	g_string_append(html, "</span>");
@@ -1930,6 +1963,468 @@ venture_web_append_nav_sections(
 
 		i = j;
 	}
+}
+
+/* ==========================================================================
+ * The rows plugins add
+ * ========================================================================== */
+
+/*
+ * The icons a plugin's row may use, by name.
+ *
+ * A row's icon is markup written straight into every page, so it is never
+ * taken from a plugin: a manifest, a script or a careless string would
+ * otherwise put whatever it liked into the sidebar of every signed-in
+ * user. A plugin names one of these instead, drawn with the same wrapper
+ * -- and so the same stroke -- as every built-in row.
+ */
+static const struct
+{
+	const gchar *name;
+	const gchar *svg;
+} venture_web_nav_icons[] = {
+	{ "plug", VENTURE_ICON("<path d=\"M9 2v6M15 2v6\"/><path d=\"M6 8h12v3a6 6 0 0 1-12 0z\"/><path d=\"M12 17v5\"/>") },
+	{ "chart", VENTURE_ICON("<path d=\"M3 20h18\"/><path d=\"M6 20v-6\"/><path d=\"M12 20V5\"/><path d=\"M18 20v-9\"/>") },
+	{ "trend", VENTURE_ICON("<path d=\"M3 17l6-6 4 4 8-8\"/><path d=\"M15 7h6v6\"/>") },
+	{ "list", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>") },
+	{ "document", VENTURE_ICON("<path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/><path d=\"M14 3v5h5\"/><path d=\"M9 13h6\"/><path d=\"M9 17h4\"/>") },
+	{ "calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>") },
+	{ "box", VENTURE_ICON("<path d=\"M21 8l-9-5-9 5 9 5 9-5z\"/><path d=\"M3 8v8l9 5 9-5V8\"/><path d=\"M12 13v8\"/>") },
+	{ "tag", VENTURE_ICON("<path d=\"M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z\"/><circle cx=\"7.5\" cy=\"7.5\" r=\"1.5\"/>") },
+	{ "grid", VENTURE_ICON("<rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>") },
+	{ "gear", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1\"/>") },
+	{ "people", VENTURE_ICON("<circle cx=\"9\" cy=\"8\" r=\"3\"/><path d=\"M3 20a6 6 0 0 1 12 0\"/><path d=\"M16 5a3 3 0 0 1 0 6M21 20a6 6 0 0 0-4-5.6\"/>") },
+	{ "link", VENTURE_ICON("<path d=\"M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1\"/><path d=\"M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1\"/>") },
+};
+
+/**
+ * venture_web_server_nav_icon_names:
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the icon names
+ *   venture_web_server_add_nav_link() accepts
+ */
+gchar **
+venture_web_server_nav_icon_names(void)
+{
+	gchar **names;
+	gsize i;
+
+	names = g_new0(gchar *, G_N_ELEMENTS(venture_web_nav_icons) + 1);
+
+	for (i = 0; i < G_N_ELEMENTS(venture_web_nav_icons); i++)
+		names[i] = g_strdup(venture_web_nav_icons[i].name);
+
+	return names;
+}
+
+static const gchar *
+venture_web_nav_icon_lookup(const gchar *name)
+{
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(venture_web_nav_icons); i++)
+	{
+		if (0 == g_strcmp0(venture_web_nav_icons[i].name, name))
+			return venture_web_nav_icons[i].svg;
+	}
+
+	return NULL;
+}
+
+/*
+ * A path a row may link to: absolute, plain and short. No quote, angle
+ * bracket, backslash or backtick, which is what keeps an attribute an
+ * attribute; no whitespace or control byte; no query or fragment, so it
+ * is a page and not a page plus whatever state a plugin thought to carry;
+ * no `.` or `..` segment, and not `//`, which a browser reads as another
+ * host.
+ */
+static gboolean
+venture_web_nav_path_is_valid(const gchar *path)
+{
+	g_auto(GStrv) segments = NULL;
+	gsize length;
+	gsize i;
+
+	if ((NULL == path) || ('/' != path[0]) || ('/' == path[1]))
+		return FALSE;
+
+	length = strlen(path);
+
+	if (length > 256)
+		return FALSE;
+
+	for (i = 0; i < length; i++)
+	{
+		guchar c;
+
+		c = (guchar)path[i];
+
+		if ((c <= 0x20) || (c >= 0x7f) || (NULL != strchr("\"'<>\\`?#", (gchar)c)))
+			return FALSE;
+	}
+
+	segments = g_strsplit(path, "/", -1);
+
+	for (i = 0; NULL != segments[i]; i++)
+	{
+		if ((0 == strcmp(segments[i], ".")) || (0 == strcmp(segments[i], "..")))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * Whether a router pattern matches a concrete path: segment for segment,
+ * with `:name` matching any one non-empty segment. Enough for the patterns
+ * a page is registered under; a row naming a path that only a wildcard
+ * could serve is better refused than guessed at.
+ */
+static gboolean
+venture_web_pattern_matches(
+	const gchar	*pattern,
+	const gchar	*path
+){
+	g_auto(GStrv) want = NULL;
+	g_auto(GStrv) have = NULL;
+	gsize i;
+
+	want = g_strsplit(pattern, "/", -1);
+	have = g_strsplit(path, "/", -1);
+
+	if (g_strv_length(want) != g_strv_length(have))
+		return FALSE;
+
+	for (i = 0; NULL != want[i]; i++)
+	{
+		if (':' == want[i][0])
+		{
+			if ('\0' == have[i][0])
+				return FALSE;
+
+			continue;
+		}
+
+		if (0 != strcmp(want[i], have[i]))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* Whether the built-in sidebar already has a row for @path. */
+static gboolean
+venture_web_nav_path_is_builtin(const gchar *path)
+{
+	const VentureWebNavLink *links;
+	gsize i;
+
+	links = venture_web_navigation();
+
+	for (i = 0; NULL != links[i].path; i++)
+	{
+		if (0 == g_strcmp0(links[i].path, path))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+gboolean
+venture_web_server_add_nav_link(
+	VentureWebServer	 *self,
+	const gchar		 *path,
+	const gchar		 *label,
+	const gchar		 *icon,
+	const gchar		 *module,
+	GError			**error
+){
+	const VentureWebNavLink *rows;
+	VentureWebNavLink link;
+	const gchar *svg;
+	gboolean routed;
+	gchar *owned_path;
+	gchar *owned_label;
+	gchar *owned_module;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), FALSE);
+
+	/*
+	 * Built-in pages keep the static table, which test-plugin holds to
+	 * exact membership; letting core code add rows here would be a
+	 * second, unchecked sidebar. A web extension is how a plugin reaches
+	 * this at all, so outside one it is refused.
+	 */
+	if (!self->extending)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A sidebar row can only be added from a web "
+		                    "extension; built-in pages belong in the "
+		                    "navigation table");
+		return FALSE;
+	}
+
+	if (!venture_web_nav_path_is_valid(path))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A sidebar row's path must be absolute and plain -- no "
+		            "quotes, angle brackets, spaces, query or fragment -- "
+		            "and at most 256 bytes; \"%s\" is not",
+		            (NULL != path) ? path : "");
+		return FALSE;
+	}
+
+	if ((NULL == label) || ('\0' == label[0]) || (strlen(label) > 64) ||
+	    !g_utf8_validate(label, -1, NULL))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The sidebar row for %s needs a label of 1 to 64 bytes "
+		            "of UTF-8", path);
+		return FALSE;
+	}
+
+	for (i = 0; '\0' != label[i]; i++)
+	{
+		if (g_ascii_iscntrl(label[i]))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "The sidebar row for %s has a control character "
+			            "in its label", path);
+			return FALSE;
+		}
+	}
+
+	svg = venture_web_nav_icon_lookup((NULL != icon) ? icon : "plug");
+
+	if (NULL == svg)
+	{
+		g_auto(GStrv) names = NULL;
+		g_autofree gchar *joined = NULL;
+
+		names = venture_web_server_nav_icon_names();
+		joined = g_strjoinv(", ", names);
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "There is no sidebar icon called \"%s\" (there are: %s)",
+		            icon, joined);
+		return FALSE;
+	}
+
+	if ((NULL != module) &&
+	    (NULL == venture_module_registry_lookup(
+		venture_context_get_modules(self->context), module)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The sidebar row for %s names a module, \"%s\", that "
+		            "does not exist", path, module);
+		return FALSE;
+	}
+
+	if (venture_web_nav_path_is_builtin(path))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+		            "%s is a built-in page and already has a sidebar row",
+		            path);
+		return FALSE;
+	}
+
+	rows = (const VentureWebNavLink *)(gconstpointer)self->plugin_nav->data;
+
+	for (i = 0; i < self->plugin_nav->len; i++)
+	{
+		if (0 == g_strcmp0(rows[i].path, path))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+			            "%s already has a sidebar row", path);
+			return FALSE;
+		}
+	}
+
+	routed = FALSE;
+
+	for (i = 0; !routed && (i < self->get_patterns->len); i++)
+		routed = venture_web_pattern_matches(
+			g_ptr_array_index(self->get_patterns, i), path);
+
+	if (!routed)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "Nothing serves GET %s; add its route with "
+		            "venture_web_server_add_classified_route() before its "
+		            "sidebar row", path);
+		return FALSE;
+	}
+
+	owned_path = g_strdup(path);
+	owned_label = g_strdup(label);
+	owned_module = g_strdup(module);
+	g_ptr_array_add(self->nav_strings, owned_path);
+	g_ptr_array_add(self->nav_strings, owned_label);
+
+	if (NULL != owned_module)
+		g_ptr_array_add(self->nav_strings, owned_module);
+
+	link.path = owned_path;
+	link.label = owned_label;
+	link.icon = svg;
+	link.section = "Plugins";
+	link.module = owned_module;
+
+	g_array_append_val(self->plugin_nav, link);
+
+	return TRUE;
+}
+
+const VentureWebNavLink *
+venture_web_server_get_plugin_navigation(VentureWebServer *self)
+{
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
+
+	/* Zero-terminated by construction (g_array_new(TRUE, ...)). */
+	return (const VentureWebNavLink *)(gconstpointer)self->plugin_nav->data;
+}
+
+/* Whether any row of @links belongs to @module. */
+static gboolean
+venture_web_nav_table_has_module(
+	const VentureWebNavLink	*links,
+	const gchar		*module
+){
+	gsize i;
+
+	if (NULL == module)
+		return FALSE;
+
+	for (i = 0; NULL != links[i].path; i++)
+	{
+		if (0 == g_strcmp0(links[i].module, module))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/*
+ * The plugins' rows, under one folding "Plugins" heading drawn only when
+ * there is a row to put under it -- so an install with no such plugin has
+ * exactly the sidebar it always had.
+ *
+ * An accountant-only sidebar (@links is not the full table) is Books
+ * alone, deliberately; a plugin's row joins it only when it belongs to a
+ * module that sidebar already offers, which is the same judgement the
+ * accountant table made for the built-in pages. A row with no module is
+ * nobody's books, and stays out.
+ */
+static void
+venture_web_append_plugin_nav(
+	VentureWebServer	*self,
+	GString			*html,
+	const VentureWebNavLink	*links,
+	const gchar		*active
+){
+	g_autoptr(GString) items = NULL;
+	const VentureWebNavLink *rows;
+	gboolean accountant;
+	gboolean open;
+	guint i;
+
+	if (0 == self->plugin_nav->len)
+		return;
+
+	rows = venture_web_server_get_plugin_navigation(self);
+	accountant = (links != venture_web_navigation());
+	items = g_string_new(NULL);
+	open = FALSE;
+
+	for (i = 0; i < self->plugin_nav->len; i++)
+	{
+		if (!venture_web_module_enabled(self, rows[i].module))
+			continue;
+
+		if (accountant && !venture_web_nav_table_has_module(links, rows[i].module))
+			continue;
+
+		open = open || (0 == g_strcmp0(active, rows[i].path));
+		venture_web_append_nav_item(items, &rows[i], active);
+	}
+
+	if (0 != items->len)
+		venture_web_append_nav_group(html, "Plugins", items->str, open);
+}
+
+/* ==========================================================================
+ * What an extension's handlers are given
+ * ========================================================================== */
+
+VentureContext *
+venture_web_server_get_context(VentureWebServer *self)
+{
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
+
+	return self->context;
+}
+
+HtmxResponse *
+venture_web_server_require_page(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureUserRole		 role
+){
+	HtmxResponse *refusal;
+
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
+
+	/* Anonymous goes to the login page, as every built-in page does --
+	 * test-auth asserts that of every route it lists. */
+	refusal = venture_web_ui_require_session(self, request);
+
+	if (NULL != refusal)
+		return refusal;
+
+	/* Signed in but short of the role: the API's refusal, which the
+	 * catch-all middleware draws as a page for a browser. */
+	return venture_web_api_require(self, request, role);
+}
+
+HtmxResponse *
+venture_web_server_require_module(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	const gchar		*module
+){
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
+	g_return_val_if_fail(NULL != module, NULL);
+
+	return venture_web_require_module_ui(self, request, module);
+}
+
+HtmxResponse *
+venture_web_server_require_api(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureUserRole		 role
+){
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
+
+	return venture_web_api_require(self, request, role);
+}
+
+HtmxResponse *
+venture_web_server_render_page(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	const gchar		*active,
+	const gchar		*title,
+	const gchar		*content
+){
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), NULL);
+	g_return_val_if_fail(NULL != title, NULL);
+
+	return venture_web_html_response(
+		venture_web_page(self, request, active, title,
+		                 (NULL != content) ? content : ""), 200);
 }
 
 static gchar *
@@ -2144,6 +2639,9 @@ venture_web_page(
 
 		if (!questions_shown)
 			venture_web_append_nav_sections(self, html, links, active);
+
+		/* Pages plugins added, after every built-in one. */
+		venture_web_append_plugin_nav(self, html, links, active);
 
 		/* The operator's own pages, after the built-in ones. */
 		venture_web_append_dashboard_nav(self, request, html, active);
@@ -4110,14 +4608,53 @@ venture_web_ui_automations(
 			}
 		}
 
+		/*
+		 * The venture module's vocabulary, read from the registry
+		 * rather than written here: a plugin's handler or event is in
+		 * it the moment the plugin loads, and a sentence listing the
+		 * built-ins went stale the first time one was added.
+		 */
+		{
+			VentureAutomationHandlerRegistry *registry;
+			const gchar *const *names;
+			gsize n;
+
+			registry = venture_context_get_automation_handlers(self->context);
+
+			g_string_append(content,
+				"</dl><h3>The <code>venture</code> module</h3>"
+				"<p class=\"muted\">Events a <code>venture-&gt;new()</code> "
+				"pod can bind:");
+
+			names = venture_automation_handler_registry_get_events(registry);
+
+			for (n = 0; NULL != names[n]; n++)
+			{
+				g_string_append(content, (0 == n) ? " <code>" : ", <code>");
+				venture_html_escape_append(content, names[n]);
+				g_string_append(content, "</code>");
+			}
+
+			g_string_append(content, ".</p><dl>");
+
+			names = venture_automation_handler_registry_get_names(registry);
+
+			for (n = 0; NULL != names[n]; n++)
+			{
+				g_string_append(content, "<dt><code>venture-&gt;");
+				venture_html_escape_append(content, names[n]);
+				g_string_append(content, "()</code></dt><dd>");
+				venture_html_escape_append(content,
+					venture_automation_handler_registry_get_description(
+						registry, names[n]));
+				g_string_append(content, "</dd>");
+			}
+		}
+
 		g_string_append(content,
-			"</dl><p class=\"muted\">The <code>venture</code> module "
-			"raises <code>on_created</code>, <code>on_updated</code> "
-			"and <code>on_deleted</code> for every record change, and "
-			"its handlers can query, report, create, update and delete "
-			"records. Everything an automation writes is audited as "
-			"the automation actor. Worked examples -- recurring "
-			"expenses included -- ship in "
+			"</dl><p class=\"muted\">Everything an automation writes is "
+			"audited as the automation actor. Worked examples -- "
+			"recurring expenses included -- ship in "
 			"<code>data/examples/automations.pod</code>.</p>"
 			"</div></div>");
 	}
@@ -30128,6 +30665,30 @@ venture_web_api_palette(
 		json_builder_end_object(builder);
 	}
 
+	/* Plugins' pages, by the rule the sidebar draws them with: a row a
+	 * person can see in the sidebar is a page the palette can find. */
+	links = venture_web_server_get_plugin_navigation(self);
+
+	for (i = 0; NULL != links[i].path; i++)
+	{
+		g_autofree gchar *label = NULL;
+
+		if (!venture_web_module_enabled(self, links[i].module))
+			continue;
+
+		label = g_utf8_casefold(links[i].label, -1);
+
+		if (('\0' != needle[0]) && (NULL == strstr(label, needle)))
+			continue;
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "label");
+		json_builder_add_string_value(builder, links[i].label);
+		json_builder_set_member_name(builder, "url");
+		json_builder_add_string_value(builder, links[i].path);
+		json_builder_end_object(builder);
+	}
+
 	{
 		static const struct
 		{
@@ -31836,6 +32397,16 @@ venture_document_web_register(router, self);
 	venture_money_calendar_web_register(router, self);
 	venture_docs_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/report_pack/:id/deliver", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_report_pack_deliver, self);
+
+	/*
+	 * Plugins' pages, last: they loaded before this server existed and
+	 * left extensions on the context. After every built-in route, so a
+	 * built-in always wins a path both match -- the router takes the
+	 * first -- and an extension cannot shadow /api/v1/:type or a page.
+	 */
+	self->extending = TRUE;
+	venture_context_run_web_extensions(context, self);
+	self->extending = FALSE;
 
 	return g_steal_pointer(&self);
 }

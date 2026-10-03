@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-static gboolean venture_pod_module_handle_commerce(VenturePodModule *self, GVariant *params, GVariant **result)
+static gboolean venture_pod_module_handle_commerce(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	VentureCommerceService *service = venture_context_get_commerce_service(self->context);
 	const gchar *organization = venture_pod_module_argument(params, 0);

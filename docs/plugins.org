@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-10-03]
 #+updated: [2026-10-03]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * Plugins
 
@@ -161,7 +161,48 @@ When a plugin with a manifest loads, the manager hands each entry, in order, to 
 - When a load fails at this stage, an exec plugin's program is withdrawn, so nothing can run a plugin that did not load. Native and crispy code has already run and cannot be withdrawn; keep their =provides= lists to things a handler can check before it registers anything.
 - A kind registered twice is refused: two handlers would each believe they own the plugins that name it.
 
-The runtime never needs to know what a kind is. That is what lets later kinds -- data-source providers for feeds, and whatever follows -- arrive without touching the loader. This release ships the registry and no built-in kinds; the first arrives with the feeds module. A kind belonging to a module that can be switched off should stay registered and *skip* its entries while the module is off, rather than leave the plugin to fail with an unknown kind on every start.
+The runtime never needs to know what a kind is. That is what lets later kinds -- data-source providers for feeds, and whatever follows -- arrive without touching the loader. A kind belonging to a module that can be switched off should stay registered and *skip* its entries while the module is off, rather than leave the plugin to fail with an unknown kind on every start.
+
+The kinds that ship:
+
+| Kind                 | Registered by          | Entry keys                          | Means                                                         |
+|----------------------+------------------------+-------------------------------------+---------------------------------------------------------------|
+| =automation_handler= | the automation engine  | =name=, =command=, =description=    | A step an automation rule can call, run as the plugin's program; exec plugins only. See below. |
+
+* Automation handlers from an exec plugin
+
+An exec plugin can be a step in an automation rule. The manifest names the handler:
+
+#+begin_src yaml
+name: price-check
+runtime: exec
+protocol: 1
+entry: check.sh
+exec:
+  timeout: 20
+provides:
+  - kind: automation_handler
+    name: price_check           # what a rule calls: venture->price_check(...)
+    command: check              # optional; the request's command, default the name
+    description: Compare our listed prices with the market
+#+end_src
+
+and a rule calls it like any built-in handler:
+
+#+begin_src
+pod nightly = cron->new("0 6 * * *");
+nightly->on_schedule => venture->price_check("gold", "weekly")
+    | log->write_info("{pipe->count} items under the market: {pipe->summary}");
+#+end_src
+
+- *Exec only.* A native or crispy plugin registers its handler in code with =venture_automation_handler_registry_add()= ([[file:extending.org][Extending VENTURE]]); naming this kind from any other plugin fails its load.
+- *A closed entry.* =name= is required -- a lower-case letter, then lower-case letters, digits and =_=, as the DSL can spell it -- and =command= and =description= are optional. Any other key fails the load, so a misspelt =commnd= cannot load a plugin that runs the wrong command.
+- *Names are never shared.* A name a built-in or another plugin holds (=report=, =count=, ...) fails the load rather than replacing it.
+- *The request.* The command is =command= (or the handler's name); =params= is ={"args": [...]}=, the rule's positional arguments as strings, in order; =settings= is the plugin's stored configuration as for every run; =secrets= is empty -- a rule has nowhere to keep one.
+- *The answer.* A handler answers with =count=, =summary= and =detail=, like every handler. The last =result= message gives all three. Without one, =count= is the number of messages that were neither =log= nor =result=, and =summary= is empty. A =detail= the program did not give is its =log= lines, one per line. Nothing else it writes is applied: a =record= message here changes no record, so an automation that wants a write says so in its own pipeline, where the reader of the rule can see it.
+- *Failure.* A run that does not complete, exits non-zero or writes an =error= message fails the handler with that error; from a pod the failure is logged, from =venture_automation_invoke()= it is returned.
+- *=plugins.allow_exec= at every call.* Off at load, the plugin and its handler do not exist; switched off later, the next call is refused, with no restart.
+- *It blocks.* Automation handlers run synchronously on the main thread (the engine's handler timeout is deliberately zero; see [[file:automation.org][Automating VENTURE]]), so the server waits for the program. The manifest's =timeout= is the bound: keep it short, and do slow work in a feed rather than a handler.
 
 * Exec plugins
 
@@ -293,6 +334,7 @@ One JSON object per line, UTF-8, each naming its =type=. An exec plugin writes t
 | =not_modified= |                                  | =venue=                                                                                        | Nothing changed since last time, for one venue or the whole unit. |
 | =log=          | =message=                        | =level= (=debug=, =info=, =warning=; default =info=)                                          | A diagnostic line. Never a reason to fail a run. |
 | =error=        | =message=                        | =retry_after= (integer seconds, at least 0)                                                    | The producer could not do what was asked. Earlier messages are kept; =retry_after= asks the consumer to back off. |
+| =result=       |                                  | =count= (integer, at least 0), =summary=, =detail= (text)                                      | What a command produced, for a consumer that wants one answer rather than a stream -- an automation handler. The last one wins. |
 
 A minimal exec plugin in bash:
 
@@ -330,6 +372,9 @@ What the loader promises, and what it does not:
 | =src/plugin/venture-exec.{h,c}=              | Running a program: the spec, the run, redaction, the result           |
 | =src/plugin/venture-jsonl.{h,c}=             | The protocol: message validation and the incremental reader           |
 | =tests/test-plugin-runtime.c=                | Runtimes, manifests, exec and the protocol                            |
+| =src/automation/venture-automation.c=        | The =automation_handler= provides kind                                |
+| =tests/test-automation.c=                    | Exec automation handlers, =plugins.allow_exec= at every call          |
+| =tests/fixtures/exec/automation-handler.sh=  | The exec plugin those tests drive                                     |
 | =tests/fixtures/exec/probe.sh=               | The misbehaving exec plugin the tests drive                           |
 
 In the source tree, =plugins/exec/= holds exec plugins and is not compiled; =plugins/blizzard-auctions/= is a native plugin built into =$(OUTDIR)/plugins-optional/= rather than =$(OUTDIR)/plugins/=, so that it does not load into every test fixture through =VENTURE_PLUGIN_PATH=. The Makefile keeps both out of the generic one-directory-one-=.so= rule.

@@ -378,6 +378,43 @@ first seven columns were empty.
   one is registered by the subsystem that understands it, and an unknown
   kind fails the plugin's load. A kind whose module can be switched off
   stays registered and skips while off.
+- **What the `venture` pod module answers to is a registry, not a list.**
+  `venture_context_get_automation_handlers()` holds every handler and
+  event; the built-ins and the three record events are registered first
+  (`venture_automation_register_builtins()`), a held name is never
+  replaced, and an unknown one is still refused. It lives on the context
+  because plugins load before the engine exists and a reload rebuilds the
+  engine. Do not bring back a handler array or an if-chain in the module.
+  A handler that returns FALSE without a `GError` is taken to have logged
+  its own reason (every built-in does): the registry reports
+  `VENTURE_ERROR_AUTOMATION` and a pod does not log it twice -- so a new
+  handler that fails silently must `g_warning()`, and one that sets an
+  error must not use that code for it. Handlers stay synchronous; an exec
+  plugin's `automation_handler` blocks the main loop up to its manifest's
+  `timeout`, and `plugins.allow_exec` is checked at every call.
+- **`venture_automation_emit()` goes through the same cascade guard as
+  record events.** An event raised from inside a handler goes nowhere. It
+  refuses an unregistered event even with automation off (a typo must be
+  found the first time) and refuses `on_created`/`on_updated`/`on_deleted`,
+  which only the database raises.
+- **A plugin's pages are web extensions, run after every core route.**
+  Plugins load before the server exists, so they call
+  `venture_context_add_web_extension()` and `venture_web_server_new()` runs
+  each one last -- the router takes the first match, so a built-in always
+  wins a path both serve. Extension routes go through
+  `venture_web_server_add_classified_route()` and guard themselves with
+  `venture_web_server_require_page()`/`_require_api()`/`_require_module()`;
+  `/auth/web-extension-routes` in `tests/test-auth.c` pins the guards and
+  the ordering.
+- **A plugin's sidebar row is not in the link table.**
+  `venture_web_server_add_nav_link()` is refused outside an extension
+  (built-in pages belong in the static table, which `test-plugin` holds to
+  exact membership), needs a plain path a classified GET route already
+  serves, escapes its label, and takes an icon only as a name from the
+  built-in set -- never markup, because it is drawn into every page. Rows
+  render under a "Plugins" heading only when one exists, so with none the
+  sidebar and its exact-match tests are unchanged; an accountant-only
+  sidebar shows a row only when its module is one that sidebar offers.
 
 ## The CLI, and its skill
 

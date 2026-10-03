@@ -711,6 +711,14 @@ jsonl_validate(
 		                          VENTURE_JSONL_MAX_TEXT_LENGTH, line, error) &&
 		       jsonl_check_int(object, type, "retry_after", 0, line, error);
 
+	/* Every member optional: "it ran" is an answer too. */
+	case VENTURE_JSONL_MESSAGE_RESULT:
+		return jsonl_check_int(object, type, "count", 0, line, error) &&
+		       jsonl_check_string(object, type, "summary", FALSE,
+		                          VENTURE_JSONL_MAX_TEXT_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "detail", FALSE,
+		                          VENTURE_JSONL_MAX_TEXT_LENGTH, line, error);
+
 	default:
 		break;
 	}
@@ -729,7 +737,8 @@ jsonl_validate(
  */
 static const gchar *const jsonl_kind_names[] = {
 	"venue", "instrument", "snapshot", "listing", "stat", "quote",
-	"entry", "record", "cursor", "not_modified", "log", "error", NULL
+	"entry", "record", "cursor", "not_modified", "log", "error", "result",
+	NULL
 };
 
 gboolean

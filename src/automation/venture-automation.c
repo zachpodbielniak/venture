@@ -43,15 +43,25 @@ G_DEFINE_FINAL_TYPE_WITH_CODE(VenturePodModule, venture_pod_module,
 	                      venture_pod_module_handler_init))
 
 /*
- * Record changes become events, so a rule can say "when a sale is recorded,
- * do X" without the write path knowing automations exist.
+ * What a built-in handler is handed. The built-ins only ever read the
+ * context, and they predate the registry: giving them this rather than the
+ * pod module is what lets the registry call them with no pod in sight --
+ * a direct invocation, or a reload between two engines.
  */
-static const gchar *const venture_pod_module_events[] = {
-	"on_created", "on_updated", "on_deleted", NULL
-};
+typedef struct
+{
+	VentureContext *context;
+} VentureAutomationCall;
 
-static const gchar *const venture_pod_module_handlers[] = {
-	"query", "count", "report", "create", "low_stock", "assets_run_period", "mail_deliver", "mail_sync", "recurring_run", "collections_run", "bankfeed_sync", "commerce_import", "report_packs_run", "dunning_sweep", "backups_run", NULL
+/*
+ * The three record-change events. Record changes become events, so a rule
+ * can say "when a sale is recorded, do X" without the write path knowing
+ * automations exist. Only the database raises these; venture_automation_emit()
+ * refuses them, because a plugin raising on_created for a record nobody
+ * wrote would set off every rule that trusts the event.
+ */
+static const gchar *const venture_automation_record_events[] = {
+	"on_created", "on_updated", "on_deleted", NULL
 };
 
 /* --- Event source --------------------------------------------------------- */
@@ -78,10 +88,24 @@ venture_pod_module_get_event_kind(PodEventSource *source)
 	return POD_EVENT_KIND_CUSTOM;
 }
 
+/*
+ * Asked of the module, not fixed in it: a plugin may have registered an
+ * event since the engine was built. podomation does not check a binding
+ * against this list -- a pod may bind a name nothing raises -- so this is
+ * the reference the REPL and the rules editor read.
+ */
 static const gchar *const *
 venture_pod_module_get_supported_events(PodEventSource *source)
 {
-	return venture_pod_module_events;
+	VenturePodModule *self;
+
+	self = VENTURE_POD_MODULE(source);
+
+	if (NULL == self->context)
+		return venture_automation_record_events;
+
+	return venture_automation_handler_registry_get_events(
+		venture_context_get_automation_handlers(self->context));
 }
 
 static void
@@ -96,35 +120,16 @@ venture_pod_module_source_init(PodEventSourceInterface *iface)
 /* --- Event handler -------------------------------------------------------- */
 
 /*
- * Reads the n-th positional argument of a DSL call as a string.
+ * Reads the n-th positional argument of a DSL call as a string. The public
+ * venture_automation_argument() is the one implementation; this name stays
+ * because every built-in handler's .inc file is written against it.
  */
 static const gchar *
 venture_pod_module_argument(
 	GVariant	*params,
 	gsize		 index
 ){
-	g_autoptr(GVariant) child = NULL;
-
-	if (NULL == params)
-		return NULL;
-
-	if (g_variant_is_of_type(params, G_VARIANT_TYPE_STRING))
-		return (0 == index) ? g_variant_get_string(params, NULL) : NULL;
-
-	if (!g_variant_is_of_type(params, G_VARIANT_TYPE_TUPLE))
-		return NULL;
-
-	if (index >= g_variant_n_children(params))
-		return NULL;
-
-	child = g_variant_get_child_value(params, index);
-
-	if (!g_variant_is_of_type(child, G_VARIANT_TYPE_STRING))
-		return NULL;
-
-	/* The tuple owns the string for as long as @params lives, which
-	 * outlasts the handler call. */
-	return g_variant_get_string(child, NULL);
+	return venture_automation_argument(params, index);
 }
 
 /*
@@ -191,22 +196,12 @@ venture_pod_module_result(
 	const gchar	*summary,
 	const gchar	*detail
 ){
-	GVariantBuilder builder;
-
-	g_variant_builder_init(&builder, G_VARIANT_TYPE_VARDICT);
-	g_variant_builder_add(&builder, "{sv}", "count",
-	                      g_variant_new_int64(count));
-	g_variant_builder_add(&builder, "{sv}", "summary",
-	                      g_variant_new_string((NULL != summary) ? summary : ""));
-	g_variant_builder_add(&builder, "{sv}", "detail",
-	                      g_variant_new_string((NULL != detail) ? detail : ""));
-
-	return g_variant_builder_end(&builder);
+	return venture_automation_result_new(count, summary, detail);
 }
 
 static gboolean
 venture_pod_module_handle_query(
-	VenturePodModule	 *self,
+	VentureAutomationCall	 *self,
 	GVariant		 *params,
 	gboolean		  count_only,
 	GVariant		**result
@@ -294,7 +289,7 @@ venture_pod_module_handle_query(
 
 static gboolean
 venture_pod_module_handle_report(
-	VenturePodModule	 *self,
+	VentureAutomationCall	 *self,
 	GVariant		 *params,
 	GVariant		**result
 ){
@@ -362,7 +357,7 @@ venture_pod_module_handle_report(
 
 static gboolean
 venture_pod_module_handle_create(
-	VenturePodModule	 *self,
+	VentureAutomationCall	 *self,
 	GVariant		 *params,
 	GVariant		**result
 ){
@@ -477,7 +472,7 @@ venture_pod_module_handle_create(
  */
 static gboolean
 venture_pod_module_handle_low_stock(
-	VenturePodModule	 *self,
+	VentureAutomationCall	 *self,
 	GVariant		 *params,
 	GVariant		**result
 ){
@@ -560,6 +555,407 @@ venture_pod_module_handle_low_stock(
 #include "backup/venture-backup-automation.inc"
 
 static gboolean
+venture_pod_module_handle_count(
+	VentureAutomationCall	 *self,
+	GVariant		 *params,
+	GVariant		**result
+){
+	return venture_pod_module_handle_query(self, params, TRUE, result);
+}
+
+static gboolean
+venture_pod_module_handle_query_all(
+	VentureAutomationCall	 *self,
+	GVariant		 *params,
+	GVariant		**result
+){
+	return venture_pod_module_handle_query(self, params, FALSE, result);
+}
+
+/* ==========================================================================
+ * The built-in handlers, in the registry
+ * ========================================================================== */
+
+typedef gboolean (*VentureBuiltinHandler) (
+	VentureAutomationCall	 *self,
+	GVariant		 *params,
+	GVariant		**result
+);
+
+/*
+ * Registered first and in this order, which is the order the rules editor
+ * lists and an "available handlers" refusal names. A built-in reports its
+ * own failures with g_warning() and returns FALSE without an error, which
+ * the registry turns into "see the log".
+ */
+static const struct
+{
+	const gchar		*name;
+	VentureBuiltinHandler	 func;
+	const gchar		*description;
+} venture_automation_builtins[] = {
+	{ "query", venture_pod_module_handle_query_all,
+	  "Count the records of a type matching a filter" },
+	{ "count", venture_pod_module_handle_count,
+	  "Count the records of a type matching a filter" },
+	{ "report", venture_pod_module_handle_report,
+	  "Run a report for a period and hand on its text" },
+	{ "create", venture_pod_module_handle_create,
+	  "Create a record from field=value pairs" },
+	{ "low_stock", venture_pod_module_handle_low_stock,
+	  "Inventory items at or below their reorder point" },
+	{ "assets_run_period", venture_pod_module_assets_run,
+	  "Post a period's depreciation" },
+	{ "mail_deliver", venture_pod_module_handle_mail,
+	  "Deliver the mail that is due" },
+	{ "mail_sync", venture_pod_module_handle_mail_sync,
+	  "Fetch new mail from the mailboxes" },
+	{ "recurring_run", venture_pod_module_recurring_run,
+	  "Raise the recurring documents that are due" },
+	{ "collections_run", venture_pod_module_collections_run,
+	  "Collect the payments that are due" },
+	{ "bankfeed_sync", venture_pod_module_handle_bankfeed,
+	  "Fetch new bank transactions" },
+	{ "commerce_import", venture_pod_module_handle_commerce,
+	  "Import orders from the connected shops" },
+	{ "report_packs_run", venture_pod_module_handle_report_packs,
+	  "Deliver the report packs that are due" },
+	{ "dunning_sweep", venture_pod_module_dunning_sweep,
+	  "Send the overdue-invoice reminders" },
+	{ "backups_run", venture_pod_module_handle_backups,
+	  "Take the backups that are due" },
+};
+
+/*
+ * Calls a built-in. @user_data is its index in the table above, so the
+ * table stays const and nothing is allocated per handler.
+ */
+static gboolean
+venture_automation_builtin_trampoline(
+	VentureContext	 *context,
+	const gchar	 *name,
+	GVariant	 *params,
+	GVariant	**result,
+	gpointer	  user_data,
+	GError		**error
+){
+	VentureAutomationCall call;
+	guint index;
+
+	(void)name;
+	(void)error;
+
+	index = GPOINTER_TO_UINT(user_data);
+	call.context = context;
+
+	return venture_automation_builtins[index].func(&call, params, result);
+}
+
+void
+venture_automation_register_builtins(VentureAutomationHandlerRegistry *registry)
+{
+	g_autoptr(GError) error = NULL;
+	gsize i;
+
+	g_return_if_fail(VENTURE_IS_AUTOMATION_HANDLER_REGISTRY(registry));
+
+	for (i = 0; NULL != venture_automation_record_events[i]; i++)
+	{
+		if (!venture_automation_handler_registry_add_event(registry,
+			venture_automation_record_events[i],
+			"A record was written or deleted", &error))
+		{
+			/* Only a registry that already had it; nothing to undo. */
+			g_debug("venture_automation: %s", error->message);
+			g_clear_error(&error);
+		}
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(venture_automation_builtins); i++)
+	{
+		if (!venture_automation_handler_registry_add(registry,
+			venture_automation_builtins[i].name,
+			venture_automation_builtins[i].description,
+			venture_automation_builtin_trampoline,
+			GUINT_TO_POINTER((guint)i), NULL, &error))
+		{
+			g_debug("venture_automation: %s", error->message);
+			g_clear_error(&error);
+		}
+	}
+}
+
+/* ==========================================================================
+ * Handlers an exec plugin provides
+ * ========================================================================== */
+
+typedef struct
+{
+	gchar	*plugin;
+	gchar	*command;
+} VentureExecHandler;
+
+static void
+venture_exec_handler_free(gpointer data)
+{
+	VentureExecHandler *handler;
+
+	handler = data;
+
+	g_free(handler->plugin);
+	g_free(handler->command);
+	g_free(handler);
+}
+
+/*
+ * Runs an exec plugin as a handler.
+ *
+ * The rule's positional arguments go to the program as `params.args`, a
+ * list of strings in order. What comes back is read as follows: the last
+ * `result` message gives count, summary and detail; without one, count is
+ * how many messages were neither a `log` nor a `result`, and summary is
+ * empty; a missing detail is the `log` lines, one per line. Nothing else a
+ * program writes is applied -- a `record` here changes no record -- so an
+ * automation that wants a write says so in its own pipeline, where the
+ * reader of the rule can see it.
+ *
+ * The run blocks the main loop for as long as the program takes, up to the
+ * manifest's `timeout`. Handlers are synchronous by design (see
+ * venture_automation_build_engine()), and the exec run's own deadline is
+ * what bounds this one.
+ */
+static gboolean
+venture_automation_exec_handler(
+	VentureContext	 *context,
+	const gchar	 *name,
+	GVariant	 *params,
+	GVariant	**result,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(VentureExecResult) run = NULL;
+	g_autoptr(JsonObject) request = NULL;
+	g_autoptr(GString) logs = NULL;
+	VentureExecHandler *handler;
+	VenturePluginManager *manager;
+	JsonArray *args;
+	GPtrArray *messages;
+	const gchar *summary;
+	const gchar *detail;
+	const gchar *argument;
+	gboolean answered;
+	gint64 count;
+	gint64 others;
+	gsize i;
+
+	handler = user_data;
+	manager = venture_context_get_plugin_manager(context);
+
+	if (NULL == manager)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		            "venture->%s is provided by the %s plugin, and plugins "
+		            "are not loaded", name, handler->plugin);
+		return FALSE;
+	}
+
+	args = json_array_new();
+
+	for (i = 0; NULL != (argument = venture_automation_argument(params, i)); i++)
+		json_array_add_string_element(args, argument);
+
+	request = json_object_new();
+	json_object_set_array_member(request, "args", args);
+
+	/* plugins.allow_exec is checked again in here, at every run. */
+	run = venture_plugin_manager_run_exec(manager, handler->plugin,
+	                                      handler->command, request, NULL,
+	                                      NULL, error);
+
+	if ((NULL == run) || !venture_exec_result_check(run, error))
+	{
+		g_prefix_error(error, "venture->%s: ", name);
+		return FALSE;
+	}
+
+	messages = venture_exec_result_get_messages(run);
+	logs = g_string_new(NULL);
+	answered = FALSE;
+	summary = NULL;
+	detail = NULL;
+	count = 0;
+	others = 0;
+
+	for (i = 0; i < messages->len; i++)
+	{
+		VentureJsonlMessage *message;
+
+		message = g_ptr_array_index(messages, i);
+
+		switch (venture_jsonl_message_get_kind(message))
+		{
+		case VENTURE_JSONL_MESSAGE_RESULT:
+			/* The last word wins, so a program may revise its answer. */
+			answered = TRUE;
+			count = venture_jsonl_message_get_int(message, "count", 0);
+			summary = venture_jsonl_message_get_string(message, "summary");
+			detail = venture_jsonl_message_get_string(message, "detail");
+			break;
+
+		case VENTURE_JSONL_MESSAGE_LOG:
+			if (0 != logs->len)
+				g_string_append_c(logs, '\n');
+
+			g_string_append(logs,
+				venture_jsonl_message_get_string(message, "message"));
+			break;
+
+		default:
+			others++;
+			break;
+		}
+	}
+
+	if (!answered)
+		count = others;
+
+	if ((NULL == detail) && (0 != logs->len))
+		detail = logs->str;
+
+	if (NULL != result)
+		*result = g_variant_ref_sink(
+			venture_automation_result_new(count, summary, detail));
+
+	return TRUE;
+}
+
+/*
+ * The `automation_handler` provides kind: an exec plugin naming a handler
+ * a rule can call. Only an exec plugin may provide one -- a native or
+ * crispy plugin registers its handler in code -- and the entry's keys are
+ * a closed list, because a misspelt one would load a plugin that quietly
+ * runs the wrong command.
+ */
+static gboolean
+venture_automation_accept_handler(
+	VenturePluginManager	 *manager,
+	VenturePluginManifest	 *manifest,
+	JsonObject		 *entry,
+	gpointer		  user_data,
+	GError			**error
+){
+	static const gchar *const allowed[] = {
+		"kind", "name", "command", "description", NULL
+	};
+	g_autoptr(GList) members = NULL;
+	g_autofree gchar *fallback = NULL;
+	VentureExecHandler *handler;
+	VentureContext *context;
+	const gchar *plugin;
+	const gchar *name;
+	const gchar *command;
+	const gchar *description;
+	GList *l;
+
+	(void)user_data;
+
+	plugin = venture_plugin_manifest_get_name(manifest);
+	members = json_object_get_members(entry);
+
+	for (l = members; NULL != l; l = l->next)
+	{
+		if (!g_strv_contains(allowed, l->data))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			            "an automation_handler entry has no \"%s\" "
+			            "(it takes name, command and description)",
+			            (const gchar *)l->data);
+			return FALSE;
+		}
+	}
+
+	name = json_object_has_member(entry, "name") &&
+	       JSON_NODE_HOLDS_VALUE(json_object_get_member(entry, "name"))
+		? json_object_get_string_member(entry, "name") : NULL;
+	command = json_object_has_member(entry, "command") &&
+	          JSON_NODE_HOLDS_VALUE(json_object_get_member(entry, "command"))
+		? json_object_get_string_member(entry, "command") : NULL;
+	description = json_object_has_member(entry, "description") &&
+	              JSON_NODE_HOLDS_VALUE(json_object_get_member(entry, "description"))
+		? json_object_get_string_member(entry, "description") : NULL;
+
+	if (!venture_automation_name_is_valid(name))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		                    "an automation_handler needs a name: a lower-case "
+		                    "letter followed by lower-case letters, digits "
+		                    "and underscores");
+		return FALSE;
+	}
+
+	if (json_object_has_member(entry, "command") &&
+	    (venture_string_is_empty(command) || (strlen(command) > 256)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		            "automation_handler %s has an empty or overlong "
+		            "command", name);
+		return FALSE;
+	}
+
+	if (NULL == venture_plugin_manager_lookup_exec(manager, plugin))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		                    "an automation_handler is run as a program, so "
+		                    "only an exec plugin may provide one; a native or "
+		                    "crispy plugin registers its handler in code");
+		return FALSE;
+	}
+
+	if (NULL == description)
+	{
+		fallback = g_strdup_printf("Runs the %s plugin", plugin);
+		description = fallback;
+	}
+
+	handler = g_new0(VentureExecHandler, 1);
+	handler->plugin = g_strdup(plugin);
+
+	/* The handler's own name is the default command, so one program can
+	 * answer several handlers by reading `command`. */
+	handler->command = g_strdup((NULL != command) ? command : name);
+
+	context = venture_plugin_manager_get_context(manager);
+
+	if (!venture_automation_handler_registry_add(
+		venture_context_get_automation_handlers(context), name, description,
+		venture_automation_exec_handler, handler, venture_exec_handler_free,
+		error))
+	{
+		venture_exec_handler_free(handler);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+void
+venture_automation_register_provides(VenturePluginProvidesRegistry *registry)
+{
+	g_autoptr(GError) error = NULL;
+
+	g_return_if_fail(VENTURE_IS_PLUGIN_PROVIDES_REGISTRY(registry));
+
+	if (!venture_plugin_provides_registry_add(registry, "automation_handler",
+		"A step an automation rule can call, run as the plugin's program",
+		venture_automation_accept_handler, NULL, NULL, &error))
+	{
+		g_debug("venture_automation: %s", error->message);
+	}
+}
+
+/* --- The module's handler interface -------------------------------------- */
+
+static gboolean
 venture_pod_module_handle_event(
 	PodEventHandler	 *handler,
 	const gchar	 *event_name,
@@ -567,11 +963,15 @@ venture_pod_module_handle_event(
 	GVariant	 *params,
 	GVariant	**result
 ){
+	g_autoptr(GError) error = NULL;
+	VentureAutomationHandlerRegistry *registry;
 	VenturePodModule *self;
 
 	self = VENTURE_POD_MODULE(handler);
 
 	g_return_val_if_fail(NULL != event_name, FALSE);
+
+	(void)event_data;
 
 	if (NULL == self->context)
 	{
@@ -579,51 +979,47 @@ venture_pod_module_handle_event(
 		return FALSE;
 	}
 
-	if (0 == g_strcmp0(event_name, "query"))
-		return venture_pod_module_handle_query(self, params, FALSE, result);
+	registry = venture_context_get_automation_handlers(self->context);
 
-	if (0 == g_strcmp0(event_name, "count"))
-		return venture_pod_module_handle_query(self, params, TRUE, result);
+	if (!venture_automation_handler_registry_has(registry, event_name))
+	{
+		g_warning("venture has no handler called \"%s\"", event_name);
+		return FALSE;
+	}
 
-	if (0 == g_strcmp0(event_name, "report"))
-		return venture_pod_module_handle_report(self, params, result);
+	if (venture_automation_handler_registry_call(registry, self->context,
+	                                             event_name, params, result,
+	                                             &error))
+		return TRUE;
 
-	if (0 == g_strcmp0(event_name, "create"))
-		return venture_pod_module_handle_create(self, params, result);
-
-	if (0 == g_strcmp0(event_name, "low_stock"))
-		return venture_pod_module_handle_low_stock(self, params, result);
-
-	if (0 == g_strcmp0(event_name, "assets_run_period"))
-		return venture_pod_module_assets_run(self, params, result);
-	if (0 == g_strcmp0(event_name, "mail_deliver"))
-		return venture_pod_module_handle_mail(self, params, result);
-	if (0 == g_strcmp0(event_name, "mail_sync"))
-		return venture_pod_module_handle_mail_sync(self, params, result);
-	if (0 == g_strcmp0(event_name, "recurring_run"))
-		return venture_pod_module_recurring_run(self, params, result);
-	if (0 == g_strcmp0(event_name, "collections_run"))
-		return venture_pod_module_collections_run(self, params, result);
-	if (0 == g_strcmp0(event_name, "bankfeed_sync"))
-		return venture_pod_module_handle_bankfeed(self, params, result);
-	if (0 == g_strcmp0(event_name, "commerce_import"))
-		return venture_pod_module_handle_commerce(self, params, result);
-	if (0 == g_strcmp0(event_name, "report_packs_run"))
-		return venture_pod_module_handle_report_packs(self, params, result);
-	if (0 == g_strcmp0(event_name, "dunning_sweep"))
-		return venture_pod_module_dunning_sweep(self, params, result);
-	if (0 == g_strcmp0(event_name, "backups_run"))
-		return venture_pod_module_handle_backups(self, params, result);
-
-	g_warning("venture has no handler called \"%s\"", event_name);
+	/*
+	 * VENTURE_ERROR_AUTOMATION is the registry saying the handler logged
+	 * its own reason, as every built-in does. Anything else is a reason
+	 * nobody has written down yet, and a pod has nowhere else to put it.
+	 */
+	if (!g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION))
+		g_warning("%s", error->message);
 
 	return FALSE;
 }
 
+/*
+ * Asked of the module rather than fixed in it, like the events: a plugin
+ * may have registered a handler since the engine was built.
+ */
 static const gchar *const *
 venture_pod_module_get_supported_handlers(PodEventHandler *handler)
 {
-	return venture_pod_module_handlers;
+	static const gchar *const none[] = { NULL };
+	VenturePodModule *self;
+
+	self = VENTURE_POD_MODULE(handler);
+
+	if (NULL == self->context)
+		return none;
+
+	return venture_automation_handler_registry_get_names(
+		venture_context_get_automation_handlers(self->context));
 }
 
 static void
@@ -1160,51 +1556,40 @@ venture_automation_get_pod_count(VentureAutomation *self)
 	return (NULL != pods) ? pods->len : 0;
 }
 
-void
-venture_automation_emit_entity_event(
+/*
+ * Hands one event to every pod built on the venture module.
+ *
+ * The cascade guard lives here, so it holds for a plugin's event exactly
+ * as for a record change: an automation's own work -- a write, or an event
+ * a handler raises -- does not trigger automations. Without it, the
+ * obvious and reasonable-looking rule
+ *
+ *     watch->on_created => venture->create("research_note", ...);
+ *
+ * creates a record, which raises on_created, which creates a record,
+ * until the disk is full. There is no useful depth limit to pick instead:
+ * one level of cascade is as arbitrary as ten, and a rule that genuinely
+ * needs to chain can call the next step in its own pipeline, where the
+ * author can see it.
+ *
+ * @payload is borrowed, and must not be floating.
+ */
+static void
+venture_automation_fire(
 	VentureAutomation	*self,
 	const gchar		*event_name,
-	VentureEntity		*entity
+	GVariant		*payload
 ){
-	g_autofree gchar *label = NULL;
 	GPtrArray *pods;
 	guint i;
 
-	g_return_if_fail(VENTURE_IS_AUTOMATION(self));
-	g_return_if_fail(NULL != event_name);
-	g_return_if_fail(VENTURE_IS_ENTITY(entity));
-
-	if (!self->running)
-		return;
-
-	/* An audit entry is itself a record, so emitting an event for one
-	 * would make every automation that writes trigger itself. */
-	if (VENTURE_IS_AUDIT_ENTRY(entity))
-		return;
-	if (venture_access_policy_record_is_personal(venture_database_get_access_policy(
-		venture_context_get_database(self->context)), entity)) return;
-
-
-	/*
-	 * An automation's own writes do not trigger automations. Without
-	 * this, the obvious and reasonable-looking rule
-	 *
-	 *     watch->on_created => venture->create("research_note", ...);
-	 *
-	 * creates a record, which raises on_created, which creates a record,
-	 * until the disk is full. There is no useful depth limit to pick
-	 * instead: one level of cascade is as arbitrary as ten, and a rule
-	 * that genuinely needs to chain can call the next step in its own
-	 * pipeline, where the author can see it.
-	 */
 	if (0 != self->dispatching)
 	{
-		g_debug("venture_automation: not raising %s for %s from inside a "
-		        "handler", event_name, venture_entity_get_entity_name(entity));
+		g_debug("venture_automation: not raising %s from inside a handler",
+		        event_name);
 		return;
 	}
 
-	label = venture_entity_get_display_name(entity);
 	pods = pod_engine_get_pods(self->engine);
 
 	if (NULL == pods)
@@ -1220,19 +1605,123 @@ venture_automation_emit_entity_event(
 		pod = g_ptr_array_index(pods, i);
 		source = pod_pod_get_source(pod);
 
-		/* Only pods built on the venture module care about record
-		 * changes; a timer pod must not receive them. */
+		/* Only pods built on the venture module care about these; a
+		 * timer pod must not receive them. */
 		if (!VENTURE_IS_POD_MODULE(source))
 			continue;
 
-		g_signal_emit_by_name(source, "event-fired", event_name,
-			g_variant_new_parsed("{'type': <%s>, 'id': <%x>, 'label': <%s>}",
-				venture_entity_get_entity_name(entity),
-				venture_entity_get_id(entity),
-				label));
+		g_signal_emit_by_name(source, "event-fired", event_name, payload);
 	}
 
 	self->dispatching--;
+}
+
+void
+venture_automation_emit_entity_event(
+	VentureAutomation	*self,
+	const gchar		*event_name,
+	VentureEntity		*entity
+){
+	g_autoptr(GVariant) payload = NULL;
+	g_autofree gchar *label = NULL;
+
+	g_return_if_fail(VENTURE_IS_AUTOMATION(self));
+	g_return_if_fail(NULL != event_name);
+	g_return_if_fail(VENTURE_IS_ENTITY(entity));
+
+	if (!self->running)
+		return;
+
+	/* An audit entry is itself a record, so emitting an event for one
+	 * would make every automation that writes trigger itself. */
+	if (VENTURE_IS_AUDIT_ENTRY(entity))
+		return;
+	if (venture_access_policy_record_is_personal(venture_database_get_access_policy(
+		venture_context_get_database(self->context)), entity)) return;
+
+	/* Checked here as well as in fire(), so a write made from inside a
+	 * handler does not even build its payload. */
+	if (0 != self->dispatching)
+	{
+		g_debug("venture_automation: not raising %s for %s from inside a "
+		        "handler", event_name, venture_entity_get_entity_name(entity));
+		return;
+	}
+
+	label = venture_entity_get_display_name(entity);
+	payload = g_variant_ref_sink(
+		g_variant_new_parsed("{'type': <%s>, 'id': <%x>, 'label': <%s>}",
+			venture_entity_get_entity_name(entity),
+			venture_entity_get_id(entity),
+			label));
+
+	venture_automation_fire(self, event_name, payload);
+}
+
+gboolean
+venture_automation_emit(
+	VentureContext	 *context,
+	const gchar	 *event_name,
+	GVariant	 *data,
+	GError		**error
+){
+	g_autoptr(GVariant) payload = NULL;
+	VentureAutomation *self;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != event_name, FALSE);
+
+	/* Take the caller's floating reference first, so every return below
+	 * releases it rather than leaking it. */
+	if (NULL != data)
+		payload = g_variant_ref_sink(data);
+
+	if (g_strv_contains(venture_automation_record_events, event_name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION,
+		            "%s is raised by the database when a record is "
+		            "written; it cannot be emitted", event_name);
+		return FALSE;
+	}
+
+	/*
+	 * Judged before anything else, including whether automation is on:
+	 * a misspelt event must be found the first time it is emitted, not
+	 * the first time somebody switches automation on and wonders why the
+	 * rule never fires.
+	 */
+	if (!venture_automation_handler_registry_has_event(
+		venture_context_get_automation_handlers(context), event_name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION,
+		            "There is no automation event called \"%s\"; register "
+		            "it with venture_automation_handler_registry_add_event() "
+		            "first", event_name);
+		return FALSE;
+	}
+
+	if ((NULL != payload) &&
+	    !g_variant_is_of_type(payload, G_VARIANT_TYPE_VARDICT))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The data for %s must be a dictionary (a{sv}), not %s",
+		            event_name, g_variant_get_type_string(payload));
+		return FALSE;
+	}
+
+	self = venture_context_get_automation(context);
+
+	/* Automation off, or not started: an event nobody listens to has
+	 * been delivered to everybody who is listening. */
+	if ((NULL == self) || !self->running)
+		return TRUE;
+
+	if (NULL == payload)
+		payload = g_variant_ref_sink(g_variant_new("a{sv}", NULL));
+
+	venture_automation_fire(self, event_name, payload);
+
+	return TRUE;
 }
 
 gboolean
@@ -1260,18 +1749,6 @@ venture_automation_invoke(
 		return FALSE;
 	}
 
-	if (!g_strv_contains(venture_pod_module_handlers, handler))
-	{
-		g_autofree gchar *known = NULL;
-
-		known = g_strjoinv(", ", (gchar **)venture_pod_module_handlers);
-
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION,
-		            "There is no automation handler called \"%s\". "
-		            "Available handlers: %s", handler, known);
-		return FALSE;
-	}
-
 	/*
 	 * The DSL passes positional arguments as a tuple of strings, so a
 	 * direct invocation builds the same shape. A handler must not be able
@@ -1296,15 +1773,15 @@ venture_automation_invoke(
 			g_variant_builder_clear(&builder);
 	}
 
-	if (!pod_event_handler_handle_event(POD_EVENT_HANDLER(module), handler,
-	                                    NULL, params, result))
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION,
-		            "The \"%s\" handler failed; see the log for why", handler);
-		return FALSE;
-	}
-
-	return TRUE;
+	/*
+	 * Through the same registry a pod's call reaches, so the handler is
+	 * the same one -- but straight to it, so its error comes back to the
+	 * caller instead of being written to the log, and an unknown name is
+	 * refused with the list of names that exist.
+	 */
+	return venture_automation_handler_registry_call(
+		venture_context_get_automation_handlers(self->context),
+		self->context, handler, params, result, error);
 }
 
 JsonNode *

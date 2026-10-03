@@ -963,6 +963,8 @@ typedef enum
  * @VENTURE_JSONL_MESSAGE_NOT_MODIFIED: nothing changed since last time
  * @VENTURE_JSONL_MESSAGE_LOG: a diagnostic line
  * @VENTURE_JSONL_MESSAGE_ERROR: the producer could not do what was asked
+ * @VENTURE_JSONL_MESSAGE_RESULT: what a command produced, for a consumer that
+ *   wants one answer rather than a stream -- an automation handler
  *
  * The message vocabulary of protocol 1 of the JSON-lines protocol spoken by
  * exec plugins and read from `file_jsonl` sources. The nick is the
@@ -981,7 +983,8 @@ typedef enum
 	VENTURE_JSONL_MESSAGE_CURSOR,
 	VENTURE_JSONL_MESSAGE_NOT_MODIFIED,
 	VENTURE_JSONL_MESSAGE_LOG,
-	VENTURE_JSONL_MESSAGE_ERROR
+	VENTURE_JSONL_MESSAGE_ERROR,
+	VENTURE_JSONL_MESSAGE_RESULT
 } VentureJsonlMessageKind;
 
 /**

@@ -17,6 +17,9 @@
 #include <venture.h>
 
 #include <glib.h>
+#include <glib/gstdio.h>
+
+#include <string.h>
 
 #include "venture-test-util.h"
 
@@ -474,6 +477,533 @@ test_automation_shipped_examples_parse(void)
 	g_assert_cmpuint(checked, >, 0);
 }
 
+/* ==========================================================================
+ * The handler and event registry
+ * ========================================================================== */
+
+typedef struct
+{
+	guint		 calls;
+	gchar		*last_argument;
+	gboolean	 emit_from_inside;
+} Witness;
+
+static void
+witness_clear(Witness *witness)
+{
+	g_clear_pointer(&witness->last_argument, g_free);
+}
+
+/* A plugin's handler: notes what it was called with, answers like any. */
+static gboolean
+witness_handler(
+	VentureContext	 *context,
+	const gchar	 *name,
+	GVariant	 *params,
+	GVariant	**result,
+	gpointer	  user_data,
+	GError		**error
+){
+	Witness *witness = user_data;
+
+	(void)name;
+	(void)error;
+
+	witness->calls++;
+	g_free(witness->last_argument);
+	witness->last_argument = g_strdup(venture_automation_argument(params, 0));
+
+	/* A handler that raises an event: the cascade guard must swallow it. */
+	if (witness->emit_from_inside)
+	{
+		g_autoptr(GError) local_error = NULL;
+
+		g_assert_true(venture_automation_emit(context, "feed_finished",
+			g_variant_new_parsed("{'source': <'from-inside'>}"),
+			&local_error));
+		g_assert_no_error(local_error);
+	}
+
+	if (NULL != result)
+		*result = venture_automation_result_new(7, "seven", NULL);
+
+	return TRUE;
+}
+
+/* Writes @rules as the pods file and starts an engine over them. */
+static VentureAutomation *
+start_rules(
+	Fixture		*fixture,
+	const gchar	*rules
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *pods_path = NULL;
+	VentureAutomation *automation;
+
+	pods_path = g_build_filename(fixture->state_dir, "automations.pod", NULL);
+	g_assert_true(g_file_set_contents(pods_path, rules, -1, &error));
+	g_assert_no_error(error);
+
+	automation = venture_automation_new(fixture->context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(automation);
+
+	/* As main() does, so venture_automation_emit() can find it. */
+	venture_context_set_automation(fixture->context, automation);
+
+	g_assert_true(venture_automation_start(automation, &error));
+	g_assert_no_error(error);
+
+	return automation;
+}
+
+static void
+stop_rules(
+	Fixture			*fixture,
+	VentureAutomation	*automation
+){
+	venture_automation_stop(automation);
+	venture_context_set_automation(fixture->context, NULL);
+}
+
+static void
+save_ticket(Fixture *fixture)
+{
+	g_autoptr(VentureTicket) ticket = NULL;
+	g_autoptr(GError) error = NULL;
+
+	ticket = venture_ticket_new();
+	g_object_set(ticket, "title", "trigger", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(ticket), NULL, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * A plugin's handler is a step a rule can call, exactly like a built-in.
+ *
+ * What breaks if this regresses: the handler list was a fixed array and an
+ * if-chain inside the venture module, so a plugin could add a record type,
+ * a report and a page but never a step an automation could call -- every
+ * rule naming one failed with "venture has no handler". The registry lives
+ * on the context because plugins load before the engine exists, so this
+ * registers first and builds the engine after, as main() does.
+ */
+static void
+test_automation_plugin_handler_runs_from_a_pod(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(GVariant) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAutomationHandlerRegistry *registry;
+	Witness witness = { 0, NULL, FALSE };
+	const gchar *const arguments[] = { "by hand", NULL };
+	gint64 count;
+
+	(void)user_data;
+
+	registry = venture_context_get_automation_handlers(fixture->context);
+
+	/* Built-ins come first and keep their names. */
+	g_assert_cmpstr(venture_automation_handler_registry_get_names(registry)[0],
+	                ==, "query");
+	g_assert_false(venture_automation_handler_registry_add(registry, "count",
+		NULL, witness_handler, &witness, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+	g_clear_error(&error);
+
+	/* A name a rule could not spell is refused at the door. */
+	g_assert_false(venture_automation_handler_registry_add(registry,
+		"Shout-Loud", NULL, witness_handler, &witness, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	g_assert_true(venture_automation_handler_registry_add(registry, "tally",
+		"Counts calls", witness_handler, &witness, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(g_strv_contains(
+		venture_automation_handler_registry_get_names(registry), "tally"));
+
+	automation = start_rules(fixture,
+		"pod watcher = venture->new();\n"
+		"watcher->on_created => venture->tally(\"{event->type}\");\n");
+
+	save_ticket(fixture);
+
+	/* The rule reached the plugin's handler, with the event's data. */
+	g_assert_cmpuint(witness.calls, ==, 1);
+	g_assert_cmpstr(witness.last_argument, ==, "ticket");
+
+	/* And a direct invocation reaches the same handler, with its result. */
+	g_assert_true(venture_automation_invoke(automation, "tally", arguments,
+	                                        &result, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(witness.calls, ==, 2);
+	g_assert_cmpstr(witness.last_argument, ==, "by hand");
+	g_assert_true(g_variant_lookup(result, "count", "x", &count));
+	g_assert_cmpint(count, ==, 7);
+
+	stop_rules(fixture, automation);
+	witness_clear(&witness);
+}
+
+/*
+ * A name nobody registered is refused, naming what does exist -- a
+ * plugin's handler among them.
+ *
+ * What breaks if this regresses: an unknown name reaching a handler table
+ * as a silent no-op is a rule that does nothing forever and logs nothing.
+ */
+static void
+test_automation_unknown_handler_refused(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(GError) error = NULL;
+	Witness witness = { 0, NULL, FALSE };
+
+	(void)user_data;
+
+	g_assert_true(venture_automation_handler_registry_add(
+		venture_context_get_automation_handlers(fixture->context), "tally",
+		NULL, witness_handler, &witness, NULL, &error));
+	g_assert_no_error(error);
+
+	automation = venture_automation_new(fixture->context, &error);
+	g_assert_no_error(error);
+
+	g_assert_false(venture_automation_invoke(automation, "tallly", NULL, NULL,
+	                                         &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION);
+	g_assert_nonnull(strstr(error->message, "tallly"));
+	g_assert_nonnull(strstr(error->message, "tally"));
+	g_assert_nonnull(strstr(error->message, "dunning_sweep"));
+	g_assert_cmpuint(witness.calls, ==, 0);
+}
+
+/*
+ * A plugin's own event reaches a pod bound to it, with its data.
+ *
+ * What breaks if this regresses: the supported events were a fixed list
+ * of the three record changes, so "when my feed finishes, do X" had no
+ * way to be said. The refusals matter as much: a misspelt event must be
+ * found the first time it is emitted, not never, and a plugin must not be
+ * able to forge a record change every rule trusts.
+ */
+static void
+test_automation_custom_event_reaches_a_pod(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAutomationHandlerRegistry *registry;
+	Witness witness = { 0, NULL, FALSE };
+
+	(void)user_data;
+
+	registry = venture_context_get_automation_handlers(fixture->context);
+
+	g_assert_true(venture_automation_handler_registry_add_event(registry,
+		"feed_finished", "A feed run finished", &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_automation_handler_registry_add_event(registry,
+		"feed_finished", NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+	g_clear_error(&error);
+	g_assert_true(g_strv_contains(
+		venture_automation_handler_registry_get_events(registry),
+		"feed_finished"));
+
+	g_assert_true(venture_automation_handler_registry_add(registry, "tally",
+		NULL, witness_handler, &witness, NULL, &error));
+	g_assert_no_error(error);
+
+	/* Before the engine exists, an emit is delivered to nobody -- and a
+	 * misspelt one is still refused. */
+	g_assert_true(venture_automation_emit(fixture->context, "feed_finished",
+	                                      NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_automation_emit(fixture->context, "feed_finshed",
+	                                       NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION);
+	g_clear_error(&error);
+
+	automation = start_rules(fixture,
+		"pod watcher = venture->new();\n"
+		"watcher->feed_finished => venture->tally(\"{event->source}\");\n");
+
+	g_assert_true(venture_automation_emit(fixture->context, "feed_finished",
+		g_variant_new_parsed("{'source': <'auction-house'>}"), &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(witness.calls, ==, 1);
+	g_assert_cmpstr(witness.last_argument, ==, "auction-house");
+
+	/* Only the database raises a record change. */
+	g_assert_false(venture_automation_emit(fixture->context, "on_created",
+	                                       NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AUTOMATION);
+	g_clear_error(&error);
+
+	/* The data is a dictionary, as the record events' is. */
+	g_assert_false(venture_automation_emit(fixture->context, "feed_finished",
+		g_variant_new_string("not a dictionary"), &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	g_assert_cmpuint(witness.calls, ==, 1);
+
+	stop_rules(fixture, automation);
+	witness_clear(&witness);
+}
+
+/*
+ * An event raised from inside a handler does not trigger automations.
+ *
+ * What breaks if this regresses: the cascade guard that stops a rule's
+ * own write from raising on_created again would not hold for custom
+ * events, and a handler that emits the event its own pod is bound to is
+ * an unbounded loop.
+ */
+static void
+test_automation_custom_event_does_not_cascade(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAutomationHandlerRegistry *registry;
+	Witness witness = { 0, NULL, TRUE };
+
+	(void)user_data;
+
+	registry = venture_context_get_automation_handlers(fixture->context);
+
+	g_assert_true(venture_automation_handler_registry_add_event(registry,
+		"feed_finished", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_automation_handler_registry_add(registry, "tally",
+		NULL, witness_handler, &witness, NULL, &error));
+	g_assert_no_error(error);
+
+	automation = start_rules(fixture,
+		"pod watcher = venture->new();\n"
+		"watcher->feed_finished => venture->tally(\"{event->source}\");\n");
+
+	g_assert_true(venture_automation_emit(fixture->context, "feed_finished",
+		g_variant_new_parsed("{'source': <'outside'>}"), &error));
+	g_assert_no_error(error);
+
+	/* Once for the outside emit; the one the handler raised went nowhere. */
+	g_assert_cmpuint(witness.calls, ==, 1);
+	g_assert_cmpstr(witness.last_argument, ==, "outside");
+
+	stop_rules(fixture, automation);
+	witness_clear(&witness);
+}
+
+/*
+ * Installs the handler script as plugin @name, with a manifest providing
+ * @provides. Each attempt gets its own name: the manager loads a path
+ * once, failed or not.
+ */
+static gchar *
+write_handler_plugin(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*provides
+){
+	g_autofree gchar *source = NULL;
+	g_autofree gchar *contents = NULL;
+	g_autofree gchar *directory = NULL;
+	g_autofree gchar *script = NULL;
+	g_autofree gchar *manifest = NULL;
+	gchar *path;
+	gsize length;
+
+	g_autofree gchar *manifest_name = NULL;
+
+	directory = g_build_filename(fixture->state_dir, "plugins", name, NULL);
+	g_assert_cmpint(g_mkdir_with_parents(directory, 0755), ==, 0);
+
+	source = g_build_filename(VENTURE_TEST_FIXTURES, "exec",
+	                          "automation-handler.sh", NULL);
+	g_assert_true(g_file_get_contents(source, &contents, &length, NULL));
+
+	script = g_build_filename(directory, "tally.sh", NULL);
+	g_assert_true(g_file_set_contents(script, contents, (gssize)length, NULL));
+	g_assert_cmpint(g_chmod(script, 0755), ==, 0);
+
+	manifest = g_strdup_printf("name: %s\n"
+	                           "runtime: exec\n"
+	                           "protocol: 1\n"
+	                           "entry: tally.sh\n"
+	                           "exec:\n"
+	                           "  timeout: 20\n"
+	                           "provides:\n"
+	                           "%s", name, provides);
+	manifest_name = g_strdup_printf("%s.plugin.yaml", name);
+
+	path = g_build_filename(directory, manifest_name, NULL);
+	g_assert_true(g_file_set_contents(path, manifest, -1, NULL));
+
+	return path;
+}
+
+static const gchar *
+result_string(
+	GVariant	*result,
+	const gchar	*key
+){
+	const gchar *value = NULL;
+
+	g_assert_true(g_variant_lookup(result, key, "&s", &value));
+
+	return value;
+}
+
+/*
+ * An exec plugin's manifest can provide a handler, run as its program.
+ *
+ * What breaks if this regresses: the arguments must arrive as
+ * `params.args` with the declared command, the program's `result` must
+ * become count and summary, a program with no `result` is counted by its
+ * messages, and plugins.allow_exec -- off by default -- must stop the run
+ * at the next call, not only at load: switching it off on a running
+ * install is how an operator stops a program without a restart.
+ */
+static void
+test_automation_exec_handler(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VenturePluginManager) manager = NULL;
+	g_autoptr(VentureAutomation) automation = NULL;
+	g_autoptr(GVariant) result = NULL;
+	g_autoptr(GVariant) fallback = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *manifest = NULL;
+	const gchar *const arguments[] = { "alpha", "beta", NULL };
+	const gchar *const fallback_arguments[] = { "fallback", NULL };
+	const gchar *detail;
+	gint64 count;
+
+	(void)user_data;
+
+	g_object_set(fixture->config, "plugins-allow-exec", TRUE, NULL);
+
+	manager = venture_plugin_manager_new(fixture->context);
+	venture_context_set_plugin_manager(fixture->context, manager);
+
+	manifest = write_handler_plugin(fixture, "tally",
+		"  - kind: automation_handler\n"
+		"    name: tally_up\n"
+		"    command: tally\n"
+		"    description: Counts what it was given\n");
+
+	g_assert_true(venture_plugin_manager_load_file(manager, manifest, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_automation_handler_registry_has(
+		venture_context_get_automation_handlers(fixture->context),
+		"tally_up"));
+	g_assert_cmpstr(venture_automation_handler_registry_get_description(
+		venture_context_get_automation_handlers(fixture->context), "tally_up"),
+		==, "Counts what it was given");
+
+	automation = venture_automation_new(fixture->context, &error);
+	g_assert_no_error(error);
+
+	g_assert_true(venture_automation_invoke(automation, "tally_up", arguments,
+	                                        &result, &error));
+	g_assert_no_error(error);
+
+	g_assert_true(g_variant_lookup(result, "count", "x", &count));
+	g_assert_cmpint(count, ==, 2);
+	g_assert_cmpstr(result_string(result, "summary"), ==, "two of them");
+
+	/* The request the program read, handed back as its log line. */
+	detail = result_string(result, "detail");
+	g_assert_nonnull(strstr(detail, "\"command\":\"tally\""));
+	g_assert_nonnull(strstr(detail, "\"args\":[\"alpha\",\"beta\"]"));
+
+	/* No result message: two cursors are a count of two. */
+	g_assert_true(venture_automation_invoke(automation, "tally_up",
+	                                        fallback_arguments, &fallback,
+	                                        &error));
+	g_assert_no_error(error);
+	g_assert_true(g_variant_lookup(fallback, "count", "x", &count));
+	g_assert_cmpint(count, ==, 2);
+	g_assert_cmpstr(result_string(fallback, "summary"), ==, "");
+
+	/* Switched off on a running install: the next run is refused. */
+	g_object_set(fixture->config, "plugins-allow-exec", FALSE, NULL);
+	g_assert_false(venture_automation_invoke(automation, "tally_up", arguments,
+	                                         NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+
+	venture_context_set_plugin_manager(fixture->context, NULL);
+}
+
+/*
+ * With exec off the plugin does not load and its handler does not exist;
+ * an entry with a misspelt key fails the load rather than running the
+ * wrong command; and a handler may not take a built-in's name.
+ */
+static void
+test_automation_exec_handler_refusals(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VenturePluginManager) manager = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *manifest = NULL;
+	VentureAutomationHandlerRegistry *registry;
+
+	(void)user_data;
+
+	registry = venture_context_get_automation_handlers(fixture->context);
+	manager = venture_plugin_manager_new(fixture->context);
+	venture_context_set_plugin_manager(fixture->context, manager);
+
+	/* plugins.allow_exec is off by default. */
+	manifest = write_handler_plugin(fixture, "tally-off",
+		"  - kind: automation_handler\n"
+		"    name: tally_up\n");
+	g_assert_false(venture_plugin_manager_load_file(manager, manifest, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+	g_clear_error(&error);
+	g_assert_false(venture_automation_handler_registry_has(registry,
+	                                                       "tally_up"));
+
+	g_object_set(fixture->config, "plugins-allow-exec", TRUE, NULL);
+
+	g_clear_pointer(&manifest, g_free);
+	manifest = write_handler_plugin(fixture, "tally-typo",
+		"  - kind: automation_handler\n"
+		"    name: tally_up\n"
+		"    commnd: tally\n");
+	g_assert_false(venture_plugin_manager_load_file(manager, manifest, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+	g_assert_nonnull(strstr(error->message, "commnd"));
+	g_clear_error(&error);
+	g_assert_false(venture_automation_handler_registry_has(registry,
+	                                                       "tally_up"));
+
+	g_clear_pointer(&manifest, g_free);
+	manifest = write_handler_plugin(fixture, "tally-clash",
+		"  - kind: automation_handler\n"
+		"    name: report\n");
+	g_assert_false(venture_plugin_manager_load_file(manager, manifest, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+	g_assert_nonnull(strstr(error->message, "already registered"));
+	g_clear_error(&error);
+
+	venture_context_set_plugin_manager(fixture->context, NULL);
+}
+
 int
 main(
 	int	  argc,
@@ -494,6 +1024,25 @@ main(
 	           fixture_tear_down);
 	g_test_add("/automation/mail-sync-handler", Fixture, NULL,
 	           fixture_set_up, test_automation_mail_sync_handler,
+	           fixture_tear_down);
+
+	g_test_add("/automation/plugin-handler-runs-from-a-pod", Fixture, NULL,
+	           fixture_set_up, test_automation_plugin_handler_runs_from_a_pod,
+	           fixture_tear_down);
+	g_test_add("/automation/unknown-handler-refused", Fixture, NULL,
+	           fixture_set_up, test_automation_unknown_handler_refused,
+	           fixture_tear_down);
+	g_test_add("/automation/custom-event-reaches-a-pod", Fixture, NULL,
+	           fixture_set_up, test_automation_custom_event_reaches_a_pod,
+	           fixture_tear_down);
+	g_test_add("/automation/custom-event-does-not-cascade", Fixture, NULL,
+	           fixture_set_up, test_automation_custom_event_does_not_cascade,
+	           fixture_tear_down);
+	g_test_add("/automation/exec-handler", Fixture, NULL,
+	           fixture_set_up, test_automation_exec_handler,
+	           fixture_tear_down);
+	g_test_add("/automation/exec-handler-refusals", Fixture, NULL,
+	           fixture_set_up, test_automation_exec_handler_refusals,
 	           fixture_tear_down);
 
 	g_test_add_func("/automation/shipped-examples-parse",

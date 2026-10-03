@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-static gboolean venture_pod_module_handle_mail(VenturePodModule *self, GVariant *params, GVariant **result)
+static gboolean venture_pod_module_handle_mail(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	VentureMailOutbox *outbox = venture_context_get_mail_outbox(self->context);
 	const gchar *organization = venture_pod_module_argument(params, 0);
@@ -27,7 +27,7 @@ static gboolean venture_pod_module_handle_mail(VenturePodModule *self, GVariant 
  * most that many messages; each account's cursor resumes on the next run.
  * A failing account is recorded on the account and backs off; only a sweep
  * that could not run at all fails the handler. */
-static gboolean venture_pod_module_handle_mail_sync(VenturePodModule *self, GVariant *params, GVariant **result)
+static gboolean venture_pod_module_handle_mail_sync(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *organization = venture_pod_module_argument(params, 0);
 	const gchar *bound = venture_pod_module_argument(params, 1);

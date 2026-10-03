@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-static gboolean venture_pod_module_handle_report_packs(VenturePodModule *self, GVariant *params, GVariant **result)
+static gboolean venture_pod_module_handle_report_packs(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *organization = venture_pod_module_argument(params, 0);
 	g_autoptr(GError) error = NULL;

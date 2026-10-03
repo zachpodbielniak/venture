@@ -371,6 +371,81 @@ VenturePluginProvidesRegistry *
 venture_context_get_plugin_provides(VentureContext *self);
 
 /**
+ * venture_context_get_automation_handlers:
+ * @self: a #VentureContext
+ *
+ * The handlers a rule may call on the `venture` pod module and the events
+ * a pod may bind to it. Created on first use with the built-ins already
+ * in it. It lives here rather than on the engine because plugins load
+ * before the engine is built, and a reload rebuilds the engine without
+ * losing what a plugin registered.
+ *
+ * Returns: (transfer none): the registry
+ */
+VentureAutomationHandlerRegistry *
+venture_context_get_automation_handlers(VentureContext *self);
+
+/**
+ * VentureWebExtensionFunc:
+ * @server: the web server being built
+ * @user_data: the data given to venture_context_add_web_extension()
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Adds a plugin's pages to a web server: routes through
+ * venture_web_server_add_classified_route(), each carrying its own
+ * authentication check, and sidebar rows through
+ * venture_web_server_add_nav_link(). Called once per server, after every
+ * built-in route is registered.
+ *
+ * Returns: %TRUE on success. A failure is logged and the server starts
+ *   without the rest of this extension; routes it added before failing
+ *   stay.
+ */
+typedef gboolean (*VentureWebExtensionFunc) (
+	VentureWebServer	 *server,
+	gpointer		  user_data,
+	GError			**error
+);
+
+/**
+ * venture_context_add_web_extension:
+ * @self: a #VentureContext
+ * @func: (scope notified) (closure user_data) (destroy destroy): the
+ *   extension
+ * @user_data: (nullable): data for @func
+ * @destroy: (nullable): frees @user_data with the context
+ *
+ * Registers pages for every web server built over this context. Plugins
+ * load before the server exists, so a plugin cannot add a route directly;
+ * it leaves this instead, and venture_web_server_new() runs each extension,
+ * in the order added, after its own routes -- which also means a built-in
+ * route always wins a path both match.
+ */
+void
+venture_context_add_web_extension(
+	VentureContext		*self,
+	VentureWebExtensionFunc	 func,
+	gpointer		 user_data,
+	GDestroyNotify		 destroy
+);
+
+/**
+ * venture_context_run_web_extensions:
+ * @self: a #VentureContext
+ * @server: the server being built
+ *
+ * Runs every registered web extension against @server. Called by
+ * venture_web_server_new(); nothing else should need to.
+ *
+ * Returns: how many extensions succeeded
+ */
+guint
+venture_context_run_web_extensions(
+	VentureContext		*self,
+	VentureWebServer	*server
+);
+
+/**
  * venture_context_get_stripe_service:
  * @self: context
  * Returns: (transfer none) (nullable): explicitly injected provider; NULL in production or when switched off

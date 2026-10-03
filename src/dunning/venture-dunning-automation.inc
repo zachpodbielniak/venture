@@ -7,7 +7,7 @@
  * summary is the sweep's JSON answer, failures and warnings included.
  */
 static gboolean
-venture_pod_module_dunning_sweep(VenturePodModule *self, GVariant *params, GVariant **result)
+venture_pod_module_dunning_sweep(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *as_of_text = venture_pod_module_argument(params, 0);
 	const gchar *organization = venture_pod_module_argument(params, 1);

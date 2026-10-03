@@ -26,6 +26,9 @@ venture_web_server_add_classified_route(VentureWebServer *self, HtmxMethod metho
 	htmx_router_add_route(htmx_server_get_router(self->server), method, pattern, callback, user_data);
 	htmx_router_add_route(self->classified_routes, method, pattern, venture_web_classification_response,
 		GUINT_TO_POINTER((guint)classification | ((guint)flags << 8)));
+	/* What a plugin's sidebar row may point at; see get_patterns. */
+	if (HTMX_METHOD_GET == method)
+		g_ptr_array_add(self->get_patterns, g_strdup(pattern));
 }
 
 static gboolean

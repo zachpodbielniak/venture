@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 static gboolean
-venture_pod_module_recurring_run(VenturePodModule *self, GVariant *params, GVariant **result)
+venture_pod_module_recurring_run(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *as_of_text = venture_pod_module_argument(params, 0);
 	const gchar *organization = venture_pod_module_argument(params, 1);
@@ -40,7 +40,7 @@ venture_pod_module_recurring_run(VenturePodModule *self, GVariant *params, GVari
 }
 
 static gboolean
-venture_pod_module_collections_run(VenturePodModule *self, GVariant *params, GVariant **result)
+venture_pod_module_collections_run(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *as_of_text = venture_pod_module_argument(params, 0);
 	const gchar *organization = venture_pod_module_argument(params, 1);

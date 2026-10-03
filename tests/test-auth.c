@@ -672,6 +672,11 @@ typedef struct
 	gchar			*state_dir;
 } ServerFixture;
 
+/* A plugin's web extension, registered by server_fixture_set_up() when a
+ * test is added with auth_extension_marker; defined further down. */
+static gboolean auth_probe_extension(VentureWebServer *server, gpointer user_data, GError **error);
+static const gchar auth_extension_marker[] = "web-extension";
+
 static void
 server_fixture_set_up(
 	ServerFixture	*fixture,
@@ -706,6 +711,12 @@ server_fixture_set_up(
 
 	fixture->context = venture_context_new(fixture->config,
 	                                       fixture->database);
+
+	/* Plugins load before the server exists; a test that wants one's
+	 * pages registers its extension here, at the same point. */
+	if (user_data == (gconstpointer)auth_extension_marker)
+		venture_context_add_web_extension(fixture->context,
+		                                  auth_probe_extension, NULL, NULL);
 
 	fixture->server = venture_web_server_new(fixture->context, &error);
 	g_assert_no_error(error);
@@ -5482,6 +5493,182 @@ test_auth_printer_roles(
 	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/printers/test/test", cookie, "{}", NULL), ==, SOUP_STATUS_FORBIDDEN);
 }
 
+/* ==========================================================================
+ * A plugin's web extension
+ * ========================================================================== */
+
+static HtmxResponse *
+auth_probe_page(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *server = user_data;
+	HtmxResponse *refusal;
+
+	(void)params;
+
+	refusal = venture_web_server_require_page(server, request,
+	                                          VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != refusal)
+		return refusal;
+
+	return venture_web_server_render_page(server, request, "/x/auth-probe",
+	                                      "Probe", "<p>extension page</p>");
+}
+
+static HtmxResponse *
+auth_probe_admin_page(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *server = user_data;
+	HtmxResponse *refusal;
+
+	(void)params;
+
+	refusal = venture_web_server_require_page(server, request,
+	                                          VENTURE_USER_ROLE_ADMIN);
+
+	if (NULL != refusal)
+		return refusal;
+
+	return venture_web_server_render_page(server, request, NULL, "Probe",
+	                                      "<p>admin only</p>");
+}
+
+static HtmxResponse *
+auth_probe_api(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *server = user_data;
+	HtmxResponse *response;
+
+	(void)params;
+
+	response = venture_web_server_require_api(server, request,
+	                                          VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != response)
+		return response;
+
+	response = htmx_response_new_with_content("{\"probe\":true}");
+	htmx_response_set_content_type(response, "application/json");
+
+	return response;
+}
+
+/* Would shadow a built-in page, if extensions ran before the core. */
+static HtmxResponse *
+auth_probe_shadow(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	(void)request;
+	(void)params;
+	(void)user_data;
+
+	return htmx_response_new_with_content("shadowed by a plugin");
+}
+
+static gboolean
+auth_probe_extension(
+	VentureWebServer	 *server,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)user_data;
+
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/x/auth-probe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE,
+		auth_probe_page, server);
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/x/auth-probe/admin", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, auth_probe_admin_page, server);
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/x/auth-probe/api", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, auth_probe_api, server);
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/reports", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE,
+		auth_probe_shadow, server);
+
+	return venture_web_server_add_nav_link(server, "/x/auth-probe",
+	                                       "Auth probe", "plug", NULL, error);
+}
+
+/*
+ * A plugin's routes carry their own guards, like every built-in route:
+ * an anonymous page request is sent to the login page, an anonymous API
+ * request is a 401, a role short of the page's is a 403 -- and a plugin
+ * cannot take over a built-in path, because its routes are added after.
+ *
+ * What breaks if this regresses: an extension route is invisible to the
+ * route lists this file walks, so a guard it forgot would be a page open
+ * to the internet that no other test notices; and a plugin registering
+ * /reports before the core would replace the page every report links to.
+ */
+static void
+test_auth_web_extension_routes(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *viewer = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *reports = NULL;
+	g_autofree gchar *api = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/x/auth-probe"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+	                                              "/x/auth-probe/admin"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+	                                              "/x/auth-probe/api"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+
+	server_fixture_create_member(fixture, "vera", "v-long-password",
+	                             VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "vera", "v-long-password");
+	g_assert_nonnull(viewer);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/x/auth-probe",
+		viewer, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "extension page"));
+
+	/* The extension's row is in the sidebar it drew, under its heading. */
+	g_assert_nonnull(strstr(page,
+		"<summary class=\"nav-section\">Plugins</summary>"));
+	g_assert_nonnull(strstr(page, "href=\"/x/auth-probe\""));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/x/auth-probe/api", viewer, NULL, &api, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/x/auth-probe/admin", viewer, NULL, NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	/* The built-in page, not the plugin's. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/reports",
+		viewer, NULL, &reports, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(reports, "shadowed by a plugin"));
+
+	/* What the sidebar offers, the palette finds. */
+	{
+		g_autofree gchar *palette = NULL;
+
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/api/v1/palette?q=auth%20probe", viewer, NULL, &palette, NULL),
+			==, SOUP_STATUS_OK);
+		g_assert_nonnull(strstr(palette, "/x/auth-probe"));
+	}
+}
+
 int
 main(
 	int	  argc,
@@ -5711,6 +5898,7 @@ main(
 	           server_fixture_set_up, test_auth_calendar_account_delegation,
 	           server_fixture_tear_down);
 	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
+	g_test_add("/auth/web-extension-routes", ServerFixture, auth_extension_marker, server_fixture_set_up, test_auth_web_extension_routes, server_fixture_tear_down);
 	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
 	g_test_add("/auth/connector-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_connector_settings, server_fixture_tear_down);
 	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);

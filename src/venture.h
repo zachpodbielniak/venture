@@ -185,6 +185,7 @@
 #include "plugin/venture-plugin-runtime.h"
 #include "plugin/venture-plugin-manager.h"
 
+#include "automation/venture-automation-registry.h"
 #include "automation/venture-automation.h"
 
 #include "report/venture-report.h"

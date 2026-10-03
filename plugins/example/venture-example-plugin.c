@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * This is a complete plugin, small enough to read in one sitting. It shows
- * the two things a plugin usually wants to do:
+ * the things a plugin usually wants to do:
  *
  *   - register a record type, which becomes a database table, a REST
  *     resource, a web list view, AI tools and CLI subcommands
@@ -13,10 +13,15 @@
  *     the AI's report tool
  *   - register a posting rule, so an explicitly recorded renewal uses the
  *     same atomic journal service as built-in documents
+ *   - register an automation handler, so a rule can call
+ *     `venture->subscription_costs()` like any built-in step
+ *   - add a page of its own, with a sidebar row, through a web extension
  *
- * Neither needs any routing, SQL, serialisation or form code, because every
- * consumer works from the registries rather than a hardcoded list. That is
- * the whole point of deriving the system from property metadata.
+ * The first three need no routing, SQL, serialisation or form code, because
+ * every consumer works from the registries rather than a hardcoded list.
+ * That is the whole point of deriving the system from property metadata.
+ * The page is the one thing written by hand, because it is the one thing
+ * the field table cannot say.
  *
  * Build it with the tree (`make plugins`) or compile the same source on
  * demand by dropping it in a plugin directory as a .c file -- crispy will
@@ -258,6 +263,190 @@ venture_subscription_report(
 }
 
 /* ==========================================================================
+ * An automation handler
+ * ========================================================================== */
+
+/*
+ * `venture->subscription_costs()`: the report's two figures, for a rule
+ * that wants to say "you are now paying X a year for N subscriptions" in
+ * a weekly message. It answers in the shape every handler does -- count,
+ * summary, detail -- so `{pipe->count}` means the same thing after it as
+ * after a built-in.
+ */
+static gboolean
+venture_example_subscription_costs(
+	VentureContext	 *context,
+	const gchar	 *name,
+	GVariant	 *params,
+	GVariant	**result,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureReportResult) report = NULL;
+	g_autofree gchar *annual_text = NULL;
+	g_autofree gchar *summary = NULL;
+	g_autofree gchar *detail = NULL;
+	GPtrArray *metrics;
+	gint64 active;
+	guint i;
+
+	(void)name;
+	(void)params;
+	(void)user_data;
+
+	period = venture_context_parse_period(context, "this_month", error);
+
+	if (NULL == period)
+		return FALSE;
+
+	report = venture_subscription_report(context, period, NULL, error);
+
+	if (NULL == report)
+		return FALSE;
+
+	active = 0;
+	metrics = venture_report_result_get_metrics(report);
+
+	for (i = 0; i < metrics->len; i++)
+	{
+		VentureMetric *metric;
+
+		metric = g_ptr_array_index(metrics, i);
+
+		if (0 == g_strcmp0(venture_metric_get_key(metric), "count"))
+			active = (gint64)venture_metric_get_number(metric);
+		else if (0 == g_strcmp0(venture_metric_get_key(metric), "annual"))
+			annual_text = venture_metric_format_value(metric);
+	}
+
+	summary = g_strdup_printf("%" G_GINT64_FORMAT " active subscription%s, "
+	                          "%s a year", active, (1 == active) ? "" : "s",
+	                          (NULL != annual_text) ? annual_text : "nothing");
+	detail = venture_report_result_render(report, VENTURE_OUTPUT_FORMAT_TEXT);
+
+	if (NULL != result)
+		*result = venture_automation_result_new(active, summary, detail);
+
+	return TRUE;
+}
+
+/* ==========================================================================
+ * A page of its own
+ * ========================================================================== */
+
+/*
+ * GET /example/subscriptions: what the subscriptions cost per year, as a
+ * page. Every route carries its own checks -- the module first, so a
+ * switched-off plugin answers like a switched-off built-in, then the
+ * session -- because a route with no guard looks exactly like one with.
+ */
+static HtmxResponse *
+venture_example_page(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureReportResult) report = NULL;
+	g_autoptr(GString) content = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureWebServer *server;
+	VentureContext *context;
+	HtmxResponse *refusal;
+	GPtrArray *metrics;
+	guint i;
+
+	(void)params;
+
+	server = user_data;
+	context = venture_web_server_get_context(server);
+
+	refusal = venture_web_server_require_module(server, request, "example");
+
+	if (NULL != refusal)
+		return refusal;
+
+	refusal = venture_web_server_require_page(server, request,
+	                                          VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != refusal)
+		return refusal;
+
+	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Subscription costs</h1>"
+	                       "<span class=\"subtitle\">What the active "
+	                       "subscriptions cost, per year</span></div></div>"
+	                       "<section class=\"card\"><div class=\"card-body\">");
+
+	period = venture_context_parse_period(context, "this_month", &error);
+	report = (NULL != period)
+		? venture_subscription_report(context, period, NULL, &error) : NULL;
+
+	if (NULL == report)
+	{
+		g_string_append(content, "<p class=\"muted\">");
+		venture_html_escape_append(content, error->message);
+		g_string_append(content, "</p>");
+	}
+	else
+	{
+		metrics = venture_report_result_get_metrics(report);
+
+		g_string_append(content, "<dl>");
+
+		for (i = 0; i < metrics->len; i++)
+		{
+			g_autofree gchar *value = NULL;
+			VentureMetric *metric;
+
+			metric = g_ptr_array_index(metrics, i);
+			value = venture_metric_format_value(metric);
+
+			/* Escaped: a label or a figure is text, never markup. */
+			g_string_append(content, "<dt>");
+			venture_html_escape_append(content, venture_metric_get_label(metric));
+			g_string_append(content, "</dt><dd>");
+			venture_html_escape_append(content, value);
+			g_string_append(content, "</dd>");
+		}
+
+		g_string_append(content, "</dl><p><a href=\"/e/subscription\">"
+		                          "Every subscription</a></p>");
+	}
+
+	g_string_append(content, "</div></section>");
+
+	return venture_web_server_render_page(server, request,
+	                                      "/example/subscriptions",
+	                                      "Subscription costs", content->str);
+}
+
+/*
+ * Runs once for every web server built over the context, after the
+ * server's own routes: the route first, then the row that points at it --
+ * a row is refused unless something already serves its path.
+ */
+static gboolean
+venture_example_web(
+	VentureWebServer	 *server,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)user_data;
+
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/example/subscriptions", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, venture_example_page, server);
+
+	/* An icon by name, never markup; the module hides the row when the
+	 * plugin is switched off. */
+	return venture_web_server_add_nav_link(server, "/example/subscriptions",
+	                                       "Subscription costs", "calendar",
+	                                       "example", error);
+}
+
+/* ==========================================================================
  * Entry points
  * ========================================================================== */
 
@@ -349,6 +538,23 @@ venture_plugin_register(
 	/* The report was added after the module was applied; apply again so
 	 * a disabled module hides it too. */
 	venture_context_apply_modules(context);
+
+	/*
+	 * A step automations can call. The registry is the context's, so it
+	 * outlives every rebuild of the automation engine; a name a built-in
+	 * or another plugin already holds is refused rather than replaced.
+	 */
+	if (!venture_automation_handler_registry_add(
+		venture_context_get_automation_handlers(context),
+		"subscription_costs",
+		"Active subscriptions and what they cost per year",
+		venture_example_subscription_costs, NULL, NULL, error))
+		return FALSE;
+
+	/* The server does not exist yet when plugins load, so the page is
+	 * left as an extension for every server built later. */
+	venture_context_add_web_extension(context, venture_example_web, NULL,
+	                                  NULL);
 
 	return TRUE;
 }

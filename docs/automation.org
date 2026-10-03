@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-15]
-#+updated: [2026-08-15]
-#+version: 0.1.0
+#+updated: [2026-10-03]
+#+version: 0.2.0
 
 * Automation
 
@@ -58,14 +58,78 @@ source module".
 * The venture module
 
 - *Events:* =on_created=, =on_updated= and =on_deleted= fire for every
-  record change from every surface — web, API, CLI, AI.
-- *Handlers:* query, count, report, create, update, delete — the same
-  repository everything else uses.
+  record change from every surface — web, API, CLI, AI. Plugins may register
+  more, and raise them with =venture_automation_emit()=.
+- *Handlers:* the built-ins below, plus whatever plugins registered — the
+  same repository everything else uses.
 - *Audit:* everything an automation writes is audited as the automation
   actor, so the trail always distinguishes a rule's change from a person's
   or the AI's.
-- Audit entries never raise events, which is what stops a rule that writes
-  from triggering itself forever.
+- Audit entries never raise events, and neither does anything an
+  automation does from inside a handler — a write or a plugin's event —
+  which is what stops a rule that writes from triggering itself forever.
+
+| Handler             | What it does                                    |
+|---------------------+-------------------------------------------------|
+| =query=, =count=    | Count the records of a type matching a filter   |
+| =report=            | Run a report for a period and hand on its text  |
+| =create=            | Create a record from =field=value= pairs        |
+| =low_stock=         | Inventory items at or below their reorder point |
+| =assets_run_period= | Post a period's depreciation                    |
+| =mail_deliver=      | Deliver the mail that is due                    |
+| =mail_sync=         | Fetch new mail from the mailboxes               |
+| =recurring_run=     | Raise the recurring documents that are due      |
+| =collections_run=   | Collect the payments that are due               |
+| =bankfeed_sync=     | Fetch new bank transactions                     |
+| =commerce_import=   | Import orders from the connected shops          |
+| =report_packs_run=  | Deliver the report packs that are due           |
+| =dunning_sweep=     | Send the overdue-invoice reminders              |
+| =backups_run=       | Take the backups that are due                   |
+
+** One registry, built-ins first
+
+The handlers and events are not a list inside the module: they are the
+context's =VentureAutomationHandlerRegistry=
+(=venture_context_get_automation_handlers()=), which the module asks every
+time a rule calls it. The built-ins above and the three record events are
+registered first, when the context first hands the registry out; a plugin
+registers after, and a name already held — a built-in's or another
+plugin's — is refused, so what a rule does never depends on which plugin
+loaded first. An unknown handler is still refused: from a pod with a
+warning, from =venture_automation_invoke()= with an error naming every
+handler that exists.
+
+The registry lives on the context, not on the engine, for two reasons:
+plugins load before the engine is built, and a reload rebuilds the engine —
+a rebuild must not forget what a plugin added.
+
+A plugin adds a handler or an event in C (see [[file:extending.org][Extending VENTURE]]), or, as an
+exec plugin, names a handler in its manifest with the =automation_handler=
+provides kind, which runs its program (see [[file:plugins.org][Plugins]]).
+
+** Handlers stay synchronous
+
+Every handler — built-in, a plugin's in C, an exec plugin's program — runs
+on the main thread, inside the pod or invocation that called it. The engine
+sets podomation's handler timeout to zero for this; a non-zero timeout
+would run handlers on a worker thread while the main loop spins underneath,
+and VENTURE's handlers write to the database and read a non-atomic cascade
+guard. An exec handler therefore blocks the server for as long as its
+program runs, bounded by its manifest's =timeout=.
+
+** A plugin's events
+
+#+begin_src
+pod feeds = venture->new();
+feeds->feed_finished => log->write_info("{event->source}: {event->rows} rows");
+#+end_src
+
+A plugin registers =feed_finished= and raises it with
+=venture_automation_emit(context, "feed_finished", data, &error)=, where
+=data= is an =a{sv}= a rule reads as =\{event->member\}=. An unregistered
+event is refused, automation on or off, so a typo surfaces the first time;
+the record events are refused, because only the database may say a record
+was written. With automation off the emit succeeds and nothing happens.
 
 * Worked examples
 

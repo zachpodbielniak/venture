@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 static gboolean
-venture_pod_module_assets_run(VenturePodModule *self, GVariant *params, GVariant **result)
+venture_pod_module_assets_run(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *requested = venture_pod_module_argument(params, 0);
 	const gchar *organization = venture_pod_module_argument(params, 1);

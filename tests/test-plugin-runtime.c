@@ -1816,7 +1816,9 @@ test_jsonl_kind_names_match_enum(void)
 		g_assert_cmpint(kind, ==, klass->values[i].value);
 	}
 
-	g_assert_cmpuint(klass->n_values, ==, 12);
+	/* Twelve, plus `result`, which an exec automation handler answers
+	 * with. A thirteenth that the parser does not name fails above. */
+	g_assert_cmpuint(klass->n_values, ==, 13);
 	g_type_class_unref(klass);
 
 	g_assert_false(venture_jsonl_kind_from_name("Listing", NULL));
@@ -1893,6 +1895,9 @@ test_jsonl_accepts_every_kind(void)
 		"{\"type\":\"log\",\"level\":\"warning\",\"message\":\"slow\"}",
 		"{\"type\":\"error\",\"message\":\"quota\",\"retry_after\":30,"
 		"\"future_member\":\"ignored\"}",
+		"{\"type\":\"result\"}",
+		"{\"type\":\"result\",\"count\":3,\"summary\":\"three\","
+		"\"detail\":\"a\\nb\"}",
 	};
 	gsize i;
 
@@ -1964,6 +1969,9 @@ test_jsonl_refusals(void)
 		  "must be one of" },
 		{ "{\"type\":\"error\",\"message\":\"x\",\"retry_after\":-1}",
 		  "at least 0" },
+		{ "{\"type\":\"result\",\"count\":-1}", "at least 0" },
+		{ "{\"type\":\"result\",\"count\":2.5}", "whole number" },
+		{ "{\"type\":\"result\",\"summary\":7}", "must be a string" },
 	};
 	gsize i;
 

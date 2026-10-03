@@ -190,6 +190,65 @@ venture_automation_emit_entity_event(
 );
 
 /**
+ * venture_automation_emit:
+ * @context: the wiring
+ * @event_name: an event registered with
+ *   venture_automation_handler_registry_add_event()
+ * @data: (nullable) (transfer floating): the event's data, an `a{sv}`; a
+ *   pod's pipeline reads its members as `{event->member}`. %NULL is an
+ *   empty dictionary
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Raises a custom event into every pod built on the `venture` module. This
+ * is how a plugin lets a rule say "when my feed finishes, do X" without the
+ * plugin knowing automations exist, the same bargain the record-change
+ * events strike for the database.
+ *
+ * Refused with %VENTURE_ERROR_AUTOMATION: an event nobody registered (so a
+ * typo is found the first time, whether or not automation is on), and the
+ * record-change events, which only the database raises. An @data that is
+ * not a dictionary is refused with %VENTURE_ERROR_INVALID_ARGUMENT.
+ *
+ * With automation off or not yet started it succeeds and nothing happens.
+ * Raised from inside a handler it also does nothing: the cascade guard
+ * that stops an automation's own writes from triggering automations holds
+ * for events too. Main thread only, like every handler.
+ *
+ * Returns: %TRUE unless the event was refused
+ */
+gboolean
+venture_automation_emit(
+	VentureContext	 *context,
+	const gchar	 *event_name,
+	GVariant	 *data,
+	GError		**error
+);
+
+/**
+ * venture_automation_register_builtins:
+ * @registry: a #VentureAutomationHandlerRegistry
+ *
+ * Registers the built-in handlers -- query, count, report, create and the
+ * modules' sweeps -- and the three record-change events. The context does
+ * this when it first hands its registry out, so that the built-ins always
+ * come first and no plugin can take one of their names.
+ */
+void
+venture_automation_register_builtins(VentureAutomationHandlerRegistry *registry);
+
+/**
+ * venture_automation_register_provides:
+ * @registry: the context's #VenturePluginProvidesRegistry
+ *
+ * Registers the `automation_handler` provides kind, through which an exec
+ * plugin's manifest names a handler its program answers. The context does
+ * this when it first hands its provides registry out, before any plugin
+ * loads.
+ */
+void
+venture_automation_register_provides(VenturePluginProvidesRegistry *registry);
+
+/**
  * venture_automation_invoke:
  * @self: a #VentureAutomation
  * @handler: the handler to run, e.g. "report" or "low_stock"
@@ -200,7 +259,10 @@ venture_automation_emit_entity_event(
  * @error: (out) (optional): return location for a #GError
  *
  * Runs one of the `venture` module's handlers immediately, as though an
- * event had triggered it.
+ * event had triggered it. Any handler in the context's registry may be
+ * named, a plugin's as well as a built-in; an unknown one is refused with
+ * %VENTURE_ERROR_AUTOMATION, naming those that exist, and a plugin
+ * handler's own error comes back as it was raised.
  *
  * This exists because the alternative way to find out what a rule will do is
  * to wait for its trigger and read the log afterwards. Writes go through the

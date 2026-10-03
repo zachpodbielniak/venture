@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-18]
-#+updated: [2026-09-25]
-#+version: 0.6.0
+#+updated: [2026-10-03]
+#+version: 0.7.0
 
 * What this is
 
@@ -39,6 +39,22 @@ The link table (=venture_web_navigation()=) is unchanged and stays in the order 
 
 A section's heading follows the first of its rows actually shown, the same rule as before, so a question every one of whose modules is off leaves no heading over nothing. The command palette (Ctrl+K) and the assistant's page context read the link table directly and are unaffected.
 
+* Plugins' rows
+
+A plugin's pages get rows too, but not in the link table: that table is the built-in sidebar, held to exact membership by the tests, and it is compiled in. A plugin adds a row from its web extension with =venture_web_server_add_nav_link(server, path, label, icon, module, error)= (see [[file:extending.org][Extending VENTURE]]), per server, and the rows are drawn after every built-in area under one folding *Plugins* heading -- drawn only when at least one row is, so an install with no such plugin has exactly the sidebar it always had. The rows are listed by =venture_web_server_get_plugin_navigation()=, in the order added.
+
+What a row must be:
+
+- *Only from an extension.* A call from anywhere else is refused: built-in pages belong in the static table, which is what the tests hold still.
+- *A plain path that is served.* Absolute, at most 256 bytes, no quote, angle bracket, backslash, backtick, whitespace, control byte, query, fragment, =.= or =..= segment, and not =//= (another host, to a browser) -- and a GET route registered through =venture_web_server_add_classified_route()= must already match it, segment for segment with =:name= matching one segment. A row with nothing behind it is a 404 the operator finds by clicking. A built-in page's path, or a path an earlier row has, is refused.
+- *An escaped label* of 1 to 64 bytes of UTF-8. The path is escaped on output too, though the check already rules out anything that would need it.
+- *An icon by name, never markup.* One of the built-in set (=plug=, the default, =chart=, =trend=, =list=, =document=, =calendar=, =box=, =tag=, =grid=, =gear=, =people=, =link=; =venture_web_server_nav_icon_names()=), drawn with the same wrapper and stroke as every built-in row. Icon markup is written into every page every signed-in person sees, so it is never taken from a plugin, a manifest or a script.
+- *A module that exists, or none.* While the module is off the row is not drawn; the heading goes with the last row under it.
+
+An accountant-only sidebar is Books alone, on purpose. A plugin's row joins it only when its module is one that sidebar already offers (=statements= today) -- the same judgement the accountant table makes for built-in pages -- and a row with no module stays out.
+
 * Tests
 
 =test-plugin= asserts each section's membership, that every path a section gathers is a row in the link table, that no path is gathered twice, and that no row is orphaned -- every row is either under a question or under a heading it inherits. =test-auth= renders the sidebar as an administrator and checks the headings appear in order after Overview, that a gathered page is drawn once and under its question, that the emptied headings are gone, that the group holding the current page is the one drawn open, and that switching a module off removes its row and leaves the question's heading in place. The anonymous-route test is untouched: it walks the same link table, so every page still answers a redirect to the sign-in page when nobody is signed in.
+
+For plugins' rows, =test-plugin= (=/web/plugin-nav-row=) builds a server with no extension and finds no Plugins heading; then one with an extension, and checks each refusal above, that the row appears exactly once under one heading with its label escaped, that its page answers with the row marked current, and that a row whose module is off disappears while the heading stays for the other. The example plugin's own row is asserted where that test loads it (=/plugin/manager-loads-native-plugin=), deliberately and nowhere else. =test-auth= (=/auth/web-extension-routes=) checks an extension's page redirects anonymously, its API answers 401, a role short of the page's gets 403, and that an extension registering =/reports= does not displace the built-in page.

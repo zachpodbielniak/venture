@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* venture->backups_run("ORG") dispatches the due backup schedules of one
  * organization, or of every one with "0", the way report_packs_run does. */
-static gboolean venture_pod_module_handle_backups(VenturePodModule *self, GVariant *params, GVariant **result)
+static gboolean venture_pod_module_handle_backups(VentureAutomationCall *self, GVariant *params, GVariant **result)
 {
 	const gchar *organization = venture_pod_module_argument(params, 0);
 	g_autoptr(GError) error = NULL;

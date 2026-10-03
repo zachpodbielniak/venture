@@ -753,6 +753,11 @@ test_plugin_manager_list_is_json(
  * A native plugin, loaded for real
  * ========================================================================== */
 
+/* A real server and a page fetch; defined with the sidebar tests below. */
+static VentureWebServer *start_page_server(Fixture *fixture, const gchar *state_dir);
+static guint fetch_page(VentureWebServer *server, const gchar *path, gchar **body);
+static guint count_occurrences(const gchar *haystack, const gchar *needle);
+
 /*
  * Loads the example plugin built alongside the tests. Skipped when it is not
  * present, so the suite still runs for someone who built with
@@ -867,6 +872,77 @@ test_plugin_manager_loads_native_plugin(
 			g_assert_no_error(error);
 			g_assert_cmpuint(journals->len, ==, 1);
 		}
+	}
+
+	/*
+	 * Its automation handler is in the same registry the built-ins are,
+	 * and answers in their shape: the one active subscription above.
+	 */
+	{
+		g_autoptr(GVariant) result = NULL;
+		gint64 count;
+
+		g_assert_true(venture_automation_handler_registry_call(
+			venture_context_get_automation_handlers(fixture->context),
+			fixture->context, "subscription_costs", NULL, &result, &error));
+		g_assert_no_error(error);
+		g_assert_true(g_variant_lookup(result, "count", "x", &count));
+		g_assert_cmpint(count, ==, 1);
+	}
+
+	/*
+	 * And its page: the extension it left on the context runs when a
+	 * server is built, its row is the only one under "Plugins" -- this
+	 * test loads the example deliberately, so the heading is expected
+	 * here and nowhere else -- and the row's page answers.
+	 */
+	{
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autofree gchar *state_dir = NULL;
+		g_autofree gchar *reports = NULL;
+		g_autofree gchar *page = NULL;
+		const VentureWebNavLink *rows;
+
+		state_dir = g_dir_make_tmp("venture-example-web-XXXXXX", NULL);
+		server = start_page_server(fixture, state_dir);
+
+		rows = venture_web_server_get_plugin_navigation(server);
+		g_assert_cmpstr(rows[0].path, ==, "/example/subscriptions");
+		g_assert_cmpstr(rows[0].module, ==, "example");
+		g_assert_null(rows[1].path);
+
+		g_assert_cmpuint(fetch_page(server, "/reports", &reports), ==, 200);
+		g_assert_cmpuint(count_occurrences(reports, ">Plugins</summary>"),
+		                 ==, 1);
+		g_assert_cmpuint(count_occurrences(reports,
+			"href=\"/example/subscriptions\""), ==, 1);
+
+		g_assert_cmpuint(fetch_page(server, "/example/subscriptions", &page),
+		                 ==, 200);
+		g_assert_nonnull(strstr(page, "Active subscriptions"));
+
+		/* The rules editor's reference reads the registry, so the
+		 * plugin's handler is listed beside the built-ins. */
+		{
+			g_autoptr(VentureAutomation) automation = NULL;
+			g_autofree gchar *rules = NULL;
+
+			automation = venture_automation_new(fixture->context, &error);
+			g_assert_no_error(error);
+			venture_context_set_automation(fixture->context, automation);
+
+			g_assert_cmpuint(fetch_page(server, "/automations", &rules),
+			                 ==, 200);
+			g_assert_nonnull(strstr(rules,
+				"venture-&gt;subscription_costs()"));
+			g_assert_nonnull(strstr(rules, "venture-&gt;dunning_sweep()"));
+			g_assert_nonnull(strstr(rules, "<code>on_created</code>"));
+
+			venture_context_set_automation(fixture->context, NULL);
+		}
+
+		venture_web_server_stop(server);
+		venture_test_remove_tree(state_dir);
 	}
 }
 
@@ -1364,6 +1440,299 @@ test_web_navigation_groups_by_question(
 
 		g_assert_cmpuint(drawn, ==, i);
 	}
+}
+
+/* ==========================================================================
+ * Plugins' pages and sidebar rows
+ * ========================================================================== */
+
+typedef struct
+{
+	gboolean	 done;
+	GBytes		*body;
+	GError		*error;
+} PageReply;
+
+static void
+page_reply_done(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 user_data
+){
+	PageReply *reply = user_data;
+
+	reply->body = soup_session_send_and_read_finish(SOUP_SESSION(source),
+	                                                result, &reply->error);
+	reply->done = TRUE;
+}
+
+/*
+ * Starts a server with authentication off -- every request is the owner,
+ * which validation allows only on loopback -- on a port the kernel picks.
+ */
+static VentureWebServer *
+start_page_server(
+	Fixture		*fixture,
+	const gchar	*state_dir
+){
+	g_autoptr(GError) error = NULL;
+	VentureWebServer *server;
+
+	g_object_set(fixture->config,
+	             "state-dir", state_dir,
+	             "server-bind-address", "127.0.0.1",
+	             "server-port", (gint64)0,
+	             "security-require-auth", FALSE,
+	             NULL);
+
+	server = venture_web_server_new(fixture->context, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(server);
+
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+
+	return server;
+}
+
+static guint
+fetch_page(
+	VentureWebServer	 *server,
+	const gchar		 *path,
+	gchar			**body
+){
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	PageReply reply = { FALSE, NULL, NULL };
+	guint status;
+
+	session = soup_session_new();
+	url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	message = soup_message_new("GET", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+
+	/* The server answers on this thread's main context, so the request
+	 * is made asynchronously and the context turned until it lands. */
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT,
+	                                 NULL, page_reply_done, &reply);
+
+	while (!reply.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(reply.error);
+
+	*body = g_strndup(g_bytes_get_data(reply.body, NULL),
+	                  g_bytes_get_size(reply.body));
+	status = soup_message_get_status(message);
+	g_bytes_unref(reply.body);
+
+	return status;
+}
+
+/* How many times @needle occurs in @haystack. */
+static guint
+count_occurrences(
+	const gchar	*haystack,
+	const gchar	*needle
+){
+	const gchar *at;
+	guint count;
+
+	count = 0;
+
+	for (at = strstr(haystack, needle); NULL != at;
+	     at = strstr(at + strlen(needle), needle))
+		count++;
+
+	return count;
+}
+
+static HtmxResponse *
+probe_page(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *server = user_data;
+	HtmxResponse *refusal;
+
+	(void)params;
+
+	refusal = venture_web_server_require_page(server, request,
+	                                          VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != refusal)
+		return refusal;
+
+	return venture_web_server_render_page(server, request, "/x/probe",
+	                                      "Probe", "<p>probe page</p>");
+}
+
+typedef struct
+{
+	guint runs;
+} ProbeExtension;
+
+/*
+ * The extension under test: one route, then the rows that may and may not
+ * point at it. Each refusal is the rule that keeps a plugin's row from
+ * being a broken link, a duplicate, or markup in every page.
+ */
+static gboolean
+probe_extension(
+	VentureWebServer	 *server,
+	gpointer		  user_data,
+	GError			**error
+){
+	ProbeExtension *probe = user_data;
+	g_autoptr(GError) local_error = NULL;
+
+	probe->runs++;
+
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/x/probe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE,
+		probe_page, server);
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/x/probe/:what", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE,
+		probe_page, server);
+
+	/* A path that would break out of the href. */
+	g_assert_false(venture_web_server_add_nav_link(server,
+		"/x/probe\"onmouseover=\"x", "Bad", NULL, NULL, &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&local_error);
+
+	/* Another host, to a browser. */
+	g_assert_false(venture_web_server_add_nav_link(server, "//evil.example/x",
+		"Bad", NULL, NULL, &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&local_error);
+
+	/* An icon is a name, never markup. */
+	g_assert_false(venture_web_server_add_nav_link(server, "/x/probe",
+		"Probe", "<svg onload=x>", NULL, &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&local_error);
+
+	/* A module nobody registered. */
+	g_assert_false(venture_web_server_add_nav_link(server, "/x/probe",
+		"Probe", NULL, "no-such-module", &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&local_error);
+
+	/* A built-in page keeps its own row. */
+	g_assert_false(venture_web_server_add_nav_link(server, "/reports",
+		"Reports again", NULL, NULL, &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+	g_clear_error(&local_error);
+
+	/* Nothing serves it. */
+	g_assert_false(venture_web_server_add_nav_link(server, "/x/missing",
+		"Missing", NULL, NULL, &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&local_error);
+
+	/* The row, with a label that would be markup if it were not escaped. */
+	g_assert_true(venture_web_server_add_nav_link(server, "/x/probe",
+		"Tom & \"Jerry\" <b>", "chart", NULL, &local_error));
+	g_assert_no_error(local_error);
+
+	/* Once. */
+	g_assert_false(venture_web_server_add_nav_link(server, "/x/probe",
+		"Probe again", NULL, NULL, &local_error));
+	g_assert_error(local_error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
+	g_clear_error(&local_error);
+
+	/* A row behind a module, served by the parameterised route. */
+	return venture_web_server_add_nav_link(server, "/x/probe/market",
+	                                       "Probe market", "tag", "market",
+	                                       error);
+}
+
+/*
+ * A plugin's page reaches the sidebar exactly once, under a "Plugins"
+ * heading, escaped, and resolves -- and an install with no such plugin has
+ * no "Plugins" heading at all.
+ *
+ * What breaks if this regresses: the sidebar was a static table only, so a
+ * plugin's page was reachable only by typing its address. A row that
+ * appears twice, links nowhere, or carries markup from a plugin is a worse
+ * sidebar than none; and a "Plugins" heading over nothing would change
+ * every install's sidebar, which the exact-match tables above hold still.
+ */
+static void
+test_web_plugin_nav_row(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureWebServer) plain = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *plain_page = NULL;
+	g_autofree gchar *probe = NULL;
+	g_autofree gchar *after = NULL;
+	const VentureWebNavLink *rows;
+	ProbeExtension extension = { 0 };
+
+	(void)user_data;
+
+	state_dir = g_dir_make_tmp("venture-plugin-nav-XXXXXX", NULL);
+
+	/* A server over a context with no extension: no heading. */
+	plain = start_page_server(fixture, state_dir);
+	g_assert_null(venture_web_server_get_plugin_navigation(plain)[0].path);
+	g_assert_cmpuint(fetch_page(plain, "/reports", &plain_page), ==, 200);
+	g_assert_null(strstr(plain_page, ">Plugins</summary>"));
+
+	/* Outside an extension, a row is refused: built-in pages belong in
+	 * the static table, which test-plugin holds to exact membership. */
+	g_assert_false(venture_web_server_add_nav_link(plain, "/reports",
+		"Reports", NULL, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	venture_web_server_stop(plain);
+
+	venture_context_add_web_extension(fixture->context, probe_extension,
+	                                  &extension, NULL);
+	server = start_page_server(fixture, state_dir);
+	g_assert_cmpuint(extension.runs, ==, 1);
+
+	rows = venture_web_server_get_plugin_navigation(server);
+	g_assert_cmpstr(rows[0].path, ==, "/x/probe");
+	g_assert_cmpstr(rows[0].section, ==, "Plugins");
+	g_assert_nonnull(rows[0].icon);
+	g_assert_cmpstr(rows[1].path, ==, "/x/probe/market");
+	g_assert_cmpstr(rows[1].module, ==, "market");
+	g_assert_null(rows[2].path);
+
+	g_assert_cmpuint(fetch_page(server, "/reports", &page), ==, 200);
+
+	/* Under one heading, once each, escaped. */
+	g_assert_cmpuint(count_occurrences(page, ">Plugins</summary>"), ==, 1);
+	g_assert_cmpuint(count_occurrences(page, "href=\"/x/probe\""), ==, 1);
+	g_assert_cmpuint(count_occurrences(page, "href=\"/x/probe/market\""), ==, 1);
+	g_assert_nonnull(strstr(page, "Tom &amp; &quot;Jerry&quot; &lt;b&gt;"));
+	g_assert_null(strstr(page, "Tom & \"Jerry\" <b>"));
+
+	/* It resolves: the row's page answers, drawn with the row current. */
+	g_assert_cmpuint(fetch_page(server, "/x/probe", &probe), ==, 200);
+	g_assert_nonnull(strstr(probe, "probe page"));
+	g_assert_nonnull(strstr(probe, "class=\"nav-item active\" href=\"/x/probe\""));
+
+	/* A row whose module is off is not drawn; the heading stays while
+	 * another row is under it. */
+	venture_config_set_module_enabled(fixture->config, "market", FALSE);
+	g_assert_cmpuint(fetch_page(server, "/reports", &after), ==, 200);
+	g_assert_cmpuint(count_occurrences(after, "href=\"/x/probe/market\""), ==, 0);
+	g_assert_cmpuint(count_occurrences(after, "href=\"/x/probe\""), ==, 1);
+	g_assert_cmpuint(count_occurrences(after, ">Plugins</summary>"), ==, 1);
+
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
 }
 
 /* ==========================================================================
@@ -2088,6 +2457,7 @@ main(
 	    test_web_navigation_lists_accounting_types);
 	ADD("/web/navigation-groups-by-question",
 	    test_web_navigation_groups_by_question);
+	ADD("/web/plugin-nav-row", test_web_plugin_nav_row);
 
 	ADD("/automation/disabled-is-not-a-failure",
 	    test_automation_disabled_is_not_a_failure);

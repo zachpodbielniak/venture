@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-10-03]
-#+version: 0.6.0
+#+version: 0.7.0
 
 * Extending VENTURE
 
@@ -238,7 +238,7 @@ Registered in-process rather than loaded as a =.so=, because it needs the
 =VentureContext= and an out-of-process module could not be handed one.
 
 Events, raised on any record change: =on_created=, =on_updated=,
-=on_deleted=.
+=on_deleted=. A plugin may register more (below).
 
 *An automation's own writes do not raise events.* Otherwise the obvious rule
 
@@ -252,7 +252,9 @@ of cascade is as arbitrary as ten — and a rule that genuinely needs to chain
 can call the next step in its own pipeline, where the author can see it.
 Audit entries never raise events either, for the same reason.
 
-Handlers:
+Handlers -- the built-ins, registered first; the modules' sweeps
+(=dunning_sweep=, =recurring_run=, =mail_sync=, =backups_run= and the rest)
+are listed in [[file:automation.org][Automating VENTURE]]:
 
 | Handler      | Arguments                       | What it answers                       |
 |--------------+---------------------------------+---------------------------------------|
@@ -284,6 +286,160 @@ so reviewing the log later answers "did I do this, or did a rule?".
 =venture_automation_invoke()= runs a handler immediately, as though an event
 had triggered it. It exists because the alternative way to find out what a
 rule will do is to wait for its trigger and read the log afterwards.
+
+** A plugin's own handlers and events
+
+What the =venture= module answers to is a registry, not a list in the
+module: =venture_context_get_automation_handlers()= holds every handler a
+rule may call and every event a pod may bind. It lives on the context
+because plugins load before the engine is built, and a reload rebuilds the
+engine without forgetting what a plugin added. The built-ins are registered
+first, when the context first hands the registry out, and a name is never
+registered twice -- so no plugin can replace =report= or =count=, and an
+unknown name is still refused, naming the handlers that exist.
+
+A handler, from =venture_plugin_register()=:
+
+#+begin_src C
+static gboolean
+subscription_costs(VentureContext *context, const gchar *name,
+                   GVariant *params, GVariant **result,
+                   gpointer user_data, GError **error)
+{
+	const gchar *window = venture_automation_argument(params, 0);
+	/* ... work out count, summary, detail ... */
+	if (NULL != result)
+		*result = venture_automation_result_new(count, summary, detail);
+	return TRUE;
+}
+
+venture_automation_handler_registry_add(
+	venture_context_get_automation_handlers(context),
+	"subscription_costs", "Active subscriptions and their annual cost",
+	subscription_costs, NULL, NULL, error);
+#+end_src
+
+and a rule calls it like any built-in: =venture->subscription_costs()=.
+Names are a lower-case letter, then lower-case letters, digits and =_=, up
+to 64 bytes -- what the DSL can spell. A handler:
+
+- runs synchronously on the main thread, inside the pod or the invocation
+  that called it, and may read and write the database; a write should be
+  made as the automation actor;
+- reads its arguments with =venture_automation_argument()= (positional
+  strings, as the DSL passes them) and answers with
+  =venture_automation_result_new()=, the =count= / =summary= / =detail=
+  shape every handler shares;
+- fails by setting its =GError=. A handler that returns =FALSE= without one
+  is taken to have logged its own reason (every built-in does, with
+  =g_warning()=): the caller reports =VENTURE_ERROR_AUTOMATION= ("see the
+  log") and a pod does not log it twice. So keep that code for "already
+  reported" and raise your own errors with another.
+
+An event:
+
+#+begin_src C
+venture_automation_handler_registry_add_event(
+	venture_context_get_automation_handlers(context),
+	"feed_finished", "A market-data feed finished a run", error);
+
+/* later, when it happens: */
+venture_automation_emit(context, "feed_finished",
+	g_variant_new_parsed("{'source': <%s>, 'rows': <%x>}", name, rows),
+	&error);
+#+end_src
+
+#+begin_src
+pod feeds = venture->new();
+feeds->feed_finished => log->write_info("{event->source}: {event->rows} rows");
+#+end_src
+
+=venture_automation_emit()= refuses an event nobody registered -- whether
+or not automation is on, so a typo is found the first time -- and refuses
+=on_created=, =on_updated= and =on_deleted=, which only the database
+raises: a plugin forging a record change would set off every rule that
+trusts one. The data is an =a{sv}= dictionary, read in a rule as
+=\{event->member\}=. With automation off or not started the emit succeeds
+and nothing happens. The cascade guard holds for events as for writes: an
+event raised from inside a handler goes nowhere.
+
+An exec plugin provides a handler from its manifest instead, with the
+=automation_handler= provides kind; see [[file:plugins.org][Plugins]].
+
+* Pages and sidebar rows
+
+A plugin can add pages of its own. The server does not exist when plugins
+load, so a plugin leaves a /web extension/ on the context, and every web
+server built over it runs the extension after registering its own routes:
+
+#+begin_src C
+static HtmxResponse *
+costs_page(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *server = user_data;
+	HtmxResponse *refusal;
+
+	refusal = venture_web_server_require_module(server, request, "example");
+	if (NULL != refusal)
+		return refusal;
+	refusal = venture_web_server_require_page(server, request,
+	                                          VENTURE_USER_ROLE_VIEWER);
+	if (NULL != refusal)
+		return refusal;
+
+	return venture_web_server_render_page(server, request,
+		"/example/subscriptions", "Subscription costs", body_html);
+}
+
+static gboolean
+example_web(VentureWebServer *server, gpointer user_data, GError **error)
+{
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		"/example/subscriptions", VENTURE_DATA_CLASS_TENANT,
+		VENTURE_HOSTED_ROUTE_NONE, costs_page, server);
+
+	return venture_web_server_add_nav_link(server, "/example/subscriptions",
+		"Subscription costs", "calendar", "example", error);
+}
+
+/* in venture_plugin_register(): */
+venture_context_add_web_extension(context, example_web, NULL, NULL);
+#+end_src
+
+The rules:
+
+- *Routes through =venture_web_server_add_classified_route()=*, never the
+  raw router: hosted mode refuses unclassified routes, and the class is
+  what tenant isolation reads.
+- *Every route carries its own guard.* =venture_web_server_require_page()=
+  sends an anonymous visitor to the login page and refuses a role short of
+  the page's with a 403; =venture_web_server_require_api()= answers 401 and
+  403 as JSON; =venture_web_server_require_module()= answers a switched-off
+  module the way a built-in page does. A route with no guard looks exactly
+  like one with, which is why =tests/test-auth.c= checks an extension's.
+- *Built-in routes win.* Extensions run after every built-in route and the
+  router takes the first match, so an extension can neither shadow a page
+  nor take over =/api/v1/:type=. A path a built-in already matches is
+  simply unreachable; give a plugin's pages a prefix of their own.
+- *=content= is HTML as given.* =venture_web_server_render_page()= wraps it
+  in the shell every page uses -- sidebar, assistant, both looks -- and
+  writes it unchanged, so escape what a person typed with
+  =venture_html_escape_append()=, and use the theme's classes and tokens,
+  never a literal colour.
+- *A sidebar row is checked.* =venture_web_server_add_nav_link()= is only
+  callable from an extension (built-in pages belong in the static table);
+  its path must be plain and absolute and already served by a GET route;
+  its label is escaped; its icon is a name from the built-in set
+  (=venture_web_server_nav_icon_names()=), never markup; its module, if
+  given, must exist and hides the row while off. Rows appear under a
+  "Plugins" heading drawn only when there is one; see
+  [[file:navigation.org][Navigation]].
+- *A failing extension is skipped with a warning*, like a failing plugin;
+  the routes it added before failing stay, because a router cannot take
+  one back.
+
+=plugins/example/venture-example-plugin.c= does all of this: a handler, a
+page and its row.
 
 * Plugin configuration at runtime
 
@@ -340,6 +496,10 @@ built-in to every consumer:
 - both are covered by the same validation, concurrency and audit guarantees
 - a module is switched, listed and masked exactly as a built-in one, and its
   types link to and from every other record through =record_link=
+- automation handlers and events sit in the registry the built-ins do, so
+  a rule cannot tell a plugin's step from a built-in one
+- pages are drawn in the same shell, guarded the same way, and listed in
+  the sidebar by the same renderer
 
 That is the point of deriving everything from property metadata rather than
 writing it out: there is no second path for extensions to fall short on.

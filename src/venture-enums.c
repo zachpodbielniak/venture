@@ -638,6 +638,7 @@ static const GEnumValue venture_jsonl_message_kind_values[] = {
 	VE(VENTURE_JSONL_MESSAGE_NOT_MODIFIED, "not_modified"),
 	VE(VENTURE_JSONL_MESSAGE_LOG,          "log"),
 	VE(VENTURE_JSONL_MESSAGE_ERROR,        "error"),
+	VE(VENTURE_JSONL_MESSAGE_RESULT,       "result"),
 	VE_END
 };
 
