@@ -39,11 +39,20 @@ static gboolean upload_fail(GError **error, const gchar *message)
 	venture_set_error_validation(error, "Upload", "%s", message); return FALSE;
 }
 
+/* OS failures are operational, not evidence that a visitor chose a bad file.
+ * Only the operation and strerror are safe to expose to the boundary logger. */
+static gboolean upload_storage_fail(GError **error, const gchar *operation, gint code)
+{
+	g_set_error(error, G_IO_ERROR, g_io_error_from_errno(code),
+		"Attachment storage %s failed: %s", operation, g_strerror(code));
+	return FALSE;
+}
+
 static gchar *upload_root(VentureDatabase *database, GError **error)
 {
 	GWeakRef *reference = g_object_get_data(G_OBJECT(database), "venture-forms-payment-context");
 	g_autoptr(VentureContext) context = reference != NULL ? g_weak_ref_get(reference) : NULL;
-	if (context == NULL) { upload_fail(error, "storage is unavailable"); return NULL; }
+	if (context == NULL) { g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED, "Attachment storage is unavailable"); return NULL; }
 	return g_build_filename(venture_config_get_state_dir(venture_context_get_config(context)), "attachments", NULL);
 }
 
@@ -306,7 +315,7 @@ gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity 
 	digest = g_compute_hmac_for_string(G_CHECKSUM_SHA256, (const guchar *)key, strlen(key), client != NULL ? client : "unknown", -1);
 	if (!venture_database_begin(database, error)) return FALSE;
 	if (g_mkdir_with_parents(root, 0700) != 0 || (directory = g_open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0)) < 0)
-	{ upload_fail(error, "attachment storage is unavailable"); goto fail; }
+	{ upload_storage_fail(error, "open directory", errno); goto fail; }
 	for (i = 0; i < parts->len; i++)
 	{
 		VentureFormsUploadPart *part = g_ptr_array_index(parts, i);
@@ -316,7 +325,7 @@ gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity 
 		g_autoptr(VentureEntity) upload = NULL;
 		gsize length, offset = 0;
 		const guint8 *bytes = g_bytes_get_data(part->bytes, &length);
-		gint fd;
+		gint fd, write_error = 0;
 		if (field == NULL || length == 0 || length > (gsize)upload_max_bytes(field) || (previous != NULL && previous->len >= upload_max_count(field)))
 		{ upload_fail(error, "unknown file question or exceeded file size/count"); goto fail; }
 		if (venture_string_is_empty(part->filename) || strlen(part->filename) > 512 || !g_utf8_validate(part->filename, -1, NULL))
@@ -329,16 +338,20 @@ gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity 
 		token = venture_generate_token(32); hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
 		uuid = g_uuid_string_random(); filename = g_strconcat("form-upload-", uuid, NULL); path = g_build_filename(root, filename, NULL);
 		fd = openat(directory, filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-		if (fd < 0) { upload_fail(error, "cannot create private attachment"); goto fail; }
+		if (fd < 0) { upload_storage_fail(error, "create", errno); goto fail; }
 		while (offset < length)
 		{
 			ssize_t wrote = write(fd, bytes + offset, length - offset);
 			if (wrote < 0 && errno == EINTR) continue;
-			if (wrote <= 0) break;
+			if (wrote <= 0) { write_error = wrote < 0 ? errno : EIO; break; }
 			offset += (gsize)wrote;
 		}
-		if (close(fd) != 0 || offset != length)
-		{ unlinkat(directory, filename, 0); upload_fail(error, "cannot store the complete attachment"); goto fail; }
+		if (close(fd) != 0 && write_error == 0) write_error = errno;
+		if (write_error != 0)
+		{
+			unlinkat(directory, filename, 0);
+			upload_storage_fail(error, "write", write_error); goto fail;
+		}
 		upload = g_object_new(VENTURE_TYPE_FORM_UPLOAD, "organization-id", venture_entity_get_organization_id(form), "name", "Private form upload",
 			"form-id", venture_entity_get_id(form), "version-id", venture_entity_get_id(version), "field-key", field->key,
 			"filename", part->filename, "path", path, "token-hash", hash, "client-hash", digest, "size-bytes", (gint64)length,

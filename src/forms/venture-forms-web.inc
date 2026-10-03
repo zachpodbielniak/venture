@@ -707,8 +707,18 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		if (!venture_forms_receive_uploads(database, form, version, fields, answers, parts, address, now, &error))
 		{
 			g_autoptr(JsonObject) problem = json_object_new();
-			json_object_set_string_member(problem, "_form", error != NULL ? error->message : "The attachment could not be accepted.");
-			return json ? forms_web_json_result(FALSE, "Check the uploaded files.", NULL, problem, 422, allow_origin) : forms_web_status(422, error != NULL ? error->message : "The attachment could not be accepted.");
+			g_autoptr(GEnumClass) io_codes = g_type_class_ref(G_TYPE_IO_ERROR_ENUM);
+			GEnumValue *io_code = error != NULL && error->domain == G_IO_ERROR ? g_enum_get_value(io_codes, error->code) : NULL;
+			gboolean invalid = g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+			const gchar *message = invalid ? error->message : "Attachment storage is temporarily unavailable. Please try again later.";
+			HtmxResponse *response;
+			g_message("Form upload failed: cause=%s domain=%s code=%d",
+				invalid ? "validation" : io_code != NULL ? io_code->value_nick : "storage_or_scanner_failure",
+				error != NULL ? g_quark_to_string(error->domain) : "unknown", error != NULL ? error->code : 0);
+			json_object_set_string_member(problem, "_form", message);
+			response = json ? forms_web_json_result(FALSE, message, NULL, problem, invalid ? 422 : 503, allow_origin) : forms_web_status(invalid ? 422 : 503, message);
+			if (!invalid) htmx_response_add_header(response, "Retry-After", "60");
+			return response;
 		}
 	}
 

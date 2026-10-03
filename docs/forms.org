@@ -1384,3 +1384,11 @@ ID and a cause category (transport, provider availability/rate limit, or local
 error domain/code). Customer answers, provider response text, Checkout URLs
 and bearer links are excluded. The visitor keeps the generic retry message;
 operators can use the invoice ID to find retained reconciliation evidence.
+
+Upload storage failures return HTTP 503 with =Retry-After: 60=. Invalid file
+content, count and size remain 422. Filesystem create/write/close failures
+preserve the OS error category, and failed batches remove incomplete bytes
+and roll back upload metadata. The boundary emits one redacted cause and
+keeps filesystem paths and database diagnostics out of the public response.
+The write-failure regression uses a child process file-size limit, so it
+exercises a short write and refusal without filling the machine's disk.

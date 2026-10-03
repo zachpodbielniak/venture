@@ -13,6 +13,9 @@
 #include <venture.h>
 #include "../src/forms/venture-forms-private.h"
 #include <string.h>
+#include <glib/gstdio.h>
+#include <sys/resource.h>
+#include <signal.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
 #include <libxml/HTMLparser.h>
@@ -4673,6 +4676,64 @@ upload_form(Fixture *f)
 	return form;
 }
 
+/* Storage failure is retryable and must not blame a valid attachment. The
+ * same request succeeds after storage is repaired, without orphan records. */
+static void
+test_upload_storage_failure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = upload_form(f);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL, *body = NULL;
+	start_http(f);
+	path = g_build_filename(f->state_dir, "attachments", NULL);
+	g_assert_true(g_file_set_contents(path, "blocked", -1, &error)); g_assert_no_error(error);
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "Form upload failed: cause=* domain=g-io-error-quark code=*");
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, &body), ==, 503);
+	g_test_assert_expected_messages();
+	g_assert_null(strstr(body, f->state_dir));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_cmpint(g_unlink(path), ==, 0);
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 200);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+}
+
+/* A bounded child process forces an actual short write followed by EFBIG,
+ * without filling the host disk or changing another test's resource limits. */
+static void
+test_upload_write_failure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(GDir) directory = NULL;
+	g_autoptr(GProxyResolver) proxy = g_simple_proxy_resolver_new(NULL, NULL);
+	struct rlimit original, limited;
+	guint status;
+	if (!g_test_subprocess())
+	{
+		g_test_trap_subprocess(NULL, 60 * G_USEC_PER_SEC, G_TEST_SUBPROCESS_DEFAULT);
+		g_test_trap_assert_passed();
+		return;
+	}
+	form = upload_form(f); start_http(f);
+	/* Loopback needs no desktop proxy settings (or dconf disk writes). */
+	g_object_set(f->session, "proxy-resolver", proxy, NULL);
+	g_assert_cmpint(getrlimit(RLIMIT_FSIZE, &original), ==, 0);
+	limited = original; limited.rlim_cur = 1;
+	signal(SIGXFSZ, SIG_IGN);
+	g_assert_cmpint(setrlimit(RLIMIT_FSIZE, &limited), ==, 0);
+	status = upload_post(f, form, "hello", 5, "file.txt", 1, NULL);
+	g_assert_cmpint(setrlimit(RLIMIT_FSIZE, &original), ==, 0);
+	g_assert_cmpuint(status, ==, 503);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	path = g_build_filename(f->state_dir, "attachments", NULL);
+	directory = g_dir_open(path, 0, NULL); g_assert_nonnull(directory);
+	g_assert_null(g_dir_read_name(directory));
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 200);
+}
+
 static void
 test_upload_http(Fixture *f, gconstpointer data)
 {
@@ -4971,6 +5032,9 @@ test_erasure_mail_content(Fixture *f, gconstpointer data)
 int
 main(int argc, char **argv)
 {
+	/* Desktop proxy/settings discovery must not write outside a fixture,
+	 * especially in the child that deliberately limits file writes. */
+	g_setenv("GSETTINGS_BACKEND", "memory", TRUE);
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/forms/records", test_records);
 	g_test_add_func("/forms/urlencoded-repeats", test_urlencoded_repeats);
@@ -5060,6 +5124,8 @@ main(int argc, char **argv)
 	g_test_add("/forms/portable-refusals", Fixture, NULL, setup, test_portable_refusals, teardown);
 	g_test_add("/forms/portable-bindings", Fixture, NULL, setup, test_portable_bindings, teardown);
 	g_test_add("/forms/portable-prices", Fixture, NULL, setup, test_portable_prices, teardown);
+	g_test_add("/forms/upload-write-failure", Fixture, NULL, setup, test_upload_write_failure, teardown);
+	g_test_add("/forms/upload-storage-failure", Fixture, NULL, setup, test_upload_storage_failure, teardown);
 	g_test_add("/forms/upload-http", Fixture, NULL, setup, test_upload_http, teardown);
 	g_test_add("/forms/upload-refusals", Fixture, NULL, setup, test_upload_refusals, teardown);
 	g_test_add("/forms/upload-drafts", Fixture, NULL, setup, test_upload_drafts, teardown);
