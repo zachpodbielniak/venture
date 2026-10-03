@@ -435,6 +435,66 @@ test_no_internal_config(Fixture *f, gconstpointer data)
 	g_assert_false(g_str_has_prefix(html, "<!DOCTYPE html>"));
 }
 
+/* A lost acknowledgement must not repeat the accepted write or follow-ups. */
+static void
+test_submission_retry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = NULL, first = NULL, second = NULL;
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *nonce = NULL, *path = NULL, *uri = NULL;
+	VentureFormsOutcome outcome;
+	(void)data;
+	g_clear_object(&f->context); g_clear_object(&f->db);
+	f->state_dir = g_dir_make_tmp("venture-receipt-restart-XXXXXX", &error); g_assert_no_error(error);
+	path = g_build_filename(f->state_dir, "test.db", NULL); uri = g_strconcat("sqlite://", path, NULL);
+	f->db = venture_database_new(uri, &error); g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error)); g_assert_no_error(error);
+	f->context = venture_context_new(f->config, f->db); f->org = venture_context_get_default_organization_id(f->context);
+	form = contact_form(f, "retry-form"); nonce = venture_forms_payment_nonce(form);
+	venture_forms_answers_add(answers, "name", "Alice");
+	venture_forms_answers_add(answers, "email", "alice@example.test");
+	venture_forms_answers_add(answers, "topic", "sales");
+	venture_forms_answers_add(answers, VENTURE_FORMS_PAYMENT_NONCE, nonce);
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &first, NULL, &error));
+	g_assert_no_error(error); g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	/* Replay must survive loss of every in-memory service/context object. */
+	g_clear_object(&f->context); g_clear_object(&f->db);
+	f->db = venture_database_new(uri, &error); g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error)); g_assert_no_error(error);
+	f->context = venture_context_new(f->config, f->db);
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &second, NULL, &error));
+	g_assert_no_error(error); g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(venture_entity_get_id(first), ==, venture_entity_get_id(second));
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_clear_object(&second);
+	g_hash_table_remove(answers, "name"); venture_forms_answers_add(answers, "name", "Changed");
+	g_assert_false(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &second, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	g_hash_table_remove(answers, "name"); venture_forms_answers_add(answers, "name", "Alice");
+	{
+		g_autoptr(JsonNode) erased = venture_forms_erase_person(f->db, f->org, "alice@example.test", NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(erased);
+	}
+	g_assert_false(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &second, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_clear_pointer(&nonce, g_free); nonce = venture_forms_payment_nonce(form);
+	g_hash_table_remove(answers, VENTURE_FORMS_PAYMENT_NONCE);
+	venture_forms_answers_add(answers, VENTURE_FORMS_PAYMENT_NONCE, nonce);
+	g_assert_true(venture_database_execute(f->db,
+		"CREATE TRIGGER refuse_receipt BEFORE INSERT ON form_receipts BEGIN SELECT RAISE(ABORT, 'fixture storage failure'); END", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &second, NULL, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_true(venture_database_execute(f->db, "DROP TRIGGER refuse_receipt", NULL, &error)); g_assert_no_error(error);
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &second, NULL, &error));
+	g_assert_no_error(error); g_assert_cmpint(outcome, ==, VENTURE_FORMS_ACCEPTED);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+}
+
 /* ==========================================================================
  * Answers and validation, without HTTP
  * ========================================================================== */
@@ -679,6 +739,37 @@ old_ticket(VentureEntity *form)
 	return g_strdup_printf("_vf_t=%s", escaped);
 }
 
+/* A copied snippet cannot share one visitor's retry identity. Its first
+ * POST obtains a fresh native form; only the confirmation can accept it. */
+static void
+test_static_submission_retry(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "static-retry");
+	g_autofree gchar *ticket = old_ticket(form), *body = NULL, *nonce = NULL, *accepted = NULL;
+	g_autoptr(GRegex) pattern = g_regex_new("name=\"_vf_payment\" value=\"([^\"]+)\"", 0, 0, NULL);
+	g_autoptr(GMatchInfo) match = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	start_http(f);
+	body = g_strdup_printf("%s&_vf_start=1&unexpected=discarded", ticket);
+	request(f, "/pub/form/static-retry", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 422); reply_clear(&reply);
+	g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("%s&_vf_start=1&name=Alice&email=alice%%40example.test&topic=sales", ticket);
+	request(f, "/pub/form/static-retry", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_true(g_regex_match(pattern, reply.body, 0, &match)); nonce = g_match_info_fetch(match, 1);
+	g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("%s&_vf_payment=%s&name=Alice&email=alice%%40example.test&topic=sales", ticket, nonce);
+	reply_clear(&reply);
+	request(f, "/pub/form/static-retry", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); accepted = g_strdup(reply.body); reply_clear(&reply);
+	request(f, "/pub/form/static-retry", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_cmpstr(reply.body, ==, accepted);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1); reply_clear(&reply);
+}
+
 /* The done-when: a form submits from a plain HTML page with no script at
  * all, and lands as a response. The success is a page, not JSON, because
  * a browser that posted a form shows whatever comes back. */
@@ -852,6 +943,8 @@ test_multi_page(Fixture *f, gconstpointer data)
 	g_autofree gchar *ticket = NULL;
 	g_autofree gchar *body = NULL, *token = NULL, *old = NULL;
 	guint saves = 0, audits = 0;
+	gboolean retry = data != NULL;
+	g_autofree gchar *nonce = venture_forms_payment_nonce(form);
 	Reply reply = { 0, NULL, NULL, NULL, NULL };
 	(void)data;
 	g_assert_nonnull(page_break);
@@ -874,7 +967,7 @@ test_multi_page(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", "_vf_draft=&name=Robot"), ==, 404);
 	g_signal_connect(f->db, "entity-saved", G_CALLBACK(page_saved), &saves);
 	g_signal_connect(f->db, "audit", G_CALLBACK(page_audit), &audits);
-	body = g_strdup_printf("%s&name=Alice", ticket);
+	body = g_strdup_printf("%s&name=Alice%s%s", ticket, retry ? "&_vf_payment=" : "", retry ? nonce : "");
 	request(f, "/pub/form/pages-form", "application/x-www-form-urlencoded", body, NULL, NULL, &reply);
 	g_assert_cmpuint(reply.status, ==, 200);
 	g_assert_nonnull(strstr(reply.body, "name=\"email\""));
@@ -915,13 +1008,14 @@ test_multi_page(Fixture *f, gconstpointer data)
 	reply_clear(&reply);
 	g_assert_cmpuint(saves, ==, 0);
 	g_assert_cmpuint(audits, ==, 0);
-	g_free(body); body = g_strdup_printf("_vf_draft=%s&agree=on", token);
+	g_free(body); body = g_strdup_printf("_vf_draft=%s&agree=on%s%s", token, retry ? "&_vf_payment=" : "", retry ? nonce : "");
 	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, 200);
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_DRAFT_RECORD), ==, 0);
 	g_assert_cmpuint(saves, >, 0);
 	g_assert_cmpuint(audits, >, 0);
-	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, 404);
+	g_assert_cmpuint(post_form(f, "/pub/form/pages-form", body), ==, retry ? 200 : 404);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
 	{
 		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
 		g_autoptr(VentureEntity) response = venture_database_find_one(f->db, q, NULL);
@@ -5109,6 +5203,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/rules", Fixture, NULL, setup, test_rules, teardown);
 	g_test_add("/forms/draft-version", Fixture, NULL, setup, test_draft_version, teardown);
 	g_test_add("/forms/draft-privacy", Fixture, NULL, setup, test_draft_privacy, teardown);
+	g_test_add("/forms/multi-page-retry", Fixture, "retry", setup, test_multi_page, teardown);
 	g_test_add("/forms/multi-page", Fixture, NULL, setup, test_multi_page, teardown);
 	g_test_add("/forms/unique-email", Fixture, NULL, setup, test_unique_email, teardown);
 	g_test_add("/forms/last-slot", Fixture, NULL, setup, test_last_slot, teardown);
@@ -5172,8 +5267,10 @@ main(int argc, char **argv)
 	g_test_add("/forms/portable-bindings", Fixture, NULL, setup, test_portable_bindings, teardown);
 	g_test_add("/forms/portable-prices", Fixture, NULL, setup, test_portable_prices, teardown);
 	g_test_add("/forms/upload-write-failure", Fixture, NULL, setup, test_upload_write_failure, teardown);
-	g_test_add("/forms/upload-storage-failure", Fixture, NULL, setup, test_upload_storage_failure, teardown);
 	g_test_add("/forms/upload-external-scanner", Fixture, NULL, setup, test_upload_external_scanner, teardown);
+	g_test_add("/forms/static-submission-retry", Fixture, NULL, setup, test_static_submission_retry, teardown);
+	g_test_add("/forms/submission-retry", Fixture, NULL, setup, test_submission_retry, teardown);
+	g_test_add("/forms/upload-storage-failure", Fixture, NULL, setup, test_upload_storage_failure, teardown);
 	g_test_add("/forms/upload-http", Fixture, NULL, setup, test_upload_http, teardown);
 	g_test_add("/forms/upload-refusals", Fixture, NULL, setup, test_upload_refusals, teardown);
 	g_test_add("/forms/upload-drafts", Fixture, NULL, setup, test_upload_drafts, teardown);

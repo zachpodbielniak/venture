@@ -2417,16 +2417,40 @@ forms_check_email_limit(VentureDatabase *database, VentureEntity *form,
 
 /* One attempt at the whole write: the lead, the confirmation and the
  * response, in one transaction. */
+#include "venture-forms-receipts.inc"
+
 static gboolean
-forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submission,
+forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity **submission_out,
 	GPtrArray *fields, JsonObject *answers, gboolean follow_up, GDateTime *now, JsonObject *refused, GError **error)
 {
 	g_autofree gchar *note = NULL;
+	VentureEntity *submission = *submission_out;
 	g_autoptr(VentureEntity) booking_hold = NULL;
+	g_autoptr(VentureEntity) receipt = NULL;
 	g_autoptr(GPtrArray) uploads = NULL;
 
 	if (!venture_database_begin(database, error))
 		return FALSE;
+
+	/* Recheck under the write lock before any follow-up can run. */
+	{
+		const gchar *nonce = g_object_get_data(G_OBJECT(submission), FORMS_RECEIPT_NONCE);
+		if (nonce != NULL)
+		{
+			g_autoptr(GHashTable) identity = venture_forms_answers_new();
+			g_autoptr(VentureEntity) prior = NULL;
+			gint replay;
+			venture_forms_answers_add(identity, VENTURE_FORMS_PAYMENT_NONCE, nonce);
+			replay = venture_forms_receipt_replay(database, form, identity,
+				g_object_get_data(G_OBJECT(submission), FORMS_RECEIPT_DIGEST), FALSE, &prior, error);
+			if (replay < 0) goto fail;
+			if (replay > 0)
+			{
+				g_object_unref(*submission_out); *submission_out = g_steal_pointer(&prior);
+				return venture_database_commit(database, error);
+			}
+		}
+	}
 
 	/* Under the lock, re-read: the cap and the state are what they are
 	 * now, so two people posting the last place at once get one response
@@ -2445,6 +2469,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 		     !forms_check_email_limit(database, fresh, submission, fields, refused, error) ||
 		     !forms_payment_limits(database, fresh, submission, refused, error))) goto fail;
 	}
+
+	if (!forms_receipt_reserve(database, form, submission, &receipt, error)) goto fail;
 
 	if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_SETTLING) != NULL)
 	{
@@ -2510,6 +2536,11 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity *submi
 	if (!venture_forms_upload_claim(database, form, submission, fields, now, &uploads, error)) goto fail;
 	if (!venture_database_save(database, submission, NULL, error)) goto fail;
 	if (!venture_forms_upload_bind_response(database, submission, uploads, error)) goto fail;
+	if (receipt != NULL)
+	{
+		g_object_set(receipt, "response-id", venture_entity_get_id(submission), NULL);
+		if (!venture_database_save(database, receipt, NULL, error)) goto fail;
+	}
 	return venture_database_commit(database, error);
 
 fail:
@@ -2567,6 +2598,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autoptr(JsonArray) price_lines = NULL;
 	g_autoptr(VentureMoney) price_total = NULL;
 	g_autofree gchar *payment_nonce = g_strdup(forms_first(answers, VENTURE_FORMS_PAYMENT_NONCE));
+	g_autofree gchar *receipt_digest = NULL;
 	g_autofree gchar *secret_text = NULL;
 	g_autofree gchar *omitted_text = NULL;
 	g_autofree gchar *personal = g_strdup(forms_first(answers, VENTURE_FORMS_PERSONAL));
@@ -2591,6 +2623,15 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	if (NULL != errors)
 		*errors = NULL;
 	*outcome = VENTURE_FORMS_INVALID;
+
+	if (payment_nonce != NULL && venture_forms_payment_nonce_valid(form, payment_nonce))
+	{
+		gint replay;
+		receipt_digest = venture_forms_request_digest(form, answers, NULL);
+		replay = venture_forms_receipt_replay(database, form, answers, receipt_digest, FALSE, submission, error);
+		if (replay < 0) return FALSE;
+		if (replay > 0) { *outcome = VENTURE_FORMS_ACCEPTED; return TRUE; }
+	}
 
 	version = venture_forms_version_for_answers(database, form, answers);
 	if (NULL == version)
@@ -2748,7 +2789,14 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		if (submission != NULL) *submission = g_steal_pointer(&response);
 		return TRUE;
 	}
-	if (!forms_write(database, form, response, fields, stored, TRUE, now, refused, &follow_error))
+	if (payment_nonce != NULL && !venture_forms_payment_nonce_valid(form, payment_nonce))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
+		return FALSE;
+	}
+	g_object_set_data_full(G_OBJECT(response), FORMS_RECEIPT_NONCE, g_strdup(payment_nonce), g_free);
+	g_object_set_data_full(G_OBJECT(response), FORMS_RECEIPT_DIGEST, g_strdup(receipt_digest), g_free);
+	if (!forms_write(database, form, &response, fields, stored, TRUE, now, refused, &follow_error))
 	{
 		g_autofree gchar *note = NULL;
 
@@ -2758,7 +2806,8 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 			if (errors != NULL) *errors = g_steal_pointer(&refused);
 			return TRUE;
 		}
-		if (g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) != NULL)
+		if (g_error_matches(follow_error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT) ||
+		    g_object_get_data(G_OBJECT(form), VENTURE_FORMS_CONFIRMING) != NULL)
 		{
 			g_propagate_error(error, g_steal_pointer(&follow_error));
 			return FALSE;
@@ -2789,7 +2838,9 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 		g_object_set(response, "language", venture_forms_language(fields), NULL);
 		g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_PERSONAL_WRITE, g_strdup(personal), g_free);
 		g_object_set(response, "mapping-note", note, "sensitive-answers", secret_text, "not-shown", omitted_text, NULL);
-		if (!forms_write(database, form, response, fields, stored, FALSE, now, refused, error))
+		g_object_set_data_full(G_OBJECT(response), FORMS_RECEIPT_NONCE, g_strdup(payment_nonce), g_free);
+		g_object_set_data_full(G_OBJECT(response), FORMS_RECEIPT_DIGEST, g_strdup(receipt_digest), g_free);
+		if (!forms_write(database, form, &response, fields, stored, FALSE, now, refused, error))
 		{
 			venture_forms_translation_errors(fields, refused);
 			if (json_object_get_size(refused) > 0)
@@ -3102,7 +3153,7 @@ venture_forms_retention_sweep(VentureDatabase *database, gint64 organization_id,
 		{
 			VentureEntity *response = g_ptr_array_index(expired, j);
 
-			if (!forms_forget_response_mail(database, response, actor, NULL, error) || !venture_forms_upload_purge_source(database, response, error) || !forms_payment_forget_response(database, response, error)) return NULL;
+			if (!forms_forget_response_mail(database, response, actor, NULL, error) || !venture_forms_upload_purge_source(database, response, error) || !forms_payment_forget_response(database, response, error) || !forms_receipt_forget(database, response, error)) return NULL;
 			if (purge ? !venture_database_purge(database, response, actor, error)
 			          : !forms_anonymise(database, response, now, actor, error))
 				return NULL;
@@ -3311,7 +3362,7 @@ forms_erase_matching(VentureDatabase *database, gint64 organization_id, const gc
 		if (!forms_privacy_matches(database, response, open, hidden, wanted, contact_id))
 			continue;
 		if (!forms_forget_response_mail(database, response, actor, &cancelled, error)) goto fail;
-		if (!forms_payment_forget_response(database, response, error)) goto fail;
+		if (!forms_payment_forget_response(database, response, error) || !forms_receipt_forget(database, response, error)) goto fail;
 		if (!venture_forms_upload_purge_source(database, response, error) || !venture_database_purge(database, response, actor, error))
 			goto fail;
 		erased++;

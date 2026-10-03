@@ -94,6 +94,7 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 	const gchar *origin, GDateTime *now, GError **error)
 {
 	g_autoptr(VentureFormsStep) step = g_new0(VentureFormsStep, 1);
+	g_autofree gchar *request_digest = NULL;
 	g_autoptr(VentureEntity) draft = NULL, fresh = NULL;
 	g_autoptr(GPtrArray) fields = NULL, page_fields = NULL, base_fields = NULL;
 	g_autoptr(JsonObject) page_values = NULL;
@@ -112,9 +113,18 @@ venture_forms_step(VentureDatabase *database, VentureEntity *form, GHashTable *a
 
 	step->errors = json_object_new();
 	step->values = json_object_new();
+	request_digest = g_object_get_data(G_OBJECT(form), VENTURE_FORMS_REQUEST_HASH) != NULL ?
+		g_strdup(g_object_get_data(G_OBJECT(form), VENTURE_FORMS_REQUEST_HASH)) : venture_forms_request_digest(form, answers, NULL);
+	{
+		gint replay = venture_forms_receipt_replay(database, form, answers, request_digest, TRUE, &step->submission, error);
+		if (replay < 0) return NULL;
+		if (replay > 0) { step->complete = TRUE; return g_steal_pointer(&step); }
+	}
 	if (!venture_database_begin(database, error)) return NULL;
 	fresh = venture_database_get(database, VENTURE_TYPE_FORM, venture_entity_get_id(form), error);
 	if (fresh == NULL) goto fail;
+	g_object_set_data_full(G_OBJECT(fresh), VENTURE_FORMS_REQUEST_HASH,
+		g_strdup(request_digest), g_free);
 	if (!forms_is_open(database, fresh, now)) goto missing;
 	if (g_hash_table_contains(answers, VENTURE_FORMS_DRAFT_TOKEN))
 	{

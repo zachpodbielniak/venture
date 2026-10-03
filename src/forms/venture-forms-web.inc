@@ -699,6 +699,24 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	}
 
 	{
+		g_autofree gchar *digest = venture_forms_request_digest(form, answers, parts);
+		gint replay = venture_forms_receipt_replay(database, form, answers, digest, TRUE, &submission, &error);
+		if (replay > 0) return forms_web_accepted(database, form, submission, json, allow_origin);
+		if (replay < 0)
+		{
+			if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return forms_web_missing();
+			if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT))
+			{
+				g_message("Form retry refused: cause=payload_conflict");
+				return forms_web_status(409, "This submission identity was already used with different answers. Start a new form.");
+			}
+			g_message("Form receipt lookup failed: domain=%s code=%d", error != NULL ? g_quark_to_string(error->domain) : "unknown", error != NULL ? error->code : 0);
+			return forms_web_status(503, "The response could not be checked; please retry the same submission.");
+		}
+		g_object_set_data_full(G_OBJECT(form), VENTURE_FORMS_REQUEST_HASH, g_steal_pointer(&digest), g_free);
+	}
+
+	{
 		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
 		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, &error);
 		if (fields == NULL) return forms_web_missing();
@@ -731,6 +749,44 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 		if (contact == NULL) return forms_web_missing();
 	}
 
+	/* A copied snippet is shared by visitors. Its first POST obtains a
+	 * private submission identity; only the fresh native form accepts it. */
+	if (g_hash_table_contains(answers, "_vf_start"))
+	{
+		GPtrArray *start = g_hash_table_lookup(answers, "_vf_start");
+		GPtrArray *tickets = g_hash_table_lookup(answers, VENTURE_FORMS_TICKET);
+		g_autoptr(JsonObject) values = venture_forms_answers_state(answers);
+		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
+		g_autofree gchar *html = NULL;
+		VentureFormsRender options;
+		g_autoptr(GPtrArray) definition = venture_forms_definition_for(database, form, version, &error);
+		g_autoptr(GPtrArray) expanded = NULL;
+		g_autoptr(JsonObject) refused = json_object_new();
+		GHashTableIter names;
+		gpointer name;
+		if (definition == NULL) return forms_web_missing();
+		expanded = venture_forms_expand_groups(definition, values, FALSE, refused);
+		g_hash_table_iter_init(&names, answers);
+		while (g_hash_table_iter_next(&names, &name, NULL))
+		{
+			if (g_strcmp0(name, "_vf_start") == 0 || g_strcmp0(name, VENTURE_FORMS_TICKET) == 0 ||
+			    g_strcmp0(name, VENTURE_FORMS_HONEYPOT) == 0 || g_strcmp0(name, VENTURE_FORMS_PERSONAL) == 0 ||
+			    g_strcmp0(name, VENTURE_FORMS_PREFILL) == 0 || g_strcmp0(name, VENTURE_FORMS_MOVE) == 0) continue;
+			if (venture_forms_definition_find(expanded, name) == NULL)
+				return forms_web_status(422, "This form has no such question.");
+		}
+		if (start->len != 1 || g_strcmp0(g_ptr_array_index(start, 0), "1") != 0 ||
+		    g_hash_table_contains(answers, VENTURE_FORMS_PAYMENT_NONCE))
+			return forms_web_status(400, "Invalid form start.");
+		if (!venture_forms_screen(form, answers, now)) return forms_web_accepted(database, form, NULL, json, allow_origin);
+		options.mode = VENTURE_FORMS_RENDER_HOSTED;
+		options.action = NULL; options.ticket = tickets != NULL && tickets->len == 1 ? g_ptr_array_index(tickets, 0) : NULL;
+		options.values = values; options.errors = NULL; options.version = version;
+		html = venture_forms_render(database, form, &options, &error);
+		if (html == NULL) return forms_web_missing();
+		return forms_web_html(form, g_steal_pointer(&html), 200, allow_origin, TRUE);
+	}
+
 	{
 		g_autoptr(VentureEntity) version = venture_forms_version_for_answers(database, form, answers);
 		g_autoptr(GPtrArray) fields = venture_forms_definition_for(database, form, version, NULL);
@@ -760,7 +816,11 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 			if (step == NULL)
 			{
 				if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return forms_web_missing();
-				return forms_web_status(500, "The page could not be saved; please try again.");
+				g_message("Form page failed: cause=%s domain=%s code=%d",
+					error != NULL && error->domain == VENTURE_ERROR ? venture_error_get_slug(error->code) : "storage_failure",
+					error != NULL ? g_quark_to_string(error->domain) : "unknown", error != NULL ? error->code : 0);
+				if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT)) return forms_web_status(409, "This submission identity was already used. Start a new form.");
+				return forms_web_status(500, "The page could not be saved; please retry the same submission.");
 			}
 			if (step->complete) return step->awaiting_confirmation ? forms_web_pending(database, form, answers, step, json, allow_origin) : forms_web_accepted(database, form, step->submission, json, allow_origin);
 			action = forms_web_action(self, form, json);
@@ -796,7 +856,11 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	{
 		if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))
 			return forms_web_missing();
-		return forms_web_status(500, "The response could not be saved; please try again.");
+		g_message("Form intake failed: cause=%s domain=%s code=%d",
+			error != NULL && error->domain == VENTURE_ERROR ? venture_error_get_slug(error->code) : "storage_failure",
+			error != NULL ? g_quark_to_string(error->domain) : "unknown", error != NULL ? error->code : 0);
+		if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT)) return forms_web_status(409, "This submission identity was already used. Start a new form.");
+		return forms_web_status(500, "The response could not be saved; please retry the same submission.");
 	}
 	if (VENTURE_FORMS_PENDING == outcome) return forms_web_pending(database, form, answers, NULL, json, allow_origin);
 	if (VENTURE_FORMS_ACCEPTED == outcome || VENTURE_FORMS_DISCARDED == outcome || VENTURE_FORMS_PAYMENT == outcome)

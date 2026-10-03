@@ -211,6 +211,14 @@ VENTURE_DECLARE_ENTITY(VentureFormResultBand, venture_form_result_band, FORM_RES
  * Returns: (transfer full): an unsaved score range and public result
  */
 
+#define VENTURE_TYPE_FORM_RECEIPT (venture_form_receipt_get_type())
+VENTURE_DECLARE_ENTITY(VentureFormReceipt, venture_form_receipt, FORM_RECEIPT)
+/**
+ * venture_form_receipt_new:
+ *
+ * Returns: (transfer full): a service-owned acceptance receipt
+ */
+
 #define VENTURE_TYPE_FORM_PAYMENT (venture_form_payment_get_type())
 VENTURE_DECLARE_ENTITY(VentureFormPayment, venture_form_payment, FORM_PAYMENT)
 /**

@@ -287,6 +287,11 @@ GBytes *venture_forms_upload_read(VentureDatabase *database, VentureEntity *uplo
 G_END_DECLS
 
 
+#define VENTURE_FORMS_REQUEST_HASH "venture-forms-request-hash"
+gchar *venture_forms_request_digest(VentureEntity *form, GHashTable *answers, GPtrArray *parts);
+gint venture_forms_receipt_replay(VentureDatabase *database, VentureEntity *form,
+	GHashTable *answers, const gchar *digest, gboolean wire, VentureEntity **response, GError **error);
+
 #define VENTURE_FORMS_PAYMENT_NONCE "_vf_payment"
 #define VENTURE_FORMS_PAYMENT_WRITE "venture-forms-payment-write"
 #define VENTURE_FORMS_PAYMENT_SETTLING "venture-forms-payment-settling"

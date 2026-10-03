@@ -722,8 +722,10 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 		}
 	}
 
-	if (!preview && venture_forms_payment(fields) != NULL &&
-	    json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+	if (options->mode == VENTURE_FORMS_RENDER_SNIPPET)
+		g_string_append(html, "<input type=\"hidden\" name=\"_vf_start\" value=\"1\">");
+
+	if (!preview && options->mode != VENTURE_FORMS_RENDER_SNIPPET)
 	{
 		const gchar *prior = options->values != NULL ? json_object_get_string_member_with_default(options->values, VENTURE_FORMS_PAYMENT_NONCE, NULL) : NULL;
 		g_autofree gchar *nonce = venture_forms_payment_nonce_valid(form, prior) ? g_strdup(prior) : venture_forms_payment_nonce(form);
@@ -835,7 +837,7 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	if (preview)
 		g_string_append(html, " disabled");
 	g_string_append_c(html, '>');
-	forms_escape(html, !preview && page + 1 < pages ? venture_forms_text(fields, "message.next", "Next") : (venture_string_is_empty(submit) ? venture_forms_text(fields, "message.send", "Send") : submit));
+	forms_escape(html, options->mode == VENTURE_FORMS_RENDER_SNIPPET ? venture_forms_text(fields, "message.next", "Next") : !preview && page + 1 < pages ? venture_forms_text(fields, "message.next", "Next") : (venture_string_is_empty(submit) ? venture_forms_text(fields, "message.send", "Send") : submit));
 	g_string_append(html, "</button></div>");
 	if (!preview && pages > 1 && venture_forms_get_bool(form, "allow-resume"))
 	{
@@ -982,11 +984,15 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 	json_builder_add_string_value(builder, VENTURE_FORMS_TICKET);
 	json_builder_set_member_name(builder, "ticket");
 	json_builder_add_string_value(builder, ticket);
-	if (venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
 	{
 		g_autofree gchar *nonce = venture_forms_payment_nonce(form);
-		json_builder_set_member_name(builder, "payment_field"); json_builder_add_string_value(builder, VENTURE_FORMS_PAYMENT_NONCE);
-		json_builder_set_member_name(builder, "payment_nonce"); json_builder_add_string_value(builder, nonce);
+		json_builder_set_member_name(builder, "submission_field"); json_builder_add_string_value(builder, VENTURE_FORMS_PAYMENT_NONCE);
+		json_builder_set_member_name(builder, "submission_nonce"); json_builder_add_string_value(builder, nonce);
+		if (venture_forms_payment(fields) != NULL && json_object_get_boolean_member(venture_forms_payment(fields), "enabled"))
+		{
+			json_builder_set_member_name(builder, "payment_field"); json_builder_add_string_value(builder, VENTURE_FORMS_PAYMENT_NONCE);
+			json_builder_set_member_name(builder, "payment_nonce"); json_builder_add_string_value(builder, nonce);
+		}
 	}
 	json_builder_set_member_name(builder, "allow_resume");
 	json_builder_add_boolean_value(builder, venture_forms_get_bool(form, "allow-resume") && venture_forms_page_count(fields) > 1);

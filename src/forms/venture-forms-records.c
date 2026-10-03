@@ -504,6 +504,21 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormPrice, venture_form_price, venture_fo
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form price", NULL);
 	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "key", "form-id", NULL);)
 
+/* A receipt outlives erased answers: a random consumed identity must never
+ * become permission to recreate personal data. No answers are stored here. */
+static const VentureFieldDecl venture_form_receipt_fields[] = {
+	VENTURE_FIELD_NAME("name", "Receipt", NULL),
+	VENTURE_FIELD_REF("form-id", "Form", NULL, "form", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("nonce-hash", "Consumed identity", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("answers-hash", "Answer digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("request-hash", "Request digest", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD_REF("response-id", "Response", NULL, "form_submission", VENTURE_COLUMN_FLAG_SENSITIVE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormReceipt, venture_form_receipt, venture_form_receipt_fields,
+	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Private form receipt", NULL);
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "nonce-hash", "form-id", NULL);)
+
 /* Pending answers and bearer identities are never business events. Only the
  * settled ordinary response enters automations, audit or generic surfaces. */
 static const VentureFieldDecl venture_form_payment_fields[] = {

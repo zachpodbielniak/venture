@@ -11,6 +11,15 @@ venture_forms_check_write(VentureDatabase *database, VentureEntity *entity, gboo
 {
 	(void)database;
 	if (!venture_forms_upload_check_write(entity, error)) return FALSE;
+	if (VENTURE_IS_FORM_RECEIPT(entity))
+	{
+		if (removal || g_object_get_data(G_OBJECT(entity), FORMS_RECEIPT_WRITE) == NULL)
+		{
+			venture_set_error_validation(error, "Receipt", "acceptance receipts belong to the forms service");
+			return FALSE;
+		}
+		return TRUE;
+	}
 	if (!VENTURE_IS_FORM_PAYMENT(entity)) return TRUE;
 	if (removal || g_object_get_data(G_OBJECT(entity), VENTURE_FORMS_PAYMENT_WRITE) == NULL)
 	{
@@ -399,7 +408,7 @@ venture_forms_payment_reconcile(VentureDatabase *database, gint64 organization,
 	answers = venture_forms_get_string(response, "answers");
 	if (!json_parser_load_from_data(answer_parser, answers, -1, error)) goto fail;
 	g_object_set_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_SETTLING, pending);
-	if (!forms_write(database, form, response, fields, json_node_get_object(json_parser_get_root(answer_parser)), TRUE, now, refused, error))
+	if (!forms_write(database, form, &response, fields, json_node_get_object(json_parser_get_root(answer_parser)), TRUE, now, refused, error))
 	{
 		if (error != NULL && *error == NULL) venture_set_error_validation(error, "Paid response", "completion needs recovery; the invoice remains paid");
 		goto fail;

@@ -2036,3 +2036,16 @@ is omitted from ordinary reads. Download bytes only through the authenticated
 files). Generic document/AI attachment readers refuse these bytes. Erasure and
 the forms retention sweep remove their files; neither CLI output nor an AI
 summary contains file contents.
+
+### Retrying public form intake
+
+Fetch a fresh public schema/fragment per intentional submission. Retain
+`submission_nonce` under the schema's `submission_field` (currently `_vf_payment`)
+and retry exactly the same answers after an uncertain final response. A changed
+payload under an accepted identity conflicts; do not obtain a new identity merely
+to retry. Ordinary forms now keep a private service-owned `form_receipt` in the
+acceptance transaction. Never create or edit receipts with generic commands.
+Erasure removes their fingerprints and response links but preserves a minimal
+consumed-identity marker. Closed/full forms still return the uniform 404.
+Copied HTML snippets first open a native confirmation form to obtain a fresh
+identity; legacy clients omitting it remain outside the retry guarantee.

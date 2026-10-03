@@ -1416,3 +1416,46 @@ additional trusted check. Venture cannot preempt arbitrary C callbacks; use the
 external executable path for a scanner that can block. Callbacks must return
 promptly, must not enter a nested application loop, and must not access the
 database from another thread. No antivirus engine is bundled.
+
+* Retrying an ordinary final submission
+
+A fresh hosted page, embed fragment or schema response supplies a unique signed
+submission identity. JSON clients copy =submission_nonce= under the key named
+by =submission_field=. The historical wire key is =_vf_payment=; it now serves
+ordinary forms as well as paid intake. Paid schemas retain =payment_field= and
+=payment_nonce= aliases for compatibility. Keep the identity and exact submitted
+answers when a response is lost. Do not fetch a new identity or edit answers to
+retry an uncertain operation. A new intentional response uses a fresh form.
+
+Ordinary final acceptance reserves a private =form_receipt= and commits it with
+the response. Identical retries reuse that response without repeating leads,
+bookings, mail or response-save signals. Reuse with different content returns
+409. Normalized request digests ignore multipart boundaries and JSON object-key
+ordering, but include value ordering, files, control fields and the version
+carried by the fill ticket. Draft navigation and resume retain the identity.
+A final-page replay can find acceptance even after its draft was consumed.
+Intermediate page tokens still rotate; this is not an automatic retry protocol
+for every unfinished-page edit.
+
+The signed identity is form-specific. Public module, availability, origin and
+rate checks still apply: a closed/full/deleted form returns its existing uniform
+404 even for a receipt. An erased response is not recreated. Erasure and retention
+remove receipt answer/request fingerprints and the response link, retaining only
+a consumed random-identity digest and its form. These small tombstones remain
+for the lifetime of the form identity; they contain no answers or contact/email
+binding. Rotating the form's signing key invalidates old identities. Receipt
+records cannot be written, deleted or restored through generic record actions.
+
+The receipt survives process restart; a failed transaction leaves no accepted
+identity. Restore storage availability before retrying. Venture does not blindly
+reconnect and replay an ambiguous database commit. Old hand-written clients
+without an identity retain their legacy behavior and are not retry-safe; migrate
+them to fresh schema/fragment identities. Network failures do not trigger an
+automatic browser resend.
+
+Copied HTML snippets include =_vf_start= rather than a shared visitor identity.
+Their first native POST opens a fresh hosted confirmation form with the answers
+preserved; only its final submission accepts a response. This extra step works
+without JavaScript and keeps a copied snippet from deduplicating unrelated
+visitors. Files remain private upload claims until final acceptance. Prefer the
+loader or hosted page to avoid this confirmation step.
