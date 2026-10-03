@@ -231,6 +231,25 @@
 		form.addEventListener("input", update); form.addEventListener("change", update); update();
 	}
 
+	/* Bound body consumption too: headers alone do not release submit controls.
+	 * An uncertain POST is never automatically resent with a new identity. */
+	async function fetchValue(url, options, kind, milliseconds) {
+		var controller = new AbortController();
+		var expired = false;
+		var timer = setTimeout(function () { expired = true; controller.abort(); }, milliseconds);
+		options.signal = controller.signal;
+		try {
+			var response = await fetch(url, options);
+			if (kind === "text" && !response.ok) { throw new Error("HTTP " + response.status); }
+			return await response[kind]();
+		} catch (error) {
+			console.warn("Form request failed: " + (expired ? "deadline exceeded" : "network or response failure"));
+			throw error;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	function sendForm(form, body, files) {
 		var progress = form.querySelector(".vf-upload-progress");
 		if (files && !progress) {
@@ -244,7 +263,7 @@
 		 * embeds keep a simple multipart request and show indeterminate
 		 * progress; same-origin uploads can report the transferred bytes. */
 		if (!files || new URL(form.action, window.location.href).origin !== window.location.origin) {
-			return fetch(form.action, { method: "POST", mode: "cors", credentials: "omit", headers: { "Accept": "application/json" }, body: body });
+			return fetchValue(form.action, { method: "POST", mode: "cors", credentials: "omit", headers: { "Accept": "application/json" }, body: body }, "json", 120000);
 		}
 		return new Promise(function (resolve, reject) {
 			var xhr = new XMLHttpRequest();
@@ -252,8 +271,18 @@
 			xhr.upload.onprogress = function (event) {
 				if (event.lengthComputable) { progress.max = event.total; progress.value = event.loaded; }
 			};
-			xhr.onerror = reject; xhr.onabort = reject;
-			xhr.onload = function () { resolve({ json: function () { return Promise.resolve().then(function () { return JSON.parse(xhr.responseText); }); } }); };
+			xhr.timeout = 120000;
+			function fail(cause) {
+				console.warn("Form request failed: " + cause);
+				reject(new Error(cause));
+			}
+			xhr.onerror = function () { fail("network failure"); };
+			xhr.onabort = function () { fail("request aborted"); };
+			xhr.ontimeout = function () { fail("deadline exceeded"); };
+			xhr.onload = function () {
+				try { resolve(JSON.parse(xhr.responseText)); }
+				catch (error) { fail("invalid response"); }
+			};
 			xhr.send(body);
 		});
 	}
@@ -294,11 +323,7 @@
 				button.disabled = true;
 			}
 
-			sendForm(form, body, files.length > 0).then(function (response) {
-				return response.json().catch(function () {
-					return { ok: false, message: "The form could not be sent. Please try again." };
-				});
-			}).then(function (result) {
+			sendForm(form, body, files.length > 0).then(function (result) {
 				if (result.html) {
 					var holder = document.createElement("template");
 					holder.innerHTML = result.html;
@@ -321,7 +346,7 @@
 				}
 				showErrors(form, result.errors, result.message);
 			}).catch(function () {
-				showErrors(form, null, "The form could not be sent. Check your connection and try again.");
+				showErrors(form, null, "We could not confirm whether your form was received. Check your connection before trying again.");
 			}).then(function () {
 				form.ventureSending = false;
 				var progress = form.querySelector(".vf-upload-progress"); if (progress) { progress.hidden = true; }
@@ -346,12 +371,7 @@
 		} catch (error) { return; }
 		target.ventureFormLoaded = true;
 
-		fetch(source, { mode: "cors", credentials: "omit" }).then(function (response) {
-			if (!response.ok) {
-				throw new Error("unavailable");
-			}
-			return response.text();
-		}).then(function (html) {
+		fetchValue(source, { mode: "cors", credentials: "omit" }, "text", 15000).then(function (html) {
 			target.innerHTML = html;
 			target.querySelectorAll("form.vf-form").forEach(wire);
 		}).catch(function () {

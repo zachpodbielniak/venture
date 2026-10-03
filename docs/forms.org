@@ -1365,3 +1365,16 @@ download headers and erasure, with links to the refusal and authority tests.
 
 Final privacy acceptance, including contact erasure and queued copies, is
 recorded in [[file:evidence/forms-privacy.org][the privacy demonstration]].
+
+* Browser network failures
+
+The embed loader allows 15 seconds to load a fragment and two minutes for a
+submission, including response-body transfer and file uploads. A timeout
+releases the submit button and focuses the existing error summary. The
+original answers and payment nonce remain in the form. It emits one browser
+log line naming the failure category, without URLs, capabilities or answers.
+
+The loader never automatically resends an uncertain POST. Paid forms retain
+the same invoice/Checkout identity when retried unchanged. Ordinary forms do
+not promise general exactly-once delivery after a lost final response; use
+the configured email/contact limits where a second response is forbidden.
