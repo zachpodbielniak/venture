@@ -1174,3 +1174,37 @@ JSON and HTML are emitted together; the assistant reads the same aggregates.
 Queries are bounded and ask for a narrower period/version rather than silently
 truncating. The [[file:../data/examples/form-results-dashboard.json][form results dashboard template]] imports without a fixture
 form ID; set its IDs and question keys after import.
+
+* Proposed summaries of free-text answers
+
+The form's =summarize= action reads one form, an inclusive published-version
+range and a submitted-date period. Editors can request it through the generic
+action UI or CLI:
+
+#+begin_src sh
+venturectl act form 12 summarize first_version=1 last_version=3 period=this_month question=comments limit=100
+#+end_src
+
+=first_version= defaults to 1, =last_version= to the current published version,
+=period= to all dates and =limit= to 100 responses (maximum 200). Omit =question=
+for all short/long text questions. Other field kinds, file contents and all
+sensitive fields are excluded. A question marked sensitive after publication
+is excluded from historical summaries too, even if that field was later deleted.
+Repeating text rows are separate answers.
+
+Input is bounded to the response limit, 200 text answers and 32 KiB of answer
+text. An excessive range or empty eligible input is refused before calling a
+model; narrow the version range, period or question. The request goes through
+the existing organization-bound, toolless completion service. Strangers' text
+is JSON-encoded between =BEGIN RECORDS=/=END RECORDS= under instructions to
+ignore any instructions in those records.
+
+The result is a proposal with a short summary, up to ten themes, and up to five
+quotes. The model names answer IDs for each theme; the server counts distinct
+valid IDs, so a duplicated citation cannot inflate its count. Themes may
+overlap, and their classification is still a model proposal. Every retained
+quote is a verbatim substring of its named input answer; invented quotes and
+invalid references are dropped. A malformed output format is refused. No tools
+are offered to the model, and no form, response, score or note is updated.
+The action is not stageable. A person may copy the proposal into their own
+ordinary saved note; there is no automatic summary persistence.

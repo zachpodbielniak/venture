@@ -551,6 +551,30 @@ JsonNode *venture_forms_results(VentureContext *context, gint64 organization,
 	gint64 form_id, const gchar *kind, const gchar *key, gint64 version_number,
 	VentureDateRange *period, GError **error);
 
+/**
+ * venture_forms_summarize:
+ * @context: the application context
+ * @organization: organization to read, or 0 for the default
+ * @form_id: a form in that organization
+ * @first_version: first published version number, inclusive
+ * @last_version: last published version number, inclusive
+ * @question: (nullable): one free-text question key, or all
+ * @period: (nullable): submitted date range, or all dates
+ * @limit: maximum responses to read, from 1 through 200
+ * @error: return location for a #GError
+ *
+ * Calls the organization-bound toolless completion service with at most 200
+ * nonsensitive text answers and 32 KiB of answer text. Refuses empty or excessive
+ * input before a model call. Returns only bounded structured output, derives
+ * theme counts from distinct valid answer IDs, and drops unverifiable quotes.
+ * No submission or form is changed; the result is a proposal for a person.
+ *
+ * Returns: (transfer full) (nullable): a validated JSON proposal, or %NULL
+ */
+JsonNode *venture_forms_summarize(VentureContext *context, gint64 organization,
+	gint64 form_id, gint64 first_version, gint64 last_version, const gchar *question,
+	VentureDateRange *period, guint limit, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

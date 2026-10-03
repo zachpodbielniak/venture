@@ -1994,3 +1994,11 @@ key for choice/NPS/rating kinds. `options={"version":2}` narrows before row
 limits. NPS requires a 0–10 rating. `form_dropoff` counts retained unfinished
 drafts by current page, not all historical visitors; it never exposes draft
 answers. `dashboard SLUG` reads the same scoped aggregates as the page.
+
+For a bounded proposed summary, use
+`act form ID summarize first_version=1 last_version=3 period=this_month question=comments limit=100`.
+Version endpoints are inclusive; omitted last version means the published one.
+Only nonsensitive short/long text answers are sent to the organization-bound
+toolless model. Theme counts use cited answer IDs and quotes are checked against
+the input. Nothing is saved back to responses. Excessive/empty input is refused;
+narrow the scope. This action is nonstageable and requires an editor.

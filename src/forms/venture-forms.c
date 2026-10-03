@@ -968,6 +968,42 @@ forms_personal_links_invoke(VentureAction *action, VentureEntity *entity, GHashT
 	return answer;
 }
 
+static VentureEntity *
+forms_summary_invoke(VentureAction *action, VentureEntity *form, GHashTable *params,
+	const VentureActor *actor, GError **error)
+{
+	VentureDatabase *database = venture_action_get_data(action);
+	GWeakRef *reference = g_object_get_data(G_OBJECT(database), "venture-forms-payment-context");
+	g_autoptr(VentureContext) context = reference != NULL ? g_weak_ref_get(reference) : NULL;
+	g_autoptr(VentureEntity) version = NULL, result = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(JsonNode) summary = NULL;
+	g_autofree gchar *text = NULL;
+	JsonNode *first_node = g_hash_table_lookup(params, "first_version"), *last_node = g_hash_table_lookup(params, "last_version");
+	JsonNode *period_node = g_hash_table_lookup(params, "period"), *question_node = g_hash_table_lookup(params, "question"), *limit_node = g_hash_table_lookup(params, "limit");
+	gint64 first = first_node != NULL && !JSON_NODE_HOLDS_NULL(first_node) ? json_node_get_int(first_node) : 1;
+	gint64 last = last_node != NULL && !JSON_NODE_HOLDS_NULL(last_node) ? json_node_get_int(last_node) : 0;
+	gint64 limit = limit_node != NULL && !JSON_NODE_HOLDS_NULL(limit_node) ? json_node_get_int(limit_node) : 100;
+	(void)actor;
+	if (context == NULL) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Form context unavailable"); return NULL; }
+	if (last == 0)
+	{
+		version = venture_database_get(database, VENTURE_TYPE_FORM_VERSION, venture_forms_get_int(form, "published-version-id"), error);
+		if (version == NULL) return NULL;
+		last = venture_forms_get_int(version, "number");
+	}
+	if (limit < 1 || limit > 200) { venture_set_error_validation(error, "Limit", "choose 1 through 200 responses"); return NULL; }
+	period = venture_context_parse_period(context, period_node != NULL && !JSON_NODE_HOLDS_NULL(period_node) ? json_node_get_string(period_node) : "all", error);
+	if (period == NULL) return NULL;
+	summary = venture_forms_summarize(context, venture_entity_get_organization_id(form), venture_entity_get_id(form), first, last,
+		question_node != NULL && !JSON_NODE_HOLDS_NULL(question_node) ? json_node_get_string(question_node) : NULL, period, (guint)limit, error);
+	if (summary == NULL) return NULL;
+	text = json_to_string(summary, FALSE);
+	result = VENTURE_ENTITY(venture_form_new()); venture_entity_set_organization_id(result, venture_entity_get_organization_id(form));
+	g_object_set(result, "name", "Proposed answer summary", "result", text, NULL);
+	return g_steal_pointer(&result);
+}
+
 static void
 forms_register_actions(VentureDatabase *database)
 {
@@ -1044,6 +1080,20 @@ forms_register_actions(VentureDatabase *database)
 	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 		forms_publish_allowed, forms_payment_recover_invoke, database, NULL, &error))
 		g_error("Form payment recovery registration: %s", error->message);
+
+	g_clear_object(&action); g_ptr_array_set_size(parameters, 0);
+	g_ptr_array_add(parameters, venture_field_spec_new("first_version", "First version", VENTURE_FIELD_KIND_INTEGER));
+	g_ptr_array_add(parameters, venture_field_spec_new("last_version", "Last version", VENTURE_FIELD_KIND_INTEGER));
+	g_ptr_array_add(parameters, venture_field_spec_new("period", "Period", VENTURE_FIELD_KIND_STRING));
+	g_ptr_array_add(parameters, venture_field_spec_new("question", "Question key", VENTURE_FIELD_KIND_STRING));
+	g_ptr_array_add(parameters, venture_field_spec_new("limit", "Response limit", VENTURE_FIELD_KIND_INTEGER));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "form", "name", "summarize", "label", "Summarize free-text answers",
+		"description", "Propose themes and verified quotes from bounded nonsensitive answers; no response is changed",
+		"parameters", parameters, "stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+		forms_publish_allowed, forms_summary_invoke, database, NULL, &error))
+		g_error("Form summary registration: %s", error->message);
 
 }
 
