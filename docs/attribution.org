@@ -364,3 +364,11 @@ receipt, independent email withdrawal and exact replay after server restart.
 The [[file:evidence/125-attribution-server.org][recorded transcript]] explains expected amounts, source identities, cleanup
 and the boundaries of this demonstration. It sends no mail and invokes no
 external provider or Lightsite provisioning.
+
+* Operational failures
+
+A failed database lookup is a retryable HTTP 500, not proof that a site's
+endpoint is gone. Internal diagnostics are replaced with a generic public
+message. The intake boundary logs one cause category plus error domain/code;
+it never logs the signed body, signature, visitor token or enquiry fields.
+After repairing storage, retry the unchanged envelope and submission identity.
