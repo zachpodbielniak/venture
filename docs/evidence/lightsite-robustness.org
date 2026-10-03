@@ -1,0 +1,107 @@
+#+title: Lightsite dependency robustness pass
+
+* Scope
+
+Started 2026-10-03 from PR 163 head
+=58583c4ff513301674d4cb2680a5d4a2725bbdde= in a separately locked worktree,
+branch =harden/lightsite-20261003=. The source PR and master are unchanged.
+No live Stripe, mail or AI provider is used for this pass.
+
+* Failure-mode checklist
+
+| Surface | Failure mode | Existing boundary / check under review |
+|---------+--------------+----------------------------------------|
+| Lead/enquiry intake | Dependency down or slow | Lead capture is local; browser HTTP needs a deadline including body reads |
+| Lead/enquiry intake | Timeout / retry / backoff | Caller retains submission envelope; use bounded backoff and jitter for transient failures, Retry-After for 429 |
+| Lead/enquiry intake | Duplicate / replay | Stable submission ID plus payload digest; changed content conflicts; HMAC receipt window for signed delivery |
+| Lead/enquiry intake | Partial writes | Capture, consent, attribution and binding share database transaction; synchronous observers need care |
+| Lead/enquiry intake | Bad boundary input | Bounded exact envelope and mapping; signed malformed JSON already remains a client error |
+| Lead/enquiry intake | DB restart / failed reads | Preserve database errors instead of interpreting failed lookup as missing site; retry same ID |
+| Lead/enquiry intake | Disk full | Database write/commit must refuse acknowledgement; no external provider call on intake |
+| Site pairing/accounts | Dependency down or slow | Identity endpoint only reads local authority; remote Lightsite must bound its request and response size |
+| Site pairing/accounts | Timeout / retry / backoff | Identity GET is repeatable; configure uses expected connection and version; do not provision on uncertainty |
+| Site pairing/accounts | Duplicate / replay | Exact site/tenant/organization binding; immutable remote identity; rotated secret invalidates old signature |
+| Site pairing/accounts | Partial writes | Encrypted connection settings configured transactionally; account identity creates no records |
+| Site pairing/accounts | Bad boundary input | Exact keys, bounded IDs/secrets, HTTPS origin normalization; current and captured token authority |
+| Site pairing/accounts | DB restart / failed reads | Persisted hosted identity and current membership rechecked; unknown authority refuses provisioning |
+| Site pairing/accounts | Disk full | Failed pairing transaction cannot claim successful configuration; account identity is read-only |
+| Forms | Dependency down or slow | Local validation/drafts; mail is durable outbox; scanner callback is synchronous and must be bounded by its adapter |
+| Forms | Timeout / retry / backoff | Rotating draft/resume tokens; ordinary final responses lack a general network-retry identity |
+| Forms | Duplicate / replay | Draft generation, one-time resume/opt-in links, email/contact caps; last-slot check under lock |
+| Forms | Partial writes | Final response and follow-ups share audited transaction; uploads also require filesystem compensation |
+| Forms | Bad boundary input | Frozen definitions, unknown-field refusal, hidden-answer removal, multipart size/type/count/quota checks |
+| Forms | DB restart / failed reads | Durable private drafts and versions; unavailable storage must not be treated as invalid user input |
+| Forms | Disk full | File create/write/close and metadata failures must remove incomplete bytes and permit repair/retry |
+| Payment/Stripe | Dependency down or slow | Provider transport timeout; durable Checkout reservation committed before provider request |
+| Payment/Stripe | Timeout / retry / backoff | Same retained Checkout idempotency key; uncertain old attempts require reconciliation; collection has recorded retry delay |
+| Payment/Stripe | Duplicate / replay | Verified event/session/invoice identity and amount/currency checks; repeated settlement completes once |
+| Payment/Stripe | Partial writes | Settlement commits before form completion; private pending record supports later recovery |
+| Payment/Stripe | Bad boundary input | Prices from published rules and exact minor-unit money; caller amount/currency refused |
+| Payment/Stripe | DB restart / failed reads | Pending invoice/Checkout identity survives provider uncertainty; webhook retry reconciles local completion |
+| Payment/Stripe | Disk full | Local reservation must commit before contacting Stripe; post-provider failure retains reconciliation identity |
+
+* Proven fixes
+
+- Browser HTTP deadline: the new stalled-header/body scenario failed because
+  no deadline existed. A 15-second AbortController deadline now covers the
+  entire response and releases serialized consent work. Existing consent,
+  offline withdrawal and stable-envelope scenarios pass with it. A single
+  content-free browser diagnostic names the failure cause.
+
+- Form loader deadlines: stalled fragment headers/body, POST headers/body,
+  cross-origin uploads and same-origin XHR uploads all release controls.
+  Six scripted transport scenarios pass. The error states that receipt is
+  uncertain; the existing payment nonce is retained and no retry is automatic.
+- Intake storage classification: a failed site-table read returned 404 before
+  the fix. It now returns a sanitized 500 and one cause log. Restoring storage
+  permits the same request to succeed. The real HTTP case passes on SQLite
+  and PostgreSQL 18.
+- Upload storage classification: unavailable storage and an actual kernel
+  short-write failure returned 422 before the fix. They now return 503 with
+  retry guidance. The child-process write limit leaves no bytes, upload row
+  or response; after lifting it, the same request succeeds. OS errors survive
+  to the boundary as typed GIO errors. Invalid files still return 422.
+- Payment observability: the lost-Checkout-response case failed its expected
+  diagnostic before the fix. It now logs a cause and local invoice ID without
+  customer data. The existing retry uses retained payment identity. All eleven
+  paid-form cases pass, including replay, uncertain transport, delayed payment,
+  booking recovery, erasure and capacity checks.
+- Account observability: the authority fixture failed its expected validation
+  diagnostic before the fix. It now logs stable categories without credentials
+  or token names. All existing hosted/token authority checks continue to pass.
+
+* Validation
+
+Targeted runs: 37 attribution tests, 99 forms tests, the account-identity
+HTTP authority test, eleven paid-form cases and the forms transport test
+(six scenarios). The attribution browser test also covers stalled headers and
+body, serialized consent, offline withdrawal and retained submission IDs.
+The source builds with DEBUG=1 and no warnings. PostgreSQL storage-recovery
+coverage uses an owned disposable instance, not an operator database.
+
+Every retained new regression was observed failing before its fix. An extra
+malformed-JSON probe passed on the existing code, so it was removed rather
+than represented as a repair. The full DEBUG suite is reserved for one run on
+the fixed final source, followed by the repository's litter/version/demo checks.
+
+* Operational limits and decisions
+
+- Ben/Zach: choose whether ordinary forms need a general final-submission
+  idempotency contract. They intentionally accept repeat responses today;
+  email/contact limits and private draft tokens are narrower guarantees.
+  Browser deadlines cannot prove whether a lost final response committed.
+- Provider calls and optional scanner callbacks are synchronous. Stripe has
+  per-attempt timeouts, bounded retry counts, backoff/jitter and Retry-After;
+  it has no total wall-clock budget across those waits. A slow provider can
+  therefore occupy the request thread beyond the browser deadline. A total
+  provider budget/async flow needs a separate decision; no database work was
+  moved to a background thread in this pass. Scanner adapters must bound their
+  external calls; the default path invokes no external scanner.
+- Database failures fail closed. These checks cover failed reads and restoration,
+  retained replay after application reconnect (existing attribution test),
+  failed file writes and cleanup. They do not claim automatic reconnect or
+  replay after an ambiguous commit, power-loss durability, or exhaustive
+  host-wide disk exhaustion. Restore database availability and restart Venture
+  if its connection was lost; retry retained operation identities.
+
+No PR is opened, no merge is performed, and PR 163 is not modified.
