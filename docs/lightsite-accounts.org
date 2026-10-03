@@ -92,3 +92,8 @@ make DEBUG=1 test-one T=test-auth
 The end-to-end Lightsite demonstration is linked from the prerequisite PR
 and Lightsite PR #23. It uses the actual provisioning command and this built
 server; fixture responses alone do not establish interoperability.
+
+Refusals produced by the account-identity handler emit one server diagnostic
+with the stable error category and domain/code. Credentials, token names,
+organization input and response bodies are excluded. HTTP responses remain
+uncacheable; this diagnostic does not grant or weaken provisioning authority.

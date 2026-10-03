@@ -139,7 +139,10 @@ static void identity_http(void)
 		CHECK(path, limited_secret, NULL, 403);
 		CHECK(path, secret, NULL, 200);
 	}
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+		"Account identity request failed: cause=validation domain=* code=*");
 	CHECK("/api/v1/account-identity/-1", secret, NULL, 422);
+	g_test_assert_expected_messages();
 	CHECK("/api/v1/account-identity/9223372036854775808", secret, NULL, 422);
 	CHECK("/api/v1/account-identity/not-an-id", secret, NULL, 422);
 	CHECK("/api/v1/account-identity/0", secret, NULL, 422);
