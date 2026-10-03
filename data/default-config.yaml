@@ -587,3 +587,9 @@ printing:
   #   width: 48              # optional; otherwise use the font's width
   #   cut: true
   #   feed: 4
+
+# Optional trusted executable: stdin is the file; argv[1] is its sniffed MIME.
+# Exit 0 accepts, 1 refuses content, all other failures are operational.
+forms:
+  scanner_executable: ""
+  scanner_timeout_ms: 10000

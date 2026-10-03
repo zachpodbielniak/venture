@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 
 #define UPLOAD_MAX_FILE (20 * 1024 * 1024)
 #define UPLOAD_MAX_BODY (32 * 1024 * 1024)
@@ -37,6 +38,94 @@ void venture_forms_set_upload_scanner(VentureDatabase *database, VentureFormsUpl
 static gboolean upload_fail(GError **error, const gchar *message)
 {
 	venture_set_error_validation(error, "Upload", "%s", message); return FALSE;
+}
+
+/* A private context drains only scanner I/O, never application callbacks.
+ * Output is discarded so a noisy scanner cannot fill memory or leak bytes. */
+typedef struct {
+	GSubprocess *process;
+	GCancellable *io;
+	GError *error;
+	gboolean done;
+	gboolean expired;
+	pid_t group;
+} UploadScanRun;
+
+static gboolean upload_scan_timeout(gpointer data)
+{
+	UploadScanRun *run = data;
+	run->expired = TRUE;
+	if (run->group > 0) kill(-run->group, SIGKILL);
+	g_subprocess_force_exit(run->process);
+	g_cancellable_cancel(run->io);
+	return G_SOURCE_REMOVE;
+}
+
+static void upload_scan_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	UploadScanRun *run = data;
+	g_subprocess_communicate_finish(G_SUBPROCESS(source), result, NULL, NULL, &run->error);
+	run->done = TRUE;
+}
+
+/* Only async-signal-safe operations are permitted after fork. A separate
+ * session lets a deadline terminate scanner children holding inherited pipes. */
+static void upload_scan_child(gpointer data)
+{
+	(void)data;
+	if (setsid() < 0) _exit(127);
+}
+
+static gboolean upload_scan_process(const gchar *executable, const gchar *mime,
+	GBytes *bytes, gint64 deadline, GError **error)
+{
+	const gchar *argv[] = { executable, mime, NULL };
+	g_autoptr(GSubprocess) process = NULL;
+	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_PIPE |
+		G_SUBPROCESS_FLAGS_STDOUT_SILENCE | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+	g_autoptr(GMainContext) context = g_main_context_new();
+	g_autoptr(GCancellable) io = g_cancellable_new();
+	g_autoptr(GSource) timer = g_timeout_source_new(0);
+	UploadScanRun run;
+	gboolean accepted;
+	if (g_get_monotonic_time() >= deadline)
+	{
+		g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Upload scanner deadline exhausted");
+		return FALSE;
+	}
+	g_subprocess_launcher_set_child_setup(launcher, upload_scan_child, NULL, NULL);
+	process = g_subprocess_launcher_spawnv(launcher, argv, error);
+	if (process == NULL) return FALSE;
+	run.process = process; run.io = io; run.error = NULL; run.done = FALSE; run.expired = FALSE;
+	run.group = g_subprocess_get_identifier(process) != NULL ? (pid_t)g_ascii_strtoll(g_subprocess_get_identifier(process), NULL, 10) : 0;
+	g_main_context_push_thread_default(context);
+	g_source_set_ready_time(timer, deadline);
+	g_source_set_callback(timer, upload_scan_timeout, &run, NULL);
+	g_source_attach(timer, context);
+	g_subprocess_communicate_async(process, bytes, io, upload_scan_done, &run);
+	while (!run.done) g_main_context_iteration(context, TRUE);
+	g_source_destroy(timer);
+	g_main_context_pop_thread_default(context);
+	/* Cancellation of communicate cancels its wait too. Reap the killed
+	 * child before releasing the buffers or accepting another upload. */
+	if (run.expired)
+	{
+		g_clear_error(&run.error);
+		g_subprocess_wait(process, NULL, NULL);
+		g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Upload scanner deadline exhausted");
+		return FALSE;
+	}
+	if (run.error != NULL)
+	{
+		g_subprocess_force_exit(process); g_subprocess_wait(process, NULL, NULL);
+		g_propagate_error(error, run.error); return FALSE;
+	}
+	accepted = g_subprocess_get_successful(process);
+	if (accepted) return TRUE;
+	if (g_subprocess_get_if_exited(process) && g_subprocess_get_exit_status(process) == 1)
+		return upload_fail(error, "the file scanner refused this attachment");
+	g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Upload scanner failed");
+	return FALSE;
 }
 
 /* OS failures are operational, not evidence that a visitor chose a bad file.
@@ -298,13 +387,52 @@ void venture_forms_upload_part_free(gpointer data)
 	g_free(part->key); g_free(part->filename); g_bytes_unref(part->bytes); g_free(part);
 }
 
+static gboolean upload_scan_parts(VentureDatabase *database, GPtrArray *fields,
+	GPtrArray *parts, GError **error)
+{
+	GWeakRef *reference = g_object_get_data(G_OBJECT(database), "venture-forms-payment-context");
+	g_autoptr(VentureContext) context = reference != NULL ? g_weak_ref_get(reference) : NULL;
+	g_autofree gchar *executable = NULL;
+	UploadScanner *scanner = g_object_get_data(G_OBJECT(database), "venture-forms-upload-scanner");
+	gint64 milliseconds = 10000, deadline;
+	guint i;
+	if (context != NULL) g_object_get(venture_context_get_config(context),
+		"forms-scanner-executable", &executable, "forms-scanner-timeout-ms", &milliseconds, NULL);
+	if (!venture_string_is_empty(executable) &&
+	    (!g_path_is_absolute(executable) || milliseconds < 1 || milliseconds > 30000))
+	{
+		g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Invalid upload scanner configuration");
+		return FALSE;
+	}
+	deadline = g_get_monotonic_time() + CLAMP(milliseconds, 1, 30000) * 1000;
+	for (i = 0; i < parts->len; i++)
+	{
+		VentureFormsUploadPart *part = g_ptr_array_index(parts, i);
+		const VentureFormsField *field = upload_field(fields, part->key);
+		g_autofree gchar *mime = NULL;
+		gsize length = g_bytes_get_size(part->bytes);
+		if (field == NULL || length == 0 || length > (gsize)upload_max_bytes(field))
+			return upload_fail(error, "unknown file question or exceeded file size/count");
+		mime = upload_sniff(part->bytes, error);
+		if (mime == NULL) return FALSE;
+		if (!upload_type_allowed(field->file_types, mime))
+			return upload_fail(error, "this file's content type is not allowed for the question");
+		if (!venture_string_is_empty(executable) && !upload_scan_process(executable, mime, part->bytes, deadline, error)) return FALSE;
+		if (scanner != NULL && scanner->scanner != NULL && !scanner->scanner(part->bytes, mime, scanner->data, error))
+		{
+			if (error != NULL && *error == NULL) upload_fail(error, "the file scanner refused this attachment");
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
 gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity *form, VentureEntity *version,
 	GPtrArray *fields, GHashTable *answers, GPtrArray *parts, const gchar *client, GDateTime *now, GError **error)
 {
 	g_autoptr(GPtrArray) created = g_ptr_array_new_with_free_func(g_object_unref);
 	g_autofree gchar *root = NULL, *key = venture_forms_get_string(form, "ticket-key"), *digest = NULL;
 	g_autoptr(GDateTime) expires = g_date_time_add_hours(now, 1);
-	UploadScanner *scanner = g_object_get_data(G_OBJECT(database), "venture-forms-upload-scanner");
 	gint directory = -1;
 	guint i;
 	gboolean committed = FALSE;
@@ -312,6 +440,7 @@ gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity 
 	if (parts->len > 100) return upload_fail(error, "too many files in one request");
 	if (!venture_forms_upload_definition(fields, error)) return FALSE;
 	root = upload_root(database, error); if (root == NULL) return FALSE;
+	if (!upload_scan_parts(database, fields, parts, error)) return FALSE;
 	digest = g_compute_hmac_for_string(G_CHECKSUM_SHA256, (const guchar *)key, strlen(key), client != NULL ? client : "unknown", -1);
 	if (!venture_database_begin(database, error)) return FALSE;
 	if (g_mkdir_with_parents(root, 0700) != 0 || (directory = g_open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0)) < 0)
@@ -332,8 +461,6 @@ gboolean venture_forms_receive_uploads(VentureDatabase *database, VentureEntity 
 		{ upload_fail(error, "filename must be nonempty UTF-8 of at most 512 bytes"); goto fail; }
 		mime = upload_sniff(part->bytes, error); if (mime == NULL) goto fail;
 		if (!upload_type_allowed(field->file_types, mime)) { upload_fail(error, "this file's content type is not allowed for the question"); goto fail; }
-		if (scanner != NULL && scanner->scanner != NULL && !scanner->scanner(part->bytes, mime, scanner->data, error))
-		{ if (error != NULL && *error == NULL) upload_fail(error, "the file scanner refused this attachment"); goto fail; }
 		if (!upload_quota(database, form, digest, length, now, error)) goto fail;
 		token = venture_generate_token(32); hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
 		uuid = g_uuid_string_random(); filename = g_strconcat("form-upload-", uuid, NULL); path = g_build_filename(root, filename, NULL);

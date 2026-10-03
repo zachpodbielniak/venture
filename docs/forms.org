@@ -1392,3 +1392,27 @@ and roll back upload metadata. The boundary emits one redacted cause and
 keeps filesystem paths and database diagnostics out of the public response.
 The write-failure regression uses a child process file-size limit, so it
 exercises a short write and refusal without filling the machine's disk.
+
+* Bounded external upload scanning
+
+Operators may set =forms.scanner_executable= to an absolute path and
+=forms.scanner_timeout_ms= to 1..30000 milliseconds (default 10000). An empty
+path disables the external scanner. The executable receives bounded file bytes
+on stdin and the content-sniffed MIME type as its sole argument. No filename or
+shell command is interpolated. Exit 0 accepts, exit 1 rejects content, and other
+exit codes, signals, unavailable executables and deadlines fail closed with 503
+and Retry-After. Scanner output is discarded; the boundary logs one safe cause.
+
+The budget covers scanning all files in one request, including feeding stdin
+and waiting for exit. The deadline kills the owned scanner process group and
+reaps the direct child. A trusted scanner must not daemonize or escape its
+process group. Scanning runs before the database transaction or attachment
+writes, using a private main context that cannot dispatch application callbacks.
+There are no automatic retries. After repairing the scanner, retrying the same
+upload can succeed. Normal size, content-type, count and quota checks still apply.
+
+The existing in-process =venture_forms_set_upload_scanner()= hook remains an
+additional trusted check. Venture cannot preempt arbitrary C callbacks; use the
+external executable path for a scanner that can block. Callbacks must return
+promptly, must not enter a nested application loop, and must not access the
+database from another thread. No antivirus engine is bundled.

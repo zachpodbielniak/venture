@@ -61,6 +61,8 @@ typedef struct
 	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
 
 static const VentureConfigSetting venture_config_settings[] = {
+	VC_STR("forms-scanner-executable", "forms", "scanner_executable", "", "Optional trusted upload scanner executable; receives bytes on stdin"),
+	VC_INT("forms-scanner-timeout-ms", "forms", "scanner_timeout_ms", 10000, "Total upload scanning budget in milliseconds, 1..30000"),
 	VC_BOOL("ocr-enabled", "ocr", "enabled", FALSE, "Enable bounded local OCR explicitly"),
 	VC_STR("ocr-executable", "ocr", "executable", "tesseract", "Local OCR executable, chosen by the operator"),
 	VC_STR("ocr-language", "ocr", "language", "eng", "Installed OCR languages joined with +"),

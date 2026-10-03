@@ -4734,6 +4734,53 @@ test_upload_write_failure(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 200);
 }
 
+/* Configured scanner failure must never accept an unchecked attachment. */
+static void
+test_upload_external_scanner(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = upload_form(f);
+	g_autofree gchar *scanner = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 started;
+	(void)data;
+	start_http(f);
+	scanner = g_build_filename(f->state_dir, "scanner", NULL);
+	g_assert_true(g_file_set_contents(scanner, "#!/bin/sh\nexec sleep 20\n", -1, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(g_chmod(scanner, 0700), ==, 0);
+	g_object_set(f->config, "forms-scanner-executable", scanner,
+		"forms-scanner-timeout-ms", (gint64)100, NULL);
+	started = g_get_monotonic_time();
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "Form upload failed: cause=* domain=g-io-error-quark code=*");
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 503);
+	g_test_assert_expected_messages();
+	g_assert_cmpint(g_get_monotonic_time() - started, <, 3 * G_USEC_PER_SEC);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	g_assert_true(g_file_set_contents(scanner, "#!/bin/sh\ncat >/dev/null\nexit 1\n", -1, &error));
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 422);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
+	/* Exit 1 is a content decision; a crash and an unavailable executable
+	 * are operational failures and cannot leave a saved attachment. */
+	g_assert_true(g_file_set_contents(scanner, "#!/bin/sh\nexit 2\n", -1, &error));
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "Form upload failed: cause=* domain=g-io-error-quark code=*");
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 503);
+	g_test_assert_expected_messages();
+	g_assert_true(g_file_set_contents(scanner, "#!/bin/sh\nkill -TERM $$\n", -1, &error));
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "Form upload failed: cause=* domain=g-io-error-quark code=*");
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 503);
+	g_test_assert_expected_messages();
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
+	g_assert_cmpint(g_unlink(scanner), ==, 0);
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "Form upload failed: cause=* domain=g-exec-error-quark code=*");
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 503);
+	g_test_assert_expected_messages();
+	g_assert_true(g_file_set_contents(scanner, "#!/bin/sh\ncat >/dev/null\nexit 0\n", -1, &error));
+	g_assert_cmpint(g_chmod(scanner, 0700), ==, 0);
+	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 200);
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+}
+
 static void
 test_upload_http(Fixture *f, gconstpointer data)
 {
@@ -5126,6 +5173,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/portable-prices", Fixture, NULL, setup, test_portable_prices, teardown);
 	g_test_add("/forms/upload-write-failure", Fixture, NULL, setup, test_upload_write_failure, teardown);
 	g_test_add("/forms/upload-storage-failure", Fixture, NULL, setup, test_upload_storage_failure, teardown);
+	g_test_add("/forms/upload-external-scanner", Fixture, NULL, setup, test_upload_external_scanner, teardown);
 	g_test_add("/forms/upload-http", Fixture, NULL, setup, test_upload_http, teardown);
 	g_test_add("/forms/upload-refusals", Fixture, NULL, setup, test_upload_refusals, teardown);
 	g_test_add("/forms/upload-drafts", Fixture, NULL, setup, test_upload_drafts, teardown);
