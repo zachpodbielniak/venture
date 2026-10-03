@@ -204,7 +204,8 @@ static gboolean forms_payment_continue(VentureDatabase *database, VentureEntity 
 	g_autoptr(GError) error = NULL;
 	const gchar *cause;
 	if (forms_payment_checkout(database, pending, response, &error)) return TRUE;
-	cause = g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_TRANSPORT) ? "provider transport failure" :
+	cause = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT) ? "provider deadline exhausted" :
+		g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_TRANSPORT) ? "provider transport failure" :
 		g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_RATE_LIMIT) ? "provider rate limit" :
 		g_error_matches(error, STRIPE_ERROR, STRIPE_ERROR_SERVER) ? "provider unavailable" :
 		error != NULL && error->domain == VENTURE_ERROR ? venture_error_get_slug(error->code) : "provider or storage failure";

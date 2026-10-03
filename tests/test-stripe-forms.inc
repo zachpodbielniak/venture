@@ -14,7 +14,8 @@ static void test_paid_form(Fixture *f, gconstpointer data)
 	const gchar *mode = data;
 	gboolean booking = g_str_has_prefix(mode, "booking-");
 	gboolean reordered = g_strcmp0(mode, "expired-paid") == 0;
-	gboolean erased = g_strcmp0(mode, "erased") == 0, uncertain = g_strcmp0(mode, "uncertain") == 0;
+	gboolean deadline = g_strcmp0(mode, "deadline") == 0;
+	gboolean erased = g_strcmp0(mode, "erased") == 0, uncertain = g_strcmp0(mode, "uncertain") == 0 || deadline;
 	guint attempts = uncertain ? 2 : 1;
 	gboolean expired = strstr(mode, "expired") != NULL, failed = strstr(mode, "failed") != NULL, late = strstr(mode, "late") != NULL;
 	g_autoptr(VentureEntity) page = NULL;
@@ -86,18 +87,19 @@ static void test_paid_form(Fixture *f, gconstpointer data)
 	if (uncertain)
 	{
 		g_autoptr(GPtrArray) invoices = NULL;
-		fake->checkout_drop = TRUE;
+		fake->checkout_drop = !deadline; fake->checkout_timeout = deadline;
 		g_clear_pointer(&errors, json_object_unref);
 		/* A retained retry identity is useful only if an operator can also
 		 * distinguish provider uncertainty from invalid customer answers. */
 		g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+			deadline ? "Form payment checkout failed: invoice=* cause=provider deadline exhausted*" :
 			"Form payment checkout failed: invoice=* cause=provider transport failure*");
 		ok = venture_forms_submit(f->database, form, answers, NULL, now, &outcome, &response, &errors, &error);
 		g_test_assert_expected_messages();
 		g_assert_no_error(error); g_assert_true(ok); g_assert_cmpint(outcome, ==, VENTURE_FORMS_INVALID);
 		g_assert_nonnull(json_object_get_member(errors, "_form")); g_assert_cmpuint(saved, ==, 0);
 		invoices = rows(f, "invoice"); g_assert_cmpuint(invoices->len, ==, 1);
-		fake->checkout_drop = FALSE;
+		fake->checkout_drop = FALSE; fake->checkout_timeout = FALSE;
 	}
 	g_clear_pointer(&errors, json_object_unref);
 	ok = venture_forms_submit(f->database, form, answers, NULL, now, &outcome, &response, &errors, &error); g_assert_no_error(error); g_assert_true(ok);

@@ -386,3 +386,22 @@ can recover completion without posting another payment. Paid bookings use a
 45-minute, card-only Checkout window; other paid forms retain configured ACH.
 Refunds, disputes and accounting remain on the invoice. See
 [[file:evidence/forms-payment.org][the offline built-server payment demonstration]].
+
+* Provider operation deadlines
+
+The pinned stripe-glib client now treats its default =request_timeout: 30= as a
+whole-operation budget, including headers, bounded response-body reads and all
+retry waits. It refuses a Retry-After/backoff delay that cannot fit; it never
+retries earlier than Stripe requested. A deadline preserves the operation's
+idempotency key and returns a typed timeout. Paid-form intake logs one redacted
+=provider deadline exhausted= cause and retains the invoice/Checkout attempt for
+retry or reconciliation. No provider request runs inside the form transaction.
+
+An individual host workflow can make several Stripe operations (for example
+customer creation then Checkout). Each has its own 30-second budget; this is not
+a global deadline for an entire multi-operation workflow. Default transport I/O
+uses a private GLib context and does not dispatch application/database callbacks.
+Injected transports must obey the supplied deadline and cancellable; arbitrary
+in-process callbacks cannot be forcibly preempted safely. Ordinary transport
+failures remain non-retryable inside stripe-glib. Use the retained durable key
+when the caller explicitly retries an uncertain mutation.
