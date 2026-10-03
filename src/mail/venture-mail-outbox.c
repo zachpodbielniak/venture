@@ -576,3 +576,27 @@ gboolean venture_mail_outbox_cancel(VentureMailOutbox *self, gint64 org, gint64 
 fail:
 	venture_database_rollback(self->database); return FALSE;
 }
+
+
+gboolean venture_mail_outbox_forget_pending(VentureMailOutbox *self, gint64 organization_id,
+	gint64 id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) row = NULL;
+	g_autofree gchar *state = NULL;
+	g_return_val_if_fail(VENTURE_IS_MAIL_OUTBOX(self), FALSE);
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	row = get_retained_row(self, organization_id, id, error); if (row == NULL) goto fail;
+	g_object_get(row, "state", &state, NULL);
+	if (venture_entity_get_audit_private(row) == NULL ||
+	    (g_strcmp0(state, "queued") && g_strcmp0(state, "failed") && g_strcmp0(state, "dead") && g_strcmp0(state, "cancelled")))
+	{ refuse(error, "Only private intake copies known not to be in flight may be forgotten"); goto fail; }
+	g_object_set(row, "state", "cancelled", "to", "Erased recipient", "cc", NULL, "bcc", NULL,
+		"reply-to", NULL, "subject", "Erased private intake message", "text-body", "", "html-body", NULL,
+		"private-text-body", NULL, "private-html-body", NULL, "private-unsubscribe-url", NULL,
+		"attachments", NULL, "next-attempt-at", NULL, "lease-until", NULL, "last-error", "Private intake copy erased", NULL);
+	venture_entity_set_attribute(row, "_mail_attachments", NULL);
+	if (!save(self, row, actor, error)) goto fail;
+	return venture_database_commit(self->database, error);
+fail:
+	venture_database_rollback(self->database); return FALSE;
+}

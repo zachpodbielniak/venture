@@ -14,9 +14,10 @@ remaining place. The transcript records assertions against actual HTTP
 responses and the final stored response count.
 
 This is evidence for the schedule, total-cap and email-limit portions of #148.
-Personal-link and contact limits are still pending; this is not completion
-evidence for the entire forms epic. Exact boundary times and stale form
-objects are additionally covered by =/forms/schedule=.
+Personal-link and contact limits were completed subsequently; see
+[[file:forms-prefill.org][the prefill and personal-link demonstration]] and =/forms/personal-links=.
+Exact boundary times and stale form objects are additionally covered by
+=/forms/schedule=.
 
 * Transcript
 

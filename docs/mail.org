@@ -641,3 +641,17 @@ C callers can use =venture_organization_mailer_dup_schema()= to derive
 write-only settings inputs, and =venture_mail_outbox_deliver_one()= to
 restrict a deliberate test to its message and exact configuration. The
 ordinary outbox claim, veto, retry and uncertainty rules remain shared.
+
+* Private intake copies
+
+Mail related to =form=, =form_draft=, =form_pending= or
+=booking_reservation= redacts recipients, bodies, attachment references and
+error content in its audit diff, and uses a type/id audit label. Ordinary
+business mail keeps its existing audit behavior. Migration 000902 repairs
+older intake audit copies.
+
+Form erasure and retention use =venture_mail_outbox_forget_pending()= for
+queued, failed, dead or cancelled intake mail. The method clears copied
+personal content and leaves a cancelled row with the original idempotency
+key, preventing a retry from recreating delivery. It refuses ordinary mail
+and sending, uncertain or sent states; those retain the outbox's own policy.

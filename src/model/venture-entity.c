@@ -543,6 +543,16 @@ venture_entity_type_get_audit_private(GType type)
 	return NULL;
 }
 
+const gchar *const *
+venture_entity_get_audit_private(VentureEntity *self)
+{
+	VentureEntityClass *klass;
+	g_return_val_if_fail(VENTURE_IS_ENTITY(self), NULL);
+	klass = VENTURE_ENTITY_GET_CLASS(self);
+	return klass->get_audit_private != NULL ? klass->get_audit_private(self) :
+		venture_entity_type_get_audit_private(G_OBJECT_TYPE(self));
+}
+
 /*
  * "attribution_submission" or "VentureAttributionSubmission" to
  * "Attribution submission". ASCII only, as every type name is.

@@ -534,6 +534,35 @@ static void test_async_registry(void)
 	g_assert_cmpuint(venture_log_mailer_get_messages(mailer)->len, ==, 1);
 }
 
+/* Erasure retains the durable key, cancels delivery, clears both public and
+ * private copies, and cannot silently destroy ordinary business mail. */
+static void test_forget_private_intake(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) input = venture_mail_message_new(), queued = NULL, ordinary = enqueue(f, "ordinary-retained");
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL, *private_body = NULL, *key = NULL;
+	gint64 id;
+	(void)data;
+	g_object_set(input, "organization-id", f->org, "to", "erasable@example.test", "subject", "Private intake", "text-body", "Personal copied answer", "private-text-body", "private-capability", "related-type", "form_draft", "idempotency-key", "retained-private-key", NULL);
+	queued = venture_mail_outbox_enqueue(f->outbox, input, NULL, &error); g_assert_no_error(error); g_assert_nonnull(queued);
+	id = venture_entity_get_id(VENTURE_ENTITY(queued));
+	g_assert_true(venture_mail_outbox_forget_pending(f->outbox, f->org, id, NULL, &error)); g_assert_no_error(error); assert_state(f, id, "cancelled");
+	row = venture_database_get(f->db, VENTURE_TYPE_MAIL_MESSAGE, id, &error); g_assert_no_error(error);
+	g_object_get(row, "text-body", &body, "private-text-body", &private_body, "idempotency-key", &key, NULL);
+	g_assert_true(venture_string_is_empty(body)); g_assert_true(venture_string_is_empty(private_body)); g_assert_cmpstr(key, ==, "retained-private-key");
+	g_assert_true(venture_mail_outbox_forget_pending(f->outbox, f->org, id, NULL, &error)); g_assert_no_error(error);
+	g_assert_false(venture_mail_outbox_retry(f->outbox, f->org, id, NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_mail_outbox_forget_pending(f->outbox, f->org, venture_entity_get_id(VENTURE_ENTITY(ordinary)), NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+	assert_state(f, venture_entity_get_id(VENTURE_ENTITY(ordinary)), "queued");
+	{
+		g_autofree gchar *sql = g_strdup_printf("UPDATE mail_messages SET state = 'sending' WHERE id = %" G_GINT64_FORMAT, id);
+		g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+		g_assert_false(venture_mail_outbox_forget_pending(f->outbox, f->org, id, NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+		assert_state(f, id, "sending");
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -561,5 +590,6 @@ main(int argc, char **argv)
 	g_test_add("/mail/organization-unique", Fixture, NULL, setup, test_organization_unique, teardown);
 	g_test_add_func("/mail/restart-lease", test_restart_lease);
 	g_test_add_func("/mail/async-registry", test_async_registry);
+	g_test_add("/mail/forget-private-intake", Fixture, NULL, setup, test_forget_private_intake, teardown);
 	return g_test_run();
 }

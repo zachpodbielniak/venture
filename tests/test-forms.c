@@ -3349,6 +3349,12 @@ test_optin_private_erasure(Fixture *f, gconstpointer data)
 	g_assert_no_error(error); g_assert_nonnull(result);
 	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result), "confirmations_cancelled"), ==, 1);
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_PENDING), ==, 0);
+	{
+		g_autoptr(VentureQuery) mail = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(VentureEntity) message = venture_database_find_one(f->db, mail, NULL);
+		g_autofree gchar *private_body = venture_forms_get_string(message, "private-text-body");
+		g_assert_true(venture_string_is_empty(private_body));
+	}
 }
 
 
@@ -4435,6 +4441,25 @@ static void test_booking_form(Fixture *f, gconstpointer data)
 		request(f, cancel_path, NULL, NULL, NULL, NULL, &reply); g_assert_cmpuint(reply.status, ==, 404); reply_clear(&reply);
 	}
 
+	/* Erasing the intake also forgets the queued management-link copy,
+	 * while the independently managed booking remains in the calendar. */
+	{
+		g_autoptr(JsonNode) erased = venture_forms_erase_person(f->db, f->org, "first@example.test", NULL, &error);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+		g_autoptr(GPtrArray) mail = NULL;
+		guint i;
+		g_assert_no_error(error); g_assert_nonnull(erased);
+		venture_query_add_filter_string(query, "related-type", VENTURE_FILTER_OP_EQ, "booking_reservation", NULL);
+		mail = venture_database_find(f->db, query, &error); g_assert_no_error(error); g_assert_cmpuint(mail->len, >, 0);
+		for (i = 0; i < mail->len; i++)
+		{
+			g_autofree gchar *mail_body = venture_forms_get_string(g_ptr_array_index(mail, i), "private-text-body");
+			g_autofree gchar *address = venture_forms_get_string(g_ptr_array_index(mail, i), "to");
+			g_assert_true(venture_string_is_empty(mail_body)); g_assert_cmpstr(address, ==, "Erased recipient");
+		}
+		g_assert_cmpint(count(f, VENTURE_TYPE_ACTIVITY), ==, 1);
+	}
+
 	/* Navigating into a booking page keeps a private draft, not a seat. */
 	add_field(f, form, "next", "Choose a time", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 25);
 	g_object_unref(publish(f, form));
@@ -4770,6 +4795,15 @@ test_upload_drafts(Fixture *f, gconstpointer data)
 		upload = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_nonnull(upload);
 		g_clear_pointer(&path, g_free); path = venture_forms_get_string(upload, "path");
 		g_assert_cmpint(venture_forms_get_int(upload, "source-id"), >, 0);
+		{
+			g_autoptr(JsonObject) values = json_object_new();
+			g_autoptr(JsonNode) exported = json_node_new(JSON_NODE_OBJECT);
+			g_autofree gchar *text = NULL;
+			json_object_set_string_member(values, "attachment", capability);
+			json_node_set_object(exported, values);
+			g_assert_true(venture_forms_upload_export(f->db, venture_entity_get_id(form), exported, &error)); g_assert_no_error(error);
+			text = json_to_string(exported, FALSE); g_assert_null(strstr(text, capability)); g_assert_nonnull(strstr(text, "upload_id"));
+		}
 		if (round == 1)
 		{
 			sweep = venture_forms_retention_sweep(f->db, f->org, 10, later, NULL, &error); g_assert_no_error(error);
@@ -4835,6 +4869,103 @@ test_upload_version_privacy(Fixture *f, gconstpointer data)
 	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
 	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, &errors, &error)); g_assert_no_error(error); g_assert_nonnull(response);
 	upload = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_true(venture_forms_get_bool(upload, "sensitive"));
+}
+
+/* Deletion hides a response in the UI; it must not exempt the retained
+ * answers/files from expiry or release their identity limit. */
+static void
+test_retention_deleted(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "deleted-retention"), response = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), later = g_date_time_add_days(now, 2);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+	const gchar *const pairs[] = { "name", "Private retained", "email", "retained@example.test", "topic", "sales", NULL };
+	(void)data;
+	g_object_set(form, "retention-days", (gint64)1, "retention-action", "purge", "unique-email-field", "email", NULL); save(f, form);
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_nonnull(response);
+	g_assert_true(venture_database_delete(f->db, response, NULL, &error)); g_assert_no_error(error);
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_INVALID);
+	g_assert_true(venture_database_delete(f->db, form, NULL, &error)); g_assert_no_error(error);
+	/* A forms-only installation need never have created the mail table. */
+	g_assert_true(venture_database_execute(f->db, "DROP TABLE mail_messages", NULL, &error)); g_assert_no_error(error);
+	result = venture_forms_retention_sweep(f->db, f->org, 1, later, NULL, &error); g_assert_no_error(error); g_assert_nonnull(result);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result), "purged"), ==, 1);
+	venture_query_set_include_deleted(query, TRUE); g_assert_cmpint(venture_database_count(f->db, query, NULL), ==, 0);
+}
+
+static void
+test_sensitive_default(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "private-default", VENTURE_FORM_LIVE), field = make_field(f, form, "private", "Private answer", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 1);
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *legacy = "{\"fields\":[{\"key\":\"private\",\"label\":\"Private\",\"kind\":\"short_text\",\"sensitive\":true,\"default_value\":\"SECRET_DEFAULT\"}]}";
+	(void)data;
+	g_object_set(field, "sensitive", TRUE, "default-value", "SECRET_DEFAULT", NULL); refuse(f, field, "default");
+	fields = venture_forms_definition_from_json(legacy, &error); g_assert_no_error(error); g_assert_nonnull(fields);
+	g_assert_null(((VentureFormsField *)g_ptr_array_index(fields, 0))->default_value);
+}
+
+/* Personal-link identity still works after the CRM email is removed. Erasure
+ * and access export share that selector, including retained deleted rows. */
+static void
+test_contact_privacy(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "contact-privacy"), contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Private contact", "email", "before@example.test", NULL), response = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), expires = g_date_time_add_days(now, 1), issued = g_date_time_add_seconds(now, -60);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(JsonObject) errors = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL, *token = NULL, *ticket = NULL;
+	VentureFormsOutcome outcome;
+	(void)data;
+	save(f, contact); url = venture_forms_personal_link(f->db, form, contact, "https://forms.example.test", expires, now, &error); g_assert_no_error(error);
+	{ g_autoptr(GUri) uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL); g_autoptr(GHashTable) params = g_uri_parse_params(g_uri_get_query(uri), -1, "&", G_URI_PARAMS_NONE, NULL); token = g_strdup(g_hash_table_lookup(params, "personal")); }
+	g_assert_nonnull(token); ticket = venture_forms_ticket_new(form, issued);
+	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket); venture_forms_answers_add(answers, VENTURE_FORMS_PERSONAL, token);
+	venture_forms_answers_add(answers, "name", "Edited name"); venture_forms_answers_add(answers, "email", "submitted@example.test"); venture_forms_answers_add(answers, "topic", "sales");
+	g_assert_true(venture_forms_submit(f->db, form, answers, NULL, now, &outcome, &response, &errors, &error)); g_assert_no_error(error); g_assert_nonnull(response);
+	g_object_set(contact, "email", "", NULL); save(f, contact);
+	g_assert_true(venture_database_delete(f->db, response, NULL, &error)); g_assert_no_error(error);
+	result = venture_forms_export_contact(f->db, f->org, venture_entity_get_id(contact), &error); g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(result), "responses")), ==, 1); g_clear_pointer(&result, json_node_unref);
+	result = venture_forms_erase_contact(f->db, f->org + 1000, venture_entity_get_id(contact), NULL, &error); g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	result = venture_forms_erase_contact(f->db, f->org, venture_entity_get_id(contact), NULL, &error); g_assert_no_error(error);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result), "erased"), ==, 1);
+}
+
+/* Cancelling delivery alone keeps its immutable personal payload. Erasure
+ * must actually forget queued copies and redact their old/new audit values. */
+static void
+test_erasure_mail_content(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "mail-erasure"), response = NULL, message = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE), audit = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL, *to = NULL, *state = NULL;
+	const gchar *const pairs[] = { "name", "ERASABLE_PERSON", "email", "erasable@example.test", "topic", "sales", NULL };
+	guint i;
+	(void)data;
+	g_object_set(form, "confirmation-field", "email", "confirmation-message", "Hello {name}", NULL); save(f, form); g_object_unref(publish(f, form));
+	g_assert_cmpint(submit_pairs(f, form, pairs, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	message = venture_database_find_one(f->db, query, &error); g_assert_no_error(error); g_assert_nonnull(message);
+	body = venture_forms_get_string(message, "text-body"); g_assert_nonnull(strstr(body, "ERASABLE_PERSON")); g_clear_pointer(&body, g_free);
+	result = venture_forms_erase_person(f->db, f->org, "erasable@example.test", NULL, &error); g_assert_no_error(error); g_assert_nonnull(result);
+	{ g_autoptr(VentureEntity) fresh = reread(f, message); g_object_get(fresh, "text-body", &body, "to", &to, "state", &state, NULL); }
+	g_assert_cmpstr(state, ==, "cancelled"); g_assert_null(strstr(body, "ERASABLE_PERSON")); g_assert_null(strstr(to, "erasable@example.test"));
+	venture_query_add_filter_string(audit, "target-type", VENTURE_FILTER_OP_EQ, "mail_message", NULL); venture_query_set_limit(audit, 0);
+	entries = venture_database_find(f->db, audit, &error); g_assert_no_error(error); g_assert_cmpuint(entries->len, >, 0);
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autofree gchar *diff = venture_forms_get_string(g_ptr_array_index(entries, i), "diff"), *label = venture_forms_get_string(g_ptr_array_index(entries, i), "target-label");
+		if (diff != NULL) { g_assert_null(strstr(diff, "ERASABLE_PERSON")); g_assert_null(strstr(diff, "erasable@example.test")); } g_assert_null(strstr(label, "erasable@example.test"));
+	}
 }
 
 int
@@ -4934,5 +5065,9 @@ main(int argc, char **argv)
 	g_test_add("/forms/upload-drafts", Fixture, NULL, setup, test_upload_drafts, teardown);
 	g_test_add("/forms/upload-groups", Fixture, NULL, setup, test_upload_groups, teardown);
 	g_test_add("/forms/upload-version-privacy", Fixture, NULL, setup, test_upload_version_privacy, teardown);
+	g_test_add("/forms/retention-deleted", Fixture, NULL, setup, test_retention_deleted, teardown);
+	g_test_add("/forms/sensitive-default", Fixture, NULL, setup, test_sensitive_default, teardown);
+	g_test_add("/forms/contact-privacy", Fixture, NULL, setup, test_contact_privacy, teardown);
+	g_test_add("/forms/erasure-mail-content", Fixture, NULL, setup, test_erasure_mail_content, teardown);
 	return g_test_run();
 }

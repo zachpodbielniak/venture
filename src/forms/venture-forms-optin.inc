@@ -161,9 +161,9 @@ forms_working_copy_purge(VentureDatabase *database, VentureEntity *pending, cons
 			g_autofree gchar *state = venture_forms_get_string(message, "state");
 			/* A refused nested cancellation rolls back its parent too.
 			 * Sent/leased mail cannot be recalled; never attempt that write. */
-			if (g_strcmp0(state, "queued") != 0 && g_strcmp0(state, "failed") != 0) continue;
-			if (!venture_mail_outbox_cancel(outbox, venture_entity_get_organization_id(pending),
-				venture_entity_get_id(message), "private form copy ended", actor, error)) return FALSE;
+			if (g_strcmp0(state, "queued") != 0 && g_strcmp0(state, "failed") != 0 && g_strcmp0(state, "dead") != 0 && g_strcmp0(state, "cancelled") != 0) continue;
+			if (!venture_mail_outbox_forget_pending(outbox, venture_entity_get_organization_id(pending),
+				venture_entity_get_id(message), actor, error)) return FALSE;
 			if (cancelled != NULL) (*cancelled)++;
 		}
 	}

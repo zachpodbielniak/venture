@@ -185,6 +185,11 @@ static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GD
 	venture_query_set_organization(query, org);
 	venture_query_add_filter_string(query, "owner", VENTURE_FILTER_OP_EQ, p->owner, NULL);
 	venture_query_add_filter_int(query, "status", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_STATUS_PLANNED, NULL);
+	{
+		g_autoptr(GPtrArray) kinds = g_ptr_array_new_with_free_func(g_free);
+		g_ptr_array_add(kinds, g_strdup("call")); g_ptr_array_add(kinds, g_strdup("meeting"));
+		if (!venture_query_add_filter(query, "kind", VENTURE_FILTER_OP_IN, kinds, error)) return NULL;
+	}
 	venture_query_set_limit(query, 10001);
 	rows = venture_database_find(self->database, query, error);
 	if (rows == NULL) return NULL;

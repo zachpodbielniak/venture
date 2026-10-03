@@ -1866,16 +1866,22 @@ Privacy settings and actions:
   processes a bounded batch; it is not a timer.
 - `form_field.sensitive=true` keeps answers out of generic JSON, pages,
   AI tools, audit content, webhooks and notifications. Sensitive questions
-  cannot map to leads or marketing permission.
+  cannot map to leads or marketing permission, or have a default answer.
 - `kind=consent` records the published wording, version and time. It cannot
   have `default_value`. `marketing_consent=true` explicitly maps checked
   permission to the lead captured by `create_lead` and its name/email
   mappings. The marketing module must be enabled; suppression is never
   cleared. Check `mapping_note` for a refused follow-up.
 - `venturectl act form 0 erase_person organization_id=1 email=person@example.com`
-  is owner-only and erases matching responses across forms in that organization.
+  is owner-only and erases matching responses, drafts, opt-in copies and files
+  across forms in that organization, including soft-deleted rows. Replace
+  `email` with `contact_id=42` to use personal-link bindings even after the
+  contact loses its email. Queued private mail content is erased; delivery
+  identities remain cancelled. Sending/uncertain/sent mail and independent
+  CRM, booking and financial records retain their own lifecycle.
 - `export_person` is an owner-only access-request export containing sensitive
-  answers. It cannot be staged, so generated assistant and MCP action tools
+  answers. It accepts the same email or contact selector; unfinished files
+  export metadata rather than bearer claims. It cannot be staged, so generated assistant and MCP action tools
   refuse it. A human owner performs this outside those tools; never put its
   payload into AI context or an approval card.
 

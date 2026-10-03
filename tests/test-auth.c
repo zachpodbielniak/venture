@@ -12,6 +12,7 @@
  */
 
 #include <venture.h>
+#include "../src/forms/venture-forms-private.h"
 
 #include <libsoup/soup.h>
 #include <glib/gstdio.h>
@@ -4850,6 +4851,41 @@ test_forms_upload_authority(ServerFixture *f, gconstpointer data)
 	g_assert_cmpstr(text, ==, "Private resume bytes");
 }
 
+/* A capability is its own authority. An unrelated site's logged-in user
+ * must neither restrict nor acquire authority over the owner's draft. */
+static void
+test_forms_resume_session_authority(ServerFixture *f, gconstpointer data)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org, "name", "Resume", "public-token", "session-resume", "state", VENTURE_FORM_LIVE, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL), field = NULL, version = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), issued = g_date_time_add_seconds(now, -60);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) saved = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL, *cookie = NULL;
+	const gchar *path;
+	gint64 id;
+	(void)data;
+	g_assert_true(venture_database_save(f->database, form, NULL, &error)); g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "name", "label", "Name", "position", (gint64)1, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error); g_clear_object(&field);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "next", "label", "Next", "position", (gint64)2, "kind", VENTURE_FORM_FIELD_PAGE_BREAK, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error); g_clear_object(&field);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "email", "label", "Email", "position", (gint64)3, "kind", VENTURE_FORM_FIELD_EMAIL, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error); g_assert_no_error(error);
+	id = venture_entity_get_id(form); g_clear_object(&form); form = venture_database_get(f->database, VENTURE_TYPE_FORM, id, NULL);
+	ticket = venture_forms_ticket_new(form, issued); venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save"); venture_forms_answers_add(answers, "name", "Private unfinished answer");
+	saved = venture_forms_step(f->database, form, answers, NULL, now, &error); g_assert_no_error(error); g_assert_nonnull(saved); g_assert_nonnull(saved->resume_url);
+	path = strstr(saved->resume_url, "/pub/form/"); g_assert_nonnull(path);
+	server_fixture_create_user(f, "resume-outsider", "password", VENTURE_USER_ROLE_VIEWER, NULL); cookie = server_fixture_login(f, "resume-outsider", "password");
+	g_assert_cmpuint(server_fixture_get_anonymous(f, path), ==, 200);
+	g_assert_cmpuint(server_fixture_request(f, "GET", path, cookie, NULL, NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_request(f, "POST", path, cookie, "", NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_get_anonymous(f, path), ==, 404);
+}
+
 static void
 test_forms_public_door(ServerFixture *fixture, gconstpointer unused)
 {
@@ -5846,5 +5882,6 @@ main(
 	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
 	g_test_add("/auth/forms-upload-authority", ServerFixture, GINT_TO_POINTER(1), server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	g_test_add("/auth/forms-upload-viewer", ServerFixture, NULL, server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
+	g_test_add("/auth/forms-resume-session-authority", ServerFixture, NULL, server_fixture_set_up, test_forms_resume_session_authority, server_fixture_tear_down);
 	return g_test_run();
 }

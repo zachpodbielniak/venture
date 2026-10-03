@@ -584,3 +584,58 @@ GBytes *venture_forms_upload_read(VentureDatabase *database, VentureEntity *uplo
 missing:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Attachment not found"); return NULL;
 }
+
+/* Access exports describe the file without exporting a still-live claim that
+ * could be replayed in another submission. Only this form's claims match. */
+static void upload_export_node(JsonNode *node, GHashTable *claims, guint depth)
+{
+	guint i;
+	if (node == NULL || depth > 16) return;
+	if (JSON_NODE_HOLDS_OBJECT(node))
+	{
+		g_autoptr(GList) members = json_object_get_members(json_node_get_object(node));
+		GList *item;
+		for (item = members; item != NULL; item = item->next)
+			upload_export_node(json_object_get_member(json_node_get_object(node), item->data), claims, depth + 1);
+	}
+	else if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *array = json_node_get_array(node);
+		for (i = 0; i < json_array_get_length(array); i++) upload_export_node(json_array_get_element(array, i), claims, depth + 1);
+	}
+	else if (JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_STRING)
+	{
+		const gchar *value = json_node_get_string(node);
+		g_autofree gchar *hash = NULL;
+		JsonObject *metadata;
+		if (value == NULL || strlen(value) != 64) return;
+		hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, value, -1);
+		metadata = g_hash_table_lookup(claims, hash);
+		if (metadata != NULL) { json_node_init_object(node, metadata); }
+	}
+}
+
+gboolean venture_forms_upload_export(VentureDatabase *database, gint64 form_id, JsonNode *answers, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_UPLOAD);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) claims = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_object_unref);
+	guint i;
+	venture_query_add_filter_int(query, "form-id", VENTURE_FILTER_OP_EQ, form_id, NULL);
+	venture_query_set_limit(query, 0); venture_query_set_include_deleted(query, TRUE);
+	rows = venture_database_find(database, query, error); if (rows == NULL) return FALSE;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *upload = g_ptr_array_index(rows, i);
+		g_autofree gchar *hash = venture_forms_get_string(upload, "token-hash"), *name = venture_forms_get_string(upload, "filename"), *mime = venture_forms_get_string(upload, "mime-type");
+		JsonObject *metadata;
+		if (venture_string_is_empty(hash)) continue;
+		metadata = json_object_new();
+		json_object_set_int_member(metadata, "upload_id", venture_entity_get_id(upload));
+		json_object_set_string_member(metadata, "name", name != NULL ? name : "");
+		json_object_set_string_member(metadata, "type", mime != NULL ? mime : "");
+		json_object_set_int_member(metadata, "size", venture_forms_get_int(upload, "size-bytes"));
+		g_hash_table_insert(claims, g_steal_pointer(&hash), metadata);
+	}
+	upload_export_node(answers, claims, 0); return TRUE;
+}

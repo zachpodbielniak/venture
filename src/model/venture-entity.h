@@ -70,6 +70,7 @@ G_DECLARE_DERIVABLE_TYPE(VentureEntity, venture_entity, VENTURE, ENTITY, GObject
  * @validate: check the record's own invariants before it is saved
  * @before_save: last chance to compute derived fields
  * @after_load: fix up state after the record is read back
+ * @get_audit_private: optional per-record privacy fields, falling back to type metadata
  * @get_field_specs: describe the record's fields for form and schema
  *   generation; the default derives them from the GObject properties
  *
@@ -95,8 +96,10 @@ struct _VentureEntityClass
 
 	GPtrArray   *(*get_field_specs)  (VentureEntity *self);
 
+	const gchar *const *(*get_audit_private)(VentureEntity *self);
+
 	/*< private >*/
-	gpointer padding[8];
+	gpointer padding[7];
 };
 
 /**
@@ -651,6 +654,17 @@ venture_entity_class_set_audit_private(
  */
 const gchar *const *
 venture_entity_type_get_audit_private(GType type);
+
+/**
+ * venture_entity_get_audit_private:
+ * @self: record being audited
+ *
+ * Resolves per-record privacy through the class hook, or the existing
+ * type-level declaration when the class has no override.
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): redacted properties
+ */
+const gchar *const *venture_entity_get_audit_private(VentureEntity *self);
+
 
 /**
  * venture_entity_type_dup_label:

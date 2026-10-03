@@ -309,7 +309,9 @@ The [[file:evidence/forms-rules.org][built-server branching demonstration]] reco
   sensitive column: never in the API's JSON, the assistant's view,
   webhooks, notifications, search or the audit log. The summary names the
   question only. The response's page omits it too. A sensitive question
-  cannot fill a lead. =/webhook/form-sensitive-delivery= checks actual
+  cannot fill a lead or declare a default value. Older private defaults are
+  removed from field records and frozen definitions by migration 000903.
+  =/webhook/form-sensitive-delivery= checks actual
   outgoing HTTP create/update bodies and an emitted inbox notification.
 - *The audit log holds no answers.* A response's audit entries are
   labelled "Form response #N", and changes to its name, answers, summary,
@@ -322,19 +324,32 @@ The [[file:evidence/forms-rules.org][built-server branching demonstration]] reco
   sweep runs when asked, never on a timer, at most =limit= (100, up to
   1000) responses a run: =venturectl act form 0 sweep_retention
   organization_id=1 limit=200=. It returns how many it anonymised and
-  purged and whether it hit the limit.
+  purged and whether it hit the limit. Soft-deleted forms and responses remain
+  subject to retention; hiding a record cannot exempt its private data.
 - *Erasure.* =venturectl act form 0 erase_person organization_id=1
-  email=someone@example.com= (owners only) deletes every response in the
-  organization whose answers carry that address, sensitive answers
-  included; cancels their queued confirmations (the outbox keeps its own
-  retained record of every message, as mail always does); and records one
-  audit entry, "Erasure request", with how many --- not whose, and not
-  what. Leads made from those responses are CRM records, erased there.
+  email=someone@example.com= (owners only) purges matching responses,
+  drafts, opt-in working copies and uploads across the organization,
+  including soft-deleted records. Instead of =email=, pass =contact_id=42=
+  to match personal-link bindings even after a contact's email changes or
+  becomes empty. Choose exactly one selector. A contact must belong to the
+  named organization; its current address also matches ordinary submissions.
+  Queued, failed, dead and cancelled confirmation, resume, opt-in and booking
+  mail loses its recipient and body content while retaining its idempotency
+  key and cancelled delivery record. Sending, uncertain and sent mail follow
+  the outbox's separate retention policy: it cannot recall delivery.
+  Private intake mail audits redact recipients, bodies and labels from the
+  start; migration 000902 removes earlier copied values. One audit entry,
+  "Erasure request", records how many, without the erased person or answers.
+  Leads, marketing consent, bookings and financial records have their own
+  subsystem retention; erasure of a form does not cancel those transactions.
 - *Export.* =venturectl act form 0 export_person organization_id=1
-  email=someone@example.com= (owners only, never staged) returns every
-  response carrying the address --- form, version, time, answers and
-  sensitive answers --- for an access request. Generated assistant and MCP
-  action tools always stage their calls, so they cannot run this export.
+  email=someone@example.com=, or =contact_id=42=, is owner-only and never
+  staged. It returns retained responses and working copies with form,
+  version, time, ordinary and sensitive answers. Unfinished upload claims
+  become filename, content type, size and upload references; bearer claims
+  are not exported. Generated assistant and MCP action tools always stage
+  calls, so they cannot run this export. Save the result to a private file
+  for the access request, outside an AI conversation.
 
 * Putting it on a site
 
@@ -595,8 +610,8 @@ Expired, altered, wrong-form and consumed links receive the uniform 404.
 
 The bounded retention sweep purges expired pending signups and reports
 =expired_signups=. Owner export and erasure include unconfirmed signups;
-erasure and expiration cancel queued confirmation mail where still
-cancellable. Sent mail follows the outbox's separate retention policy.
+erasure and expiration cancel and erase content from confirmation mail
+known not to be in flight. Sent mail follows the outbox's separate retention policy.
 Migration =000800_form_optin= supports SQLite and PostgreSQL. Generic CRUD
 cannot manufacture or confirm =form_pending= records. See the
 [[file:evidence/forms-optin.org][built-server double opt-in demonstration]].
@@ -1347,3 +1362,6 @@ metadata on SQLite and PostgreSQL.
 
 The [[file:evidence/forms-uploads.org][built-server upload demonstration]] records native and loader flows,
 download headers and erasure, with links to the refusal and authority tests.
+
+Final privacy acceptance, including contact erasure and queued copies, is
+recorded in [[file:evidence/forms-privacy.org][the privacy demonstration]].

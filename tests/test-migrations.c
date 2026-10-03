@@ -1274,10 +1274,64 @@ test_forms_schema(void)
 	venture_test_remove_tree(directory);
 }
 
+/* Upgrading retained private records must redact old content while keeping
+ * ordinary mail, public defaults and unrelated audit events intact. */
+static void
+test_forms_private_upgrade(gconstpointer data)
+{
+	const gchar *backend = data;
+	gboolean postgres = g_str_equal(backend, "postgresql");
+	const gchar *uri = postgres ? g_getenv("VENTURE_TEST_MIGRATION_POSTGRES_URI") : "sqlite://:memory:";
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *uuid = NULL, *setup_sql = NULL, *cleanup_sql = NULL;
+	g_autofree gchar *text = NULL;
+	guint i;
+	const gchar *scripts[] = { "000902_private_intake_mail_audit.sql", "000903_form_private_defaults.sql" };
+	if (uri == NULL) { g_test_skip("Set VENTURE_TEST_MIGRATION_POSTGRES_URI for a disposable PostgreSQL server"); return; }
+	database = venture_database_new(uri, &error); g_assert_no_error(error);
+	if (postgres)
+	{
+		uuid = g_uuid_string_random(); g_strdelimit(uuid, "-", '_');
+		setup_sql = g_strdup_printf("CREATE SCHEMA privacy_%s; SET search_path TO privacy_%s", uuid, uuid);
+		cleanup_sql = g_strdup_printf("DROP SCHEMA privacy_%s CASCADE", uuid);
+		g_assert_true(venture_database_execute(database, setup_sql, NULL, &error)); g_assert_no_error(error);
+	}
+	g_assert_true(venture_database_execute(database,
+		"CREATE TABLE mail_messages (id BIGINT, related_type TEXT);"
+		"CREATE TABLE audit_entries (target_type TEXT, target_id BIGINT, target_label TEXT, diff TEXT);"
+		"CREATE TABLE form_fields (id BIGINT, sensitive BOOLEAN, default_value TEXT);"
+		"CREATE TABLE form_versions (definition TEXT);"
+		"INSERT INTO mail_messages VALUES (1,'form'),(2,'invoice');"
+		"INSERT INTO audit_entries VALUES ('mail_message',1,'PRIVATE ADDRESS','{\"to\":\"PRIVATE ADDRESS\",\"text_body\":\"PRIVATE ANSWER\",\"state\":\"queued\"}'),"
+		"('mail_message',1,'PRIVATE ADDRESS',NULL),('mail_message',2,'Public invoice','{\"text_body\":\"Public invoice\"}'),"
+		"('form_field',3,'Field','{\"default_value\":\"PRIVATE DEFAULT\",\"required\":true}');"
+		"INSERT INTO form_fields VALUES (3,TRUE,'PRIVATE DEFAULT'),(4,FALSE,'Public default');"
+		"INSERT INTO form_versions VALUES ('{\"fields\":[{\"key\":\"private\",\"sensitive\":true,\"default_value\":\"PRIVATE DEFAULT\"},{\"key\":\"public\",\"sensitive\":false,\"default_value\":\"Public default\"}]}');",
+		NULL, &error)); g_assert_no_error(error);
+	for (i = 0; i < G_N_ELEMENTS(scripts); i++)
+	{
+		g_autofree gchar *path = g_build_filename("migrations", backend, scripts[i], NULL), *script = NULL;
+		g_assert_true(g_file_get_contents(path, &script, NULL, &error)); g_assert_no_error(error);
+		g_assert_true(venture_migrations_execute_sql(venture_database_get_connection(database), script, &error)); g_assert_no_error(error);
+	}
+	text = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM audit_entries WHERE REPLACE(target_label, 'PRIVATE', '') != target_label OR REPLACE(COALESCE(diff, ''), 'PRIVATE', '') != COALESCE(diff, '')");
+	g_assert_cmpstr(text, ==, "0"); g_clear_pointer(&text, g_free);
+	text = query_text(database, "SELECT definition FROM form_versions");
+	g_assert_null(strstr(text, "PRIVATE")); g_assert_nonnull(strstr(text, "Public default")); g_clear_pointer(&text, g_free);
+	text = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM form_fields WHERE sensitive = TRUE AND default_value IS NOT NULL");
+	g_assert_cmpstr(text, ==, "0"); g_clear_pointer(&text, g_free);
+	text = query_text(database, "SELECT diff FROM audit_entries WHERE target_type = 'mail_message' AND target_id = 2");
+	g_assert_nonnull(strstr(text, "Public invoice"));
+	if (postgres) { g_assert_true(venture_database_execute(database, cleanup_sql, NULL, &error)); g_assert_no_error(error); }
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add_data_func("/migrations/forms-private-sqlite", "sqlite", test_forms_private_upgrade);
+	g_test_add_data_func("/migrations/forms-private-postgresql", "postgresql", test_forms_private_upgrade);
 	g_test_add_func("/migrations/generator", test_generator);
 	g_test_add_func("/migrations/optional-table", test_optional_table);
 	g_test_add_func("/migrations/optional-module", test_optional_module);

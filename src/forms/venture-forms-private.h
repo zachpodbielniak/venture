@@ -294,4 +294,6 @@ G_END_DECLS
 gchar *venture_forms_payment_nonce(VentureEntity *form);
 gboolean venture_forms_payment_nonce_valid(VentureEntity *form, const gchar *nonce);
 
+gboolean venture_forms_upload_export(VentureDatabase *database, gint64 form_id, JsonNode *answers, GError **error);
+
 #endif /* VENTURE_FORMS_PRIVATE_H */

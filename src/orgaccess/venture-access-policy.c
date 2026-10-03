@@ -800,12 +800,22 @@ public_capability_request(HtmxRequest *request)
 	}
 	if (g_str_has_prefix(path, "/f/") && path[3] != '\0')
 		return method == HTMX_METHOD_POST && strchr(path + 3, '/') == NULL;
+	if (g_str_has_prefix(path, "/book/") && path[6] != '\0' && path[6] != '/')
+	{
+		suffix = strchr(path + 6, '/');
+		if (suffix != NULL && g_str_has_prefix(suffix, "/manage/") && suffix[8] != '\0' && strchr(suffix + 8, '/') == NULL)
+			return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+	}
 	/* The forms door: /pub/form/<token> takes GET and POST; its /fragment
 	 * and /schema only GET. Nothing deeper and nothing else. */
 	if (g_str_has_prefix(path, "/pub/form/") && path[10] != '\0' && path[10] != '/')
 	{
 		suffix = strchr(path + 10, '/');
 		if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+		if (((g_str_has_prefix(suffix, "/resume/") && suffix[8] != '\0') ||
+		     (g_str_has_prefix(suffix, "/confirm/") && suffix[9] != '\0')) &&
+		    strchr(suffix + (g_str_has_prefix(suffix, "/resume/") ? 8 : 9), '/') == NULL)
+			return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
 		return method == HTMX_METHOD_GET && (!g_strcmp0(suffix, "/fragment") || !g_strcmp0(suffix, "/schema"));
 	}
 	if (!g_strcmp0(path, "/pub/forms.js")) return method == HTMX_METHOD_GET;

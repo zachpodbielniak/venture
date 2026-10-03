@@ -54,4 +54,4 @@ PASS: built-server consent flow
 
 The instance was stopped after the assertions. This demonstrates consent
 capture, not double opt-in delivery, cross-organization authorization or the
-other pending forms features.
+other forms features, which have their own acceptance evidence.

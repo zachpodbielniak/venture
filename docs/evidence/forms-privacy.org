@@ -1,0 +1,50 @@
+#+title: Forms privacy completion evidence
+
+* Built-server demonstration
+
+Ran a disposable DEBUG server with an isolated SQLite database, a kernel-assigned
+loopback listener and synthetic contact data. Authentication was disabled only
+for this fixture. Chromium completed the public form with JavaScript disabled;
+owner API actions then exercised export and erasure. No mail delivery or external
+provider contact occurred.
+
+The fixture linked the same rebuilt DEBUG library as the server and tests.
+Fixture SHA256:
+=2a64319e15d1227b522f9fcb205989f112a582bf39d26ce7268efe8d7c044717=.
+
+#+begin_example
+PASS: JavaScript-disabled personal-link submission retained its contact and queued the piped confirmation.
+PASS: Owner contact export found a soft-deleted response after its contact email was emptied.
+PASS: Erasure purged the response and queued recipient/body content, retained a cancelled delivery identity, and left no copied answers in response/mail audit entries.
+#+end_example
+
+The original contact address differed from the submitted address. After intake,
+the contact's address was emptied and its response soft-deleted. Contact-based
+export still found the exact personal-link binding. Erasure left the cancelled
+outbox identity and its idempotency key, with no recipient or answer content.
+The fixture stopped and removed its temporary state after verification.
+
+* Regression boundaries
+
+- =/forms/contact-privacy=: contact bindings survive address changes; another
+  organization's selector is refused; retained soft-deleted answers are included.
+- =/forms/erasure-mail-content= and =/mail/forget-private-intake=: queued content
+  is forgotten, audit values are redacted, retry cannot recreate it, ordinary
+  business mail and an in-flight message cannot use this erasure operation.
+- =/forms/booking=: erasure removes queued booking-management mail content while
+  preserving the independent calendar transaction.
+- =/forms/retention-deleted=: deleted records still count for identity limits
+  and expiry; a forms-only installation requires no mail table for cleanup.
+- =/forms/upload-drafts=: unfinished upload exports describe files without
+  leaking a reusable claim; draft expiry removes the file.
+- =/forms/sensitive-default=: private defaults are refused and legacy frozen
+  definitions cannot publish one.
+- =/migrations/forms-private-sqlite= and =/migrations/forms-private-postgresql=:
+  nonempty upgrade fixtures remove old private defaults and copied intake audit
+  values, retaining public defaults and ordinary invoice mail history.
+- =/auth/forms-resume-session-authority=: possession of a valid resume capability
+  works even with an unrelated signed-in session; the consumed link returns 404.
+
+Sending, uncertain and sent mail cannot be recalled. CRM, calendar, consent and
+financial records retain their own subsystem lifecycle. The privacy operation
+removes intake copies, not the business transactions they produced.

@@ -363,6 +363,7 @@ venture_forms_field_from_record(VentureEntity *row)
 	             "min-value", &field->min_value,
 	             "max-value", &field->max_value, "min-length", &field->min_length,
 	             "max-length", &field->max_length, NULL);
+	if (field->sensitive) g_clear_pointer(&field->default_value, g_free);
 	field->choices = venture_forms_choices_parse(choices, FALSE, NULL);
 	if (NULL == field->choices)
 		field->choices = g_ptr_array_new_with_free_func(venture_forms_choice_free);
@@ -639,7 +640,7 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		field->help = forms_member_string(object, "help");
 		field->placeholder = forms_member_string(object, "placeholder");
 		field->pattern = forms_member_string(object, "pattern");
-		field->default_value = forms_member_string(object, "default_value");
+		field->default_value = field->sensitive ? NULL : forms_member_string(object, "default_value");
 		field->maps_to = forms_member_string(object, "maps_to");
 		field->contact_field = forms_member_string(object, "contact_field");
 		field->allow_prefill = json_object_get_boolean_member_with_default(object, "allow_prefill", FALSE);

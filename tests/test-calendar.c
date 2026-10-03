@@ -488,6 +488,22 @@ static void test_booking_slots(Fixture *f, gconstpointer data)
 		g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 2);
 	}
 }
+static void test_booking_bound_ignores_tasks(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) booking_page = page(f);
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = NULL;
+	(void)data;
+	/* These valid task rows must be narrowed out before the 10,000-row
+	 * availability bound, rather than refused and then ignored in C. */
+	sql = g_strdup_printf("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<10001) INSERT INTO activities(uuid, subject, owner, organization_id, kind, status, version) SELECT 'bounded-task-' || CAST(n AS TEXT), 'Unscheduled task', 'ben', %" G_GINT64_FORMAT ", %d, %d, 1 FROM numbers", f->org, VENTURE_ACTIVITY_KIND_TASK, VENTURE_ACTIVITY_STATUS_PLANNED);
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+	slots = venture_booking_service_slots(f->booking, booking_page, now, &error); g_assert_no_error(error); g_assert_nonnull(slots);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+}
+
 static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) p = page(f);
@@ -851,5 +867,6 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/sweep", Fixture, NULL, setup, test_sweep, teardown);
 	g_test_add("/calendar/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add_func("/calendar/migrate-disabled", test_migrate_disabled);
+	g_test_add("/calendar/booking-bound-ignores-tasks", Fixture, NULL, setup, test_booking_bound_ignores_tasks, teardown);
 	return g_test_run();
 }

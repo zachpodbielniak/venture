@@ -137,7 +137,16 @@ printf '%s\n' "unfinished-maintenance" > "$fixture/host/studio/control/maintenan
 expect_failure "$tool" "${args[@]}" verify "$fixture/complete.gpg"
 rm "$fixture/host/studio/control/maintenance-container"
 cp "$fixture/complete.gpg" "$fixture/tampered.gpg"
-printf X | dd of="$fixture/tampered.gpg" bs=1 seek=80 conv=notrunc status=none
+# Replacing a random ciphertext byte with X sometimes changes nothing.
+python3 - "$fixture/tampered.gpg" <<'PYFLIP'
+import sys
+with open(sys.argv[1], "r+b") as archive:
+    archive.seek(80)
+    original = archive.read(1)
+    assert len(original) == 1
+    archive.seek(80)
+    archive.write(bytes([original[0] ^ 1]))
+PYFLIP
 expect_failure "$tool" "${args[@]}" verify "$fixture/tampered.gpg"
 mkdir -m 700 "$fixture/host/neighbor" "$fixture/host/neighbor/control"
 jq '.tenant_id="neighbor"' "$fixture/host/studio/manifest.json" > "$fixture/host/neighbor/manifest.json"

@@ -3546,7 +3546,7 @@ venture_audit_entry_new_for_change(
 		if (VENTURE_IS_API_TOKEN(target))
 			label = g_strdup_printf("API token #%" G_GINT64_FORMAT,
 				venture_entity_get_id(target));
-		else if (NULL != venture_entity_type_get_audit_private(G_OBJECT_TYPE(target)))
+		else if (NULL != venture_entity_get_audit_private(target))
 		{
 			g_autofree gchar *type_label = venture_entity_type_dup_label(G_OBJECT_TYPE(target), FALSE);
 
@@ -3591,9 +3591,9 @@ venture_audit_entry_new_for_change(
 		/* A private record's personal fields: that they changed, never
 		 * what they were or became. */
 		if (NULL != target && JSON_NODE_HOLDS_OBJECT(diff) &&
-		    NULL != venture_entity_type_get_audit_private(G_OBJECT_TYPE(target)))
+		    NULL != venture_entity_get_audit_private(target))
 		{
-			const gchar *const *private = venture_entity_type_get_audit_private(G_OBJECT_TYPE(target));
+			const gchar *const *private = venture_entity_get_audit_private(target);
 			g_autoptr(JsonNode) private_diff = venture_json_parse(text, NULL);
 			guint i;
 

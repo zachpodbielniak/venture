@@ -1566,3 +1566,10 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   limits run at HTTP headers/chunks, before multipart parsing; a handler-only
   check is too late. Erasure/retention unlinks bytes before dropping metadata
   so a failed unlink remains retryable and continues to count against quota.
+
+- **Audit privacy can depend on the instance.** Private intake mail shares
+  its record type with ordinary business mail. Audit writers use
+  `venture_entity_get_audit_private(entity)`, which falls back to the type
+  metadata; using only the type would persist queued answers in audit history.
+  Erasure forgets known-not-in-flight mail content through the outbox service,
+  retaining its idempotency identity, and includes soft-deleted form records.

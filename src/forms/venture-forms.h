@@ -646,6 +646,34 @@ typedef gboolean (*VentureFormsUploadScanner)(GBytes *bytes, const gchar *mime_t
 void venture_forms_set_upload_scanner(VentureDatabase *database, VentureFormsUploadScanner callback,
 	gpointer user_data, GDestroyNotify destroy);
 
+/**
+ * venture_forms_erase_contact:
+ * @database: storage
+ * @organization: exact owning organization
+ * @contact_id: retained contact identity
+ * @actor: (nullable): audited owner
+ * @error: (out) (optional): refusal
+ *
+ * Erases bound responses/private intake and those mentioning the contact's
+ * current email. Includes soft-deleted contacts and records.
+ * Returns: (transfer full) (nullable): erasure counts
+ */
+JsonNode *venture_forms_erase_contact(VentureDatabase *database, gint64 organization,
+	gint64 contact_id, const VentureActor *actor, GError **error);
+/**
+ * venture_forms_export_contact:
+ * @database: storage
+ * @organization: exact owning organization
+ * @contact_id: retained contact identity
+ * @error: (out) (optional): refusal
+ *
+ * Owner-only export selected by contact binding and its current email.
+ * Callers must enforce the same private, non-staged boundary as email exports.
+ * Returns: (transfer full) (nullable): private access-request data
+ */
+JsonNode *venture_forms_export_contact(VentureDatabase *database, gint64 organization,
+	gint64 contact_id, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */
