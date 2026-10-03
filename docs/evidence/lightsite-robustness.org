@@ -81,8 +81,21 @@ coverage uses an owned disposable instance, not an operator database.
 
 Every retained new regression was observed failing before its fix. An extra
 malformed-JSON probe passed on the existing code, so it was removed rather
-than represented as a repair. The full DEBUG suite is reserved for one run on
-the fixed final source, followed by the repository's litter/version/demo checks.
+than represented as a repair.
+
+The single full DEBUG run passed on exact commit
+=6a92979780758eb4d18abb8796bdb4272a10e248=: all 153 test binaries, followed by
+litter, version, foreground-demo and clock-demo checks. The build emitted no
+warnings. This includes 99 forms tests, 37 attribution tests, 112 Stripe tests,
+108 authentication checks, 35 lead tests, 15 routing tests and 21 migrations.
+Live PostgreSQL migrations passed. There were 22 explicit optional skips in
+unconfigured OCR, Keycloak, embedding, accounting/schema-isolation,
+process-lease and mail-routing integration fixtures; those are not claimed
+as executed coverage. No live payment/mail/AI provider was contacted.
+
+The subsequent commit only records this result; executable source is unchanged.
+The owned PostgreSQL instance is stopped after validation. Work concluded
+before 08:00 America/New_York on 2026-10-03.
 
 * Operational limits and decisions
 
