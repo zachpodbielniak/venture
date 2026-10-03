@@ -59,6 +59,15 @@ The caller decides which navigation events to observe and retries with the
 same identity. Sessions renew after 30 minutes without an accepted observation.
 A visitor is a consenting browser capability, not proof of a unique person.
 
+Each browser request has a 15-second deadline covering headers and JSON body.
+A stalled request rejects and releases queued consent work; withdrawal keeps
+tracking stopped. The browser logs one content-free cause for a failed request.
+The helper does not retry automatically: retain the same submission envelope
+or observation ID, and retry transient network/5xx failures with bounded
+exponential backoff and jitter. Honor =Retry-After= on 429. A timeout leaves
+acceptance uncertain; never replace the submission ID merely because it timed
+out. Validation and identity conflicts require correction, not a retry loop.
+
 The script sends simple =text/plain;charset=UTF-8= JSON POSTs with credentials
 omitted and no referrer. Every browser endpoint checks the exact configured
 Origin and returns CORS permission only for it. It does not use cookies or a
