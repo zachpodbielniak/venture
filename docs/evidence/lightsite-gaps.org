@@ -47,6 +47,7 @@ identical HTTP replay. The verbatim browser transcript is:
 PASS: server accepted one response; simulated lost reply released the submit control.
 PASS: retry returned success with exactly one stored response.
 PASS: JavaScript-disabled form and identical replay produced one additional response.
+PASS: concurrent identical POSTs accepted one response; changed-content replay returned 409.
 #+end_example
 
 The recording and fixture are retained locally under
@@ -60,12 +61,12 @@ Stripe and owned subprocesses for scanning, plus the actual Venture public
 upload route and paid-form service. Relevant passing transcript lines:
 
 #+begin_example
-ok /client/total-budget
-ok /edge/slow-body
-ok /edge/slow-headers
-ok /edge/cancel-headers
-ok /stripe/forms/deadline
-ok /forms/upload-external-scanner
+ok 1 /client/total-budget
+ok 1 /edge/slow-body
+ok 2 /edge/slow-headers
+ok 3 /edge/cancel-headers
+ok 56 /stripe/forms/deadline
+ok 91 /forms/upload-external-scanner
 #+end_example
 
 No external charge, mail delivery or antivirus service is used. The scanner
@@ -77,8 +78,13 @@ response. The Stripe failure retains invoice identity for a caller retry.
 Targeted checks: 103 forms tests, 113 Venture Stripe tests and 21 migrations,
 including the owned PostgreSQL migration fixture. stripe-glib's complete DEBUG
 unit and owned stripe-mock integration suite passed; the final edge suite also
-passes caller cancellation. Full Venture validation is recorded below after the
-fixed-commit run.
+passes caller cancellation. The full run on =7442c34= passed 152 of 153 binaries; Stripe stopped at its
+old hardcoded dependency-revision assertion. Commit =5c732f3= updates only
+that expected revision to the published =ad43580=. Rerunning the Stripe binary
+passed all 113 tests, and the litter, version, foreground-demo and clock-demo
+checks passed. Thus all 153 DEBUG binaries are green after one complete run
+and one targeted repair rerun; the complete build was warning-free.
+There were 22 optional test skips. The source remained fixed during each run.
 
 The provider budget applies to each Stripe operation across its attempts, not
 an entire multi-operation checkout workflow. Trusted custom transports and
