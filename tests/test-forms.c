@@ -717,6 +717,201 @@ request(Fixture *f, const gchar *path, const gchar *content_type, const gchar *b
 	g_bytes_unref(pending.body);
 }
 
+/* Native rendering must read the frozen contract through scoped authentication. */
+static void
+test_authenticated_definition(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "relay-definition");
+	g_autofree gchar *path = g_strdup_printf("/api/v1/forms/%" G_GINT64_FORMAT "/definition", venture_entity_get_id(form));
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	{
+		g_autoptr(GPtrArray) fields = venture_forms_fields(f->db, form, NULL);
+		VentureEntity *field = g_ptr_array_index(fields, 0);
+		g_object_set(field, "label", "Unpublished label", "required", FALSE, NULL); save(f, field);
+	}
+	f->open = TRUE;
+	start_http(f);
+	request(f, path, NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "\"fields\":["));
+	g_assert_nonnull(strstr(reply.body, "\"required\":true"));
+	g_assert_null(strstr(reply.body, "INTERNAL-NOTE"));
+	g_assert_null(strstr(reply.body, "Unpublished label"));
+	g_assert_nonnull(strstr(reply.body, "\"relay_supported\":true"));
+	g_assert_null(strstr(reply.body, "submission_nonce"));
+	g_assert_null(strstr(reply.body, "ticket"));
+	reply_clear(&reply);
+}
+
+static JsonNode *
+relay_call(Fixture *f, VentureEntity *site, VentureIntegrationConnection *connection,
+	JsonNode *payload, GDateTime *now, GError **error)
+{
+	static const gchar secret[] = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	g_autofree gchar *body = json_to_string(payload, FALSE);
+	g_autofree gchar *stamp = g_strdup_printf("%" G_GINT64_FORMAT, g_date_time_to_unix(now));
+	g_autofree gchar *material = g_strdup_printf("%s\n%s", stamp, body);
+	g_autofree gchar *signature = g_compute_hmac_for_string(G_CHECKSUM_SHA256, (const guchar *)secret, strlen(secret), material, -1);
+	g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+	return venture_attribution_service_receive_form(venture_attribution_service_get(f->db), venture_entity_get_uuid(site),
+		venture_entity_get_id(VENTURE_ENTITY(connection)), stamp, signature, bytes, now, error);
+}
+
+/* A daemon retries the same stored submission, not a fresh browser nonce. */
+static void
+test_signed_relay(Fixture *f, gconstpointer unused)
+{
+	static const gchar secret[] = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	g_autoptr(VentureEntity) form = NULL;
+	g_autoptr(VentureEntity) lead_form = g_object_new(VENTURE_TYPE_LEAD_FORM, "organization-id", f->org, "name", "Legacy intake", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) site = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static(secret, 32);
+	g_autoptr(JsonNode) settings = json_from_string("{\"tenant_id\":\"tenant_one\",\"environment\":\"test\",\"signing_secret\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *stamp = g_strdup_printf("%" G_GINT64_FORMAT, g_date_time_to_unix(now));
+	g_autofree gchar *body = NULL, *material = NULL, *signature = NULL, *uri = NULL;
+	g_autofree gchar *restart_dir = g_dir_make_tmp("venture-relay-restart-XXXXXX", NULL);
+	g_autofree gchar *database_uri = g_strdup_printf("sqlite://%s/relay.db", restart_dir);
+	guint i;
+	g_clear_object(&f->context); g_clear_object(&f->db);
+	f->db = venture_database_new(database_uri, &error); g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error)); g_assert_no_error(error);
+	f->context = venture_context_new(f->config, f->db); f->org = venture_context_get_default_organization_id(f->context);
+	form = contact_form(f, "relay-contact");
+	{
+		g_autoptr(GPtrArray) fields = venture_forms_fields(f->db, form, NULL);
+		for (i = 0; i < fields->len; i++) {
+			VentureEntity *field = g_ptr_array_index(fields, i);
+			g_autofree gchar *field_key = venture_forms_get_string(field, "key");
+			if (!strcmp(field_key, "name") || !strcmp(field_key, "email")) { g_object_set(field, "maps-to", field_key, NULL); save(f, field); }
+		}
+		g_object_set(form, "create-lead", TRUE, NULL); save(f, form);
+		g_object_unref(publish(f, form));
+	}
+	save(f, lead_form);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	connection = venture_attribution_settings_configure(f->db, f->org, settings, 0, 0, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(connection);
+	site = g_object_new(VENTURE_TYPE_ATTRIBUTION_SITE, "organization-id", f->org, "name", "Paired site", "consent-policy", "analytics-v1",
+		"origin", "https://site.example.test", "external-site-id", "site_one", "external-tenant-id", "tenant_one",
+		"lead-form-id", venture_entity_get_id(lead_form), "connection-id", venture_entity_get_id(VENTURE_ENTITY(connection)), "active", TRUE, NULL);
+	save(f, site);
+	start_http(f);
+	uri = g_strdup_printf("http://127.0.0.1:%u/hooks/lightsite/%s/%" G_GINT64_FORMAT "/forms", f->port,
+		venture_entity_get_uuid(site), venture_entity_get_id(VENTURE_ENTITY(connection)));
+	body = g_strdup_printf("{\"version\":1,\"tenant_id\":\"tenant_one\",\"site_id\":\"site_one\",\"submission_id\":\"stable-daemon-id\",\"form_id\":%" G_GINT64_FORMAT ",\"form_version\":2,\"answers\":{\"name\":\"Reader\",\"email\":\"reader@example.test\",\"message\":\"Quote please\",\"topic\":\"sales\"}}", venture_entity_get_id(form));
+	material = g_strdup_printf("%s\n%s", stamp, body);
+	signature = g_compute_hmac_for_string(G_CHECKSUM_SHA256, (const guchar *)secret, strlen(secret), material, -1);
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(SoupMessage) msg = soup_message_new("POST", uri);
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+		Pending pending = { FALSE, NULL, NULL };
+		soup_message_set_request_body_from_bytes(msg, "application/json", bytes);
+		soup_message_headers_replace(soup_message_get_request_headers(msg), "X-Venture-Timestamp", stamp);
+		soup_message_headers_replace(soup_message_get_request_headers(msg), "X-Venture-Signature", signature);
+		soup_session_send_and_read_async(f->session, msg, G_PRIORITY_DEFAULT, NULL, received, &pending);
+		while (!pending.done) g_main_context_iteration(NULL, TRUE);
+		g_assert_no_error(pending.error);
+		g_assert_cmpuint(soup_message_get_status(msg), ==, 200);
+		g_bytes_unref(pending.body);
+	}
+	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 1);
+	venture_web_server_stop(f->server); g_clear_object(&f->server);
+	g_clear_object(&f->context); g_clear_object(&f->db);
+	f->db = venture_database_new(database_uri, &error); g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error)); g_assert_no_error(error);
+	f->context = venture_context_new(f->config, f->db);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error)); g_assert_no_error(error);
+	{
+		g_autoptr(JsonNode) payload = json_from_string(body, NULL), result = NULL;
+		JsonObject *envelope = json_node_get_object(payload);
+		JsonObject *values = json_object_get_object_member(envelope, "answers");
+		g_autoptr(GDateTime) later = g_date_time_add_seconds(now, 10);
+		result = relay_call(f, site, connection, payload, later, &error);
+		g_assert_no_error(error); g_assert_nonnull(result);
+		g_clear_pointer(&result, json_node_unref);
+		json_object_set_string_member(values, "message", "changed answer");
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+		json_object_set_string_member(envelope, "submission_id", "second-id");
+		json_object_set_string_member(envelope, "origin", "https://attacker.example");
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+		json_object_remove_member(envelope, "origin");
+		json_object_set_string_member(envelope, "site_id", "wrong-site");
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+		json_object_set_string_member(envelope, "site_id", "site_one");
+		json_object_set_int_member(envelope, "form_version", 999);
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+		json_object_set_int_member(envelope, "form_version", 2);
+		json_object_set_string_member(values, "_vf_payment", "forged");
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+		json_object_remove_member(values, "_vf_payment");
+		json_object_set_string_member(values, "topic", "forged-choice");
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_no_error(error); g_assert_nonnull(result);
+		g_assert_false(json_object_get_boolean_member(json_node_get_object(result), "accepted"));
+		g_assert_true(json_object_has_member(json_object_get_object_member(json_node_get_object(result), "errors"), "topic"));
+		g_clear_pointer(&result, json_node_unref);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+		g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 1);
+		{
+			g_autoptr(VentureEntity) other_org = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other relay organization", NULL);
+			g_autoptr(VentureEntity) other_form = NULL;
+			g_autoptr(GBytes) original = g_bytes_new(body, strlen(body));
+			save(f, other_org);
+			other_form = g_object_new(VENTURE_TYPE_FORM, "organization-id", venture_entity_get_id(other_org), "name", "Other form", NULL); save(f, other_form);
+			json_object_set_int_member(envelope, "form_id", venture_entity_get_id(other_form));
+			result = relay_call(f, site, connection, payload, now, &error);
+			g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+			json_object_set_int_member(envelope, "form_id", venture_entity_get_id(form));
+			result = venture_attribution_service_receive_form(venture_attribution_service_get(f->db), venture_entity_get_uuid(site),
+				venture_entity_get_id(VENTURE_ENTITY(connection)), stamp, "0000000000000000000000000000000000000000000000000000000000000000", original, now, &error);
+			g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED); g_clear_error(&error);
+		}
+		{
+			g_autoptr(VentureEntity) file = make_field(f, form, "attachment", "Attachment", VENTURE_FORM_FIELD_FILE, FALSE, 80);
+			g_autoptr(JsonNode) schema = NULL;
+			save(f, file); g_object_unref(publish(f, form));
+			schema = venture_forms_schema(f->db, form, "", now, &error); g_assert_no_error(error);
+			g_assert_false(json_object_get_boolean_member(json_node_get_object(schema), "relay_supported"));
+			json_object_set_int_member(envelope, "form_version", 3);
+			result = relay_call(f, site, connection, payload, now, &error);
+			g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+			json_object_set_int_member(envelope, "form_version", 2);
+		}
+		json_object_set_string_member(values, "topic", "sales");
+		g_assert_true(venture_database_execute(f->db, "CREATE TRIGGER refuse_relay_receipt BEFORE INSERT ON form_receipts BEGIN SELECT RAISE(ABORT, 'fixture receipt failure'); END", NULL, &error)); g_assert_no_error(error);
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
+		g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 1);
+		g_assert_true(venture_database_execute(f->db, "DROP TRIGGER refuse_relay_receipt", NULL, &error)); g_assert_no_error(error);
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_no_error(error); g_assert_nonnull(result); g_clear_pointer(&result, json_node_unref);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 2);
+		{
+			g_autoptr(JsonNode) erased = venture_forms_erase_person(f->db, f->org, "reader@example.test", NULL, &error);
+			g_assert_no_error(error); g_assert_nonnull(erased);
+		}
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+		g_object_set(site, "active", FALSE, NULL); save(f, site);
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	}
+
+	g_clear_object(&f->context); g_clear_object(&f->db);
+	venture_test_remove_tree(restart_dir);
+}
+
 static guint
 post_form(Fixture *f, const gchar *path, const gchar *body)
 {
@@ -5177,6 +5372,8 @@ main(int argc, char **argv)
 	 * especially in the child that deliberately limits file writes. */
 	g_setenv("GSETTINGS_BACKEND", "memory", TRUE);
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/forms/signed-relay", Fixture, NULL, setup, test_signed_relay, teardown);
+	g_test_add("/forms/authenticated-definition", Fixture, NULL, setup, test_authenticated_definition, teardown);
 	g_test_add_func("/forms/records", test_records);
 	g_test_add_func("/forms/urlencoded-repeats", test_urlencoded_repeats);
 	g_test_add_func("/forms/a11y-checker-catches", test_a11y_checker_catches);

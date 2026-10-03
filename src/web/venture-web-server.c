@@ -31648,6 +31648,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/fragment", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_fragment, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/forms/:id/definition", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_definition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_schema, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/forms/uploads/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_download, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forms/:id/publish", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_publish, self);
@@ -31853,6 +31854,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_click, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/attribution.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/attribution/:site/:operation", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN, venture_web_attribution_ingest, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection/forms", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_form_receive, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_receive, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);

@@ -663,3 +663,11 @@ must use =can_manage_sites=, not the current role alone: the decision also
 limits bearer tokens to their captured authority. Responses are uncached and
 bounded; arbitrary-user lookup is not supported. See
 [[file:lightsite-accounts.org][Lightsite account validation]] for the full contract.
+
+** Native form integrations
+
+=GET /api/v1/forms/:id/definition= reads the published rendering contract with
+ordinary authenticated organization access. =POST
+/hooks/lightsite/:site/:connection/forms= accepts a bounded, signed daemon relay
+with a stable submission ID, using the paired site's stored origin and the
+ordinary form validator/receipt service. See [[file:forms.org::*Native Lightsite forms and signed daemon relay][the exact schema, signing and retry contract]].

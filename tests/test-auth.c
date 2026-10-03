@@ -1110,6 +1110,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/account-authority"), ==, 401);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/forms/1/definition"), ==, 401);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/account-identity/1"),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),
@@ -4850,6 +4851,13 @@ test_forms_upload_authority(ServerFixture *f, gconstpointer data)
 	g_assert_cmpuint(server_fixture_request(f, "GET", url, viewer, NULL, NULL, NULL), ==, data != NULL ? 404 : 200);
 	g_assert_cmpuint(server_fixture_request(f, "GET", url, owner, NULL, &text, NULL), ==, 200);
 	g_assert_cmpstr(text, ==, "Private resume bytes");
+	{
+		g_autofree gchar *definition = g_strdup_printf("/api/v1/forms/%" G_GINT64_FORMAT "/definition", venture_entity_get_id(form));
+		g_assert_cmpuint(server_fixture_get_anonymous(f, definition), ==, 401);
+		g_assert_cmpuint(server_fixture_request(f, "GET", definition, outsider, NULL, NULL, NULL), ==, 404);
+		g_assert_cmpuint(server_fixture_request(f, "GET", definition, viewer, NULL, NULL, NULL), ==, 200);
+	}
+
 }
 
 /* A capability is its own authority. An unrelated site's logged-in user

@@ -2057,3 +2057,15 @@ token. A shared provisioning token does not identify a signed-in customer.
 See `docs/lightsite-accounts.org`. Staging Mailpit uses normal organization mail
 settings and the operator's explicit `mail.plaintext_endpoints` exception;
 never put credentials on plaintext SMTP or rely on legacy global mail settings.
+
+### Native Lightsite forms
+
+Authenticated `GET /api/v1/forms/:id/definition` returns published fields,
+labels, constraints and stable choice IDs for native rendering, without visitor
+capabilities or internal mappings. Read the returned `form_id`/`form_version`.
+Lightsite's daemon posts signed complete answers to
+`/hooks/lightsite/:site/:connection/forms`, preserving its original
+`submission_id` on retries. Origin comes from Venture's paired site, not the
+browser payload. This uses ordinary form lead mappings and receipts; it does
+not create invoices/quotes. Payments, bookings, uploads and double opt-in use
+the hosted workflow. See `docs/forms.org` for the exact closed envelope.

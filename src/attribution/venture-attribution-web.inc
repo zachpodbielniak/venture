@@ -114,3 +114,26 @@ static HtmxResponse *venture_web_lightsite_receive(HtmxRequest *request, GHashTa
 		soup_message_headers_get_one(headers, "X-Venture-Signature"), htmx_request_get_body_bytes(request), now, &error);
 	return attribution_web_result(result, error, NULL);
 }
+
+static HtmxResponse *venture_web_lightsite_form_receive(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	SoupMessageHeaders *headers = soup_server_message_get_request_headers(htmx_request_get_message(request));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	const gchar *id = g_hash_table_lookup(params, "connection");
+	gint64 connection;
+	HtmxResponse *response;
+	if (!id || !g_ascii_string_to_signed(id, 10, 1, G_MAXINT64, &connection, NULL))
+		venture_set_error_validation(&error, "connection", "Expected exact Lightsite connection identity");
+	else result = venture_attribution_service_receive_form(venture_attribution_service_get(venture_context_get_database(self->context)),
+		g_hash_table_lookup(params, "site"), connection, soup_message_headers_get_one(headers, "X-Venture-Timestamp"),
+		soup_message_headers_get_one(headers, "X-Venture-Signature"), htmx_request_get_body_bytes(request), now, &error);
+	response = attribution_web_result(result, error, NULL);
+	if (result && !json_object_get_boolean_member(json_node_get_object(result), "accepted")) {
+		g_message("Lightsite form relay failed: cause=field_validation");
+		htmx_response_set_status(response, 422);
+	}
+	return response;
+}

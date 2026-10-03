@@ -674,6 +674,23 @@ JsonNode *venture_forms_erase_contact(VentureDatabase *database, gint64 organiza
 JsonNode *venture_forms_export_contact(VentureDatabase *database, gint64 organization,
 	gint64 contact_id, GError **error);
 
+/**
+ * venture_forms_relay:
+ * @database: form database
+ * @organization_id: authenticated pairing's organization
+ * @scope: authenticated site and connection identity
+ * @origin: configured site origin
+ * @envelope: bounded signed relay payload
+ * @now: trusted receipt time
+ * @error: return location for an error
+ *
+ * Reuses published form validation and durable receipts for complete ordinary
+ * responses. Call only after authenticating the pairing; not a public capability.
+ * Returns: (transfer full) (nullable): acceptance or field validation result
+ */
+JsonNode *venture_forms_relay(VentureDatabase *database, gint64 organization_id,
+	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORMS_H */

@@ -2859,6 +2859,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 }
 
 /* Private intermediate-state service; shares field validation and final intake. */
+#include "venture-forms-relay.inc"
 #include "venture-forms-pages.inc"
 #include "venture-forms-resume.inc"
 #include "venture-forms-optin.inc"

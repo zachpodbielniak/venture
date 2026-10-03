@@ -284,6 +284,8 @@ gboolean venture_forms_upload_purge_source(VentureDatabase *database, VentureEnt
 gint64 venture_forms_upload_sweep(VentureDatabase *database, gint64 organization, guint limit, GDateTime *now, GError **error);
 GBytes *venture_forms_upload_read(VentureDatabase *database, VentureEntity *upload, GError **error);
 
+gboolean venture_forms_relay_supported(VentureEntity *form, GPtrArray *fields);
+
 G_END_DECLS
 
 

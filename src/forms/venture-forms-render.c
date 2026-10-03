@@ -994,6 +994,8 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 			json_builder_set_member_name(builder, "payment_nonce"); json_builder_add_string_value(builder, nonce);
 		}
 	}
+	json_builder_set_member_name(builder, "relay_supported");
+	json_builder_add_boolean_value(builder, venture_forms_relay_supported(form, fields));
 	json_builder_set_member_name(builder, "allow_resume");
 	json_builder_add_boolean_value(builder, venture_forms_get_bool(form, "allow-resume") && venture_forms_page_count(fields) > 1);
 	json_builder_set_member_name(builder, "pages");

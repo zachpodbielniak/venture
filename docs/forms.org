@@ -1459,3 +1459,85 @@ preserved; only its final submission accepts a response. This extra step works
 without JavaScript and keeps a copied snippet from deduplicating unrelated
 visitors. Files remain private upload claims until final acceptance. Prefer the
 loader or hosted page to avoid this confirmation step.
+
+* Native Lightsite forms and signed daemon relay
+
+Contact forms, quote requests and lead-capture questions belong to Venture.
+Libresite may render their published contract in a site's own style; Lightsite's
+daemon receives the browser POST and signs its stored submission for Venture.
+This does not create a quote/invoice automatically: =create_lead= and each
+question's =maps_to= retain their ordinary form meanings.
+
+** Fetch the published definition
+
+=GET /api/v1/forms/ID/definition= requires a Venture session or bearer API token
+with read access to that form's organization. It returns the same published
+=fields=, =pages=, =rules=, labels, kinds, required flags, choices and validation
+bounds as =/pub/form/TOKEN/schema=. Draft question edits are excluded. It adds
+=form_id= and retains =form_version=. =relay_supported= tells the client whether
+this definition can use the complete-response relay; false means use the hosted
+workflow instead. Internal mapping, ticket keys, personal
+answers and browser submission capabilities are excluded. The response is
+=no-store, private=. Read credentials stay in Lightsite's daemon, never in the
+rendered site. Definitions do not grant submission permission.
+
+Libresite must render the advertised kind/constraints (and stable choice IDs),
+not invent another list of four contact fields. Server validation remains final.
+A frontend which does not implement a kind must refuse that form explicitly.
+
+** Pair and relay
+
+Reuse the encrypted =lightsite_capture= connection and =attribution_site=
+pairing described in [[file:attribution.org][attribution]]. The site's organization,
+external tenant/site identities and exact HTTPS origin are operator-owned.
+The legacy attribution site's =lead_form_id= remains its legacy capture mapping;
+this relay instead uses the published Venture =form_id= and its own mappings.
+The daemon must select that form from its authorized site configuration, not
+from a browser-selected organization or credential.
+
+=POST /hooks/lightsite/SITE_UUID/CONNECTION_ID/forms= takes a maximum 32768-byte
+JSON object, authenticated before parsing using the existing timestamp/HMAC
+headers. Sign the exact UTF-8 bytes =timestamp + newline + body= using the
+64-character secret as UTF-8 text. =X-Venture-Timestamp= is Unix seconds within
+five minutes and =X-Venture-Signature= is lowercase hexadecimal HMAC-SHA256.
+A browser cookie is neither required nor trusted at this capability endpoint.
+
+#+begin_src json
+{"version":1,"tenant_id":"tenant_one","site_id":"site_one","submission_id":"original-daemon-submission-id","form_id":42,"form_version":3,"answers":{"name":"Reader","email":"reader@example.test","topic":"sales","message":"Please quote this work"}}
+#+end_src
+
+The closed envelope refuses =origin=, organization/owner overrides and unknown
+members. Venture reads origin from the paired site and enforces the form's
+allowed origins. =submission_id= is a nonempty string of at most 128 bytes;
+keep it stable across daemon restarts and retry attempts. =answers= uses the
+ordinary JSON form format, including arrays for multiple choices/repeated rows.
+Internal =_vf_= controls are forbidden. All answers arrive together; this is
+not a draft navigation API. Hidden/skipped answers, required values, choices,
+patterns, bounds and sensitive answers use the existing published validator.
+
+The supported relay workflow is an ordinary complete response. Payments,
+bookings, uploads and double opt-in are refused explicitly; use their hosted
+form workflow. The trusted daemon owns browser spam screening and rate limiting;
+it must not expose its signing secret or act as an arbitrary signing proxy.
+Venture still enforces form availability, origin, response/email/contact limits
+and its HTTP request bounds.
+
+** Acceptance and retries
+
+HTTP 200 with ={"accepted":true}= means one accepted form response. Venture
+runs the configured lead/mail follow-ups through the ordinary form service;
+a refused follow-up follows that service's existing retained-response/note
+behavior. No CRM identifiers or submitted answers are returned to the caller.
+HTTP 422 with =accepted:false= and =errors= names invalid fields. Authentication,
+identity, availability and malformed envelope errors use ordinary HTTP errors;
+changed reuse returns 409. Failures log one cause without the signed payload.
+
+A receipt identity is derived from the form, paired site, connection identity
+and original submission ID. Identical retries return acceptance without another
+response, lead, mail or automation event. Changed answers or version conflict.
+Retry with the same envelope and a freshly signed timestamp after a transient
+transport/storage failure; do not generate another submission ID. Connection
+secret rotation retains identity, while disconnect/replacement refuses the old
+binding. Erasure keeps the existing consumed receipt tombstone and does not
+allow a retry to recreate an erased response. Public availability checks still
+apply to retries, so closed/full forms retain the uniform 404 contract.

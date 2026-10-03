@@ -1166,6 +1166,7 @@ venture_web_forms_body_limit(SoupServerMessage *message, gpointer data)
 	g_autoptr(VentureAccessScope) boundary = NULL;
 	g_autoptr(HtmxRequest) request = NULL;
 	VentureTenantService *service;
+	if (path != NULL && g_str_has_prefix(path, "/hooks/lightsite/")) return 32768;
 	if (path == NULL || !g_str_has_prefix(path, "/pub/form/")) return G_MAXSIZE;
 	if (g_strcmp0(soup_server_message_get_method(message), "POST") != 0 || path[10] == '\0' || strchr(path + 10, '/') != NULL) return VENTURE_FORMS_MAX_BODY;
 	boundary = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
@@ -1176,4 +1177,39 @@ venture_web_forms_body_limit(SoupServerMessage *message, gpointer data)
 		if (!venture_web_host_matches(service, request, FALSE)) return VENTURE_FORMS_MAX_BODY;
 	}
 	return venture_forms_upload_body_limit(database, path + 10);
+}
+
+/* The public rendering contract is shared; only the lookup authority differs. */
+static HtmxResponse *
+venture_web_forms_definition(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) form = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) schema = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	gint64 id;
+	const gchar *text = g_hash_table_lookup(params, "id");
+	HtmxResponse *response = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	if (response != NULL) return response;
+	response = venture_web_require_module_api(self, "forms");
+	if (response != NULL) return response;
+	if (!text || !g_ascii_string_to_signed(text, 10, 1, G_MAXINT64, &id, NULL)) return forms_web_missing();
+	form = venture_database_get(database, VENTURE_TYPE_FORM, id, &error);
+	if (form == NULL) return venture_web_error_response(error);
+	if (!venture_access_policy_check_read(venture_database_get_access_policy(database), form, &error)) return venture_web_error_response(error);
+	schema = venture_forms_schema(database, form, "", now, &error);
+	if (schema == NULL) return venture_web_error_response(error);
+	/* Fetching a definition is not starting a visitor's fill. Never cache a
+	 * per-visitor capability in a generated static site or its definition. */
+	{
+		const gchar *controls[] = { "ticket", "ticket_field", "submission_field", "submission_nonce", "payment_field", "payment_nonce", "honeypot", "action", "form", NULL };
+		guint i;
+		for (i = 0; controls[i]; i++) json_object_remove_member(json_node_get_object(schema), controls[i]);
+		json_object_set_int_member(json_node_get_object(schema), "form_id", id);
+	}
+	response = forms_web_json(schema, 200);
+	forms_web_common(response, NULL);
+	return response;
 }
