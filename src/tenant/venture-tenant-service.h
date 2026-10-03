@@ -53,6 +53,19 @@ const gchar *venture_tenant_service_get_workspace_id(VentureTenantService *self)
  */
 const gchar *venture_tenant_service_get_origin(VentureTenantService *self);
 /**
+ * venture_tenant_service_account_authority:
+ * @self: initialized hosted tenant service
+ * @error: (out) (optional): lifecycle, authority or storage refusal
+ *
+ * Lists the current principal's explicit active memberships, bounded to twenty.
+ * The management decision intersects current roles with token snapshots.
+ * No arbitrary user lookup or workspace-administrator membership inference.
+ *
+ * Returns: (transfer full) (nullable): current account authority document
+ */
+JsonNode *venture_tenant_service_account_authority(VentureTenantService *self, GError **error);
+
+/**
  * venture_tenant_service_account_identity:
  * @self: initialized hosted service
  * @organization_id: owning organization, greater than zero

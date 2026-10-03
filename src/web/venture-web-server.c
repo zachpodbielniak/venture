@@ -31669,6 +31669,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/builds/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_build_ticket, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/post/backfill", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_autojournal_backfill, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/inbox", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-authority", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_authority, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-identity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_identity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox_read, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watch, self);

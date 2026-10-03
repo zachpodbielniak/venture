@@ -36,3 +36,21 @@ venture_web_account_identity(HtmxRequest *request, GHashTable *params, gpointer 
 	}
 	return account_identity_finish(response);
 }
+
+static HtmxResponse *
+venture_web_account_authority(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) authority = NULL;
+	HtmxResponse *response = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	(void)params;
+	if (response != NULL) return account_identity_finish(response);
+	principal = venture_auth_authenticate(self->auth, request);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(database), principal);
+	authority = venture_tenant_service_account_authority(venture_tenant_service_get(database), &error);
+	return account_identity_finish(authority != NULL ? venture_web_json_response(authority, 200) : venture_web_error_response(error));
+}

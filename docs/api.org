@@ -656,3 +656,10 @@ Readers of a payment or invoice may =POST /api/v1/print/:type/:id= with JSON
 refused; the response never exposes a host or port. A successful exchange
 returns ={"state":"sent"}=. Printing is immediate and cannot be staged.
 See [[file:printing.org][receipt printers]] for deadlines and partial-delivery semantics.
+
+=GET /api/v1/account-authority= returns the authenticated principal's hosted
+origin, workspace, user ID and explicit organization memberships. Consumers
+must use =can_manage_sites=, not the current role alone: the decision also
+limits bearer tokens to their captured authority. Responses are uncached and
+bounded; arbitrary-user lookup is not supported. See
+[[file:lightsite-accounts.org][Lightsite account validation]] for the full contract.

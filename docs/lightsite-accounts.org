@@ -97,3 +97,39 @@ Refusals produced by the account-identity handler emit one server diagnostic
 with the stable error category and domain/code. Credentials, token names,
 organization input and response bodies are excluded. HTTP responses remain
 uncacheable; this diagnostic does not grant or weaken provisioning authority.
+
+* Signed-in account authority for site management
+
+=GET /api/v1/account-authority= authenticates the requesting Venture user
+(session or that user's normal bearer token). It accepts no target user and
+never infers identity from email, a domain, a site or a shared provisioning
+token. Lightsite must forward/use a credential belonging to the signed-in
+principal; this endpoint does not turn a Lightsite cookie into Venture identity.
+
+#+begin_src json
+{"origin":"https://venture.example","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","state":"active","user_id":7,"organizations":[{"organization_id":42,"role":"admin","can_manage_sites":true}]}
+#+end_src
+
+Match the complete configured origin/workspace and the account's organization.
+The =user_id= is local to that workspace. =role= describes current membership;
+**authorize site management only when =can_manage_sites= is true**. That decision
+requires a write-capable credential and owner/admin membership both now and in the bearer token's captured
+snapshot. A viewer token promoted later can report the new current role but
+still has =can_manage_sites: false=. A later demotion immediately removes
+management authority. Tokens omit organizations absent from their snapshot.
+Other roles receive no site-management permission from this API.
+
+Only explicit active memberships in active, non-deleted organizations appear.
+Workspace/platform administration does not fabricate organization membership.
+Inactive users, revoked/expired credentials, non-active workspace lifecycle,
+identity mismatch and support sessions fail closed. Storage failure returns an
+error, never a successful empty authority list. There is no permission cache:
+responses use =Cache-Control: no-store=. Lightsite must validate current authority
+on management operations, refuse redirects and bound the complete request and
+body as described in its =docs/venture-accounts.org= (five seconds, 4096 bytes).
+
+The response is bounded to twenty explicit memberships; more refuses the whole
+request rather than returning a partial permission list. This is a management
+authority endpoint, not a membership directory or an arbitrary-user lookup.
+Public hosting remains independent of authority-service availability.
+Provisioning still uses the unchanged =/api/v1/account-identity/:id= contract.

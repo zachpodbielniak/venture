@@ -713,6 +713,97 @@ venture_tenant_service_status(VentureTenantService *self, GError **error)
 }
 
 JsonNode *
+venture_tenant_service_account_authority(VentureTenantService *self, GError **error)
+{
+	VentureAccessPolicy *policy;
+	const VentureAuthPrincipal *actor;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GPtrArray) members = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autoptr(JsonNode) snapshot = NULL, result = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(JsonObject) object = json_object_new();
+	g_autoptr(JsonArray) organizations = json_array_new();
+	g_autofree gchar *snapshot_text = NULL;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
+	policy = venture_database_get_access_policy(self->database);
+	actor = venture_access_policy_get_actor(policy);
+	if (!self->enabled || !self->initialized || actor == NULL || actor->user_id <= 0 ||
+	    venture_tenant_service_get_support_organization(self) > 0) {
+		tenant_fail(error, "account authority requires a signed-in hosted member"); return NULL;
+	}
+	if (!venture_tenant_service_check_principal(self, actor, error) ||
+	    !venture_tenant_service_check_operation(self, TRUE, error)) return NULL;
+	/* Enumerate only this principal's explicit memberships. Workspace/platform
+	 * administration is not evidence of membership in somebody else's account. */
+	internal = venture_access_policy_enter(policy, NULL);
+	if (!venture_database_begin(self->database, error)) return NULL;
+	if (actor->token_id > 0) {
+		token = venture_database_get(self->database, VENTURE_TYPE_API_TOKEN, actor->token_id, error);
+		if (token == NULL) goto fail;
+		g_object_get(token, "membership-snapshot", &snapshot_text, NULL);
+		snapshot = venture_json_parse(snapshot_text, error);
+		if (snapshot == NULL) goto fail;
+		if (!JSON_NODE_HOLDS_OBJECT(snapshot)) { tenant_fail(error, "token authority is unavailable"); goto fail; }
+	}
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, actor->user_id, NULL);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
+	venture_query_set_limit(query, 21);
+	members = venture_database_find(self->database, query, error);
+	if (members == NULL) goto fail;
+	if (members->len > 20) { tenant_fail(error, "account authority exceeds the bounded membership limit"); goto fail; }
+	for (i = 0; i < members->len; i++) {
+		VentureEntity *member = g_ptr_array_index(members, i);
+		gint64 org = venture_entity_get_organization_id(member);
+		g_autoptr(VentureEntity) organization = NULL;
+		g_autoptr(JsonObject) entry = json_object_new();
+		g_autoptr(GError) local = NULL;
+		g_autofree gchar *role_name = record_enum_nick(member, "role");
+		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, org);
+		gint role, captured;
+		gboolean active = FALSE, can_manage;
+		g_object_get(member, "role", &role, NULL);
+		captured = role;
+		if (snapshot != NULL) {
+			JsonNode *value = json_object_get_member(json_node_get_object(snapshot), key);
+			if (value == NULL) continue;
+			if (json_node_get_value_type(value) != G_TYPE_INT64) { tenant_fail(error, "token authority is unavailable"); goto fail; }
+			if (json_node_get_int(value) < VENTURE_ORGANIZATION_ROLE_VIEWER ||
+			    json_node_get_int(value) > VENTURE_ORGANIZATION_ROLE_ACCOUNTANT) {
+				tenant_fail(error, "token authority is unavailable"); goto fail;
+			}
+			captured = json_node_get_int(value);
+		}
+		organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, org, &local);
+		if (organization == NULL) {
+			if (g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) continue;
+			g_propagate_error(error, g_steal_pointer(&local)); goto fail;
+		}
+		g_object_get(organization, "active", &active, NULL);
+		if (!active || venture_entity_is_deleted(organization)) continue;
+		can_manage = actor->role != VENTURE_USER_ROLE_VIEWER &&
+			(role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN) &&
+			(captured == VENTURE_ORGANIZATION_ROLE_OWNER || captured == VENTURE_ORGANIZATION_ROLE_ADMIN);
+		json_object_set_int_member(entry, "organization_id", org);
+		json_object_set_string_member(entry, "role", role_name);
+		json_object_set_boolean_member(entry, "can_manage_sites", can_manage);
+		json_array_add_object_element(organizations, g_steal_pointer(&entry));
+	}
+	json_object_set_string_member(object, "origin", self->origin);
+	json_object_set_string_member(object, "workspace_id", self->workspace_id);
+	json_object_set_string_member(object, "state", "active");
+	json_object_set_int_member(object, "user_id", actor->user_id);
+	json_object_set_array_member(object, "organizations", g_steal_pointer(&organizations));
+	json_node_take_object(result, g_steal_pointer(&object));
+	if (!venture_database_commit(self->database, error)) return NULL;
+	return g_steal_pointer(&result);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+JsonNode *
 venture_tenant_service_account_identity(VentureTenantService *self,
 	gint64 organization_id, GError **error)
 {
