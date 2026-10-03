@@ -2049,3 +2049,11 @@ Erasure removes their fingerprints and response links but preserves a minimal
 consumed-identity marker. Closed/full forms still return the uniform 404.
 Copied HTML snippets first open a native confirmation form to obtain a fresh
 identity; legacy clients omitting it remain outside the retry guarantee.
+
+For Lightsite user management, `GET /api/v1/account-authority` describes the
+credential's own principal. Match origin/workspace/organization and require
+`can_manage_sites: true`; a displayed current role alone cannot expand an old
+token. A shared provisioning token does not identify a signed-in customer.
+See `docs/lightsite-accounts.org`. Staging Mailpit uses normal organization mail
+settings and the operator's explicit `mail.plaintext_endpoints` exception;
+never put credentials on plaintext SMTP or rely on legacy global mail settings.

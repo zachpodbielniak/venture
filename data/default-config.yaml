@@ -424,6 +424,8 @@ mail:
   # Operator-allowed organization SMTP host:port pairs, comma-separated.
   # Deny by default: empty denies every organization-bound SMTP account.
   allowed_endpoints: ""
+  # Staging-only exceptions; also require allowed_endpoints and auth=none.
+  plaintext_endpoints: ""
   # Operator-owned SMTP CA bundle; empty uses system trust.
   tls_ca_file: ""
   host: ""

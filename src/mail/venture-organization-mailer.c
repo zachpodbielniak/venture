@@ -12,7 +12,7 @@ typedef struct {
 static const SettingField fields[] = {
 	{ "host", "Relay hostname", NULL, FALSE, FALSE },
 	{ "port", "Relay port", "587", TRUE, FALSE },
-	{ "tls", "TLS mode (starttls or implicit)", "starttls", FALSE, FALSE },
+	{ "tls", "TLS mode (starttls, implicit; staging-only none)", "starttls", FALSE, FALSE },
 	{ "auth", "Authentication (plain, login or none)", "plain", FALSE, FALSE },
 	{ "username", "Account username", NULL, FALSE, TRUE },
 	{ "password", "Account password", NULL, FALSE, TRUE },
@@ -88,6 +88,21 @@ static gboolean available(VentureOrganizationMailer *self, GError **error)
 		return refuse(error, "Organization mail must resolve on its repository thread");
 	return TRUE;
 }
+/* Plaintext is an operator exception for one exact relay, never an
+ * organization-controlled global switch or a fallback after TLS fails. */
+static gboolean plaintext_allowed(VentureOrganizationMailer *self, JsonObject *values)
+{
+	g_autofree gchar *allowed = NULL;
+	g_autofree gchar *endpoint = g_strdup_printf("%s:%" G_GINT64_FORMAT,
+		venture_json_object_get_string(values, "host", ""), venture_json_object_get_int(values, "port", 587));
+	g_auto(GStrv) entries = NULL;
+	guint i;
+	g_object_get(self->config, "mail-plaintext-endpoints", &allowed, NULL);
+	entries = g_strsplit(allowed != NULL ? allowed : "", ",", -1);
+	for (i = 0; entries[i] != NULL; i++)
+		if (g_ascii_strcasecmp(g_strstrip(entries[i]), endpoint) == 0) return TRUE;
+	return FALSE;
+}
 static gboolean endpoint_allowed(VentureOrganizationMailer *self, JsonObject *values, GError **error)
 {
 	const gchar *host = venture_json_object_get_string(values, "host", "");
@@ -147,8 +162,9 @@ static VentureMailer *prepare(VentureMailer *mailer, VentureMailMessage *message
 	g_object_get(self->config, "mail-tls-ca-file", &ca_file, NULL);
 	if (ca_file != NULL && *ca_file != '\0')
 		json_object_set_string_member(json_node_get_object(settings), "tls-ca-file", ca_file);
-	return VENTURE_MAILER(venture_smtp_mailer_new_for_connection(json_node_get_object(settings),
-		venture_entity_get_id(VENTURE_ENTITY(connection)), venture_entity_get_version(VENTURE_ENTITY(connection)), error));
+	return VENTURE_MAILER(venture_smtp_mailer_new_for_endpoint(json_node_get_object(settings),
+		venture_entity_get_id(VENTURE_ENTITY(connection)), venture_entity_get_version(VENTURE_ENTITY(connection)),
+		plaintext_allowed(self, json_node_get_object(settings)), error));
 }
 static void mailer_iface(VentureMailerInterface *iface) { iface->prepare = prepare; }
 static void finalize(GObject *object)
@@ -194,7 +210,7 @@ VentureIntegrationConnection *venture_organization_mailer_configure(VentureOrgan
 	if (!available(self, error) || !endpoint_allowed(self, values, error)) return NULL;
 	settings = normalized_settings(values);
 	values = json_node_get_object(settings);
-	checked = venture_smtp_mailer_new_from_values(values, error);
+	checked = venture_smtp_mailer_new_for_endpoint(values, 0, 0, plaintext_allowed(self, values), error);
 	if (checked == NULL) return NULL;
 	host = g_ascii_strdown(venture_json_object_get_string(values, "host", ""), -1);
 	identity = g_strdup_printf("%s\n%" G_GINT64_FORMAT "\n%s\n%s\n%s", host,

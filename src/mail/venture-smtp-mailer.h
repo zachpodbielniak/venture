@@ -40,4 +40,20 @@ VentureSmtpMailer *venture_smtp_mailer_new_from_values(JsonObject *values, GErro
  */
 VentureSmtpMailer *venture_smtp_mailer_new_for_connection(JsonObject *values,
 	gint64 connection_id, gint64 version, GError **error);
+/**
+ * venture_smtp_mailer_new_for_endpoint:
+ * @values: explicit SMTP settings
+ * @connection_id: verified connection identity, or zero for configuration validation
+ * @version: connection version, or zero with an unbound identity
+ * @allow_plaintext: trusted operator permission for this exact endpoint
+ * @error: (out) (optional): redacted refusal
+ *
+ * Like venture_smtp_mailer_new_for_connection(), but permits unauthenticated
+ * plaintext only when explicitly approved. Username/password remain forbidden.
+ * Callers must verify endpoint policy before construction; no network I/O occurs.
+ *
+ * Returns: (transfer full) (nullable): immutable SMTP adapter
+ */
+VentureSmtpMailer *venture_smtp_mailer_new_for_endpoint(JsonObject *values,
+	gint64 connection_id, gint64 version, gboolean allow_plaintext, GError **error);
 #endif
