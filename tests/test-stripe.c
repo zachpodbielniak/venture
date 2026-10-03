@@ -867,7 +867,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "fbc66e52ddaa8e6294aaa5c48d36bf206c286105");
+		g_assert_cmpstr(g_strstrip(out), ==, "ad435805a0b0f4228ef7a98ae9b03bb3d06591ac");
 	}
 }
 
