@@ -512,7 +512,10 @@ Read `docs/orgaccess.org` for the role matrix. Membership and team records use
 generic CRUD. Tokens intersect mint-time memberships with current authority;
 new grants never widen an old token. Missing membership gives empty results or
 404; a refused in-organization write gives 403. Owner/admin data authority and
-output formats remain unchanged. `journal post ID` returns a confirmation for
+output formats remain unchanged. An organization owner/admin may
+`update organization ID` for its own profile (name, phone, email, address,
+...), but `parent_id` and `is_default` are workspace authority: 403 for them.
+`create organization` leaves `organization_id` 0. `journal post ID` returns a confirmation for
 an organization editor. Treat that response as pending until finance approves.
 ## SaaS billing actions
 
