@@ -120,6 +120,22 @@ count_of(
 	return count;
 }
 
+/* An active editor's membership of @organization_id: an alert's recipient
+ * must be able to read the organization the hit is about. */
+static void
+member_of(
+	Fixture		*fixture,
+	gint64		 user_id,
+	gint64		 organization_id
+){
+	g_autoptr(VentureEntity) membership = NULL;
+
+	membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user_id,
+	                          "organization-id", organization_id,
+	                          "role", VENTURE_ORGANIZATION_ROLE_EDITOR, "active", TRUE, NULL);
+	save(fixture, membership);
+}
+
 static gint64
 user(
 	Fixture		*fixture,
@@ -130,6 +146,7 @@ user(
 	record = venture_user_new();
 	g_object_set(record, "username", username, "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
 	save(fixture, record);
+	member_of(fixture, ID(record), fixture->org);
 
 	return ID(record);
 }
@@ -638,6 +655,24 @@ test_alerts_rule_validation(
 		user(fixture, "trader");
 		g_object_set(rule, "notify-username", "trader", NULL);
 		save(fixture, rule);
+	}
+
+	/* A user of another organization is no recipient: the hit carries
+	 * this organization's instruments and prices to their inbox. The
+	 * refusal is the same as for nobody, so it says nothing of who
+	 * exists elsewhere. */
+	{
+		g_autoptr(VentureEntity) rule = new_rule(fixture, "elsewhere", VENTURE_ALERT_KIND_UNDERCUT);
+		g_autoptr(VentureEntity) other = NULL;
+		g_autoptr(VentureUser) outsider = venture_user_new();
+
+		other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other books", "slug", "other-books", NULL);
+		save(fixture, other);
+		g_object_set(outsider, "username", "outsider", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+		save(fixture, outsider);
+		member_of(fixture, ID(outsider), ID(other));
+		g_object_set(rule, "notify-username", "outsider", NULL);
+		save_refused(fixture, rule, "no active user of this organization");
 	}
 
 	/* A category of instruments is a tree for instruments, and a rule may
@@ -1319,6 +1354,33 @@ test_alerts_delivery(
 		}
 
 		g_assert_cmpuint(delivery.received, ==, 2);
+
+		/* A membership revoked since the rule was saved stops the
+		 * delivery; the hit is still written. */
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+			g_autoptr(VentureEntity) membership = NULL;
+			g_autoptr(JsonObject) third = NULL;
+			g_autoptr(VentureSeriesStore) store = writer(fixture);
+			static const Offer b4[] = { { "ore", 10, 104, 4 } };
+
+			g_assert_true(venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, other, NULL));
+			membership = venture_database_find_one(fixture->database, query, NULL);
+			g_assert_nonnull(membership);
+			g_object_set(membership, "active", FALSE, NULL);
+			save(fixture, membership);
+
+			snapshot(store, "realm-b", "USD", fixture->now - 900, b4, G_N_ELEMENTS(b4));
+			third = evaluate(fixture, rule, TRUE);
+			g_assert_cmpint(report_int(third, "written"), ==, 1);
+			g_assert_cmpint(count_of(fixture, VENTURE_TYPE_NOTIFICATION, "user-id", other), ==, 1);
+
+			for (waited = 0; (waited < 5000) && (delivery.received < 3); waited += 10)
+			{
+				if (!g_main_context_iteration(NULL, FALSE))
+					g_usleep(10 * 1000);
+			}
+		}
 	}
 
 	stop_rules(fixture, automation);

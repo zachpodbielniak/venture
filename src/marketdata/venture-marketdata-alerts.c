@@ -127,20 +127,35 @@ alerts_refuse_unused(
 	return FALSE;
 }
 
-/* An active user called @username, read as the system: a rule's author
- * may not be allowed to list users, and only the name's existence is
- * said. */
+/* An active user called @username who may read @organization_id, read as
+ * the system: a rule's author may not be allowed to list users. A hit
+ * carries the organization's instrument names and prices to the
+ * recipient's inbox, so a user of another organization is no recipient;
+ * "no such user" and "not a member" are one answer, so the refusal does
+ * not probe who exists elsewhere. Without organization memberships (the
+ * type switched off) every active user reads every organization. */
 static gboolean
-alerts_user_exists(
+alerts_user_may_hear(
 	VentureDatabase	*database,
-	const gchar	*username
+	const gchar	*username,
+	gint64		 organization_id
 ){
+	static const gint any_role[] = {
+		VENTURE_ORGANIZATION_ROLE_VIEWER, VENTURE_ORGANIZATION_ROLE_OWNER,
+		VENTURE_ORGANIZATION_ROLE_ADMIN, VENTURE_ORGANIZATION_ROLE_EDITOR,
+		VENTURE_ORGANIZATION_ROLE_FINANCE, VENTURE_ORGANIZATION_ROLE_SALES,
+		VENTURE_ORGANIZATION_ROLE_SUPPORT, VENTURE_ORGANIZATION_ROLE_ACCOUNTANT
+	};
+	VentureAccessPolicy *policy;
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureEntity) user = NULL;
+	VentureAuthPrincipal principal;
+	VentureUserRole role;
 	gboolean active = FALSE;
 
-	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	policy = venture_database_get_access_policy(database);
+	internal = venture_access_policy_enter(policy, NULL);
 	query = venture_query_new(VENTURE_TYPE_USER);
 	venture_query_set_limit(query, 1);
 
@@ -152,9 +167,24 @@ alerts_user_exists(
 	if (NULL == user)
 		return FALSE;
 
-	g_object_get(user, "active", &active, NULL);
+	g_object_get(user, "active", &active, "role", &role, NULL);
 
-	return active;
+	if (!active)
+		return FALSE;
+
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(),
+	                                             "organization_membership"))
+		return TRUE;
+
+	memset(&principal, 0, sizeof(principal));
+	principal.user_id = venture_entity_get_id(user);
+	principal.token_id = 0;
+	principal.role = role;
+	principal.name = NULL;
+	principal.authenticated = TRUE;
+
+	return venture_access_policy_has_organization_role(policy, &principal, organization_id, any_role,
+	                                                   G_N_ELEMENTS(any_role));
 }
 
 /*
@@ -416,10 +446,11 @@ alerts_validate_rule(
 
 		if (((NULL == previous) || (0 != g_strcmp0(was, notify))) &&
 		    (!venture_marketdata_check_text(notify, "Tell", error) ||
-		     !alerts_user_exists(database, notify)))
+		     !alerts_user_may_hear(database, notify, venture_entity_get_organization_id(entity))))
 		{
 			if ((NULL != error) && (NULL == *error))
-				venture_set_error_validation(error, "Tell", "no active user is called %s", notify);
+				venture_set_error_validation(error, "Tell",
+					"no active user of this organization is called %s", notify);
 			return FALSE;
 		}
 	}
@@ -2175,7 +2206,10 @@ alerts_write_recipient(
 
 	if (!venture_string_is_empty(username))
 	{
-		user_id = venture_notify_user_id_for_username(w->context, username);
+		/* Judged again at every hit: a membership revoked since the rule
+		 * was saved stops the delivery. The hit is still recorded. */
+		if (alerts_user_may_hear(w->database, username, venture_entity_get_organization_id(rule)))
+			user_id = venture_notify_user_id_for_username(w->context, username);
 	}
 	else
 	{
