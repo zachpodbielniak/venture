@@ -1462,6 +1462,75 @@ test_exec_program_that_never_reads(
 	g_assert_cmpuint(venture_exec_result_get_messages(result)->len, ==, 1);
 }
 
+/* Runs @name (the echo probe) with a secret, returning its stderr. */
+static gchar *
+probe_stderr(
+	Fixture		*fixture,
+	const gchar	*name,
+	gboolean	*out_truncated
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureExecResult) result = NULL;
+	g_autoptr(JsonObject) secrets = NULL;
+
+	secrets = json_object_new();
+	json_object_set_string_member(secrets, "token", "s3cret-token-value");
+	result = venture_plugin_manager_run_exec(fixture->manager, name, "fetch", NULL, secrets, NULL,
+	                                         &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	*out_truncated = venture_exec_result_get_stderr_truncated(result);
+
+	return g_strdup(venture_exec_result_get_stderr(result));
+}
+
+/*
+ * A stderr cap that falls inside a secret keeps none of it. Redaction
+ * replaces whole secrets only, so the first part of one cut off by the
+ * cap survived at the very end of the capture -- the tail an error
+ * quotes into run records and logs.
+ */
+static void
+test_exec_stderr_cap_cuts_no_secret(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *wide_manifest = NULL;
+	g_autofree gchar *cut_manifest = NULL;
+	g_autofree gchar *cap = NULL;
+	g_autofree gchar *wide = NULL;
+	g_autofree gchar *cut = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *marker;
+	gboolean truncated;
+
+	(void)user_data;
+
+	allow_exec(fixture, TRUE);
+
+	/* Same-length names, so both requests -- echoed to stderr -- put
+	 * the secret at the same offset. */
+	wide_manifest = write_exec_plugin(fixture, "tellera", "echo", NULL, NULL);
+	g_assert_true(venture_plugin_manager_load_file(fixture->manager, wide_manifest, &error));
+	g_assert_no_error(error);
+	wide = probe_stderr(fixture, "tellera", &truncated);
+	marker = strstr(wide, VENTURE_EXEC_REDACTED);
+	g_assert_nonnull(marker);
+	g_assert_false(truncated);
+
+	/* Cap ten bytes into the secret. */
+	cap = g_strdup_printf("  max_stderr: %" G_GSIZE_FORMAT "\n", (gsize)(marker - wide) + 10);
+	cut_manifest = write_exec_plugin(fixture, "tellerb", "echo", cap, NULL);
+	g_assert_true(venture_plugin_manager_load_file(fixture->manager, cut_manifest, &error));
+	g_assert_no_error(error);
+	cut = probe_stderr(fixture, "tellerb", &truncated);
+	g_assert_true(truncated);
+	g_assert_null(strstr(cut, "s3cret"));
+
+	/* Exactly the secret's ten bytes went; everything before stays. */
+	g_assert_cmpuint(strlen(cut), ==, (gsize)(marker - wide));
+}
+
 static gpointer
 cancel_later(gpointer data)
 {
@@ -2148,6 +2217,8 @@ main(
 	ADD("/plugin-runtime/exec/output-cap", test_exec_output_cap);
 	ADD("/plugin-runtime/exec/stderr-capped-not-fatal",
 	    test_exec_stderr_is_capped_not_fatal);
+	ADD("/plugin-runtime/exec/stderr-cap-cuts-no-secret",
+	    test_exec_stderr_cap_cuts_no_secret);
 	ADD("/plugin-runtime/exec/nonzero-exit", test_exec_nonzero_exit);
 	ADD("/plugin-runtime/exec/error-message-keeps-partial-batch",
 	    test_exec_error_message_keeps_partial_batch);

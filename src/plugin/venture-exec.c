@@ -516,6 +516,43 @@ exec_redact_text(
 }
 
 /*
+ * Drops the longest ending of @buffer that is the start of a secret, so
+ * a capture cut off mid-secret keeps none of it.
+ */
+static void
+exec_trim_secret_prefix(
+	GByteArray	*buffer,
+	GPtrArray	*secrets
+){
+	gsize cut;
+	guint i;
+
+	cut = 0;
+
+	for (i = 0; i < secrets->len; i++)
+	{
+		const gchar *secret;
+		gsize length;
+		gsize k;
+
+		secret = g_ptr_array_index(secrets, i);
+		length = strlen(secret);
+
+		for (k = MIN(length - 1, (gsize)buffer->len); (k > cut) && (length > 0); k--)
+		{
+			if (0 == memcmp(buffer->data + buffer->len - k, secret, k))
+			{
+				cut = k;
+				break;
+			}
+		}
+	}
+
+	if (cut > 0)
+		g_byte_array_set_size(buffer, (guint)(buffer->len - cut));
+}
+
+/*
  * Redacts every string in a message, members and nested values alike. A
  * program that echoes its request back -- in a record, a log line, an error
  * -- would otherwise hand its secret to whatever stores or logs the batch.
@@ -1200,6 +1237,13 @@ venture_exec_run(
 			result->exit_status = -g_subprocess_get_term_sig(run.process);
 		else
 			result->exit_status = -1;
+
+		/* A cap that cut a secret in half leaves its first part at the
+		 * very end, which no whole-secret redaction finds, and the tail
+		 * is exactly what an error quotes. Any ending that begins a
+		 * secret goes before redacting. */
+		if (run.stderr_truncated)
+			exec_trim_secret_prefix(run.stderr_buffer, secret_values);
 
 		/* An empty GByteArray has no data pointer at all. */
 		stderr_text = (0 == run.stderr_buffer->len)
