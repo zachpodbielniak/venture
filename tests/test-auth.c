@@ -4540,7 +4540,8 @@ test_orgaccess_report_organization(ServerFixture *fixture, gconstpointer user_da
 {
 	static const gchar *const reports[] = {
 		"recipe_margin", "goal_progress", "goal_materials", "listing_performance",
-		"session_performance", NULL
+		"session_performance", "arbitrage_performance", "arbitrage_scan",
+		"craft_arbitrage", "market_deals", "venue_index", "watchlist", NULL
 	};
 	g_autoptr(VentureEntity) other = NULL;
 	g_autoptr(VentureEntity) member = NULL;
