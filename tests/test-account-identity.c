@@ -268,6 +268,18 @@ static guint exchange(SoupSession *session, const gchar *base, const gchar *meth
 	g_bytes_unref(reply.body);
 	return soup_message_get_status(message);
 }
+/* Days from now until a stored token expires; it must expire. */
+static gdouble token_days_left(VentureDatabase *db, gint64 id)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) stored = venture_database_get(db, VENTURE_TYPE_API_TOKEN, id, &error);
+	g_autoptr(GDateTime) expires = NULL;
+	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_assert_no_error(error); g_assert_nonnull(stored);
+	g_object_get(stored, "expires-at", &expires, NULL);
+	g_assert_nonnull(expires);
+	return (gdouble)g_date_time_difference(expires, now) / (gdouble)G_TIME_SPAN_DAY;
+}
 /* Lightsite is told to use the signed-in owner's own bearer token, so an
  * ordinary hosted member must be able to mint one from a browser session.
  * The token is theirs: their role, their memberships at the moment of
@@ -352,6 +364,36 @@ static void member_mint_http(void)
 	/* A bearer token never mints another one for a non-administrator. */
 	g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", NULL, secret, "application/json",
 		"{\"name\":\"Second\"}", NULL, NULL), ==, 403);
+	/* A member's token is never open-ended: thirty days unless asked for
+	 * fewer, at most ninety. A stolen session must not become a credential
+	 * that outlives every sign-out and password change. */
+	g_assert_cmpfloat(token_days_left(db, json_object_get_int_member(json_node_get_object(minted), "id")), >, 29.9);
+	g_assert_cmpfloat(token_days_left(db, json_object_get_int_member(json_node_get_object(minted), "id")), <=, 30.0);
+	{
+		g_autoptr(JsonNode) week = NULL;
+		g_clear_pointer(&body, g_free);
+		g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", cookie, NULL, "application/json",
+			"{\"name\":\"Week\",\"expires_in_days\":7}", NULL, &body), ==, 201);
+		week = venture_json_parse(body, &error); g_assert_no_error(error);
+		g_assert_cmpfloat(token_days_left(db, json_object_get_int_member(json_node_get_object(week), "id")), >, 6.9);
+		g_assert_cmpfloat(token_days_left(db, json_object_get_int_member(json_node_get_object(week), "id")), <=, 7.0);
+	}
+	{
+		const gchar *refused[] = { "0", "91", "-1", "\"7\"", "7.5", "null" };
+		guint i;
+		for (i = 0; i < G_N_ELEMENTS(refused); i++) {
+			g_autofree gchar *payload = g_strdup_printf("{\"name\":\"Bad\",\"expires_in_days\":%s}", refused[i]);
+			g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", cookie, NULL, "application/json",
+				payload, NULL, NULL), ==, 422);
+		}
+	}
+	{
+		g_autofree gchar *expire = g_strdup_printf("UPDATE api_tokens SET expires_at='2000-01-01T00:00:00Z' WHERE id=%" G_GINT64_FORMAT,
+			json_object_get_int_member(json_node_get_object(minted), "id"));
+		sql(db, expire);
+		g_clear_pointer(&result, json_node_unref);
+		result = request(session, base, "/api/v1/account-authority", secret, "127.0.0.1:8443", 401);
+	}
 	/* Lifecycle still governs the session: no minting from a read-only workspace. */
 	sql(db, "UPDATE tenant_workspaces SET state='read_only'");
 	g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", cookie, NULL, "application/json",
