@@ -63,6 +63,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libarchive-devel \
         gmime30-devel \
         gnutls-devel \
+        libdex-devel \
         jq \
         gnupg2 \
     && dnf clean all \
@@ -124,6 +125,17 @@ COPY docs/ docs/
 COPY migrations/ migrations/
 COPY README.org ./
 
+#
+# tools/ is the build's as well as the test suite's: `make all` generates
+# venture-models.h and venture-migration-sql.h by running
+# tools/venture-models.sh and tools/venture-migrations.sh, and `make test`
+# runs venture-test-litter.sh to prove a green run left no temp directories
+# behind. It once came after `make all` so that editing a tool would not
+# rebuild the world; the generators moved into tools/ and that build then
+# failed on a missing script.
+#
+COPY tools/ tools/
+
 RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
     make DEBUG=${DEBUG} PREFIX=${PREFIX} all plugins
 
@@ -134,16 +146,15 @@ RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
 #
 
 #
-# tools/ is the test suite's, not the build's: `make test` runs
-# venture-test-litter.sh from here to prove a green run left no temp
-# directories behind. Without it that line fails on a missing file and takes
-# the whole build with it -- `|| exit 1` cannot tell a missing script from a
-# dirty machine -- so RUN_TESTS=1 could never pass in a container, however
-# green the suite was.
+# The install renders the documentation site (install-docs-site), and that
+# refuses any internal link whose target is missing: the docs link to the
+# agent skill, and README.org to the Containerfile and the licence. These
+# are the only files outside the trees above that it reads; copy them
+# rather than the whole context, so a stray file in a checkout cannot
+# change the image. Copied after `make all`, which does not read them.
 #
-# Copied after `make all` so that editing a tool does not rebuild the world.
-#
-COPY tools/ tools/
+COPY skills/ skills/
+COPY Containerfile LICENSE ./
 
 ARG RUN_TESTS=1
 RUN if [ "${RUN_TESTS}" = "1" ]; then \

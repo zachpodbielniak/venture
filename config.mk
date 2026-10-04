@@ -612,3 +612,9 @@ ARCH_DEPS += jose jansson
 FEDORA_DEPS += jq gnupg2
 DEBIAN_DEPS += jq gnupg
 ARCH_DEPS += jq gnupg
+
+# ai-glib builds its vendored mcp-glib, which resolves libdex-1 through
+# pkg-config. Nothing VENTURE links needs it at run time.
+FEDORA_DEPS += libdex-devel
+DEBIAN_DEPS += libdex-dev
+ARCH_DEPS += libdex

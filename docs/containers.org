@@ -118,6 +118,13 @@ vendored dependencies, runs the test suite, and installs into a staging tree.
 The runtime stage copies that tree onto a fresh Fedora with only the shared
 libraries. The compiler never reaches the final image unless you ask for it.
 
+The builder copies the tree a directory at a time rather than the whole
+context, so a stray file in a checkout cannot change the image. The cost is
+that a directory the build starts to read must be named in a =COPY= line:
+=tools/= holds the generators =make all= runs, and the install renders this
+documentation, whose links reach =skills/=, =LICENSE= and the
+=Containerfile= itself.
+
 ** Build arguments
 
 | Argument         | Default   | Effect                                        |
@@ -281,6 +288,7 @@ libxml2-devel sqlite-devel libpq-devel readline-devel openssl-devel
 gobject-introspection-devel poppler-glib-devel gdk-pixbuf2-devel
 libarchive-devel gmime30-devel gnutls-devel libjose-devel jansson-devel
 jq gnupg2
+libdex-devel
 libetpan-devel libgudev-devel
 #+end_src
 
@@ -295,6 +303,10 @@ exactly how a missing one presents.
 
 =jq= and =gnupg2= are the recovery GTest's: it works on real authenticated
 archives rather than a fake encryptor.
+
+=libdex-devel= is ai-glib's: its vendored mcp-glib resolves =libdex-1= through
+=pkg-config=, so without it =make deps= stops in ai-glib. Nothing VENTURE
+links needs =libdex= at run time, so the runtime list does not name it.
 
 The last two are podomation's, not VENTURE's -- its mail and device modules
 need them. They matter more than they look: podomation resolves its whole
