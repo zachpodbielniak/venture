@@ -1056,6 +1056,77 @@ test_account_holdings_without_accounts(void)
 }
 
 /*
+ * 000715 checks backup_runs carries the two columns a store copy is filed
+ * by and backfills nothing: a run recorded before store copies existed is
+ * a database copy or a snapshot, and its parent and store stay empty --
+ * inventing either would file it as a store copy and prune it by a
+ * store's retention. With the backup module off the table is absent and
+ * the script is recorded as done. If this regresses, an upgrade either
+ * rewrites old backup evidence or refuses on an install without backups.
+ */
+static void
+test_backup_store_copies(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *recorded = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO backup_runs (uuid, organization_id, created_at, updated_at, version, kind, scope, status, path) "
+		"VALUES ('run-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'backup', 'installation', "
+		"'succeeded', '/backups/installation-1.sqlite');"
+		"DELETE FROM schema_migrations WHERE version >= 715", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *untouched = NULL;
+		g_autofree gchar *history = NULL;
+
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		untouched = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM backup_runs WHERE uuid = 'run-1' AND scope = 'installation' "
+			"AND parent_run_id IS NULL AND store_uuid IS NULL AND path = '/backups/installation-1.sqlite'");
+		g_assert_cmpstr(untouched, ==, "1");
+		history = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 715");
+		g_assert_cmpstr(history, ==, "1");
+		g_clear_object(&database);
+	}
+
+	/* The backup module off: no table, nothing to check, recorded done. */
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE backup_runs;"
+		"DELETE FROM schema_migrations WHERE version >= 715", NULL, &error));
+	g_assert_no_error(error);
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+	g_assert_false(table_exists(database, "backup_runs"));
+	recorded = query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 715");
+	g_assert_cmpstr(recorded, ==, "1");
+	g_clear_object(&runner);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
+/*
  * A fresh install that never had finance on: accounts and tax_categories
  * are finance's, and reconciliation never creates a hidden type's table,
  * so the seeds after the migrations must skip what is not there instead
@@ -1131,6 +1202,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
 	g_test_add_func("/migrations/account-holdings-without-accounts",
 	                test_account_holdings_without_accounts);
+	g_test_add_func("/migrations/backup-store-copies", test_backup_store_copies);
 	g_test_add_func("/migrations/fresh-without-finance", test_fresh_without_finance);
 	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);

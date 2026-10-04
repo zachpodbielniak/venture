@@ -563,7 +563,8 @@ plugins" and `docs/examples/*-feed.org` have the rest.
   - the **feeds worker** (`venture-feeds`, `venture-series-worker.c`): its
     own `GMainContext`, `SoupSession` and every series store's writer; it is
     handed frozen sources and hands back runs, and the service writes them
-    on the main thread;
+    on the main thread. It also takes installation backups' store copies:
+    handed a directory and a destination, it hands back a digest;
   - `g_task_run_in_thread` under the feeds worker: provider parsing, exec
     providers and `venture_func_data_source_provider_new()` fetches. They
     see only their `VentureFeedRequest`.
@@ -575,6 +576,22 @@ plugins" and `docs/examples/*-feed.org` have the rest.
   `g_critical` (fatal in tests). `count` and `find` are not checked:
   `tests/test-database.c` probes the lock from a second thread on purpose.
   A new thread goes into this list in the same commit.
+- **A series store is copied on the feeds worker, never the main thread,
+  and the copy never makes the installation backup wait.** A store can be
+  gigabytes. The backup service knows nothing about stores: the feeds
+  module registers a companion
+  (`venture_backup_schedule_service_add_companion()`) that records each
+  store's `backup_run` as running, queues the copy and returns; the answer
+  is recorded later on the main thread, after any open transaction, with
+  `_finish_companion()`. The copy holds one read transaction across every
+  `sqlite3_backup_step()` -- drop it and SQLite restarts the copy at each
+  commit, so a busy store is never backed up at all
+  (`/backup-series/consistent-under-writer` fails at its deadline). A
+  copy nobody will answer (a restart) is marked interrupted by the next
+  backup; one still in flight is skipped, not started twice. Retention and
+  `latest_run()` tell a companion from the schedule's own copies by scope
+  -- a pruning or drill query that forgets the scope prunes a store by the
+  database's count or drills a store as if it were books.
 - **Customer subscription mail is queued inside the billing instruction.**
   The trial reminder (renewal sweep) and the price-change notice
   (`change`/`change-seats`) enqueue through the outbox in the service's own

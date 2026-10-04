@@ -34,7 +34,7 @@ static const VentureFieldDecl backup_run_fields[] = {
 	VENTURE_FIELD("kind", "Kind", "backup or drill", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("name", "Name", "Schedule name, or the drill's name",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD("scope", "Scope", "organization or installation", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("scope", "Scope", "organization, installation, or series (a market-data store copied with an installation backup)", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("path", "Path", "Where the file was written", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("started-at", "Started", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("finished-at", "Finished", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
@@ -48,6 +48,15 @@ static const VentureFieldDecl backup_run_fields[] = {
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("report", "Report", "JSON comparison of trial balance, ledger totals and document counts",
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("source-run-id", "Source run", "The backup a drill restored", "backup_run", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("source-run-id", "Source run", "The backup a drill restored", "backup_run", VENTURE_COLUMN_FLAG_NONE),
+	/* A companion copy -- a market-data series store taken with an
+	 * installation copy -- names the run it was taken with and the store
+	 * it copies; retention is counted per store. The store's UUID is
+	 * machinery (the name says which source), so it folds under "All
+	 * fields" rather than showing a raw UUID on the page. */
+	VENTURE_FIELD_REF("parent-run-id", "Taken with", "The installation backup this file was copied alongside",
+		"backup_run", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("store-uuid", "Store", "For a series store copy, the data source whose store it is (its UUID names the store directory)",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY(VentureBackupRun, venture_backup_run, backup_run_fields)

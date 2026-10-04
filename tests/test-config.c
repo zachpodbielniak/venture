@@ -432,8 +432,11 @@ test_config_validate_rejects_bad_fiscal_month(void)
 
 /*
  * The series store's retention: 14 days of hourly history, daily kept
- * forever, no size cap -- the same in the compiled table and the shipped
- * YAML, because the store reads neither and is handed whatever these say.
+ * forever, no size cap, stores copied with every installation backup --
+ * the same in the compiled table and the shipped YAML, because the store
+ * reads neither and is handed whatever these say. A store's history cannot
+ * be fetched again, so an install whose YAML lost include_in_backup would
+ * quietly stop keeping the only copy.
  * A negative value would reach the store as an unsigned count of billions
  * of days, so it is refused here.
  */
@@ -445,6 +448,7 @@ test_config_series_retention(void)
 	gint64 hourly_days;
 	gint64 daily_days;
 	gint64 max_store_mb;
+	gboolean include_in_backup;
 	guint pass;
 
 	for (pass = 0; pass < 2; pass++)
@@ -463,11 +467,13 @@ test_config_series_retention(void)
 		             "series-hourly-days", &hourly_days,
 		             "series-daily-days", &daily_days,
 		             "series-max-store-mb", &max_store_mb,
+		             "series-include-in-backup", &include_in_backup,
 		             NULL);
 
 		g_assert_cmpint(hourly_days, ==, 14);
 		g_assert_cmpint(daily_days, ==, 0);
 		g_assert_cmpint(max_store_mb, ==, 0);
+		g_assert_true(include_in_backup);
 	}
 
 	g_object_set(config, "series-hourly-days", (gint64)-1, NULL);

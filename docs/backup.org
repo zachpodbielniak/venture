@@ -100,6 +100,31 @@ Off-site transport is not implemented. The destination directory is the
 hand-off: point rsync, restic or an S3 sync at it, and keep the =backup_run=
 row as the inventory of what should be there and what it should hash to.
 
+* Series stores
+
+Market data lives outside the database, in one SQLite file per data source under =<state_dir>/series/<data-source-uuid>/store.db= (see [[file:market-data.org][Market data]]). Those files hold history no source will serve again -- an auction house answers with what is listed now, never with what was listed last month -- so an installation backup copies them too. =series.include_in_backup= (true by default) turns this off for an operator who keeps the stores some other way; with the =feeds= module off, or no store on disk, nothing happens.
+
+After an installation run succeeds, the backup service calls the companions registered with =venture_backup_schedule_service_add_companion()=; the feeds module registers one. It records one =backup_run= per store -- every data source's store, deleted sources included, since soft deletion leaves the file and its history -- with scope =series=, kind =backup=, status =running=, =parent-run-id= naming the installation run it was taken with and =store-uuid= naming the data source. The copy itself is queued to the feeds worker thread, never taken on the main thread: a store can be gigabytes, and the server keeps serving while it is read. The installation run returns at once; =venturectl backup run= answers with the database copy, and the store copies finish behind it (=venturectl list backup_run scope=series= shows them).
+
+On the worker the copy is SQLite's online backup API on a connection of its own, inside one read transaction: the copy is the store as of one moment, however many commits the writer makes while it runs (WAL lets it go on), and the pinned read is also what lets the copy finish at all while a busy source keeps writing -- without it SQLite restarts a copy at every commit. It is written to =series-<uuid>-<stamp>-<run>.sqlite.partial= in the installation copy's directory and renamed into place only when complete, switched to a rollback journal so the file stands alone, and its SHA-256 and size are computed on the worker. The answer comes back to the main thread as plain data and is recorded on the run (=succeeded= with path, size and digest, or =failed= with SQLite's reason), waiting for any open transaction to close first. A failed store copy never fails the installation run or another store's copy; it is visible on its own row.
+
+Retention follows the schedule's =retention=, counted per store: a schedule keeping seven copies keeps seven of the database and seven of each store, oldest-first pruning removes the file and marks the run =pruned=, and pruning only ever follows that store's own success. A store copy still running when the next backup comes is left to finish; the new one is recorded as =failed= with "skipped" rather than starting a second copy of the same file. A copy recorded as running that will never be answered -- the server stopped, or feeds were switched off, before the worker finished -- is marked =failed= ("interrupted") by the next installation backup of that schedule. Turning =include_in_backup= off stops new copies; the files already written are kept until removed by hand.
+
+On PostgreSQL an installation schedule records a failed run (=pg_dump= is the tool there), and store copies only follow a successful installation copy, so none are made. Copy the stores with the state directory instead; SQLite's own =.backup= command (=sqlite3 store.db ".backup /backups/store-copy.db"=) is safe while the server runs, and a plain file copy is safe only with the server stopped.
+
+The restore drill restores books and never picks a store copy: the latest run it drills is the newest database copy or snapshot.
+
+** Restoring a store
+
+There is no automated restore of a live store, as there is none of a live database. To put a store back by hand:
+
+1. Stop the server (or switch =feeds= off), so nothing holds the store's writer.
+2. Find the run: =venturectl list backup_run scope=series store_uuid=<uuid>=; its =path= is the file and =sha256= what it should hash to (=sha256sum=).
+3. Copy the file to =<state_dir>/series/<uuid>/store.db=, replacing what is there, and delete =store.db-wal= and =store.db-shm= beside it: they belong to the file being replaced.
+4. Start the server. The writer reopens the store, switches it back to WAL and, if the copy is from an older release, upgrades its schema.
+
+History after the copy's moment is gone from the restored store; the next sync carries on from there. A store copy holds market data only, so it may be restored independently of the database copy it was taken with.
+
 * Verification
 
 =venturectl backup verify RUN= -- =POST /api/v1/backup_run/:id/actions/verify=,
@@ -116,6 +141,8 @@ a scratch copy of the file -- opening SQLite rewrites its header, and the
 retained artefact is never touched -- and running the same comparison for
 every organization, leaving out the backup module's own records and the
 audit trail, which the act of backing up writes after the copy is taken.
+
+A series store copy cannot be tied to anything live -- the store has moved on since -- so verifying one recomputes its digest and then opens the file immutable (no lock, no journal, not one byte written, so the digest still matches afterwards) and runs SQLite's =integrity_check=. It ties when the file is whole and at a schema this build reads; the report carries =store_uuid=, =schema_version=, =integrity= and the =venues=, =instruments= and =current_rows= it holds. Verifying reads the whole file on the request that asked, as verifying an installation copy does.
 
 The verdict, =tie= or =mismatch=, is recorded on the run with =verified-at=
 and a JSON =report= holding each comparison and a =mismatches= list in plain
@@ -159,3 +186,5 @@ attachments and application state needed to restore a workspace. The separate
 [[file:tenant-recovery.org][tenant recovery utility]] snapshots a stopped application and its PostgreSQL
 database into an encrypted archive, verifies workspace identity, and restores
 only into an empty destination. Keep the recovery key outside that archive.
+
+A hosted workspace runs on PostgreSQL, so its installation schedules make no copies and no store copies; its series stores are in the state directory, which the tenant recovery archive already carries whole (=state.tar=, taken with the application stopped, so every store is consistent). Restoring the archive restores the stores with everything else.

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
-#+updated: [2026-10-03]
-#+version: 0.3.0
+#+updated: [2026-10-04]
+#+version: 0.3.1
 
 * Market data
 
@@ -284,6 +284,14 @@ The store reads none of these: the caller hands them over. =venture_series_store
 
 The cap counts pages that hold data. Past it, snapshots of known instruments carry on -- the history being paid for keeps arriving -- but an instrument the store has never seen is refused and counted in the commit's =instruments_refused= and =listings_refused=, which the feeds run records. Hourly history is what grows: as measured, one snapshot of a million venue-instrument rows (100 venues × 10 000 instruments, 50 000 listings each) makes a 350 MB store, of which =current= and its indexes are about 190 MB, a day's =daily= and =hourly= rows with their indexes about 120 MB and the hundred listing sets about 40 MB; each further hour adds roughly ten to fifteen bytes per row to =hourly=. At a full World of Warcraft region that is gigabytes a fortnight, which is what =hourly_days= is for.
 
+** Backups
+
+A store is history its source will never serve again, so installation backups copy it: with =series.include_in_backup= on (the default) and the =feeds= module on, every installation copy is followed by one copy of each store on disk, recorded as a =backup_run= of scope =series= naming the installation run (=parent-run-id=) and the data source (=store-uuid=). [[file:backup.org][Backups]] has the whole of it -- retention per store, failures, verification and restoring by hand; what matters here is how a copy is taken.
+
+=venture_series_store_backup(directory, destination, pages_per_step, cancellable, &sha256, &size, error)= copies a store with SQLite's online backup API on a connection of its own -- never the writer's, which may hold a batch open -- inside one read transaction, so the copy is the store as of one commit while the writer carries on in WAL; and stepping inside that pinned read is what lets a copy finish at all under a busy writer, because without it SQLite restarts the copy at every commit. It writes =destination.partial=, switches it to a rollback journal so it is one self-contained file, renames it into place, and hashes it, all on the calling thread; nothing half-written survives a failure or a cancel. It reads no version: a copy is bytes, and a store an older build wrote is still worth keeping. =venture_series_store_check_file(path, &check, error)= opens a copy immutable -- not one byte written, so its recorded digest still matches -- and reports its schema version, =integrity_check= and row counts; verification uses it.
+
+The copy runs on the feeds worker (=venture_series_worker_backup()=, answered on the main context as =VentureSeriesWorker::backup-finished=), between fetches, because a store can be gigabytes and the main thread serves requests. It holds the worker for as long as the copy takes, so feeds wait behind a large store's backup; a stop cancels it between steps of 4096 pages.
+
 ** Builds without SQLite
 
 A =SQLITE=0= build has no store: =venture-series-store.c= is left out by the Makefile and its header is not included by =<venture.h>=, so nothing can call it. The math (=venture-series-math.c=) has no database and is always built. =tests/test-series-store.c= becomes an empty plan.
@@ -369,7 +377,7 @@ A main-thread action that must reach the far end -- the Blizzard plugin's recipe
 =VentureSeriesWorker= is one thread with its own =GMainContext=, its own =SoupSession= and the writer handle of every source's store. It starts lazily -- when a source is enabled and runs on its own schedule, or when somebody asks for a sync -- and is joined when the context is disposed or the module switched off.
 
 - *What it never touches*: =VentureDatabase=, the entity registry, the configuration, a plugin's settings. Everything it needs is frozen first, on the main thread, into a =VentureFeedSource=: the record, its credentials, the provider's frozen data, every limit, and every hook's frozen copy. The JSON in it is kept as text and parsed by each thread for itself, because JSON-GLib's reference counts are not atomic.
-- *Commands* reach it through =g_main_context_invoke_full()= on its context; *runs* come back through the main context and are emitted as =VentureSeriesWorker::run-finished= there. The only shared state is the published status (as JSON text) and a live count, under a mutex.
+- *Commands* reach it through =g_main_context_invoke_full()= on its context; *runs* come back through the main context and are emitted as =VentureSeriesWorker::run-finished= there. A store copy for an installation backup is a command too, answered as =VentureSeriesWorker::backup-finished= (see Backups above). The only shared state is the published status (as JSON text) and a live count, under a mutex.
 - *A source's units are fetched one after another*, never at once: one quota, one writer, one far end. Different sources interleave on the loop. Parsing and exec programs run on GTask threads so a large answer never stops another source's timers.
 - *It logs with =g_message()=*, never =g_warning()=, which the test harness makes fatal from any thread; a failure is recorded in the run.
 

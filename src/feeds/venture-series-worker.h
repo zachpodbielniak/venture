@@ -310,6 +310,28 @@ venture_series_worker_purge(
 );
 
 /**
+ * venture_series_worker_backup:
+ * @self: a worker
+ * @tag: the caller's id for this copy (the backup_run's id), handed back
+ * @store_dir: the store's directory
+ * @destination: the file to write
+ *
+ * Queues a copy of a store with venture_series_store_backup(), taken on the
+ * worker thread -- a store can be gigabytes, and the main thread serves
+ * requests -- between fetches, so it never sees a write half done. The
+ * answer comes back on the main context as
+ * #VentureSeriesWorker::backup-finished. A copy still queued when the worker
+ * stops is dropped unanswered; its caller must notice that itself.
+ */
+void
+venture_series_worker_backup(
+	VentureSeriesWorker	*self,
+	gint64			 tag,
+	const gchar		*store_dir,
+	const gchar		*destination
+);
+
+/**
  * venture_series_worker_dup_status:
  * @self: a worker
  *

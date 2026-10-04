@@ -946,6 +946,97 @@ venture_series_store_get_size(
 	GError			**error
 );
 
+/* --- Backups ------------------------------------------------------------------ */
+
+/**
+ * venture_series_store_backup:
+ * @directory: the store's directory (the one venture_series_store_open() takes)
+ * @destination: the file to write; it must not be inside @directory
+ * @pages_per_step: pages copied between looks at @cancellable; 0 for the
+ *   default, 4096 (about 16 MiB). Tests pass 1 to make a small store's copy
+ *   span many of a concurrent writer's commits.
+ * @cancellable: (nullable): checked between steps of the copy
+ * @out_sha256: (out) (optional) (transfer full): the copy's SHA-256, hex
+ * @out_size: (out) (optional): the copy's size in bytes
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Copies a store with SQLite's online backup API, on a connection of its
+ * own, while its writer may be committing on another: the copy is taken
+ * inside one read transaction, so it is the store as of one moment however
+ * many steps the copy takes and however many commits land meanwhile (WAL
+ * lets the writer go on). The copy is written beside @destination as
+ * "@destination.partial" and renamed into place only when complete, and it
+ * is left in rollback-journal mode so it is one self-contained file.
+ *
+ * It reads gigabytes for a large store: call it on the thread that owns
+ * the store's writer (the series worker), never the main thread. It never
+ * calls g_warning().
+ *
+ * Returns: %TRUE when @destination holds a complete copy
+ */
+gboolean
+venture_series_store_backup(
+	const gchar	 *directory,
+	const gchar	 *destination,
+	guint		  pages_per_step,
+	GCancellable	 *cancellable,
+	gchar		**out_sha256,
+	guint64		 *out_size,
+	GError		**error
+);
+
+/**
+ * VentureSeriesStoreCheck:
+ * @schema_version: the file's `user_version`
+ * @intact: whether `PRAGMA integrity_check` answered "ok" and the version is
+ *   one this build can open
+ * @problems: (nullable): what was wrong, one per line; %NULL when intact
+ * @venues: venue rows
+ * @instruments: instrument rows
+ * @current_rows: rows of the current table (venue x instrument)
+ *
+ * What venture_series_store_check_file() found.
+ */
+typedef struct
+{
+	gint64		 schema_version;
+	gboolean	 intact;
+	gchar		*problems;
+	gint64		 venues;
+	gint64		 instruments;
+	gint64		 current_rows;
+} VentureSeriesStoreCheck;
+
+/**
+ * venture_series_store_check_file:
+ * @path: a store file, typically a backup copy
+ * @out: (out caller-allocates): what was found; clear it with
+ *   venture_series_store_check_clear()
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Opens @path immutable -- no lock, no journal, not one byte written, so a
+ * retained backup's digest still matches afterwards -- and checks it is a
+ * series store SQLite reads back whole. A file that is not an SQLite
+ * database at all is an error; a damaged one is @out with @intact FALSE.
+ *
+ * Returns: %TRUE when the check ran
+ */
+gboolean
+venture_series_store_check_file(
+	const gchar		 *path,
+	VentureSeriesStoreCheck	 *out,
+	GError			**error
+);
+
+/**
+ * venture_series_store_check_clear:
+ * @check: a check filled by venture_series_store_check_file()
+ *
+ * Frees what @check holds; the struct itself is the caller's.
+ */
+void
+venture_series_store_check_clear(VentureSeriesStoreCheck *check);
+
 /* --- Transactions ------------------------------------------------------------- */
 
 /**

@@ -1032,6 +1032,14 @@ needs an administrator: it decides which outside host the server calls.
   one is refused (403).
 - The data lands in a series store per source, not in records; there is no
   `list` for it yet.
+- `backup run SCHEDULE_ID` on an installation schedule also copies every
+  store (unless `series.include_in_backup` is false), but answers before
+  the copies finish: each is its own `backup_run` with `scope` `series`,
+  `parent_run_id` (the installation run) and `store_uuid` (the source's
+  UUID), `running` until the worker answers. Check them with
+  `venturectl list backup_run scope=series`; a `failed` one says why and
+  did not fail the database copy. Restoring one is a manual, server-stopped
+  file copy (`docs/backup.org`, "Restoring a store").
 - Plugins add providers: `blizzard_auctions` (World of Warcraft auction
   houses; optional plugin, needs a registered `GOLD` with exponent 4 and
   `client_secret` on the credentials page), `odds_api` (bookmakers' odds;

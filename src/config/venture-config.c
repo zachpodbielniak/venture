@@ -191,6 +191,10 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("series-max-store-mb", "series", "max_store_mb", 0,
 	        "Size in MiB past which a store refuses new instruments; "
 	        "0 for no cap"),
+	/* On by default: a source serves only its current snapshot, so a
+	 * store's history exists nowhere else and cannot be fetched again. */
+	VC_BOOL("series-include-in-backup", "series", "include_in_backup", TRUE,
+	        "Copy every series store with each installation backup"),
 
 	VC_STR ("locale-default-currency", "locale", "default_currency", "USD",
 	        "Currency assumed when an amount does not name one"),

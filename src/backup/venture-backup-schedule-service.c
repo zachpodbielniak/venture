@@ -17,6 +17,7 @@
 #define KIND_DRILL "drill"
 #define SCOPE_ORGANIZATION "organization"
 #define SCOPE_INSTALLATION "installation"
+#define SCOPE_SERIES "series"
 #define STATUS_RUNNING "running"
 #define STATUS_SUCCEEDED "succeeded"
 #define STATUS_FAILED "failed"
@@ -25,12 +26,23 @@
 #define VERIFICATION_MISMATCH "mismatch"
 #define DEFAULT_RETENTION 7
 
+/* A set of files outside the database that an installation copy also
+ * covers, registered by the module that owns them. */
+typedef struct
+{
+	gchar *name;
+	VentureBackupCompanionFunc func;
+	gpointer user_data;
+	GDestroyNotify destroy;
+} Companion;
+
 struct _VentureBackupScheduleService
 {
 	GObject parent_instance;
 	VentureDatabase *database;
 	VentureConfig *config;
 	VentureEntity *writing;
+	GPtrArray *companions;
 	gboolean actions;
 };
 G_DEFINE_FINAL_TYPE(VentureBackupScheduleService, venture_backup_schedule_service, G_TYPE_OBJECT)
@@ -124,6 +136,7 @@ finalize(GObject *object)
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	g_clear_object(&self->config);
+	g_clear_pointer(&self->companions, g_ptr_array_unref);
 	G_OBJECT_CLASS(venture_backup_schedule_service_parent_class)->finalize(object);
 }
 
@@ -143,9 +156,19 @@ venture_backup_schedule_service_class_init(VentureBackupScheduleServiceClass *kl
 }
 
 static void
+companion_free(gpointer data)
+{
+	Companion *companion = data;
+	if (companion->destroy != NULL)
+		companion->destroy(companion->user_data);
+	g_free(companion->name);
+	g_free(companion);
+}
+
+static void
 venture_backup_schedule_service_init(VentureBackupScheduleService *self)
 {
-	(void)self;
+	self->companions = g_ptr_array_new_with_free_func(companion_free);
 }
 
 VentureBackupScheduleService *
@@ -161,6 +184,29 @@ venture_backup_schedule_service_get(VentureDatabase *database)
 		venture_database_add_save_validator(database, VENTURE_TYPE_BACKUP_SCHEDULE, validate_schedule, NULL, NULL);
 	}
 	return self;
+}
+
+void
+venture_backup_schedule_service_add_companion(VentureBackupScheduleService *self, const gchar *name,
+	VentureBackupCompanionFunc func, gpointer user_data, GDestroyNotify destroy)
+{
+	Companion *companion;
+	guint i;
+	g_return_if_fail(VENTURE_IS_BACKUP_SCHEDULE_SERVICE(self));
+	g_return_if_fail(name != NULL);
+	g_return_if_fail(func != NULL);
+	for (i = 0; i < self->companions->len; i++)
+		if (g_strcmp0(((Companion *)g_ptr_array_index(self->companions, i))->name, name) == 0)
+		{
+			g_ptr_array_remove_index(self->companions, i);
+			break;
+		}
+	companion = g_new0(Companion, 1);
+	companion->name = g_strdup(name);
+	companion->func = func;
+	companion->user_data = user_data;
+	companion->destroy = destroy;
+	g_ptr_array_add(self->companions, companion);
 }
 
 void
@@ -293,17 +339,29 @@ stamp(VentureBackupScheduleService *self, VentureEntity *run, const gchar *statu
 
 /* Successful backups beyond retention go oldest-first. A run whose file
  * cannot be removed keeps its status; nothing is ever deleted after a
- * failed backup because prune only runs after a success. */
+ * failed backup because prune only runs after a success. Retention is
+ * counted per scope and, for a companion, per store: a schedule keeping
+ * seven copies keeps seven of its database and seven of each series store,
+ * and pruning one never reaches the other's files. */
 static gboolean
-prune(VentureBackupScheduleService *self, VentureEntity *schedule, gint64 retention, const VentureActor *actor, GError **error)
+prune(VentureBackupScheduleService *self, VentureEntity *schedule, const gchar *companion_scope, const gchar *store_uuid,
+	gint64 retention, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BACKUP_RUN);
 	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) own_scopes = g_ptr_array_new();
 	guint i, excess;
 	venture_query_set_organization(query, venture_entity_get_organization_id(schedule));
 	venture_query_set_limit(query, 0);
+	/* A schedule's own copies are either scope, as they always were (its
+	 * scope can be edited); a companion's are its scope and store only. */
+	g_ptr_array_add(own_scopes, (gpointer)SCOPE_ORGANIZATION);
+	g_ptr_array_add(own_scopes, (gpointer)SCOPE_INSTALLATION);
 	if (!venture_query_add_filter_int(query, "schedule-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(schedule), error) ||
 		!venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, KIND_BACKUP, error) ||
+		(companion_scope == NULL && !venture_query_add_filter(query, "scope", VENTURE_FILTER_OP_IN, own_scopes, error)) ||
+		(companion_scope != NULL && !venture_query_add_filter_string(query, "scope", VENTURE_FILTER_OP_EQ, companion_scope, error)) ||
+		(store_uuid != NULL && !venture_query_add_filter_string(query, "store-uuid", VENTURE_FILTER_OP_EQ, store_uuid, error)) ||
 		!venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, STATUS_SUCCEEDED, error) ||
 		!venture_query_add_order(query, "started-at", VENTURE_SORT_ASCENDING, error) ||
 		!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
@@ -727,6 +785,51 @@ verify_installation_copy(VentureBackupScheduleService *self, Comparison *c, cons
 	return ok;
 }
 
+/* A series store copy is market history, not books: there is nothing live
+ * to tie it to, because the live store has moved on since. What can be
+ * proved is that the file SQLite reads back is whole, at a schema this
+ * build opens, holding what it held -- so the verdict is "tie" when the
+ * copy is intact and "mismatch" with SQLite's own complaints when not.
+ * The file is opened immutable: its digest is on record. */
+static gboolean
+verify_series_copy(VentureBackupScheduleService *self, Comparison *c, VentureEntity *run, const gchar *path, GError **error)
+{
+#ifdef VENTURE_HAVE_SQLITE
+	VentureSeriesStoreCheck check;
+	g_autofree gchar *store = text(run, "store-uuid");
+	(void)self;
+	if (!venture_series_store_check_file(path, &check, error))
+		return FALSE;
+	json_builder_set_member_name(c->builder, "store_uuid");
+	json_builder_add_string_value(c->builder, store != NULL ? store : "");
+	json_builder_set_member_name(c->builder, "schema_version");
+	json_builder_add_int_value(c->builder, check.schema_version);
+	json_builder_set_member_name(c->builder, "integrity");
+	json_builder_add_string_value(c->builder, check.intact ? "ok" : check.problems);
+	json_builder_set_member_name(c->builder, "venues");
+	json_builder_add_int_value(c->builder, check.venues);
+	json_builder_set_member_name(c->builder, "instruments");
+	json_builder_add_int_value(c->builder, check.instruments);
+	json_builder_set_member_name(c->builder, "current_rows");
+	json_builder_add_int_value(c->builder, check.current_rows);
+	if (!check.intact)
+	{
+		g_autofree gchar *what = g_strdup_printf("series store copy is damaged: %s", check.problems);
+		mismatch(c, what);
+	}
+	venture_series_store_check_clear(&check);
+	return TRUE;
+#else
+	(void)self;
+	(void)c;
+	(void)run;
+	(void)path;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+		"This build has no SQLite, so it cannot open a series store copy");
+	return FALSE;
+#endif
+}
+
 /* Restore and tie out one run's file. The verdict and the report land on
  * @target, which is the run itself for a verification and the new drill
  * record for a drill. */
@@ -776,6 +879,8 @@ verify_into(VentureBackupScheduleService *self, VentureEntity *run, VentureEntit
 	}
 	if (g_strcmp0(scope, SCOPE_INSTALLATION) == 0)
 		ok = verify_installation_copy(self, &c, path, error);
+	else if (g_strcmp0(scope, SCOPE_SERIES) == 0)
+		ok = verify_series_copy(self, &c, run, path, error);
 	else
 	{
 		g_autofree gchar *payload = NULL;
@@ -797,8 +902,9 @@ verify_into(VentureBackupScheduleService *self, VentureEntity *run, VentureEntit
 		json_builder_end_object(builder);
 		built = json_builder_get_root(builder);
 		object = json_node_get_object(built);
-		organizations = json_object_get_array_member(object, "organizations");
-		if (json_array_get_length(organizations) > 0)
+		organizations = json_object_has_member(object, "organizations") ?
+			json_object_get_array_member(object, "organizations") : NULL;
+		if (organizations != NULL && json_array_get_length(organizations) > 0)
 		{
 			JsonObject *first = json_array_get_object_element(organizations, 0);
 			json_object_set_member(object, "trial_balance", json_node_copy(json_object_get_member(first, "trial_balance")));
@@ -884,6 +990,19 @@ venture_backup_schedule_service_run(VentureBackupScheduleService *self, VentureB
 	g_object_set(fresh, "last-run-at", now, NULL);
 	if (!venture_database_save(self->database, fresh, actor, error))
 		return NULL;
+	/* Companion files are queued before verification so their copies run on
+	 * their own thread while this one ties the database copy out. Only an
+	 * installation copy has them, and only a successful one: the set is
+	 * the database and the files beside it. */
+	if (g_strcmp0(scope, SCOPE_INSTALLATION) == 0)
+	{
+		guint i;
+		for (i = 0; i < self->companions->len; i++)
+		{
+			Companion *companion = g_ptr_array_index(self->companions, i);
+			companion->func(self, run, directory, actor, companion->user_data);
+		}
+	}
 	{
 		gboolean verify = FALSE;
 		g_object_get(fresh, "verify", &verify, NULL);
@@ -896,7 +1015,7 @@ venture_backup_schedule_service_run(VentureBackupScheduleService *self, VentureB
 				return NULL;
 		}
 	}
-	if (!prune(self, fresh, resolve_retention(self, fresh), actor, error))
+	if (!prune(self, fresh, NULL, NULL, resolve_retention(self, fresh), actor, error))
 		return NULL;
 	return VENTURE_ENTITY(g_steal_pointer(&run));
 }
@@ -1005,6 +1124,14 @@ venture_backup_schedule_service_latest_run(VentureBackupScheduleService *self, g
 	venture_query_set_organization(query, organization_id);
 	venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, KIND_BACKUP, NULL);
 	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, STATUS_SUCCEEDED, NULL);
+	/* The latest backup of the books, never a series store copied with it:
+	 * a drill restores and ties out ledgers. */
+	{
+		g_autoptr(GPtrArray) scopes = g_ptr_array_new();
+		g_ptr_array_add(scopes, (gpointer)SCOPE_ORGANIZATION);
+		g_ptr_array_add(scopes, (gpointer)SCOPE_INSTALLATION);
+		venture_query_add_filter(query, "scope", VENTURE_FILTER_OP_IN, scopes, NULL);
+	}
 	venture_query_add_order(query, "started-at", VENTURE_SORT_DESCENDING, NULL);
 	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
 	run = venture_database_find_one(self->database, query, error);
@@ -1012,6 +1139,79 @@ venture_backup_schedule_service_latest_run(VentureBackupScheduleService *self, g
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 			"Organization %" G_GINT64_FORMAT " has no succeeded backup to drill", organization_id);
 	return run;
+}
+
+/* --- Companion files ------------------------------------------------------ */
+
+VentureEntity *
+venture_backup_schedule_service_begin_companion(VentureBackupScheduleService *self, VentureBackupRun *parent,
+	const gchar *scope, const gchar *name, const gchar *store_uuid, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureBackupRun) run = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_return_val_if_fail(VENTURE_IS_BACKUP_SCHEDULE_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_BACKUP_RUN(parent), NULL);
+	if (!enabled(error))
+		return NULL;
+	if (venture_string_is_empty(scope) || g_strcmp0(scope, SCOPE_ORGANIZATION) == 0 || g_strcmp0(scope, SCOPE_INSTALLATION) == 0)
+	{
+		refuse(error, "a companion copy needs a scope of its own");
+		return NULL;
+	}
+	run = venture_backup_run_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(run), venture_entity_get_organization_id(VENTURE_ENTITY(parent)));
+	g_object_set(run, "schedule-id", number(VENTURE_ENTITY(parent), "schedule-id"),
+		"parent-run-id", venture_entity_get_id(VENTURE_ENTITY(parent)), "kind", KIND_BACKUP, "name", name,
+		"scope", scope, "store-uuid", store_uuid, "started-at", now, "status", STATUS_RUNNING, NULL);
+	if (!save_owned(self, VENTURE_ENTITY(run), actor, error))
+		return NULL;
+	return VENTURE_ENTITY(g_steal_pointer(&run));
+}
+
+gboolean
+venture_backup_schedule_service_finish_companion(VentureBackupScheduleService *self, gint64 run_id,
+	const gchar *path, const gchar *sha256, gint64 size, const gchar *failure, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(GDateTime) finished = venture_time_now();
+	g_autofree gchar *status = NULL, *scope = NULL, *store = NULL;
+	gint64 schedule_id;
+	g_return_val_if_fail(VENTURE_IS_BACKUP_SCHEDULE_SERVICE(self), FALSE);
+	if (!enabled(error))
+		return FALSE;
+	run = venture_database_get(self->database, VENTURE_TYPE_BACKUP_RUN, run_id, error);
+	if (run == NULL)
+	{
+		if (error != NULL && *error == NULL)
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Backup run %" G_GINT64_FORMAT " does not exist", run_id);
+		return FALSE;
+	}
+	status = text(run, "status");
+	if (number(run, "parent-run-id") == 0 || g_strcmp0(status, STATUS_RUNNING) != 0)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"Backup run %" G_GINT64_FORMAT " is not a companion copy still running", run_id);
+		return FALSE;
+	}
+	if (failure != NULL)
+		return stamp(self, run, STATUS_FAILED, failure, finished, actor, error);
+	if (venture_string_is_empty(path) || venture_string_is_empty(sha256))
+		return refuse(error, "a finished companion copy names its file and digest");
+	g_object_set(run, "path", path, "size", size, "sha256", sha256, NULL);
+	if (!stamp(self, run, STATUS_SUCCEEDED, NULL, finished, actor, error))
+		return FALSE;
+	/* Retention follows the schedule, as for its own copies; a schedule
+	 * deleted while the copy ran leaves nothing to count against, so the
+	 * copy is kept rather than guessed about. */
+	schedule_id = number(run, "schedule-id");
+	schedule = schedule_id > 0 ? venture_database_get(self->database, VENTURE_TYPE_BACKUP_SCHEDULE, schedule_id, NULL) : NULL;
+	if (schedule == NULL)
+		return TRUE;
+	scope = text(run, "scope");
+	store = text(run, "store-uuid");
+	return prune(self, schedule, scope, venture_string_is_empty(store) ? NULL : store,
+		resolve_retention(self, schedule), actor, error);
 }
 
 /* --- Actions: the one door the web page, REST, the CLI and the assistant use */

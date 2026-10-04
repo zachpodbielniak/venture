@@ -16,7 +16,11 @@
  * - taking each finished run back and writing it -- once, as the system --
  *   then the records it carried, then `feed_synced` or `feed_failed`, then
  *   the hooks. A run that arrives while a transaction is open waits for it
- *   to close rather than joining somebody else's.
+ *   to close rather than joining somebody else's;
+ * - copying every store beside an installation backup: the backup_run is
+ *   recorded here, the copy is taken on the worker, and its answer is
+ *   recorded here again when it comes back, under the same rule about open
+ *   transactions.
  */
 
 #include "venture.h"
@@ -723,12 +727,23 @@ struct _VentureFeedsService
 	guint			 waiting_source;
 	guint			 refresh_source;
 	gboolean		 shut_down;
+
+	/* Store copies: queued to the worker and not yet answered (run id ->
+	 * store uuid), and answers waiting for a moment with no transaction. */
+	gulong			 backup_handler;
+	GHashTable		*backups_in_flight;
+	GQueue			 backups_waiting;
+	guint			 backups_source;
 };
 
 G_DEFINE_FINAL_TYPE(VentureFeedsService, venture_feeds_service, G_TYPE_OBJECT)
 
 static void feeds_service_run_finished(VentureSeriesWorker *worker, VentureFeedRun *run,
                                        gpointer user_data);
+static void feeds_service_backup_finished(VentureSeriesWorker *worker, gint64 tag,
+                                          const gchar *destination, const gchar *sha256,
+                                          guint64 size, const gchar *failure, gpointer user_data);
+static void feeds_backup_answer_free(gpointer data);
 
 void
 venture_feeds_service_shutdown(VentureFeedsService *self)
@@ -751,10 +766,25 @@ venture_feeds_service_shutdown(VentureFeedsService *self)
 
 	g_queue_clear_full(&self->waiting, (GDestroyNotify)venture_feed_run_unref);
 
+	/* Answers not yet written, and copies never answered, leave their
+	 * runs running; the next installation backup marks them interrupted. */
+	if (0 != self->backups_source)
+	{
+		g_source_remove(self->backups_source);
+		self->backups_source = 0;
+	}
+
+	g_queue_clear_full(&self->backups_waiting, feeds_backup_answer_free);
+
+	if (NULL != self->backups_in_flight)
+		g_hash_table_remove_all(self->backups_in_flight);
+
 	if (NULL != self->worker)
 	{
 		g_signal_handler_disconnect(self->worker, self->run_handler);
 		self->run_handler = 0;
+		g_signal_handler_disconnect(self->worker, self->backup_handler);
+		self->backup_handler = 0;
 		venture_series_worker_stop(self->worker);
 		g_clear_object(&self->worker);
 	}
@@ -769,15 +799,28 @@ venture_feeds_service_dispose(GObject *object)
 }
 
 static void
+venture_feeds_service_finalize(GObject *object)
+{
+	VentureFeedsService *self = VENTURE_FEEDS_SERVICE(object);
+
+	g_clear_pointer(&self->backups_in_flight, g_hash_table_unref);
+
+	G_OBJECT_CLASS(venture_feeds_service_parent_class)->finalize(object);
+}
+
+static void
 venture_feeds_service_class_init(VentureFeedsServiceClass *klass)
 {
 	G_OBJECT_CLASS(klass)->dispose = venture_feeds_service_dispose;
+	G_OBJECT_CLASS(klass)->finalize = venture_feeds_service_finalize;
 }
 
 static void
 venture_feeds_service_init(VentureFeedsService *self)
 {
 	g_queue_init(&self->waiting);
+	g_queue_init(&self->backups_waiting);
+	self->backups_in_flight = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
 }
 
 static VentureSeriesWorker *
@@ -788,6 +831,8 @@ feeds_service_worker(VentureFeedsService *self)
 		self->worker = venture_series_worker_new();
 		self->run_handler = g_signal_connect(self->worker, "run-finished",
 		                                     G_CALLBACK(feeds_service_run_finished), self);
+		self->backup_handler = g_signal_connect(self->worker, "backup-finished",
+		                                        G_CALLBACK(feeds_service_backup_finished), self);
 	}
 
 	return self->worker;
@@ -1600,7 +1645,7 @@ venture_feeds_service_count_pending(VentureFeedsService *self)
 {
 	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), 0);
 
-	return g_queue_get_length(&self->waiting) +
+	return g_queue_get_length(&self->waiting) + g_queue_get_length(&self->backups_waiting) +
 	       ((NULL != self->worker) ? venture_series_worker_count_live(self->worker) : 0);
 }
 
@@ -1635,6 +1680,400 @@ feeds_service_new(VentureContext *context)
 	self->context = context;
 
 	return self;
+}
+
+/* --- Store backups ------------------------------------------------------------------- */
+
+/*
+ * A store holds history its source will never serve again -- an auction
+ * house answers with what is listed now, not what was listed last month --
+ * so an installation backup copies every store beside the database. The
+ * copies are gigabytes and the main thread serves requests: each is taken
+ * on the worker, which owns the stores' writers anyway, and its backup_run
+ * is recorded here twice, running when queued and finished when answered.
+ */
+
+#define FEEDS_BACKUP_SCOPE "series"
+
+typedef struct
+{
+	gint64	 run_id;
+	gchar	*destination;
+	gchar	*sha256;
+	guint64	 size;
+	gchar	*failure;
+} FeedBackupAnswer;
+
+static void
+feeds_backup_answer_free(gpointer data)
+{
+	FeedBackupAnswer *answer = data;
+
+	g_free(answer->destination);
+	g_free(answer->sha256);
+	g_free(answer->failure);
+	g_free(answer);
+}
+
+static const VentureActor *
+feeds_backup_actor(VentureActor *actor)
+{
+	actor->kind = VENTURE_ACTOR_KIND_SYSTEM;
+	actor->name = "backup";
+	actor->prompt = NULL;
+	actor->request_id = NULL;
+	actor->approved_by = NULL;
+
+	return actor;
+}
+
+/* Writes one answer onto its run, as the system: nobody's request is
+ * waiting for it. A refusal is logged, not raised -- the run's own record
+ * is the place a failure shows, and if it cannot be written there is
+ * nowhere better. */
+static void
+feeds_backup_record(
+	VentureFeedsService	*self,
+	FeedBackupAnswer	*answer
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDatabase *database;
+	VentureActor actor;
+
+	database = venture_context_get_database(self->context);
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+
+	if (!venture_backup_schedule_service_finish_companion(venture_backup_schedule_service_get(database),
+	                                                      answer->run_id, answer->destination,
+	                                                      answer->sha256, (gint64)answer->size,
+	                                                      answer->failure, feeds_backup_actor(&actor),
+	                                                      &error))
+		g_message("feeds: could not record store backup %" G_GINT64_FORMAT ": %s",
+		          answer->run_id, error->message);
+}
+
+static gboolean feeds_service_backups_drain(gpointer data);
+
+static void
+feeds_service_backups_arm(VentureFeedsService *self)
+{
+	if ((0 == self->backups_source) && !g_queue_is_empty(&self->backups_waiting))
+		self->backups_source = g_timeout_add(FEEDS_RETRY_MS, feeds_service_backups_drain, self);
+}
+
+/* The same rule as a feed run: never written inside somebody else's
+ * transaction, which could roll the answer back without telling anyone. */
+static gboolean
+feeds_service_backups_drain(gpointer data)
+{
+	VentureFeedsService *self = data;
+
+	self->backups_source = 0;
+
+	while (!g_queue_is_empty(&self->backups_waiting))
+	{
+		FeedBackupAnswer *answer;
+
+		if (venture_database_has_transaction(venture_context_get_database(self->context)))
+			break;
+
+		answer = g_queue_pop_head(&self->backups_waiting);
+		feeds_backup_record(self, answer);
+		feeds_backup_answer_free(answer);
+	}
+
+	feeds_service_backups_arm(self);
+
+	return G_SOURCE_REMOVE;
+}
+
+static void
+feeds_service_backup_finished(
+	VentureSeriesWorker	*worker,
+	gint64			 tag,
+	const gchar		*destination,
+	const gchar		*sha256,
+	guint64			 size,
+	const gchar		*failure,
+	gpointer		 user_data
+){
+	VentureFeedsService *self = user_data;
+	FeedBackupAnswer *answer;
+
+	(void)worker;
+
+	if (self->shut_down)
+		return;
+
+	g_hash_table_remove(self->backups_in_flight, &tag);
+
+	answer = g_new0(FeedBackupAnswer, 1);
+	answer->run_id = tag;
+	answer->destination = g_strdup(destination);
+	answer->sha256 = g_strdup(sha256);
+	answer->size = size;
+	answer->failure = (NULL != failure) ? g_strdup(failure)
+	                  : ((NULL == sha256) ? g_strdup("the copy reported no digest") : NULL);
+	g_queue_push_tail(&self->backups_waiting, answer);
+
+	if (0 == self->backups_source)
+		feeds_service_backups_drain(self);
+}
+
+/* The run in flight copying @uuid's store, or 0. */
+static gint64
+feeds_backup_in_flight_for(
+	VentureFeedsService	*self,
+	const gchar		*uuid
+){
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	g_hash_table_iter_init(&iter, self->backups_in_flight);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+		if (0 == g_strcmp0(value, uuid))
+			return *(gint64 *)key;
+
+	return 0;
+}
+
+/*
+ * A copy still marked running that this service never queued -- or queued
+ * and lost when the server stopped -- will never be answered. Saying so on
+ * the next backup keeps the page from showing a copy running for ever.
+ */
+static void
+feeds_backup_fail_stale(
+	VentureFeedsService		*self,
+	VentureBackupScheduleService	*backups,
+	VentureBackupRun		*parent,
+	const VentureActor		*actor
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDatabase *database;
+	gint64 schedule_id;
+	guint i;
+
+	database = venture_context_get_database(self->context);
+	g_object_get(parent, "schedule-id", &schedule_id, NULL);
+
+	query = venture_query_new(VENTURE_TYPE_BACKUP_RUN);
+	venture_query_set_organization(query, venture_entity_get_organization_id(VENTURE_ENTITY(parent)));
+	venture_query_set_limit(query, 0);
+
+	if (!venture_query_add_filter_int(query, "schedule-id", VENTURE_FILTER_OP_EQ, schedule_id, &error) ||
+	    !venture_query_add_filter_string(query, "scope", VENTURE_FILTER_OP_EQ, FEEDS_BACKUP_SCOPE, &error) ||
+	    !venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "running", &error))
+	{
+		g_message("feeds: could not look for interrupted store backups: %s", error->message);
+		return;
+	}
+
+	rows = venture_database_find(database, query, &error);
+
+	if (NULL == rows)
+	{
+		g_message("feeds: could not look for interrupted store backups: %s", error->message);
+		return;
+	}
+
+	for (i = 0; i < rows->len; i++)
+	{
+		gint64 id = venture_entity_get_id(g_ptr_array_index(rows, i));
+		g_autoptr(GError) stamp_error = NULL;
+
+		if (g_hash_table_contains(self->backups_in_flight, &id))
+			continue;
+
+		if (!venture_backup_schedule_service_finish_companion(backups, id, NULL, NULL, 0,
+		                                                      "interrupted: the server stopped or "
+		                                                      "feeds were switched off before this "
+		                                                      "copy finished", actor, &stamp_error))
+			g_message("feeds: could not mark store backup %" G_GINT64_FORMAT " interrupted: %s",
+			          id, stamp_error->message);
+	}
+}
+
+/* Records a store's copy as failed without queueing it. */
+static void
+feeds_backup_refuse(
+	VentureBackupScheduleService	*backups,
+	VentureBackupRun		*parent,
+	const gchar			*name,
+	const gchar			*uuid,
+	const gchar			*why,
+	const VentureActor		*actor
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GError) error = NULL;
+
+	run = venture_backup_schedule_service_begin_companion(backups, parent, FEEDS_BACKUP_SCOPE,
+	                                                      name, uuid, actor, &error);
+
+	if ((NULL == run) ||
+	    !venture_backup_schedule_service_finish_companion(backups, venture_entity_get_id(run), NULL,
+	                                                      NULL, 0, why, actor, &error))
+		g_message("feeds: could not record a skipped store backup: %s", error->message);
+}
+
+static void
+feeds_service_backup_stores(
+	VentureFeedsService		*self,
+	VentureBackupScheduleService	*backups,
+	VentureBackupRun		*parent,
+	const gchar			*directory,
+	const VentureActor		*actor
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) started = NULL;
+	g_autofree gchar *stamp = NULL;
+	VentureDatabase *database;
+	VentureConfig *config;
+	guint i;
+
+	database = venture_context_get_database(self->context);
+	config = venture_context_get_config(self->context);
+
+	/* Every organization's stores: the backup is of the installation, and
+	 * the schedule that asked belongs to one organization only by filing. */
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+
+	feeds_backup_fail_stale(self, backups, parent, actor);
+
+	/* Deleted sources too: soft deletion keeps the store on disk, and its
+	 * history is as irreplaceable as a live one's. */
+	query = venture_query_new(VENTURE_TYPE_DATA_SOURCE);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_limit(query, 0);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = venture_database_find(database, query, &error);
+
+	if (NULL == rows)
+	{
+		g_message("feeds: could not list the stores to back up: %s", error->message);
+		return;
+	}
+
+	g_object_get(parent, "started-at", &started, NULL);
+	stamp = (NULL != started) ? g_date_time_format(started, "%Y%m%dT%H%M%SZ") : g_strdup("now");
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *record = g_ptr_array_index(rows, i);
+		const gchar *uuid = venture_entity_get_uuid(record);
+		g_autofree gchar *store_dir = NULL;
+		g_autofree gchar *store_file = NULL;
+		g_autofree gchar *source_name = NULL;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *filename = NULL;
+		g_autofree gchar *path = NULL;
+		g_autoptr(VentureEntity) run = NULL;
+		g_autoptr(GError) begin_error = NULL;
+		VentureSeriesWorker *worker;
+		gint64 busy;
+		gint64 run_id;
+
+		store_dir = venture_feeds_store_dir(config, uuid);
+		store_file = g_build_filename(store_dir, VENTURE_SERIES_STORE_FILENAME, NULL);
+
+		/* A source never synced has no store, and nothing to keep. */
+		if (!g_file_test(store_file, G_FILE_TEST_EXISTS))
+			continue;
+
+		g_object_get(record, "name", &source_name, NULL);
+		name = g_strdup_printf("Series store: %s%s", (NULL != source_name) ? source_name : uuid,
+		                       venture_entity_is_deleted(record) ? " (deleted source)" : "");
+
+		/* A slow copy still going when the next backup comes is left to
+		 * finish; two copies of one store at once would only compete for
+		 * the disk. */
+		busy = feeds_backup_in_flight_for(self, uuid);
+
+		if (0 != busy)
+		{
+			g_autofree gchar *why = g_strdup_printf("skipped: the previous copy of this store "
+			                                        "(backup run %" G_GINT64_FORMAT ") is still "
+			                                        "running", busy);
+
+			feeds_backup_refuse(backups, parent, name, uuid, why, actor);
+			continue;
+		}
+
+		run = venture_backup_schedule_service_begin_companion(backups, parent, FEEDS_BACKUP_SCOPE,
+		                                                      name, uuid, actor, &begin_error);
+
+		if (NULL == run)
+		{
+			g_message("feeds: could not record a store backup: %s", begin_error->message);
+			continue;
+		}
+
+		run_id = venture_entity_get_id(run);
+		filename = g_strdup_printf("series-%s-%s-%" G_GINT64_FORMAT ".sqlite", uuid, stamp, run_id);
+		path = g_build_filename(directory, filename, NULL);
+		worker = feeds_service_worker(self);
+
+		if (NULL == worker)
+		{
+			if (!venture_backup_schedule_service_finish_companion(backups, run_id, NULL, NULL, 0,
+			                                                      "feeds are shutting down", actor,
+			                                                      &begin_error))
+				g_message("feeds: %s", begin_error->message);
+			continue;
+		}
+
+		{
+			gint64 *key = g_new(gint64, 1);
+
+			*key = run_id;
+			g_hash_table_insert(self->backups_in_flight, key, g_strdup(uuid));
+		}
+
+		venture_series_worker_backup(worker, run_id, store_dir, path);
+	}
+}
+
+/*
+ * The backup module's companion: called after every installation copy,
+ * on the main thread. The last context over the database answers, as for
+ * the actions. Feeds off, include_in_backup off, or no store: nothing.
+ */
+static void
+feeds_backup_companion(
+	VentureBackupScheduleService	*backups,
+	VentureBackupRun		*run,
+	const gchar			*directory,
+	const VentureActor		*actor,
+	gpointer			 user_data
+){
+	g_autoptr(VentureContext) context = NULL;
+	VentureFeedsService *service;
+	gboolean include;
+
+	context = feeds_context_for(VENTURE_DATABASE(user_data));
+
+	if (NULL == context)
+		return;
+
+	service = venture_context_get_feeds_service(context);
+
+	if ((NULL == service) || service->shut_down)
+		return;
+
+	g_object_get(venture_context_get_config(context), "series-include-in-backup", &include, NULL);
+
+	if (!include)
+		return;
+
+	feeds_service_backup_stores(service, backups, run, directory, actor);
 }
 
 /* --- The context's half --------------------------------------------------------------- */
@@ -2362,6 +2801,12 @@ venture_feeds_install(VentureContext *context)
 		venture_database_add_save_validator(database, VENTURE_TYPE_DATA_SOURCE,
 		                                    feeds_validate_source, NULL, NULL);
 		feeds_register_actions(database);
+
+		/* The database owns the backup service, so it outlives the
+		 * companion and needs no reference from it. */
+		venture_backup_schedule_service_add_companion(venture_backup_schedule_service_get(database),
+		                                              "series-stores", feeds_backup_companion,
+		                                              database, NULL);
 	}
 
 	g_signal_connect_object(database, "entity-saved", G_CALLBACK(feeds_on_saved), context, 0);

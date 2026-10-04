@@ -1530,6 +1530,434 @@ venture_series_store_get_size(
 	return TRUE;
 }
 
+/* --- Backups --------------------------------------------------------------------- */
+
+/* Pages copied per backup step: about 16 MiB at the default page size, so a
+ * stop is noticed within a fraction of a second of disk time. */
+#define SERIES_BACKUP_PAGES (4096)
+
+/* How long one copy waits, in all, on a lock it cannot take. */
+#define SERIES_BACKUP_BUSY_MS (30000)
+
+static void
+series_backup_error(
+	sqlite3		 *db,
+	gint		  rc,
+	const gchar	 *path,
+	const gchar	 *what,
+	GError		**error
+){
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+	            "Backing up %s: %s while %s", path,
+	            (NULL != db) ? sqlite3_errmsg(db) : sqlite3_errstr(rc), what);
+}
+
+/* Streams the file, so a gigabyte copy is never held in memory. */
+static gchar *
+series_file_digest(
+	const gchar	 *path,
+	guint64		 *out_size,
+	GError		**error
+){
+	g_autoptr(GFile) file = NULL;
+	g_autoptr(GFileInputStream) stream = NULL;
+	g_autoptr(GChecksum) checksum = NULL;
+	guchar buffer[65536];
+	gssize count;
+	guint64 size;
+
+	file = g_file_new_for_path(path);
+	stream = g_file_read(file, NULL, error);
+
+	if (NULL == stream)
+		return NULL;
+
+	checksum = g_checksum_new(G_CHECKSUM_SHA256);
+	size = 0;
+
+	while ((count = g_input_stream_read(G_INPUT_STREAM(stream), buffer, sizeof buffer,
+	                                    NULL, error)) > 0)
+	{
+		g_checksum_update(checksum, buffer, (gsize)count);
+		size += (guint64)count;
+	}
+
+	if (count < 0)
+		return NULL;
+
+	*out_size = size;
+	return g_strdup(g_checksum_get_string(checksum));
+}
+
+/*
+ * Copies every page of the source into the copy, inside the read
+ * transaction the caller opened on @source. Holding that transaction is
+ * what makes a stepped copy consistent: without it SQLite restarts the copy
+ * whenever another connection commits, and a store written every few
+ * seconds might never finish.
+ */
+static gboolean
+series_backup_pages(
+	sqlite3		 *source,
+	sqlite3		 *copy,
+	const gchar	 *path,
+	guint		  pages_per_step,
+	GCancellable	 *cancellable,
+	GError		**error
+){
+	sqlite3_backup *backup;
+	gint waited_ms;
+	gint rc;
+
+	backup = sqlite3_backup_init(copy, "main", source, "main");
+
+	if (NULL == backup)
+	{
+		series_backup_error(copy, sqlite3_errcode(copy), path, "starting the copy", error);
+		return FALSE;
+	}
+
+	waited_ms = 0;
+
+	do
+	{
+		if (g_cancellable_is_cancelled(cancellable))
+		{
+			sqlite3_backup_finish(backup);
+			g_set_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED,
+			            "Backing up %s: stopped before the copy finished", path);
+			return FALSE;
+		}
+
+		rc = sqlite3_backup_step(backup, (0 != pages_per_step) ? (gint)MIN(pages_per_step, (guint)G_MAXINT)
+		                                                       : SERIES_BACKUP_PAGES);
+
+		if ((SQLITE_BUSY == (rc & 0xff)) || (SQLITE_LOCKED == (rc & 0xff)))
+		{
+			if (waited_ms >= SERIES_BACKUP_BUSY_MS)
+				break;
+
+			g_usleep(10 * 1000);
+			waited_ms += 10;
+		}
+	}
+	while ((SQLITE_OK == rc) || (SQLITE_BUSY == (rc & 0xff)) || (SQLITE_LOCKED == (rc & 0xff)));
+
+	sqlite3_backup_finish(backup);
+
+	if (SQLITE_DONE != rc)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Backing up %s: %s while copying", path, sqlite3_errstr(rc));
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_series_store_backup(
+	const gchar	 *directory,
+	const gchar	 *destination,
+	guint		  pages_per_step,
+	GCancellable	 *cancellable,
+	gchar		**out_sha256,
+	guint64		 *out_size,
+	GError		**error
+){
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *partial = NULL;
+	g_autofree gchar *digest = NULL;
+	sqlite3 *source;
+	sqlite3 *copy;
+	gboolean renamed;
+	gboolean ok;
+	guint64 size;
+	gint rc;
+
+	g_return_val_if_fail(NULL != directory, FALSE);
+	g_return_val_if_fail(NULL != destination, FALSE);
+
+	path = g_build_filename(directory, VENTURE_SERIES_STORE_FILENAME, NULL);
+
+	if (!g_file_test(path, G_FILE_TEST_IS_REGULAR))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no series store at %s", path);
+		return FALSE;
+	}
+
+	partial = g_strconcat(destination, ".partial", NULL);
+
+	if ((0 != g_unlink(partial)) && (ENOENT != errno))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Could not clear %s: %s", partial, g_strerror(errno));
+		return FALSE;
+	}
+
+	/*
+	 * A connection of its own, never the writer's: the writer may hold a
+	 * batch open, and a copy taken through it would carry the half that
+	 * was not committed. Read-write without CREATE and then query-only,
+	 * as a reader does, because a WAL file opened strictly read-only
+	 * cannot make its shared-memory index. No version check: a copy is
+	 * bytes, and a store an older build wrote is still worth keeping.
+	 */
+	source = NULL;
+	copy = NULL;
+	renamed = FALSE;
+	ok = FALSE;
+	size = 0;
+
+	rc = sqlite3_open_v2(path, &source,
+	                     SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX |
+	                     SQLITE_OPEN_PRIVATECACHE | SQLITE_OPEN_EXRESCODE, NULL);
+
+	if (SQLITE_OK != rc)
+	{
+		series_backup_error(source, rc, path, "opening the store", error);
+		goto out;
+	}
+
+	sqlite3_busy_timeout(source, SERIES_BUSY_TIMEOUT_MS);
+
+	rc = sqlite3_exec(source, "PRAGMA query_only = ON; BEGIN; SELECT count(*) FROM sqlite_schema",
+	                  NULL, NULL, NULL);
+
+	if (SQLITE_OK != rc)
+	{
+		series_backup_error(source, rc, path, "starting the read the copy is taken in", error);
+		goto out;
+	}
+
+	rc = sqlite3_open_v2(partial, &copy,
+	                     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX |
+	                     SQLITE_OPEN_PRIVATECACHE | SQLITE_OPEN_EXRESCODE, NULL);
+
+	if (SQLITE_OK != rc)
+	{
+		series_backup_error(copy, rc, partial, "creating the copy", error);
+		goto out;
+	}
+
+	if (!series_backup_pages(source, copy, path, pages_per_step, cancellable, error))
+		goto out;
+
+	/* The pages carry the store's WAL flag; a backup is one file that
+	 * opens on its own, so it goes back to a rollback journal. */
+	rc = sqlite3_exec(copy, "PRAGMA journal_mode = DELETE", NULL, NULL, NULL);
+
+	if (SQLITE_OK != rc)
+	{
+		series_backup_error(copy, rc, partial, "making the copy self-contained", error);
+		goto out;
+	}
+
+	rc = sqlite3_close(copy);
+	copy = NULL;
+
+	if (SQLITE_OK != rc)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Backing up %s: %s while closing the copy", path, sqlite3_errstr(rc));
+		goto out;
+	}
+
+	if (0 != g_rename(partial, destination))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Could not move the copy to %s: %s", destination, g_strerror(errno));
+		goto out;
+	}
+
+	renamed = TRUE;
+	digest = series_file_digest(destination, &size, error);
+	ok = (NULL != digest);
+
+out:
+	if (NULL != copy)
+		sqlite3_close_v2(copy);
+
+	if (NULL != source)
+	{
+		sqlite3_exec(source, "ROLLBACK", NULL, NULL, NULL);
+		sqlite3_close_v2(source);
+	}
+
+	/* Nothing half-written is left under either name. */
+	if (!ok)
+	{
+		g_unlink(partial);
+
+		if (renamed)
+			g_unlink(destination);
+
+		return FALSE;
+	}
+
+	if (NULL != out_sha256)
+		*out_sha256 = g_steal_pointer(&digest);
+
+	if (NULL != out_size)
+		*out_size = size;
+
+	return TRUE;
+}
+
+/* One integer from @sql, or FALSE with an error. */
+static gboolean
+series_check_int(
+	sqlite3		 *db,
+	const gchar	 *path,
+	const gchar	 *sql,
+	gint64		 *out,
+	GError		**error
+){
+	sqlite3_stmt *stmt;
+	gint rc;
+
+	stmt = NULL;
+	rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+
+	if (SQLITE_OK == rc)
+		rc = sqlite3_step(stmt);
+
+	if (SQLITE_ROW != rc)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Checking %s: %s", path, sqlite3_errmsg(db));
+		sqlite3_finalize(stmt);
+		return FALSE;
+	}
+
+	*out = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	return TRUE;
+}
+
+gboolean
+venture_series_store_check_file(
+	const gchar		 *path,
+	VentureSeriesStoreCheck	 *out,
+	GError			**error
+){
+	g_autofree gchar *absolute = NULL;
+	g_autofree gchar *file_uri = NULL;
+	g_autofree gchar *uri = NULL;
+	g_autoptr(GString) problems = NULL;
+	sqlite3_stmt *stmt;
+	sqlite3 *db;
+	gboolean ok;
+	gint rc;
+
+	g_return_val_if_fail(NULL != path, FALSE);
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	memset(out, 0, sizeof *out);
+
+	if (!g_file_test(path, G_FILE_TEST_IS_REGULAR))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no store file at %s", path);
+		return FALSE;
+	}
+
+	/*
+	 * immutable=1: no lock, no journal, no header rewrite. The file is a
+	 * retained artefact whose SHA-256 is on record; opening it the usual
+	 * way would change the bytes the digest vouches for.
+	 */
+	absolute = g_canonicalize_filename(path, NULL);
+	file_uri = g_filename_to_uri(absolute, NULL, error);
+
+	if (NULL == file_uri)
+		return FALSE;
+
+	uri = g_strconcat(file_uri, "?mode=ro&immutable=1", NULL);
+	db = NULL;
+	ok = FALSE;
+	problems = g_string_new(NULL);
+
+	rc = sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI |
+	                     SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_PRIVATECACHE, NULL);
+
+	if (SQLITE_OK != rc)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Checking %s: %s", path,
+		            (NULL != db) ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
+		goto out;
+	}
+
+	if (!series_check_int(db, path, "PRAGMA user_version", &out->schema_version, error))
+		goto out;
+
+	if ((out->schema_version < 1) || (out->schema_version > (gint64)SERIES_SCHEMA_VERSION))
+		g_string_append_printf(problems, "schema version %" G_GINT64_FORMAT
+		                       " is not one this build reads (1 to %u)\n",
+		                       out->schema_version, (guint)SERIES_SCHEMA_VERSION);
+
+	/* integrity_check rather than quick_check: verification is asked for,
+	 * and the indexes the browse pages lean on are part of what must
+	 * come back. */
+	stmt = NULL;
+	rc = sqlite3_prepare_v2(db, "PRAGMA integrity_check", -1, &stmt, NULL);
+
+	while ((SQLITE_OK == rc) && (SQLITE_ROW == sqlite3_step(stmt)))
+	{
+		const gchar *line = (const gchar *)sqlite3_column_text(stmt, 0);
+
+		if (0 != g_strcmp0(line, "ok"))
+			g_string_append_printf(problems, "%s\n", (NULL != line) ? line : "");
+	}
+
+	sqlite3_finalize(stmt);
+
+	if (SQLITE_OK != rc)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Checking %s: %s", path, sqlite3_errmsg(db));
+		goto out;
+	}
+
+	/* The counts only mean something for a schema this build knows. */
+	if (0 == problems->len)
+	{
+		if (!series_check_int(db, path, "SELECT count(*) FROM venues", &out->venues, error) ||
+		    !series_check_int(db, path, "SELECT count(*) FROM instruments",
+		                      &out->instruments, error) ||
+		    !series_check_int(db, path, "SELECT count(*) FROM current",
+		                      &out->current_rows, error))
+			goto out;
+	}
+
+	out->intact = (0 == problems->len);
+
+	if (!out->intact)
+	{
+		g_strchomp(problems->str);
+		out->problems = g_strdup(problems->str);
+	}
+
+	ok = TRUE;
+
+out:
+	if (NULL != db)
+		sqlite3_close_v2(db);
+
+	return ok;
+}
+
+void
+venture_series_store_check_clear(VentureSeriesStoreCheck *check)
+{
+	if (NULL == check)
+		return;
+
+	g_clear_pointer(&check->problems, g_free);
+}
+
 /* Whether the cap now refuses new instruments. */
 static gboolean
 series_over_cap(

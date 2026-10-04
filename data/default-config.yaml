@@ -499,6 +499,14 @@ series:
   # refused. 0 for no cap.
   max_store_mb: 0
 
+  # Copy every store beside each installation backup (a backup_schedule of
+  # scope installation), one backup_run per store, taken on the feeds
+  # worker so the server keeps serving. On by default: a source only ever
+  # serves what it has now, so the history in a store exists nowhere else.
+  # The hosted platform's archive already holds the stores; see
+  # docs/backup.org.
+  include_in_backup: true
+
 # Market data feeds: data sources fetched on a schedule, on a worker thread,
 # into the series stores above. Off unless turned on, because a source
 # makes this server call outside hosts. See docs/market-data.org.

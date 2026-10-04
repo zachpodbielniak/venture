@@ -31,6 +31,8 @@ so a database-only export is insufficient.
 
 Creation requires the tenant application to be stopped, rather than assuming
 that database snapshot isolation also snapshots filesystem attachments.
+
+The state payload includes every market-data series store (=series/<data-source-uuid>/store.db= under the state root, see [[file:market-data.org][Market data]]): those SQLite files hold history no source will serve again and live outside PostgreSQL, so a database-only export would lose them. Because the application is stopped, nothing holds a store's writer and the copy is consistent without the online backup the in-process installation backups use; a hosted workspace's installation schedules copy nothing, since its database is PostgreSQL (see [[file:backup.org][Backups]]). Restoring the archive restores the stores with the rest of the state; there is no separate step.
 A failed dump or encryption must leave no published archive. Temporary plaintext is private and
 removed by an owned cleanup path. A backup's successful encryption is not a
 restore qualification.

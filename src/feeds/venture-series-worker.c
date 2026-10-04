@@ -349,6 +349,7 @@ struct _WorkerPass
 enum
 {
 	SIGNAL_RUN_FINISHED,
+	SIGNAL_BACKUP_FINISHED,
 	N_SIGNALS
 };
 
@@ -468,6 +469,82 @@ worker_hand_back(
 
 	g_main_context_invoke_full(self->main_context, G_PRIORITY_DEFAULT, worker_deliver,
 	                           delivery, worker_delivery_free);
+}
+
+/* A store copy's answer, plain data for the main context. */
+typedef struct
+{
+	VentureSeriesWorker	*worker;
+	gint64			 tag;
+	gchar			*destination;
+	gchar			*sha256;
+	guint64			 size;
+	gchar			*error;
+} WorkerBackupDelivery;
+
+static void
+worker_backup_delivery_free(gpointer data)
+{
+	WorkerBackupDelivery *delivery = data;
+
+	worker_live_add(delivery->worker, -1);
+	g_object_unref(delivery->worker);
+	g_free(delivery->destination);
+	g_free(delivery->sha256);
+	g_free(delivery->error);
+	g_free(delivery);
+}
+
+static gboolean
+worker_backup_deliver(gpointer data)
+{
+	WorkerBackupDelivery *delivery = data;
+
+	if (!delivery->worker->stopping)
+		g_signal_emit(delivery->worker, worker_signals[SIGNAL_BACKUP_FINISHED], 0,
+		              delivery->tag, delivery->destination, delivery->sha256,
+		              delivery->size, delivery->error);
+
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Copies one store, here on the worker, and hands the answer back. The
+ * copy happens between fetches -- a command runs only when no fetch
+ * callback is -- so it never sees a unit's writes half done, and a source
+ * whose writer is open keeps it open: the copy reads through a connection
+ * of its own.
+ */
+static void
+worker_backup_store(
+	VentureSeriesWorker	*self,
+	gint64			 tag,
+	const gchar		*store_dir,
+	const gchar		*destination
+){
+	WorkerBackupDelivery *delivery;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sha256 = NULL;
+	guint64 size;
+
+	size = 0;
+
+	if (!venture_series_store_backup(store_dir, destination, 0, self->cancellable,
+	                                 &sha256, &size, &error))
+		g_message("feeds: backup %" G_GINT64_FORMAT " of %s failed: %s",
+		          tag, store_dir, error->message);
+
+	delivery = g_new0(WorkerBackupDelivery, 1);
+	delivery->worker = g_object_ref(self);
+	delivery->tag = tag;
+	delivery->destination = g_strdup(destination);
+	delivery->sha256 = g_steal_pointer(&sha256);
+	delivery->size = size;
+	delivery->error = (NULL != error) ? g_strdup(error->message) : NULL;
+	worker_live_add(self, 1);
+
+	g_main_context_invoke_full(self->main_context, G_PRIORITY_DEFAULT, worker_backup_deliver,
+	                           delivery, worker_backup_delivery_free);
 }
 
 /* --- Stores ---------------------------------------------------------------------- */
@@ -1769,7 +1846,8 @@ typedef enum
 	COMMAND_SET = 0,
 	COMMAND_REMOVE,
 	COMMAND_SYNC,
-	COMMAND_PURGE
+	COMMAND_PURGE,
+	COMMAND_BACKUP
 } WorkerCommandKind;
 
 typedef struct
@@ -1780,6 +1858,7 @@ typedef struct
 	gint64				 id;
 	VentureDataSourceRunTrigger	 trigger;
 	gchar				*store_dir;
+	gchar				*destination;
 } WorkerCommand;
 
 static void
@@ -1790,6 +1869,7 @@ worker_command_free(gpointer data)
 	worker_live_add(command->worker, -1);
 	g_clear_pointer(&command->spec, venture_feed_source_unref);
 	g_free(command->store_dir);
+	g_free(command->destination);
 	g_free(command);
 }
 
@@ -1911,6 +1991,10 @@ worker_command(gpointer data)
 			g_message("feeds: source %" G_GINT64_FORMAT ": %s", command->id, error->message);
 		break;
 	}
+
+	case COMMAND_BACKUP:
+		worker_backup_store(self, command->id, command->store_dir, command->destination);
+		break;
 	}
 
 	worker_publish_status(self);
@@ -1994,6 +2078,27 @@ venture_series_worker_purge(
 	command->kind = COMMAND_PURGE;
 	command->id = source_id;
 	command->store_dir = g_strdup(store_dir);
+	worker_send(self, command);
+}
+
+void
+venture_series_worker_backup(
+	VentureSeriesWorker	*self,
+	gint64			 tag,
+	const gchar		*store_dir,
+	const gchar		*destination
+){
+	WorkerCommand *command;
+
+	g_return_if_fail(VENTURE_IS_SERIES_WORKER(self));
+	g_return_if_fail(NULL != store_dir);
+	g_return_if_fail(NULL != destination);
+
+	command = g_new0(WorkerCommand, 1);
+	command->kind = COMMAND_BACKUP;
+	command->id = tag;
+	command->store_dir = g_strdup(store_dir);
+	command->destination = g_strdup(destination);
 	worker_send(self, command);
 }
 
@@ -2142,6 +2247,22 @@ venture_series_worker_class_init(VentureSeriesWorkerClass *klass)
 	worker_signals[SIGNAL_RUN_FINISHED] =
 		g_signal_new("run-finished", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
 		             0, NULL, NULL, NULL, G_TYPE_NONE, 1, VENTURE_TYPE_FEED_RUN);
+
+	/**
+	 * VentureSeriesWorker::backup-finished:
+	 * @self: the worker
+	 * @tag: the tag venture_series_worker_backup() was given
+	 * @destination: the file it was asked to write
+	 * @sha256: (nullable): the copy's SHA-256, or %NULL when it failed
+	 * @size: the copy's size in bytes
+	 * @error: (nullable): why it failed, or %NULL
+	 *
+	 * Emitted on the context that made the worker, never on the thread.
+	 */
+	worker_signals[SIGNAL_BACKUP_FINISHED] =
+		g_signal_new("backup-finished", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
+		             0, NULL, NULL, NULL, G_TYPE_NONE, 5, G_TYPE_INT64, G_TYPE_STRING,
+		             G_TYPE_STRING, G_TYPE_UINT64, G_TYPE_STRING);
 }
 
 static void

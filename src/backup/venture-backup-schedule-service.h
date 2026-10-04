@@ -110,6 +110,79 @@ VentureEntity *venture_backup_schedule_service_restore_drill(VentureBackupSchedu
 VentureEntity *venture_backup_schedule_service_latest_run(VentureBackupScheduleService *self, gint64 organization_id,
 	GError **error);
 /**
+ * VentureBackupCompanionFunc:
+ * @self: the service
+ * @run: the installation run that just succeeded
+ * @directory: where its file was written; companion files go beside it
+ * @actor: (nullable): who asked for the backup
+ * @user_data: what venture_backup_schedule_service_add_companion() was given
+ *
+ * Called on the main thread after an installation copy succeeds, to back up
+ * files that live outside the database but belong to the installation --
+ * the market-data series stores. It must not block on the copy: it records
+ * each file as a running run with
+ * venture_backup_schedule_service_begin_companion(), hands the copy to its
+ * own thread and finishes the run later with
+ * venture_backup_schedule_service_finish_companion(). It cannot fail the
+ * installation run; a failure belongs on the companion's own run.
+ */
+typedef void (*VentureBackupCompanionFunc)(VentureBackupScheduleService *self, VentureBackupRun *run,
+	const gchar *directory, const VentureActor *actor, gpointer user_data);
+/**
+ * venture_backup_schedule_service_add_companion:
+ * @self: the service
+ * @name: the companion's name; adding one under a name already held replaces it
+ * @func: (scope notified): called after each installation copy
+ * @user_data: (closure): passed to @func
+ * @destroy: (nullable): frees @user_data
+ *
+ * Registers files an installation backup also covers. The backup module
+ * knows nothing about what they are, which is what keeps it building and
+ * working without the modules that own them.
+ */
+void venture_backup_schedule_service_add_companion(VentureBackupScheduleService *self, const gchar *name,
+	VentureBackupCompanionFunc func, gpointer user_data, GDestroyNotify destroy);
+/**
+ * venture_backup_schedule_service_begin_companion:
+ * @self: the service
+ * @parent: the installation run the file is taken with
+ * @scope: what the file is, e.g. =series=; never =organization= or =installation=
+ * @name: the run's name, shown on the Backups page
+ * @store_uuid: (nullable): which store or file set it copies, the key its
+ *   retention is counted by
+ * @actor: (nullable): attribution
+ * @error: (out) (optional): return location for an error
+ *
+ * Records a companion copy as started: a backup_run of kind =backup= and
+ * status =running=, under @parent's schedule and organization, naming
+ * @parent in =parent-run-id=.
+ *
+ * Returns: (transfer full) (nullable): the running run
+ */
+VentureEntity *venture_backup_schedule_service_begin_companion(VentureBackupScheduleService *self, VentureBackupRun *parent,
+	const gchar *scope, const gchar *name, const gchar *store_uuid, const VentureActor *actor, GError **error);
+/**
+ * venture_backup_schedule_service_finish_companion:
+ * @self: the service
+ * @run_id: a run venture_backup_schedule_service_begin_companion() made, still running
+ * @path: (nullable): the file written; ignored on failure
+ * @sha256: (nullable): its digest; ignored on failure
+ * @size: its size in bytes
+ * @failure: (nullable): why the copy failed, or %NULL when it succeeded
+ * @actor: (nullable): attribution
+ * @error: (out) (optional): return location for an error
+ *
+ * Stamps a companion run =succeeded= with its path, size and digest, then
+ * prunes the schedule's succeeded runs of the same scope and store beyond
+ * retention, oldest first -- the installation copy's own rule -- or stamps
+ * it =failed= with @failure and prunes nothing. A run that is no longer
+ * running is refused, so an answer cannot land twice.
+ *
+ * Returns: TRUE when the run was stamped
+ */
+gboolean venture_backup_schedule_service_finish_companion(VentureBackupScheduleService *self, gint64 run_id,
+	const gchar *path, const gchar *sha256, gint64 size, const gchar *failure, const VentureActor *actor, GError **error);
+/**
  * venture_backup_schedule_service_set_config:
  * @self: the service
  * @config: (nullable): configuration supplying backup.directory and backup.retention
