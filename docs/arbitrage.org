@@ -9,6 +9,8 @@ It requires =marketdata= (a leg names a venue and an instrument) and =ledger= (a
 
 The first half of this document is the records and the books; the second, [[*Finding opportunities][Finding opportunities]], is the scan -- its strategies, the arithmetic of odds and flips, fee models, presets, the calculators and how an opportunity becomes a trade.
 
+=make demo= seeds one of each, and four worked examples rebuild them by hand with the exact commands: [[file:examples/arbitrage-wow-cross-realm.org][a cross-realm flip]], [[file:examples/arbitrage-crafting.org][craft arbitrage and a write-off]], [[file:examples/arbitrage-dropshipping.org][dropshipping]] and [[file:examples/arbitrage-surebet.org][a surebet]].
+
 * The records
 
 ** =arbitrage_trade=

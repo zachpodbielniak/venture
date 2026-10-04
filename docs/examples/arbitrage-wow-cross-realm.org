@@ -1,0 +1,198 @@
+#+title: Worked example: a cross-realm flip in a game's gold
+#+description: The demo's Evermoor flip, step by step: six realms of generated auction-house data synced into a series store, venue records with their cut and the characters whose purses they move, a watchlist and alert rules, the spread scan, and five moonsteel bars bought on Thornmere and sold on Silverfen through the books
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+The same item sells for different prices on different realms of an online game, and a player with a character on each can buy where it is cheap and sell where it is dear. This page is that trade in VENTURE, exactly as =make demo= seeds it into its second organization, /Evermoor Trading/ (=seed_evermoor_market= in =tools/venture-demo.sh=): market data for six realms, the venues and their fees, a watchlist and alerts, the =spread= scan, and one flip recorded through the books from Brisk's purse to Tallow's.
+
+It builds on [[file:game-economy.org][the game economy]] -- the =GOLD= currency, the organization, the characters Brisk and Tallow and their purses -- and on [[file:../arbitrage.org][Arbitrage]] and [[file:../market-data.org][Market data]] for the rules. For real World of Warcraft data the source is the Blizzard plugin instead of a file ([[file:wow-auction-house-feed.org][World of Warcraft auction houses as a feed]]); everything after the sync is the same.
+
+* The market data
+
+=tools/venture-demo-market.sh= writes what a real feed would: one JSON-lines file per realm in the protocol of [[file:../plugins.org::*The JSON-lines protocol (version 1)][the plugin protocol]], fourteen days of complete hourly snapshots each, forty-one items. It is deterministic: every price is a seeded hash of the realm, the item, the listing slot and its generation, every time an offset from one anchor (the demo's economy clock, the start of the current hour). The same anchor gives the same bytes.
+
+#+begin_src sh
+tools/venture-demo-market.sh --out build/demo/market --anchor "$(( $(date -u +%s) / 3600 * 3600 ))"
+head -3 build/demo/market/evermoor/thornmere.jsonl
+#+end_src
+
+#+begin_example
+{"type":"venue","key":"thornmere","name":"Thornmere","kind":"auction_house","group":"evermoor-eu","currency":"GOLD","attrs":{"population":"low"}}
+{"type":"instrument","key":"silverleaf","name":"Silverleaf","kind":"item","category":"Trade goods/Herbs","attrs":{"vendor_sell":"0.0092"}}
+{"type":"instrument","key":"duskroot","name":"Duskroot","kind":"item","category":"Trade goods/Herbs","attrs":{"vendor_sell":"0.0210"}}
+#+end_example
+
+Each realm has a price level (Thornmere 82% of an item's base, Duskwatch 124%), a weekly rhythm, and two or three listing slots per item that are posted, sold or left to expire on their own cycles -- each listing with an =id= and =expires_in_min= (the least time it had left, in seconds), so the store can tell a sale from an expiry. Three spreads are planted and hold in every snapshot: moonsteel bars (Thornmere 62%, Silverfen 145%, Duskwatch 150%), the bog frog (Emberfall 56%, Duskwatch 138%) and mithril ore (Moonwell 60%, Greyharbor 125%). =tests/demo-market.sh= checks them, the protocol and the churn at several anchors.
+
+* The data source and its sync
+
+The files must be under =feeds.file_roots=; the demo sets it to =build/demo/market= and leaves =feeds.allowed_origins= empty, so nothing here touches the network.
+
+#+begin_src sh
+ORG=$(venturectl -f json list organization slug=evermoor | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+
+SOURCE=$(new data_source organization_id=$ORG name="Evermoor auction houses" provider=file_jsonl \
+    schedule=manual currency=GOLD venue_namespace=realm instrument_namespace=item \
+    settings=$'file: evermoor/{unit}.jsonl\nunits: [silverfen, thornmere, moonwell, greyharbor, emberfall, duskwatch]')
+#+end_src
+
+=new= is the helper from [[file:game-economy.org::*Before you start][the game economy]]: create a record and print its id. =units= are fetched one after another, each file read and parsed on a worker thread and committed oldest snapshot first, so the newest snapshot of each realm becomes its current prices and the thirteen days before it its history.
+
+*A second organization cannot use =feeds sync=.* =venturectl feeds sync ID --wait= answers for the caller's active organization, and a token's is always the default one; Evermoor's source is "No such data source" there. The data source's =sync= record action works for any organization's record, and the wait is a poll of the source's runs:
+
+#+begin_src sh
+venturectl act data_source $SOURCE sync
+until venturectl -f json list data_source_run data_source_id=$SOURCE organization_id=$ORG \
+        | python3 -c 'import json,sys; r=json.load(sys.stdin)["records"]; print(r[0]["status"]) if r else sys.exit(1)'
+do
+    sleep 0.5
+done
+#+end_src
+
+The run is =ok= with about 240,000 rows from six units, in two or three seconds. A manual sync also recomputes the region figures -- each item's median across the six realms, the deal price, each realm's sale rate -- which the scans and the Venues page read.
+
+#+begin_src sh
+venturectl report venue_index organization_id=$ORG
+venturectl report market_deals organization_id=$ORG category_path="Trade goods/Bars"
+#+end_src
+
+Thornmere comes out cheaper than its region on every item it lists and Duskwatch dearer on every one. (The =market browse|deals|venues= verbs read the active organization too; for Evermoor use the reports.)
+
+* Venues: who charges what, and whose purse moves
+
+A venue record is how a scan knows what a realm charges and how a trade knows where its gold goes. One per realm, matched to the store by =data_source_id= and =key=:
+
+#+begin_src sh
+BRISK=$(venturectl -f json list location name=Brisk organization_id=$ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+TALLOW=$(venturectl -f json list location name=Tallow organization_id=$ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+
+THORNMERE=$(new venue organization_id=$ORG name=Thornmere kind=auction_house namespace=realm key=thornmere \
+    group_key=evermoor-eu data_source_id=$SOURCE currency=GOLD location_id=$BRISK \
+    fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5' transfer_cost="20s GOLD")
+SILVERFEN=$(new venue organization_id=$ORG name=Silverfen kind=auction_house namespace=realm key=silverfen \
+    group_key=evermoor-eu data_source_id=$SOURCE currency=GOLD location_id=$TALLOW \
+    fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5' transfer_cost="20s GOLD")
+# ...and moonwell, greyharbor, emberfall, duskwatch the same, with no location.
+#+end_src
+
+- =fee_model=percent=: the house keeps =cut_percent= of a sale and holds =deposit_percent= of the listing price, refunded when it sells. A scan prices every sell side with it; the trade's legs carry the fees that were actually charged.
+- =location_id=: the venue's cash is that location's holding. Brisk plays on Thornmere and Tallow on Silverfen, so a buy on Thornmere spends Brisk's purse and a sale on Silverfen fills Tallow's. A purse may not go below zero.
+- =transfer_cost=: what moving one lot away from the realm costs; a scan subtracts it from a flip.
+
+*A second organization makes its records with =create=.* =venturectl market promote SOURCE venue KEY= does the same thing in one line -- and is what the [[file:arbitrage-dropshipping.org][dropshipping example]] uses -- but it, too, works in the active organization only.
+
+* Instruments, a product to go with them
+
+The flip moves stock, so the bars need a product and an inventory item, and the store's =moonsteel-bar= an instrument record linked to that product:
+
+#+begin_src sh
+VENTURE=$(venturectl -f json list venture slug=silverfen-ah | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+ORE=$(venturectl -f json list category name=Ore organization_id=$ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+
+MOONSTEEL=$(new product organization_id=$ORG venture_id=$VENTURE name="Moonsteel bar" sku=BAR-MS \
+    category_id=$ORE tags=bar,flip list_price="1g 20s GOLD" active=true)
+BARS=$(new instrument organization_id=$ORG name="Moonsteel bar" kind=item namespace=item key=moonsteel-bar \
+    data_source_id=$SOURCE product_id=$MOONSTEEL)
+BARS_ITEM=$(new inventory_item organization_id=$ORG product_id=$MOONSTEEL venture_id=$VENTURE location_id=$TALLOW)
+#+end_src
+
+The demo makes instruments for the seven products the economy already had (silverleaf, duskroot, copper and ironstone ore, the crystal vial, the healing potion, the flask) plus the mortar, the bars, swiftness potions, the bog frog and mithril ore. An instrument's =product_id= is what lets the oracle value stock from the store and lets a stock leg check that the item it moves is the thing it says it traded.
+
+* A watchlist and two alerts
+
+#+begin_src sh
+LIST=$(new watchlist organization_id=$ORG name="Alchemy shopping list" group_key=evermoor-eu venture_id=$VENTURE)
+new watchlist_entry organization_id=$ORG watchlist_id=$LIST instrument_id=$BARS \
+    target_buy="80s GOLD" target_sell="1g 50s GOLD"
+# ...silverleaf (buy under 10s), crystal vial (3s 50c), healing potion (sell over 1g 20s), flask (sell over 7g 50s)
+venturectl market watchlist           # the default organization's; Evermoor's is on its dashboard
+#+end_src
+
+#+begin_src sh
+key_id () {   # an instrument record's id by its store key
+    venturectl -f json list instrument key="$1" organization_id=$ORG \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])'
+}
+SILVERLEAF=$(key_id silverleaf) FLASK=$(key_id flask-of-endurance)
+
+CHEAP=$(new alert_rule organization_id=$ORG name="Cheap silverleaf on Thornmere" kind=below \
+    instrument_id=$SILVERLEAF venue_id=$THORNMERE threshold="10s GOLD" cooldown_minutes=180)
+DEAR=$(new alert_rule organization_id=$ORG name="Flask of endurance over 20g" kind=above \
+    instrument_id=$FLASK group_key=evermoor-eu threshold="20g GOLD" cooldown_minutes=60)
+
+venturectl act alert_rule $CHEAP evaluate record=true
+venturectl act alert_rule $DEAR evaluate record=true
+venturectl list alert_hit organization_id=$ORG
+#+end_src
+
+Rules are evaluated after every feed run against the newest snapshot of each venue; a rule made after the sync is evaluated by hand with its =evaluate= action. The first fires -- Thornmere's silverleaf never costs ten silver ("Silverleaf at thornmere: 0.0905 GOLD, at or below 0.1000 GOLD") -- and lands in the owner's inbox; the second never does, because no flask in the data is near twenty gold. =market alerts evaluate RULE_ID= is the same thing for the default organization.
+
+* The scan
+
+#+begin_src sh
+venturectl report arbitrage_scan organization_id=$ORG strategy=spread units=5 min_profit="1.0000 GOLD"
+venturectl report arbitrage_scan organization_id=$ORG strategy=spread units=5 instrument=moonsteel-bar
+#+end_src
+
+=spread= takes each instrument where it is cheapest against its region, walks that realm's listings for the five units, and prices selling them at every other realm: the sell venue's lowest price (=sell_basis=), less its 5% cut, less the buy realm's transfer cost. Rows come sorted by profit; the moonsteel row reads Thornmere to Duskwatch or Silverfen with a net of three to four gold on five bars. The gear and pets above it are the same planted levels on items worth hundreds of gold -- and the reason =min_profit=, =max_capital= and =min_sale_rate= exist.
+
+The demo saves the question as a preset, which the dashboard's =opportunities= widget runs:
+
+#+begin_src sh
+FLIPS=$(new arbitrage_strategy organization_id=$ORG name="Cross-realm flips" strategy=spread \
+    data_source_id=$SOURCE options=$'units: 5\nmin_profit: 1.0000 GOLD\nsort: profit\ntop: 20')
+#+end_src
+
+* The trade
+
+Recorded from explicit legs -- the form that works for any organization (=arbitrage record ROW= records a scan's row, in the active organization). Legs marked =executed= are executed in order as the trade is recorded; dates are when it happened. The demo dates them 52, 51 and 31 hours before its anchor, and closes an hour after the sale; the dates below are one such run.
+
+#+begin_src sh
+TRADE=$(venturectl -f json arbitrage record organization_id=$ORG venture_id=$VENTURE strategy=spread \
+    name="Moonsteel bars, Thornmere to Silverfen" expected='{"profit": "4.0000 GOLD"}' legs='[
+  {"kind":"buy","status":"executed","venue_id":'$THORNMERE',"instrument_id":'$BARS',
+   "inventory_item_id":'$BARS_ITEM',"quantity":5,"unit_price":"0.6800 GOLD",
+   "occurred_at":"2026-10-02T05:00:00Z","notes":"Brisk bought the five cheapest bars"},
+  {"kind":"transfer","status":"executed","venue_id":'$THORNMERE',"amount":"20s GOLD",
+   "occurred_at":"2026-10-02T06:00:00Z","notes":"Couriered to Tallow on Silverfen"},
+  {"kind":"sell","status":"executed","venue_id":'$SILVERFEN',"instrument_id":'$BARS',
+   "inventory_item_id":'$BARS_ITEM',"quantity":5,"unit_price":"1.6200 GOLD","fees":"0.4050 GOLD",
+   "occurred_at":"2026-10-03T02:00:00Z","notes":"Sold in one go; the house kept 5%"}]' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+venturectl arbitrage close $TRADE closed_at=2026-10-03T03:00:00Z
+#+end_src
+
+What each leg posts (see [[file:../arbitrage.org::*Posting][Arbitrage: posting]]):
+
+| Leg                       | Journal                                                                                 |
+|---------------------------+-----------------------------------------------------------------------------------------|
+| buy 5 at 0.68, stock      | Execute receives the bars: Dr Inventory 3.40 / Cr Brisk's purse 3.40                   |
+| transfer 20s at Thornmere | Dr Arbitrage positions 0.20 / Cr Brisk's purse 0.20                                     |
+| sell 5 at 1.62, stock     | Execute issues the bars: Dr positions 3.40 / Cr Inventory 3.40; the rule: Dr Tallow's purse 8.10 / Cr positions 8.10; fees Dr Arbitrage fees 0.405 / Cr Tallow's purse 0.405 |
+| close                     | positions are 4.50 in credit (8.10 against 3.60): Dr positions 4.50 / Cr Arbitrage gains 4.50 |
+
+Realised is 8.10 returned - 3.40 bought - 0.20 moved - 0.405 fees = *4.095 gold*: the 4.50 of gains less the 0.405 of fees, against 4.00 expected -- a slippage of 0.095.
+
+#+begin_src sh
+venturectl report arbitrage_performance last_90_days organization_id=$ORG group_by=strategy
+venturectl report income_statement this_month organization_id=$ORG     # Arbitrage gains, Arbitrage fees
+venturectl report holdings all organization_id=$ORG                    # Brisk and Tallow's gold
+#+end_src
+
+=pnl= does not show it: that report totals sales and expenses, and a trade is neither. The ledger's =income_statement= has the gains and the fees, and the trade's own page has its result per currency and the journals behind it.
+
+* Funding, and the order of things
+
+Brisk's purse holds 7g 23s from three farming sessions, the newest ten days before the anchor. The flip spends 3g 60s of it, the [[file:arbitrage-crafting.org][craft]] another 1g 72s, and he ends on 1g 91s. Every date in the demo is an offset from the economy's anchor, so the buy is always after the sessions that fund it whatever the time of day; =tests/demo-market.sh= replays every purse's gold in date order at awkward clock times and fails if one goes below zero -- the server would refuse the leg at the same point.
+
+* Traps
+
+- *The second organization is not the active one.* =feeds sync=, =market promote=, the =market= page verbs and =arbitrage scan= answer for the default organization when called with a token. Use the record action, =create=, the reports with =organization_id= and =arbitrage record ... organization_id==.
+- *A stock leg moves stock once, when executed.* A sell needs the units on the shelf at that moment; =arbitrage record= executes legs in order, so a sell after a buy in the same trade is fine, a sell of goods still to be made is recorded =planned= and executed later (see [[file:arbitrage-crafting.org][the craft]]).
+- *A fresh inventory item for the trade.* First in, first out issues the oldest layers of an item; selling bars from an item that already held cheaper ones would book the older cost against this trade.
+- *A leg's amount is in its venue's currency.* A bare =20s= at a GOLD venue is gold; =20.00 USD= there is refused.

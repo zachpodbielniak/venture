@@ -1576,6 +1576,52 @@ than one that fails.
   posted sessions (zero-cost layers) and crafts, and the listings and
   sales are seeded *after* both. Only craft inputs get opening
   adjustments.
+- **The demo's market data is generated, deterministically, from the
+  economy's anchor.** `tools/venture-demo-market.sh` writes the
+  JSON-lines files every demo data source reads (`build/demo/market`, the
+  only `feeds.file_roots`; no allowed origin, so nothing reaches the
+  network). Prices come from a seeded integer hash -- never `$RANDOM`,
+  never the clock -- and listing generations count from the anchor, so
+  `--days` changes how far back the history goes and never the newest
+  snapshot. The weekly rhythm makes prices depend on the weekday: only an
+  anchor a whole week later gives the same bytes, which is what
+  `tests/demo-market.sh` compares. Its planted spreads must hold in every
+  snapshot (the alert, the scans and the trades are written against
+  them), so planted cells never stand empty between listings.
+- **A token's active organization is always the default one.**
+  `feeds sync|runs`, `market promote`, the `market` page verbs and
+  `arbitrage scan` refuse or ignore Evermoor's records. Its source syncs
+  through the `sync` record action and a poll of `data_source_run`
+  (`sync_source`), its venues and instruments are `create`d with
+  `data_source_id` and `key`, its scans are `report arbitrage_scan
+  organization_id=N`, its trades `arbitrage record ... organization_id=N`.
+- **Every purse a trade spends is funded first, in date order.** A
+  bookmaker wallet is a holding: the demo funds it with a posted journal a
+  hundred hours before the stakes. Brisk's purse holds only what three
+  farming sessions earned (7g 23s), and the flip and the craft leave him
+  1g 91s -- raise a trade's quantity and the holding floor refuses it.
+  `tests/demo-market.sh` replays every purse and wallet from the recorded
+  calls; its recorder writes a value's newlines as spaces, because a
+  multi-line `fee_params` split one call into two and the venue lost its
+  location.
+- **Trades get their own inventory items, and a sell of goods still to
+  be made is recorded `planned`.** First in, first out would issue the
+  guild bank's zero-cost potions against the craft trade; the sell leg is
+  executed (`arbitrage execute`) after the `craft` action, which takes
+  `location_id` and finds every input and the output at exactly that
+  location.
+- **The exec plugins are copied into the state directory.** The supplier's
+  snapshot is dated by its CSV's mtime; loaded from the checkout it is as
+  old as the clone and the Venues page calls it overdue. `start_server`
+  copies `plugins/exec` to `build/demo/plugins` and points
+  `plugins.paths` there.
+- **`report pnl` does not see a trade.** It totals sales and expenses;
+  the ledger's `income_statement` has Arbitrage gains and fees. A played
+  match is still quoted, so the `cover` preset and widget carry
+  `max_age_hours: 6`.
+- **`(( x = 0 ))` is a failing command under `set -e`.** The generator
+  assigns with `x=$(( ... ))`; a hash or an age of zero ended the run
+  silently after the first realm's header.
 
 ## The assistant panel
 

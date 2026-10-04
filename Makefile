@@ -530,6 +530,7 @@ test: $(TEST_BINS) plugins
 	bash $(TOOLSDIR)/check-versions.sh || exit 1; \
 	bash tests/demo-foreground.sh || exit 1; \
 	bash tests/demo-clock.sh || exit 1; \
+	bash tests/demo-market.sh || exit 1; \
 	rmdir "$$TMPDIR" 2>/dev/null || true; \
 	echo "All $$total test binaries passed"
 

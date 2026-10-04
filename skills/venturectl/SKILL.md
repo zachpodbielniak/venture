@@ -1048,6 +1048,15 @@ needs an administrator: it decides which outside host the server calls.
   server. `act data_source ID test` fetches one unit and reports what came
   back, writing nothing; `act data_source ID purge_history` deletes the
   source's stored history and cannot be undone.
+- `feeds sync|runs` and `market promote` answer for the **active
+  organization** -- with a token, always the default one -- so another
+  organization's source is "No such data source" (exit 3). Use the record
+  forms, which any organization's record answers: `act data_source ID
+  sync`, then poll `list data_source_run data_source_id=ID
+  organization_id=N` until a run appears (its `status` is `ok`, `partial`,
+  `failed` or `deferred`); and `create venue|instrument organization_id=N
+  key=KEY namespace=NS data_source_id=ID ...` in place of promoting. The
+  demo seeds its second organization exactly this way.
 - `data_source_run` is written by the server only; creating or updating
   one is refused (403).
 - The data lands in a series store per source, not in records; there is no

@@ -488,6 +488,7 @@ TEST_CFLAGS = $(CFLAGS) -I$(CURDIR)/tests \
                -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\" \
                -DVENTURE_TEST_VENTURE_TYPES=\"$(CURDIR)/data/venture-types\" \
                -DVENTURE_TEST_PLUGIN_SOURCES=\"$(CURDIR)/plugins\" \
+               -DVENTURE_TEST_TOOLS=\"$(CURDIR)/tools\" \
                -DVENTURE_TEST_OPTIONAL_PLUGINS=\"$(CURDIR)/$(OUTDIR)/plugins-optional\"
 TEST_LDFLAGS = $(LDFLAGS)
 

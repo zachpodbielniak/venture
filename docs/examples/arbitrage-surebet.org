@@ -1,0 +1,129 @@
+#+title: Worked example: a surebet across two bookmakers
+#+description: The demo's settled surebet, step by step: bookmakers' odds as a file_jsonl source, the cover scan, wallets as holdings funded by a journal, the calculator's stake split, stake and payout legs, and the close
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+When two bookmakers disagree enough about a match, backing every outcome -- each where its odds are best -- returns more than the stakes whichever way it goes: the inverse odds add up to less than one. This page is the one =make demo= seeds into its default organization (=seed_trading_desk= in =tools/venture-demo.sh=): a tennis match priced by Northbet and Pinehill Sports, a hundred dollars split the way the calculator splits it, the winner paid, the trade closed.
+
+The rules are in [[file:../arbitrage.org::*Surebet][Arbitrage: surebet]]. For live odds the source is the =odds-api= plugin ([[file:odds-api-feed.org][bookmakers' odds from the-odds-api]]); the generated file below has the same shape.
+
+* The odds
+
+=tools/venture-demo-market.sh= writes =usd/odds.jsonl=: the two books as venues, each match an =event= instrument with an =outcome= per player (=parent= the event), and =quote= messages carrying decimal odds (back side, no currency: odds are a ratio, not money):
+
+#+begin_example
+{"type":"instrument","key":"evt-varga-okafor","name":"M. Varga v T. Okafor","kind":"event","category":"Tennis/Harbor Open","attrs":{"commence_time":"..."}}
+{"type":"instrument","key":"evt-varga-okafor:varga","name":"M. Varga","kind":"outcome","category":"Tennis/Harbor Open","parent":"evt-varga-okafor"}
+{"type":"quote","venue":"northbet","instrument":"evt-varga-okafor:varga","odds":"2.10","format":"decimal","side":"back","taken_at":"..."}
+#+end_example
+
+Two matches. Varga v Okafor was played two days before the demo's anchor: an hour before it, Northbet had Varga at 2.10 and Pinehill had Okafor at 2.15. Lindqvist v Moreau is tomorrow, quoted three hours ago and now, with Lindqvist 1.80 at Northbet against Moreau 2.40 at Pinehill.
+
+#+begin_src sh
+ODDS=$(new data_source name="Bookmaker odds" provider=file_jsonl schedule=manual currency=USD \
+    venue_namespace=bookmaker instrument_namespace=event settings='file: usd/odds.jsonl')
+venturectl feeds sync $ODDS --wait
+#+end_src
+
+=new= creates a record and prints its id (see [[file:game-economy.org::*Before you start][the game economy]]).
+
+* The scan
+
+#+begin_src sh
+venturectl arbitrage scan cover total_stake="100.00 USD"
+venturectl arbitrage scan cover total_stake="100.00 USD" max_age_hours=6
+#+end_src
+
+=cover= takes each event with quotes, the best back odds for every outcome across the books, and the stakes that make every result pay the same. Without a bound it lists both matches -- Varga v Okafor first, at 6.23 on a hundred (1/2.10 + 1/2.15 = 0.941) -- because odds alone do not say a match is over. =max_age_hours=6= leaves the two-day-old quotes out, and the demo's "Surebets" preset and the Trading desk dashboard's widget both carry it; what is left is Lindqvist v Moreau, 2.85 on a hundred (1/1.80 + 1/2.40 = 0.972).
+
+#+begin_src sh
+new arbitrage_strategy name="Surebets" strategy=cover data_source_id=$ODDS \
+    options=$'total_stake: 100.00 USD\nmax_age_hours: 6'
+#+end_src
+
+* Wallets: money at the books
+
+Money staked with a bookmaker is not in the bank. Each book gets a location (its wallet) and an asset account on that location -- a holding, which may not go below zero -- and its venue names the location, so a stake there leaves the wallet and a payout lands in it.
+
+#+begin_src sh
+NORTHBET=$(venturectl -f json market promote $ODDS venue northbet | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+PINEHILL=$(venturectl -f json market promote $ODDS venue pinehill | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+
+NORTH_WALLET=$(new location name="Northbet wallet" kind=wallet active=true)
+PINE_WALLET=$(new location name="Pinehill wallet" kind=wallet active=true)
+NORTH_ACCOUNT=$(new account code=1161 name="Northbet balance" kind=asset location_id=$NORTH_WALLET active=true)
+PINE_ACCOUNT=$(new account code=1162 name="Pinehill balance" kind=asset location_id=$PINE_WALLET active=true)
+
+venturectl update venue $NORTHBET fee_model=none location_id=$NORTH_WALLET
+venturectl update venue $PINEHILL fee_model=none location_id=$PINE_WALLET
+#+end_src
+
+Funding them is an ordinary journal from the bank -- sixty dollars each, a hundred hours before the anchor:
+
+#+begin_src sh
+CASH=$(venturectl -f json list account code=1000 organization_id=$HOME_ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+JOURNAL=$(new journal memo="Deposits at Northbet and Pinehill" state=draft occurred_at=2026-09-30T05:00:00Z \
+    currency=USD source_type=organization source_id=$HOME_ORG)
+new journal_line journal_id=$JOURNAL account_id=$NORTH_ACCOUNT side=debit amount=60.00 memo="Northbet deposit"
+new journal_line journal_id=$JOURNAL account_id=$PINE_ACCOUNT side=debit amount=60.00 memo="Pinehill deposit"
+new journal_line journal_id=$JOURNAL account_id=$CASH side=credit amount=120.00 memo="From the bank"
+venturectl journal post $JOURNAL
+#+end_src
+
+* The stakes
+
+The calculator gives the split:
+
+#+begin_src sh
+venturectl arbitrage calc surebet 2.10 2.15 --stake "100.00 USD"
+#+end_src
+
+| Outcome            | Odds | Stake     | Pays       |
+|--------------------+------+-----------+------------|
+| Varga at Northbet  | 2.10 | 50.59 USD | 106.23 USD |
+| Okafor at Pinehill | 2.15 | 49.41 USD | 106.23 USD |
+
+Stakes are rounded to the cent and each payout down to the cent, so the guaranteed profit is 6.23 (the ideal, unrounded, is 6.24). The demo reads the split from this command rather than typing it.
+
+* The trade
+
+Two stakes, then Varga won and Northbet paid:
+
+#+begin_src sh
+VARGA=$(venturectl -f json market promote $ODDS instrument evt-varga-okafor:varga | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+OKAFOR=$(venturectl -f json market promote $ODDS instrument evt-varga-okafor:okafor | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+
+BET=$(venturectl -f json arbitrage record name="Varga v Okafor, both ways" strategy=cover \
+    expected='{"profit": "6.23 USD"}' legs='[
+  {"kind":"stake","status":"executed","venue_id":'$NORTHBET',"instrument_id":'$VARGA',
+   "amount":"50.59 USD","occurred_at":"2026-10-02T06:00:00Z","notes":"Varga at 2.10"},
+  {"kind":"stake","status":"executed","venue_id":'$PINEHILL',"instrument_id":'$OKAFOR',
+   "amount":"49.41 USD","occurred_at":"2026-10-02T06:00:00Z","notes":"Okafor at 2.15"},
+  {"kind":"payout","status":"executed","venue_id":'$NORTHBET',"instrument_id":'$VARGA',
+   "amount":"106.23 USD","occurred_at":"2026-10-02T13:00:00Z","notes":"Varga won in three sets"}]' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+venturectl arbitrage close $BET closed_at=2026-10-02T13:00:00Z
+#+end_src
+
+Promoting an outcome promotes its event first, so the records keep the store's parent. The demo dates the stakes 51 hours before its anchor and the payout and close 44.
+
+| Leg               | Journal                                                       |
+|-------------------+---------------------------------------------------------------|
+| stake at Northbet | Dr Arbitrage positions 50.59 / Cr Northbet balance 50.59      |
+| stake at Pinehill | Dr positions 49.41 / Cr Pinehill balance 49.41                |
+| payout            | Dr Northbet balance 106.23 / Cr positions 106.23              |
+| close             | Dr positions 6.23 / Cr Arbitrage gains 6.23                   |
+
+The wallets end on 115.64 at Northbet and 10.59 at Pinehill; the losing stake is simply gone, which is what a surebet costs on one side and earns on the other. =report holdings= shows both, =report arbitrage_performance= the trade (realised 6.23 on 100.00 of capital, 6.23%), and =report income_statement= the gain.
+
+* Traps
+
+- *Odds have no currency; stakes do.* A =cover= scan needs =total_stake= with its currency, and a quote's odds are never converted.
+- *A finished match is still quoted.* Use =max_age_hours= (or a preset with it) so a played match does not read as an opportunity.
+- *Fund the wallet before the stake.* A wallet is a holding; a stake dated before the deposit is refused, however much is there today.
+- *Record the losing stake too.* The trade's result is every stake against the payout; leaving the loser out books a profit that never happened.

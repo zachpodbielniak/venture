@@ -1351,6 +1351,142 @@ test_feeds_providers_reach_the_store(
 	}
 }
 
+/*
+ * The demo's market data goes through the real path: the generator's
+ * files (tools/venture-demo-market.sh, one day of it) read by file_jsonl
+ * sources, parsed, batched and committed by the worker. Every realm's
+ * newest snapshot is the anchor, nothing is refused, listings that
+ * vanished with time left count as sold, the bookmakers' quotes hang off
+ * their events, and a second sync of the same files writes nothing.
+ *
+ * What breaks if this regresses: `make demo` dies at its first sync with
+ * a protocol error naming a line number, or seeds an empty market -- and
+ * tests/demo-market.sh, which checks the files in Python, cannot see a
+ * disagreement between its reading of the protocol and the server's.
+ */
+static void
+test_feeds_demo_market_files(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(VentureEntity) odds_run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(VentureSeriesStore) odds_reader = NULL;
+	g_autoptr(VentureSeriesRow) leaf = NULL;
+	g_autoptr(GPtrArray) quotes = NULL;
+	g_autofree gchar *script = NULL;
+	g_autofree gchar *anchor_text = NULL;
+	g_autofree gchar *err = NULL;
+	static const gchar *const realms[] = {
+		"silverfen", "thornmere", "moonwell", "greyharbor", "emberfall", "duskwatch"
+	};
+	const gchar *argv[] = { "bash", NULL, "--out", NULL, "--anchor", NULL, "--days", "1", NULL };
+	gint64 anchor;
+	gint64 rows;
+	gint64 sold;
+	gint status;
+	guint i;
+	gint64 id;
+	gint64 odds_id;
+
+	(void)user_data;
+
+	/* GOLD as the demo registers it: a copper is a ten-thousandth, and
+	 * the generator writes four places. Unregistered, every price would
+	 * be refused for its places. */
+	{
+		g_autoptr(VentureEntity) gold = NULL;
+
+		gold = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_CURRENCY, NULL));
+		g_object_set(gold, "code", "GOLD", "name", "Gold", "exponent", (gint64)4, NULL);
+		g_assert_true(venture_database_save(fixture->database, gold, NULL, &error));
+		g_assert_no_error(error);
+	}
+
+	/* On the hour and in the past, as the demo's economy clock is. */
+	anchor = (g_get_real_time() / G_USEC_PER_SEC) / 3600 * 3600 - 3600;
+	anchor_text = g_strdup_printf("%" G_GINT64_FORMAT, anchor);
+	script = g_build_filename(VENTURE_TEST_TOOLS, "venture-demo-market.sh", NULL);
+	argv[1] = script;
+	argv[3] = fixture->file_root;
+	argv[5] = anchor_text;
+	g_assert_true(g_spawn_sync(NULL, (gchar **)argv, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL,
+	                           NULL, NULL, NULL, &err, &status, &error));
+	g_assert_no_error(error);
+	if (!g_spawn_check_wait_status(status, &error))
+		g_error("venture-demo-market.sh: %s: %s", error->message, err);
+
+	id = create_source(fixture, "Evermoor", "file_jsonl",
+	                   "file: evermoor/{unit}.jsonl\n"
+	                   "units: [silverfen, thornmere, moonwell, greyharbor, emberfall, duskwatch]\n",
+	                   "manual");
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "units"), ==, 6);
+	g_assert_cmpint(run_int(run, "refused"), ==, 0);
+	g_assert_cmpint(run_int(run, "new-instruments"), ==, 41);
+	rows = store_rows(fixture, id);
+	g_assert_cmpint(rows, >, 200);
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), id, &error);
+	g_assert_no_error(error);
+	sold = 0;
+
+	for (i = 0; i < G_N_ELEMENTS(realms); i++)
+	{
+		VentureSeriesVenueState state;
+		g_autoptr(GArray) days = NULL;
+		guint d;
+
+		g_assert_true(venture_series_store_get_venue_state(reader, realms[i], &state, &error));
+		g_assert_no_error(error);
+		g_assert_true(state.found);
+		g_assert_cmpint(state.last_taken_at, ==, anchor);
+
+		days = venture_series_store_daily(reader, realms[i], "silverleaf", 0, &error);
+		g_assert_no_error(error);
+
+		for (d = 0; d < days->len; d++)
+		{
+			const VentureSeriesDay *day = &g_array_index(days, VentureSeriesDay, d);
+
+			if (VENTURE_SERIES_NONE != day->sold_estimate)
+				sold += day->sold_estimate;
+		}
+	}
+
+	/* The listings churn: what vanished early was sold. */
+	g_assert_cmpint(sold, >, 0);
+
+	/* The planted craft input, under the demo's alert line, in gold. */
+	g_assert_true(venture_series_store_get_current(reader, "thornmere", "silverleaf", &leaf, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(leaf);
+	g_assert_cmpstr(leaf->currency, ==, "GOLD");
+	g_assert_cmpint(leaf->min_price, <, 1000);
+	g_assert_cmpint(leaf->taken_at, ==, anchor);
+
+	/* The same files again: every snapshot is a duplicate. */
+	again = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(again), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(store_rows(fixture, id), ==, rows);
+
+	odds_id = create_source(fixture, "Books", "file_jsonl", "file: usd/odds.jsonl\n", "manual");
+	odds_run = sync_and_wait(fixture, odds_id);
+	g_assert_cmpint(run_status(odds_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	odds_reader = venture_feeds_service_open_reader(service_of(fixture), odds_id, &error);
+	g_assert_no_error(error);
+	quotes = venture_series_store_list_quotes(odds_reader, NULL, "evt-varga-okafor", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(quotes->len, >=, 4);
+
+	/* The registry is process-wide; the next test starts without GOLD. */
+	venture_currency_clear_registered();
+}
+
 static gchar *
 install_exec_provider(Fixture *fixture)
 {
@@ -2133,6 +2269,8 @@ main(
 	           test_feeds_file_roots, fixture_tear_down);
 	g_test_add("/feeds/providers-reach-the-store", Fixture, NULL, fixture_set_up,
 	           test_feeds_providers_reach_the_store, fixture_tear_down);
+	g_test_add("/feeds/demo-market-files", Fixture, NULL, fixture_set_up,
+	           test_feeds_demo_market_files, fixture_tear_down);
 	g_test_add("/feeds/exec-provider", Fixture, NULL, fixture_set_up,
 	           test_feeds_exec_provider, fixture_tear_down);
 	g_test_add("/feeds/partial-batch", Fixture, NULL, fixture_set_up,

@@ -1,0 +1,134 @@
+#+title: Worked example: craft arbitrage
+#+description: The demo's healing-potion trade, step by step: the transform scan pricing a recipe's inputs where each is cheapest against the output where it is dearest, then reagents bought on one realm, a craft into a fresh inventory item, the potions sold on another realm and the trade closed -- and the abandoned trade the demo writes off beside it
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+Craft arbitrage is buying a recipe's inputs, making the thing, and selling it for more than the inputs cost -- on a game's auction houses, or a print shop's paper and ink, or a kit assembled from parts. VENTURE's =transform= strategy finds it from a =recipe= and market data, and a trade records the attempt through the books, stock and all. This page is the trade =make demo= seeds into /Evermoor Trading/: silverleaf bought cheaply on Thornmere, brewed into healing potions by Tallow, sold on Silverfen.
+
+It follows [[file:arbitrage-wow-cross-realm.org][the cross-realm flip]] -- the same data source, venues and purses, which that page sets up -- and [[file:game-economy.org][the game economy]], where the recipe was made. [[file:../arbitrage.org::*=transform=][Arbitrage: transform]] has the strategy's rules and [[file:../production.org][Production]] the craft's.
+
+* The recipe and its instruments
+
+The healing potion's recipe is the game economy's: two silverleaf and a crystal vial a potion, and a mortar and pestle that is a tool (=reusable=, needed once a craft, never consumed). The scan prices a recipe through its products' instruments, so every product in it needs an instrument record with =product_id=:
+
+#+begin_src sh
+for pair in silverleaf:$SILVERLEAF_PRODUCT crystal-vial:$VIAL_PRODUCT \
+            mortar-and-pestle:$MORTAR_PRODUCT healing-potion:$HEALING_PRODUCT
+do
+    new instrument organization_id=$ORG kind=item namespace=item key="${pair%%:*}" \
+        name="${pair%%:*}" data_source_id=$SOURCE product_id="${pair#*:}"
+done
+#+end_src
+
+An input with no instrument, or one no realm lists, blanks the row's net and says which in =missing=; the generator lists the mortar on four realms so that the demo's row is priced.
+
+* The scan
+
+#+begin_src sh
+RECIPE=$(venturectl -f json list recipe name="Healing potion" organization_id=$ORG \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+
+venturectl report arbitrage_scan organization_id=$ORG strategy=transform recipe_id=$RECIPE units=10
+#+end_src
+
+For ten potions =transform= walks each input's cheapest realm for the units needed -- twenty leaves, ten vials, one mortar -- and prices the output at its dearest realm less that realm's cut. Thornmere's silverleaf is planted at 45% of the realm-wide price and Silverfen's potion at 150%, so the row buys the herbs on Thornmere and sells on Silverfen, with the mortar's two gold or so counted once. (Tallow already owns a mortar; the scan does not know that, which is why its net is below what the trade below made.)
+
+The demo saves it as a preset for the dashboard:
+
+#+begin_src sh
+new arbitrage_strategy organization_id=$ORG name="Potions from cheap herbs" strategy=transform \
+    data_source_id=$SOURCE options="recipe_id: $RECIPE"$'\nunits: 10'
+#+end_src
+
+=report craft_arbitrage organization_id=$ORG recipe_id=$RECIPE units=10= answers the same question for one recipe, input by input.
+
+* Stock for the trade
+
+A fresh inventory item for the bought herbs and one for the potions, both on Tallow, where the vials and the mortar already are. The craft looks every input and the output up at exactly one location, and a fresh potions item keeps first-in-first-out honest: the guild bank's potions were brewed from farmed herbs that cost nothing, and selling those against this trade would book a cost of zero.
+
+#+begin_src sh
+HERBS_ITEM=$(new inventory_item organization_id=$ORG product_id=$SILVERLEAF_PRODUCT venture_id=$VENTURE location_id=$TALLOW)
+POTIONS_ITEM=$(new inventory_item organization_id=$ORG product_id=$HEALING_PRODUCT venture_id=$VENTURE location_id=$TALLOW)
+#+end_src
+
+* The trade, in three moves
+
+*Buy, and plan the sale.* The buy leg is executed as the trade is recorded; the sell leg is recorded =planned=, because a stock sell issues units that must be on the shelf when it is executed and the potions do not exist yet.
+
+#+begin_src sh
+TRADE=$(venturectl -f json arbitrage record organization_id=$ORG venture_id=$VENTURE strategy=transform \
+    name="Healing potions: Thornmere herbs, Silverfen potions" expected='{"profit": "11.0000 GOLD"}' legs='[
+  {"kind":"buy","status":"executed","venue_id":'$THORNMERE',"instrument_id":'$SILVERLEAF',
+   "inventory_item_id":'$HERBS_ITEM',"quantity":20,"unit_price":"0.0860 GOLD",
+   "occurred_at":"2026-10-02T09:00:00Z","notes":"Two leaves a potion"},
+  {"kind":"sell","status":"planned","venue_id":'$SILVERFEN',"instrument_id":'$HEALING',
+   "inventory_item_id":'$POTIONS_ITEM',"quantity":10,"unit_price":"1.3800 GOLD","fees":"0.6900 GOLD",
+   "notes":"Listed on Silverfen once brewed"}]' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+#+end_src
+
+The buy's execute receives twenty leaves into =HERBS_ITEM= at 1.72 gold, paid from Brisk's purse (Thornmere's venue location) -- a cost layer of 0.086 each.
+
+*Craft.* The recipe's =craft= action, at Tallow, ten times:
+
+#+begin_src sh
+venturectl act recipe $RECIPE craft times=10 location_id=$TALLOW occurred_at=2026-10-02T11:00:00Z
+#+end_src
+
+Twenty leaves, ten vials and the mortar are drawn; ten potions arrive in =POTIONS_ITEM= with cost layers that add up exactly to what the inputs cost -- the leaves' 1.72 and nothing for the vials, which were counted in by hand and carry no layer. The craft posts no journal: the value only moves from one item to another.
+
+*Sell, and close.*
+
+#+begin_src sh
+LEG=$(venturectl -f json list arbitrage_leg trade_id=$TRADE kind=sell organization_id=$ORG \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
+venturectl arbitrage execute $LEG occurred_at=2026-10-03T05:00:00Z
+venturectl arbitrage close $TRADE closed_at=2026-10-03T06:00:00Z
+#+end_src
+
+Execute issues the ten potions first in first out (Dr Arbitrage positions 1.72 / Cr Inventory 1.72), and the rule posts the proceeds into Tallow's purse (Dr purse 13.80 / Cr positions 13.80) and the cut (Dr Arbitrage fees 0.69 / Cr purse 0.69). Close moves the 12.08 left in positions to Arbitrage gains. Realised: 13.80 - 1.72 - 0.69 = *11.39 gold*, ROI about 660% on 1.72 of capital.
+
+The demo dates these 48, 46, 28 and 27 hours before its anchor: the herbs after the flip's bars (both spend Brisk's purse, which ends on 1g 91s), the craft after the herbs, the sale after the craft.
+
+* The one that went wrong
+
+Beside it the demo records a trade that failed, because a results report with only wins is not believable. Ten swiftness potions bought on Silverfen for a raid night that was cancelled, then written off when a patch made them useless:
+
+#+begin_src sh
+SWIFT_ITEM=$(new inventory_item organization_id=$ORG product_id=$SWIFTNESS_PRODUCT venture_id=$VENTURE location_id=$TALLOW)
+RAID=$(venturectl -f json arbitrage record organization_id=$ORG venture_id=$VENTURE strategy=deal \
+    name="Swiftness potions for raid night" expected='{"profit": "3.0000 GOLD"}' legs='[
+  {"kind":"buy","status":"executed","venue_id":'$SILVERFEN',"instrument_id":'$SWIFTNESS',
+   "inventory_item_id":'$SWIFT_ITEM',"quantity":10,"unit_price":"0.6600 GOLD",
+   "occurred_at":"2026-10-03T17:00:00Z","notes":"Tallow bought ten"}]' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+venturectl arbitrage abandon $RAID goods=write_off abandoned_at=2026-10-04T06:00:00Z
+#+end_src
+
+=abandon= with =goods=write_off= issues what the trade still holds to a =write_off= leg (Dr positions 6.60 / Cr Inventory 6.60) and closes it as =abandoned=: the 6.60 debit in positions moves to Arbitrage gains as a loss. Tallow's purse paid 6.60 sixteen hours before the anchor, after the whistle sale that funds it.
+
+* What the books say
+
+#+begin_src sh
+venturectl report arbitrage_performance last_90_days organization_id=$ORG
+#+end_src
+
+| Strategy  | Trades | Wins | Realised | Capital | ROI     | Fees  | Expected | Slippage |
+|-----------+--------+------+----------+---------+---------+-------+----------+----------|
+| deal      |      1 |    0 | -6.60    | 6.60    | -100%   | 0     | 3.00     | -9.60    |
+| spread    |      1 |    1 | 4.095    | 3.60    | 113.75% | 0.405 | 4.00     | 0.095    |
+| transform |      1 |    1 | 11.39    | 1.72    | 662%    | 0.69  | 11.00    | 0.39     |
+
+All in GOLD, all on the Evermoor dashboard's "Arbitrage results" widget, and in =report income_statement this_month organization_id=$ORG= as 9g 98s of Arbitrage gains and 1g 9s 50c of Arbitrage fees.
+
+* Traps
+
+- *Record the sell =planned= when the goods are still to be made.* A stock sell executed before the craft is refused for want of units; record it planned and =arbitrage execute= it afterwards.
+- *A craft looks every item up at one location.* With =location_id= the inputs and the output must all have an item there -- exactly one each -- or the craft is refused naming what to create.
+- *Give the trade its own items.* First in, first out takes the oldest layers of an item; a trade selling from a shared item books somebody else's cost.
+- *Close after the last leg.* =closed_at= before an executed leg's time is refused.

@@ -1,0 +1,19 @@
+{
+  "name": "Trading desk",
+  "slug": "trading",
+  "purpose": "overview",
+  "layout": "three_columns",
+  "description": "Dropshipping and surebets: what is worth listing, what the books disagree on, and what the trades made.",
+  "widgets": [
+    { "kind": "opportunities", "title": "Worth listing on ShopMart",
+      "options": "{\"strategy\": \"spread\", \"buy_venues\": \"acme\", \"sell_venues\": \"shopmart\", \"units\": 1}",
+      "limit": 5, "span": "wide", "position": 1 },
+    { "kind": "source_health", "title": "Market data", "position": 2 },
+    { "kind": "opportunities", "title": "Surebets",
+      "options": "{\"strategy\": \"cover\", \"total_stake\": \"100.00 USD\", \"max_age_hours\": 6}",
+      "limit": 5, "span": "wide", "position": 3 },
+    { "kind": "market_alerts", "title": "Alert hits", "limit": 5, "position": 4 },
+    { "kind": "report", "title": "Arbitrage results", "report_name": "arbitrage_performance",
+      "period": "last_90_days", "options": "{\"tiles\": false}", "span": "full", "position": 5 }
+  ]
+}
