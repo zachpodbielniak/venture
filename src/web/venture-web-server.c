@@ -2858,8 +2858,12 @@ venture_web_api_write(
 	}
 
 	/* A record that names no organisation belongs to the caller's, rather
-	 * than to organisation zero where nothing would ever find it. */
-	if (0 == venture_entity_get_organization_id(record))
+	 * than to organisation zero where nothing would ever find it. An
+	 * organisation is the exception, as on the web form: it is not filed
+	 * against another one, and stamping the creator's on it made its own
+	 * members' writes be judged in the creator's organisation. */
+	if (0 == venture_entity_get_organization_id(record) &&
+	    !VENTURE_IS_ORGANIZATION(record))
 	{
 		venture_entity_set_organization_id(record,
 			venture_context_get_default_organization_id(self->context));

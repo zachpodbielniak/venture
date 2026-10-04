@@ -645,7 +645,11 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	g_autoptr(VentureEntity) member = NULL;
 	g_autoptr(GError) veto = NULL;
 	gint role;
-	if (self->organization_id != 0 && venture_entity_get_organization_id(entity) != self->organization_id)
+	/* An organization is judged in itself, as venture_access_policy_can()
+	 * judges it; its own organization column says nothing about who runs
+	 * it, and reading it refused an owner her own profile as not found. */
+	gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
+	if (self->organization_id != 0 && org != self->organization_id)
 	{
 		refuse(error, TRUE);
 		return FALSE;
@@ -654,7 +658,12 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	 * membership row in a later-created organization to write there. */
 	if (administrator(actor) || tenant_administrator(self, actor))
 		return FALSE;
-	member = membership(self, actor, venture_entity_get_organization_id(entity));
+	/* A new organization belongs to no organization yet. Its membership
+	 * lookup would match any of the caller's, letting a viewer elsewhere
+	 * propose one; the save's own guard refuses it instead. */
+	if (VENTURE_IS_ORGANIZATION(entity) && org <= 0)
+		return FALSE;
+	member = membership(self, actor, org);
 	if (NULL == member)
 	{
 		refuse(error, TRUE);
@@ -665,7 +674,7 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 		return FALSE;
 	if (actor->token_id > 0)
 	{
-		gint minted = token_role(self, actor, venture_entity_get_organization_id(entity));
+		gint minted = token_role(self, actor, org);
 		if (!role_proposes(minted, action, entity) && !role_allows(self, actor, "write", entity, minted))
 			return refuse(error, FALSE);
 	}
@@ -712,6 +721,22 @@ venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GErro
 	}
 	return result;
 }
+/* Where other people's records land (the default organization) and what
+ * a parent's reports roll up (the hierarchy) are workspace decisions. An
+ * organization's own owner or admin keeps its profile, not these. */
+static gboolean
+organization_structure_changed(VentureEntity *entity, VentureEntity *previous)
+{
+	gboolean was_default = FALSE;
+	gboolean is_default = FALSE;
+	if (!VENTURE_IS_ORGANIZATION(entity))
+		return FALSE;
+	g_object_get(entity, "is-default", &is_default, NULL);
+	if (NULL == previous)
+		return is_default || reference(entity, "parent-id") != 0;
+	g_object_get(previous, "is-default", &was_default, NULL);
+	return !was_default != !is_default || reference(entity, "parent-id") != reference(previous, "parent-id");
+}
 static gboolean
 check_mutation_authority(VentureAccessPolicy *self, VentureEntity *entity, const gchar *action, gboolean record_write, GError **error)
 {
@@ -732,6 +757,9 @@ check_mutation_authority(VentureAccessPolicy *self, VentureEntity *entity, const
 			venture_access_policy_check_read(self, previous, error)))
 			return FALSE;
 	}
+	if (NULL != self->actor && !administrator(self->actor) && !tenant_administrator(self, self->actor) &&
+	    organization_structure_changed(entity, previous))
+		return refuse(error, FALSE);
 	return self->actor ? venture_access_policy_can(self, self->actor, action, entity, error) :
 		venture_access_policy_check_read(self, entity, error);
 }
