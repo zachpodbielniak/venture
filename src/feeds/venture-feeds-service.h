@@ -335,12 +335,36 @@ void
 venture_feeds_shutdown(VentureContext *context);
 
 /**
+ * venture_feeds_validate_config:
+ * @config: the configuration
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Refuses a feeds.allowed_origins entry that is not an origin (a scheme,
+ * host and optional port; plain http only for a loopback host; no path,
+ * query or credentials) and a feeds.file_roots entry that is not an
+ * absolute path. Such an entry could never match, so it used to be
+ * skipped and every fetch was denied as if it had not been written. The
+ * message masks a password an origin carries. Empty entries are allowed.
+ *
+ * Returns: %TRUE when the feeds settings are usable, else %FALSE with
+ *   %VENTURE_ERROR_CONFIG
+ */
+gboolean
+venture_feeds_validate_config(
+	VentureConfig	 *config,
+	GError		**error
+);
+
+/**
  * venture_feeds_store_dir:
  * @config: the configuration
  * @uuid: a data_source's uuid
  *
  * Where a source's store lives: <state_dir>/series/<uuid>. Derived every
- * time, never stored.
+ * time, never stored. Something that is not a uuid (the save refuses one,
+ * but the generic API writes the field) lands under series/invalid/ with
+ * every character but hex digits and dashes replaced, so no source's
+ * directory is ever outside series/ or another source's.
  *
  * Returns: (transfer full): the directory
  */

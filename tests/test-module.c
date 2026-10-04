@@ -1179,8 +1179,27 @@ test_module_http_disabled_module_is_absent(
 	g_assert_cmpuint(server_request(fixture, "GET", "/kb", NULL, NULL, NULL),
 	                 ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_request(fixture, "GET",
-	                                "/api/v1/kb/search?q=anything", NULL, NULL,
+	                                "/api/v1/kb/search?q=anything", NULL, &body,
 	                                NULL), ==, SOUP_STATUS_NOT_FOUND);
+	/* The refusal names the switch that is off: here the module switch. */
+	g_assert_nonnull(strstr(body, "modules.kb.enabled is false"));
+	g_clear_pointer(&body, g_free);
+
+#ifdef VENTURE_HAVE_SQLITE
+	/* feeds is off by its legacy switch, feeds.enabled, as it is by
+	 * default; telling the operator to set modules.feeds.enabled, which
+	 * the message once did, changes nothing. */
+	g_assert_cmpuint(server_request(fixture, "GET", "/api/v1/feeds", NULL, &body, NULL),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(body, "feeds.enabled is false"));
+	g_assert_null(strstr(body, "modules.feeds.enabled"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_request(fixture, "GET", "/feeds", NULL, &page, NULL),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(page, "feeds.enabled is false"));
+	g_assert_null(strstr(page, "modules.feeds.enabled"));
+	g_clear_pointer(&page, g_free);
+#endif
 	g_assert_cmpuint(server_request(fixture, "POST", "/forges/1/verify", "",
 	                                NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_request(fixture, "POST", "/hooks/forge/1", "{}",

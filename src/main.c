@@ -424,7 +424,11 @@ main(
 			                                  FALSE);
 	}
 
-	if (!venture_config_validate(config, &error) || !venture_http_limits_validate(config, &error))
+	if (!venture_config_validate(config, &error) || !venture_http_limits_validate(config, &error)
+#ifdef VENTURE_HAVE_SQLITE
+	    || !venture_feeds_validate_config(config, &error)
+#endif
+	    )
 	{
 		g_printerr("Configuration: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);

@@ -770,8 +770,155 @@ test_feeds_settings_are_validated(
 		venture_config_set_module_enabled(fixture->config, "marketdata", TRUE);
 	}
 
+	/* The uuid names the store's directory, and the generic API writes
+	 * it: "../escape" would make, purge and remove a store outside
+	 * series/, or open another source's. */
+	{
+		g_autoptr(VentureDataSource) source = venture_data_source_new();
+
+		venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+		g_object_set(source, "name", "Escape", "provider", "file_jsonl", "settings", "file: x.jsonl",
+		             "uuid", "../escape", NULL);
+		g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(source), NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+	}
+
 	/* And a good one saves, with a cron schedule. */
 	create_source(fixture, "Good", "file_jsonl", "file: x.jsonl", "15 * * * *");
+}
+
+/* --- A provider that ignores its cancellable ---------------------------------------- */
+
+static gint stuck_entered = 0;
+static gint stuck_release = 0;
+
+/* Blocks until released (or thirty seconds), whatever the cancellable says. */
+static VentureFeedBatch *
+stuck_fetch(
+	VentureFeedRequest	 *request,
+	gpointer		  user_data,
+	GError			**error
+){
+	gint64 until;
+
+	(void)request;
+	(void)user_data;
+
+	until = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+	g_atomic_int_set(&stuck_entered, 1);
+
+	while (!g_atomic_int_get(&stuck_release) && (g_get_monotonic_time() < until))
+		g_usleep(10000);
+
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "released");
+
+	return NULL;
+}
+
+/*
+ * Stopping the worker is bounded even while a provider ignores its
+ * cancellable. The ten-second wait for in-flight fetches was a blocking
+ * iteration with nothing to wake it, so a stuck fetch held stop() -- and
+ * the main thread joining it, from context dispose or a request turning
+ * feeds off -- forever. What breaks if this regresses: switching feeds
+ * off hangs the server.
+ */
+static void
+test_feeds_stop_is_bounded(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id;
+	gint64 deadline;
+	gint64 started;
+
+	(void)user_data;
+
+	g_atomic_int_set(&stuck_entered, 0);
+	g_atomic_int_set(&stuck_release, 0);
+	provider = venture_func_data_source_provider_new("stuck", "Stuck", NULL, stuck_fetch, NULL, NULL);
+	g_assert_true(venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(fixture->context), provider, &error));
+	g_assert_no_error(error);
+
+	id = create_source(fixture, "Stuck", "stuck", "", "manual");
+	g_assert_true(venture_feeds_service_sync(service_of(fixture), id,
+	                                         VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL, &error));
+	g_assert_no_error(error);
+
+	deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+	while (!g_atomic_int_get(&stuck_entered))
+	{
+		if (g_get_monotonic_time() > deadline)
+			g_error("the stuck provider was never called");
+
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(2000);
+	}
+
+	started = g_get_monotonic_time();
+	venture_feeds_shutdown(fixture->context);
+	g_assert_cmpint(g_get_monotonic_time() - started, <, 15 * G_TIME_SPAN_SECOND);
+
+	/* Let the provider's thread end before the fixture goes. */
+	g_atomic_int_set(&stuck_release, 1);
+	g_usleep(100000);
+}
+
+/*
+ * A feeds.allowed_origins entry that can never match, or a relative
+ * feeds.file_roots entry, refuses the configuration and names the entry,
+ * with any password masked; it used to be skipped, and every fetch was
+ * denied as if the entry had never been written. A store directory stays
+ * under series/ whatever uuid reaches it.
+ */
+static void
+test_feeds_config_is_validated(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *state = NULL;
+	g_autofree gchar *escaped = NULL;
+	g_autofree gchar *series = NULL;
+
+	g_object_set(config, "feeds-allowed-origins", "https://ok.example, https://[::1]:8443,", "feeds-file-roots",
+	             "/srv/feeds,", NULL);
+	g_assert_true(venture_feeds_validate_config(config, &error));
+	g_assert_no_error(error);
+
+	g_object_set(config, "feeds-allowed-origins", "https://ok.example,http://remote.example", NULL);
+	g_assert_false(venture_feeds_validate_config(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_nonnull(strstr(error->message, "http://remote.example"));
+	g_clear_error(&error);
+
+	g_object_set(config, "feeds-allowed-origins", "https://user:hunter2@api.example", NULL);
+	g_assert_false(venture_feeds_validate_config(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_null(strstr(error->message, "hunter2"));
+	g_clear_error(&error);
+
+	g_object_set(config, "feeds-allowed-origins", "https://api.example/v1", NULL);
+	g_assert_false(venture_feeds_validate_config(config, &error));
+	g_clear_error(&error);
+
+	g_object_set(config, "feeds-allowed-origins", "", "feeds-file-roots", "build/demo/market", NULL);
+	g_assert_false(venture_feeds_validate_config(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_nonnull(strstr(error->message, "feeds.file_roots"));
+	g_clear_error(&error);
+
+	g_object_set(config, "state-dir", "/var/lib/venture", NULL);
+	escaped = venture_feeds_store_dir(config, "../../etc");
+	series = g_build_filename("/var/lib/venture", "series", "", NULL);
+	g_assert_true(g_str_has_prefix(escaped, series));
+	g_assert_null(strstr(escaped, ".."));
+	state = venture_feeds_store_dir(config, "6b1a2c1e-3f1d-4a8e-9a77-5c3b2e1d0f9a");
+	g_assert_cmpstr(state, ==, "/var/lib/venture/series/6b1a2c1e-3f1d-4a8e-9a77-5c3b2e1d0f9a");
 }
 
 /* --- Exact conversions ---------------------------------------------------------------- */
@@ -2252,6 +2399,7 @@ main(
 	g_test_add_func("/feeds/listing-expiry-in-the-protocol", test_feeds_listing_expiry_in_the_protocol);
 	g_test_add_func("/feeds/adaptive-interval", test_feeds_adaptive_interval);
 	g_test_add_func("/feeds/home-thread-critical", test_feeds_home_thread_critical);
+	g_test_add_func("/feeds/config-is-validated", test_feeds_config_is_validated);
 	g_test_add("/feeds/settings-are-validated", Fixture, NULL, fixture_set_up,
 	           test_feeds_settings_are_validated, fixture_tear_down);
 	g_test_add("/feeds/http-ok", Fixture, NULL, fixture_set_up, test_feeds_http_ok, fixture_tear_down);
@@ -2273,6 +2421,8 @@ main(
 	           test_feeds_demo_market_files, fixture_tear_down);
 	g_test_add("/feeds/exec-provider", Fixture, NULL, fixture_set_up,
 	           test_feeds_exec_provider, fixture_tear_down);
+	g_test_add("/feeds/stop-is-bounded", Fixture, NULL, fixture_set_up,
+	           test_feeds_stop_is_bounded, fixture_tear_down);
 	g_test_add("/feeds/partial-batch", Fixture, NULL, fixture_set_up,
 	           test_feeds_partial_batch, fixture_tear_down);
 	g_test_add("/feeds/records-sink", Fixture, NULL, fixture_set_up,

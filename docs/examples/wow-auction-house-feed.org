@@ -86,7 +86,7 @@ Then set the client secret on the source's credentials page, =/feeds/ID/credenti
 | =item_names_per_fetch= | 100                              | item detail lookups one fetch may make, 0 to 1000 (0 for none)                                                                |
 | =realms_per_fetch=     | 10                               | in the =realms= unit, how many realms with new data one fetch reads before it stops, 1 to 200                                  |
 | =key_modifier_types=   | every type                       | the modifier types that make an item a variant (see the key format below)                                                     |
-| =requests_per_hour=    | none                             | the hourly budget; Blizzard allows 36,000 per client (the schema names 36000 as its default, but nothing is budgeted until it is set) |
+| =requests_per_hour=    | 36000                            | the hourly budget; Blizzard allows 36,000 per client, and the schema's default applies when the setting is left out |
 | =dynamic_namespace=, =static_namespace= | =dynamic-<region>=, =static-<region>= | overrides, for a classic realm (=dynamic-classic-us=) or a test                                               |
 | =api_base=, =oauth_base= | the region's, =https://oauth.battle.net= | origin overrides, for a mirror or a scripted test server; still held to =feeds.allowed_origins=                     |
 

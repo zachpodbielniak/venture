@@ -310,7 +310,9 @@ struct _VentureSeriesWorker
 	GHashTable		*sources;	/* gint64* -> WorkerSource */
 	SoupSession		*session;
 	GSource			*timer;
-	gboolean		 stopping;
+
+	/* Set by stop() on the main thread, read here: atomic. */
+	gint			 stopping;
 };
 
 struct _WorkerSource
@@ -444,7 +446,7 @@ worker_deliver(gpointer data)
 	WorkerDelivery *delivery = data;
 
 	/* After stop() nobody is listening for this run any more. */
-	if (!delivery->worker->stopping)
+	if (!g_atomic_int_get(&delivery->worker->stopping))
 		g_signal_emit(delivery->worker, worker_signals[SIGNAL_RUN_FINISHED], 0, delivery->run);
 
 	return G_SOURCE_REMOVE;
@@ -461,6 +463,11 @@ worker_hand_back(
 	VentureFeedRun		*run
 ){
 	WorkerDelivery *delivery;
+
+	/* Nobody listens after stop(), and stop() may be finalize's: a
+	 * reference taken now would be on an object already going away. */
+	if (g_atomic_int_get(&self->stopping))
+		return;
 
 	delivery = g_new0(WorkerDelivery, 1);
 	delivery->worker = g_object_ref(self);
@@ -500,7 +507,7 @@ worker_backup_deliver(gpointer data)
 {
 	WorkerBackupDelivery *delivery = data;
 
-	if (!delivery->worker->stopping)
+	if (!g_atomic_int_get(&delivery->worker->stopping))
 		g_signal_emit(delivery->worker, worker_signals[SIGNAL_BACKUP_FINISHED], 0,
 		              delivery->tag, delivery->destination, delivery->sha256,
 		              delivery->size, delivery->error);
@@ -533,6 +540,9 @@ worker_backup_store(
 	                                 &sha256, &size, &error))
 		g_message("feeds: backup %" G_GINT64_FORMAT " of %s failed: %s",
 		          tag, store_dir, error->message);
+
+	if (g_atomic_int_get(&self->stopping))
+		return;
 
 	delivery = g_new0(WorkerBackupDelivery, 1);
 	delivery->worker = g_object_ref(self);
@@ -1402,7 +1412,7 @@ worker_pass_finish(WorkerPass *pass)
 
 	now = worker_now();
 
-	if (!self->stopping && (NULL != source->store))
+	if (!g_atomic_int_get(&self->stopping) && (NULL != source->store))
 	{
 		g_autoptr(GError) error = NULL;
 
@@ -1497,7 +1507,7 @@ worker_pass_next(WorkerPass *pass)
 	const gchar *unit_name;
 	gint64 if_modified_since;
 
-	if (self->stopping || (pass->index >= pass->units->len))
+	if (g_atomic_int_get(&self->stopping) || (pass->index >= pass->units->len))
 	{
 		worker_pass_finish(pass);
 		return;
@@ -1547,6 +1557,14 @@ worker_pass_next(WorkerPass *pass)
 	                                                  secrets, self->session,
 	                                                  &source->quota, cursor, if_modified_since,
 	                                                  worker_now(), self->cancellable);
+
+	/* The request holds its own references now. Ours must go before the
+	 * fetch starts, not when this function returns: a provider may take
+	 * and drop references on the same objects from its GTask thread
+	 * already, and two threads moving one non-atomic count lose updates
+	 * -- a leak, or a free while the other still reads. */
+	g_clear_pointer(&settings, json_object_unref);
+	g_clear_pointer(&secrets, json_object_unref);
 
 	venture_data_source_provider_fetch_async(source->spec->provider, pass->request,
 	                                         self->cancellable, worker_unit_fetched, pass);
@@ -1636,7 +1654,7 @@ worker_tick(gpointer data)
 
 	g_clear_pointer(&self->timer, g_source_unref);
 
-	if (self->stopping)
+	if (g_atomic_int_get(&self->stopping))
 		return G_SOURCE_REMOVE;
 
 	now = worker_now();
@@ -1710,7 +1728,7 @@ worker_reschedule(VentureSeriesWorker *self)
 	gint64 now;
 	gint64 wait_ms;
 
-	if (self->stopping)
+	if (g_atomic_int_get(&self->stopping))
 		return;
 
 	if (NULL != self->timer)
@@ -1937,7 +1955,7 @@ worker_command(gpointer data)
 	VentureSeriesWorker *self = command->worker;
 	WorkerSource *source;
 
-	if (self->stopping)
+	if (g_atomic_int_get(&self->stopping))
 		return G_SOURCE_REMOVE;
 
 	switch (command->kind)
@@ -2135,6 +2153,14 @@ venture_series_worker_count_live(VentureSeriesWorker *self)
 
 /* --- The thread ----------------------------------------------------------------------- */
 
+static gboolean
+worker_flag_expired(gpointer data)
+{
+	*(gboolean *)data = TRUE;
+
+	return G_SOURCE_REMOVE;
+}
+
 static gpointer
 worker_thread(gpointer data)
 {
@@ -2159,12 +2185,20 @@ worker_thread(gpointer data)
 	}
 
 	/* Fetches cancelled by stop() complete with an error; let them, so
-	 * their passes are freed by their own code. */
+	 * their passes are freed by their own code. The deadline is a source
+	 * of its own: a blocking iteration with nothing else to wake it never
+	 * returns while a provider ignores its cancellable, and stop() --
+	 * which a request turning feeds off reaches -- would join forever. */
 	{
-		gint64 deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+		GSource *wake;
+		gboolean expired = FALSE;
 		gboolean busy = TRUE;
 
-		while (busy && (g_get_monotonic_time() < deadline))
+		wake = g_timeout_source_new_seconds(10);
+		g_source_set_callback(wake, worker_flag_expired, &expired, NULL);
+		g_source_attach(wake, self->context);
+
+		while (busy && !expired)
 		{
 			GHashTableIter iter;
 			gpointer value;
@@ -2177,6 +2211,25 @@ worker_thread(gpointer data)
 
 			if (busy)
 				g_main_context_iteration(self->context, TRUE);
+		}
+
+		g_source_destroy(wake);
+		g_source_unref(wake);
+
+		if (busy)
+		{
+			/* A fetch that will not end. Its pass still points at its
+			 * source, the session and this context; freeing them would
+			 * hand its completion freed memory. Left behind on purpose,
+			 * with the context never iterated again, so the completion
+			 * is never dispatched. */
+			g_message("feeds: a fetch ignored its cancellation for 10 seconds; the worker "
+			          "stops without it");
+			self->sources = NULL;
+			self->session = NULL;
+			g_main_context_pop_thread_default(self->context);
+
+			return NULL;
 		}
 	}
 
@@ -2207,7 +2260,7 @@ venture_series_worker_stop(VentureSeriesWorker *self)
 	if (NULL == self->thread)
 		return;
 
-	self->stopping = TRUE;
+	g_atomic_int_set(&self->stopping, TRUE);
 	g_cancellable_cancel(self->cancellable);
 	g_main_context_invoke(self->context, worker_quit, self->loop);
 	g_thread_join(self->thread);

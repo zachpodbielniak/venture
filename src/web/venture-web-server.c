@@ -367,18 +367,48 @@ venture_web_module_enabled(
 }
 
 /*
+ * Why @module_name is off, as the module registry resolved it: the
+ * setting that turned it off ("feeds.enabled is false" for a module with
+ * a legacy switch), or the required module that is off. NULL when the
+ * registry has no reason to give.
+ */
+static const gchar *
+venture_web_module_disabled_reason(
+	VentureWebServer	*self,
+	const gchar		*module_name
+){
+	VentureModule *module;
+
+	module = venture_module_registry_lookup(venture_context_get_modules(self->context), module_name);
+
+	return (NULL != module) ? venture_module_get_disabled_reason(module) : NULL;
+}
+
+/*
  * Builds the error a request into a disabled module gets. Named so the
  * operator who turned the module off recognises it, and so somebody who
- * did not learns which switch to look at.
+ * did not learns which switch to look at -- the one that is actually off.
+ * Naming modules.<name>.enabled for a module that also has a legacy
+ * switch (feeds.enabled, kb.enabled) told an operator to set something
+ * that changed nothing.
  */
 static void
 venture_web_set_module_disabled_error(
-	const gchar	 *module_name,
-	GError		**error
+	VentureWebServer	 *self,
+	const gchar		 *module_name,
+	GError			**error
 ){
-	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-	            "The %s module is disabled on this install "
-	            "(modules.%s.enabled)", module_name, module_name);
+	const gchar *reason;
+
+	reason = venture_web_module_disabled_reason(self, module_name);
+
+	if (NULL != reason)
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "The %s module is disabled on this install (%s)", module_name, reason);
+	else
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "The %s module is disabled on this install "
+		            "(modules.%s.enabled)", module_name, module_name);
 }
 
 #include "venture-web-account-identity.inc"
@@ -402,7 +432,7 @@ venture_web_require_module_api(
 	if (venture_web_module_enabled(self, module_name))
 		return NULL;
 
-	venture_web_set_module_disabled_error(module_name, &error);
+	venture_web_set_module_disabled_error(self, module_name, &error);
 
 	return venture_web_error_response(error);
 }
@@ -646,12 +676,24 @@ venture_web_require_module_ui(
 	venture_html_escape_append(body, module_name);
 	g_string_append(body,
 		" module is turned off</h3><p class=\"muted\">This page belongs to "
-		"a module the configuration has disabled. Turn it on with "
-		"<code>modules.");
-	venture_html_escape_append(body, module_name);
+		"a module the configuration has disabled");
+
+	/* The switch that is actually off, as the registry resolved it. */
+	if (NULL != venture_web_module_disabled_reason(self, module_name))
+	{
+		g_string_append(body, ": <code>");
+		venture_html_escape_append(body, venture_web_module_disabled_reason(self, module_name));
+		g_string_append(body, "</code>. Turn it on and restart");
+	}
+	else
+	{
+		g_string_append(body, ". Turn it on with <code>modules.");
+		venture_html_escape_append(body, module_name);
+		g_string_append(body, ".enabled: true</code> and restart");
+	}
+
 	g_string_append(body,
-		".enabled: true</code> and restart, or see what is on at "
-		"<a href=\"/modules\">Modules</a>.</p>"
+		", or see what is on at <a href=\"/modules\">Modules</a>.</p>"
 		"<p><a class=\"btn btn-primary\" href=\"/\">Dashboard</a></p></div>");
 
 	return venture_web_html_response(
@@ -32108,6 +32150,11 @@ venture_web_server_new(
 
 	if (!venture_http_limits_validate(venture_context_get_config(context), error))
 		return NULL;
+
+#ifdef VENTURE_HAVE_SQLITE
+	if (!venture_feeds_validate_config(venture_context_get_config(context), error))
+		return NULL;
+#endif
 
 	if (!venture_tenant_service_configure(venture_tenant_service_get(venture_context_get_database(context)),
 	        venture_context_get_config(context), error))

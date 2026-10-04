@@ -255,6 +255,23 @@ venture_feeds_store_dir(
 		state = g_build_filename(g_get_user_data_dir(), "venture", NULL);
 	}
 
+	/* The record's uuid names the directory, and a uuid is writable
+	 * through the generic API. The save refuses one that is not a uuid;
+	 * this keeps anything else that reaches here inside series/ all the
+	 * same -- "../x" would otherwise make, purge and remove a store
+	 * outside it, or open another source's. */
+	if (!g_uuid_string_is_valid(uuid))
+	{
+		g_autofree gchar *safe = g_strdup(uuid);
+		gchar *cursor;
+
+		for (cursor = safe; '\0' != *cursor; cursor++)
+			if (!g_ascii_isxdigit(*cursor) && ('-' != *cursor))
+				*cursor = '_';
+
+		return g_build_filename(state, "series", "invalid", safe, NULL);
+	}
+
 	return g_build_filename(state, "series", uuid, NULL);
 }
 
@@ -342,12 +359,67 @@ feeds_normalise_origin(const gchar *text)
 
 	if (NULL != strchr(host, ':'))
 		return (port > 0)
-			? g_strdup_printf("%s://[%s]:%d", g_ascii_strdown(scheme, -1), host, port)
-			: g_strdup_printf("%s://[%s]", g_ascii_strdown(scheme, -1), host);
+			? g_strdup_printf("%s://[%s]:%d", (0 == g_ascii_strcasecmp(scheme, "https")) ? "https" : "http",
+			                  host, port)
+			: g_strdup_printf("%s://[%s]", (0 == g_ascii_strcasecmp(scheme, "https")) ? "https" : "http",
+			                  host);
 
 	return (port > 0)
 		? g_strdup_printf("%s://%s:%d", (0 == g_ascii_strcasecmp(scheme, "https")) ? "https" : "http", host, port)
 		: g_strdup_printf("%s://%s", (0 == g_ascii_strcasecmp(scheme, "https")) ? "https" : "http", host);
+}
+
+/*
+ * Fills each setting the source leaves out with the default its
+ * provider's schema declares, so the schema is what a source gets: the
+ * Blizzard provider declared requests_per_hour 36000 and a source that
+ * did not repeat it ran with no budget at all. Scalars only (a copied
+ * node would share a nested object between sources), never a sensitive
+ * one, and an explicit null is the source's own choice and kept.
+ */
+static void
+feeds_apply_schema_defaults(
+	VentureDataSourceProvider	*provider,
+	JsonObject			*settings
+){
+	g_autoptr(JsonNode) schema = NULL;
+	JsonObject *properties;
+	JsonObjectIter iter;
+	const gchar *name;
+	JsonNode *declared;
+
+	schema = venture_data_source_provider_dup_settings_schema(provider);
+
+	if ((NULL == schema) || !JSON_NODE_HOLDS_OBJECT(schema))
+		return;
+
+	declared = json_object_get_member(json_node_get_object(schema), "properties");
+
+	if ((NULL == declared) || !JSON_NODE_HOLDS_OBJECT(declared))
+		return;
+
+	properties = json_node_get_object(declared);
+
+	json_object_iter_init(&iter, properties);
+
+	while (json_object_iter_next(&iter, &name, &declared))
+	{
+		JsonObject *property;
+		JsonNode *fallback;
+
+		if (!JSON_NODE_HOLDS_OBJECT(declared) || json_object_has_member(settings, name))
+			continue;
+
+		property = json_node_get_object(declared);
+
+		if (venture_json_object_get_bool(property, "x-sensitive", FALSE))
+			continue;
+
+		fallback = json_object_get_member(property, "default");
+
+		if ((NULL != fallback) && JSON_NODE_HOLDS_VALUE(fallback))
+			json_object_set_member(settings, name, json_node_copy(fallback));
+	}
 }
 
 /*
@@ -423,6 +495,67 @@ feeds_file_roots(VentureConfig *config)
 	g_ptr_array_add(list, NULL);
 
 	return (gchar **)g_ptr_array_free(g_steal_pointer(&list), FALSE);
+}
+
+gboolean
+venture_feeds_validate_config(
+	VentureConfig	 *config,
+	GError		**error
+){
+	g_autofree gchar *origins = NULL;
+	g_autofree gchar *roots = NULL;
+	g_auto(GStrv) entries = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(config), FALSE);
+
+	g_object_get(config, "feeds-allowed-origins", &origins, "feeds-file-roots", &roots, NULL);
+
+	/* An entry the fetch could never match was skipped, so a typo denied
+	 * every fetch with "not one of feeds.allowed_origins" -- which reads
+	 * as if the entry had never been written. */
+	entries = g_strsplit((NULL != origins) ? origins : "", ",", -1);
+
+	for (i = 0; NULL != entries[i]; i++)
+	{
+		const gchar *entry = g_strstrip(entries[i]);
+		g_autofree gchar *origin = NULL;
+
+		if ('\0' == *entry)
+			continue;
+
+		origin = feeds_normalise_origin(entry);
+
+		if (NULL == origin)
+		{
+			/* An entry with a password in it is shown without one. */
+			g_autofree gchar *shown = venture_string_redact_uri(entry);
+
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "feeds.allowed_origins: \"%s\" is not an origin: write "
+			            "https://host[:port], with no path, query or credentials (plain http "
+			            "only for a loopback host)", shown);
+			return FALSE;
+		}
+	}
+
+	g_strfreev(entries);
+	entries = g_strsplit((NULL != roots) ? roots : "", ",", -1);
+
+	for (i = 0; NULL != entries[i]; i++)
+	{
+		const gchar *entry = g_strstrip(entries[i]);
+
+		if (('\0' != *entry) && !g_path_is_absolute(entry))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "feeds.file_roots: \"%s\" is not an absolute path; a relative root "
+			            "would mean wherever the server started", entry);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
 }
 
 /* --- Records the sink may write ------------------------------------------------------ */
@@ -534,6 +667,8 @@ feeds_freeze(
 
 	if (NULL == settings)
 		return NULL;
+
+	feeds_apply_schema_defaults(provider, settings);
 
 	spec = g_new0(VentureFeedSource, 1);
 	g_atomic_ref_count_init(&spec->ref);
@@ -2332,6 +2467,14 @@ feeds_validate_source(
 	{
 		venture_set_error_validation(error, "provider",
 		                             "must be a provider's name: lower case, digits and underscores");
+		return FALSE;
+	}
+
+	/* The uuid names the source's store directory. */
+	if (!venture_string_is_empty(venture_entity_get_uuid(entity)) &&
+	    !g_uuid_string_is_valid(venture_entity_get_uuid(entity)))
+	{
+		venture_set_error_validation(error, "uuid", "must be a uuid");
 		return FALSE;
 	}
 

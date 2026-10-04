@@ -314,7 +314,10 @@ settle(Fixture *fixture)
 		;
 }
 
-/* The base settings, pointed at the scripted server, plus @extra. */
+/* The base settings, pointed at the scripted server, plus @extra. No
+ * requests_per_hour: the provider's schema declares 36000, and the
+ * quota assertions below are what show a schema default reaches a source
+ * that leaves the setting out (it once ran with no budget at all). */
 static gchar *
 settings_text(
 	Fixture		*fixture,
@@ -324,7 +327,6 @@ settings_text(
 	                       "client_id: %s\n"
 	                       "api_base: %s\n"
 	                       "oauth_base: %s\n"
-	                       "requests_per_hour: 36000\n"
 	                       "%s",
 	                       client_id, fixture->http.origin, fixture->http.origin,
 	                       (NULL != extra) ? extra : "");
