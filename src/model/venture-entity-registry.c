@@ -750,6 +750,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_watchlist_entry_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_alert_rule_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_alert_hit_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_arbitrage_trade_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_arbitrage_leg_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_plugin_config_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_user_get_type, VENTURE_DATA_CLASS_PERSONAL },
 		{ venture_api_token_get_type, VENTURE_DATA_CLASS_PERSONAL },

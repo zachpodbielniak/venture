@@ -209,6 +209,11 @@ venture_context_new(
 	 * loop, and achieved and done times that follow the status. */
 	venture_goals_install(self);
 
+	/* Arbitrage trades and legs: an executed leg posts on save through the
+	 * ledger's source registry, stock legs are executed by an action that
+	 * moves the units once, and a closed trade's executed legs are frozen. */
+	venture_arbitrage_install(self);
+
 
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as

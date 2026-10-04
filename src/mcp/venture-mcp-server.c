@@ -1195,7 +1195,7 @@ venture_mcp_tool_report(
 	}
 
 	{
-		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", "vendor_id", "type", "measure", "aggregate", "group_by", "category_depth", "date_field", "bucket", "filter", "per", "product_id", "source", "venture_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "data_source_id", "venue", "group_key", "category_path", "min_value", "max_pct", "top", "watchlist_id", NULL };
+		static const gchar *const options[] = { "customer_id", "organization_id", "currency", "as_of", "vendor_id", "type", "measure", "aggregate", "group_by", "category_depth", "date_field", "bucket", "filter", "per", "product_id", "source", "venture_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "data_source_id", "venue", "group_key", "category_path", "min_value", "max_pct", "top", "watchlist_id", "strategy", NULL };
 		guint i;
 		for (i = 0; options[i] != NULL; i++)
 		{

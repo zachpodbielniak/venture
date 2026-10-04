@@ -255,6 +255,47 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   chart class goes into both, in the market block at their end, and
   `/market-pages/doors-and-looks` checks the page in both looks.
 
+## Arbitrage trades and the ledger
+
+- **Everything a trade does passes through arbitrage positions.** Out legs
+  debit it, in legs credit it, a stock sell's FIFO cost and a write-off
+  debit it, so what is left on it is the trade's profit. Fees go to
+  arbitrage fees, never through the position. `docs/arbitrage.org` has
+  the table; keep the rule and that table in step.
+- **A leg posts through the registry; its stock moves once, by
+  `execute`.** `arbitrage_leg` is a registered source (rule
+  `arbitrage_leg`, postable when executed with an amount). Its rule is
+  built twice per save and must never call the inventory service: a stock
+  buy is received with `venture_inventory_service_receive_from()` (Cr the
+  venue's cash, never GRNI) and a stock sell issued with
+  `venture_inventory_service_issue_to()` (Dr positions, never COGS) by the
+  execute action, which stamps `inventory-txn-id` and `cost`; the rule
+  then posts only the proceeds and fees. One truth per unit: posting a
+  stock leg's principal from the rule would spend its cash twice.
+- **Close is an action, per book section.** A save-time rule over sibling
+  legs always looks unchanged to `same_posting()`, so `close`, `reopen`
+  and `abandon` are record actions. Close sums the positions lines of
+  every journal the trade touched (legs -- deleted ones too --, their
+  stock movements, its own closes and reversals) per *journal* currency in
+  book amounts, and posts one journal per section in that section's own
+  currency, keyed `arbitrage_close:<trade>:<n>:<CODE>`. Never close by
+  original currency (a converted euro section would never reach zero) and
+  never add two sections together.
+- **Leg validators never write the trade.** A derived write bumps the
+  trade's version under whoever holds it. The actions (execute opening a
+  planned trade, close stamping it) are the writers; their stamps pass the
+  validators by an id-based permit, because a leg is a ledger source and
+  the ledger saves a *copy* -- a pointer permit never matches.
+- **`arbitrage` is in the accounting boundary's financial module list**
+  (`venture_accounting_operation_is_financial()`), so the action framework
+  wraps execute, close, reopen, abandon and record in one whole-operation
+  proposal. Without it, a second-actor rule refused every one of them with
+  "must begin before the enclosing business transaction";
+  `/arbitrage-ledger/second-actor` pins it.
+- **An executed stock leg is for good.** Changing or cancelling it is
+  refused with the counter-leg message, and so is any financial change to
+  an executed leg of a closed or abandoned trade until it is reopened.
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.

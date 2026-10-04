@@ -1688,6 +1688,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/market/venues", "Venues", VENTURE_ICON("<path d=\"M4 20V9l8-5 8 5v11\"/><path d=\"M9 20v-6h6v6\"/>"), NULL, "marketdata" },
 	{ "/market/watchlists", "Watchlists", VENTURE_ICON("<path d=\"M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>"), NULL, "marketdata" },
 	{ "/market/alerts", "Alerts", VENTURE_ICON("<path d=\"M6 16V11a6 6 0 0 1 12 0v5l2 2H4z\"/><path d=\"M10 21h4\"/>"), NULL, "marketdata" },
+	{ "/e/arbitrage_trade", "Trades", VENTURE_ICON("<path d=\"M4 8h13l-3-3\"/><path d=\"M20 16H7l3 3\"/>"), NULL, "arbitrage" },
 	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
 	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
 	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
@@ -1788,7 +1789,7 @@ static const gchar *const venture_web_nav_operations[] = {
  * no data sources rather than vanish. */
 static const gchar *const venture_web_nav_trading[] = {
 	"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
-	"/market/alerts", "/feeds",
+	"/market/alerts", "/e/arbitrage_trade", "/feeds",
 	NULL
 };
 
@@ -3722,7 +3723,7 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -7421,6 +7422,64 @@ venture_web_sessions_controls(
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
+/*
+ * arbitrage_performance's question, as a form: what to group by, which
+ * strategy, which venture and the period trades finished in. All are
+ * query parameters the API takes too.
+ */
+static void
+venture_web_arbitrage_controls(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureReport		*report,
+	GString			*content
+){
+	static const gchar *const groups[] = { "strategy", "venue_pair", "instrument", "month", NULL };
+	static const gchar *const fields[] = { "strategy", "venture_id", "period", NULL };
+	static const gchar *const labels[] = { "Strategy", "Venture", "Period", NULL };
+	static const gchar *const hints[] = { "every strategy", "every venture", "this_month", NULL };
+	const gchar *organization;
+	const gchar *group_by;
+	guint i;
+
+	(void)self;
+
+	if (0 != g_strcmp0(venture_report_get_name(report), "arbitrage_performance"))
+		return;
+
+	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
+	organization = htmx_request_get_query_param(request, "organization_id");
+
+	if (!venture_string_is_empty(organization))
+	{
+		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
+		venture_html_escape_append(content, organization);
+		g_string_append(content, "\">");
+	}
+
+	group_by = htmx_request_get_query_param(request, "group_by");
+	g_string_append(content, "<div class=\"field\"><label>Group by<select name=\"group_by\">");
+
+	for (i = 0; NULL != groups[i]; i++)
+		g_string_append_printf(content, "<option value=\"%s\"%s>%s</option>", groups[i],
+		                       (0 == g_strcmp0(groups[i], group_by)) ? " selected" : "", groups[i]);
+
+	g_string_append(content, "</select></label></div>");
+
+	for (i = 0; NULL != fields[i]; i++)
+	{
+		const gchar *value;
+
+		value = htmx_request_get_query_param(request, fields[i]);
+		g_string_append_printf(content, "<div class=\"field\"><label>%s<input name=\"%s\" value=\"",
+		                       labels[i], fields[i]);
+		venture_html_escape_append(content, (NULL != value) ? value : "");
+		g_string_append_printf(content, "\" placeholder=\"%s\"></label></div>", hints[i]);
+	}
+
+	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
 /* A text box for one query parameter, refilled from the request. */
 static void
 venture_web_goals_input(
@@ -7696,7 +7755,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
@@ -7747,7 +7806,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -7811,7 +7870,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -7834,6 +7893,7 @@ venture_web_ui_report(
 	venture_web_market_controls(self, request, report, content);
 	venture_web_production_controls(self, request, report, content);
 	venture_web_sessions_controls(self, request, report, content);
+	venture_web_arbitrage_controls(self, request, report, content);
 	venture_web_goals_controls(self, request, report, content);
 	venture_web_holdings_controls(self, request, report, content);
 	venture_marketdata_web_report_controls(self, request, report, content);
@@ -9647,6 +9707,12 @@ venture_web_append_related(
 		    (VENTURE_TYPE_GOAL == G_OBJECT_TYPE(record)))
 			continue;
 
+		/* A trade's legs are its Legs panel, with venues, amounts and
+		 * Execute; listing their names again here says it worse. */
+		if ((VENTURE_TYPE_ARBITRAGE_LEG == types[i]) &&
+		    (VENTURE_TYPE_ARBITRAGE_TRADE == G_OBJECT_TYPE(record)))
+			continue;
+
 		/*
 		 * A ticket's comments and worklogs are its timeline, rendered
 		 * at the foot of the page in order with its changes; a list of
@@ -11332,6 +11398,7 @@ venture_web_append_incident_block(
 #include "marketing/venture-marketing-web.inc"
 #include "attribution/venture-attribution-web.inc"
 #include "attribution/venture-attribution-settings-web.inc"
+#include "arbitrage/venture-arbitrage-web.inc"
 
 static HtmxResponse *
 venture_web_ui_detail(
@@ -11476,6 +11543,12 @@ venture_web_ui_detail(
 	if ((VENTURE_TYPE_GOAL == entity_type) &&
 	    venture_web_module_enabled(self, "goals"))
 		venture_web_append_goal_block(self, content, record);
+
+	/* A trade's result per currency, its position and its legs, with
+	 * Execute beside each leg that can be. */
+	if ((VENTURE_TYPE_ARBITRAGE_TRADE == entity_type) &&
+	    venture_web_module_enabled(self, "arbitrage"))
+		venture_web_append_arbitrage_block(self, content, principal, record);
 
 	/*
 	 * The other half of a polymorphic relation. On a ticket the panel

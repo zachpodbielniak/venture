@@ -806,7 +806,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "type", "aggregate: the record type to read.");
 		venture_mcp_catalog_add_string_property(builder, "measure", "aggregate: the field to aggregate, or count.");
 		venture_mcp_catalog_add_string_property(builder, "aggregate", "aggregate: sum, avg, min, max, count or count_distinct.");
-		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference. listing_performance: product, category or channel. session_performance: activity, category, location or venture.");
+		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference. listing_performance: product, category or channel. session_performance: activity, category, location or venture. arbitrage_performance: strategy, venue_pair, instrument or month.");
 		venture_mcp_catalog_add_integer_property(builder, "category_depth", "aggregate, listing_performance, session_performance: roll category and location groups up to this level.");
 		venture_mcp_catalog_add_string_property(builder, "date_field", "aggregate: the date field the period bounds.");
 		venture_mcp_catalog_add_string_property(builder, "bucket", "aggregate: day, week, month, quarter or year; price_history: day, week or month.");
@@ -834,6 +834,8 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "max_pct", "market_deals: only prices at most this percent of the region median, e.g. 80.");
 		venture_mcp_catalog_add_integer_property(builder, "top", "market_deals: how many deals, 1 to 500; 50 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "watchlist_id", "watchlist: the watchlist to price.");
+		/* The arbitrage report's question. */
+		venture_mcp_catalog_add_string_property(builder, "strategy", "arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's), matched exactly.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

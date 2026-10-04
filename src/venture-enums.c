@@ -875,6 +875,46 @@ VENTURE_DEFINE_ENUM_TYPE(venture_alert_kind_get_type,
                          "VentureAlertKind",
                          venture_alert_kind_values)
 
+static const GEnumValue venture_arbitrage_trade_status_values[] = {
+	VE(VENTURE_ARBITRAGE_TRADE_STATUS_PLANNED,   "planned"),
+	VE(VENTURE_ARBITRAGE_TRADE_STATUS_OPEN,      "open"),
+	VE(VENTURE_ARBITRAGE_TRADE_STATUS_CLOSED,    "closed"),
+	VE(VENTURE_ARBITRAGE_TRADE_STATUS_ABANDONED, "abandoned"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_arbitrage_trade_status_get_type,
+                         "VentureArbitrageTradeStatus",
+                         venture_arbitrage_trade_status_values)
+
+static const GEnumValue venture_arbitrage_leg_kind_values[] = {
+	VE(VENTURE_ARBITRAGE_LEG_KIND_BUY,       "buy"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_SELL,      "sell"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_FEE,       "fee"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_TRANSFER,  "transfer"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_STAKE,     "stake"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_PAYOUT,    "payout"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_REFUND,    "refund"),
+	VE(VENTURE_ARBITRAGE_LEG_KIND_WRITE_OFF, "write_off"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_arbitrage_leg_kind_get_type,
+                         "VentureArbitrageLegKind",
+                         venture_arbitrage_leg_kind_values)
+
+static const GEnumValue venture_arbitrage_leg_status_values[] = {
+	VE(VENTURE_ARBITRAGE_LEG_STATUS_PLANNED,   "planned"),
+	VE(VENTURE_ARBITRAGE_LEG_STATUS_EXECUTED,  "executed"),
+	VE(VENTURE_ARBITRAGE_LEG_STATUS_FAILED,    "failed"),
+	VE(VENTURE_ARBITRAGE_LEG_STATUS_CANCELLED, "cancelled"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_arbitrage_leg_status_get_type,
+                         "VentureArbitrageLegStatus",
+                         venture_arbitrage_leg_status_values)
+
 static const GEnumValue venture_dashboard_layout_values[] = {
 	VE(VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS, "three_columns"),
 	VE(VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,   "two_columns"),

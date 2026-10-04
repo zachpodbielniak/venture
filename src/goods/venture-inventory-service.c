@@ -709,6 +709,122 @@ add_lot_layers(VentureInventoryService *self, VentureEntity *item, gint64 quanti
 	return TRUE;
 }
 
+/*
+ * A receipt paid from @credit_id rather than accrued to goods received not
+ * invoiced: stock bought outright at a venue, whose money left the venue's
+ * cash the moment it was bought. Layers and FIFO are exactly a receipt's,
+ * except that the cost is a total split over the units exactly (one layer
+ * a minor unit higher and one at the floor, in one lot), because 100.00
+ * paid for 7 units has no exact unit cost and a rounded one would leave a
+ * cent behind on every flip.
+ */
+static gboolean
+receive_from_impl(VentureInventoryService *self, gint64 inventory_item_id, gint64 quantity,
+	const VentureMoney *total_cost, GDateTime *date, const gchar *reference, gint64 credit_id,
+	const VentureActor *actor, VentureEntity **out_txn, GError **error)
+{
+	g_autoptr(GPtrArray) costs = venture_money_totals_new();
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureEntity) item = NULL;
+	g_autoptr(VentureEntity) credit = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	gint64 org, inventory;
+	if (quantity <= 0 || total_cost == NULL || venture_money_is_negative(total_cost))
+		return refuse(error, "receipts need a positive quantity and a cost of zero or more");
+	if (credit_id <= 0)
+		return refuse(error, "a receipt paid outright needs the account it was paid from");
+	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
+	item = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (item == NULL)
+		return FALSE;
+	org = venture_entity_get_organization_id(item);
+	/* The account paid from must be the item's organization's: a journal
+	 * between two organizations' charts is refused by the posting service
+	 * anyway, but only after the layers were written. */
+	credit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, credit_id, error);
+	if (credit == NULL)
+		return FALSE;
+	if (venture_entity_get_organization_id(credit) != org)
+		return refuse(error, "the account paid from belongs to another organization");
+	if (!venture_money_totals_add(costs, total_cost, error))
+		return FALSE;
+	if (!movement_unit(costs, quantity, &unit, &notes, error))
+		return FALSE;
+	txn = write_txn(self, inventory_item_id, quantity, VENTURE_INVENTORY_TXN_KIND_PURCHASE,
+		unit, notes, when, reference, 0, actor, error);
+	if (txn == NULL)
+		return FALSE;
+	if (!add_lot_layers(self, item, quantity, costs, venture_entity_get_id(txn), when, actor, error))
+		return FALSE;
+	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
+	if (inventory == 0)
+		return FALSE;
+	/* Dr inventory, Cr the account paid from. GRNI is not touched: there
+	 * is no bill to come that would clear it. */
+	if (!post_pair(self, org, txn, inventory, credit_id, total_cost, "Inventory bought", when, actor, error))
+		return FALSE;
+	if (out_txn != NULL)
+		*out_txn = g_steal_pointer(&txn);
+	return TRUE;
+}
+
+/*
+ * An issue whose cost goes to @debit_id rather than cost of goods sold:
+ * stock leaving for an arbitrage position (sold at a venue, or written off
+ * when the trade is abandoned), whose profit or loss is decided when the
+ * position closes. FIFO, the lots and the per-currency posting are an
+ * issue's, unchanged.
+ */
+static gboolean
+issue_to_impl(VentureInventoryService *self, gint64 inventory_item_id, gint64 quantity,
+	GDateTime *date, const gchar *reference, gint64 debit_id, VentureInventoryTxnKind kind,
+	const VentureActor *actor, VentureEntity **out_txn, GPtrArray **out_costs, GError **error)
+{
+	g_autoptr(GPtrArray) costs = venture_money_totals_new();
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureEntity) debit = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	gint64 org, inventory;
+	if (quantity <= 0)
+		return refuse(error, "issues need a positive quantity");
+	if (kind != VENTURE_INVENTORY_TXN_KIND_SALE && kind != VENTURE_INVENTORY_TXN_KIND_WRITE_OFF)
+		return refuse(error, "an issue to an account is a sale or a write-off");
+	if (debit_id <= 0)
+		return refuse(error, "an issue to an account needs the account");
+	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
+	if (!guard_stock(self, inventory_item_id, -quantity, error))
+		return FALSE;
+	if (!consume_fifo(self, inventory_item_id, quantity, actor, costs, error))
+		return FALSE;
+	if (!movement_unit(costs, quantity, &unit, &notes, error))
+		return FALSE;
+	txn = write_txn(self, inventory_item_id, -quantity, kind, unit, notes, when, reference, 0, actor, error);
+	if (txn == NULL)
+		return FALSE;
+	org = venture_entity_get_organization_id(txn);
+	debit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, debit_id, error);
+	if (debit == NULL)
+		return FALSE;
+	if (venture_entity_get_organization_id(debit) != org)
+		return refuse(error, "the account issued to belongs to another organization");
+	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
+	if (inventory == 0)
+		return FALSE;
+	if (!post_costs(self, org, txn, debit_id, inventory, costs,
+		kind == VENTURE_INVENTORY_TXN_KIND_WRITE_OFF ? "Inventory written off" : "Inventory issued",
+		when, actor, error))
+		return FALSE;
+	if (out_txn != NULL)
+		*out_txn = g_steal_pointer(&txn);
+	if (out_costs != NULL)
+		*out_costs = g_steal_pointer(&costs);
+	return TRUE;
+}
+
 static gboolean
 venture_inventory_service_transfer_impl(VentureInventoryService *self, gint64 from_item_id,
 	gint64 to_item_id, gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
@@ -1590,6 +1706,114 @@ venture_inventory_service_issue(VentureInventoryService *self, gint64 inventory_
 	if (!venture_accounting_operation_finish(operation, error))
 		return FALSE;
 	return result;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal;
+ * the writes are one transaction of their own (joining the caller's). */
+gboolean
+venture_inventory_service_receive_from(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, const VentureMoney *total_cost, GDateTime *date, const gchar *reference,
+	gint64 credit_account_id, const VentureActor *actor, VentureEntity **out_txn, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autofree gchar *cost_text = NULL;
+	g_autofree gchar *date_text = NULL;
+	VentureDatabase *db;
+	GVariantBuilder arguments;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	if (out_txn != NULL)
+		*out_txn = NULL;
+	db = self->database;
+	if (db == NULL)
+		return refuse(error, "the database is unavailable");
+	subject = venture_database_get(db, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (subject == NULL)
+		return FALSE;
+	cost_text = total_cost != NULL ? venture_money_to_string(total_cost) : NULL;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "inventory_item_id", g_variant_new_int64(inventory_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64(quantity));
+	g_variant_builder_add(&arguments, "{sv}", "total_cost", g_variant_new_maybe(G_VARIANT_TYPE_STRING, cost_text != NULL ? g_variant_new_string(cost_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "reference", g_variant_new_maybe(G_VARIANT_TYPE_STRING, reference != NULL ? g_variant_new_string(reference) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "credit_account_id", g_variant_new_int64(credit_account_id));
+	operation = venture_accounting_operation_begin(db, "inventory-receive-from", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!venture_database_begin(db, error))
+		return FALSE;
+	if (!receive_from_impl(self, inventory_item_id, quantity, total_cost, date, reference,
+		credit_account_id, actor, &txn, error))
+	{
+		venture_database_rollback(db);
+		return FALSE;
+	}
+	if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	if (out_txn != NULL)
+		*out_txn = g_steal_pointer(&txn);
+	return TRUE;
+}
+
+/* Bind consent before this operation creates derived rows or enters nested
+ * transactions. All generated financial effects share this root proposal;
+ * the writes are one transaction of their own (joining the caller's). */
+gboolean
+venture_inventory_service_issue_to(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, GDateTime *date, const gchar *reference, gint64 debit_account_id,
+	VentureInventoryTxnKind kind, const VentureActor *actor, VentureEntity **out_txn,
+	GPtrArray **out_costs, GError **error)
+{
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(GPtrArray) costs = NULL;
+	g_autofree gchar *date_text = NULL;
+	VentureDatabase *db;
+	GVariantBuilder arguments;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	if (out_txn != NULL)
+		*out_txn = NULL;
+	if (out_costs != NULL)
+		*out_costs = NULL;
+	db = self->database;
+	if (db == NULL)
+		return refuse(error, "the database is unavailable");
+	subject = venture_database_get(db, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (subject == NULL)
+		return FALSE;
+	date_text = date != NULL ? g_date_time_format_iso8601(date) : NULL;
+	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add(&arguments, "{sv}", "inventory_item_id", g_variant_new_int64(inventory_item_id));
+	g_variant_builder_add(&arguments, "{sv}", "quantity", g_variant_new_int64(quantity));
+	g_variant_builder_add(&arguments, "{sv}", "date", g_variant_new_maybe(G_VARIANT_TYPE_STRING, date_text != NULL ? g_variant_new_string(date_text) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "reference", g_variant_new_maybe(G_VARIANT_TYPE_STRING, reference != NULL ? g_variant_new_string(reference) : NULL));
+	g_variant_builder_add(&arguments, "{sv}", "debit_account_id", g_variant_new_int64(debit_account_id));
+	g_variant_builder_add(&arguments, "{sv}", "kind", g_variant_new_int32((gint32)kind));
+	operation = venture_accounting_operation_begin(db, "inventory-issue-to", subject, NULL,
+		g_variant_builder_end(&arguments), venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return FALSE;
+	if (!venture_database_begin(db, error))
+		return FALSE;
+	if (!issue_to_impl(self, inventory_item_id, quantity, date, reference, debit_account_id, kind,
+		actor, &txn, &costs, error))
+	{
+		venture_database_rollback(db);
+		return FALSE;
+	}
+	if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error))
+		return FALSE;
+	if (out_txn != NULL)
+		*out_txn = g_steal_pointer(&txn);
+	if (out_costs != NULL)
+		*out_costs = g_steal_pointer(&costs);
+	return TRUE;
 }
 
 /* Bind consent before this operation creates derived rows or enters nested

@@ -1306,7 +1306,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
 	static const gchar *const trading[] = {
 		"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
-		"/market/alerts", "/feeds", NULL
+		"/market/alerts", "/e/arbitrage_trade", "/feeds", NULL
 	};
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
 	static const gchar *const code[] = {

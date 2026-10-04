@@ -1778,6 +1778,79 @@ venturectl report session_performance this_month group_by=activity price_source=
 venturectl report session_performance 2026 group_by=category category_depth=0
 ```
 
+## Arbitrage: trades, legs and the books
+
+Module `arbitrage` (requires `marketdata` and `ledger`; suggests
+`production` and `goods`). Check `venturectl describe arbitrage_trade` and
+`describe arbitrage_leg`. Financial: an organization **finance** member
+records and closes trades; an editor member is refused (exit 5).
+
+- `arbitrage_trade`: `name`, `strategy` (spread, transform, deal, cover,
+  back_lay or a plugin's — exact string, the report groups by it),
+  `venture_id`, `status` (planned, open, closed, abandoned), `opened_at`,
+  `closed_at` (both derived), `expected` (technical JSON, e.g.
+  `{"profit":["40 GOLD"]}`), `close_journal_id` (technical), `tags`,
+  `notes`. **`closed`/`abandoned` are set only by the `close`/`abandon`
+  actions and left only by `reopen`** — writing them is refused (exit 8).
+- `arbitrage_leg`: `venue_id`, `trade_id` (required), `kind` (buy, sell,
+  fee, transfer, stake, payout, refund; `write_off` is the abandon
+  action's), `status` (planned, executed, failed, cancelled — **only
+  executed posts**), `instrument_id`, `inventory_item_id` (buy/sell only),
+  `quantity`, `unit_price`, `amount`, `fees`, `occurred_at`, `cost` and
+  `inventory_txn_id` (technical, set by execute). **A bare amount ("100")
+  is read in the venue's currency**; an amount in another currency than
+  the venue's is refused. Negative only on a transfer (arriving). Fees in
+  the amount's currency. A unit price × quantity fills an empty amount.
+- Posting: saving a leg `status=executed` posts it (Dr arbitrage positions
+  / Cr the venue's cash for money out, the reverse for money in, fees to
+  arbitrage fees). Saving it unchanged posts nothing; changing an executed
+  leg reposts; cancelling it reverses. The venue's cash is its location's
+  holding (so the holding floor applies, from the leg's date), else its
+  account, else the organization's cash.
+- **A leg with `inventory_item_id` is executed only by
+  `act arbitrage_leg ID execute`** (setting `status=executed` is refused):
+  a buy is received paid from the venue's cash at an exact split of the
+  amount, a sell is issued at FIFO cost into the position. **An executed
+  stock leg cannot be changed or cancelled** — record a counter-leg.
+- An executed leg of a closed or abandoned trade is frozen until `reopen`.
+
+```sh
+venturectl act arbitrage_leg 12 execute occurred_at=2026-03-05T10:00:00Z
+venturectl act arbitrage_trade 4 close closed_at=2026-03-07T10:00:00Z
+venturectl act arbitrage_trade 4 reopen
+venturectl act arbitrage_trade 4 abandon goods=write_off      # or goods=keep (default)
+venturectl --stage act arbitrage_trade 0 record organization_id=1 name="Peacebloom flip" \
+    strategy=spread expected='{"profit":["40 GOLD"]}' \
+    legs='[{"kind":"buy","venue_id":3,"amount":"100","status":"executed"},
+           {"kind":"sell","venue_id":4,"amount":"150","status":"executed"}]'
+```
+
+- `close` moves what is left on the positions account to arbitrage gains,
+  **one journal per currency section, never added together**, and is
+  refused before the last executed leg's date. `reopen` reverses it.
+  `abandon goods=write_off` writes unsold stock off at cost (a `write_off`
+  leg) before closing; `goods=keep` leaves it in stock.
+- `record` (type-level, stageable) creates the trade and its legs in one
+  transaction and executes the legs marked `"status":"executed"` in
+  order. A leg naming anything but kind, status, venue_id, instrument_id,
+  inventory_item_id, quantity, unit_price, amount, fees, occurred_at and
+  notes is refused. A member must pass `organization_id`.
+- Accounts: control-map classifications `arbitrage_positions`,
+  `arbitrage_gains`, `arbitrage_fees`; unmapped they are made as
+  `<org>:1460`, `<org>:4960`, `<org>:6960`.
+
+Report `arbitrage_performance` — finished (closed or abandoned) trades in
+the period they finished; `group_by` (`strategy` default, `venue_pair`,
+`instrument`, `month`), `strategy` (exact), `venture_id`,
+`organization_id`. One row per group **and currency**, book currency
+first: `trades`, `wins`, `hit_rate`, `realised`, `capital`, `roi`, `fees`,
+`avg_hold_days` (group-wide, repeats per row), `expected`, `slippage`
+(only trades whose snapshot named that currency).
+
+```sh
+venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread
+```
+
 ## Goals: targets, steps and the shopping list
 
 Module `goals` (requires only `core`; suggests `production` and `market`).

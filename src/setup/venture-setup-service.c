@@ -138,9 +138,10 @@ kind_for(const gchar *classification)
 	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws") ||
 		g_str_equal(classification, "currency_clearing"))
 		return VENTURE_ACCOUNT_KIND_EQUITY;
-	if (g_str_equal(classification, "income") || g_str_equal(classification, "session_income"))
+	if (g_str_equal(classification, "income") || g_str_equal(classification, "session_income") ||
+		g_str_equal(classification, "arbitrage_gains"))
 		return VENTURE_ACCOUNT_KIND_INCOME;
-	if (g_str_equal(classification, "expense"))
+	if (g_str_equal(classification, "expense") || g_str_equal(classification, "arbitrage_fees"))
 		return VENTURE_ACCOUNT_KIND_EXPENSE;
 	return VENTURE_ACCOUNT_KIND_ASSET;
 }
@@ -166,6 +167,12 @@ label_for(const gchar *classification)
 		return "currency clearing";
 	if (g_str_equal(classification, "session_income"))
 		return "session income";
+	if (g_str_equal(classification, "arbitrage_positions"))
+		return "arbitrage positions";
+	if (g_str_equal(classification, "arbitrage_gains"))
+		return "arbitrage gains";
+	if (g_str_equal(classification, "arbitrage_fees"))
+		return "arbitrage fees";
 	if (g_str_equal(classification, "income"))
 		return "income";
 	if (g_str_equal(classification, "expense"))

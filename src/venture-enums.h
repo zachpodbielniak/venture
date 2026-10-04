@@ -1756,6 +1756,95 @@ GType
 venture_alert_kind_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureArbitrageTradeStatus:
+ * @VENTURE_ARBITRAGE_TRADE_STATUS_PLANNED: written down, nothing done yet;
+ *   the zero value, so a trade nobody gave a status has not happened
+ * @VENTURE_ARBITRAGE_TRADE_STATUS_OPEN: under way: some legs executed, the
+ *   position not yet taken to gains
+ * @VENTURE_ARBITRAGE_TRADE_STATUS_CLOSED: finished; the `close` action
+ *   moved what is left on the positions account to gains, per currency
+ * @VENTURE_ARBITRAGE_TRADE_STATUS_ABANDONED: given up; the `abandon`
+ *   action wrote off or kept the stock and closed what was left
+ *
+ * Where an arbitrage trade stands. Closed and abandoned are set by the
+ * actions only, because each one posts.
+ */
+typedef enum
+{
+	VENTURE_ARBITRAGE_TRADE_STATUS_PLANNED = 0,
+	VENTURE_ARBITRAGE_TRADE_STATUS_OPEN,
+	VENTURE_ARBITRAGE_TRADE_STATUS_CLOSED,
+	VENTURE_ARBITRAGE_TRADE_STATUS_ABANDONED
+} VentureArbitrageTradeStatus;
+
+#define VENTURE_TYPE_ARBITRAGE_TRADE_STATUS (venture_arbitrage_trade_status_get_type())
+
+GType
+venture_arbitrage_trade_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureArbitrageLegKind:
+ * @VENTURE_ARBITRAGE_LEG_KIND_BUY: money out of the venue for something
+ *   bought; the zero value, because a purchase is the commonest leg and a
+ *   leg posts nothing until it is executed whatever its kind
+ * @VENTURE_ARBITRAGE_LEG_KIND_SELL: money into the venue for something sold
+ * @VENTURE_ARBITRAGE_LEG_KIND_FEE: a charge on its own: the amount is a fee
+ * @VENTURE_ARBITRAGE_LEG_KIND_TRANSFER: money moved between venues; a
+ *   positive amount leaves this venue, a negative one arrives at it
+ * @VENTURE_ARBITRAGE_LEG_KIND_STAKE: money out on a bet or a position
+ * @VENTURE_ARBITRAGE_LEG_KIND_PAYOUT: money back from a bet that won or a
+ *   position that paid
+ * @VENTURE_ARBITRAGE_LEG_KIND_REFUND: money back from a bet voided or an
+ *   order returned
+ * @VENTURE_ARBITRAGE_LEG_KIND_WRITE_OFF: stock given up when a trade is
+ *   abandoned; written by the `abandon` action only
+ *
+ * What one leg of an arbitrage trade did. The direction of the money is
+ * derived from the kind, never stored beside it.
+ */
+typedef enum
+{
+	VENTURE_ARBITRAGE_LEG_KIND_BUY = 0,
+	VENTURE_ARBITRAGE_LEG_KIND_SELL,
+	VENTURE_ARBITRAGE_LEG_KIND_FEE,
+	VENTURE_ARBITRAGE_LEG_KIND_TRANSFER,
+	VENTURE_ARBITRAGE_LEG_KIND_STAKE,
+	VENTURE_ARBITRAGE_LEG_KIND_PAYOUT,
+	VENTURE_ARBITRAGE_LEG_KIND_REFUND,
+	VENTURE_ARBITRAGE_LEG_KIND_WRITE_OFF
+} VentureArbitrageLegKind;
+
+#define VENTURE_TYPE_ARBITRAGE_LEG_KIND (venture_arbitrage_leg_kind_get_type())
+
+GType
+venture_arbitrage_leg_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureArbitrageLegStatus:
+ * @VENTURE_ARBITRAGE_LEG_STATUS_PLANNED: intended, not done; the zero
+ *   value, and it posts nothing
+ * @VENTURE_ARBITRAGE_LEG_STATUS_EXECUTED: done; the only status that posts
+ * @VENTURE_ARBITRAGE_LEG_STATUS_FAILED: tried and did not happen; posts
+ *   nothing
+ * @VENTURE_ARBITRAGE_LEG_STATUS_CANCELLED: called off, or taken back after
+ *   it executed (which reverses what it posted)
+ *
+ * Whether one leg of an arbitrage trade happened.
+ */
+typedef enum
+{
+	VENTURE_ARBITRAGE_LEG_STATUS_PLANNED = 0,
+	VENTURE_ARBITRAGE_LEG_STATUS_EXECUTED,
+	VENTURE_ARBITRAGE_LEG_STATUS_FAILED,
+	VENTURE_ARBITRAGE_LEG_STATUS_CANCELLED
+} VentureArbitrageLegStatus;
+
+#define VENTURE_TYPE_ARBITRAGE_LEG_STATUS (venture_arbitrage_leg_status_get_type())
+
+GType
+venture_arbitrage_leg_status_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureDashboardLayout:
  * @VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS: three across, the default
  * @VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS: two across

@@ -52,6 +52,15 @@ Posting is idempotent: a yield stamped with its transaction is never
 posted again, and a posted yield (and its session) cannot be deleted --
 correct its stock with an adjustment instead.
 
+* Bought and sold outright: =receive_from= and =issue_to=
+
+Two variants of receive and issue serve stock that is paid for and sold on the spot rather than through a purchase order and a bill -- an arbitrage leg (see [[file:arbitrage.org][Arbitrage]]). Each changes which account the other side of the journal hits; layers, lots and FIFO are untouched.
+
+- =venture_inventory_service_receive_from(self, item, quantity, total_cost, date, reference, credit_account_id, actor, &txn, error)= -- a purchase movement whose cost is credited to the account the money left (a venue's holding or cash), never to goods received not invoiced (2010): no bill will come to clear it. It takes the *total* cost and splits it over the units exactly, like a craft's output (100.00 for seven units is four layers at 14.29 and three at 14.28, one lot), because a rounded unit cost would leave a cent behind on every flip. Dr inventory, Cr the account paid from.
+- =venture_inventory_service_issue_to(self, item, quantity, date, reference, debit_account_id, kind, actor, &txn, &costs, error)= -- an issue whose first-in-first-out cost is debited to the given account (the arbitrage positions account) instead of cost of goods sold (5000), with movement kind =sale= or =write_off=. Each currency the layers cost is posted as its own pair, as an ordinary issue does.
+
+Both begin the whole-operation posting boundary, then one transaction (joining the caller's), and hand back the movement so the caller can stamp it. Account and item must be in one organization. Each unit is posted once: the arbitrage leg's own posting rule never repeats the stock side.
+
 * Where stock is
 
 =inventory_item.location_id= names a =location= record: a place that can

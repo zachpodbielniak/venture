@@ -2734,7 +2734,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"(defaults to genre); for aggregate, up to 3 comma-separated "
 		"fields, reference.field following one reference; for "
 		"listing_performance, product, category or channel; for "
-		"session_performance, activity, category, location or venture", FALSE);
+		"session_performance, activity, category, location or venture; for "
+		"arbitrage_performance, strategy, venue_pair, instrument or month", FALSE);
 	/* The aggregate report answers "how much / how many, grouped by
 	 * what" for any type, so it is the report to reach for before
 	 * totalling query results; its options are declared here because a
@@ -2789,6 +2790,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"market_deals: how many deals, 1 to 500; 50 by default", FALSE);
 	ai_tool_add_parameter(report, "watchlist_id", "integer",
 		"watchlist: the watchlist to price", FALSE);
+	ai_tool_add_parameter(report, "strategy", "string",
+		"arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's)", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);

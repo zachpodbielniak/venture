@@ -681,6 +681,16 @@ static GType (*const marketdata_types[]) (void) = {
 	venture_watchlist_get_type, venture_watchlist_entry_get_type,
 	venture_alert_rule_get_type, venture_alert_hit_get_type, NULL
 };
+/* Arbitrage trades and their legs, posted to the books. It requires
+ * marketdata, whose venues and instruments a leg names, and ledger, whose
+ * journals a leg posts; it suggests production (a craft between a buy and
+ * a sell) and goods (stock bought and sold by a leg carries its cost). */
+static const gchar *const arbitrage_requires[] = { "marketdata", "ledger", NULL };
+static const gchar *const arbitrage_suggests[] = { "production", "goods", NULL };
+static const gchar *const arbitrage_reports[] = { "arbitrage_performance", NULL };
+static GType (*const arbitrage_types[]) (void) = {
+	venture_arbitrage_trade_get_type, venture_arbitrage_leg_get_type, NULL
+};
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
 
@@ -1333,6 +1343,15 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"report can ask through a series: price source: min, market, 14-day "
 		"and 60-day averages, region figures, sale rate and quantity.",
 		marketdata_requires, marketdata_suggests, marketdata_types, marketdata_reports,
+		NULL, FALSE
+	},
+	{
+		"arbitrage", "Arbitrage",
+		"Arbitrage trades and their legs -- a flip between realms, a "
+		"drop-shipped order, a surebet across bookmakers -- each leg posted "
+		"through the venue's cash, the position closed to gains per "
+		"currency, and how each strategy performed.",
+		arbitrage_requires, arbitrage_suggests, arbitrage_types, arbitrage_reports,
 		NULL, FALSE
 	}
 };

@@ -247,6 +247,8 @@ The posting service registers sale and expense first, when it is made, through t
 | =sale=    | =sale=    | =postable_when_set= on =gross=    | =occurred-at= | =REFUSE_UNPOST=       |
 | =expense= | =expense= | =postable_when_set= on =amount=   | =occurred-at= | =REFUSE_UNPOST=       |
 
+Modules register their own the same way. The arbitrage module registers =arbitrage_leg= (rule =arbitrage_leg=, postable when executed with an amount, dated =occurred-at=, flags none) when it is installed, so executing a leg posts it, cancelling it takes it back out, and a leg whose figures did not change posts nothing when saved again (see [[file:arbitrage.org][Arbitrage]]). Its rule never moves stock: a stock leg's units are received or issued once by the =execute= action, through =venture_inventory_service_receive_from()= and =venture_inventory_service_issue_to()=, and stamped on the leg.
+
 The save boundary (=venture_ledger_wrap_source()= at the database's dispatch) asks the registry; there is no =VENTURE_IS_SALE= check left in it. A new type that should post on save registers itself -- never add a type check there.
 
 *Matching.* A save matches its type's own registration, or its nearest registered ancestor's (=g_type_is_a= semantics, most derived wins), so a subtype of =sale= posts as a sale unless it registers itself. Registering a type that is already registered is refused with =VENTURE_ERROR_ALREADY_EXISTS=; so is anything that is not a =VentureEntity=, an empty rule name, or a date property that is not a date-time of the type -- a misspelt date would otherwise date every journal by its creation time without a word. On failure =destroy= is not called.

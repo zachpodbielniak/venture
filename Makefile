@@ -212,6 +212,10 @@ endif
 # observations only, so the module and its records still work.
 CORE_SRCS += src/marketdata/venture-marketdata-records.c
 SERVER_ONLY_SRCS += $(filter-out src/marketdata/venture-marketdata-records.c,$(wildcard src/marketdata/*.c))
+# Arbitrage trades and their legs: the records are core (venturectl
+# describes them); the rules, posting, actions and report are the server's.
+CORE_SRCS += src/arbitrage/venture-arbitrage-records.c
+SERVER_ONLY_SRCS += $(filter-out src/arbitrage/venture-arbitrage-records.c,$(wildcard src/arbitrage/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -329,6 +333,7 @@ PUBLIC_HDRS += $(wildcard src/goals/*.h)
 PUBLIC_HDRS += src/series/venture-series-math.h
 PUBLIC_HDRS += src/feeds/venture-feeds-records.h
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/marketdata/*.h))
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/arbitrage/*.h))
 ifeq ($(SQLITE),1)
 PUBLIC_HDRS += src/series/venture-series-store.h
 PUBLIC_HDRS += $(filter-out src/feeds/venture-feeds-records.h %-private.h,$(wildcard src/feeds/*.h))

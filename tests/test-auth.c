@@ -5258,11 +5258,15 @@ test_auth_sidebar_asks_the_five_questions(
 		const gchar *build = strstr(page, headings[11]);
 		const gchar *browse = strstr(page, "href=\"/market/browse\"");
 		const gchar *alerts = strstr(page, "href=\"/market/alerts\"");
+		const gchar *trades = strstr(page, "href=\"/e/arbitrage_trade\"");
 
 		g_assert_nonnull(browse);
 		g_assert_nonnull(alerts);
 		g_assert_true((browse > trading) && (browse < build));
 		g_assert_true((alerts > browse) && (alerts < build));
+		/* Arbitrage trades, the arbitrage module's, after the market pages. */
+		g_assert_nonnull(trades);
+		g_assert_true((trades > alerts) && (trades < build));
 		g_assert_null(strstr(page, "href=\"/feeds\""));
 	}
 

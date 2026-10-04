@@ -1,0 +1,271 @@
+#+title: Arbitrage
+#+description: Arbitrage trades and their legs, how each leg reaches the books, closing a position per currency, recording an attempt, and the performance report
+
+* What the module is for
+
+Arbitrage is buying where something is cheap and selling where it is dear, or backing every outcome of an event so that whichever happens pays more than the stakes cost. The =arbitrage= module records each such attempt and makes it reach the books correctly, in any domain: herbs bought on one game realm and sold on another, a supplier's SKU drop-shipped through a marketplace, a surebet across two bookmakers, materials bought at three venues and crafted into something that sells at a fourth.
+
+It requires =marketdata= (a leg names a venue and an instrument) and =ledger= (a leg posts journals), and suggests =production= (a craft between a buy and a sell) and =goods= (stock bought and sold by a leg carries its cost). Because =ledger= requires =finance=, the module's types are financial in the organization role matrix: an organization's finance member records and closes trades, an editor member does not. The module is on by default and switches off like any other; its types, its report and its actions disappear with it.
+
+Finding opportunities -- the scan, the strategies, fee models and the arithmetic of odds -- is the subject of a later chapter of this document; this one is the records and the books.
+
+* The records
+
+** =arbitrage_trade=
+
+One attempt.
+
+| Field              | Kind      | For                                                                                        |
+|--------------------+-----------+--------------------------------------------------------------------------------------------|
+| =name=             | text      | what you call it                                                                           |
+| =strategy=         | text      | =spread=, =transform=, =deal=, =cover=, =back_lay= or a plugin's; trades of one are compared |
+| =venture_id=       | reference | optional: the venture it was for                                                           |
+| =status=           | enum      | =planned= (the zero value), =open=, =closed=, =abandoned=                                  |
+| =opened_at=        | datetime  | derived: stamped when it opens                                                              |
+| =closed_at=        | datetime  | derived: stamped when it is closed or abandoned                                            |
+| =expected=         | text      | technical: the scan's snapshot, a JSON object                                              |
+| =close_journal_id= | reference | technical: the first journal Close posted                                                  |
+| =tags=, =notes=    | text      |                                                                                            |
+
+=planned= and =open= move freely by hand. =closed= and =abandoned= are reached only through the Close and Abandon actions, and left only through Reopen, because each of those posts or reverses; a status typed into a form would do neither, and is refused with the action to use instead. =opened_at= and =closed_at= follow the factory's rule for a derived date: stamped when empty, kept when given, cleared on leaving the state, refused when typed onto a trade never in it. A trade never closes before it opened.
+
+=expected= is what the scan that found the trade expected, verbatim. The report reads one member of it, =profit=: a money string (="12.00 GOLD"=), an array of them, or an object of currency code to amount. Anything that does not name its currency is left out rather than guessed into one.
+
+** =arbitrage_leg=
+
+One movement at one venue.
+
+| Field               | Kind      | For                                                                                       |
+|---------------------+-----------+-------------------------------------------------------------------------------------------|
+| =venue_id=          | reference | where it happened; first, so a bare amount reads the venue's currency                     |
+| =trade_id=          | reference | the trade; required, in the leg's own organization                                         |
+| =kind=              | enum      | =buy= (the zero value), =sell=, =fee=, =transfer=, =stake=, =payout=, =refund=, =write_off= |
+| =status=            | enum      | =planned= (the zero value), =executed=, =failed=, =cancelled=; only executed posts         |
+| =instrument_id=     | reference | optional: what was traded                                                                  |
+| =inventory_item_id= | reference | optional, buy or sell: the stock the units go into or out of                               |
+| =quantity=          | integer   | how many units; at least one with stock                                                    |
+| =unit_price=        | money     | optional; with a quantity it fills an empty amount                                         |
+| =amount=            | money     | the money that moved, before fees                                                          |
+| =fees=              | money     | optional: what the venue charged, in the amount's currency                                 |
+| =occurred_at=       | datetime  | when; stamped when it is executed with none                                                |
+| =cost=              | money     | technical: what the units issued cost, first in first out                                 |
+| =inventory_txn_id=  | reference | technical: the stock movement Execute made                                                 |
+| =notes=             | text      |                                                                                           |
+
+The direction of the money is derived from the kind and never stored: a buy and a stake take money out of the venue into the position; a sell, a payout and a refund bring it back; a fee is a charge on its own. A transfer between two venues is two legs, one leaving the first (a positive amount) and one arriving at the second (a negative amount); they net to nothing on the positions account, and a transfer whose arrival is not recorded yet is money in transit, on the position. =write_off= legs are written by the Abandon action only.
+
+*Bare amounts.* An amount typed without a currency is read in the currency of the first referenced record that names one. =venue_id= is the first reference in the field table for exactly this reason: "100" at a gold auction house is 100 GOLD, not dollars. A venue that names a currency refuses an amount in another ("is in TICKET, and Argent Dawn AH trades in GOLD").
+
+*What a leg refuses*, in the order a person would fix it:
+
+- writing its stamps (=inventory_txn_id=, =cost=), or a =write_off= leg, by hand;
+- any change to a leg that moved stock -- including cancelling it. The units are on a shelf or gone; a correction is a counter-leg (a sell for a buy, a buy for a sell);
+- a financial change to an executed leg of a closed or abandoned trade, and a new executed leg on one: the closing journals were posted from them. Reopen first. A planned leg may still be added;
+- a trade missing, or in another organization;
+- stock on anything but a buy, a sell or a write-off, and stock with a quantity under one;
+- a negative amount on anything but a transfer, negative fees, fees without an amount, and fees or a unit price in another currency than the amount;
+- an executed leg with no amount; and a stock leg marked executed by hand -- the Execute action does that, because it moves the units first;
+- a venue, instrument or stock in another organization, and stock holding a different product from the instrument's.
+
+The leg validator never writes the trade. A derived write would bump the trade's version under whoever is editing it.
+
+* Posting
+
+Every movement of a trade passes through one asset account, *arbitrage positions*, so that what is left on it when the trade is over is exactly its profit or loss.
+
+| Leg                                    | Stock side (Execute)                      | The leg's rule (on save)            |
+|----------------------------------------+-------------------------------------------+-------------------------------------|
+| buy, stake, transfer out, no stock     | --                                        | Dr positions / Cr venue cash         |
+| sell, payout, refund, transfer in      | --                                        | Dr venue cash / Cr positions         |
+| buy with stock                         | Dr inventory / Cr venue cash, at what was paid | fees only                     |
+| sell with stock                        | Dr positions / Cr inventory, at FIFO cost | Dr venue cash / Cr positions         |
+| write_off (Abandon)                    | Dr positions / Cr inventory, at FIFO cost | nothing                             |
+| fee                                    | --                                        | Dr arbitrage fees / Cr venue cash    |
+| every leg's =fees=                     | --                                        | Dr arbitrage fees / Cr venue cash    |
+
+** The rule and the registry
+
+=arbitrage_leg= is a registered ledger source (see [[file:ledger.org][the general journal]], "Posting on save: the source registry"): rule =arbitrage_leg=, postable when the leg is executed and has an amount (written, or a unit price and a quantity to make one), dated by =occurred_at=, flags none. So every save of a leg, through any door, is a posting:
+
+- a planned, failed or cancelled leg posts nothing;
+- executing it posts its lines;
+- saving it again with the same figures posts nothing -- editing a note does not churn history;
+- changing an executed leg's amount, fees, venue or date reverses what it posted and posts the new version;
+- cancelling an executed leg (or moving it back to planned) reverses its journals and clears its memo holding movements. The holding floor judges that removal: a cancelled payout that funded a later spend is refused.
+
+The rule emits its lines in a fixed order -- principal, then fees -- because the ledger compares the stored version's lines with the new version's in order to decide whether anything changed. It is pure: it reads the leg, the venue and the account mappings, and the only thing it ever writes is an account found or made on first use. It never calls the inventory service. The stock side of a leg is done once, by Execute, and stamped on the leg; a rule that moved stock would move it again on every save.
+
+** Venue cash
+
+Where a leg's money moves through: the holding at the venue's location (=venture_holdings_account_for_location()=, made on first use) -- a character's purse, a stall's till -- else the venue's own =account_id=, else the organization's cash (the =cash= control map, else the chart's 1000, else one made under =<org>:1000=). A venue with a location is a holding, so every rule of holdings applies: one truth per currency, and the floor.
+
+** Currencies
+
+Every journal goes through the posting service's one currency rule (see [[file:currencies.org][Currencies]] and [[file:ledger.org][the general journal]]): a book-currency leg posts in the book journal; a valued currency with a rate on the leg's date is converted into it, the line keeping its original amount; a separate-book currency (or a valued one with no rate) posts a journal of its own; a memo currency posts no journal at all -- its venue-cash line on a holding becomes a =holding_txn= movement, and its positions line is dropped. Nothing is ever added across currencies.
+
+** The holding floor
+
+A leg spending from a holding is judged like any other spend, from the leg's date onward: a buy dated 1 March from a purse first funded on 10 March is refused although the purse holds enough today ("Aria holds 0 TICKET on 2026-03-01 ..."). A memo leg is judged by the movement's validator, a posted one by the posting service's guard. A leg that is refused is not saved at all.
+
+* Stock legs and Execute
+
+A leg naming =inventory_item_id= moves stock as well as money, and only the =execute= action may execute it. In one transaction, inside the whole-operation posting boundary (begun before the transaction, as the boundary requires):
+
+1. a *buy* is received through =venture_inventory_service_receive_from()=: a purchase movement referenced =arbitrage_leg:<id>=, cost layers that split the amount over the units exactly (100.00 for seven units is four layers at 14.29 and three at 14.28, one lot), and Dr inventory / Cr venue cash. Goods received not invoiced (2010) is never touched: no bill will come to clear it. The leg's =cost= is its amount;
+2. a *sell* is issued through =venture_inventory_service_issue_to()=: first in, first out, Dr positions / Cr inventory at the layers' cost -- not cost of goods sold (5000). The leg's =cost= is that cost, in the leg's currency;
+3. the leg is stamped with the movement and saved executed, which posts its money and fees through the rule.
+
+So for a flip, the cash paid becomes inventory; the units leave into the position at cost; the proceeds come out of the position into the venue's cash; and what stays on the position is the profit. Each unit is posted once, by the movement that moved it.
+
+Execute also works on a leg without stock: it stamps the time and saves it executed, which is all the rule needs. A planned trade becomes open, opened at the leg that started it.
+
+Executed stock legs are irreversible. Changing or cancelling one is refused with the counter-leg message. A sell whose units cost some other currency (made by a craft from gold inputs and sold for tickets) carries its cost in that currency on the position, and the leg's =cost= is the first one there.
+
+* Close, reopen, abandon
+
+These are record actions, not rules that run on save. A rule built over a trade's sibling legs would always look unchanged to the ledger's comparison, because the trade itself did not change.
+
+** Close
+
+=venture_arbitrage_close()= -- the =close= action, optional parameter =closed_at= (now by default, never before the last executed leg):
+
+1. gathers every journal the trade touched: its legs' (deleted legs included -- a deletion is not a correction), their stock movements', and its own earlier closes and their reversals;
+2. adds up what those journals put on the positions account, *per book section* (journal currency), in book amounts;
+3. posts, for each section with a balance, one journal in that section's own currency: a credit balance (a profit) is Dr positions / Cr arbitrage gains, a debit balance (a loss) is Dr gains / Cr positions. A loss is a debit on the gains account rather than a separate loss account, so one account reads the net result of every trade;
+4. stamps the trade closed, with =closed_at=, =close_journal_id= (the first of the journals) and, when empty, =opened_at= (its first executed leg).
+
+Each closing journal is keyed =arbitrage_close:<trade>:<n>:<CODE>=, where =n= counts the closes the trade has posted, so a reopened trade closes again under a new key. A trade with a gold section and a dollar section posts two journals, never one: gold is not added to dollars.
+
+Sections are journal currencies, not original currencies. A euro leg converted into the dollar book at a rate sits in the dollar section at its booked value, and is closed at exactly that, so the section ends at zero; the gain therefore carries the exchange difference between the legs' rates. A section kept in a separate book (gold) is closed in that book. Each closing journal's lines are all in its header's currency, so it is posted with the core post and nothing is converted. A section whose currency has since become memo cannot be held by any journal, and the close is refused saying so.
+
+** Reopen
+
+=venture_arbitrage_reopen()= -- the =reopen= action: reverses every closing journal the trade still has posted (dated now, or the close's own date when that is later), clears =closed_at= and =close_journal_id=, and sets it open. Its executed legs are editable again; stock written off by an abandon stays written off.
+
+** Abandon
+
+=venture_arbitrage_abandon()= -- the =abandon= action, parameters =goods= (=keep=, the default, or =write_off=) and =abandoned_at=:
+
+- =write_off=: for each stock the trade's executed legs bought into and did not sell out of, the remaining units -- never more than are on hand, because units that left the shelf some other way are not the trade's to lose -- are issued at FIFO cost into the positions account through a =write_off= leg (stock movement kind =write_off=, referenced =arbitrage_trade:<id>=). The close that follows takes their cost to gains as a loss;
+- =keep=: the units stay in stock at their cost and nothing moves.
+
+Then the trade is closed as above, with the status abandoned.
+
+** Deletion
+
+Deleting a leg or a trade removes nothing from the books (see [[file:ledger.org][the general journal]]): its journals and movements stay posted. A deleted leg still counts in its trade's position and figures, and the trade page marks it deleted rather than hiding it.
+
+* Recording an attempt: =record=
+
+=venture_arbitrage_record()= -- the type-level =record= action on =arbitrage_trade= -- creates a trade and its legs in one transaction, inside the posting boundary. It is what the scan's "Record attempt" calls.
+
+| Parameter         | Kind      | Notes                                                                    |
+|-------------------+-----------+--------------------------------------------------------------------------|
+| =organization_id= | integer   | the organization it is judged and filed in; a member must name one       |
+| =name=            | string    | required                                                                 |
+| =strategy=        | string    |                                                                          |
+| =venture_id=      | reference |                                                                          |
+| =expected=        | json      | an object, kept as the trade's snapshot                                  |
+| =notes=           | text      |                                                                          |
+| =legs=            | json      | required: 1 to 200 leg objects                                           |
+
+Each leg object may carry =kind=, =status=, =venue_id=, =instrument_id=, =inventory_item_id=, =quantity=, =unit_price=, =amount=, =fees=, =occurred_at= and =notes=, in their wire spelling; any other member (a stamp, an id, a trade) is refused by name. Legs are created first, then those asked for as executed are executed in the order given -- a buy before the sell of the same units -- exactly as Execute does, which opens the trade.
+
+The action is stageable: a staged record holds its parameters, and approval performs it afresh, recounting stock and re-reading purses as they are then. Like every type-level action, it is judged in the organization it names (=venture_action_prepare_target()=, =venture_action_require_organization()=): its finance member records, an editor member is refused, a member who names no organization is told to name one, and a global administrator who names none records in the default organization.
+
+#+begin_src sh
+venturectl act arbitrage_trade 0 record organization_id=1 name="Peacebloom flip" \
+  strategy=spread expected='{"profit":["40 GOLD"]}' \
+  legs='[{"kind":"buy","venue_id":3,"amount":"100","status":"executed"},
+         {"kind":"sell","venue_id":4,"amount":"150","status":"executed"}]'
+#+end_src
+
+* Actions
+
+| Type              | Action    | Parameters                      | Stageable |
+|-------------------+-----------+---------------------------------+-----------|
+| =arbitrage_leg=   | =execute= | =occurred_at=                   | yes       |
+| =arbitrage_trade= | =close=   | =closed_at=                     | yes       |
+| =arbitrage_trade= | =reopen=  | --                              | yes       |
+| =arbitrage_trade= | =abandon= | =goods=, =abandoned_at=         | yes       |
+| =arbitrage_trade= | =record=  | see above (type-level)          | yes       |
+
+The module is in the accounting boundary's list of financial modules, so the action framework wraps each of these in one whole-operation proposal: under a second-actor rule on posting, the first person's execute or close is a proposal and a second person performs it.
+
+* Accounts
+
+| Classification        | Kind    | Unmapped, made on first use as |
+|-----------------------+---------+--------------------------------|
+| =arbitrage_positions= | asset   | =<org>:1460= Arbitrage positions |
+| =arbitrage_gains=     | income  | =<org>:4960= Arbitrage gains     |
+| =arbitrage_fees=      | expense | =<org>:6960= Arbitrage fees      |
+
+Map them with an =accounting_control_map= (see [[file:setup.org][Accounting setup]]) to use your own chart's accounts. =venture_arbitrage_account()= resolves one; the codes are organization-scoped so they can never take a number a chart already uses. Remapping =arbitrage_positions= while trades are open leaves their balance on the old account: close them first.
+
+* The trade page
+
+A trade's page shows its own block before the generic panels: the result per currency (money out, back, into stock, cost of stock out, fees, realised), what is left on the positions account (a profit or a loss, per section), links to every journal, and the legs in order with venue, instrument, units, amount, fees, status and an Execute button beside each planned or failed leg. The legs are not listed again under Related. All of it is =venture_arbitrage_trade_summary()=, the arithmetic the report runs.
+
+* The =arbitrage_performance= report
+
+How finished trades did -- closed or abandoned, in the period they finished. One row per group and currency, the book currency first in each group, never a sum across currencies.
+
+| Option            | Values                                                         |
+|-------------------+----------------------------------------------------------------|
+| =group_by=        | =strategy= (default), =venue_pair=, =instrument=, =month=      |
+| =strategy=        | only trades of this strategy, matched exactly                  |
+| =venture_id=      | only this venture's trades                                     |
+| =organization_id= | the legal entity; the default organization otherwise          |
+
+Columns: trades, profitable, hit rate, realised, capital deployed, ROI, fees, average hold (days), expected, and realised less expected.
+
+- *Realised* is what came back, less what went out, less the cost of stock that left (sold or written off), less fees. Money that became stock still held is not counted as spent: =returned - (capital - stock_bought) - stock_cost - fees=, per currency, from executed legs only (deleted ones included).
+- *Capital deployed* is money out, stock bought included. *ROI* is realised over it; nothing deployed is no ROI, not an infinite one.
+- *Hit rate* is the share of a currency's trades that realised more than nothing.
+- *Average hold* is opened to closed, over the group's trades; it belongs to the group and repeats on each currency row.
+- *Expected* and *realised less expected* count only trades whose snapshot named an expected profit in that currency, so the comparison is like for like.
+- =venue_pair= labels a trade by the venue its money first went out at and the venue it first came back at ("Market → Supplier"), =instrument= by the first leg that names one, =month= by the UTC month it finished.
+
+The strategy, venture and organization filters narrow the query before its row bound is counted. Past =venture_aggregate_get_max_rows()= finished trades the report refuses, naming the bound, rather than total a truncated set.
+
+#+begin_src sh
+venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread
+#+end_src
+
+The option reaches every door: the web API, the report page (with a form for group, strategy, venture and period), the CLI, MCP's =venture_report= and the assistant's report tool.
+
+* Public API
+
+#+begin_src C
+#define VENTURE_ARBITRAGE_LEG_RULE   "arbitrage_leg"
+#define VENTURE_ARBITRAGE_CLOSE_RULE "arbitrage_close"
+#define VENTURE_ARBITRAGE_MAX_LEGS   (200)
+
+gint venture_arbitrage_leg_direction(VentureArbitrageLegKind kind, const VentureMoney *amount);
+gint64 venture_arbitrage_account(VentureDatabase *database, gint64 organization_id,
+    const gchar *classification, GDateTime *when, const VentureActor *actor, GError **error);
+gboolean venture_arbitrage_venue_cash_account(VentureDatabase *database, gint64 organization_id,
+    gint64 venue_id, GDateTime *when, const VentureActor *actor, gint64 *out_account_id,
+    GError **error);
+gboolean venture_arbitrage_execute_leg(VentureDatabase *database, gint64 leg_id,
+    GDateTime *occurred_at, const VentureActor *actor, VentureEntity **out_leg, GError **error);
+GPtrArray *venture_arbitrage_position(VentureDatabase *database, gint64 trade_id, GError **error);
+gboolean venture_arbitrage_close(VentureDatabase *database, gint64 trade_id, GDateTime *closed_at,
+    const VentureActor *actor, VentureEntity **out_trade, GError **error);
+gboolean venture_arbitrage_reopen(VentureDatabase *database, gint64 trade_id,
+    const VentureActor *actor, VentureEntity **out_trade, GError **error);
+gboolean venture_arbitrage_abandon(VentureDatabase *database, gint64 trade_id, gboolean write_off,
+    GDateTime *when, const VentureActor *actor, VentureEntity **out_trade, GError **error);
+VentureEntity *venture_arbitrage_record(VentureDatabase *database, gint64 organization_id,
+    JsonObject *request, const VentureActor *actor, GError **error);
+JsonNode *venture_arbitrage_trade_summary(VentureDatabase *database, gint64 trade_id,
+    GError **error);
+#+end_src
+
+* Traps
+
+- *Never make the leg rule touch stock.* It is built twice on every save; a rule that received or issued units would do it again each time. Execute does the stock side once and stamps it.
+- *Never post a stock leg's principal from the rule.* A buy's cash was paid when its units were received; posting it again from the rule would spend it twice.
+- *Never close by original currency.* Close per journal currency in book amounts, or a converted section never reaches zero.
+- *Never write the trade from a leg validator.* Use the actions, which are the writers allowed to.
+- *Tests that create a trade with executed legs from a purse must fund it first, and before the legs' dates* -- the floor is the running balance.

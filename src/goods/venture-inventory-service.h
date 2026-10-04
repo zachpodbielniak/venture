@@ -110,6 +110,63 @@ gboolean venture_inventory_service_issue(VentureInventoryService *self, gint64 i
 	gint64 quantity, GDateTime *date, const gchar *source_type, gint64 source_id,
 	const VentureActor *actor, GPtrArray **costs, GError **error);
 /**
+ * venture_inventory_service_receive_from:
+ * @self: the inventory service
+ * @inventory_item_id: the stock the units arrive in
+ * @quantity: how many units, more than zero
+ * @total_cost: what all of them cost together, zero or more
+ * @date: (nullable): when they arrived; now when %NULL
+ * @reference: (nullable): what the movement is found by, such as
+ *   "arbitrage_leg:12"
+ * @credit_account_id: the account the money left, in the item's
+ *   organization: a venue's holding or cash
+ * @actor: (nullable): audit actor
+ * @out_txn: (out) (optional) (transfer full): the purchase movement
+ * @error: (out) (optional): return location for an error
+ *
+ * Stock bought outright: a receipt whose cost is credited to the account
+ * it was paid from instead of goods received not invoiced, which is never
+ * touched. The cost is split over the units exactly -- one layer a minor
+ * unit dearer and one at the floor, sharing one lot -- so first in first
+ * out later takes exactly what was paid. Posted as one pair through
+ * venture_posting_service_post_by_currency(): a memo currency moves the
+ * holding and posts nothing. One transaction, joining the caller's.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean venture_inventory_service_receive_from(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, const VentureMoney *total_cost, GDateTime *date, const gchar *reference,
+	gint64 credit_account_id, const VentureActor *actor, VentureEntity **out_txn, GError **error);
+/**
+ * venture_inventory_service_issue_to:
+ * @self: the inventory service
+ * @inventory_item_id: the stock the units leave
+ * @quantity: how many units, more than zero
+ * @date: (nullable): when they left; now when %NULL
+ * @reference: (nullable): what the movement is found by
+ * @debit_account_id: the account their cost goes to, in the item's
+ *   organization, instead of cost of goods sold
+ * @kind: %VENTURE_INVENTORY_TXN_KIND_SALE or
+ *   %VENTURE_INVENTORY_TXN_KIND_WRITE_OFF; anything else is refused
+ * @actor: (nullable): audit actor
+ * @out_txn: (out) (optional) (transfer full): the issuing movement
+ * @out_costs: (out) (optional) (transfer full) (element-type VentureMoney):
+ *   what the units cost, one amount per currency their layers were in
+ * @error: (out) (optional): return location for an error
+ *
+ * An issue whose first-in-first-out cost is debited to @debit_account_id:
+ * stock sold into an arbitrage position, or written off into it, where the
+ * profit or loss is decided when the position closes. Layers, lots and the
+ * per-currency posting are venture_inventory_service_issue()'s. One
+ * transaction, joining the caller's.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean venture_inventory_service_issue_to(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, GDateTime *date, const gchar *reference, gint64 debit_account_id,
+	VentureInventoryTxnKind kind, const VentureActor *actor, VentureEntity **out_txn,
+	GPtrArray **out_costs, GError **error);
+/**
  * venture_inventory_service_restore:
  * @self: the service or registry instance
  * @inventory_item_id: inventory item id

@@ -278,7 +278,7 @@ venture_accounting_operation_is_financial(VentureEntity *record)
 	static const gchar *const modules[] = {
 		"sales", "finance", "ledger", "invoicing", "receivables", "payables",
 		"banking", "assets", "billing", "claims", "payroll", "cutover", "setup",
-		"equity", "goods", "projects", "progress", "quotes", "autojournal", NULL
+		"equity", "goods", "projects", "progress", "quotes", "autojournal", "arbitrage", NULL
 	};
 	const VentureModuleInfo *infos;
 	gsize count, i;
