@@ -301,13 +301,13 @@ compose.deploy.yaml    example deployment: PostgreSQL, named volumes
 
 Working and covered by tests:
 
-- the build system, both binaries, static linking of all seven dependencies
+- the build system, both binaries, static linking of all nine dependencies
 - =VentureMoney= and the boxed types
-- =VentureEntity=, the record types (31 built in), the registry
+- =VentureEntity=, the record types (282 built in, across the module table), the registry
 - configuration, including the compiled C configuration via crispy
 - the database layer over orm-glib, the query builder, schema derivation,
   and reference integrity enforced at the save
-- the reporting engine and ten built-in reports, none of which will total
+- the reporting engine and 96 built-in reports, none of which will total
   across currencies or leave an exclusion unmentioned
 - authentication with per-address login rate limiting, sessions, API
   tokens, the REST API, the HTMX UI
