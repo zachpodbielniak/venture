@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-09-27]
 #+updated: [2026-10-04]
-#+version: 0.3.0
+#+version: 0.3.1
 
 * What this is
 
@@ -649,16 +649,16 @@ Three trades are recorded through the books, each an =arbitrage_trade= whose leg
 
 | Trade                                              | What happened                                                                 | Realised |
 |----------------------------------------------------+-------------------------------------------------------------------------------+----------|
-| Moonsteel bars, Thornmere to Silverfen (=spread=)  | five bars bought out of Brisk's purse, couriered, sold into Tallow's          | 4.095 GOLD |
-| Healing potions (=transform=)                      | twenty silverleaf bought on Thornmere, ten potions brewed by Tallow, sold on Silverfen | 11.39 GOLD |
-| Swiftness potions for raid night (=deal=)          | ten bought on Silverfen, the raid cancelled, written off by =abandon=        | -6.60 GOLD |
+| Moonsteel bars, Thornmere to Silverfen (=spread=)  | five bars bought out of Brisk's purse, couriered, sold into Tallow's          | 4.0950 GOLD |
+| Healing potions (=transform=)                      | twenty silverleaf bought on Thornmere, ten potions brewed by Tallow, sold on Silverfen | 11.3900 GOLD |
+| Swiftness potions for raid night (=deal=)          | ten bought on Silverfen, the raid cancelled, written off by =abandon=        | -6.6000 GOLD |
 
 #+begin_src sh
 venturectl report arbitrage_scan organization_id=$ORG strategy=spread units=5 min_profit="1.0000 GOLD"
-venturectl report arbitrage_scan organization_id=$ORG strategy=transform recipe_id=$HEALING_RECIPE units=10
+venturectl report arbitrage_scan organization_id=$ORG strategy=transform recipe_id=$HEALING units=10
 venturectl report arbitrage_performance last_90_days organization_id=$ORG
-venturectl report income_statement this_month organization_id=$ORG
-venturectl report pnl this_month organization_id=$ORG    # Arbitrage gains, fees and result beside the sales
+venturectl report income_statement last_30_days organization_id=$ORG
+venturectl report pnl last_30_days organization_id=$ORG    # Arbitrage gains, fees and result beside the sales
 #+end_src
 
 Every purse a trade spends is funded before it is spent: Brisk ends on 1g 91s of the 7g 23s his farming earned, and =tests/demo-market.sh= replays both purses at awkward clock times to keep it so. [[file:arbitrage-crafting.org][Craft arbitrage]] walks through the potion trade and the write-off; the default organization's dollar trades -- a dropshipped order and a surebet -- are in [[file:arbitrage-dropshipping.org][dropshipping]] and [[file:arbitrage-surebet.org][a surebet]].

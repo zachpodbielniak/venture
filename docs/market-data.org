@@ -1,16 +1,86 @@
 #+title: Market data: feeds and the series store
-#+description: How outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract; venues, instruments, watchlists, promotion and the price oracle
+#+description: How the market data pieces fit together, from plugins to the books; how outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract; venues, instruments, watchlists, promotion, the price oracle, alerts and the Trading pages
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
 #+updated: [2026-10-04]
-#+version: 0.3.1
+#+version: 0.4.0
 
 * Market data
 
 A market data source -- an auction house API, a bookmaker's odds feed, a supplier's price list -- returns far more than the main database is for. One World of Warcraft region is some 186 realms times ten thousand items, every hour, out of a hundred thousand listings per realm. VENTURE keeps all of it, reduced to compact figures as it arrives, in a *series store*: one SQLite file per data source, outside the main database.
 
-This page documents the feeds that fill it -- data sources, providers, the worker thread, the transport rules, scheduling, the records sink -- and the store itself: its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract. The marketdata module -- venue and instrument records, watchlists, promotion and the price oracle that reads the stores -- is documented at the end of this page; the pages that browse it are built on top of it. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]].
+This page documents the whole path market data takes. It opens with how the pieces fit together, then covers the store itself -- its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract -- then the feeds that fill it (data sources, providers, the worker thread, the transport rules, scheduling, the records sink), then the marketdata module that joins the stores to the books (venue and instrument records, watchlists, promotion and the price oracle), its alerts, and the Trading pages that browse it all. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]]; for what is done with the prices once they are read -- the arbitrage scan, trades and their legs -- see [[file:arbitrage.org][Arbitrage]].
+
+** How it fits together
+
+Market data crosses four modules -- =feeds=, =marketdata=, =arbitrage= and the ledger, with =market='s price observations beside them -- and two kinds of storage, and each step has one owner. Plugins add the parts that know a particular outside service; the =feeds= module decides when to fetch and records what happened; a worker thread does the fetching and writes a *series store*, a SQLite file of its own per data source; the =marketdata= module reads the stores on the main thread and turns what matters into ordinary records; the =arbitrage= module prices opportunities from the same stores and records the trades; and the ledger books what the trades moved.
+
+#+begin_src text
+ PLUGINS (.so native | crispy .c | exec program)         docs: plugins.org
+   |  venture_plugin_register(context) / manifest "provides:"
+   v
+ REGISTRIES ON VentureContext
+   data source providers   fee models   arbitrage strategies   export formats
+   (built in: http_json, csv, file_jsonl; percent, commission, none; spread,
+    deal, transform, cover, back_lay; csv, shopping_list)
+   |  a data_source names a provider by name
+   v
+ FEEDS module (main thread, main database)                 module "feeds"
+   data_source --- frozen: settings, sealed credentials (feed-<uuid>),
+   |               limits, allowlist, the provider's and every hook's data
+   |                                         data_source_run  <-------------+
+   v                                         records sink: price_observation,
+ SERIES WORKER THREAD "venture-feeds"        exchange_rate (main thread) <--+
+   own GMainContext and SoupSession; never touches the database             |
+   fetch:  allowlisted origin, no redirect, byte cap, one deadline,         |
+           If-Modified-Since, Retry-After, hourly request budget            |
+   parse (GTask thread) -> VentureFeedBatch -> figures -> one transaction   |
+   hooks' commit: alert candidates as plain JSON on the run                 |
+   |                                       run-finished (plain data) -------+
+   v
+ SERIES STORE  <state_dir>/series/<data-source-uuid>/store.db   own SQLite, WAL
+   venues instruments snapshots current hourly daily region venue_state
+   quotes quote_history entries meta            (one writer: the worker)
+   |  read-only handles on the main thread: venture_feeds_service_open_reader()
+   v
+ MARKETDATA module (main database)                    module "marketdata"
+   venue  instrument (promoted from a store)  watchlist  watchlist_entry
+   alert_rule  alert_hit  |  price oracle, "series:<basis>[@where]"
+   Trading pages /market/*, reports market_deals venue_index watchlist
+   |  venues and instruments a leg names; the oracle and the stores
+   v
+ ARBITRAGE module (main database)                     module "arbitrage"
+   the scan (strategies x fee models over the stores), presets
+   (arbitrage_strategy), exports; arbitrage_trade and arbitrage_leg
+   |  every executed leg is a ledger source
+   v
+ LEDGER  journals through the posting service (venue cash: a location's
+         holding, else an account), holding_txn for memo currencies,
+         inventory and FIFO cost layers for stock legs
+#+end_src
+
+- *Plugins* own knowledge of one outside service. A native =.so= or a crispy =.c= file calls =venture_plugin_register()= with the context and adds to its registries directly -- a data source provider (=venture_context_get_data_source_providers()=), a fee model (=venture_context_get_fee_models()=), a strategy (=venture_context_get_arbitrage_strategies()=), an export format (=venture_context_get_export_formats()=), a record action. An exec plugin is a program and can only offer what its manifest's =provides:= names; for market data that is =kind: data_source_provider=. A name is never registered twice, so a plugin cannot replace a built-in. See [[file:plugins.org][Plugins]], and the three feed examples below.
+- *Feeds* (=src/feeds/=, module =feeds=, requires only =core=, off until =feeds.enabled: true=) owns the =data_source= and =data_source_run= records, the provider registry's built-ins, the worker thread and its schedule, and the records sink. Everything a fetch needs is frozen on the main thread into a =VentureFeedSource= before the worker sees it, which is what lets the worker never touch the database. See [[*Feeds][Feeds]] below, and [[file:security.org::*Market data feeds: where the server may reach][Security]] for where it may reach.
+- *The series worker* owns the network and the store's writer handle. Fetching, parsing and aggregating happen there, one source's units one after another; what comes back to the main thread is plain data: the run's figures, its notes and each hook's payload. See [[*The worker thread][The worker thread]].
+- *The series store* (=src/series/=) owns everything a source ever returned, reduced to compact figures as it arrives: the newest figures per venue and instrument, hourly and daily history, region figures, quotes and entries. It is one SQLite file per data source, never the main database, because its rows are derived and arrive by the million. A build without SQLite has no store, and then no feeds. See the store chapters that follow, and [[file:backup.org::*Series stores][Backups: series stores]] for how installation backups copy them.
+- *Marketdata* (=src/marketdata/=, module =marketdata=, requires =market= -- and through it =sales= -- suggests =feeds=, on by default) owns the records the books can point at: venues and instruments promoted out of a store, watchlists, alert rules and their hits. It owns the price oracle every valuing report can ask through a =series:= price source, and the Trading pages, reports and widgets that browse the stores. With feeds off its records still work and its pages say there is no data. See [[*Venues, instruments and the price oracle][Venues, instruments and the price oracle]], [[*Alerts][Alerts]] and [[*Browsing: the Trading pages][Browsing: the Trading pages]].
+- *Arbitrage* (=src/arbitrage/=, module =arbitrage=, requires =marketdata= and =ledger=, suggests =production= and =goods=, on by default) owns the scan -- strategies run over the stores and netted by each venue's fee model -- the saved questions (=arbitrage_strategy=), exports, and the trades and legs that record an attempt. See [[file:arbitrage.org][Arbitrage]].
+- *The ledger* owns the money. An executed leg is a ledger source: it posts journals through the posting service, through the venue's cash (a location's holding, else the venue's account, else the organization's cash), stock legs move inventory at FIFO cost, and a memo currency moves a holding instead of posting. Nothing here posts around it. See [[file:arbitrage.org::*Posting][Arbitrage: posting]] and [[file:ledger.org][the general journal]].
+
+Two rules hold the whole path together. Nothing on the worker thread reads or writes the main database, so every record -- a run, a price observation, an alert hit -- is written on the main thread as the system, through every validator. And nothing guesses a conversion: the store, the oracle, the Trading pages and the alerts never convert at all -- a price in another currency than the one asked for is no answer, said in a note -- and where the arbitrage scan and the ledger do value one currency in another, it is only through a recorded =exchange_rate=, never an inverted or guessed one.
+
+*** Where to read next
+
+- [[file:plugins.org][Plugins]] -- runtimes, manifests, the exec protocol, and [[file:plugins.org::*The reference plugins][the reference plugins]].
+- [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses as a feed]] -- the =blizzard-auctions= native plugin: a provider with a freeze step, the =wow_auction= fee model, the =tsm= export and recipe import.
+- [[file:examples/odds-api-feed.org][Bookmakers' odds from the-odds-api]] -- the =odds-api.c= crispy plugin: a provider as one function, quotes, a remote quota.
+- [[file:examples/dropship-supplier-feed.org][A dropshipping supplier's price list]] -- the =supplier-csv= exec plugin: a provider as a bash program.
+- [[file:arbitrage.org][Arbitrage]] -- the scan, its fee models and presets, trades, legs and how they reach the books.
+- [[file:market.org][Market]] -- price observations (the oracle's fallback and the records sink's target), listings and sale rate.
+- [[file:backup.org][Backups]] -- how installation backups copy every store, and restoring one by hand.
+- [[file:configuration.org][Configuration]] -- the =feeds.*=, =series.*= and =plugins.*= keys.
+- [[file:security.org][Security]] -- where the server may reach, credentials, and keys that travel in an address.
 
 ** Why it is not entity tables
 
@@ -63,7 +133,14 @@ A reader is opened read-write without =CREATE= and then made =query_only=: a WAL
 
 ** Schema
 
-Version 3. Step 1 is the price data; step 2 adds quotes and entries; step 3 adds =current.stock_changed_at= and an index on when an entry first arrived, for the alerts.
+Version 4 (=venture_series_store_schema_version()=); the steps are =series_schema_steps[]= in =src/series/venture-series-store.c=.
+
+| Step | Adds                                                                                                                                                      |
+|------+-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    1 | the price data: =meta= (with =created_at=), =venues=, =instruments=, =snapshots=, =current=, =hourly=, =daily=, =region=, =venue_state= and their indexes |
+|    2 | =quotes= (indexed on =instrument_id=), =quote_history= (indexed on =taken_at=) and =entries= (indexed on =COALESCE(published_at, fetched_at)= for the purge) |
+|    3 | =current.stock_changed_at= and =entries_fetched=, an index on when an entry first arrived -- both for the alerts                                           |
+|    4 | =current.sale_rate= and =current.sold_per_day=, with =current_venue_sale_rate= (=venue_id=, =sale_rate=) and the partial =current_sale_rate=, for browsing by how fast a thing sells |
 
 *** =meta=
 
@@ -78,7 +155,7 @@ Source-level state: a cursor, a quota. =key= (primary), =value=. Step 1 writes =
 | =namespace=  | the source's namespace for it                                           |
 | =name=       | readable name                                                           |
 | =kind=       | free-form: realm, marketplace, bookmaker                                |
-| =group_key=  | the group it is priced against (a region); ='' for none                  |
+| =group_key=  | the group it is priced against (a region); =''= for none                 |
 | =currency=   | its currency, used when a snapshot names none                           |
 | =attrs=      | a JSON object of anything else                                          |
 | =first_seen=, =last_seen= | when the store first and last heard of it                  |
@@ -179,7 +256,7 @@ Every blob starts with a format byte (1 today) and stores integers as unsigned L
 A snapshot is assembled in memory and applied in one transaction:
 
 1. =venture_series_store_begin_snapshot(store, venue, currency, taken_at, fetched_at, complete)=. With no currency, the venue's. =complete= says the snapshot lists everything at the venue, so an instrument missing from it is out of stock there.
-2. =venture_series_snapshot_add_listing()= per listing -- instrument key, optional listing id, unit price, quantity, side, and the least time the listing has left (=expires_in_min=, -1 when unknown) -- or =venture_series_snapshot_add_stats()= per instrument a source has already summarised. One instrument cannot have both in one snapshot. A listing whose quantity would take its instrument's total past 64 bits is refused alone, leaving the snapshot as it was.
+2. =venture_series_snapshot_add_listing()= per listing -- instrument key, optional listing id, unit price, quantity, side, and the least time the listing has left (=expires_in_min=, in *seconds* despite its name -- "min" is minimum -- and -1 when unknown) -- or =venture_series_snapshot_add_stats()= per instrument a source has already summarised. One instrument cannot have both in one snapshot. A listing whose quantity would take its instrument's total past 64 bits is refused alone, leaving the snapshot as it was.
 3. =venture_series_store_commit_snapshot()=.
 
 The commit:
@@ -279,14 +356,15 @@ Also: =_get_current()=, =_other_venues()= (every venue's row for one instrument,
 | =series.hourly_days=  | 14      | days of hourly history, quote history and snapshot log kept, today included; 0 forever      |
 | =series.daily_days=   | 0       | days of daily history and entries kept; 0 forever -- it cannot be fetched again               |
 | =series.max_store_mb= | 0       | size past which a store refuses new instruments; 0 for no cap                               |
+| =series.include_in_backup= | true | copy every store beside each installation backup (see "Backups" below)                  |
 
-The store reads none of these: the caller hands them over. =venture_series_store_purge(store, now, hourly_days, daily_days)= deletes everything before day /today − N + 1/ -- keeping N days counting today -- for good, then runs an incremental vacuum.
+The store reads none of these: the feeds service reads them on the main thread, freezes the first three into each source (=venture_series_store_set_max_bytes()= takes the cap in bytes) and asks the last itself when a backup runs; the configuration refuses a negative day count or cap at startup. =venture_series_store_purge(store, now, hourly_days, daily_days)= deletes everything before day /today − N + 1/ -- keeping N days counting today -- for good, then runs an incremental vacuum.
 
 The cap counts pages that hold data. Past it, snapshots of known instruments carry on -- the history being paid for keeps arriving -- but an instrument the store has never seen is refused and counted in the commit's =instruments_refused= and =listings_refused=, which the feeds run records. Hourly history is what grows: as measured, one snapshot of a million venue-instrument rows (100 venues × 10 000 instruments, 50 000 listings each) makes a 350 MB store, of which =current= and its indexes are about 190 MB, a day's =daily= and =hourly= rows with their indexes about 120 MB and the hundred listing sets about 40 MB; each further hour adds roughly ten to fifteen bytes per row to =hourly=. At a full World of Warcraft region that is gigabytes a fortnight, which is what =hourly_days= is for.
 
 ** Backups
 
-A store is history its source will never serve again, so installation backups copy it: with =series.include_in_backup= on (the default) and the =feeds= module on, every installation copy is followed by one copy of each store on disk, recorded as a =backup_run= of scope =series= naming the installation run (=parent-run-id=) and the data source (=store-uuid=). [[file:backup.org][Backups]] has the whole of it -- retention per store, failures, verification and restoring by hand; what matters here is how a copy is taken.
+A store is history its source will never serve again, so installation backups copy it: with =series.include_in_backup= on (the default) and the =feeds= module on, every installation copy is followed by one copy of each store on disk, recorded as a =backup_run= of scope =series= naming the installation run (=parent_run_id=) and the data source (=store_uuid=). [[file:backup.org][Backups]] has the whole of it -- retention per store, failures, verification and restoring by hand; what matters here is how a copy is taken.
 
 =venture_series_store_backup(directory, destination, pages_per_step, cancellable, &sha256, &size, error)= copies a store with SQLite's online backup API on a connection of its own -- never the writer's, which may hold a batch open -- inside one read transaction, so the copy is the store as of one commit while the writer carries on in WAL; and stepping inside that pinned read is what lets a copy finish at all under a busy writer, because without it SQLite restarts the copy at every commit. It writes =destination.partial=, switches it to a rollback journal so it is one self-contained file, renames it into place, and hashes it, all on the calling thread; nothing half-written survives a failure or a cancel. It reads no version: a copy is bytes, and a store an older build wrote is still worth keeping. =venture_series_store_check_file(path, &check, error)= opens a copy immutable -- not one byte written, so its recorded digest still matches -- and reports its schema version, =integrity_check= and row counts; verification uses it.
 
@@ -298,22 +376,53 @@ A =SQLITE=0= build has no store: =venture-series-store.c= is left out by the Mak
 
 * Feeds
 
-The =feeds= module (=src/feeds/=) fetches market data on a schedule and writes it into each source's store. It is off unless the operator sets =feeds.enabled: true=, because a source makes the server call outside hosts. It requires only =core=.
+The =feeds= module (=src/feeds/=) fetches market data on a schedule and writes it into each source's store. It is off unless the operator sets =feeds.enabled: true=, because a source makes the server call outside hosts. It requires only =core=, and it exists only in a build with SQLite: everything but its two record types is compiled under =VENTURE_HAVE_SQLITE=.
+
+** Configuration
+
+Every key but =enabled= (the module switch) is read on the main thread and frozen into each source when the source is frozen; a change to any of them (or to =series.*=, =plugins.allow_exec= or the state directory) refreezes every source. The defaults are in =data/default-config.yaml= and =src/config/venture-config.c=, and an out-of-range value is refused at startup rather than making every fetch fail in a way that looks like the far end's fault.
+
+| Key                         | Default | Range        | Meaning                                                                                                                       |
+|-----------------------------+---------+--------------+-------------------------------------------------------------------------------------------------------------------------------|
+| =feeds.enabled=             | false   |              | the module's switch                                                                                                           |
+| =feeds.allowed_origins=     | empty   |              | exact origins a source may fetch from, comma-separated (=https://api.example.com,https://eu.api.example.com=); empty denies every HTTP source |
+| =feeds.file_roots=          | empty   |              | absolute directories a file source may read under, comma-separated; empty denies every file source; a relative entry is ignored |
+| =feeds.max_response_mb=     | 64      | 1 to 4096    | the largest answer or file one fetch reads, in MiB                                                                            |
+| =feeds.request_timeout=     | 60      | 1 to 3600    | seconds one fetch may take, start to finish                                                                                   |
+| =feeds.max_records_per_run= | 500     | 0 to 100000  | main-database records (price observations, exchange rates) one run may write                                                  |
+| =feeds.run_window_minutes=  | 15      | 0 to 1440    | scheduled passes within this many minutes are recorded as one run; 0 records every pass                                      |
+
+The =series.*= keys (retention, the cap and backups) are under "Retention and the cap" above; =plugins.allow_exec= decides whether an exec plugin's provider may run at all (see [[file:plugins.org][Plugins]]). [[file:configuration.org][Configuration]] lists them all with the rest of the file.
 
 ** Data sources
 
-A =data_source= record says where the data comes from:
+A =data_source= record says where the data comes from. Fields are given in their wire spelling, as =venturectl= and the JSON API take them; the GObject property is the same name with dashes.
 
 | Field                  | Meaning                                                                                                                                            |
 |------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
-| =provider=             | A registered provider: =http_json=, =csv=, =file_jsonl=, or one a plugin added.                                                                       |
+| =name=                 | What the source is: an auction house's region, a supplier's price list.                                                                            |
+| =provider=             | A registered provider: =http_json=, =csv=, =file_jsonl=, or one a plugin added. Lower case, digits and underscores.                                 |
 | =settings=             | The provider's settings as YAML. Never credentials, never a store path.                                                                            |
 | =schedule=             | =auto= (the default when empty: learn when each venue updates), =hourly=, =manual=, or five cron fields read by the report packs' grammar.        |
 | =enabled=              | Off means it never runs on its own; it can still be synced by hand. A new source starts enabled (the column's zero value, FALSE, means off).      |
 | =currency=             | What a price that names no currency is in.                                                                                                         |
-| =venue-namespace=, =instrument-namespace= | Written onto the store's venue and instrument rows, so two sources' "1001" can be told apart when records are promoted.         |
+| =venue_namespace=, =instrument_namespace= | Written onto the store's venue and instrument rows, so two sources' "1001" can be told apart when records are promoted. At most 512 bytes, no control characters. |
 | =track=                | =all= (the zero value: store everything, as the store's design intends) or =known= (only the keys in the settings' =instruments= list, and with marketdata on the instrument records filed under the source; see "Known instruments"). |
-| =min-value=            | Money with its currency: below it an instrument is left out of region deal prices.                                                                 |
+| =min_value=            | Money with its currency: below it an instrument is left out of region deal prices.                                                                 |
+| =notes=                | Free text.                                                                                                                                         |
+| =result=               | Transient: what the last action (=sync=, =test=, =purge_history=) said; shown once, never stored.                                                   |
+
+*** Settings every provider shares
+
+Whatever else a provider reads, these keys mean the same thing in every source's =settings=, because the feeds service reads them itself when it freezes the source:
+
+| Key                 | Meaning                                                                                                                                       |
+|---------------------+-----------------------------------------------------------------------------------------------------------------------------------------------|
+| =units=             | the units one pass fetches, one fetch each (=list_units='s default: this list, else one unit called =default=); ={unit}= in a template is the unit's name |
+| =instruments=       | with =track: known=, the instrument keys to keep                                                                                              |
+| =requests_per_hour= | the source's own request budget, 0 to 1000000; absent or 0 is no budget                                                                       |
+| =record_types=      | the main-database types the source may write through the records sink: =price_observation= and =exchange_rate=, nothing else                  |
+| =origins=           | a list that narrows =feeds.allowed_origins= for this source; it can never widen it                                                            |
 
 Writes need an administrator, through the same =venture-access-admin-write= type data the currency uses: which host the server calls is configuration. The save validator (=feeds_validate_source()=) parses the settings, checks them against the provider's schema -- a setting the schema marks =x-sensitive= is refused outright, it belongs in the sealed store -- checks declared types and required settings, the schedule, the currency, the namespaces, =track: known= with something known (with marketdata off; with it on the source's instrument records count, and an empty list is accepted), =record_types= against what a feed may write, and that the provider can list its units from them.
 
@@ -321,13 +430,13 @@ A source's store is always =<state_dir>/series/<uuid>/=, derived by =venture_fee
 
 ** Credentials
 
-A provider's sensitive settings are sealed in the integration store under the provider key =feed-<uuid>=, per organization, through =/feeds/ID/credentials= (organization owners and administrators; write-only, nothing saved is shown back). They are resolved on the main thread when the source is frozen and travel to the worker inside the frozen source, never in a record, an argv or an environment. A template names one as ={secret:NAME}=; a template naming one the source has not been given is refused rather than sent empty.
+A provider's sensitive settings are sealed in the integration store under the provider key =feed-<uuid>=, per organization, through =/feeds/ID/credentials= (organization owners and administrators; write-only, nothing saved is shown back). They are resolved on the main thread when the source is frozen and travel to the worker inside the frozen source, never in a record, an argv or an environment. A template names one as ={secret:NAME}=; a template naming one the source has not been given is refused rather than sent empty. Which names exist is the provider's schema: =http_json= and =csv= have two slots, =token= (for a header, =Authorization: Bearer {secret:token}=) and =api_key= (for an address); an exec provider has one, =token=, handed to its program in the request's =secrets=; the Blizzard plugin's is =client_secret= and the-odds-api's =api_key=.
 
 Every string the worker records -- an error, a note -- and every name, attribute, title and summary a provider hands over is passed through the source's redaction, which replaces each credential value of six bytes or more with =[redacted]=, before it reaches a run, the store or a log. Errors are built to name only an origin, never a full address, because a query string may carry a key.
 
 ** Providers
 
-=VentureDataSourceProvider= is a GInterface: =get_name=, =get_label=, =dup_settings_schema= (a JSON schema, =x-sensitive= on credentials), an optional =freeze= (main thread), an optional =list_units= (default: the settings' =units= list, else one unit called =default=), and =fetch_async= of one unit into a =VentureFeedBatch=. Providers register on the context (=venture_context_get_data_source_providers()=) whether or not the module is on; a held name is never replaced.
+=VentureDataSourceProvider= is a GInterface: =get_name=, =get_label=, =dup_settings_schema= (a JSON schema, =x-sensitive= on credentials), an optional =freeze= (main thread), an optional =list_units= (default: the settings' =units= list, else one unit called =default=), and =fetch_async= of one unit into a =VentureFeedBatch= (with an optional =fetch_finish=). Providers register on the context's registry (=venture_context_get_data_source_providers()=, with =venture_data_source_provider_registry_add()=, =_lookup()= and =_list()=) whether or not the module is on, so a plugin loaded while feeds are off is still there when they come on; a held name is never replaced -- a second registration is refused with =VENTURE_ERROR_ALREADY_EXISTS=, so a plugin cannot quietly override a built-in.
 
 The threading contract is the point of the interface. Names, schemas and units are pure. =freeze= runs on the main thread and may read anything there -- an exec plugin's program and stored settings -- returning immutable data handed to another thread. =fetch_async= runs on the worker (or on a private context, for a test fetch) and touches nothing but its =VentureFeedRequest=. A provider object is shared by every source and both threads, so it holds no per-fetch state.
 
@@ -337,10 +446,22 @@ The batch is plain data: venues, instruments, snapshots of listings or figures, 
 
 *** The ones that ship
 
-- =http_json=: =url= (={unit}= and ={secret:NAME}= filled in, percent-escaped), =headers= (a mapping of templates; a value with a line break is refused), =items= (a dotted path to the list), =record_as= (=listing=, =stat= or =quote=), =fields= (target to dotted path: =instrument= required; =venue= defaults to the unit; =name=, =category=, =kind=, =parent=, =price=, =quantity=, =id=, =side=, =expires_in_min=, =currency=, figures for =stat=, =odds= and =liquidity= for =quote=), =price_units= (=major= decimals or =minor= integers), =odds_format=, =complete= (true: each fetch lists everything at its venue), =cost=. A JSON number with a fraction is spelt back in its shortest exact decimal form and parsed as a decimal -- no arithmetic happens on the double. The snapshot is dated by =Last-Modified= when the far end sends one.
+- =http_json=: =url= (={unit}= and ={secret:NAME}= filled in, percent-escaped), =headers= (a mapping of templates; a value with a line break is refused), =items= (a dotted path to the list), =record_as= (=listing=, =stat= or =quote=), =fields= (target to dotted path: =instrument= required; =venue= defaults to the unit; =name=, =category=, =kind=, =parent=, =price=, =quantity=, =id=, =side=, =expires_in_min= (seconds, the least time left), =currency=; for =stat= the figures =min=, =market=, =mean=, =median=, =sale_avg=, =listings= and =sold=; =odds= and =liquidity= for =quote=), =price_units= (=major= decimals or =minor= integers), =odds_format=, =complete= (true: each fetch lists everything at its venue), =cost=. A JSON number with a fraction is spelt back in its shortest exact decimal form and parsed as a decimal -- no arithmetic happens on the double. The snapshot is dated by =Last-Modified= when the far end sends one.
 - =csv=: the same mapping over an RFC 4180 CSV (quoted fields, doubled quotes, =delimiter=, =header=), from =url= or from =file=. A row with no header uses column numbers as names.
 - =file_jsonl=: =file=, a JSON-lines file in the plugin protocol. A line that breaks the protocol fails the unit, as it fails an exec run; an =error= message makes the batch partial.
 - exec plugins: a manifest entry =kind: data_source_provider= with =name=, =label=, =command= (default =fetch=), =description=. The program gets =params.unit=, =params.cursor=, =params.if_modified_since= and =params.source= (the settings), and its credentials as =secrets=; =plugins.allow_exec= is frozen with the source and checked at every run.
+
+*** Plugin providers
+
+Three plugins in the tree show the three ways to add a provider, each with a worked example that is the operator's side of it:
+
+| Provider            | Plugin                                       | Form                                                                 | Walk-through                                                                         |
+|---------------------+----------------------------------------------+----------------------------------------------------------------------+--------------------------------------------------------------------------------------|
+| =blizzard_auctions= | =plugins/blizzard-auctions/= (native =.so=, optional) | the GObject: a freeze step, units of its own, side requests, also a fee model, an export format and a record action | [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses]] |
+| =odds_api=          | =plugins/scripts/odds-api.c= (crispy)        | =venture_func_data_source_provider_new()=: one blocking function     | [[file:examples/odds-api-feed.org][Bookmakers' odds from the-odds-api]]              |
+| =supplier_csv=      | =plugins/exec/supplier-csv/= (exec)          | a bash program speaking the JSON-lines protocol                      | [[file:examples/dropship-supplier-feed.org][A dropshipping supplier's price list]]   |
+
+None of them is loaded by default: the Blizzard plugin builds into =plugins-optional/=, which nothing scans unless =plugins.paths= names it; the other two are copied into a plugin directory. [[file:plugins.org::*The reference plugins][Plugins: the reference plugins]] walks through their code.
 
 ** Files
 
@@ -350,13 +471,13 @@ A file provider resolves its path with =venture_feed_request_resolve_file()=: re
 
 Every HTTP fetch goes through the request's helper (=venture_feed_request_http_get_async()=, or the blocking form on a GTask thread), so a plugin's provider gets all of it by calling one function:
 
-- *An allowlisted origin.* The origin (scheme, host, port) must be on =feeds.allowed_origins=, deny by default, narrowed -- never widened -- by the source's own =origins= setting. Plain http only for a loopback host. Frozen with the source, so a configuration change refreezes every source.
+- *An allowlisted origin.* The origin (scheme, host, port) must be on =feeds.allowed_origins=, deny by default, narrowed -- never widened -- by the source's own =origins= setting. Plain http only for a loopback host (=127.0.0.1=, =::1=, =localhost=). Both sides are compared as =scheme://host[:port]=, lower case, with the scheme's default port dropped; an entry carrying a path, a query or user info is not an origin and is ignored, and an address with credentials in it is refused. Frozen with the source, so a configuration change refreezes every source.
 - *No redirects.* The message carries =SOUP_MESSAGE_NO_REDIRECT=; a 3xx is a failure naming the status, and the final address is compared with the one asked. A redirect would otherwise carry the source's =Authorization= header to a host the answer chose.
 - *A byte cap*: =Content-Length= first, then what actually arrives, chunk by chunk.
 - *One deadline* for the whole exchange (=feeds.request_timeout=), through a cancellable of its own, so a timeout is told apart from the worker stopping.
 - *If-Modified-Since* from the unit's last =Last-Modified= (kept in the store's meta as =ims:<unit>=); a 304 is a not-modified unit. A manual sync sends none: whoever asked wants the data.
 - *Retry-After* on a 429 (seconds or an HTTP date, at most a day) is kept and the unit waits at least that long.
-- *A request budget*: the settings' =requests_per_hour=; each request costs what the provider declares (=cost=, default 1). A unit that would overspend is deferred to the next hour's window, not failed. The budget is kept in the store's meta, so a restart is not a fresh hour. The cost is spent *before* the request goes out and never refunded, which is right for a far end that charges a 304 too (Blizzard's commodity market costs 25 either way).
+- *A request budget*: the settings' =requests_per_hour=; each request costs what the provider declares (=cost=, default 1). The window is an hour from the first request spent in it, not a clock hour. A unit that would overspend is deferred to the window's end, not failed, and its back-off is left where it was -- a spent budget is not the far end's fault. The budget is kept in the store's meta (=quota_window=, =quota_spent=), so a restart is not a fresh hour. The cost is spent *before* the request goes out and never refunded, which is right for a far end that charges a 304 too (Blizzard's commodity market costs 25 either way).
 
 The general form is =venture_feed_request_http_send(request, method, url, headers, body, content_type, cost, flags, error)= (and =_send_async= / =_send_finish=), under the same rules, for a provider that has to POST -- an OAuth client-credentials token -- or make requests that are not the unit's own answer. Only GET and POST exist, and a body only on a POST. The flags:
 
@@ -365,6 +486,8 @@ The general form is =venture_feed_request_http_send(request, method, url, header
 | =VENTURE_FEED_HTTP_DEFAULT=       | The unit's own request: the unit's If-Modified-Since goes out, and the answer's Last-Modified and status become the unit's.                                                                                                    |
 | =VENTURE_FEED_HTTP_UNCONDITIONAL= | A side request -- a token, an index, an item's name. No If-Modified-Since is added (the provider may send its own header), and its Last-Modified and status are left out of the unit's: an item endpoint's date must not become the question the next fetch asks of the auctions. |
 | =VENTURE_FEED_HTTP_ANY_STATUS=    | Hand back any final answer that is neither a redirect nor a 429 as a response, body included, so the provider can say what a 401 means ("the client credentials were refused") instead of "HTTP 401". |
+
+Failures come back in the =VENTURE_FEEDS_ERROR= domain, so the worker can tell how to reschedule: =VENTURE_FEEDS_ERROR_ORIGIN= (not on the allowlist), =_QUOTA= (the budget is spent: the unit is deferred, not failed), =_RATE_LIMITED= (a 429; its =Retry-After= is kept), =_HTTP= (any other status the provider did not ask to see), =_REDIRECT=, =_TOO_LARGE= and =_FILE= (outside =feeds.file_roots=, or unreadable); a deadline is =VENTURE_ERROR_TIMEOUT= and a connection that failed =VENTURE_ERROR_NETWORK=.
 
 A response carries every header, names folded to lower case, read with =venture_feed_http_response_get_header()= -- how the-odds-api's quota headers are read. =venture_feed_request_redact(request, text)= applies the source's redaction to a message a provider builds, so a message is safe wherever else it goes; the worker redacts again regardless.
 
@@ -394,11 +517,28 @@ The rule is =venture_feeds_schedule_next_auto()=, a pure function the tests driv
 
 *** After each pass
 
-Region figures are recomputed when the pass wrote something and half an hour has passed (or the sync was asked for), with the source's =min-value=; retention is purged once a day with =series.hourly_days= and =series.daily_days=; the quota is written to meta.
+Region figures are recomputed when the pass wrote something and half an hour has passed (or the sync was asked for), with the source's =min_value=; retention is purged once a day with =series.hourly_days= and =series.daily_days=; the quota is written to meta.
 
 ** Runs
 
-A =data_source_run= is written once, when a run ends, by the service on the main thread, as the system actor, from the plain figures the worker handed back: units, not-modified, rows, new instruments, refused, records written, requests, bytes, quota used and limit, the last notable HTTP status, the first error and notes. The generic write routes refuse it (=venture_web_type_accepts_writes()=). Webhooks hear about it like any other record: a run is publishable, and is not on the quiet list.
+A =data_source_run= is written once, when a run ends, by the service on the main thread, as the system actor, from the plain figures the worker handed back:
+
+| Field                        | Meaning                                                                                                   |
+|------------------------------+-----------------------------------------------------------------------------------------------------------|
+| =data_source_id=             | which source ran                                                                                          |
+| =status=                     | =ok= (the zero value), =partial=, =failed= or =deferred=                                                   |
+| =trigger=                    | =schedule= (the zero value), =manual= or =automation=                                                     |
+| =started_at=, =finished_at=  | when its first fetch began and its last ended                                                             |
+| =units=, =not_modified=      | fetches made, and how many answered that nothing had changed                                              |
+| =rows=, =new_instruments=    | rows written to the store, and instruments it had not seen before                                         |
+| =refused=                    | listings and instruments refused: malformed, or past the store's cap                                      |
+| =records=                    | main-database records the records sink created or updated                                                 |
+| =requests=, =bytes=          | HTTP requests made and bytes of answers read                                                              |
+| =quota_used=, =quota_limit=  | the budget spent this hour and the hourly limit (0 for none) -- or the far end's own count, when a provider reported one |
+| =http_status=                | the last status other than 200, else 200; 0 when nothing went over HTTP                                   |
+| =error=, =notes=             | why it failed, and what else it noticed (refusals, skipped records, deferrals, alert overflow), credentials redacted |
+
+The generic write routes refuse it (=venture_web_type_accepts_writes()=). Webhooks hear about it like any other record: a run is publishable, and is not on the quiet list.
 
 A manual sync, an automation's and the API's are each a run of their own. Scheduled passes are gathered into one run per =feeds.run_window_minutes= (default 15; 0 records every pass), so a source polling a hundred venues a minute apart writes a few rows an hour rather than a hundred; a failing pass closes its run at once so the failure is seen. The status follows from the units: all deferred is =deferred=, none failed is =ok=, none succeeded is =failed=, the rest =partial=.
 
@@ -427,8 +567,9 @@ A hook added while the worker runs refreezes every source. A module whose frozen
 - Actions on =data_source=: =sync= (queues, never waits; editors), =test= (fetches one unit on a private main context and reports what came back, writing nothing, not counted against the budget; editors), =purge_history= (deletes the store on the thread that holds its writer; administrators). None is stageable: a sync reaches outside, a test writes nothing, a purge cannot be taken back.
 - Automation: =feeds_sync("ID")= queues and returns; =feed_synced= and =feed_failed= events.
 - =/feeds=, under *Trading* in the sidebar: the organization's sources, each one's last run, next check and quota, an upload timer per store (each venue's last update, learned interval and expected next update, read through a read-only store handle on the main thread), and the recent runs.
-- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N=, =POST /api/v1/feeds/ID/sync= (202, =queued=). Each takes =organization_id= and answers for that organization, else the active one; a source of another organization than the one asked about is NOT_FOUND. See "Which organization" below.
-- =venturectl feeds sync ID [--wait] [organization_id=N]=, =feeds runs ID [organization_id=N]=, =feeds due [organization_id=N]=.
+- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N= (newest first; 1 to 500, 20 by default), =POST /api/v1/feeds/ID/sync= (202, ={"status": "queued"}=). Reading is a viewer's, a sync an editor's. Each takes =organization_id= and answers for that organization, else the active one; a source of another organization than the one asked about is NOT_FOUND. See [[*Which organization][Which organization]] below.
+- =/feeds/ID/credentials= (GET and POST; organization owners and administrators) and =POST /feeds/ID/sync= (editors) behind the page.
+- =venturectl feeds sync ID [--wait] [organization_id=N]= (=--wait= polls for the run for up to five minutes and prints it), =feeds runs ID [organization_id=N]=, =feeds due [organization_id=N]=; =venturectl act data_source ID sync|test [unit=U]|purge_history= for the actions.
 - =venture_feeds_service_open_reader()= opens a read-only handle on a source's store from the main thread, for pages and the price oracle.
 
 * Venues, instruments and the price oracle
@@ -437,41 +578,43 @@ The =marketdata= module (requires =market=, suggests =feeds=, on by default, no 
 
 ** Records
 
+All six are tenant records, filed under an organization, and work through the generic routes, forms and =venturectl= like any other type -- except that an =alert_hit= is evidence the generic routes refuse to create or edit. Fields are given in their wire spelling (=group_key=, =data_source_id=), as the JSON API and =venturectl= take them; =venturectl describe venue= prints each type's fields, what each reference points at and what each enum accepts.
+
 *** =venue=
 
 A place things are priced and traded: one realm's auction house, a bookmaker, an exchange, a supplier, your own shop.
 
 - =name=, and =kind=: =other= (the zero value, deliberately -- a venue nobody classified is not silently a marketplace, and a later fee model or strategy keyed on the kind must not apply a marketplace's cut to it), =marketplace=, =auction_house=, =bookmaker=, =exchange=, =supplier=, =store=.
-- =namespace=, =key= and =group-key=: the venue's row in its store, and the group (a region) it is compared within.
-- =external-ref=: =namespace:key= (=:key= with no namespace), derived at every save, unique in the organization with deleted rows included (=VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION=; the partition is the integer organization id). A record with no key has no reference and nothing to keep unique. A namespace may not contain a colon, or ="a:b" + "c"= and ="a" + "b:c"= would be one reference.
-- =data-source-id=: optional; the source whose store has this venue.
-- =location-id=, else =account-id=: where money moves when you trade there -- a location's holding, or an account when the venue has no location.
+- =namespace=, =key= and =group_key=: the venue's row in its store, and the group (a region) it is compared within.
+- =external_ref=: =namespace:key= (=:key= with no namespace), derived at every save, unique in the organization with deleted rows included (=VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION=; the partition is the integer organization id). A record with no key has no reference and nothing to keep unique. A namespace may not contain a colon, or ="a:b" + "c"= and ="a" + "b:c"= would be one reference.
+- =data_source_id=: optional; the source whose store has this venue.
+- =location_id=, else =account_id=: where money moves when you trade there -- a location's holding, or an account when the venue has no location.
 - =currency=: optional, a currency code, stored in capitals.
-- =fee-model= and =fee-params=: a name and its YAML parameters. Stored as text now; the registry that gives the names meaning arrives with the arbitrage engine, which validates them then.
-- =transfer-cost= (money, not negative) and =transfer-hours= (not negative): what moving one lot to or from the venue costs and how long it takes.
+- =fee_model= and =fee_params=: a fee model's name and its YAML parameters. The names come from the arbitrage engine's registry (=percent=, =commission=, =none=, and whatever a plugin adds, such as =wow_auction=); while the =arbitrage= module is on, a save validator the arbitrage engine registers judges the model and its parameters when either is written (with the module off they are kept as text), and a model kept is never judged again, so a venue saved under a plugin's model stays editable after the plugin is gone. See [[file:arbitrage.org::*Fee models][Arbitrage: fee models]].
+- =transfer_cost= (money, not negative) and =transfer_hours= (not negative): what moving one lot to or from the venue costs and how long it takes.
 
 *** =instrument=
 
-A thing that is priced: =kind= =other= (the zero value, for the same reason), =item=, =outcome=, =event=, =asset=, =sku=. It has the same =namespace=, =key=, derived =external-ref= and optional =data-source-id= as a venue, and:
+A thing that is priced: =kind= =other= (the zero value, for the same reason), =item=, =outcome=, =event=, =asset=, =sku=. It has the same =namespace=, =key=, derived =external_ref= and optional =data_source_id= as a venue, and:
 
-- =product-id=: the product it is. This is what joins outside prices to recipes, stock and goals: the oracle answers for a product through every instrument that names it.
-- =category-id= and =parent-id=: where it is filed, and what it belongs to (an outcome's event). The tree is held to the category rules -- no loop, one organization, bounded depth -- by =venture_category_check_tree_node()=.
+- =product_id=: the product it is. This is what joins outside prices to recipes, stock and goals: the oracle answers for a product through every instrument that names it.
+- =category_id= and =parent_id=: where it is filed, and what it belongs to (an outcome's event). The tree is held to the category rules -- no loop, one organization, bounded depth -- by =venture_category_check_tree_node()=.
 - =attrs=: what the source said about it, as YAML or JSON.
 
 *** =watchlist= and =watchlist_entry=
 
-A named list of instruments, optionally in one venue group and for one venture, shared in the organization rather than owned by a person: alerts read watchlists, and a record with a personal owner is one webhooks and automation are kept quiet about. An entry names a watchlist and an instrument of its own organization, once per list, with an optional =target-buy= and =target-sell= that are not negative and, when both are given, in one currency.
+A named list of instruments, optionally in one venue group and for one venture, shared in the organization rather than owned by a person: alerts read watchlists, and a record with a personal owner is one webhooks and automation are kept quiet about. An entry names a watchlist and an instrument of its own organization, once per list, with an optional =target_buy= and =target_sell= that are not negative and, when both are given, in one currency.
 
 *** Listings
 
-The market module's =listing= gained an optional =venue-id=, held to the listing's organization, so an undercut alert has a venue to compare an open listing with. The reference is to a type of this module: with marketdata off it is refused when written, like any reference into a hidden module, and listings work as before. The column is additive; reconciliation adds it, and no migration script is needed.
+The market module's =listing= gained an optional =venue_id=, held to the listing's organization, so an undercut alert has a venue to compare an open listing with. The reference is to a type of this module: with marketdata off it is refused when written, like any reference into a hidden module, and listings work as before. The column is additive; reconciliation adds it, and no migration script is needed.
 
 ** Promotion
 
 =venture_marketdata_promote_instrument(context, organization, data_source_id, key, actor, &record, &error)= and =venture_marketdata_promote_venue(...)= turn a row a store has seen into a record:
 
 - The source must be the organization's and not deleted; its store is read through =venture_feeds_service_open_reader()=, so promotion needs the feeds module (and a build with SQLite). A store with nothing in it yet, or a key it has not seen, is =VENTURE_ERROR_NOT_FOUND=.
-- The namespace is the row's, else the source's =instrument-namespace= (or =venue-namespace=). The reference is looked up *deleted rows included*: a live record is returned as it is, edits kept; a deleted one is restored, never shadowed by a duplicate that would fail the unique index on every later attempt.
+- The namespace is the row's, else the source's =instrument_namespace= (or =venue_namespace=). The reference is looked up *deleted rows included*: a live record is returned as it is, edits kept; a deleted one is restored, never shadowed by a duplicate that would fail the unique index on every later attempt.
 - A new record takes the row's name, its kind (free text read as a nick: "Auction House" is =auction_house=, anything unknown is =other=), its group and currency (venues) or its attributes (instruments). An instrument's category is the existing category whose computed path matches the row's ="Materials/Ore"=, if any, and that may group instruments; categories are never made here, because a store's taxonomy would otherwise grow a branch per string a provider ever sent. An instrument's parent is promoted first; a parent the store does not know is left out, and a loop in the store's own data ends at =VENTURE_CATEGORY_MAX_DEPTH=.
 
 =POST /api/v1/market/promote= ={"data_source_id": N, "kind": "instrument"|"venue", "key": "..."}= (editors) and =venturectl market promote SOURCE_ID instrument|venue KEY= call it.
@@ -538,7 +681,7 @@ series:<basis>[@<venue key or group>]
 
 - =GET /api/v1/market/quote= (viewers): =instrument_id= or =product_id=, =venue_id= or =where=, =basis=, =at=, =currency=, =prefer_currency=, =fallback= (=true=), =source=. Answers ={"basis", "found", "price" (money or null), "value" (number or null), "evidence"}=.
 - =POST /api/v1/market/promote= (editors), above.
-- =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]= and =venturectl market promote=.
+- =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [prefer_currency=C] [fallback=true] [source=S] [organization_id=N]= (=venue= is sent as =where=, =product= as =product_id=) and =venturectl market promote SOURCE_ID instrument|venue KEY [organization_id=N]=.
 - =venturectl market browse|deals|venues|instrument|watchlist|alerts=, the Trading pages' twins (see /Browsing: the Trading pages/).
 - The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. The Trading pages (see /Browsing: the Trading pages/) browse the stores and price the watchlists.
 - All of it is gone with the module off: the routes answer 404, the types are hidden.
@@ -554,20 +697,21 @@ An =alert_rule= says what somebody wants to hear about the market data -- a pric
 | =name= | what it watches for |
 | =kind= | one of the kinds below; =below= is the zero value |
 | =enabled= | evaluated after every feed run; a new rule starts on (the column's zero value, off, is the safe reading of a row nobody wrote it on) |
-| =watchlist-id=, =instrument-id=, =category-id= | what it watches: the watchlist's instruments, one instrument, or every instrument filed under the category or beneath it. Any of them; together they are a union. Required for every kind but =undercut= and =entry_match=, which they only narrow |
-| =data-source-id= | optional: only this source's data; empty is every source of the organization |
-| =venue-id= or =group-key= | optional, not both: only at that venue, or at venues in that group. A watchlist's own group applies when the rule names neither |
-| =threshold= | a price, for =below=, =above= and =spread= |
-| =threshold-number= | a number, for =pct_vs_reference= (a percent), =shortage= (units) and =spike= (a percent change) |
+| =watchlist_id=, =instrument_id=, =category_id= | what it watches: the watchlist's instruments, one instrument, or every instrument filed under the category or beneath it. Any of them; together they are a union. Required for every kind but =undercut= and =entry_match=, which they only narrow |
+| =data_source_id= | optional: only this source's data; empty is every source of the organization |
+| =venue_id= or =group_key= | optional, not both: only at that venue, or at venues in that group. A watchlist's own group applies when the rule names neither |
+| =threshold= | a price, not negative, for =below=, =above= and =spread= |
+| =threshold_number= | a number, for =pct_vs_reference= (a percent of the reference, above 0 and at most 1000), =shortage= (units, at least 1) and =spike= (a percent change other than 0, at most 100000 either way); 0 for every other kind |
 | =pattern= | plain text, for =entry_match= |
 | =basis= | the reference price for =pct_vs_reference= and =spread=; the series a =spike= reads |
-| =window-hours= | =spike= only: 1 to 336 |
-| =cooldown-minutes= | quiet time after a hit about the same thing; a new rule starts at 60; 0 to 43200 |
-| =notify-username= | whose inbox a hit reaches; empty is whoever created the rule |
+| =window_hours= | =spike= only: 1 to 336 |
+| =cooldown_minutes= | quiet time after a hit about the same thing; a new rule starts at 60; 0 to 43200 |
+| =notify_username= | whose inbox a hit reaches; empty is whoever created the rule |
+| =notes=, =result= | free text; =result= is transient -- the =evaluate= action's answer, shown once and never stored |
 
-The save validator holds each kind to exactly the fields it reads, and refuses the ones it does not when they are set -- a price left on an =out_of_stock= rule would read as if it mattered. =basis= is an enum with no empty value, so a kind that does not read it ignores it. References are held to the rule's organization, and a venue in another data source than the one the rule is narrowed to is refused. A category reference is judged against the tree's =applies-to= as an instrument's would be: a rule names the category its instruments are filed under, and the class says so with the =VENTURE_CATEGORY_APPLIES_AS_QDATA= qdata rather than the validator listing it.
+The save validator holds each kind to exactly the fields it reads, and refuses the ones it does not when they are set -- a price left on an =out_of_stock= rule would read as if it mattered. =basis= is an enum with no empty value, so a kind that does not read it ignores it. References are held to the rule's organization, and a venue in another data source than the one the rule is narrowed to is refused. A category reference is judged against the tree's =applies_to= as an instrument's would be: a rule names the category its instruments are filed under, and the class says so with the =VENTURE_CATEGORY_APPLIES_AS_QDATA= qdata rather than the validator listing it.
 
-A rule has no personal owner: a record with one is kept from webhooks and automation, and a hit is exactly what those are for. Whose inbox a hit reaches is =notify-username= (refused when written unless it is an active user), or, left empty, the actor of the rule's creation in the audit log -- an API token stands for its owner. Nobody resolvable is nobody told; the hit is still written and published.
+A rule has no personal owner: a record with one is kept from webhooks and automation, and a hit is exactly what those are for. Whose inbox a hit reaches is =notify_username= (refused when written unless it is an active user), or, left empty, the actor of the rule's creation in the audit log -- an API token stands for its owner. Nobody resolvable is nobody told; the hit is still written and published.
 
 ** Kinds
 
@@ -577,19 +721,19 @@ Every kind but =spread= and =entry_match= is judged per instrument per venue, on
 |------+------------+-------------------------------+---------|
 | =below= | the venue's cheapest unit is at or below =threshold= | the minimum / the threshold | |
 | =above= | the venue's cheapest unit is at or above =threshold= | the minimum / the threshold | |
-| =pct_vs_reference= | 100 x minimum / reference is at or below =threshold-number= (80 fires 20% under the reference) | the minimum / the reference | the percent / the threshold |
+| =pct_vs_reference= | 100 x minimum / reference is at or below =threshold_number= (80 fires 20% under the reference) | the minimum / the reference | the percent / the threshold |
 | =spread= | within the group (the rule's, else the venue's), the best other venue's =basis= figure is at least =threshold= above the cheapest venue's minimum | the buy venue's minimum / the sell figure | |
 | =out_of_stock= | the newest snapshot took the quantity to zero (=stock_changed_at= is that snapshot) | | 0 |
 | =back_in_stock= | the newest snapshot brought it back above zero; never a first sighting | the minimum | the quantity |
-| =shortage= | fewer units are on offer than =threshold-number= | | the quantity / the threshold |
-| =spike= | the =basis= figure (=market=, =min= or =quantity=) moved by =threshold-number= percent or more -- up for a positive one, down for a negative one -- against the newest hourly point at or before =window-hours= earlier | the price now / then (prices) | the change / the threshold |
+| =shortage= | fewer units are on offer than =threshold_number= | | the quantity / the threshold |
+| =spike= | the =basis= figure (=market=, =min= or =quantity=) moved by =threshold_number= percent or more -- up for a positive one, down for a negative one -- against the newest hourly point at or before =window_hours= earlier | the price now / then (prices) | the change / the threshold |
 | =undercut= | an open listing at a venue with prices here asks more than the cheapest unit that venue now offers of its product, in the listing's currency | the minimum / the listing's price | |
 | =entry_match= | an entry's title or summary contains =pattern=, both case-folded | | |
 
 - *Reference prices.* =pct_vs_reference= reads =market= (the venue's market value), =market_14d=, =historical_60d=, =sale_avg= (the venue's daily history) or a region figure of the venue's group, in the row's currency; =min= is refused, being the figure itself. =spread= reads the same bases for each other venue; a region basis is the group's one figure.
 - *Spread* is net of nothing: fees and transfers belong to the arbitrage engine. The buy side is the cheapest in-stock venue in the threshold's currency, the sell side the best figure among the *other* venues, and the hit is about the buy venue.
 - *Stock* is read from =stock_changed_at=, which the store writes in the statement that makes the change, so the worker never has to remember the previous snapshot.
-- *Undercut.* Your own listing is among the units on offer, so a cheapest unit below it is somebody else's. The organization's open listings that name a =venue-id= are frozen with the source: the venue's key when its prices are in this source, and the store keys of the instrument records naming the listing's product. Up to 1000.
+- *Undercut.* Your own listing is among the units on offer, so a cheapest unit below it is somebody else's. The organization's open listings that name a =venue_id= are frozen with the source: the venue's key when its prices are in this source, and the store keys of the instrument records naming the listing's product. Up to 1000.
 - *Entries* are matched on what a run brought (=fetched_at= at or after the run's start); an evaluation by hand looks back a day. A pattern is plain text of at most 200 characters, never a regular expression, so nobody's rule can make the worker backtrack. A scoped =entry_match= rule matches only entries about an instrument in scope.
 
 ** Evaluation
@@ -602,13 +746,13 @@ Nothing is ever evaluated from inside an automation handler. The run hook waits,
 
 ** Cooldown and the cap
 
-The cooldown is kept per rule and *subject*: the venue and instrument, plus the listing for =undercut= or the entry for =entry_match= (the hit's technical =subject= field). A candidate is dropped when the rule's newest hit about that subject was observed at the same snapshot or later -- always, so an evaluation by hand after a run says nothing twice -- or less than =cooldown-minutes= before it. Deleted hits count: deleting one is not asking to be told again at once. With a cooldown of 0 every new snapshot that matches is a hit.
+The cooldown is kept per rule and *subject*: the venue and instrument, plus the listing for =undercut= or the entry for =entry_match= (the hit's technical =subject= field). A candidate is dropped when the rule's newest hit about that subject was observed at the same snapshot or later -- always, so an evaluation by hand after a run says nothing twice -- or less than =cooldown_minutes= before it. Deleted hits count: deleting one is not asking to be told again at once. With a cooldown of 0 every new snapshot that matches is a hit.
 
 A run writes at most =VENTURE_ALERTS_MAX_HITS_PER_RUN= (100) hits; the rest are counted, and the run record's notes say how many, as they do for candidates past =VENTURE_ALERTS_MAX_CANDIDATES= (1000). A loose rule on a large store's first sync would otherwise write a hit, a notification and a webhook delivery per instrument.
 
 ** Hits
 
-An =alert_hit= carries =rule-id=, =kind=, =observed-at= (the snapshot's time, or the entry's arrival), =message= (one sentence, prices formatted on the main thread), =data-source-id=, =instrument-key= and =instrument-id= (when a record names that key in the source), =venue-key= and =venue-id= likewise, =listing-id= (=undercut=), =entry-key= and =url= (=entry_match=), the money =observed= and =reference=, the numbers =observed-number= and =reference-number=, and =subject=. Its display name is its message, cut to a line, so ={event->label}= and a webhook body's =label= say what happened. Instruments and venues the store saw but nobody promoted have their key and no record; a hit never promotes.
+An =alert_hit= carries =rule_id=, =kind=, =observed_at= (the snapshot's time, or the entry's arrival), =message= (one sentence, prices formatted on the main thread), =data_source_id=, =instrument_key= and =instrument_id= (when a record names that key in the source), =venue_key= and =venue_id= likewise, =listing_id= (=undercut=), =entry_key= and =url= (=entry_match=), the money =observed= and =reference=, the numbers =observed_number= and =reference_number=, and =subject=. Its display name is its message, cut to a line, so ={event->label}= and a webhook body's =label= say what happened. Instruments and venues the store saw but nobody promoted have their key and no record; a hit never promotes.
 
 A hit is evidence: =venture_web_type_accepts_writes()= refuses creating or editing one through the generic routes, as it does a data source run, and it must belong to an organization. Its creation is the event. There is no separate alert event:
 
@@ -662,7 +806,11 @@ The page and its twin are the same handler: the request is parsed into the funct
 
 Every handler checks its own session or token and the =marketdata= module, and reads one organization: another organization's data source, watchlist or rule is NOT_FOUND, never FORBIDDEN, so whether it exists is not told. Reading is a viewer's; promoting and evaluating are an editor's.
 
-*Which organization.* A page answers for the sidebar's pick, as every page does. An =/api/v1/market=, =/api/v1/feeds= or =/api/v1/arbitrage= call answers for the organization its =organization_id= names -- the query string's, or a JSON body's member (=POST /api/v1/market/promote=, =POST /api/v1/arbitrage/record=), a number or its digits -- and for the active organization when it names none, which for an API token is always the default one. Without the parameter a second organization's market data could not be reached from a token at all. The organization is judged first (=venture_web_request_organization()=): its own row is read under the caller's access scope, which every member may read and nobody else may, so a stranger is told NOT_FOUND, the same thing reading any of its records tells them. That check is not a formality: these routes read the series stores, which are files, and the row-by-row record policy never sees them. Everything after it is the record policy as usual -- a viewer member reads only what is assigned to them, and a data source is nobody's -- and a promotion or a recorded trade is judged again at its save or its action. A value that is not a positive whole number is refused (400).
+** Which organization
+
+A page answers for the sidebar's pick, as every page does. An =/api/v1/market=, =/api/v1/feeds= or =/api/v1/arbitrage= call answers for the organization its =organization_id= names -- the query string's, or a JSON body's member (=POST /api/v1/market/promote=, =POST /api/v1/arbitrage/record=), a number or its digits -- and for the active organization when it names none, which for an API token is always the default one. Without the parameter a second organization's market data could not be reached from a token at all. The organization is judged first (=venture_web_request_organization()=): its own row is read under the caller's access scope, which every member may read and nobody else may, so a stranger is told NOT_FOUND, the same thing reading any of its records tells them. That check is not a formality: these routes read the series stores, which are files, and the row-by-row record policy never sees them. Everything after it is the record policy as usual -- a viewer member reads only what is assigned to them, and a data source is nobody's -- and a promotion or a recorded trade is judged again at its save or its action. A value that is not a positive whole number is refused (400).
+
+The command line follows the API: every =venturectl feeds= and =venturectl market= verb takes =organization_id=N= (after its positional words), and reports take it as an option like any other, so a second organization's market data is reached the same way as the first's.
 
 ** What a store read may cost
 
@@ -705,7 +853,7 @@ Every heading is a link that sorts by that column (=aria-sort= marks the active 
 
 ** Deals
 
-=/market/deals?source=&venue=&group=&category=&min_value=&max_pct=&top== lists every instrument in stock at a venue whose lowest price is at or under its group's deal price -- the median of the group's lowest prices, or their 33rd percentile when 15 or more venues offer it (=venture_series_math_deal_price()=), withheld when the median is under the source's =min-value=. Every source of the organization is read unless one is named; each answers its best =top= + 1 from the deal index and the merge keeps the best =top=, cheapest against the region first, and says when it cut some.
+=/market/deals?source=&venue=&group=&category=&min_value=&max_pct=&top== lists every instrument in stock at a venue whose lowest price is at or under its group's deal price -- the median of the group's lowest prices, or their 33rd percentile when 15 or more venues offer it (=venture_series_math_deal_price()=), withheld when the median is under the source's =min_value=. Every source of the organization is read unless one is named; each answers its best =top= + 1 from the deal index and the merge keeps the best =top=, cheapest against the region first, and says when it cut some.
 
 | Column | Meaning |
 |--------+---------|
@@ -767,6 +915,21 @@ Each page's twin has a =venturectl market= verb that asks it under the page's ow
 | =market alerts [evaluate RULE_ID [--dry-run]]= | =/api/v1/market/alerts=, =POST .../alerts/ID/evaluate= | =count= |
 
 =data_source_id=, =group_key= and =category_path= are accepted for =source=, =group= and =category=, so an option that works on the report works here. Every verb takes =organization_id=N= (=market promote=, =watchlist= and =alerts evaluate= after their positional words) and answers for that organization; without it, for the active one, which for a token is the default organization. See [[file:cli.org][venturectl]].
+
+The rest of market data's command line, in one place:
+
+| Command                                                         | Does                                                                                     |
+|-----------------------------------------------------------------+------------------------------------------------------------------------------------------|
+| =venturectl feeds sync ID [--wait]=                             | queues a sync (=POST /api/v1/feeds/ID/sync=); =--wait= waits for its run and prints it   |
+| =venturectl feeds runs ID=, =venturectl feeds due=              | a source's runs, newest first; every unit's next check, soonest first                    |
+| =venturectl act data_source ID test [unit=U]=                   | fetches one unit and says what came back, writing nothing                                |
+| =venturectl act data_source ID purge_history=                   | deletes the source's store (administrators; cannot be taken back)                       |
+| =venturectl market quote ...=, =venturectl market promote ...=  | the price oracle and promotion (see "Surfaces" under the oracle above)                   |
+| =venturectl act alert_rule ID evaluate [record=true]=           | the record action behind =market alerts evaluate=                                        |
+| =venturectl report market_deals=, =venue_index=, =watchlist=    | the reports, with the options above                                                      |
+| =venturectl list TYPE= (and =get=, =create=, =update=, =delete=) | the records: =data_source=, =venue=, =instrument=, =watchlist=, =watchlist_entry=, =alert_rule= (and =list= and =get= of =data_source_run= and =alert_hit=) |
+
+=venturectl describe data_source= (or any of the types) is the ground truth for field names and enum values.
 
 ** Widgets
 

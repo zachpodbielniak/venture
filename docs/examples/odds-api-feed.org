@@ -4,13 +4,13 @@
 #+categories: projects docs
 #+created: [2026-10-04]
 #+updated: [2026-10-04]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * What this is
 
 =plugins/scripts/odds-api.c= is a crispy plugin: a C file the server compiles on demand, with no build step. It registers one data source provider, =odds_api=, that fetches head-to-head odds for the sports a source names from the-odds-api.com's v4 API and stores them as quotes: every bookmaker a venue, every match an event, every result an outcome. The arbitrage =cover= strategy then finds surebets -- matches whose best odds across bookmakers imply probabilities summing to less than one -- and splits a stake across them.
 
-It is also the reference example of a provider written as one function with =venture_func_data_source_provider_new()=; [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] covers the code.
+It is also the reference example of a provider written as one function with =venture_func_data_source_provider_new()=; [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] covers the code, and [[file:../market-data.org][Market data]] what happens to the quotes once they are stored -- the feeds, the worker thread and the series store.
 
 * Turning it on
 
@@ -79,7 +79,17 @@ the-odds-api takes its key only as =?apiKey== in the query string, and an addres
 venturectl report arbitrage_scan strategy=cover data_source_id=4 total_stake="100.00 USD"
 #+end_src
 
-For each event, =cover= takes every outcome's best odds anywhere; when 1/d₁ + 1/d₂ + 1/d₃ < 1 it is a surebet, and the stake splits across the outcomes so every result pays the same. With Arsenal 2.10 at one bookmaker, Chelsea 4.20 and the draw 3.80 at another, S = 0.977 and 100.00 returns about 102.31 whatever happens. An event missing an outcome's odds is listed blank, naming it. =/arbitrage= has the same as its =cover= tab, and "Record attempt" records the stakes as a trade (see [[file:../arbitrage.org][Arbitrage]]).
+For each event, =cover= takes every outcome's best odds anywhere; when 1/d₁ + 1/d₂ + 1/d₃ < 1 it is a surebet, and the stake splits across the outcomes so every result pays the same before rounding. With Arsenal 2.10 at one bookmaker, Chelsea 4.20 and the draw 3.80 at another, S = 0.977: the stakes are 48.72, 24.36 and 26.92, and each result pays 102.31, 102.31 or 102.29, because each stake is rounded to the cent and each payout down to it. The row's =payout= is the least of those, 102.29 -- what the split is sure to return -- and its =net= -- the sure profit -- 2.29; the unrounded 102.31 and 2.31 are beside them as =payout_ideal= and =ideal_profit=, never in their place (=arbitrage calc surebet= says the same as =payout=, =profit=, =payout_ideal= and =profit_ideal=). An event missing an outcome's odds is listed blank, naming it.
+
+=cover= leaves out an event whose =commence_time= (the attribute this provider stores on every event) has passed, and a note counts them: a bookmaker stops moving a finished match's odds, so its last quotes can look like a surebet nobody can take. Odds also go stale before a match starts, so give a scan a bound on how old a quote may be -- =max_age_hours=6= -- as the demo's "Surebets" preset does. =/arbitrage= has the same as its =cover= tab, and "Record attempt" records the stakes as a trade (see [[file:../arbitrage.org][Arbitrage]]); [[file:arbitrage-surebet.org][the surebet worked example]] walks through one from the odds to the closed trade, with the wallets, the stake and payout legs and the books.
+
+* Where to read next
+
+- [[file:../market-data.org][Market data]] -- how a fetch is scheduled, budgeted and stored; quotes in the series store; the Trading pages.
+- [[file:../plugins.org][Plugins]] -- crispy plugins, and [[file:../plugins.org::*odds-api: a provider as one function][odds-api: a provider as one function]].
+- [[file:../arbitrage.org][Arbitrage]] -- the =cover= and =back_lay= strategies, the surebet arithmetic and recording a trade.
+- [[file:arbitrage-surebet.org][A surebet across two bookmakers]] -- the demo's surebet, step by step.
+- [[file:../security.org::*A key in a query string: the-odds-api][Security: a key in a query string]].
 
 * Where things live
 

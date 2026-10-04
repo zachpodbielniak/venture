@@ -1,5 +1,67 @@
 #+title: Arbitrage
-#+description: Arbitrage trades and their legs, how each leg reaches the books, closing a position per currency, recording an attempt, and the performance report
+#+description: How market data becomes arbitrage: the scan (strategies, formulas, fee models, presets, export formats, calculators), then trades and their legs, how each leg reaches the books, closing a position per currency, recording an attempt, and the reports
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.3.0
+
+* How it fits together
+
+Arbitrage is the last stage of a pipeline that starts with somebody else's prices and ends in the general journal. Each stage is its own module with its own document, and each hands the next one plain data through a registry or a record, never through a call into the next stage's internals -- which is why a plugin can add to any stage without touching the others, and why a stage can be switched off without breaking the ones before it.
+
+#+begin_src text
+ (1) plugins: native (.so)   crispy (.c)   exec (manifest + program)        plugins.org
+   |  venture_plugin_register(context) (native, crispy), or an exec
+   |  manifest's `provides:` (a provider only: the rest are C functions)
+   |  adds, by name, to the registries on the VentureContext:
+   |    data source providers ............... used by the worker, (3)
+   |    fee models, strategies, export formats ... used by the scan, (6)
+   v
+ (2) feeds: data_source records -- provider, settings, schedule,          market-data.org
+   |        sealed credentials -- frozen on the main thread                 "Feeds"
+   v
+ (3) series worker: one thread, one source's units one after another,      market-data.org
+   |   provider fetch -> VentureFeedBatch (snapshots, listings, quotes)    "The worker thread"
+   v
+ (4) series store: <state>/series/<uuid>/store.db, one per source          market-data.org
+   |   current rows, region figures (median, deal price, sale rate),       "Market data"
+   |   quotes (odds), hourly and daily history
+   v
+ (5) marketdata: venue and instrument records (promotion), the price       market-data.org
+   |   oracle, watchlists, alerts, the Trading pages                       "Venues, instruments
+   |                                                                        and the price oracle"
+   v
+ (6) arbitrage: the scan (main thread, bounded indexed reads)              this page
+   |   strategy (spread | deal | transform | cover | back_lay | plugin's)
+   |     x fee model per venue (percent | commission | none | plugin's)
+   |   -> opportunities: judged, sorted, cut to `top`
+   |        |-> export formats (csv | shopping_list | plugin's, e.g. tsm)
+   |        `-> plan: promote venues and instruments, planned legs, expected
+   |              -> the `record` action (roles, staging, consent)
+   |                   -> arbitrage_trade + arbitrage_leg records
+   v
+ (7) ledger: the `arbitrage_leg` rule through the posting-on-save          ledger.org
+       registry; stock legs through the inventory service                  inventory.org
+       (receive_from / issue_to) when Execute runs; Close posts one
+       journal per currency section into arbitrage gains; venue cash
+       is a holding with a floor; the reports read the result              reporting.org
+#+end_src
+
+1. *Plugins* bring the outside in. A native or crispy plugin calls =venture_plugin_register()= and adds providers, fee models, strategies and export formats to the context's registries with plain functions; an exec plugin is a program the server runs, declared in a manifest, and can provide a data source provider (the supplier's price list is one) but not a fee model, a strategy or an export format, which are C functions with no manifest kind. A registered name is looked up exactly like a built-in one, and never twice, so nothing a plugin adds can replace a built-in. See [[file:plugins.org][Plugins]], "The reference plugins" for the three that ship for this pipeline.
+2. *Feeds* decide when and from where. A =data_source= record names a provider and its settings; the =feeds= module freezes it on the main thread -- credentials included, never in a record -- and hands it to the worker. See [[file:market-data.org][Market data]], "Feeds".
+3. *The series worker* fetches, one thread and one far end at a time, and writes what the provider returns into the source's store. It never touches the database, which is why everything it needs is frozen first. See [[file:market-data.org][Market data]], "The worker thread".
+4. *The series store* is a SQLite file per source, not entity tables: millions of rows of prices that only ever need indexed, precomputed reads. Every figure the scan judges by -- a venue's lowest price, its region's median and deal price, its sale rate, a bookmaker's odds -- is a column there. See [[file:market-data.org][Market data]], "Market data".
+5. *Marketdata* turns store keys into records a trade can name: a =venue= (with its fee model, its transfer cost and the location whose holding its money moves through) and an =instrument= (with the =product_id= that links it to stock), made by /promotion/ from what the store already knows. It also answers "what is this worth" (the price oracle) and drives the Trading pages, watchlists and alerts. See [[file:market-data.org][Market data]], "Venues, instruments and the price oracle" and "Browsing: the Trading pages".
+6. *Arbitrage* -- this page -- reads the stores through one strategy at a time, prices every venue's fees through its fee model, judges every candidate by the same filters and offers the rest as opportunities; the one a person chooses is planned again from the prices as they are now and recorded through the =record= action as a trade and its legs. See [[*Finding opportunities][Finding opportunities]] and [[*Recording an attempt: =record=][Recording an attempt]].
+7. *The ledger* makes the trade's money real. Every leg is a registered posting source, so any save of a leg through any door posts, reverses or does nothing exactly as the ledger decides ([[file:ledger.org::*Posting on save: the source registry][Ledger: the source registry]]); a stock leg moves units once, through the inventory service, when it is executed ([[file:inventory.org::*Bought and sold outright: =receive_from= and =issue_to=][Inventory: bought and sold outright]]); a craft between the buy and the sell is production's ([[file:production.org][Production]]); and the close takes what is left on the positions account to the gains account, one journal per currency. The results reach =arbitrage_performance=, =pnl=, =ventures=, =monthly= and the ledger's own statements ([[file:reporting.org][Reporting]]).
+
+** Where to read next
+
+- The stages before this one: [[file:market-data.org][Market data]] (feeds, the worker, the store, venues and instruments, the oracle, alerts, the Trading pages) and [[file:plugins.org][Plugins]] (runtimes, manifests, the exec protocol, the reference plugins).
+- The books behind a trade: [[file:ledger.org][the general journal]], [[file:inventory.org][Inventory]], [[file:production.org][Production]] (crafting between a buy and a sell) and [[file:reporting.org][Reporting]].
+- Feeding a store, one worked example per kind of market: [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses as a feed]] (the Blizzard plugin, its =wow_auction= fee model and =tsm= export), [[file:examples/odds-api-feed.org][bookmakers' odds from the-odds-api]] and [[file:examples/dropship-supplier-feed.org][a dropshipping supplier's price list]] (an exec plugin).
+- Trading on it, one worked example per strategy family, each rebuilding what =make demo= seeds with the exact commands: [[file:examples/arbitrage-wow-cross-realm.org][a cross-realm flip]] (=spread=, with venues, a watchlist and alerts), [[file:examples/arbitrage-crafting.org][craft arbitrage and a write-off]] (=transform=, a craft, =abandon=), [[file:examples/arbitrage-dropshipping.org][dropshipping]] (=spread= across two sources) and [[file:examples/arbitrage-surebet.org][a surebet]] (=cover=, the calculator, wallets).
 
 * What the module is for
 
@@ -9,7 +71,7 @@ It requires =marketdata= (a leg names a venue and an instrument) and =ledger= (a
 
 The first half of this document is the records and the books; the second, [[*Finding opportunities][Finding opportunities]], is the scan -- its strategies, the arithmetic of odds and flips, fee models, presets, the calculators and how an opportunity becomes a trade.
 
-=make demo= seeds one of each, and four worked examples rebuild them by hand with the exact commands: [[file:examples/arbitrage-wow-cross-realm.org][a cross-realm flip]], [[file:examples/arbitrage-crafting.org][craft arbitrage and a write-off]], [[file:examples/arbitrage-dropshipping.org][dropshipping]] and [[file:examples/arbitrage-surebet.org][a surebet]].
+=make demo= seeds one of each, and four worked examples rebuild them by hand with the exact commands (listed in [[*Where to read next][Where to read next]]).
 
 * The records
 
@@ -275,7 +337,7 @@ Every door takes the same names: the =arbitrage_scan= report's options, the quer
 | =kind=           | text               | only instruments of this kind                                                                               |
 | =instrument=     | key                | one instrument; for =cover=, one event                                                                      |
 | =recipe_id=      | integer            | =transform=: one recipe; every active recipe (at most 200) otherwise                                        |
-| =units=          | integer            | units each opportunity is priced for, 1 by default; batches for =transform=                                 |
+| =units=          | integer, 1-1000000 | units each opportunity is priced for, 1 by default; batches for =transform=                                 |
 | =buy_sources=    | integer, 1-10      | =spread=: the N cheapest buy venues per item in each currency -- the drop shipper's supplier list           |
 | =sell_basis=     | choice             | what a unit sells for: =min= (the venue's lowest listing, the default), =market=, =sale_avg=, =region_median= (the default for =deal=), =bid= |
 | =total_stake=    | money              | =cover= and =back_lay=: the stake; otherwise 100 in the bookmakers' currency, else the book currency        |
@@ -285,7 +347,7 @@ Every door takes the same names: the =arbitrage_scan= report's options, the quer
 | =max_capital=    | money              | most capital one opportunity may tie up (FlippingPal's "max buyout"); one that needs more is left out       |
 | =max_buy_pct=    | percent            | most a unit may cost as a percent of the region's average sale price ("sale avg vs buy")                    |
 | =min_confidence= | 0 to 1             | least confidence                                                                                            |
-| =max_age_hours=  | integer            | leave out prices older than this, whatever they promise                                                     |
+| =max_age_hours=  | integer, 1-8784    | leave out prices older than this, whatever they promise; bounds which events and lay quotes are read at all |
 | =share=          | percent            | the share of a market's sales a lot can expect, 100 by default; drives the lock days                        |
 | =sort=           | choice             | =profit= (default), =roi=, =roi_per_day=, =annualized=, =ev=, =confidence=                                 |
 | =top=            | integer, 1-500     | how many rows, 50 by default                                                                                |
@@ -296,19 +358,43 @@ A plugin's strategy may declare options of its own (=venture_arbitrage_strategy_
 
 ** Strategies
 
+A strategy is a registered scan function: it reads the stores through the scan it is handed, finds candidates, and adds each as an opportunity; the scan then judges every candidate the same way (see [[*The answer][The answer]]). The five built-ins declare no options of their own -- each reads the common options above, and the list under each strategy says which ones change what it does. Every opportunity carries a =key= that names it uniquely within its strategy's answer, so a fresh run of the same question can find it again; the key's shape is the strategy's, and is shown under each.
+
+| Strategy    | Label (the page's tab) | Reads from the store                                            | Default =sell_basis= |
+|-------------+------------------------+-----------------------------------------------------------------+----------------------|
+| =spread=    | Spread                 | current rows, cheapest against their region first               | =min=                |
+| =deal=      | Deals                  | current rows at or under their group's deal price               | =region_median=      |
+| =transform= | Crafting               | recipes, their products' instrument records, every input's book | =min=                |
+| =cover=     | Surebets               | events with quotes, newest first, and their outcomes' back odds | --                   |
+| =back_lay=  | Back and lay           | instruments with a lay quote, newest first, and their back odds | --                   |
+
+=GET /api/v1/arbitrage/registries= (=venturectl arbitrage registries=) lists every registered strategy with its label and description, a plugin's included.
+
 *** =spread=
 
 Buy where an instrument is cheap, sell where it is dear: cross-realm flipping, drop shipping, retail and crypto spreads. Candidates are the in-stock rows at the buy venues, cheapest against their region first (the store's indexed =pct_vs_region=), at most 500 instruments per source. For each, every source's venues quoting the same instrument key (=venture_series_store_other_venues()=, one indexed read per source) give the buy side -- the N cheapest in-stock venues per currency, N being =buy_sources= -- and the sell side, the best other venue per currency on =sell_basis=. Each buy and sell pair is priced as a flip (below). An instrument is the same instrument across two sources when its key is the same, which is how a supplier's price list and a marketplace's prices meet.
 
 The buy is priced by walking the venue's book for =units= (=venture_series_store_bulk_cost()=): a book too thin prices the units it has and remembers =requested_units=; a store that keeps only statistics prices at the lowest price with the depth unknown.
 
+- Options that shape it: =buy_venues=, =sell_venues=, =group_key=, =category_path=, =kind=, =instrument= (one instrument), =units=, =buy_sources=, =sell_basis=, =share=, =max_age_hours=; and =max_buy_pct= (or =sell_basis: sale_avg=) makes it read the buy venue's region averages to fill =buy_vs_sale_avg=.
+- Key: =spread:<buy source>:<buy venue>><sell source>:<sell venue>:<instrument>=, e.g. =spread:1:thornmere>1:silverfen:moonsteel-bar=.
+- Legs it plans: a buy at the buy venue, a sell at the sell venue with that venue's fees, and a =fee= leg at each end whose venue has a =transfer_cost=, because the lot moves.
+
 *** =deal=
 
-Undermine's deal: a venue's price at or under its group's deal price -- the median of the venues' lowest prices, or the 33rd percentile when 15 or more venues offer it (the store's =deals_only= filter) -- bought there and sold back at the same venue at =region_median= unless =sell_basis= says otherwise. No transfer; the venue's own fees.
+Undermine's deal: a venue's price at or under its group's deal price -- the median of the venues' lowest prices, or the 33rd percentile when 15 or more venues offer it (the store's =deals_only= filter) -- bought there and sold back at the same venue at =region_median= unless =sell_basis= says otherwise. No transfer; the venue's own fees. Every deal row is its own candidate (a spread keeps one per instrument), and the venue must be allowed on both sides: =buy_venues= and =sell_venues= both have to admit it.
+
+- Options that shape it: the same as =spread= less =buy_sources=.
+- Key: =deal:<source>:<venue>><source>:<venue>:<instrument>=, the same venue on both sides.
 
 *** =transform=
 
 Crafting arbitrage (TSM's crafting cost). For each recipe, the output's best venue on =sell_basis= fixes the currency; each input is priced at every allowed buy venue of every instrument its product is quoted as (instrument records with =product_id=), by walking that venue's book for the units needed, converted into the output's currency; the cheapest wins. A reusable component (a tool) is needed once, at its quantity, however many batches -- never multiplied, the =goal_materials= rule. A venue whose book cannot fill the units, or whose currency has no rate, is passed over; none left leaves the input unquoted and the row blank, naming it. The cost is the sum of the inputs, the output's gross is its price times =output_quantity= times the batches, and moving the lots costs each input venue's transfer cost and the output venue's once. The opportunity carries =inputs= -- each line's venue, units, unit price and cost -- which =craft_arbitrage= prints as a shopping list.
+
+- It needs the =production= module: with it off the scan answers no rows and a note says so. An inactive recipe is skipped unless =recipe_id= names it.
+- Options that shape it: =recipe_id= (one recipe, else every active one, at most 200 by name), =units= (batches), =buy_venues= (where inputs may be bought), =sell_venues= (where the output may be sold), =group_key=, =sell_basis=, =max_age_hours=.
+- Key: =transform:<recipe id>:<output source>:<output venue>=, or =transform:<recipe id>:0= when no venue quotes the output.
+- Legs it plans: a buy per input at its venue, then the output's sell. The craft itself is not a leg: it is the recipe's =craft= action, performed between them (see [[file:examples/arbitrage-crafting.org][the crafting example]]).
 
 *** =cover=
 
@@ -316,9 +402,57 @@ A surebet across bookmakers for one event. Events are the parents of quoted inst
 
 *An event that has started is left out.* An odds provider stores an event's start as the =commence_time= attribute of its instrument (the-odds-api's plugin does, and so does the demo's JSONL). An event whose =commence_time= is at or before the scan's time is under way or over, and its quotes -- books stop moving a finished match's odds -- would read as a surebet nobody can take; the scan leaves it out and a note counts how many. An event that names no =commence_time= is kept, and a note says how many were and that =max_age_hours= is then the only guard.
 
+- Options that shape it: =instrument= (one event, by its key), =buy_venues= (the bookmakers that may be backed at), =total_stake= (the money split over the outcomes), =max_age_hours= (prices older are not read, and events quoted only before it are not listed at all).
+- A bookmaker whose venue record names a currency other than the stake's is passed over; one with no record or no currency may take it. Odds are quotes with no currency; a quote that carries one is a price, not odds, and is not read.
+- Key: =cover:<source>:<event>=.
+- Legs it plans: a =stake= per outcome at its bookmaker, for that outcome's rounded stake. A row also carries =outcomes= (each outcome's venue, odds, effective odds, stake and payout), =sum=, =overround=, =is_surebet= and =residual=.
+
 *** =back_lay=
 
 A back at one venue matched by a lay of the same outcome at an exchange. Instruments with a lay quote (=venture_series_store_list_quoted_instruments()=); the best back (net of its venue's commission) at the buy set and the cheapest lay, counting the exchange's commission, at the sell set, at two different venues. =net= is the worse of the two results; capital is the back stake plus the lay's liability. An outcome whose event has started (the outcome's own =commence_time=, else its parent event's) is left out as =cover= leaves the event out.
+
+- Options that shape it: =instrument= (one outcome, by its key), =buy_venues= (where to back), =sell_venues= (where to lay), =total_stake= (the back stake), =max_age_hours=.
+- Key: =back_lay:<source>:<instrument>:<back venue>><lay venue>=.
+- Legs it plans: a =stake= of the back stake at the back venue, and a =stake= of the liability at the exchange (what it holds while the lay is matched). A row also carries =back_odds=, =lay_odds=, =commission=, =rating=, =back_stake=, =lay_stake=, =liability=, =if_back_wins=, =if_lay_wins= and =ideal_profit=.
+
+** The answer
+
+=venture_arbitrage_scan_run()= -- behind =GET /api/v1/arbitrage/scan=, the page, the report, the widget and the CLI -- answers one JSON object:
+
+| Member      | What                                                                                                                                |
+|-------------+-------------------------------------------------------------------------------------------------------------------------------------|
+| =available= | false when there is nothing to scan: no SQLite in the build, =feeds= off, or no data source in the organization (a note says which) |
+| =strategy=  | the strategy that ran                                                                                                               |
+| =options=   | the question as the scan read it: normalised, the preset merged in, every value in its one spelling                                 |
+| =examined=  | how many candidates the strategy offered                                                                                            |
+| =excluded=  | how many were left out, by reason (below)                                                                                           |
+| =truncated= | true when more rows passed than =top= let through                                                                                   |
+| =rows=      | the opportunities, sorted, at most =top=                                                                                            |
+| =notes=     | what the scan wants a person to know: bounds reached, rates missing, events started, sources off                                    |
+
+*Judging.* Every candidate any strategy offers is judged by the same function, in this order, and the first reason that applies is the one counted in =excluded=:
+
+| Reason           | Left out when                                                                                                |
+|------------------+--------------------------------------------------------------------------------------------------------------|
+| =stale=          | its oldest price is older than =max_age_hours= (applies even to =craft_arbitrage=)                           |
+| =unquoted=       | something in it is unquoted (=missing=) and any numeric bound was asked; with none asked a blank row is kept |
+| =unprofitable=   | its =net= is zero or less                                                                                    |
+| =no_rate=        | =min_profit= or =max_capital= is in another currency and there is no =exchange_rate= to the row's on the day |
+| =min_profit=     | =net= is under the bound                                                                                     |
+| =max_capital=    | =capital= is over the bound                                                                                  |
+| =min_roi=        | =roi= is under the bound, or unknown                                                                         |
+| =min_sale_rate=  | =sale_rate= is under the bound, or unknown                                                                   |
+| =max_buy_pct=    | =buy_vs_sale_avg= is over the bound, or unknown                                                              |
+| =min_confidence= | =confidence= is under the bound                                                                              |
+| =never_sells=    | the sell venue's sale rate is zero: infinitely many relists, every deposit lost (counted by the flip itself) |
+
+A strategy also drops prices before they become candidates: a price older than =max_age_hours= is never read (a note counts them), and a sell side in a currency with no rate to the buy side's is skipped (a note per currency pair counts them, "No exchange rate from EUR to USD on file: 3 candidates skipped. Record an exchange_rate to compare them."). Neither is in =excluded=, because neither became a row.
+
+*Sorting.* =sort= orders what passed. =profit= (by =net=) and =ev= are money, and money in two currencies has no order: rows group by currency, the book currency first and the rest by code, and order by amount within each. The ratio sorts (=roi=, =roi_per_day=, =annualized=, =confidence=) cross currencies freely. A row missing the figure sorts last whichever way; ties go by key, so the same data always gives the same order -- which is what lets =venturectl arbitrage record ROW= number rows.
+
+*Cutting.* =top= (50 by default, at most 500) keeps the first rows and sets =truncated= when it dropped any. Recording runs the same question with =top= at 500, so an opportunity a page showed on row 50 is still found.
+
+*A row.* The members every strategy writes: =strategy=, =key=, =title=, =instrument_key=, =instrument_name=, =data_source_id=, =currency=, =net=, =capital=, =roi=, =ev=, =confidence=, =age_seconds=, =venues=, =warnings= (a venue with no record, a sale rate unknown with a deposit at stake), =missing= (what is unquoted, when anything is), =narrow= (the options that find it again: its =instrument=, or for =transform= its =recipe_id=) and =legs= (kind, source, venue key, instrument key, quantity, unit price, amount, fees -- the plan's raw material). A flip (=spread=, =deal=) adds =units=, =requested_units= (a book too thin), =buy= and =sell= (each side's venue, unit price, amount, fees, and the sell side's =deposit=), =transfer_cost=, =listing_loss=, =relists=, =lock_days=, =roi_per_day=, =annualized=, =sale_rate=, =sold_per_day= and =buy_vs_sale_avg=; =transform= adds =inputs=; =cover= and =back_lay= add the members listed under them. Money is the usual money JSON; ratios are fractions (=0.15= is 15%). The page alone adds =trend= and =trend_currency= to each row -- the buy venue's lowest price over fourteen days, for its sparkline (=venture_arbitrage_add_trends()=); the JSON twin, the report and the export answer without them.
 
 ** The arithmetic
 
@@ -326,7 +460,8 @@ All of it is =venture-arbitrage-math.h=: pure, money in minor units, ratios as d
 
 *** Odds
 
-- Decimal odds d. American +A is 1 + A/100, -A is 1 + 100/A (a moneyline is at least 100 in magnitude); fractional a/b is 1 + a/b; "evens" is 2.0. Odds of one or less pay nothing and are refused.
+- Decimal odds d. American +A is 1 + A/100, -A is 1 + 100/A (a moneyline is at least 100 in magnitude); fractional a/b is 1 + a/b; "evens" (or "evs") is 2.0. Odds of one or less pay nothing and are refused.
+- =format= is =auto= (the default), =decimal=, =american= or =fractional= (=venture_arbitrage_odds_format_from_string()=). Auto reads a slash as fractional, a leading sign as American, "evens" as fractional and anything else as decimal -- which is why "+200" needs no format but "200" given as a moneyline does: auto would read it as decimal odds of 200.
 - Implied probability p = 1/d. Overround = sum(1/d_i) - 1. No-vig probability p_i = (1/d_i) / sum(1/d_j).
 
 *** Surebet
@@ -357,10 +492,11 @@ For units bought at one venue and sold at another (or the same), in one currency
 - Listing loss = relists x deposit when a sale refunds its own deposit, (relists + 1) x deposit when nothing is refunded.
 - Net = units x sell price - sell fees - buy cost - buy fees - listing loss - transfer cost.
 - Capital = buy cost + buy fees + one deposit + transfer cost.
+- Transfer cost, when the lot moves (the buy and sell venues differ), is the buy venue's =transfer_cost= plus the sell venue's, each converted into the flip's currency; a lot sold where it was bought (=deal=) moves nowhere and costs nothing.
 - ROI = net / capital; nothing tied up is no ROI, not an infinite one.
-- Lock days = units / (sold per day x share) + transit days (the venues' =transfer_hours= / 24); unknown without a pace of sales.
+- Lock days = units / (sold per day x share) + transit days (both venues' =transfer_hours=, added, / 24, when the lot moves); unknown without a pace of sales.
 - ROI per day = ROI / lock days. Annualised = (1 + ROI)^(365 / lock days) - 1; a total loss stays -1, and a hold too short for the figure to be a number has none.
-- EV = P(fill) x net - (1 - P(fill)) x unwind loss, with P(fill) the sale rate and the unwind loss a deposit and the move back. With no sale rate there is no EV. A surebet or a back and lay is quoted on both sides now: its EV is its net.
+- EV = P(fill) x net - (1 - P(fill)) x unwind loss, with P(fill) the sale rate and the unwind loss a deposit and the move back (in a scan; the =flip= calculator, which has no venues, counts only its =transfer=). With no sale rate there is no EV. A surebet or a back and lay is quoted on both sides now: its EV is its net.
 
 *** Confidence
 
@@ -377,15 +513,23 @@ Fresh data at three venues with a steady price and a deep book is 1; two interva
 
 ** Fee models
 
-A venue names a model in =fee_model= and gives its parameters in =fee_params= (YAML). A venue with no record, or no model, charges nothing, and a row says so in its =warnings= ("realm-c has no venue record: no fees counted there").
+A venue names a model in =fee_model= and gives its parameters in =fee_params= (YAML, or JSON, a mapping). A venue with no record, or no model, charges nothing, and a row says so in its =warnings= ("realm-c has no venue record: no fees counted there").
 
-| Model        | Parameters                                                                                                                         |
-|--------------+------------------------------------------------------------------------------------------------------------------------------------|
-| =percent=    | =cut_percent= of the sale; =fixed_per_unit=, =fixed_per_order= on top; at least =min_fee=; =deposit_percent= of the listing price (=deposit_basis: price=) or of a reference (=reference=, the sell venue's market value), refunded on a sale unless =deposit_refundable: false=; a =buy:= mapping with the same keys prices buying, which is free without one |
-| =commission= | =rate_percent= of net winnings (an exchange); the scan applies it through the effective odds                                       |
-| =none=       | nothing                                                                                                                            |
+*The registry.* Fee models live in a =VentureFeeModelRegistry= on the context (=venture_context_get_fee_models()=), the built-ins first, a plugin's added by name with =venture_fee_model_registry_add()=. A model is two plain functions:
 
-Percents are read exactly (4.75% is 47500 parts per million); an amount with no currency is in the sale's, and one naming another currency is refused rather than converted.
+- *compute* (=VentureFeeModelComputeFunc=) is handed the venue's parameters, the side (=VENTURE_FEE_SIDE_SELL= or =VENTURE_FEE_SIDE_BUY=), the gross amount for all the units, the units (at least one), a reference amount for all the units (in a scan, the sell venue's market value times the units; =NULL= when nobody knows one), and the instrument's *attributes* as its source stored them (=NULL= in a calculator, or when the instrument has none). It fills a =VentureFeeQuote=: =fee= (left =NULL= it is zero), an optional =deposit= and whether it is =deposit_refundable=, and a =commission= share for an exchange. It runs on the main thread and reads no database: everything it may judge by is in its arguments.
+- *validate* (=VentureFeeModelValidateFunc=), optional, judges the parameters when a venue writes them. A model with no validator accepts only empty parameters.
+
+=venture_fee_model_registry_compute()= is the one caller: an empty name is =none=, a name not registered is =VENTURE_ERROR_NOT_FOUND= ("The fee model wow_auction is not loaded"), and a failure clears the quote. A scan calls it through =venture_arbitrage_scan_fees()=, which finds the venue's record and parameters and reads the instrument's attributes from the store by the side's instrument key (cached for the scan); a failure there does not fail the scan: a flip or a surebet is blanked with =fees: <the reason>= in =missing=, and =back_lay= passes over the venue whose model failed.
+
+| Model         | Where               | Parameters                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+|---------------+---------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =percent=     | built in            | =cut_percent= of the sale (at most 100); =fixed_per_unit=, =fixed_per_order= on top; at least =min_fee=; =deposit_percent= of the listing price (=deposit_basis: price=, the default) or of a reference (=deposit_basis: reference=, the sell venue's market value), refunded on a sale unless =deposit_refundable: false=; a =buy:= mapping with the same keys (but no =buy:= of its own) prices buying, which is free without one                                          |
+| =commission=  | built in            | =rate_percent= of net winnings (an exchange), under 100; charged only on a positive sell amount, and handed to the odds strategies as the quote's =commission=, which they apply through the effective odds                                                                                                                                                                                                                                                                  |
+| =none=        | built in            | nothing; takes no parameters                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| =wow_auction= | the Blizzard plugin | =cut_percent= (5), =duration_hours= (12, 24 or 48; 48 by default), =deposit_factor_percent= (the classic 15/30/60% of the vendor price by duration otherwise); the deposit is the instrument's =vendor_sell= attribute (copper) times the units, refundable, and absent while the item's details are unfetched; the amount must have four decimal places (=GOLD=). Buying is free. See [[file:examples/wow-auction-house-feed.org::*Fees: =wow_auction=][the Blizzard feed]] |
+
+Percents are read exactly (4.75% is 47500 parts per million, at most four decimal places); an amount with no currency is in the sale's, and one naming another currency is refused rather than converted. Booleans read =true=/=false=, =yes=/=no=, =on=/=off= or =1=/=0=.
 
 *Judged when written.* A venue's model and parameters are checked against the registry when either is written -- an unregistered model is refused naming the registered ones, a parameter the model does not take is refused by name (=cut_percnt= read as no cut is the fee nobody charged). A name kept from before is never judged again, so a venue saved under a plugin's model stays editable after the plugin is gone, and with the arbitrage module off nothing is judged at all: nothing loaded is not evidence that a name is wrong. The built-in models are always registered, so a name written while a plugin is not loaded is refused -- write it once the plugin is there. A scan at a venue whose model is missing blanks the row and names the model.
 
@@ -418,10 +562,15 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 
 ** Export
 
-=GET /arbitrage/export?format=NAME&...= (and its API twin) answers the question as a download, through the export format registry:
+=GET /arbitrage/export?format=NAME&...= (and its API twin, and =venturectl arbitrage export FORMAT [-o FILE]=) runs the question and hands its rows -- exactly the rows the page would show, after the filters, the sort and =top= -- with the normalised options to the format named, through the export format registry (=venture_context_get_export_formats()=, =venture_export_format_registry_export()=). The answer is a download, =arbitrage-<format>.<extension>=, with the format's content type and =Cache-Control: no-store=; a format nobody registered is NOT_FOUND, listing the ones that are. The page links every registered format beside the results.
 
-- =csv=: one line per row -- strategy, key, title, instrument, buy and sell venue, units, currency, capital, net, ROI, ROI a day, annualised, confidence, sale rate, data age, what is unquoted. A field a spreadsheet would run as a formula is defused.
-- =shopping_list=: every buy and stake of the rows, by venue, the same instrument at the same venue added up, a total per venue per currency (never across two).
+| Format          | Where               | Content type                | What                                                                                                                                                                                                                                                                           |
+|-----------------+---------------------+-----------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =csv=           | built in            | =text/csv; charset=utf-8=   | one line per row: =strategy=, =key=, =title=, =instrument=, =buy_venue=, =sell_venue=, =units=, =currency=, =capital=, =net=, =roi=, =roi_per_day=, =annualized=, =confidence=, =sale_rate=, =age_seconds=, =missing=. A field a spreadsheet would run as a formula is defused |
+| =shopping_list= | built in            | =text/plain; charset=utf-8= | every buy and stake leg of the rows, by venue, the same instrument at the same venue added up, a total per venue per currency (never across two)                                                                                                                               |
+| =tsm=           | the Blizzard plugin | =text/plain=                | one TradeSkillMaster group-import line, =i:<item id>,...,p:<species>=, from each row's instrument and a =transform= row's inputs, each item once in first-seen order, variants collapsed, non-WoW keys skipped; an empty scan is an empty line                                 |
+
+An export function (=VentureExportFunc=) is handed the rows and the options and returns =GBytes=; it runs on the main thread after the scan, and reads nothing else.
 
 ** Calculators
 
@@ -431,7 +580,13 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 |------------+----------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------|
 | =surebet=  | =odds= (one per outcome, comma or space separated, any format), =format=, =stake=                        | each stake and payout, the no-vig chances, overround, =payout= and =profit= (sure), =payout_ideal= and =profit_ideal=, the rounding left over |
 | =back_lay= | =back_odds=, =lay_odds=, =format=, =commission= and =back_commission= (percents), =stake=               | lay stake, liability, both results, =worst= (sure), =ideal=, the rating     |
-| =flip=     | =buy=, =sell= (unit prices), =units=, =cut=, =fixed=, =deposit= (percent of the sale), =refundable=, =sale_rate=, =sold_per_day=, =share=, =transfer=, =transit_hours= | net, capital, ROI, ROI a day, annualised, listing loss, EV, days tied up |
+| =flip=     | =buy=, =sell= (unit prices, one currency), =units=, =cut= (percent), =fixed= (per order), =deposit= (percent of the sale), =refundable=, =sale_rate= (percent), =sold_per_day=, =share= (percent), =transfer= (an amount), =transit_hours= | net, capital, ROI, ROI a day, annualised, listing loss, EV, days tied up |
+
+*Surebet.* The odds are split on commas, semicolons, spaces or new lines, so "2.10, 2.05" and "+150 -120" both read; at least two outcomes, at most 64. =payout= is the least any outcome's rounded payout returns and =profit= is that less what was staked -- what a person is sure to get -- and =payout_ideal= (T/S) and =profit_ideal= (T(1/S - 1)) are the unrounded figures beside them; =stakes=, =payouts=, =staked= and =residual= (the total less what was staked) show where rounding went. On the demo's 2.10 and 2.15 with 100.00 USD: stakes 50.59 and 49.41, each paying 106.23, so =payout= 106.23 and =profit= 6.23 against an ideal 106.24 and 6.24. Each outcome also carries its =implied= and =no_vig= chance; the answer has =sum=, =overround=, =margin= and =is_surebet=. The page shows "Sure profit" ("Sure loss" when the odds are no surebet), "Sure payout" and "Ideal profit"; the CLI's table Payout, Profit, Ideal payout and Ideal profit.
+
+*Back and lay.* =back_commission= turns the back odds into effective odds before anything else (an exchange used to back); =commission= is the lay exchange's. =worst= is the lesser of =if_back_wins= and =if_lay_wins=, every rounding against the person, so it is sure; =ideal= is the unrounded result. The page shows them as "Sure result" and "Ideal".
+
+*Flip.* The sell side's fees are the =percent= fee model's arithmetic -- =cut=, =fixed= as =fixed_per_order=, =deposit=, =refundable= -- exactly as a venue naming that model would charge. =buy= and =sell= in different currencies are refused (the calculator has no exchange rate to use), and so is a =transfer= in another currency.
 
 ** Pages and routes
 
@@ -449,9 +604,25 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 
 Every route checks its own session or token and the =arbitrage= module. The scan and the export read data sources (=data_source= at viewer); recording writes trades (=arbitrage_trade= at editor, and the action's own organization roles); the calculators and the registries need a viewer of presets. The =/api/v1/arbitrage= routes are registered before the generic =/api/v1/:type= routes, which would otherwise read =arbitrage= as a type.
 
+In the sidebar the module adds three rows under /Trading/, between the market's alerts and =/feeds=: /Arbitrage/ (=/arbitrage=), /Calculators/ (=/arbitrage/calc=) and /Trades/ (=/e/arbitrage_trade=, the generic list of trades, whose detail page carries the trade's own block). Presets are ordinary =arbitrage_strategy= records at =/e/arbitrage_strategy=.
+
 ** From the command line
 
-=venturectl arbitrage= is a thin client of these routes and of the actions: =scan [STRATEGY] [option=value ...]= (the table numbers its rows), =record ROW|KEY [STRATEGY] [option=value ...]= (the same question plus the row's key and =narrow=, posted to the record route), =record name=... legs=JSON|@FILE= and =close|reopen|abandon TRADE_ID=, =execute LEG_ID= (the =act= verb, typed from each action's schema), =calc surebet|back-lay|flip= (=--stake AMOUNT=), =export FORMAT [-o FILE]= and =registries=. Every writing verb takes =--stage=. =organization_id=N= on =scan=, =record= and =export= asks for that organization (the routes read it; see "Which organization" below); the CLI refuses =venture_id=, =as_of=, =key= and =format=, which the scan's routes would ignore or drop. See [[file:cli.org][venturectl]].
+=venturectl arbitrage= is a thin client of these routes and of the actions: =scan [STRATEGY] [option=value ...]= (the table numbers its rows), =record ROW|KEY [STRATEGY] [option=value ...]= (the same question plus the row's key and =narrow=, posted to the record route), =record name=... legs=JSON|@FILE= and =close|reopen|abandon TRADE_ID=, =execute LEG_ID= (the =act= verb, typed from each action's schema), =calc surebet|back-lay|flip= (=--stake AMOUNT=), =export FORMAT [-o FILE]= and =registries=. Every writing verb takes =--stage=. =organization_id=N= on =scan=, =record= and =export= asks for that organization (the routes read it; see "Which organization" below); the CLI refuses =venture_id=, =as_of=, =key=, =format= and =calc= there (exit 2), which the scan's routes would ignore or drop. =--stake= is accepted only by =calc= and =-o= only by =export=. Whole-number options (=preset_id=, =data_source_id=, =recipe_id=, =units=, =buy_sources=, =max_age_hours=, =top=, =organization_id=) are sent as numbers and refused when they are not; everything else travels as text for the server to judge. A row past the end, a key no longer there or an unknown export format is exit 3. See [[file:cli.org][venturectl]].
+
+#+begin_src sh
+venturectl arbitrage scan spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
+venturectl arbitrage record 1 spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
+venturectl --stage arbitrage record name="Peacebloom flip" strategy=spread legs=@legs.json
+venturectl arbitrage calc surebet 2.10 2.15 --stake "100.00 USD"
+venturectl arbitrage calc surebet odds="+150 -120" format=american --stake "100.00 USD"
+venturectl arbitrage calc back-lay 3.0 2.9 --stake "50.00 USD" commission=5
+venturectl arbitrage calc flip "1.25 GOLD" "2.10 GOLD" units=20 cut=5 sale_rate=40
+venturectl arbitrage export csv spread group_key=eu -o opportunities.csv
+venturectl arbitrage execute 12 occurred_at=2026-03-05T10:00:00Z
+venturectl arbitrage abandon 4 goods=write_off
+venturectl arbitrage registries
+#+end_src
 
 ** Which organization
 
@@ -475,7 +646,7 @@ The options reach every door: the web API, the report page (with a form for each
 
 ** The =opportunities= widget
 
-A dashboard card of the top rows (=limit=, 5 by default) a scan answers now: a preset (=record_id=) or a question in =options=, in the scan's own names, for the page's organization. Its options are read by the scan's reader when the widget is saved. See [[file:dashboards.org][Dashboards]].
+A dashboard card of the top rows (=limit=, 5 by default, sent as the scan's =top=) a scan answers now: a preset (=record_id=, loaded as =preset_id=) or a question in =options=, in the scan's own names, for the page's organization. Its options are read by the scan's reader when the widget is saved (while the module is on), so a widget that saved is a question that runs. Its =data= rows are ={key, title, net, net_formatted, roi}=, the same rows the card draws. The kind belongs to the =arbitrage= module: with it off the card says so in place. The demo shows both forms: the /Evermoor arbitrage/ dashboard runs two of its presets by =record_id=, and the /Trading desk/ dashboard (=data/examples/demo-trading.json=) asks its two questions in =options=. See [[file:dashboards.org][Dashboards]].
 
 ** Plugins: strategies, fee models and export formats
 
@@ -602,7 +773,7 @@ tsm_export(JsonArray *rows, JsonObject *options, gpointer user_data, GError **er
 }
 
 venture_export_format_registry_add(venture_context_get_export_formats(context), "tsm",
-	"TSM group", "text/plain; charset=utf-8", "txt", tsm_export, NULL, NULL, error);
+	"TSM group import", "text/plain", "txt", tsm_export, NULL, NULL, error);
 #+end_src
 
 and =/arbitrage/export?format=tsm= serves it. The page lists every registered format beside the results.
@@ -641,6 +812,13 @@ gboolean venture_arbitrage_realised_totals(VentureContext *context, gint64 organ
 The engine (=venture-arbitrage-engine.h=, =venture-arbitrage-math.h=):
 
 #+begin_src C
+#define VENTURE_ARBITRAGE_NAME_MAX        (64)       /* a registered name's length */
+#define VENTURE_ARBITRAGE_SCAN_TOP_MAX    (500)      /* the most rows `top` asks for */
+#define VENTURE_ARBITRAGE_SCAN_CANDIDATES (500)      /* candidates per source */
+#define VENTURE_ARBITRAGE_SCAN_SOURCES    (20)       /* data sources per scan */
+#define VENTURE_ARBITRAGE_MAX_UNITS       (1000000)  /* units an opportunity is priced for */
+#define VENTURE_ARBITRAGE_MAX_OUTCOMES    (64)       /* outcomes a surebet covers */
+
 /* Registries, on the context, built-ins first. */
 VentureFeeModelRegistry *venture_context_get_fee_models(VentureContext *context);
 VentureArbitrageStrategyRegistry *venture_context_get_arbitrage_strategies(VentureContext *context);
@@ -664,6 +842,7 @@ gboolean venture_export_format_registry_add(VentureExportFormatRegistry *self, c
     VentureExportFunc func, gpointer user_data, GDestroyNotify destroy, GError **error);
 
 /* The scan, the plan, recording. */
+const gchar *const *venture_arbitrage_scan_option_names(void);
 JsonObject *venture_arbitrage_scan_options_normalise(VentureContext *context,
     gint64 organization_id, JsonObject *options, GError **error);
 JsonNode *venture_arbitrage_scan_run(VentureContext *context, gint64 organization_id,
@@ -680,8 +859,15 @@ VentureConfirmation *venture_arbitrage_stage_opportunity(VentureContext *context
     gint64 organization_id, JsonObject *options, const gchar *key, const VentureActor *actor,
     VentureUserRole role, const gchar *via, GError **error);
 JsonNode *venture_arbitrage_calculate(const gchar *calculator, JsonObject *input, GError **error);
+GBytes *venture_export_format_registry_export(VentureExportFormatRegistry *self, const gchar *name,
+    JsonArray *opportunities, JsonObject *options, GError **error);
+void venture_arbitrage_add_trends(VentureContext *context, JsonArray *rows);
 
 /* What a strategy's scan function is handed. */
+VentureContext *venture_arbitrage_scan_get_context(VentureArbitrageScan *scan);
+gint64 venture_arbitrage_scan_get_organization_id(VentureArbitrageScan *scan);
+gint64 venture_arbitrage_scan_get_now(VentureArbitrageScan *scan);
+gint64 venture_arbitrage_scan_get_units(VentureArbitrageScan *scan);
 JsonObject *venture_arbitrage_scan_get_options(VentureArbitrageScan *scan);
 GPtrArray *venture_arbitrage_scan_get_sources(VentureArbitrageScan *scan);
 VentureSeriesStore *venture_arbitrage_scan_open_store(VentureArbitrageScan *scan,

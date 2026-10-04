@@ -1,5 +1,10 @@
 #+title: Historical accounting export and restore
-#+description: Versioned accounting snapshots with transactional identity remapping
+#+description: Versioned accounting snapshots with transactional identity remapping; scheduled backups, installation copies and the market data series stores copied with them
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-14]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * Version 4 snapshots
 

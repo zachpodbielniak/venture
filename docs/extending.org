@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-03]
-#+version: 0.7.0
+#+updated: [2026-10-04]
+#+version: 0.8.0
 
 * Extending VENTURE
 
@@ -368,6 +368,8 @@ event raised from inside a handler goes nowhere.
 An exec plugin provides a handler from its manifest instead, with the
 =automation_handler= provides kind; see [[file:plugins.org][Plugins]].
 
+The event above is an illustration; the feeds module registers its two real ones the same way, =feed_synced= and =feed_failed=, raised after every data source run with the source, the run, the organization, the status, the rows and the error in the event's data -- see [[file:automation.org::*Market data events][Automating VENTURE]] for the members and [[file:market-data.org::*Runs][Market data: runs]] for what a run is.
+
 * Pages and sidebar rows
 
 A plugin can add pages of its own. The server does not exist when plugins
@@ -487,6 +489,46 @@ next royalties report uses it.
 Secrets do not belong in plugin configuration, for the same reason they do
 not belong in =config.yaml=: name an environment variable there instead.
 
+* Market data: data source providers
+
+Where a data source's prices come from is a /provider/, and the providers are a registry on the context: =venture_context_get_data_source_providers()=, added to with =venture_data_source_provider_registry_add(registry, provider, error)=. Three ship -- =http_json=, =csv= and =file_jsonl= -- and they are registered whether or not the feeds module is on, so a plugin may add its own unconditionally; a name already held is refused (=VENTURE_ERROR_ALREADY_EXISTS=), never replaced.
+
+A provider is either a GObject implementing the =VentureDataSourceProvider= interface (=get_name=, =get_label=, =dup_settings_schema=, an optional =freeze= and =list_units=, =fetch_async=) or, with no GObject to write, one blocking function wrapped by =venture_func_data_source_provider_new(name, label, schema_json, fetch, user_data, destroy)=:
+
+#+begin_src C
+static VentureFeedBatch *
+price_list_fetch(VentureFeedRequest *request, gpointer user_data, GError **error)
+{
+	g_autoptr(VentureFeedBatch) batch = venture_feed_batch_new();
+
+	/* venture_feed_request_http_get() or venture_feed_request_read_file(),
+	 * then venture_feed_batch_add_venue() / _begin_snapshot() /
+	 * _add_listing() ... */
+	return g_steal_pointer(&batch);
+}
+
+/* in venture_plugin_register(): */
+g_autoptr(VentureDataSourceProvider) provider = venture_func_data_source_provider_new(
+	"price_list", "Supplier price list",
+	"{\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}}}",
+	price_list_fetch, NULL, NULL);
+
+if (!venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(context), provider, error))
+	return FALSE;
+#+end_src
+
+The rules that matter, all of them because a fetch runs on another thread:
+
+- *A fetch touches nothing but its =VentureFeedRequest=.* The function form runs on a GTask thread, the interface's =fetch_async= on the feeds worker; neither may read the database, the configuration or a plugin's settings. Anything a fetch needs from the main thread is taken by =freeze=, which runs there when a source is loaded and returns data that never changes afterwards.
+- *Network and files go through the request.* =venture_feed_request_http_get()= / =venture_feed_request_http_send()= enforce =feeds.allowed_origins=, the body cap, the deadline, the request budget, and refuse redirects; =venture_feed_request_read_file()= enforces =feeds.file_roots=. A provider with its own socket would step around every one of those.
+- *Credentials are schema-marked, never settings.* A property marked =x-sensitive= in the settings schema is refused in a source's settings and sealed on the source's credentials page instead; a fetch reads it with =venture_feed_request_get_secret()=.
+- *The feeds code is built only with SQLite*, so a native plugin guards its provider with =#ifdef VENTURE_HAVE_SQLITE= as =plugins/blizzard-auctions/blizzard-plugin.c= does.
+
+An exec plugin provides one from its manifest instead, with the =data_source_provider= provides kind ([[file:plugins.org::*Data source providers from an exec plugin][Plugins]]). The batch, the threading contract and the transport are in [[file:market-data.org::*Providers][Market data: providers]]; the three reference plugins -- Blizzard's auction houses as a GObject provider, the-odds-api as one crispy function, a supplier's CSV as an exec program -- are in [[file:plugins.org::*The reference plugins][Plugins: the reference plugins]].
+
+A module that wants to ride every feed run rather than supply one -- alerts do -- adds a hook with =venture_feeds_add_hook()=; see [[file:market-data.org::*Hooks][Market data: hooks]].
+
 * Arbitrage: fee models, strategies and export formats
 
 The arbitrage engine finds opportunities through three registries on the context, each holding its built-ins first and each open to a plugin's =venture_plugin_register()= with plain functions:
@@ -497,7 +539,37 @@ The arbitrage engine finds opportunities through three registries on the context
 | strategies     | =venture_context_get_arbitrage_strategies()=  | =venture_arbitrage_strategy_registry_add()=  | =spread=, =transform=, =deal=, =cover=, =back_lay= |
 | export formats | =venture_context_get_export_formats()=        | =venture_export_format_registry_add()=       | =csv=, =shopping_list=                           |
 
-A fee model is a compute function (what a side of a trade costs at a venue, from the venue's =fee_params=) and an optional validator, which a venue's save calls when its model or parameters are written. A strategy is a scan function -- it reads the stores through the =VentureArbitrageScan= it is handed and adds opportunities, usually with =venture_arbitrage_scan_add_flip()=, which does every venue's fees, the transfer, the currency conversion and the figures in one call -- and an optional plan, which turns an opportunity into the =record= action's request. An export format turns a scan's rows into bytes, served by =/arbitrage/export?format=NAME=. A plugin's strategy is a tab on =/arbitrage=, a value of =strategy= at every door (the =arbitrage_scan= report, presets, the widget), and its rows are filtered, sorted, exported and recorded exactly like the built-ins'. The contract and a worked crispy strategy are in [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage]].
+A fee model is a compute function (what a side of a trade costs at a venue, from the venue's =fee_params= and -- since the Blizzard plugin needed a vendor price for its deposit -- the instrument's stored =attrs=) and an optional validator, which a venue's save calls when its model or parameters are written. A strategy is a scan function -- it reads the stores through the =VentureArbitrageScan= it is handed and adds opportunities, usually with =venture_arbitrage_scan_add_flip()=, which does every venue's fees, the transfer, the currency conversion and the figures in one call -- and an optional plan, which turns an opportunity into the =record= action's request. An export format turns a scan's rows into bytes, served by =/arbitrage/export?format=NAME=. A plugin's strategy is a tab on =/arbitrage=, a value of =strategy= at every door (the =arbitrage_scan= report, presets, the widget), and its rows are filtered, sorted, exported and recorded exactly like the built-ins'. The contract and a worked crispy strategy are in [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage]].
+
+* Every extension point
+
+Everything a plugin can add, in one place. Each is a registry the running program already consults for its own built-ins, which is why an addition is indistinguishable from one: there is no list of "plugin things" anywhere to fall out of step. A native or crispy plugin calls these from =venture_plugin_register()= with the =VentureContext= it is handed; an exec plugin reaches only the two rows marked as provides kinds, because what the others take is a C function, not a program to run.
+
+| What                         | Registered with                                                                       | Where it lives                    | Explained in                                                  |
+|------------------------------+---------------------------------------------------------------------------------------+-----------------------------------+---------------------------------------------------------------|
+| A runtime for a file type    | =venture_plugin_manager_add_runtime()=, =venture_func_plugin_runtime_new()=           | the plugin manager                | [[file:plugins.org::*Registering a runtime][Plugins: runtimes]]                               |
+| A manifest provides kind     | =venture_plugin_provides_registry_add()= on =venture_context_get_plugin_provides()=   | the context                       | [[file:plugins.org::*What a plugin provides][Plugins: what a plugin provides]]                 |
+| A module and its record types | =venture_context_register_module()=                                                  | the module and entity registries  | [[file:modules.org][Modules]], [[file:data-model.org][the data model]]                         |
+| A cross-row rule             | =venture_database_add_save_validator()=                                               | the database                      | [[*3. A native plugin][A native plugin]]                                               |
+| A posting source             | =venture_ledger_register_source_type()= (+ a rule in =venture_posting_service_get_rules()=) | the database's posting service | [[file:ledger.org::*Posting on save: the source registry][Ledger: posting on save]]                       |
+| A record action              | =venture_action_registry_register()= on =venture_database_get_action_registry()=      | the database                      | [[file:actions.org][Record actions]]                                        |
+| A report                     | =venture_report_registry_add()= on =venture_context_get_report_registry()=            | the context                       | [[file:reporting.org][Reporting]]                                             |
+| A dashboard widget kind      | =venture_widget_kind_registry_add()= on =venture_widget_kind_registry_get_default()=  | process-wide                      | [[file:dashboards.org][Dashboards]]                                            |
+| An automation handler        | =venture_automation_handler_registry_add()=; /provides kind/ =automation_handler=     | =venture_context_get_automation_handlers()= | [[*A plugin's own handlers and events][Handlers and events]]                               |
+| An automation event          | =venture_automation_handler_registry_add_event()=, raised by =venture_automation_emit()= | the same registry              | [[*A plugin's own handlers and events][Handlers and events]]                               |
+| Pages and a sidebar row      | =venture_context_add_web_extension()=, then =venture_web_server_add_nav_link()=      | the context, run per web server   | [[*Pages and sidebar rows][Pages and sidebar rows]]                                     |
+| A data source provider       | =venture_data_source_provider_registry_add()=; /provides kind/ =data_source_provider= | =venture_context_get_data_source_providers()= | [[*Market data: data source providers][Data source providers]]                             |
+| A fee model                  | =venture_fee_model_registry_add()= on =venture_context_get_fee_models()=              | the context                       | [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage: plugins]]                          |
+| An arbitrage strategy        | =venture_arbitrage_strategy_registry_add()= on =venture_context_get_arbitrage_strategies()= | the context                 | [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage: plugins]]                          |
+| An export format             | =venture_export_format_registry_add()= on =venture_context_get_export_formats()=      | the context                       | [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage: plugins]]                          |
+
+Three rules hold across the table, and each exists because the alternative went wrong somewhere:
+
+- *A name is held once.* Every registry here that is keyed by a name refuses a second registration of it, so a plugin cannot quietly replace =report=, =percent= or =csv=; built-ins are registered first, when the registry is first handed out. The report registry is the exception -- =venture_report_registry_add()= replaces a report of the same name -- so pick a report name nothing ships. Save validators and web extensions have no name and simply accumulate.
+- *Registries on the context survive a rebuild of what reads them.* The automation engine is rebuilt on every reload and a web server is built after plugins load; both read the context's registries afresh, which is why a plugin registers into the context and not into the engine or the server.
+- *A kind whose module can be switched off stays registered.* A provides kind, a provider or a widget kind belonging to a module that is off is kept and says so (or skips) while off, so turning the module back on needs nothing re-registered -- the same reason reports are hidden rather than removed.
+
+The Blizzard plugin is the worked example of several at once: a data source provider, the =wow_auction= fee model, the =tsm= export format and the =import_recipes= record action from one =venture_plugin_register()= ([[file:plugins.org::*Blizzard: a provider as a GObject, and four registries from one plugin][Plugins: Blizzard]]). Where the market-data and arbitrage pieces fit together is in [[file:market-data.org][Market data]] and [[file:arbitrage.org][Arbitrage]].
 
 * What extensions get for free
 
@@ -519,6 +591,12 @@ built-in to every consumer:
 - fee models, arbitrage strategies and export formats sit in the
   registries the built-ins do, so a venue, a scan and an export cannot
   tell a plugin's from a built-in one
+- a data source provider is named by a data source's =provider= like a
+  built-in one, synced by the same worker under the same origin, file and budget limits, and its
+  rows reach the Trading pages, the oracle, alerts and the scan exactly as
+  =http_json='s do
+- a widget kind is offered by the dashboard editor and answers through
+  the page, the API and the assistant from its one function
 
 That is the point of deriving everything from property metadata rather than
 writing it out: there is no second path for extensions to fall short on.

@@ -4,13 +4,13 @@
 #+categories: projects docs
 #+created: [2026-10-04]
 #+updated: [2026-10-04]
-#+version: 0.1.0
+#+version: 0.1.1
 
 * What this is
 
 A dropshipper lists a supplier's goods on a marketplace and buys each one only when it has sold, shipped straight from the supplier to the customer. The margin is the marketplace's price less its fee less the supplier's landed cost, and the question every day is which of the supplier's lines are worth listing. This page is how =make demo= seeds that into its default organization (=seed_trading_desk= in =tools/venture-demo.sh=): a venture, two data sources, two venues, the =spread= scan across them, and one order through the books.
 
-The buy side is the reference exec plugin, walked through on its own in [[file:dropship-supplier-feed.org][a dropshipping supplier's price list]]; the rules are in [[file:../arbitrage.org][Arbitrage]].
+The buy side is the reference exec plugin, walked through on its own in [[file:dropship-supplier-feed.org][a dropshipping supplier's price list]]; the sell side is a =file_jsonl= source, and both land in series stores described in [[file:../market-data.org][Market data]]. The rules are in [[file:../arbitrage.org][Arbitrage]] -- [[file:../arbitrage.org::*=spread=][the spread strategy]] and [[file:../arbitrage.org::*Posting][posting]] in particular -- and [[file:../arbitrage.org::*How it fits together][how it fits together]] shows the path from the price list to the books.
 
 * Turning it on
 
@@ -67,13 +67,14 @@ venturectl arbitrage scan spread buy_venues=acme sell_venues=shopmart units=1
 #+end_src
 
 #+begin_example
-Bamboo cutting board: Acme Wholesale → ShopMart             8.15 USD   97.6%
-Ceramic pour-over cone "V60" style: Acme Wholesale → ShopMart   7.64 USD  111.5%
-Silicone baking mat, set of 2: Acme Wholesale → ShopMart    6.41 USD  160.3%
+#  opportunity                                buy at  sell at   units  net       capital   roi
+1  Bamboo cutting board: Acme Wholesale → S…  acme    shopmart  1      8.15 USD  8.35 USD  97.6%
+2  Ceramic pour-over cone "V60" style: Acme…  acme    shopmart  1      7.64 USD  6.85 USD  111.5%
+3  Silicone baking mat, set of 2: Acme Whol…  acme    shopmart  1      6.41 USD  4.00 USD  160.3%
 ...
 #+end_example
 
-=spread= reads candidates from every source of the organization and, for each, the same key at every other venue of every source: Acme's =DS-1001= at 8.35 landed against ShopMart's lowest at about 19.50, less 13% and 0.30, is about eight dollars a board. The trivet is out of stock at Acme and never a candidate. Numbers move a little with the hour the demo ran: ShopMart's sellers reprice every day or so.
+(Abridged: the table also has =conf=, =unquoted= and =key= columns, and cuts a title at forty characters; the key is never cut, because =arbitrage record KEY= takes it. =-f json= prints the whole answer.) =spread= reads candidates from every source of the organization and, for each, the same key at every other venue of every source: Acme's =DS-1001= at 8.35 landed against ShopMart's lowest at about 19.50, less 13% and 0.30, is about eight dollars a board. Capital is the landed cost, because Acme charges no fee and neither venue has a transfer cost. The trivet is out of stock at Acme and never a candidate. Rows are sorted by profit, so the board comes first although the mat returns more on its capital; =sort=roi= turns that round. Numbers move a little with the hour the demo ran: ShopMart's sellers reprice every day or so.
 
 The demo saves the question as a preset, and the Trading desk dashboard (=/dashboards/trading=, imported from =data/examples/demo-trading.json=) runs it:
 
@@ -94,15 +95,15 @@ BOARD=$(venturectl -f json market promote $SUPPLIER instrument DS-1001 | python3
 ORDER=$(venturectl -f json arbitrage record name="Three bamboo cutting boards" strategy=spread \
     venture_id=$VENTURE expected='{"profit": "25.00 USD"}' legs='[
   {"kind":"buy","status":"executed","venue_id":'$ACME',"instrument_id":'$BOARD',"quantity":3,
-   "unit_price":"8.35 USD","occurred_at":"2026-10-01T07:00:00Z","notes":"6.40 and 1.95 shipping, each"},
+   "unit_price":"8.35 USD","occurred_at":"2026-10-01T11:00:00Z","notes":"6.40 and 1.95 shipping, each"},
   {"kind":"sell","status":"executed","venue_id":'$SHOPMART',"instrument_id":'$BOARD',"quantity":3,
-   "unit_price":"19.49 USD","fees":"7.90 USD","occurred_at":"2026-10-01T11:00:00Z",
+   "unit_price":"19.49 USD","fees":"7.90 USD","occurred_at":"2026-10-01T15:00:00Z",
    "notes":"13% of 58.47 and 0.30 for the order"}]' \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-venturectl arbitrage close $ORDER closed_at=2026-10-01T12:00:00Z
+venturectl arbitrage close $ORDER closed_at=2026-10-01T16:00:00Z
 #+end_src
 
-The demo dates the buy 70 hours before its anchor and the sale 66. =DS-1001= is promoted once, from the supplier's source; the marketplace's =DS-1001= has the same namespace and key, so promoting it there returns the same record.
+The demo dates the buy 70 hours before its anchor, the sale 66 and the close 65; the dates above are the run the other examples quote, anchored at 2026-10-04 09:00 UTC. =DS-1001= is promoted once, from the supplier's source; the marketplace's =DS-1001= has the same namespace and key, so promoting it there returns the same record.
 
 | Leg   | Journal                                                                 |
 |-------+-------------------------------------------------------------------------|
@@ -115,7 +116,10 @@ Realised: 58.47 - 25.05 - 7.90 = *25.52 USD*, ROI 102% on 25.05, slippage 0.52 a
 #+begin_src sh
 venturectl report arbitrage_performance last_90_days group_by=strategy
 venturectl report income_statement this_month     # Arbitrage gains and fees beside the year's sales
+venturectl report pnl this_month                  # Arbitrage gains, Less arbitrage fees, Arbitrage result
 #+end_src
+
+=pnl= adds the trades that finished in the period beside the sales and expenses it always totalled, in the USD block: with [[file:arbitrage-surebet.org][the surebet]] closed the same month, /Arbitrage gains/ 39.65 (33.42 here and 6.23 there), /Less arbitrage fees/ 7.90 and /Arbitrage result/ 31.75, which it adds to the profit. A dropship order is not a sale record, so nothing is counted twice; a business that also records the order as a =sale= for its customer-facing books should not record it as a trade as well.
 
 * Traps
 

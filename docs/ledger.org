@@ -1,7 +1,10 @@
 #+title: The general journal
 #+description: Posting once, preserving history, and reading authoritative balances
 #+authors: Zach Podbielniak
+#+categories: projects docs
 #+created: [2026-09-12]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * One posting boundary
 
@@ -247,7 +250,9 @@ The posting service registers sale and expense first, when it is made, through t
 | =sale=    | =sale=    | =postable_when_set= on =gross=    | =occurred-at= | =REFUSE_UNPOST=       |
 | =expense= | =expense= | =postable_when_set= on =amount=   | =occurred-at= | =REFUSE_UNPOST=       |
 
-Modules register their own the same way. The arbitrage module registers =arbitrage_leg= (rule =arbitrage_leg=, postable when executed with an amount, dated =occurred-at=, flags none) when it is installed, so executing a leg posts it, cancelling it takes it back out, and a leg whose figures did not change posts nothing when saved again (see [[file:arbitrage.org][Arbitrage]]). Its rule never moves stock: a stock leg's units are received or issued once by the =execute= action, through =venture_inventory_service_receive_from()= and =venture_inventory_service_issue_to()=, and stamped on the leg.
+Modules register their own the same way. The arbitrage module registers =arbitrage_leg= (rule =arbitrage_leg=, postable when executed with an =amount= -- or a =unit_price= and a =quantity= above zero, from which the amount is derived -- dated =occurred-at=, flags none) when it is installed, so executing a leg posts it, cancelling it takes it back out, and a leg whose figures did not change posts nothing when saved again (see [[file:arbitrage.org::*Posting][Arbitrage: posting]]). It has no =REFUSE_UNPOST= on purpose: a leg moved from executed to cancelled is a real event -- the order never filled -- and the fourth row below is exactly what it needs. Its rule never moves stock: a stock leg's units are received or issued once by the =execute= action, through =venture_inventory_service_receive_from()= and =venture_inventory_service_issue_to()=, and stamped on the leg, because a rule that moved stock would move it again every time the save built the rule for both versions.
+
+A trade's /close/ is not a registered source. The =close= action posts its journals itself through the core =venture_posting_service_post()= -- one per currency with a balance left in the positions account, =source-type= =arbitrage_trade=, =rule-name= =arbitrage_close= (=VENTURE_ARBITRAGE_CLOSE_RULE=), posting key =arbitrage_close:<trade>:<n>:<CODE>= -- moving what the trade made or lost from =arbitrage_positions= to =arbitrage_gains= (see [[file:setup.org][Accounting setup]] for the three classifications). =reopen= reverses them. Nothing about the trade record's own saves posts: the trade is a container, and its result is a fact only once somebody says the trade is finished.
 
 The save boundary (=venture_ledger_wrap_source()= at the database's dispatch) asks the registry; there is no =VENTURE_IS_SALE= check left in it. A new type that should post on save registers itself -- never add a type check there.
 

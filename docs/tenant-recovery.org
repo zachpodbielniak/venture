@@ -1,4 +1,10 @@
 #+title: Tenant recovery contract
+#+description: Encrypted whole-workspace archives of a stopped tenant: what they hold, how they are made, verified and restored
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-20]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * Scope
 
@@ -32,7 +38,8 @@ so a database-only export is insufficient.
 Creation requires the tenant application to be stopped, rather than assuming
 that database snapshot isolation also snapshots filesystem attachments.
 
-The state payload includes every market-data series store (=series/<data-source-uuid>/store.db= under the state root, see [[file:market-data.org][Market data]]): those SQLite files hold history no source will serve again and live outside PostgreSQL, so a database-only export would lose them. Because the application is stopped, nothing holds a store's writer and the copy is consistent without the online backup the in-process installation backups use; a hosted workspace's installation schedules copy nothing, since its database is PostgreSQL (see [[file:backup.org][Backups]]). Restoring the archive restores the stores with the rest of the state; there is no separate step.
+The state payload includes every market-data series store (=series/<data-source-uuid>/store.db= under the state root, see [[file:market-data.org][Market data]]): those SQLite files hold history no source will serve again and live outside PostgreSQL, so a database-only export would lose them. Because the application is stopped, nothing holds a store's writer and the copy is consistent without the online backup the in-process installation backups use; a hosted workspace's installation schedules copy nothing, since its database is PostgreSQL (see [[file:backup.org::*Series stores][Backups: series stores]]). Restoring the archive restores the stores with the rest of the state; there is no separate step. To put back one store and nothing else -- a source whose history was purged by mistake -- take =series/<uuid>/store.db= out of a verified archive's state payload and follow [[file:backup.org::*Restoring a store][Restoring a store]] by hand: a store holds market data only, so it can go back without the database it was archived with.
+
 A failed dump or encryption must leave no published archive. Temporary plaintext is private and
 removed by an owned cleanup path. A backup's successful encryption is not a
 restore qualification.

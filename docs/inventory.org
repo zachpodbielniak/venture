@@ -1,5 +1,10 @@
 #+title: Inventory to the general ledger
 #+description: FIFO cost layers, COGS on issue, and a valuation that ties to account 1200
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-15]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * Quantity and cost
 
@@ -60,6 +65,14 @@ Two variants of receive and issue serve stock that is paid for and sold on the s
 - =venture_inventory_service_issue_to(self, item, quantity, date, reference, debit_account_id, kind, actor, &txn, &costs, error)= -- an issue whose first-in-first-out cost is debited to the given account (the arbitrage positions account) instead of cost of goods sold (5000), with movement kind =sale= or =write_off=. Each currency the layers cost is posted as its own pair, as an ordinary issue does.
 
 Both begin the whole-operation posting boundary, then one transaction (joining the caller's), and hand back the movement so the caller can stamp it. Account and item must be in one organization. Each unit is posted once: the arbitrage leg's own posting rule never repeats the stock side.
+
+How the arbitrage module calls them, so a movement on the inventory page can be traced back:
+
+- An executed *buy* leg with stock is =receive_from= crediting the venue's cash (its location's holding, else its account, else the organization's cash), with reference =arbitrage_leg:<id>=; the leg's own journal then carries only its fees.
+- An executed *sell* leg with stock is =issue_to= of kind =sale= debiting =arbitrage_positions=, reference =arbitrage_leg:<id>=; the sale proceeds are the leg's own journal. The FIFO cost lands in positions rather than cost of goods sold (5000) because a trade's result is measured in one place: everything it spent and received meets in positions, and its close moves the difference to =arbitrage_gains= as one figure.
+- *Abandon* with =goods= =write_off= is =issue_to= of kind =write_off= debiting positions, reference =arbitrage_trade:<id>=, for the units the trade bought and did not sell -- never more than are on hand.
+
+The leg stamps the movement in its technical =inventory_txn_id= and its cost in =cost=; both are the module's to write. An executed stock leg cannot be changed or cancelled afterwards: the units are on the shelf or gone, and the correction is a counter-leg. See [[file:arbitrage.org::*Stock legs and Execute][Arbitrage: stock legs and Execute]].
 
 * Where stock is
 

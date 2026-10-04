@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-09-12]
-#+version: 0.6.0
+#+updated: [2026-10-04]
+#+version: 0.6.1
 
 * What this is
 
@@ -28,11 +28,13 @@ A webhook subscribes with a comma-separated list of patterns:
 
 A prefix is not a type: =ticket.*= does not match =ticket_link.created=.
 
-A market data alert firing is one of these too: it writes an =alert_hit= as the system, so =alert_hit.created= is the alert event, with the hit's message as the body's =label=. There is no separate alert event to subscribe to (see [[file:market-data.org][Market data]], "Alerts"). The system's own creations are published like anybody's.
+A market data alert firing is one of these too: it writes an =alert_hit= as the system, so =alert_hit.created= is the alert event, with the hit's message as the body's =label= (cut to 120 characters, as the hit's display name is) and =record.url= the hit's page. There is no separate alert event to subscribe to (see [[file:market-data.org::*Alerts][Market data: alerts]]). The system's own creations are published like anybody's. A hit is written outside any transaction and outside any automation handler, so the delivery leaves as the hit is saved, at most =VENTURE_ALERTS_MAX_HITS_PER_RUN= (100) per feed run and never more often per rule and subject than the rule's cooldown.
+
+The feeds module's records are published the same way, which is worth knowing before subscribing to =*=: every recorded feed run is a =data_source_run.created=, written as the system -- one per source per =feeds.run_window_minutes= at most for a scheduled source, one per manual sync. Subscribe to =alert_hit.created= (or =data_source_run.*= on purpose) rather than everything when a source polls often. A recorded arbitrage trade is =arbitrage_trade.created= and each leg =arbitrage_leg.created=, and executing or closing them are =.updated= events, like any record.
 
 ** What is never published
 
-Some types are quiet, whatever a webhook subscribes to: =webhook= and =webhook_delivery= (a delivery about a delivery is the obvious loop), =notification= and =watch= (bookkeeping), =audit_entry=, =chat_thread= and =chat_message= (private), =kb_chunk= and =kb_link= (derived, and a reindex would post a thousand times), =api_token= and =user= (access management). The list is in =src/core/venture-webhook.c= beside the one the inbox uses, and for the same reasons.
+Some types are quiet, whatever a webhook subscribes to: =webhook= and =webhook_delivery= (a delivery about a delivery is the obvious loop), =notification= and =watch= (bookkeeping), =audit_entry=, =chat_thread= and =chat_message= (private), =kb_chunk= and =kb_link= (derived, and a reindex would post a thousand times), =federation_replica=, =federation_peer= and =federation_grant= (federation's own bookkeeping, which names peers and what is shared with them), =api_token= and =user= (access management). Market data added nothing to it: an alert hit is exactly what an outside system wants to hear about, and a feed run is ordinary business activity of the organization that owns the source. The list is in =src/core/venture-webhook.c= beside the one the inbox uses, and for the same reasons.
 
 * The body
 
@@ -71,7 +73,7 @@ A webhook with no secret sends no signature, and the page says *unsigned* in yel
 
 * Deliveries
 
-Sending is asynchronous, on the main loop. A write does not wait for somebody else's server — the only background thread in this program belongs to coding runs and may not touch the database, so this is a queued request rather than a thread, and the result is recorded when it arrives.
+Sending is asynchronous, on the main loop. A write does not wait for somebody else's server — and no background thread in this program may touch the database (the coding runs' thread, the feeds worker and the transport tasks of the bank feed, the mailer and the feed providers; =AGENTS.md= lists every one), so this is a queued request rather than a thread, and the result is recorded when it arrives.
 
 Every attempt becomes a =webhook_delivery=: the event, the record, the state, the status code, how long it took, the body that went out and the beginning of what came back. Delivery records are evidence, like a coding run and the audit log: the generic routes refuse to edit them, and reading stays open.
 

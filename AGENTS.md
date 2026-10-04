@@ -62,7 +62,10 @@ outside `VentureDatabase`. Its rows are derived, append-heavy and
 high-volume -- ten thousand instruments a venue an hour -- closer to the
 audit log than to a record, and nobody edits one; the field table's
 audit, versions and validators per row would cost more than the data.
-`docs/market-data.org` has the schema and every formula.
+`docs/market-data.org` has the schema and every formula. The traps of
+everything built on it -- plugins, feeds, the oracle, alerts, the Trading
+pages and arbitrage -- are in the sections at the end of this file, in the
+order the data flows.
 
 - **It never touches `VentureDatabase`, the entity registry or the
   configuration.** Its writer runs on the feeds worker thread. Limits
@@ -85,368 +88,6 @@ audit, versions and validators per row would cost more than the data.
 - **Money in it is still never a double**, and SQLite turns an integer sum
   that overflows into a REAL: sums in its SQL saturate (`SERIES_SAT_ADD`),
   and sums in C are checked or 128-bit (`venture-series-math.c`).
-
-## Market data feeds
-
-`src/feeds/` (module `feeds`, opt-in) fetches outside data into the series
-stores. `docs/market-data.org` has the whole of it; these are the traps.
-
-- **Providers never touch the database.** A `VentureDataSourceProvider`'s
-  `fetch_async` runs on the feeds worker (or a test fetch's private
-  context) and sees only its `VentureFeedRequest`; anything from the main
-  thread -- an exec plugin's program, its stored settings -- is taken in
-  `freeze`, on the main thread, and must be immutable. JSON crosses threads
-  as text and each thread parses its own: JSON-GLib's reference counts are
-  not atomic, and `json_node_copy()` shares nested objects.
-- **Every outside fetch goes through the request's helper.** Origin on
-  `feeds.allowed_origins` (deny by default), no redirect followed and the
-  final address compared, a byte cap judged on what arrives, one deadline,
-  If-Modified-Since, Retry-After, the hourly budget. A provider that opens
-  its own socket skips all of it. Errors name an origin, never an address:
-  a query string may carry a key.
-- **Files only under `feeds.file_roots`,** realpath()'d and compared
-  against `root + "/"`. No record holds a path: a store is always
-  `<state_dir>/series/<uuid>/` (`venture_feeds_store_dir()`).
-- **Credentials never go in `settings`.** The save refuses a setting the
-  provider's schema marks `x-sensitive`; they are sealed under
-  `feed-<uuid>` and redacted out of every run, note, store string and log
-  line. A template names one as `{secret:NAME}`.
-- **A run is written once, on the main thread, as the system,** and never
-  inside somebody else's transaction: a run that arrives while one is open
-  waits (`feeds_service_drain()`). `data_source_run` refuses writes from the
-  generic routes. Scheduled passes share a run per
-  `feeds.run_window_minutes`; do not make every pass a row.
-- **A sync never waits.** The action, the API, `feeds_sync` and the page
-  queue and return; `venturectl feeds sync --wait` is the client polling.
-- **Later modules hook in, they do not edit the worker.**
-  `venture_feeds_add_hook()` gives a main-thread freeze, a worker-side
-  after-commit with the store's writer, and a main-thread after-run.
-- **Tests drain the worker.** `venture_feeds_service_count_pending()` to
-  zero, bounded, iterating the default context; the worker is joined when
-  the context is disposed, so a test that drops its context leaves no
-  thread behind.
-- **Pending never reads zero mid-sync.** Each stage counts itself before
-  the one before it stops counting: the command, the sync waiting for the
-  worker's timer (`worker_source_set_manual()`), the pass, the delivery. A
-  gap between the command being freed and the pass starting let a settle
-  loop read zero and look for a run that did not exist yet -- one
-  test-alerts run in five, under load. `/feeds/pending-covers-a-queued-sync`
-  polls without sleeping and fails within a few syncs if a gap returns.
-
-## Market data records and the price oracle
-
-`src/marketdata/` (module `marketdata`, requires `market`, suggests
-`feeds`) holds venue, instrument and watchlist records and the price oracle.
-`docs/market-data.org` ("Venues, instruments and the price oracle").
-
-- **The oracle never converts a currency.** A figure in another currency
-  than the one asked for is no answer, and the evidence names both. Nothing
-  observed is TRUE with a NULL price, as `venture_market_latest_price()`
-  answers -- feeds off, an empty store, the module off are notes, not
-  errors. Only an unreadable store is an error.
-- **`series:` is a grammar, parsed before any exact match.**
-  `venture_marketdata_parse_price_source()` runs first on every
-  `price_source`; text without the prefix is an observation source matched
-  exactly, as before. Never widen either half into a search, and keep the
-  market validator refusing an observation source that starts with
-  `series:` -- it could never be asked for. A report reached through
-  `series:` never falls back to observations (`recipe_margin`'s rule), and
-  `recipe_margin` and `goal_materials` share
-  `venture_marketdata_oracle_source_price()` so they cannot disagree.
-- **Promotion looks up deleted rows and restores them.** `external-ref`
-  (namespace:key) is `UNIQUE_ORGANIZATION`, which counts soft-deleted rows;
-  a lookup that skipped them would insert a duplicate and fail the index on
-  every retry. An existing record is returned as it is -- never overwritten
-  from the store -- so edits survive a second promotion.
-- **A group-wide figure needs one group.** With nothing named the oracle
-  uses the store's only group and refuses a store with several, naming
-  them. Do not make it pick one: an EU recipe priced from US realms reads
-  like a good answer.
-- **Oracle objects are per report.** `VentureMarketdataOracle` caches store
-  read handles for its lifetime; a long-lived one would read a purged store
-  through a stale handle. Main thread only: stores are opened through the
-  feeds service.
-- **`track: known` reads instrument records at freeze time.**
-  `venture_marketdata_known_keys()` runs in `feeds_freeze()` on the main
-  thread; the worker sees only the frozen set. An instrument save queues a
-  coalesced refreeze -- keep it coalesced, promotion saves in bulk.
-
-## Market data alerts
-
-`src/marketdata/venture-marketdata-alerts.c`: `alert_rule` and `alert_hit`
-in the marketdata module. `docs/market-data.org` ("Alerts").
-
-- **Candidates are found on the worker against frozen rules; hits are
-  written on the main thread.** The feeds hook "alerts" freezes every
-  enabled rule of a source's organization into plain structs (store keys,
-  venue key, threshold in minor units, open listings for undercut) in
-  `feeds_freeze()`; the after-commit runs the evaluation against the
-  writer and leaves JSON on the run; the after-run writes `alert_hit` as
-  the system ("alerts"). The worker never touches the database. A rule,
-  watchlist(-entry), venue, listing or category save queues
-  `venture_feeds_queue_refresh()` -- keep the list in
-  `alerts_entity_changed()` in step with what the freeze reads.
-- **One evaluation, two callers.** The worker and the `evaluate` action
-  (`venture_marketdata_alerts_evaluate()`, a read handle on the main
-  thread) run the same `alerts_evaluate()`. Never write a second matcher
-  for "test this rule".
-- **The cooldown is judged on the main thread, per rule and `subject`.**
-  A hit about the same subject observed at the same snapshot or later
-  always suppresses (so a hand evaluation after a run says nothing twice);
-  within `cooldown-minutes` it suppresses. Deleted hits count. The cap is
-  `VENTURE_ALERTS_MAX_HITS_PER_RUN`, and the overflow is a note on the run
-  record -- never silently dropped.
-- **No separate alert event.** The hit's creation is the event:
-  `alert_hit.created` to webhooks, `on_created` to automation, a
-  `VENTURE_NOTIFICATION_KIND_ALERT` (appended last; the kind is stored by
-  number) to the recipient's inbox. Do not add a custom "alert_fired"
-  event: two events for one fact is two things to keep in step. A rule has
-  no personal owner for the same reason -- a personal record is kept from
-  webhooks and automation.
-- **Never evaluated inside an automation handler.** A hit written there
-  raises no `on_created` (the cascade guard). The run hook defers while
-  `venture_automation_is_dispatching()`, and `evaluate` refuses with
-  `VENTURE_ERROR_CONFLICT`.
-- **Stock transitions come from the store, not from memory.**
-  `current.stock_changed_at` (series schema step 3) is stamped by the
-  statement that crosses zero; out_of_stock/back_in_stock fire when it
-  equals the row's `taken_at`. A first sighting leaves it NULL -- otherwise
-  a source's first sync is "back in stock" for everything. Never keep the
-  previous snapshot in hook state: frozen data is immutable and the worker
-  is restarted at will.
-- **Each kind carries exactly its fields.** The validator refuses a
-  threshold, number, pattern or window a kind does not read. `below` is the
-  zero kind *because* it requires a threshold: a rule saved without its kind
-  is refused, not quietly watching something. Patterns are bounded plain
-  text, case-folded substring -- never a user regular expression on the
-  worker.
-- **A rule's category is an instrument category.** `alert_rule` sets the
-  `VENTURE_CATEGORY_APPLIES_AS_QDATA` type qdata to "instrument" so the
-  generic category check judges it as an instrument's reference; do not
-  list the type in the validator.
-
-## The Trading pages
-
-- **One answer per page, and the twin is the same handler.** Each
-  `/market/...` page is one function in
-  `src/marketdata/venture-marketdata-browse.c` that answers JSON; the page
-  and its `/api/v1/market/...` twin are one handler branching on the path
-  prefix, and the reports and widgets read the same functions. Never
-  compute a figure in `venture-marketdata-pages.inc` or in a widget kind.
-- **A store is only sorted and filtered on its own indexed columns.** The
-  server is single-threaded. A new browse sort or filter means a column on
-  `current` (a schema step), its index, and a writer -- the region
-  recompute, on the worker -- never a per-request aggregate. That is why
-  `sale_rate` and `sold_per_day` are columns (step 4). Sorts are an
-  allowlist (`venture_marketdata_browse_sorts()`) and an unknown one is a
-  400, never ignored.
-- **An instrument key is the rest of the path.** libsoup hands handlers the
-  path already unescaped, so a key holding `%2F` arrives as two segments:
-  the routes are `/market/i/:source/*` and `mdw_path_key()` takes
-  everything after the source. Do not unescape again (a key holding `%`
-  would change), and do not add an action as a path suffix -- the actions
-  are a POST to the page itself with `action=promote|watch|alert`.
-- **A bound must name its currency.** `venture_money_from_string()` falls
-  back on the install's default currency; `venture_marketdata_parse_amount()`
-  refuses an amount that reads differently under two defaults. Use it for
-  any amount a market filter compares.
-- **Charts carry no colour.** `src/web/venture-web-chart.c` draws in
-  `currentColor` with classes both stylesheets colour from tokens; a new
-  chart class goes into both, in the market block at their end, and
-  `/market-pages/doors-and-looks` checks the page in both looks.
-
-## Arbitrage trades and the ledger
-
-- **Everything a trade does passes through arbitrage positions.** Out legs
-  debit it, in legs credit it, a stock sell's FIFO cost and a write-off
-  debit it, so what is left on it is the trade's profit. Fees go to
-  arbitrage fees, never through the position. `docs/arbitrage.org` has
-  the table; keep the rule and that table in step.
-- **A leg posts through the registry; its stock moves once, by
-  `execute`.** `arbitrage_leg` is a registered source (rule
-  `arbitrage_leg`, postable when executed with an amount). Its rule is
-  built twice per save and must never call the inventory service: a stock
-  buy is received with `venture_inventory_service_receive_from()` (Cr the
-  venue's cash, never GRNI) and a stock sell issued with
-  `venture_inventory_service_issue_to()` (Dr positions, never COGS) by the
-  execute action, which stamps `inventory-txn-id` and `cost`; the rule
-  then posts only the proceeds and fees. One truth per unit: posting a
-  stock leg's principal from the rule would spend its cash twice.
-- **Close is an action, per book section.** A save-time rule over sibling
-  legs always looks unchanged to `same_posting()`, so `close`, `reopen`
-  and `abandon` are record actions. Close sums the positions lines of
-  every journal the trade touched (legs -- deleted ones too --, their
-  stock movements, its own closes and reversals) per *journal* currency in
-  book amounts, and posts one journal per section in that section's own
-  currency, keyed `arbitrage_close:<trade>:<n>:<CODE>`. Never close by
-  original currency (a converted euro section would never reach zero) and
-  never add two sections together.
-- **Leg validators never write the trade.** A derived write bumps the
-  trade's version under whoever holds it. The actions (execute opening a
-  planned trade, close stamping it) are the writers; their stamps pass the
-  validators by an id-based permit, because a leg is a ledger source and
-  the ledger saves a *copy* -- a pointer permit never matches.
-- **`arbitrage` is in the accounting boundary's financial module list**
-  (`venture_accounting_operation_is_financial()`), so the action framework
-  wraps execute, close, reopen, abandon and record in one whole-operation
-  proposal. Without it, a second-actor rule refused every one of them with
-  "must begin before the enclosing business transaction";
-  `/arbitrage-ledger/second-actor` pins it.
-- **An executed stock leg is for good.** Changing or cancelling it is
-  refused with the counter-leg message, and so is any financial change to
-  an executed leg of a closed or abandoned trade until it is reopened.
-- **The operational reports count finished trades through one function.**
-  `pnl`, `ventures` and `monthly` add `venture_arbitrage_realised_totals()`
-  -- trades closed or abandoned in the period by `closed-at`, per
-  currency, the trade page's arithmetic -- as "Arbitrage gains", "Less
-  arbitrage fees" and "Arbitrage result" (a column in the other two), and
-  the result goes into Profit. Legs are neither sales nor expenses, so
-  nothing is counted twice; never add a trade's legs to a sales or
-  expense total. The lines appear only when the period finished a trade,
-  so an organization that never trades reads as it always did, and the
-  module off is no lines and no error. `/arbitrage-ledger/operational-reports`
-  pins all three.
-
-## Finding opportunities: the arbitrage scan
-
-- **A scan never adds or compares across currencies.** A sell side in
-  another currency is converted into the buy side's through
-  `venture_arbitrage_scan_convert()` (the organization's `exchange_rate`
-  table on the scan's date, never inverted), or the candidate is skipped
-  and a note counts it. A filter amount in another currency is converted
-  the same way or the row is left out; a profit sort groups by currency
-  first. `venture_money_compare()` across currencies warns, which is fatal
-  in tests.
-- **Unquoted is blank and named, never zero.** An input with no price, a
-  venue whose fee model is not loaded, an outcome nobody allowed quotes:
-  the row keeps `net`/`capital`/`roi` null and says what in `missing`. A
-  blank row is kept only while no numeric bound is asked, and has no plan.
-  A venue with *no record* is different: it charges nothing, and the row
-  warns rather than blanks.
-- **`plan()` and the `record` action are the only path from an
-  opportunity to the books.** `venture_arbitrage_record_opportunity()`
-  re-runs the question (top at its most), finds the key in what the data
-  says now, plans it and calls `venture_action_registry_perform()`, so the
-  organization's roles, second-actor approval and consent apply. Never
-  record from a JSON opportunity a client posted; a moved one is
-  NOT_FOUND "no longer there".
-  Staging (`?stage=1`, `venture_arbitrage_stage_opportunity()`) shares
-  the parameter building, so approval performs exactly the plan a direct
-  record would have; it still promotes the legs' venues and instruments.
-- **The scan routes drop `key` and `format` and ignore `venture_id`,
-  `as_of`.** Anything sending a question must not rely on them:
-  `venturectl arbitrage` refuses them by name, and the calculator route
-  passes `format` (the odds format) on explicitly -- dropping it read
-  American odds as decimal. `organization_id` is read, by the route and
-  not the scan (see "A Trading API answers for its organization_id").
-- **A Trading API answers for its `organization_id`, judged by the record
-  policy.** Every `/api/v1/feeds`, `/api/v1/market` and
-  `/api/v1/arbitrage` route resolves its organization through
-  `venture_web_request_organization()`: the query string's
-  `organization_id`, else the JSON body's (a number or its digits), else
-  the active organization -- which for a token is always the default one,
-  so without the parameter a second organization's market data was
-  unreachable from venturectl. The organization's own row is read under
-  the request's access scope before anything else: a member may read it,
-  a stranger is told NOT_FOUND, exactly what reading any of its records
-  would say. That check matters because these routes read series stores,
-  which are files the row-by-row policy never sees. Pages ignore the
-  parameter and answer for the sidebar's pick, as every page does. A new
-  Trading route calls the helper, never `venture_web_active_organization()`
-  directly; `/auth/trading-organization` in `tests/test-auth.c` holds the
-  families.
-- **The option table in `venture-arbitrage-scan.c` is the one list of scan
-  options, and every one is a report option.** A new option goes there,
-  into the `arbitrage_scan` schema, and through all five doors in the
-  same commit. An unknown name is refused by the reader -- presets and the
-  `opportunities` widget are judged by it at their save. No option is
-  `limit`.
-- **Fee models and strategies are judged when written, never when kept,**
-  and only while the arbitrage module is on (`venture_arbitrage_fees_validate_venue()`,
-  the preset validator). The registries live on the context; the
-  database holds the last context's (the tests build several contexts per
-  database), and the built-ins are always registered, so a plugin's name
-  written while the plugin is not loaded is refused.
-- **Every strategy read is bounded and indexed.** Candidates come from an
-  indexed store query with a limit (`pct_vs_region`, `deals_only`,
-  `_list_quoted_parents()`, `_list_quoted_instruments()`), then one
-  indexed read each; past a bound the answer notes it. Never walk a
-  region's rows on a request -- the server is single-threaded.
-- **With feeds off, a scan must not query `data_source`.** Its table may
-  not exist (the registry is process-wide and masks types per context);
-  answer "no data sources" without looking. The same holds for any page
-  that reads a module's records while that module is off.
-- **An event that has started is not an opportunity.** `cover` and
-  `back_lay` leave out an event whose `commence_time` attribute (on the
-  event, or on an outcome's parent) is at or before the scan's time: books
-  stop moving a finished match's odds, so its last quotes look exactly
-  like a surebet. An event naming no start is kept, counted and noted.
-  A test fixture with a fixed kick-off is a time bomb -- serve it moved
-  into the future, as `serve_odds()` in `tests/test-plugin-examples.c`
-  does.
-- **What a calculator presents as the result is rounded against the
-  person.** A surebet's `payout` and `profit` are the least rounded payout
-  and it less the stakes; the unrounded T/S and T(1/S - 1) are
-  `payout_ideal` and `profit_ideal` (a scan row's `ideal_profit`).
-  Back/lay rounds winnings down and the liability up, so `worst` is what
-  the pair is sure to make; `ideal` is beside it. Never show an `_ideal`
-  figure as what a person gets.
-
-## The reference plugins: Blizzard, the-odds-api, supplier-csv
-
-Three plugins are both connectors and the worked examples of a provider
-as a GObject (`plugins/blizzard-auctions/`, native), as one function
-(`plugins/scripts/odds-api.c`, crispy) and as a program
-(`plugins/exec/supplier-csv/`, exec). `docs/plugins.org` "The reference
-plugins" and `docs/examples/*-feed.org` have the rest.
-
-- **The Blizzard plugin lives in `plugins-optional` and must never load in
-  a fixture.** `PLUGIN_OPTIONAL_DIRS` keeps it out of `$(OUTDIR)/plugins`,
-  which `VENTURE_PLUGIN_PATH` loads into every test; it wants a registered
-  GOLD and credentials no other fixture has. `make plugins` builds it,
-  `tests/test-plugin-blizzard.c` loads it by path
-  (`VENTURE_TEST_OPTIONAL_PLUGINS`), and an operator adds the directory to
-  `plugins.paths`.
-- **The commodity market costs 25 even on a 304.** Blizzard charges it
-  either way, and the feeds budget is spent before a request goes out and
-  never refunded; do not "fix" that into charging only for a 200.
-- **`expires_in_min` is seconds, and a minimum.** "min" is minimum, not
-  minutes: the store, the batch and the JSON-lines protocol all mean the
-  least time a listing has left, in seconds. A bucketed source gives the
-  lower bound (WoW LONG is 7200): the sale estimate asks whether a vanished
-  listing *could* have expired, and the upper bound counts expiries as
-  sales.
-- **A request that is not the unit's own answer is
-  `VENTURE_FEED_HTTP_UNCONDITIONAL`.** A token, an index, a name lookup:
-  otherwise its Last-Modified becomes the unit's If-Modified-Since and the
-  next fetch asks the auctions "anything newer than the item database?".
-  The every-realm unit keeps each realm's date in its cursor and sends it
-  itself, unconditionally.
-- **A manual sync sends no If-Modified-Since, and refreezes the source.**
-  A test of a conditional fetch needs a scheduled run (switch the source to
-  `auto` and wait for the run, as `schedule_and_wait()` does); a token or
-  name cache lives as long as the frozen source, not across manual syncs.
-- **A provider never registers a currency.** Blizzard's freeze refuses one
-  that is not registered with exponent 4 (prices are copper); the operator
-  or the demo makes the `currency` record. A worker that created records
-  would be writing the database from another thread.
-- **Fee models get the instrument's attributes.** `wow_auction`'s deposit
-  is a share of `vendor_sell`, which only the store knows:
-  `VentureFeeModelComputeFunc` takes `attrs`, and
-  `venture_arbitrage_scan_fees()` takes the side's instrument key and reads
-  them (cached per scan). A new strategy pricing one instrument passes its
-  key; a calculator passes none.
-- **A key in a query string never reaches a message.** the-odds-api
-  takes its key only as `?apiKey=`; the script names a sport and a status
-  in its errors, never the address or the far end's body, and redacts its
-  own notes. `test-plugin-examples` greps the run, the log and the store.
-- **A crispy script sees the feeds API only with SQLite in its flags.**
-  `CFLAGS_PLUGIN_DEPS` carries `-DVENTURE_HAVE_SQLITE=1` for that; it is
-  baked into the server, so after changing it touch
-  `src/plugin/venture-crispy-host.c`.
-- **An exec program holds its own paths.** supplier-csv's `file` setting
-  is an editor's to write, so the script itself refuses anything but a
-  plain name and compares the realpath against its directory plus `/`.
 
 ## Conventions
 
@@ -627,22 +268,6 @@ plugins" and `docs/examples/*-feed.org` have the rest.
   `g_critical` (fatal in tests). `count` and `find` are not checked:
   `tests/test-database.c` probes the lock from a second thread on purpose.
   A new thread goes into this list in the same commit.
-- **A series store is copied on the feeds worker, never the main thread,
-  and the copy never makes the installation backup wait.** A store can be
-  gigabytes. The backup service knows nothing about stores: the feeds
-  module registers a companion
-  (`venture_backup_schedule_service_add_companion()`) that records each
-  store's `backup_run` as running, queues the copy and returns; the answer
-  is recorded later on the main thread, after any open transaction, with
-  `_finish_companion()`. The copy holds one read transaction across every
-  `sqlite3_backup_step()` -- drop it and SQLite restarts the copy at each
-  commit, so a busy store is never backed up at all
-  (`/backup-series/consistent-under-writer` fails at its deadline). A
-  copy nobody will answer (a restart) is marked interrupted by the next
-  backup; one still in flight is skipped, not started twice. Retention and
-  `latest_run()` tell a companion from the schedule's own copies by scope
-  -- a pruning or drill query that forgets the scope prunes a store by the
-  database's count or drills a store as if it were books.
 - **Customer subscription mail is queued inside the billing instruction.**
   The trial reminder (renewal sweep) and the price-change notice
   (`change`/`change-seats`) enqueue through the outbox in the service's own
@@ -779,71 +404,6 @@ plugins" and `docs/examples/*-feed.org` have the rest.
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
   while the tests pass against this hour's.
-- **Plugins load through runtimes, and a manifest never leaves its
-  directory.** `native`/`crispy`/`declarative`/`exec` are
-  `VenturePluginRuntime`s; a plugin may add one, and a file nothing claims
-  is held and retried -- after the registering plugin's load returns, never
-  inside it. `*.plugin.yaml` is matched before any extension (it is also a
-  `.yaml`). Every manifest `entry` and every exec program goes through
-  `venture_exec_resolve_within()`: realpath, then compared against
-  `root + "/"`, and for exec again at every run. The manager must be on
-  the context *before* loading (`main.c` set it afterwards, and every
-  plugin's `venture_context_get_plugin_manager()` got NULL).
-- **Exec plugins: argv, a socket, a cleared environment, and stdin only.**
-  `venture_exec_run()` spawns with an argv array (never a shell), a fresh
-  process group (every early end kills the group, or a script's `sleep`
-  keeps stdout open), the environment cleared to PATH/LANG/HOME plus the
-  manifest's `env` names, and stdin on a socket pair -- a pipe to a program
-  that exits unread raises SIGPIPE and kills the server. Settings and
-  secrets go in the stdin request only, never argv (`/proc`) or the
-  environment (inherited), and secret values are redacted out of every
-  string handed back. It iterates a *private* main context, so it may run
-  on a worker; `plugins.allow_exec` (off by default) is checked at load
-  and at every run. Money in the JSON-lines protocol is a decimal
-  *string*; a JSON number is refused. `docs/plugins.org` is the protocol's
-  one definition -- `file_jsonl` reads the same vocabulary.
-- **What a plugin provides is a registered kind, not a case in the
-  loader.** `venture_context_get_plugin_provides()` holds the kinds; a new
-  one is registered by the subsystem that understands it, and an unknown
-  kind fails the plugin's load. A kind whose module can be switched off
-  stays registered and skips while off.
-- **What the `venture` pod module answers to is a registry, not a list.**
-  `venture_context_get_automation_handlers()` holds every handler and
-  event; the built-ins and the three record events are registered first
-  (`venture_automation_register_builtins()`), a held name is never
-  replaced, and an unknown one is still refused. It lives on the context
-  because plugins load before the engine exists and a reload rebuilds the
-  engine. Do not bring back a handler array or an if-chain in the module.
-  A handler that returns FALSE without a `GError` is taken to have logged
-  its own reason (every built-in does): the registry reports
-  `VENTURE_ERROR_AUTOMATION` and a pod does not log it twice -- so a new
-  handler that fails silently must `g_warning()`, and one that sets an
-  error must not use that code for it. Handlers stay synchronous; an exec
-  plugin's `automation_handler` blocks the main loop up to its manifest's
-  `timeout`, and `plugins.allow_exec` is checked at every call.
-- **`venture_automation_emit()` goes through the same cascade guard as
-  record events.** An event raised from inside a handler goes nowhere. It
-  refuses an unregistered event even with automation off (a typo must be
-  found the first time) and refuses `on_created`/`on_updated`/`on_deleted`,
-  which only the database raises.
-- **A plugin's pages are web extensions, run after every core route.**
-  Plugins load before the server exists, so they call
-  `venture_context_add_web_extension()` and `venture_web_server_new()` runs
-  each one last -- the router takes the first match, so a built-in always
-  wins a path both serve. Extension routes go through
-  `venture_web_server_add_classified_route()` and guard themselves with
-  `venture_web_server_require_page()`/`_require_api()`/`_require_module()`;
-  `/auth/web-extension-routes` in `tests/test-auth.c` pins the guards and
-  the ordering.
-- **A plugin's sidebar row is not in the link table.**
-  `venture_web_server_add_nav_link()` is refused outside an extension
-  (built-in pages belong in the static table, which `test-plugin` holds to
-  exact membership), needs a plain path a classified GET route already
-  serves, escapes its label, and takes an icon only as a name from the
-  built-in set -- never markup, because it is drawn into every page. Rows
-  render under a "Plugins" heading only when one exists, so with none the
-  sidebar and its exact-match tests are unchanged; an accountant-only
-  sidebar shows a row only when its module is one that sidebar offers.
 
 ## The CLI, and its skill
 
@@ -1965,3 +1525,467 @@ Every database feature ships paired, append-only SQL in `migrations/sqlite/` and
   Share the save fixture with a socket-free rendering test so a sandbox's
   TCP refusal cannot hide missing required fields. Assert the `GError` before
   asserting a save's boolean result, or GTest hides the validator's reason.
+
+## Plugins: runtimes, manifests and exec
+
+`src/plugin/` loads every plugin through a runtime, and everything a plugin
+adds goes into a registry on the context. `docs/plugins.org` is the
+reference (and the JSON-lines protocol's one definition); `docs/extending.org`
+is the tour.
+
+- **Plugins load through runtimes, and a manifest never leaves its
+  directory.** `native`/`crispy`/`declarative`/`exec` are
+  `VenturePluginRuntime`s; a plugin may add one, and a file nothing claims
+  is held and retried -- after the registering plugin's load returns, never
+  inside it. `*.plugin.yaml` is matched before any extension (it is also a
+  `.yaml`). Every manifest `entry` and every exec program goes through
+  `venture_exec_resolve_within()`: realpath, then compared against
+  `root + "/"`, and for exec again at every run. The manager must be on
+  the context *before* loading (`main.c` set it afterwards, and every
+  plugin's `venture_context_get_plugin_manager()` got NULL).
+- **Exec plugins: argv, a socket, a cleared environment, and stdin only.**
+  `venture_exec_run()` spawns with an argv array (never a shell), a fresh
+  process group (every early end kills the group, or a script's `sleep`
+  keeps stdout open), the environment cleared to PATH/LANG/HOME plus the
+  manifest's `env` names, and stdin on a socket pair -- a pipe to a program
+  that exits unread raises SIGPIPE and kills the server. Settings and
+  secrets go in the stdin request only, never argv (`/proc`) or the
+  environment (inherited), and secret values are redacted out of every
+  string handed back. It iterates a *private* main context, so it may run
+  on a worker; `plugins.allow_exec` (off by default) is checked at load
+  and at every run. Money in the JSON-lines protocol is a decimal
+  *string*; a JSON number is refused. `docs/plugins.org` is the protocol's
+  one definition -- `file_jsonl` reads the same vocabulary.
+- **What a plugin provides is a registered kind, not a case in the
+  loader.** `venture_context_get_plugin_provides()` holds the kinds; a new
+  one is registered by the subsystem that understands it, and an unknown
+  kind fails the plugin's load. A kind whose module can be switched off
+  stays registered and skips while off.
+- **What the `venture` pod module answers to is a registry, not a list.**
+  `venture_context_get_automation_handlers()` holds every handler and
+  event; the built-ins and the three record events are registered first
+  (`venture_automation_register_builtins()`), a held name is never
+  replaced, and an unknown one is still refused. It lives on the context
+  because plugins load before the engine exists and a reload rebuilds the
+  engine. Do not bring back a handler array or an if-chain in the module.
+  A handler that returns FALSE without a `GError` is taken to have logged
+  its own reason (every built-in does): the registry reports
+  `VENTURE_ERROR_AUTOMATION` and a pod does not log it twice -- so a new
+  handler that fails silently must `g_warning()`, and one that sets an
+  error must not use that code for it. Handlers stay synchronous; an exec
+  plugin's `automation_handler` blocks the main loop up to its manifest's
+  `timeout`, and `plugins.allow_exec` is checked at every call.
+- **`venture_automation_emit()` goes through the same cascade guard as
+  record events.** An event raised from inside a handler goes nowhere. It
+  refuses an unregistered event even with automation off (a typo must be
+  found the first time) and refuses `on_created`/`on_updated`/`on_deleted`,
+  which only the database raises.
+- **A plugin's pages are web extensions, run after every core route.**
+  Plugins load before the server exists, so they call
+  `venture_context_add_web_extension()` and `venture_web_server_new()` runs
+  each one last -- the router takes the first match, so a built-in always
+  wins a path both serve. Extension routes go through
+  `venture_web_server_add_classified_route()` and guard themselves with
+  `venture_web_server_require_page()`/`_require_api()`/`_require_module()`;
+  `/auth/web-extension-routes` in `tests/test-auth.c` pins the guards and
+  the ordering.
+- **A plugin's sidebar row is not in the link table.**
+  `venture_web_server_add_nav_link()` is refused outside an extension
+  (built-in pages belong in the static table, which `test-plugin` holds to
+  exact membership), needs a plain path a classified GET route already
+  serves, escapes its label, and takes an icon only as a name from the
+  built-in set -- never markup, because it is drawn into every page. Rows
+  render under a "Plugins" heading only when one exists, so with none the
+  sidebar and its exact-match tests are unchanged; an accountant-only
+  sidebar shows a row only when its module is one that sidebar offers.
+
+## Market data feeds
+
+`src/feeds/` (module `feeds`, opt-in) fetches outside data into the series
+stores. `docs/market-data.org` has the whole of it; these are the traps.
+
+- **Providers never touch the database.** A `VentureDataSourceProvider`'s
+  `fetch_async` runs on the feeds worker (or a test fetch's private
+  context) and sees only its `VentureFeedRequest`; anything from the main
+  thread -- an exec plugin's program, its stored settings -- is taken in
+  `freeze`, on the main thread, and must be immutable. JSON crosses threads
+  as text and each thread parses its own: JSON-GLib's reference counts are
+  not atomic, and `json_node_copy()` shares nested objects. The worker is
+  in the thread list under "Things that are easy to get wrong".
+- **Every outside fetch goes through the request's helper.** Origin on
+  `feeds.allowed_origins` (deny by default), no redirect followed and the
+  final address compared, a byte cap judged on what arrives, one deadline,
+  If-Modified-Since, Retry-After, the hourly budget. A provider that opens
+  its own socket skips all of it. Errors name an origin, never an address:
+  a query string may carry a key.
+- **Files only under `feeds.file_roots`,** realpath()'d and compared
+  against `root + "/"`. No record holds a path: a store is always
+  `<state_dir>/series/<uuid>/` (`venture_feeds_store_dir()`).
+- **Credentials never go in `settings`.** The save refuses a setting the
+  provider's schema marks `x-sensitive`; they are sealed under
+  `feed-<uuid>` and redacted out of every run, note, store string and log
+  line. A template names one as `{secret:NAME}`.
+- **A run is written once, on the main thread, as the system,** and never
+  inside somebody else's transaction: a run that arrives while one is open
+  waits (`feeds_service_drain()`). `data_source_run` refuses writes from the
+  generic routes. Scheduled passes share a run per
+  `feeds.run_window_minutes`; do not make every pass a row.
+- **A sync never waits.** The action, the API, `feeds_sync` and the page
+  queue and return; `venturectl feeds sync --wait` is the client polling.
+- **Later modules hook in, they do not edit the worker.**
+  `venture_feeds_add_hook()` gives a main-thread freeze, a worker-side
+  after-commit with the store's writer, and a main-thread after-run.
+- **Tests drain the worker.** `venture_feeds_service_count_pending()` to
+  zero, bounded, iterating the default context; the worker is joined when
+  the context is disposed, so a test that drops its context leaves no
+  thread behind.
+- **Pending never reads zero mid-sync.** Each stage counts itself before
+  the one before it stops counting: the command, the sync waiting for the
+  worker's timer (`worker_source_set_manual()`), the pass, the delivery. A
+  gap between the command being freed and the pass starting let a settle
+  loop read zero and look for a run that did not exist yet -- one
+  test-alerts run in five, under load. `/feeds/pending-covers-a-queued-sync`
+  polls without sleeping and fails within a few syncs if a gap returns.
+- **A series store is copied on the feeds worker, never the main thread,
+  and the copy never makes the installation backup wait.** A store can be
+  gigabytes. The backup service knows nothing about stores: the feeds
+  module registers a companion
+  (`venture_backup_schedule_service_add_companion()`) that records each
+  store's `backup_run` as running, queues the copy and returns; the answer
+  is recorded later on the main thread, after any open transaction, with
+  `_finish_companion()`. The copy holds one read transaction across every
+  `sqlite3_backup_step()` -- drop it and SQLite restarts the copy at each
+  commit, so a busy store is never backed up at all
+  (`/backup-series/consistent-under-writer` fails at its deadline). A
+  copy nobody will answer (a restart) is marked interrupted by the next
+  backup; one still in flight is skipped, not started twice. Retention and
+  `latest_run()` tell a companion from the schedule's own copies by scope
+  -- a pruning or drill query that forgets the scope prunes a store by the
+  database's count or drills a store as if it were books.
+
+## Market data records and the price oracle
+
+`src/marketdata/` (module `marketdata`, requires `market`, suggests
+`feeds`) holds venue, instrument and watchlist records and the price oracle.
+`docs/market-data.org` ("Venues, instruments and the price oracle").
+
+- **The oracle never converts a currency.** A figure in another currency
+  than the one asked for is no answer, and the evidence names both. Nothing
+  observed is TRUE with a NULL price, as `venture_market_latest_price()`
+  answers -- feeds off, an empty store, the module off are notes, not
+  errors. Only an unreadable store is an error.
+- **`series:` is a grammar, parsed before any exact match.**
+  `venture_marketdata_parse_price_source()` runs first on every
+  `price_source`; text without the prefix is an observation source matched
+  exactly, as before. Never widen either half into a search, and keep the
+  market validator refusing an observation source that starts with
+  `series:` -- it could never be asked for. A report reached through
+  `series:` never falls back to observations (`recipe_margin`'s rule), and
+  `recipe_margin` and `goal_materials` share
+  `venture_marketdata_oracle_source_price()` so they cannot disagree.
+- **Promotion looks up deleted rows and restores them.** `external-ref`
+  (namespace:key) is `UNIQUE_ORGANIZATION`, which counts soft-deleted rows;
+  a lookup that skipped them would insert a duplicate and fail the index on
+  every retry. An existing record is returned as it is -- never overwritten
+  from the store -- so edits survive a second promotion.
+- **A group-wide figure needs one group.** With nothing named the oracle
+  uses the store's only group and refuses a store with several, naming
+  them. Do not make it pick one: an EU recipe priced from US realms reads
+  like a good answer.
+- **Oracle objects are per report.** `VentureMarketdataOracle` caches store
+  read handles for its lifetime; a long-lived one would read a purged store
+  through a stale handle. Main thread only: stores are opened through the
+  feeds service.
+- **`track: known` reads instrument records at freeze time.**
+  `venture_marketdata_known_keys()` runs in `feeds_freeze()` on the main
+  thread; the worker sees only the frozen set. An instrument save queues a
+  coalesced refreeze -- keep it coalesced, promotion saves in bulk.
+
+## Market data alerts
+
+`src/marketdata/venture-marketdata-alerts.c`: `alert_rule` and `alert_hit`
+in the marketdata module. `docs/market-data.org` ("Alerts").
+
+- **Candidates are found on the worker against frozen rules; hits are
+  written on the main thread.** The feeds hook "alerts" freezes every
+  enabled rule of a source's organization into plain structs (store keys,
+  venue key, threshold in minor units, open listings for undercut) in
+  `feeds_freeze()`; the after-commit runs the evaluation against the
+  writer and leaves JSON on the run; the after-run writes `alert_hit` as
+  the system ("alerts"). The worker never touches the database. A rule,
+  watchlist(-entry), venue, listing or category save queues
+  `venture_feeds_queue_refresh()` -- keep the list in
+  `alerts_entity_changed()` in step with what the freeze reads.
+- **One evaluation, two callers.** The worker and the `evaluate` action
+  (`venture_marketdata_alerts_evaluate()`, a read handle on the main
+  thread) run the same `alerts_evaluate()`. Never write a second matcher
+  for "test this rule".
+- **The cooldown is judged on the main thread, per rule and `subject`.**
+  A hit about the same subject observed at the same snapshot or later
+  always suppresses (so a hand evaluation after a run says nothing twice);
+  within `cooldown-minutes` it suppresses. Deleted hits count. The cap is
+  `VENTURE_ALERTS_MAX_HITS_PER_RUN`, and the overflow is a note on the run
+  record -- never silently dropped.
+- **No separate alert event.** The hit's creation is the event:
+  `alert_hit.created` to webhooks, `on_created` to automation, a
+  `VENTURE_NOTIFICATION_KIND_ALERT` (appended last; the kind is stored by
+  number) to the recipient's inbox. Do not add a custom "alert_fired"
+  event: two events for one fact is two things to keep in step. A rule has
+  no personal owner for the same reason -- a personal record is kept from
+  webhooks and automation.
+- **Never evaluated inside an automation handler.** A hit written there
+  raises no `on_created` (the cascade guard). The run hook defers while
+  `venture_automation_is_dispatching()`, and `evaluate` refuses with
+  `VENTURE_ERROR_CONFLICT`.
+- **Stock transitions come from the store, not from memory.**
+  `current.stock_changed_at` (series schema step 3) is stamped by the
+  statement that crosses zero; out_of_stock/back_in_stock fire when it
+  equals the row's `taken_at`. A first sighting leaves it NULL -- otherwise
+  a source's first sync is "back in stock" for everything. Never keep the
+  previous snapshot in hook state: frozen data is immutable and the worker
+  is restarted at will.
+- **Each kind carries exactly its fields.** The validator refuses a
+  threshold, number, pattern or window a kind does not read. `below` is the
+  zero kind *because* it requires a threshold: a rule saved without its kind
+  is refused, not quietly watching something. Patterns are bounded plain
+  text, case-folded substring -- never a user regular expression on the
+  worker.
+- **A rule's category is an instrument category.** `alert_rule` sets the
+  `VENTURE_CATEGORY_APPLIES_AS_QDATA` type qdata to "instrument" so the
+  generic category check judges it as an instrument's reference; do not
+  list the type in the validator.
+
+## The Trading pages
+
+`/market/...` and `/arbitrage...` with their `/api/v1/` twins, under the
+sidebar's Trading section. `docs/market-data.org` ("Browsing: the Trading
+pages").
+
+- **One answer per page, and the twin is the same handler.** Each
+  `/market/...` page is one function in
+  `src/marketdata/venture-marketdata-browse.c` that answers JSON; the page
+  and its `/api/v1/market/...` twin are one handler branching on the path
+  prefix, and the reports and widgets read the same functions. Never
+  compute a figure in `venture-marketdata-pages.inc` or in a widget kind.
+- **A store is only sorted and filtered on its own indexed columns.** The
+  server is single-threaded. A new browse sort or filter means a column on
+  `current` (a schema step), its index, and a writer -- the region
+  recompute, on the worker -- never a per-request aggregate. That is why
+  `sale_rate` and `sold_per_day` are columns (step 4). Sorts are an
+  allowlist (`venture_marketdata_browse_sorts()`) and an unknown one is a
+  400, never ignored.
+- **An instrument key is the rest of the path.** libsoup hands handlers the
+  path already unescaped, so a key holding `%2F` arrives as two segments:
+  the routes are `/market/i/:source/*` and `mdw_path_key()` takes
+  everything after the source. Do not unescape again (a key holding `%`
+  would change), and do not add an action as a path suffix -- the actions
+  are a POST to the page itself with `action=promote|watch|alert`.
+- **A bound must name its currency.** `venture_money_from_string()` falls
+  back on the install's default currency; `venture_marketdata_parse_amount()`
+  refuses an amount that reads differently under two defaults. Use it for
+  any amount a market filter compares.
+- **Charts carry no colour.** `src/web/venture-web-chart.c` draws in
+  `currentColor` with classes both stylesheets colour from tokens; a new
+  chart class goes into both, in the market block at their end, and
+  `/market-pages/doors-and-looks` checks the page in both looks.
+
+## Finding opportunities: the arbitrage scan
+
+`src/arbitrage/` (module `arbitrage`, requires `marketdata` and `ledger`):
+the strategies, fee models, export formats and calculators that read the
+series stores. `docs/arbitrage.org` ("Finding opportunities").
+
+- **A scan never adds or compares across currencies.** A sell side in
+  another currency is converted into the buy side's through
+  `venture_arbitrage_scan_convert()` (the organization's `exchange_rate`
+  table on the scan's date, never inverted), or the candidate is skipped
+  and a note counts it. A filter amount in another currency is converted
+  the same way or the row is left out; a profit sort groups by currency
+  first. `venture_money_compare()` across currencies warns, which is fatal
+  in tests.
+- **Unquoted is blank and named, never zero.** An input with no price, a
+  venue whose fee model is not loaded, an outcome nobody allowed quotes:
+  the row keeps `net`/`capital`/`roi` null and says what in `missing`. A
+  blank row is kept only while no numeric bound is asked, and has no plan.
+  A venue with *no record* is different: it charges nothing, and the row
+  warns rather than blanks.
+- **`plan()` and the `record` action are the only path from an
+  opportunity to the books.** `venture_arbitrage_record_opportunity()`
+  re-runs the question (top at its most), finds the key in what the data
+  says now, plans it and calls `venture_action_registry_perform()`, so the
+  organization's roles, second-actor approval and consent apply. Never
+  record from a JSON opportunity a client posted; a moved one is
+  NOT_FOUND "no longer there".
+  Staging (`?stage=1`, `venture_arbitrage_stage_opportunity()`) shares
+  the parameter building, so approval performs exactly the plan a direct
+  record would have; it still promotes the legs' venues and instruments.
+- **The scan routes drop `key` and `format` and ignore `venture_id`,
+  `as_of`.** Anything sending a question must not rely on them:
+  `venturectl arbitrage` refuses them by name, and the calculator route
+  passes `format` (the odds format) on explicitly -- dropping it read
+  American odds as decimal. `organization_id` is read, by the route and
+  not the scan (see "A Trading API answers for its organization_id").
+- **A Trading API answers for its `organization_id`, judged by the record
+  policy.** Every `/api/v1/feeds`, `/api/v1/market` and
+  `/api/v1/arbitrage` route resolves its organization through
+  `venture_web_request_organization()`: the query string's
+  `organization_id`, else the JSON body's (a number or its digits), else
+  the active organization -- which for a token is always the default one,
+  so without the parameter a second organization's market data was
+  unreachable from venturectl. The organization's own row is read under
+  the request's access scope before anything else: a member may read it,
+  a stranger is told NOT_FOUND, exactly what reading any of its records
+  would say. That check matters because these routes read series stores,
+  which are files the row-by-row policy never sees. Pages ignore the
+  parameter and answer for the sidebar's pick, as every page does. A new
+  Trading route calls the helper, never `venture_web_active_organization()`
+  directly; `/auth/trading-organization` in `tests/test-auth.c` holds the
+  families.
+- **The option table in `venture-arbitrage-scan.c` is the one list of scan
+  options, and every one is a report option.** A new option goes there,
+  into the `arbitrage_scan` schema, and through all five doors in the
+  same commit. An unknown name is refused by the reader -- presets and the
+  `opportunities` widget are judged by it at their save. No option is
+  `limit`.
+- **Fee models and strategies are judged when written, never when kept,**
+  and only while the arbitrage module is on (`venture_arbitrage_fees_validate_venue()`,
+  the preset validator). The registries live on the context; the
+  database holds the last context's (the tests build several contexts per
+  database), and the built-ins are always registered, so a plugin's name
+  written while the plugin is not loaded is refused.
+- **Fee models get the instrument's attributes.** `wow_auction`'s deposit
+  is a share of `vendor_sell`, which only the store knows:
+  `VentureFeeModelComputeFunc` takes `attrs`, and
+  `venture_arbitrage_scan_fees()` takes the side's instrument key and reads
+  them (cached per scan). A new strategy pricing one instrument passes its
+  key; a calculator passes none.
+- **Every strategy read is bounded and indexed.** Candidates come from an
+  indexed store query with a limit (`pct_vs_region`, `deals_only`,
+  `_list_quoted_parents()`, `_list_quoted_instruments()`), then one
+  indexed read each; past a bound the answer notes it. Never walk a
+  region's rows on a request -- the server is single-threaded.
+- **With feeds off, a scan must not query `data_source`.** Its table may
+  not exist (the registry is process-wide and masks types per context);
+  answer "no data sources" without looking. The same holds for any page
+  that reads a module's records while that module is off.
+- **An event that has started is not an opportunity.** `cover` and
+  `back_lay` leave out an event whose `commence_time` attribute (on the
+  event, or on an outcome's parent) is at or before the scan's time: books
+  stop moving a finished match's odds, so its last quotes look exactly
+  like a surebet. An event naming no start is kept, counted and noted.
+  A test fixture with a fixed kick-off is a time bomb -- serve it moved
+  into the future, as `serve_odds()` in `tests/test-plugin-examples.c`
+  does.
+- **What a calculator presents as the result is rounded against the
+  person.** A surebet's `payout` and `profit` are the least rounded payout
+  and it less the stakes; the unrounded T/S and T(1/S - 1) are
+  `payout_ideal` and `profit_ideal` (a scan row's `ideal_profit`).
+  Back/lay rounds winnings down and the liability up, so `worst` is what
+  the pair is sure to make; `ideal` is beside it. Never show an `_ideal`
+  figure as what a person gets.
+
+## Arbitrage trades and the ledger
+
+`arbitrage_trade` and `arbitrage_leg`, posted through the ledger's source
+registry ("Which saves post is a registry" above). `docs/arbitrage.org`
+has the posting table, close and abandon.
+
+- **Everything a trade does passes through arbitrage positions.** Out legs
+  debit it, in legs credit it, a stock sell's FIFO cost and a write-off
+  debit it, so what is left on it is the trade's profit. Fees go to
+  arbitrage fees, never through the position. `docs/arbitrage.org` has
+  the table; keep the rule and that table in step.
+- **A leg posts through the registry; its stock moves once, by
+  `execute`.** `arbitrage_leg` is a registered source (rule
+  `arbitrage_leg`, postable when executed with an amount). Its rule is
+  built twice per save and must never call the inventory service: a stock
+  buy is received with `venture_inventory_service_receive_from()` (Cr the
+  venue's cash, never GRNI) and a stock sell issued with
+  `venture_inventory_service_issue_to()` (Dr positions, never COGS) by the
+  execute action, which stamps `inventory-txn-id` and `cost`; the rule
+  then posts only the proceeds and fees. One truth per unit: posting a
+  stock leg's principal from the rule would spend its cash twice.
+- **Close is an action, per book section.** A save-time rule over sibling
+  legs always looks unchanged to `same_posting()`, so `close`, `reopen`
+  and `abandon` are record actions. Close sums the positions lines of
+  every journal the trade touched (legs -- deleted ones too --, their
+  stock movements, its own closes and reversals) per *journal* currency in
+  book amounts, and posts one journal per section in that section's own
+  currency, keyed `arbitrage_close:<trade>:<n>:<CODE>`. Never close by
+  original currency (a converted euro section would never reach zero) and
+  never add two sections together.
+- **Leg validators never write the trade.** A derived write bumps the
+  trade's version under whoever holds it. The actions (execute opening a
+  planned trade, close stamping it) are the writers; their stamps pass the
+  validators by an id-based permit, because a leg is a ledger source and
+  the ledger saves a *copy* -- a pointer permit never matches.
+- **`arbitrage` is in the accounting boundary's financial module list**
+  (`venture_accounting_operation_is_financial()`), so the action framework
+  wraps execute, close, reopen, abandon and record in one whole-operation
+  proposal. Without it, a second-actor rule refused every one of them with
+  "must begin before the enclosing business transaction";
+  `/arbitrage-ledger/second-actor` pins it.
+- **An executed stock leg is for good.** Changing or cancelling it is
+  refused with the counter-leg message, and so is any financial change to
+  an executed leg of a closed or abandoned trade until it is reopened.
+- **The operational reports count finished trades through one function.**
+  `pnl`, `ventures` and `monthly` add `venture_arbitrage_realised_totals()`
+  -- trades closed or abandoned in the period by `closed-at`, per
+  currency, the trade page's arithmetic -- as "Arbitrage gains", "Less
+  arbitrage fees" and "Arbitrage result" (a column in the other two), and
+  the result goes into Profit. Legs are neither sales nor expenses, so
+  nothing is counted twice; never add a trade's legs to a sales or
+  expense total. The lines appear only when the period finished a trade,
+  so an organization that never trades reads as it always did, and the
+  module off is no lines and no error. `/arbitrage-ledger/operational-reports`
+  pins all three.
+
+## The reference plugins: Blizzard, the-odds-api, supplier-csv
+
+Three plugins are both connectors and the worked examples of a provider
+as a GObject (`plugins/blizzard-auctions/`, native), as one function
+(`plugins/scripts/odds-api.c`, crispy) and as a program
+(`plugins/exec/supplier-csv/`, exec). `docs/plugins.org` "The reference
+plugins" and `docs/examples/*-feed.org` have the rest.
+
+- **The Blizzard plugin lives in `plugins-optional` and must never load in
+  a fixture.** `PLUGIN_OPTIONAL_DIRS` keeps it out of `$(OUTDIR)/plugins`,
+  which `VENTURE_PLUGIN_PATH` loads into every test; it wants a registered
+  GOLD and credentials no other fixture has. `make plugins` builds it,
+  `tests/test-plugin-blizzard.c` loads it by path
+  (`VENTURE_TEST_OPTIONAL_PLUGINS`), and an operator adds the directory to
+  `plugins.paths`.
+- **The commodity market costs 25 even on a 304.** Blizzard charges it
+  either way, and the feeds budget is spent before a request goes out and
+  never refunded; do not "fix" that into charging only for a 200.
+- **`expires_in_min` is seconds, and a minimum.** "min" is minimum, not
+  minutes: the store, the batch and the JSON-lines protocol all mean the
+  least time a listing has left, in seconds. A bucketed source gives the
+  lower bound (WoW LONG is 7200): the sale estimate asks whether a vanished
+  listing *could* have expired, and the upper bound counts expiries as
+  sales.
+- **A request that is not the unit's own answer is
+  `VENTURE_FEED_HTTP_UNCONDITIONAL`.** A token, an index, a name lookup:
+  otherwise its Last-Modified becomes the unit's If-Modified-Since and the
+  next fetch asks the auctions "anything newer than the item database?".
+  The every-realm unit keeps each realm's date in its cursor and sends it
+  itself, unconditionally.
+- **A manual sync sends no If-Modified-Since, and refreezes the source.**
+  A test of a conditional fetch needs a scheduled run (switch the source to
+  `auto` and wait for the run, as `schedule_and_wait()` does); a token or
+  name cache lives as long as the frozen source, not across manual syncs.
+- **A provider never registers a currency.** Blizzard's freeze refuses one
+  that is not registered with exponent 4 (prices are copper); the operator
+  or the demo makes the `currency` record. A worker that created records
+  would be writing the database from another thread.
+- **A key in a query string never reaches a message.** the-odds-api
+  takes its key only as `?apiKey=`; the script names a sport and a status
+  in its errors, never the address or the far end's body, and redacts its
+  own notes. `test-plugin-examples` greps the run, the log and the store.
+- **A crispy script sees the feeds API only with SQLite in its flags.**
+  `CFLAGS_PLUGIN_DEPS` carries `-DVENTURE_HAVE_SQLITE=1` for that; it is
+  baked into the server, so after changing it touch
+  `src/plugin/venture-crispy-host.c`.
+- **An exec program holds its own paths.** supplier-csv's `file` setting
+  is an editor's to write, so the script itself refuses anything but a
+  plain name and compares the realpath against its directory plus `/`.

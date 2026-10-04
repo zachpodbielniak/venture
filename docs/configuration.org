@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-03]
-#+version: 0.5.2
+#+updated: [2026-10-04]
+#+version: 0.6.0
 
 * Configuration
 
@@ -245,7 +245,7 @@ venture --generate-c-config > ~/.config/venture/config.c
   =embedding_*= keys are legacy hints, organizations bind providers
   explicitly
 - *series* — market data history: =hourly_days= (14; 0 keeps forever), =daily_days= (0, forever) and =max_store_mb= (0, no cap; past it a store refuses new instruments but keeps updating known ones); all three must be zero or more. =include_in_backup= (true) copies every store beside each installation backup, one =backup_run= per store, on the feeds worker; a source serves only its current snapshot, so a store's history exists nowhere else. See [[file:market-data.org][Market data]] and [[file:backup.org][Backups]]
-- *feeds* — market data feeds, off by default: =enabled=; =allowed_origins= (exact origins a source may fetch from, comma-separated, deny by default; plain http only for a loopback host); =file_roots= (absolute directories a file source may read under, comma-separated, deny by default); =max_response_mb= (64, 1 to 4096: the largest answer or file a fetch reads); =request_timeout= (60, 1 to 3600 seconds, the whole exchange); =max_records_per_run= (500: main-database records a run may write); =run_window_minutes= (15; scheduled passes within this many minutes are recorded as one run, 0 records every pass). All are read on the main thread and frozen into each source; a change refreezes every source. See [[file:market-data.org][Market data]]
+- *feeds* — market data feeds, off by default: =enabled=; =allowed_origins= (exact origins a source may fetch from, comma-separated, deny by default; plain http only for a loopback host); =file_roots= (absolute directories a file source may read under, comma-separated, deny by default); =max_response_mb= (64, 1 to 4096: the largest answer or file a fetch reads); =request_timeout= (60, 1 to 3600 seconds, the whole exchange); =max_records_per_run= (500, 0 to 100000: main-database records a run may write); =run_window_minutes= (15, 0 to 1440; scheduled passes within this many minutes are recorded as one run, 0 records every pass). All are read on the main thread and frozen into each source; a change refreezes every source. See below and [[file:market-data.org][Market data]]
 - *backup* — where scheduled backups go and how many are kept; see below
 - *stripe*, *payroll*, *bankfeed*, *commerce*, *group* — one =enabled=
   switch each, off by default, equivalent to the =modules= entry
@@ -380,6 +380,55 @@ plugins:
 #+end_src
 
 or, from a build tree, by adding it to =VENTURE_PLUGIN_PATH= (colon-separated): =VENTURE_PLUGIN_PATH=build/debug/plugins:build/debug/plugins-optional=. The plugin then needs =feeds.enabled=, its API origins on =feeds.allowed_origins= and a registered currency; [[file:examples/wow-auction-house-feed.org][the walk-through]] has the whole setup.
+
+** Exec plugins: =plugins.allow_exec=
+
+=plugins.allow_exec= (=VENTURE_PLUGINS_ALLOW_EXEC=, =plugins-allow-exec= on the object) is *false* by default. With it off at startup a =*.plugin.yaml= manifest of =runtime: exec= fails to load ("is an exec plugin but plugins.allow_exec is off") -- skipped with a warning like any failing plugin, fatal if it is named in =plugins.required= -- so its providers and handlers do not exist. Switched off while the server runs, a plugin already loaded stays listed but its program is never started again: the switch is read at every run, frozen into each data source with the rest of its limits (a change refreezes every source), so the next run of its provider fails saying so and the next call of its automation handler is refused, with no restart.
+
+It is off because an exec plugin is a program in a plugin directory run as the server's user, and an install where anyone but the operator can write a plugin directory must not start running a program because a manifest appeared there. The argv, environment, path and output rules a run is held to are in [[file:security.org::*Exec plugins: a program run as the server][Security: exec plugins]] and [[file:plugins.org::*Exec plugins][Plugins: exec plugins]].
+
+** Market data: =feeds= and =series=
+
+Two sections, both read only on the main thread and handed to the feeds worker as plain values -- the worker never reads the configuration, because the configuration is not thread-safe and a limit that changed half-way through a fetch would be no limit. Every =feeds.*= key and =plugins.allow_exec= are frozen into each data source when it is (re)loaded, and a change to any of them, to a =series.*= key or to =state_dir= refreezes every source.
+
+| Key                         | Default | Range        | Environment                           | What it bounds                                                                                                 |
+|-----------------------------+---------+--------------+---------------------------------------+----------------------------------------------------------------------------------------------------------------|
+| =feeds.enabled=             | false   | --           | =VENTURE_FEEDS_ENABLED=               | the =feeds= module (also =modules.feeds=; both must be on)                                                     |
+| =feeds.allowed_origins=     | empty   | --           | =VENTURE_FEEDS_ALLOWED_ORIGINS=       | origins an HTTP source may fetch from, comma-separated; empty denies every HTTP source                       |
+| =feeds.file_roots=          | empty   | --           | =VENTURE_FEEDS_FILE_ROOTS=            | absolute directories a file source may read under, comma-separated; empty denies every file source           |
+| =feeds.max_response_mb=     | 64      | 1 to 4096    | =VENTURE_FEEDS_MAX_RESPONSE_MB=       | the largest answer or file one fetch reads, in MiB                                                           |
+| =feeds.request_timeout=     | 60      | 1 to 3600    | =VENTURE_FEEDS_REQUEST_TIMEOUT=       | seconds one fetch may take, start to finish                                                                  |
+| =feeds.max_records_per_run= | 500     | 0 to 100000  | =VENTURE_FEEDS_MAX_RECORDS_PER_RUN=   | main-database records (price observations, exchange rates) one run may create or update                      |
+| =feeds.run_window_minutes=  | 15      | 0 to 1440    | =VENTURE_FEEDS_RUN_WINDOW_MINUTES=    | scheduled passes gathered into one recorded run; 0 records every pass                                        |
+| =series.hourly_days=        | 14      | 0 or more    | =VENTURE_SERIES_HOURLY_DAYS=          | days of hourly history kept, today included; 0 keeps it forever                                              |
+| =series.daily_days=         | 0       | 0 or more    | =VENTURE_SERIES_DAILY_DAYS=           | days of daily history kept; 0 keeps it forever                                                               |
+| =series.max_store_mb=       | 0       | 0 or more    | =VENTURE_SERIES_MAX_STORE_MB=         | MiB past which a store refuses instruments it has never seen; known ones carry on; 0 for no cap              |
+| =series.include_in_backup=  | true    | --           | =VENTURE_SERIES_INCLUDE_IN_BACKUP=    | copy every series store beside each installation backup                                                      |
+
+What each is for, and why the default is what it is:
+
+- *=feeds.enabled= is off* because a data source makes this server call outside hosts on a schedule, which an operator should choose. Turning it off stops the worker thread at once; the stores, sources and runs stay.
+- *=allowed_origins= is deny-by-default and exact.* Each entry is a scheme, a host and an optional port -- =https://us.api.blizzard.com=, no path, no query, no user -- compared case-insensitively against the URL a fetch builds and again against the final address. Plain =http= is accepted only for =127.0.0.1=, =::1= and =localhost=, so a credential never crosses a network in the clear; an entry that is not a valid origin (an =http= one elsewhere included) is skipped, not an error, so check a source with its Test button. A source's own =origins= setting can only narrow this list, never widen it. Redirects are never followed, whatever the list says.
+- *=file_roots= is deny-by-default and resolved.* A relative entry is ignored -- it would mean wherever the server happened to start. A file is =realpath()='d and must land strictly inside a root plus its separator, so a symlink is judged by where it points and =/srv/feeds-evil= is not under =/srv/feeds=.
+- *=max_response_mb= and =request_timeout= are per fetch*, judged on =Content-Length= first and again on what arrives; one deadline covers connecting, waiting and reading, so a far end trickling a byte at a time is still cut off.
+- *=max_records_per_run= bounds the main database*, not the store: a run's =price_observation= and =exchange_rate= upserts are written on the main thread, and a source that returned a hundred thousand of them would stall every request while they saved. What is cut is counted in the run's notes. 0 writes none.
+- *=run_window_minutes= keeps the run list readable.* An adaptive schedule may fetch a busy source every few minutes; each pass is still a pass, but passes within the window are recorded as one =data_source_run=.
+- *=series.hourly_days= is the one with a finite default* because hourly history is what fills a disk -- one blob per venue, instrument and day; daily history is the one that cannot be fetched again, so it is kept forever unless you say otherwise. Purging runs once a day on the worker.
+- *=series.include_in_backup= is on* because a source serves only its current snapshot: the history in a store exists nowhere else. See [[file:backup.org::*Series stores][Backups: series stores]].
+
+#+begin_src yaml
+feeds:
+  enabled: true
+  allowed_origins: "https://us.api.blizzard.com,https://oauth.battle.net"
+  file_roots: "/srv/venture/market"
+series:
+  hourly_days: 30
+  max_store_mb: 2048
+plugins:
+  allow_exec: true
+#+end_src
+
+The stores themselves, the providers and the worker are in [[file:market-data.org][Market data]]; the walk-throughs in [[file:examples/wow-auction-house-feed.org][a WoW auction house feed]], [[file:examples/odds-api-feed.org][an odds feed]] and [[file:examples/dropship-supplier-feed.org][a supplier's price list]] set each of these for a real source.
 
 * HTTP receive and connection limits
 

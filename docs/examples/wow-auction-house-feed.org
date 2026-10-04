@@ -4,13 +4,13 @@
 #+categories: projects docs
 #+created: [2026-10-04]
 #+updated: [2026-10-04]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * What this is
 
 The =blizzard-auctions= plugin turns Blizzard's Game Data API into a VENTURE data source: every connected realm's auction house and the region's commodity market, hour by hour, into the source's series store, where the Trading pages browse it, alerts watch it and the arbitrage scan prices flips, crafts and dropship-style buys between realms. It also reads the crafting professions into recipe records, prices auction-house fees, and exports a scan's items as a TradeSkillMaster group.
 
-It is the reference example of a native plugin that reaches several extension points at once; [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] walks through the code. This page is the operator's side: what to set up, in what order, and what to expect.
+It is the reference example of a native plugin that reaches several extension points at once; [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] walks through the code, and [[file:../market-data.org][Market data]] covers the machinery it plugs into -- the feeds module, the worker thread, the series store and the Trading pages. This page is the operator's side: what to set up, in what order, and what to expect.
 
 Nothing about World of Warcraft is in VENTURE's core. Venues, instruments, listings, fee models and export formats are generic; this plugin is what knows a realm, a bonus id and copper.
 
@@ -83,10 +83,10 @@ Then set the client secret on the source's credentials page, =/feeds/ID/credenti
 | =include_bid_only=     | =true=                           | list an auction with a bid and no buyout at its bid (the least it can be had for)                                             |
 | =currency=             | =GOLD=                           | the registered currency, exponent 4, prices are emitted in                                                                    |
 | =locale=               | =en_US=                          | the locale item and realm names are asked in                                                                                  |
-| =item_names_per_fetch= | 100                              | item detail lookups one fetch may make (0 for none)                                                                           |
-| =realms_per_fetch=     | 10                               | in the =realms= unit, how many realms with new data one fetch reads before it stops                                            |
+| =item_names_per_fetch= | 100                              | item detail lookups one fetch may make, 0 to 1000 (0 for none)                                                                |
+| =realms_per_fetch=     | 10                               | in the =realms= unit, how many realms with new data one fetch reads before it stops, 1 to 200                                  |
 | =key_modifier_types=   | every type                       | the modifier types that make an item a variant (see the key format below)                                                     |
-| =requests_per_hour=    | none                             | the hourly budget; Blizzard allows 36,000 per client                                                                          |
+| =requests_per_hour=    | none                             | the hourly budget; Blizzard allows 36,000 per client (the schema names 36000 as its default, but nothing is budgeted until it is set) |
 | =dynamic_namespace=, =static_namespace= | =dynamic-<region>=, =static-<region>= | overrides, for a classic realm (=dynamic-classic-us=) or a test                                               |
 | =api_base=, =oauth_base= | the region's, =https://oauth.battle.net= | origin overrides, for a mirror or a scripted test server; still held to =feeds.allowed_origins=                     |
 
@@ -192,7 +192,7 @@ Once a sync has run: =/market/browse= lists every item at every realm with its p
 i:2770,i:2589,i:19019,p:39
 #+end_example
 
-one TradeSkillMaster item string per item a row names -- the row's item and a craft's reagents -- each once, a variant as its item, a pet as =p:<species>=; paste it into TSM's group import. =venturectl report arbitrage_scan strategy=spread data_source_id=3= gives the same rows on the command line.
+one TradeSkillMaster item string per item a row names -- the row's item and a craft's reagents -- each once, a variant as its item, a pet as =p:<species>=; paste it into TSM's group import. =venturectl report arbitrage_scan strategy=spread data_source_id=3= (or =venturectl arbitrage scan spread data_source_id=3=) gives the same rows on the command line. [[file:arbitrage-wow-cross-realm.org][The cross-realm flip worked example]] takes one of those rows to a closed trade, and [[file:arbitrage-crafting.org][the crafting example]] does the same for a recipe; [[file:../arbitrage.org][Arbitrage]] has every strategy, option and fee model.
 
 * When it goes wrong
 
@@ -205,6 +205,14 @@ one TradeSkillMaster item string per item a row names -- the row's item and a cr
 | =... answered 429 Too Many Requests; retry after N seconds= | nothing: the unit waits; lower the realms or the budget if it recurs                  |
 | =Battle.net has no connected realm 1234 (HTTP 404)=        | the id is wrong for the region; the index at =/data/wow/connected-realm/index= lists them |
 | =item names: N items still to name=                        | nothing: later fetches name them, =item_names_per_fetch= at a time                      |
+
+* Where to read next
+
+- [[file:../market-data.org][Market data]] -- data sources, transport and budgets, scheduling, the series store and its figures, the price oracle, alerts and the Trading pages.
+- [[file:../plugins.org][Plugins]] -- native plugins, and [[file:../plugins.org::*Blizzard: a provider as a GObject, and four registries from one plugin][Blizzard: a provider as a GObject]].
+- [[file:../arbitrage.org][Arbitrage]] -- the =spread= and =transform= strategies, fee models, exports and trades.
+- [[file:arbitrage-wow-cross-realm.org][A cross-realm flip]] and [[file:arbitrage-crafting.org][craft arbitrage]] -- the demo's game-economy trades, step by step.
+- [[file:../security.org::*OAuth tokens: Blizzard][Security: OAuth tokens]] -- what happens to the client secret and the token.
 
 * Where things live
 

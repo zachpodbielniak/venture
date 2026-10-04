@@ -1,5 +1,10 @@
 #+title: Accounting setup
 #+description: Guided books setup, control-account mappings and first-posting checks
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-14]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * Setup
 
@@ -21,7 +26,7 @@ same legal entity. =currency_clearing= must be an equity account; when it
 is not mapped the posting service makes one on first use (see
 [[file:ledger.org][the general journal]]). =session_income= is the income
 account a session's money yield is credited to; unmapped, one coded
-=<organization>:4900= is made on first use (see [[file:sessions.org][Sessions]]). The three arbitrage classifications are the asset every trade's movements pass through, the income account a closed trade's result goes to (a loss as a debit), and the expense its fees go to; unmapped, each is made on first use as =<organization>:1460=, =<organization>:4960= and =<organization>:6960= (see [[file:arbitrage.org][Arbitrage]]). The account class must
+=<organization>:4900= is made on first use (see [[file:sessions.org][Sessions]]). The three arbitrage classifications are the asset every trade's movements pass through, the income account a closed trade's result goes to (a loss as a debit), and the expense its fees go to; unmapped, each is made on first use as =<organization>:1460= (Arbitrage positions), =<organization>:4960= (Arbitrage gains) and =<organization>:6960= (Arbitrage fees) -- scoped codes, like the session income account's, so a chart that already uses 1460 is never borrowed. Map them to fold trading into accounts you already keep. Executed legs post through =arbitrage_positions= and =arbitrage_fees=; only a trade's =close= moves its result to =arbitrage_gains= (see [[file:arbitrage.org::*Accounts][Arbitrage: accounts]] and [[file:ledger.org::*Posting on save: the source registry][the general journal]]). The account class must
 match the role: cash is an asset, tax payable a liability, and so on. Bank
 and item overrides use =subject-type= / =subject-id=. Dated restatements use
 =effective-from=; changing an existing map restates the current default.

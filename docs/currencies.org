@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-28]
-#+version: 0.1.0
+#+updated: [2026-10-04]
+#+version: 0.2.0
 
 * Units of account beyond ISO 4217
 
@@ -419,6 +419,30 @@ Conversion rounds once, half to even, at the destination's exponent; a
 result that no longer fits a 64-bit minor-unit count is refused, not
 wrapped. Check the exact field names with =venturectl describe
 exchange_rate=.
+
+* Market data, odds and arbitrage
+
+Market data feeds and the arbitrage module meet currencies in four places, and each follows the rules above rather than adding its own.
+
+** Register a game currency before its first sync
+
+A feed's prices arrive as decimal text and are stored as minor units in the currency they name (=venture_feed_decimal_to_minor()=), with the currency's exponent read from the registry. A code nobody registered and that is not ISO 4217 is assumed to have two places, like any unknown code, so =12.3456 GOLD= from an unregistered GOLD is refused as having too many decimal places -- exactly, rather than rounded, because a rounded price is a wrong one. Register the currency first; its code is stored upper-case in the series store, as it is everywhere.
+
+The Blizzard auction house plugin is stricter, because its prices are integers of copper: its source's =currency= setting (=GOLD= by default) must be a registered currency with exponent 4 -- one gold is 10 000 copper -- or the source cannot be loaded for a run and every run fails saying so ("must be a registered currency with exponent 4"). The plugin never registers one itself; that is the operator's =currency= record, or the demo's. Its =wow_auction= fee model likewise refuses a sale amount whose exponent is not 4. See [[file:examples/wow-auction-house-feed.org][the WoW auction house walk-through]].
+
+** Odds have no currency
+
+A bookmaker's or an exchange's odds are a ratio, not money: they are stored as decimal odds times =VENTURE_SERIES_ODDS_SCALE= (one million) with no currency at all, so nothing needs registering for an odds feed. Money enters only with a stake: a =cover= or =back_lay= scan, and the surebet and back-lay calculators, take the stake as an amount with its code (=total_stake= ="100.00 USD"=, =--stake "50.00 EUR"=), and stakes, payouts and profits come back in that currency, rounded at its exponent. See [[file:arbitrage.org::*The arithmetic][Arbitrage: the arithmetic]].
+
+** Nothing converts unless a rate says so
+
+- *The price oracle never converts.* A figure in another currency than the one asked for is no answer; =series:= price sources and alert thresholds compare only like with like (see [[file:market-data.org::*Never a conversion][Market data: never a conversion]]).
+- *The scan converts through =exchange_rate= only* (=venture_arbitrage_scan_convert()=): buying in one currency to sell in another needs a recorded rate on the scan's date, never a guessed or inverted one. Without one the opportunity cannot be priced in the selling currency, and the scan's notes count the missing pair (=GOLD>USD=) rather than guessing. A gold-only economy needs no rates at all.
+- *A trade's legs are in their venue's currency.* A bare leg amount is read in the venue's =currency=, and a venue refuses an amount in another. The close moves each currency's balance to gains in that currency, and the reports keep one figure per currency, book currency first -- including =pnl=, =ventures= and =monthly=, where an arbitrage result in a currency nothing else used gets its own block or row.
+
+** Book treatments still decide the books
+
+Executed legs post through the posting service like every automatic journal, so a =separate_book= currency's legs land in its own journal and a =memo= currency's become holding movements, as [[*In the books: the book treatment][the book treatment]] says. A trade cannot be closed while a section of it is in a currency that is memo now: there is no journal to move a memo balance from positions to gains. See [[file:arbitrage.org::*Currencies][Arbitrage: currencies]].
 
 * Traps
 

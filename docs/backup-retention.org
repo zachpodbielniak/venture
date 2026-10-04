@@ -1,4 +1,10 @@
 #+title: Local encrypted backup catalog and retention
+#+description: The operator catalog of encrypted tenant archives: registration, retirement, retention plans and their limits
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-20]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * Operator boundary
 
@@ -19,7 +25,7 @@ erasure. Its current 16 MiB bound refuses further publication rather than
 silently dropping old tombstones. Preserve and separately back up the control
 catalog and operator audit log; deleting them loses the retirement authority.
 
-The catalog governs the encrypted tenant archives only. The in-process scheduled backups of [[file:backup.org][Backups]] -- database snapshots, installation copies and the series store copies taken with them -- are retained by their schedule's =retention= and recorded as =backup_run= rows in the application database, not here. A tenant archive carries the whole state directory, so any of those files that live under it (and every live series store) are inside the archive and expire with it.
+The catalog governs the encrypted tenant archives only. The in-process scheduled backups of [[file:backup.org::*Scheduled backups][Backups]] -- database snapshots, installation copies and the series store copies taken with them ([[file:backup.org::*Series stores][series stores]], one =backup_run= of scope =series= per store) -- are retained by their schedule's =retention= and recorded as =backup_run= rows in the application database, not here. A tenant archive carries the whole state directory, so any of those files that live under it (and every live series store) are inside the archive and expire with it.
 
 * Registration and explicit replicas
 

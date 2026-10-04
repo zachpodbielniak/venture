@@ -4,13 +4,13 @@
 #+categories: projects docs
 #+created: [2026-10-04]
 #+updated: [2026-10-04]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * What this is
 
 A dropshipper buys from a supplier and sells on a marketplace without holding stock. The buy side is a price list -- a CSV the supplier exports or emails -- and =plugins/exec/supplier-csv/= turns one into market data: the supplier as a venue, every SKU as an instrument, every line in stock as a listing at its *landed* price, price plus shipping. Against a marketplace's prices (another source, or listings) the arbitrage =spread= strategy then finds what is worth listing, net of the marketplace's =percent= fee.
 
-It is the reference example of an exec plugin: a manifest and a bash script, no C, no build. [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] and the exec chapters there have the rules it runs under.
+It is the reference example of an exec plugin: a manifest and a bash script, no C, no build. [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] and the exec chapters there have the rules it runs under; [[file:../market-data.org][Market data]] has what the feeds module does with what the program prints -- the schedule, the run record and the series store.
 
 * Turning it on
 
@@ -43,7 +43,7 @@ DS-1005,Cast iron trivet,5.90,USD,0,2.40
 DS-1006,Linen tea towel,2.35,USD,410,
 #+end_example
 
-The header must be exactly that. =price= and =shipping= are decimals in the line's =currency= (up to four places; an empty shipping is free), =quantity= the supplier's stock. A field in double quotes may hold commas, and =""= inside one is a quote. A line that breaks a rule is skipped and logged (the first twenty), never guessed at. =sample-price-list.csv= in the plugin's directory is the example the demo uses.
+The header must be exactly that. =price= and =shipping= are decimals in the line's =currency= (up to four places; an empty shipping is free), =quantity= the supplier's stock. A field in double quotes may hold commas, and =""= inside one is a quote. A line that breaks a rule is skipped and logged (the first twenty), never guessed at; a list longer than 50,000 rows is cut there, with a warning. =sample-price-list.csv= in the plugin's directory is the example the demo uses.
 
 * The data source
 
@@ -78,10 +78,10 @@ group: us"
 Promote the SKUs you sell (=venturectl market promote SOURCE instrument DS-1001=), link each to its =product=, and give the marketplace venue its fee (=fee_model=percent=, =fee_params: "cut_percent: 15"=). Then:
 
 #+begin_src sh
-venturectl report arbitrage_scan strategy=spread buy_venues=acme sell_venues=marketplace min_roi=0.2
+venturectl report arbitrage_scan strategy=spread buy_venues=acme sell_venues=marketplace min_roi=20
 #+end_src
 
-lists what is worth listing at the marketplace's prices, after its cut, with the supplier's landed price as the cost. "Record attempt" on =/arbitrage= records it as a trade with a buy leg at the supplier and a sell leg at the marketplace.
+lists what is worth listing at the marketplace's prices, after its cut, with the supplier's landed price as the cost -- here only what returns at least 20% (=min_roi= is a percent). "Record attempt" on =/arbitrage= records it as a trade with a buy leg at the supplier and a sell leg at the marketplace. [[file:arbitrage-dropshipping.org][The dropshipping worked example]] does all of this with the demo's data, from the two sources to a closed trade, and [[file:../arbitrage.org][Arbitrage]] has the scan's options and how a trade reaches the books.
 
 * Running it by hand
 
@@ -92,6 +92,13 @@ cd /var/lib/venture/plugins/supplier-csv
 printf '%s\n' '{"protocol":1,"command":"fetch","params":{"unit":"default","source":{"venue":"acme"}}}' | ./fetch.sh
 ./fetch.sh --help
 #+end_src
+
+* Where to read next
+
+- [[file:../market-data.org][Market data]] -- data sources, runs, the series store and the Trading pages that browse it.
+- [[file:../plugins.org][Plugins]] -- the exec runtime, the JSON-lines protocol, and [[file:../plugins.org::*supplier-csv: a provider as a program][supplier-csv: a provider as a program]].
+- [[file:../arbitrage.org][Arbitrage]] -- the =spread= strategy, fee models and trades.
+- [[file:arbitrage-dropshipping.org][Dropshipping, end to end]] -- the demo's supplier and marketplace, the scan and an order recorded as a trade.
 
 * Where things live
 

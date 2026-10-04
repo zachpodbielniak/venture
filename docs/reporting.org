@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-03]
-#+version: 0.7.0
+#+updated: [2026-10-04]
+#+version: 0.8.0
 
 * Reporting
 
@@ -70,6 +70,18 @@ curl '.../api/v1/reports/tax?period=2026&format=csv'
 
 =categories= takes =group_by=, so the same report answers "how did each genre
 do", "how did each format do" and "how did each product do".
+
+** Market data and arbitrage
+
+Six of the reports above read market data rather than records alone: =market_deals=, =venue_index= and =watchlist= belong to the =marketdata= module, =arbitrage_scan=, =craft_arbitrage= and =arbitrage_performance= to =arbitrage=, and each is hidden with its module. What sets the first five apart:
+
+- *They answer for now.* They read each data source's series store as it stands -- the newest snapshot per venue, the region figures last computed -- and say so in a note ("the period does not narrow it"). A period is accepted, because every door sends one, and ignored. =arbitrage_performance= is the exception: it reads finished trades, and the period bounds their =closed_at=.
+- *No data is a note, not a refusal.* With the =feeds= module off, in a build without SQLite, or before a source has stored anything, the report answers with no rows and a note saying which; a scan that left opportunities out says how many and why ("Left out: ..." by reason). A bad option is still refused -- an unknown =sort=, an amount with no currency for =min_value= or =min_profit= ("10.00" is refused, "10.00 GOLD" is not), a negative amount, a scan percentage with more than four decimal places.
+- *Amounts name their currency, ratios are strings.* Money options are spelt with their code because a gold threshold and a dollar threshold are different questions and nothing converts between them. The scan's percentages (=min_roi= ="15"=, =min_sale_rate=, =max_buy_pct=, =share=) are read as exact decimals of at most four places; =min_confidence= (="0.6"=, 0 to 1) and =market_deals='s =max_pct= (="80"=) bound figures that are ratios already, and are read as plain numbers.
+- *Every option is at every door.* The web API, the report page (its controls and the names that keep a question across period links), =venturectl report=, the MCP =venture_report= tool and the assistant all forward the same option lists; an option missing from one door would silently answer a different question there (see the =AGENTS.md= rule). =limit= is never one of them -- the bound is =top=.
+- *=organization_id= is the question*, as for every report: =venturectl report market_deals organization_id=2= reads the second organization's sources (judged as below).
+
+The arbitrage figures in =pnl=, =ventures= and =monthly= come from the same trades as =arbitrage_performance= and are described under "Several currencies" next. The stores and figures behind the market reports are in [[file:market-data.org::*Reports][Market data: reports]]; the scan's options, strategies and arithmetic in [[file:arbitrage.org::*Reports][Arbitrage: reports]] and [[file:arbitrage.org::*Finding opportunities][Finding opportunities]].
 
 ** Several currencies in one organization
 

@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-08-14]
 #+updated: [2026-10-04]
-#+version: 0.6.2
+#+version: 0.7.0
 
 * VENTURE
 
@@ -54,17 +54,8 @@ New to VENTURE? Two pages, in this order:
 - [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost and money into the location's holding, and what an hour of each kind is worth
 - [[file:goals.org][Goals]] — measurable targets (a skill to level, a sum to save, a weight to lose) with ordered steps, progress measured from the start, a straight-line forecast, and the shopping list for recipe steps still ahead
 - [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
-- [[file:market-data.org][Market data: feeds and the series store]] — data sources and their providers (JSON, CSV, JSON-lines files, exec plugins), the feeds worker thread, transport rules, adaptive scheduling, runs and the records sink; then one SQLite file per data source holding everything it returns: the schema, every formula (market value, deal price, sale estimate, 14-day value), retention and the threading contract; and the marketdata module: venues, instruments, watchlists, promotion, the price oracle, the =series:= price source, and alert rules with their hits
-- [[file:arbitrage.org][Arbitrage]] — trades and their legs, each leg posted through the venue's cash and an arbitrage positions account, stock legs executed once through the inventory service, closing a position to gains per book section, recording an attempt in one stageable action, and the =arbitrage_performance= report
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record
 - [[file:examples/game-economy.org][Worked example: a game economy]] — every generic feature above, end to end, in a game's gold
-- [[file:examples/wow-auction-house-feed.org][Worked example: World of Warcraft auction houses as a feed]] — the optional =blizzard-auctions= plugin: GOLD at exponent 4, the data source and its sealed client secret, realms and the commodity market (25 requests even on a 304), the instrument key format, recipe import, the =wow_auction= fee model and the =tsm= export
-- [[file:examples/odds-api-feed.org][Worked example: bookmakers' odds from the-odds-api]] — the =odds-api.c= crispy plugin: events, outcomes and bookmakers as quotes, the far end's quota, a key that has to travel in the address, and surebets with =cover=
-- [[file:examples/dropship-supplier-feed.org][Worked example: a dropshipping supplier's price list]] — the =supplier-csv= exec plugin: a bash program reading a CSV in its own directory into listings at the landed price
-- [[file:examples/arbitrage-wow-cross-realm.org][Worked example: a cross-realm flip in a game's gold]] — the demo's Evermoor market end to end: generated JSON-lines data for six realms synced through =file_jsonl=, venues with their cut and the purses they move, a watchlist and alerts, the =spread= scan, and a flip through the books
-- [[file:examples/arbitrage-crafting.org][Worked example: craft arbitrage]] — the =transform= scan over a recipe, reagents bought, a craft into the trade's own stock, the potions sold and the trade closed; and an abandoned trade written off
-- [[file:examples/arbitrage-dropshipping.org][Worked example: dropshipping]] — a supplier's price list (exec plugin) against a marketplace's listings, a =percent= fee, the cross-source spread and an order bought, sold and closed in dollars
-- [[file:examples/arbitrage-surebet.org][Worked example: a surebet]] — bookmakers' odds as a source, the =cover= scan, wallets funded by a journal, the calculator's split, stakes, the payout and the close
 - [[file:sales-orders.org][Sales orders]] — allocate, ship and invoice fulfilled quantity
 - [[file:reporting.org][Reporting]] — the built-in reports, the generic =aggregate= report (sum, average, count of any field of any type, grouped and bucketed, money per currency), and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
@@ -79,7 +70,6 @@ New to VENTURE? Two pages, in this order:
 - [[file:harness.org][The agent harness]] — a coding agent kept open in a workspace: sessions, providers, and what an operator has to switch on
 - [[file:interface.org][The interface]] — the design system behind the web UI: substrates, the two registers of type, geometry, and the tokens a plugin builds on
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
-- [[file:plugins.org][Plugins: runtimes, manifests and exec]] — the loader's reference: runtimes and how a plugin adds one, =*.plugin.yaml= manifests, what a plugin provides, exec plugins, the JSON-lines protocol, the security model and the three reference plugins (Blizzard as a native =.so=, the-odds-api as crispy, a supplier price list as exec)
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:reconciliation.org][Reconciliation suggestions]] — pluggable matching and operator approval
 - [[file:mail.org][Transactional mail]] — durable outbox, SMTP, templates, operator-resolved uncertainty, and inbound IMAP sync onto contact timelines and the capture inbox
@@ -117,6 +107,23 @@ New to VENTURE? Two pages, in this order:
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
 - [[file:docs-site.org][The documentation site]] — docs/*.org rendered to HTML, served at =/docs=, with link and index checks
 
+** Market data, arbitrage and plugins
+
+Outside prices in, opportunities found, attempts booked. The pages build on each other in this order: plugins bring the data in, market data keeps it and makes it browsable, arbitrage finds and records the trades. Then three worked examples of a feed, one per plugin runtime, and four of a trade, one per kind of arbitrage, each run end to end with the exact commands (the trades exactly as =make demo= seeds them). [[file:market.org][Market]], [[file:production.org][Production]] and [[file:currencies.org][Currencies]] are the generic features underneath.
+
+- [[file:plugins.org][Plugins: runtimes, manifests and exec]] — the loader's reference: runtimes and how a plugin adds one, =*.plugin.yaml= manifests, what a plugin provides, exec plugins, the JSON-lines protocol and how a data source reads it, the security model, the three reference plugins (Blizzard as a native =.so=, the-odds-api as crispy, a supplier price list as exec), and a tutorial that writes one market data provider in each runtime
+- [[file:market-data.org][Market data: feeds and the series store]] — how it fits together (plugins, feeds, the worker thread, the store, marketdata, arbitrage, the ledger); data sources and their providers (JSON, CSV, JSON-lines files, exec and plugin providers), the feeds worker thread, transport rules, adaptive scheduling, runs and the records sink; one SQLite file per data source: the schema, every formula (market value, deal price, sale estimate, 14-day value), retention, backups and the threading contract; venues, instruments, watchlists, promotion, the price oracle and the =series:= price source; alert rules and their hits; and the Trading pages, their reports and widgets
+- [[file:arbitrage.org][Arbitrage]] — how the pieces fit, then the scan (the =spread=, =deal=, =transform=, =cover= and =back_lay= strategies, every formula, fee models, presets, export formats, the calculators) and the books (trades and legs, each leg posted through the venue's cash and an arbitrage positions account, stock legs executed once through the inventory service, closing a position to gains per currency, recording an attempt in one stageable action, the =arbitrage_performance= report and the arbitrage lines in the profit and loss)
+
+- [[file:examples/wow-auction-house-feed.org][Worked example: World of Warcraft auction houses as a feed]] — the optional =blizzard-auctions= plugin: GOLD at exponent 4, the data source and its sealed client secret, realms and the commodity market (25 requests even on a 304), the instrument key format, recipe import, the =wow_auction= fee model and the =tsm= export
+- [[file:examples/odds-api-feed.org][Worked example: bookmakers' odds from the-odds-api]] — the =odds-api.c= crispy plugin: events, outcomes and bookmakers as quotes, the far end's quota, a key that has to travel in the address, and surebets with =cover=
+- [[file:examples/dropship-supplier-feed.org][Worked example: a dropshipping supplier's price list]] — the =supplier-csv= exec plugin: a bash program reading a CSV in its own directory into listings at the landed price
+
+- [[file:examples/arbitrage-wow-cross-realm.org][Worked example: a cross-realm flip in a game's gold]] — the demo's Evermoor market end to end: generated JSON-lines data for six realms synced through =file_jsonl=, venues with their cut and the purses they move, a watchlist and alerts, the =spread= scan, and a flip through the books
+- [[file:examples/arbitrage-crafting.org][Worked example: craft arbitrage]] — the =transform= scan over a recipe, reagents bought, a craft into the trade's own stock, the potions sold and the trade closed; and an abandoned trade written off
+- [[file:examples/arbitrage-dropshipping.org][Worked example: dropshipping]] — a supplier's price list (exec plugin) against a marketplace's listings, a =percent= fee, the cross-source spread and an order bought, sold and closed in dollars
+- [[file:examples/arbitrage-surebet.org][Worked example: a surebet]] — bookmakers' odds as a source, the =cover= scan, wallets funded by a journal, the calculator's split, stakes, the payout and the close
+
 ** The shape of the thing in one page
 
 Everything derives from GObject properties. A record type is a field table; from that VENTURE builds the database table, the REST resource, the JSON and YAML serialisation, the web form, the AI tool schema, the audit diff and the CLI subcommands. Adding a field is a line; adding a record type is a registration.
@@ -134,6 +141,8 @@ Something outside can be told too. A webhook is a URL, a set of events and a sig
 You are told what matters, and only that. Every record's page has a Watch button and a timeline; a comment naming =@you=, a ticket handed to you, a change to something you follow, a service level about to be missed, a budget crossed or a run finishing lands in your inbox, fed by the audit trail so every door tells the same people the same things. Saved views keep a filtered list under a name; a service-level policy puts clocks on a ticket; a macro answers in one press; sprints burn down; forty records change in one transaction; and the coding runs have one screen, a cost, and a budget that refuses them before the money is gone.
 
 Any page you want, you build. A dashboard is a grid of widgets — a count, a list, a report's figure, a breakdown, a note, a row of buttons — each a declarative question answered from any module's records or reports, rendered the same for the browser, the API and the assistant. There can be as many as you like; one can be home; a personal one is yours alone; and a dashboard exports as JSON that imports anywhere.
+
+Outside prices come in, and stay. A data source names a provider -- built in, or added by a plugin in any runtime, a program included -- and a worker thread fetches it on a schedule it learns from the far end, through an origin allowlist, a budget and byte caps, into a SQLite file of its own outside the main database: every snapshot reduced as it lands to the latest price, a regional median and a deal price, hourly and daily history, odds and estimated sales. The Trading pages browse it, alert rules watch it, recipes and goals can price from it, and the arbitrage scan finds the flips, crafts and surebets in it -- net of each venue's fees -- and records the attempt as a trade whose legs post to the ledger and close into gains per currency. None of that thread touches the database; its results cross back to the main thread as plain data.
 
 The AI reads freely and cannot write unsupervised. A tool call that would change a record stages a diff for approval instead; only approval applies it, and the applied write is audited with the prompt that caused it. Any REST write can do the same with =?stage=1=, so an outside agent proposes into the same queue and a person answers both from one page.
 

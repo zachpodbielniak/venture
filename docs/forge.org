@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-21]
-#+updated: [2026-09-11]
-#+version: 0.5.0
+#+updated: [2026-10-04]
+#+version: 0.5.1
 
 * What this is
 
@@ -317,7 +317,7 @@ A coding agent is a separate thing from the chat assistant, on a separate execut
 
 * Where things run
 
-A coding run takes minutes. Everything else in VENTURE takes milliseconds on one main loop, so runs get the only background thread in the program — with its own main context, and a rule that it never touches the database. Progress crosses back as plain data and is written to the run record on the main thread.
+A coding run takes minutes. Everything else in VENTURE takes milliseconds on one main loop, so runs get a background thread of their own — with its own main context, and a rule that it never touches the database (the feeds worker is the only other long-lived thread, under the same rule; AGENTS.md lists every thread). Progress crosses back as plain data and is written to the run record on the main thread.
 
 Forge API calls are *not* on that thread: they happen inside the request that asked for them, bounded by =forge.request_timeout=. That is the same shape as the AI chat route and the invoice actions, and it is why the timeout is worth keeping short.
 

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-27]
-#+version: 0.6.0
+#+updated: [2026-10-04]
+#+version: 0.7.0
 
 
 * For an AI agent
@@ -114,6 +114,10 @@ venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio
 venturectl support rollup --from D --to D [--sort C]  # support cost and tickets per customer
 venturectl report packs deliver ID       # re-send a pack's last retained output by email
+venturectl feeds sync|runs|due ...       # market data sources; see Market data, arbitrage and plugins
+venturectl market VERB ...               # the price oracle and the Trading pages; market help
+venturectl arbitrage VERB ...            # scan, record, calculate, export; arbitrage help
+venturectl plugins [list]                # what the server loaded; owner only
 #+end_src
 
 * Examples
@@ -662,6 +666,8 @@ record and is immediate, not staged. See [[file:printing.org][receipt printers]]
 
 * Market data, arbitrage and plugins
 
+Four verb groups reach what is not a record: =feeds= queues a market data source's sync and reads its schedule, =market= asks the price oracle and the Trading pages' questions, =arbitrage= scans for opportunities, records them as trades and runs the calculators, and =plugins= lists what the server loaded. Each is a thin client of a JSON route (=/api/v1/feeds=, =/api/v1/market=, =/api/v1/arbitrage=, =/api/v1/plugins=) or of a record action, asking exactly the question the matching page asks, so the terminal and the page cannot answer differently. The records themselves -- =data_source=, =venue=, =instrument=, =watchlist=, =alert_rule=, =arbitrage_trade=, =arbitrage_strategy= and the rest -- need no verb of their own: =list=, =create=, =update= and =act= cover them like any other type. What the verbs ask about is described in [[file:market-data.org][Market data]] (the series stores, feeds, the price oracle, alerts and the Trading pages), [[file:arbitrage.org][Arbitrage]] (trades and legs, the scan, presets and calculators) and [[file:plugins.org][Plugins]] (runtimes, exec plugins and what a manifest provides).
+
 #+begin_src sh
 venturectl feeds sync 1 --wait                        # queue a data source's sync and wait for its run
 venturectl feeds runs 1                               # its runs, newest first
@@ -675,12 +681,13 @@ venturectl market alerts                              # rules and recent hits
 venturectl market alerts evaluate 7 --dry-run         # what would fire now; without --dry-run it is written
 venturectl market quote 12 basis=region_median venue=eu
 venturectl market promote 1 instrument 2589
-venturectl feeds sync 7 --wait organization_id=2      # every verb here takes organization_id=N
+venturectl feeds sync 7 --wait organization_id=2      # another organization's source
 venturectl market deals organization_id=2 group=evermoor-eu
 venturectl arbitrage scan spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
 venturectl arbitrage record 1 spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
 venturectl --stage arbitrage record name="Peacebloom flip" strategy=spread legs=@legs.json
 venturectl arbitrage calc surebet 2.10 2.05 --stake "100.00 USD"
+venturectl arbitrage calc surebet odds="+150 -120" format=american --stake "100.00 USD"
 venturectl arbitrage calc back-lay 3.0 2.9 --stake "50.00 USD" commission=5
 venturectl arbitrage calc flip "1.25 GOLD" "2.10 GOLD" units=20 cut=5 sale_rate=40
 venturectl arbitrage export csv spread group_key=eu -o opportunities.csv
@@ -691,14 +698,52 @@ venturectl arbitrage registries                       # strategies, fee models, 
 venturectl plugins list                               # owner only: what loaded, its runtime, what it provides
 #+end_src
 
-=venturectl market help= and =venturectl arbitrage help= print every verb of the group with its options and examples.
+=venturectl market help= and =venturectl arbitrage help= print every verb of the group with its options and examples; =feeds= and =plugins= print their one-line usage when given anything they do not take.
 
-*Which organization.* Every =feeds=, =market= and =arbitrage= verb takes =organization_id=N= and answers for that organization; without it, for the caller's active organization, which for a token is always the default one -- so the parameter is how a second organization's market data is reached at all. The server judges it first: a member of the organization is answered, anybody else is told NOT_FOUND (exit 3), and a value that is not a positive whole number is refused (exit 2). Verbs with positional words take it after them: =feeds sync ID [--wait] organization_id=N=, =market promote SOURCE instrument|venue KEY organization_id=N=, =market watchlist [ID] organization_id=N=, =market alerts evaluate RULE_ID organization_id=N=. A source, rule or list of another organization than the one asked about is NOT_FOUND.
+** Feeds
 
-The =market= verbs are the Trading pages' JSON twins (=/api/v1/market/...=) asked under the pages' own query names; the report spellings =data_source_id=, =group_key= and =category_path= are accepted too. Each option is typed before anything is sent: =page=two= or =stock=maybe= is refused by name (exit 2), because a page reads an unknown =dir= as ascending and a false =stock= as unset rather than refusing it. The answers draw as a table on a terminal (named columns, money with its currency, a blank -- never a zero -- for a figure that is not there, then the answer's notes), the rows as CSV with =-f csv=, and the whole answer with =-f json= or =-f yaml=.
+=feeds sync ID= queues a sync of the =data_source= and answers at once with ={"status": "queued", "data_source_id": ID}= (202): the server never waits on an outside host inside a request. =--wait= is the CLI waiting instead. It reads the source's newest run before queueing, then asks for the newest run once a second until one newer than that appears and prints it; after five minutes (=VENTURE_CLI_FEEDS_WAIT_SECONDS=) it gives up with exit 7 and names the =feeds runs= command that will show the run later -- the sync is still queued, only the waiting stopped. =--wait= belongs to =feeds sync= alone and is refused on =feeds runs=, =feeds due= and every other verb, because a flag that is quietly ignored teaches that it did something.
 
-=arbitrage scan= takes the strategy as its first word and the scan's options after it (see [[file:arbitrage.org][Arbitrage]], "The question"). Money names its currency ("10.00 GOLD"), percents are plain numbers ("15" is 15%). The table numbers its rows, and =arbitrage record N= with the same options records row /N/: the CLI asks the same question, takes that row's key and what narrows the plan to it, and posts them to =/api/v1/arbitrage/record=, which re-runs the scan and performs the =record= action with the plan -- a row the prices have moved away is refused, never recorded from what the terminal showed. =arbitrage record KEY= does the same with a key from a JSON scan. =organization_id=N= travels with the question, to the scan and to the record route alike. Options a scan route would quietly ignore are refused instead: =venture_id=, =as_of=, =key= and =format=.
+=feeds runs ID= prints the source's =data_source_run= records newest first (status, trigger, units, rows, error and the rest of the run's counters), and =feeds due= every unit of every source in the organization with when the worker checks it next, soonest first; a unit that never runs on its own (a =manual= schedule) has a null =next_check= and sorts last. With the feeds module off (=feeds.enabled=, off by default) every =/api/v1/feeds= route is NOT_FOUND, so all three exit 3. Testing a source, purging its history and the Blizzard plugin's recipe import are record actions: =venturectl act data_source ID test unit=...=, =act data_source ID purge_history=, =act data_source ID import_recipes ...=.
 
-=arbitrage record name=... legs=...=, =close=, =reopen=, =abandon= and =execute= are the =act= verb on =arbitrage_trade= and =arbitrage_leg= under a friendlier name: every argument is typed from the action's own schema, and =legs=@FILE= (or =expected=@FILE=) reads the value from a file. All five honour =--stage=, as does recording a scan row (=POST /api/v1/arbitrage/record?stage=1=); planning a staged row still promotes the venues and instruments its legs name, because legs must name records, but the trade and its legs wait for approval.
+** Which organization
 
-=arbitrage calc= runs the calculators on the server (=/api/v1/arbitrage/calc=): =surebet= takes every outcome's odds as bare words (or =odds="+150 -120"=; a bare negative American price would read as an option), =back-lay= the back and lay odds, =flip= the buy and sell prices; =--stake= is the total or back stake, and =format= picks the odds format. =arbitrage export FORMAT= writes what a registered export format makes of the scan to stdout or to =-o FILE=. =--stake= and =-o= are refused on every other verb, and =--dry-run= belongs only to =market alerts evaluate=.
+The =feeds= and =market= verbs and =arbitrage scan=, =record= and =export= answer for the organization =organization_id=N= names; without it, for the caller's active organization, which for a token is always the default one -- so the parameter is how a second organization's market data is reached from the command line at all. The server judges it before reading anything: a member of the organization is answered, anybody else is told NOT_FOUND (exit 3), exactly what reading one of its records would say, and a value that is not a positive whole number is refused (exit 2, by the CLI before anything is sent). A source, rule, list or scan row of another organization than the one asked about is NOT_FOUND too, which is why a second organization's source asked about without the parameter reads like a missing one ("No such data source in organization 1").
+
+Where a verb takes =name=value= options -- =market browse=, =deals=, =venues=, =instrument=, =alerts=, =quote= and the arbitrage scan verbs -- =organization_id= is one of them. Verbs with positional words take it as a trailing word after them, and refuse anything else there (exit 2): =feeds sync ID [--wait] organization_id=N=, =feeds runs ID organization_id=N=, =feeds due organization_id=N=, =market promote SOURCE instrument|venue KEY organization_id=N=, =market watchlist [ID] organization_id=N=, =market alerts evaluate RULE_ID organization_id=N=. =arbitrage record name=... legs=...= passes it to the =record= action, whose own parameter it is. =arbitrage calc= and =registries= read no organization, and =arbitrage close=, =reopen=, =abandon= and =execute= act on a record that already belongs to one, so =organization_id== there is refused as an unknown action parameter (exit 2).
+
+** Market
+
+The =market= verbs are the Trading pages' JSON twins (=/api/v1/market/...=) asked under the pages' own query names (=source=, =group=, =category=); the report spellings =data_source_id=, =group_key= and =category_path= are accepted too, so an option that worked on =report market_deals= works here. Each option is typed before anything is sent: =page=two=, =stock=maybe= or =dir=sideways= is refused by name (exit 2), and so is a name the verb does not take (=limit=5=), because a page reads an unknown =dir= as ascending and a false =stock= as unset rather than refusing it. =browse= sorts only by the columns =venture_marketdata_browse_sorts()= lists (=min_price=, =quantity=, =market_value=, =region_median=, =pct_vs_region=, =sale_rate=, =sold_per_day=, =deal_price=, =listings=, =name=, =updated=, =venue=); anything else is refused by the server (exit 2). =market watchlists= is the same verb as =market watchlist=.
+
+=market instrument SOURCE_ID KEY= takes the store's key, not an instrument record's id, and sends it as one path segment however many slashes it holds. =market quote= takes an instrument id (or =product=ID=) and passes =basis=, =venue= (a venue key, else a group), =venue_id=, =at=, =currency=, =prefer_currency=, =fallback= and =source= to the price oracle; it prints the oracle's answer as it is. =market promote= prints the record it made, found or restored.
+
+=market alerts evaluate RULE_ID= *writes* the hits it finds, under the rule's cooldown and as a feed run would -- a webhook and the inbox fire -- and =--dry-run= (=?record=false=) only says what would fire. That is the opposite default from the record action =act alert_rule ID evaluate=, which only looks unless given =record=true=. Neither can be staged, and =--dry-run= is refused on every other =market= verb.
+
+The answers draw as a table on a terminal (named columns, money with its currency, a blank -- never a zero -- for a figure that is not there, then the answer's notes, which =-q= drops), the rows as CSV with =-f csv=, and the whole answer -- notes, echoes of the question and all -- with =-f json= or =-f yaml=, so a script never loses what the table leaves out.
+
+** Arbitrage
+
+=arbitrage scan= takes the strategy as its first word (=spread= when there is none) and the scan's options after it (see [[file:arbitrage.org][Arbitrage]], "The question"). Money names its currency (="10.00 GOLD"=; a bare bound is refused by the server rather than read as dollars), percents are plain numbers ("15" is 15%), and the options that are whole numbers -- =preset_id=, =data_source_id=, =recipe_id=, =units=, =buy_sources=, =max_age_hours=, =top=, =organization_id= -- are typed by the CLI. Every other option travels as text for the server to read, and it refuses by name one that neither the scan nor the chosen strategy declares -- the CLI keeps no list of its own, which is how a plugin strategy's own options get through. Options a scan route would quietly ignore or drop are refused instead (exit 2): =venture_id=, =as_of=, =key=, =format= and =calc=. =cover= and =back_lay= leave out an event whose =commence_time= has passed, and say so in a note.
+
+The table numbers its rows, and =arbitrage record N= with the same options records row /N/: the CLI asks the same question, takes that row's key and what narrows the plan to it, and posts them to =/api/v1/arbitrage/record=, which re-runs the scan and performs the =record= action with the plan -- a row the prices have moved away is refused (exit 3, "That opportunity is no longer there"), never recorded from what the terminal showed, and a row past the end is exit 3 too. Pass exactly the options the scan had, or row /N/ is a different row. =arbitrage record KEY= does the same with a key from a JSON scan.
+
+=arbitrage record name=... legs=...=, =close=, =reopen=, =abandon= and =execute= are the =act= verb on =arbitrage_trade= and =arbitrage_leg= under a friendlier name: every argument is typed from the action's own schema, an unknown parameter is refused (exit 2), and =legs=@FILE= (or =expected=@FILE=) reads the value from a file. All five honour =--stage=, as does recording a scan row (=POST /api/v1/arbitrage/record?stage=1=); planning a staged row still promotes the venues and instruments its legs name, because legs must name records, but the trade and its legs wait for approval. =--stage= is refused on =scan=, =calc=, =export= and =registries=, which write nothing.
+
+=arbitrage calc= runs the calculators on the server (=/api/v1/arbitrage/calc=): =surebet= takes every outcome's odds as bare words (or =odds="+150 -120"=; a bare negative American price would read as an option), =back-lay= (or =back_lay=) the back and lay odds, =flip= the buy and sell prices. =--stake= (or =stake==, not both) is the total or back stake; a flip takes none, its capital being the buy price. Unlike a scan's bounds, a calculator reads an amount that names no currency -- =--stake 100=, =fixed==, =transfer==, a flip's prices -- in the install's default currency, so name it. =format= picks the odds format (=auto=, =decimal=, =american=, =fractional=). Stakes are rounded to the currency's minor unit and the answer keeps both readings: a surebet's =payout= is the least of the rounded payouts -- what any result is sure to pay -- and =profit= that less the stakes, while =payout_ideal= and =profit_ideal= are the unrounded figures; a back-lay's =worst= rounds against you and =ideal= does not. Quote the sure figures as what a person gets.
+
+=arbitrage export FORMAT= writes what a registered export format (=csv=, =shopping_list=, or a plugin's, such as the Blizzard plugin's =tsm=) makes of the scan, raw, to stdout or to =-o FILE=; an unknown format is NOT_FOUND (exit 3). =arbitrage registries= lists the strategies, fee models, export formats and scan option names this server has. =--stake= belongs to =arbitrage calc= and =-o= to =arbitrage export= alone; both are refused on every other verb.
+
+** Plugins
+
+=venturectl plugins= (or =plugins list=) prints every plugin the server loaded -- its name, kind, runtime (=native=, =crispy=, =exec= or =declarative=) and what its manifest provides (=data_source_provider=, =automation_handler=). It is owner only, because the answer names paths on the server. "No plugins are loaded." is an answer, not an error. An exec plugin loads only when the operator sets =plugins.allow_exec=; nothing from the command line turns it on. Strategies, fee models and export formats a plugin registers appear in =arbitrage registries=, not here.
+
+** Reports
+
+The market and arbitrage reports run through =report= like every other, with their options after the period: =market_deals= (=data_source_id=, =venue=, =group_key=, =category_path=, =min_value=, =max_pct=, =top=), =venue_index= (=data_source_id=, =group_key=), =watchlist= (=watchlist_id=), =arbitrage_performance= (=group_by=, =strategy=, =venture_id=), =arbitrage_scan= (the scan's options, =strategy= included) and =craft_arbitrage= (=recipe_id=, =units=, =data_source_id=, =buy_venues=, =sell_venues=, =group_key=, =sell_basis=, =max_age_hours=); all of them take =organization_id=. The market reports and the scans read the stores as they are now, so the period does not narrow them. =pnl=, =ventures= and =monthly= count the arbitrage trades a period finished (see [[file:arbitrage.org][Arbitrage]], "In the profit and loss").
+
+#+begin_src sh
+venturectl report market_deals group_key=eu min_value="10.00 GOLD" max_pct=80 top=20
+venturectl report arbitrage_scan strategy=spread organization_id=2 min_roi=15
+venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread
+#+end_src

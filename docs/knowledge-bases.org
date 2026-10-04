@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-03]
-#+updated: [2026-09-03]
-#+version: 0.3.0
+#+updated: [2026-10-04]
+#+version: 0.3.1
 
 * Knowledge bases
 
@@ -109,8 +109,8 @@ it is, this column is what an ANN index would be built from anyway.
 
 * Indexing is synchronous, and bulk work is a command
 
-Coding runs hold the only background thread in VENTURE and are forbidden from
-touching the database: writing a record emits =entity-saved=, whose handler
+No background thread in VENTURE -- a coding run's, the feeds worker, a
+transport task -- may touch the database: writing a record emits =entity-saved=, whose handler
 enters podomation's nested main loop on the default context, and driving that
 from a second thread is a context-ownership failure rather than merely a data
 race.

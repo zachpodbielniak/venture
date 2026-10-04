@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects
 #+created: [2026-08-14]
-#+updated: [2026-09-27]
-#+version: 0.6.0
+#+updated: [2026-10-04]
+#+version: 0.7.0
 
 * VENTURE
 
@@ -23,9 +23,14 @@ A venture does not have to be a business. VENTURE runs ventures of any kind -- b
 - *Sessions.* Time-boxed runs of effort -- a farming route, a market day, a shift -- with what they yielded, posted into stock and into the location's holding once, and what an hour of each kind is worth. See [[file:docs/sessions.org][sessions]].
 - *Goals.* Measurable targets with ordered steps, progress from the start, a forecast, and the shopping list for the recipe steps still ahead. See [[file:docs/goals.org][goals]].
 - *Aggregate anything.* Sum, average or count any field of any record type, grouped and bucketed, money per currency; dashboards gain =sum= and =progress= widgets over the same arithmetic. See [[file:docs/reporting.org][reporting]].
+- *Market data feeds.* A =data_source= names a provider -- an HTTP JSON API, a CSV or JSON-lines file, a program, or one a plugin adds (Battle.net's auction houses, the-odds-api's bookmakers, a supplier's price list ship as reference plugins) -- and a worker thread fetches it on a schedule it learns from the far end, behind an origin allowlist, a budget, deadlines and byte caps, with credentials sealed and redacted. Off until switched on. See [[file:docs/market-data.org][market data]].
+- *A series store per source.* Everything a source returns is kept, outside the main database, in one SQLite file per source: the latest row per venue and instrument with its regional median and deal price precomputed, hourly and daily history, odds, sale estimates from vanished listings, retention and a size cap, and a copy with every installation backup. See [[file:docs/market-data.org][market data]].
+- *Trading pages.* Browse, deals, venues, watchlists and alerts over that store, each instrument with server-drawn charts, a weekday-by-hour heat map, bulk pricing and the other venues; alert rules that fire into the inbox, webhooks and automations; a price oracle that =recipe_margin= and =goal_materials= can price from (=series:market_14d@group=) and that never converts a currency. See [[file:docs/market-data.org][market data]].
+- *Arbitrage.* A scan across venues for flips, deals below a reference, craft arbitrage over a recipe's inputs, surebets and back/lay pairs, net of each venue's fee model, with odds and flip calculators; then trades whose legs post to the ledger, move stock at FIFO cost and close per currency into arbitrage gains, which the profit and loss counts. Worked examples cover a game's cross-realm flip, crafting, dropshipping and a surebet. See [[file:docs/arbitrage.org][arbitrage]].
+- *Plugins in any runtime.* A native =.so=, a crispy =.c= compiled on demand, a declarative =.yaml= type, or -- when the operator allows it -- any program beside a =*.plugin.yaml= manifest, spoken to in a versioned JSON-lines protocol with an argv array, a cleared environment and secrets on stdin only. Plugins register providers, fee models, strategies, export formats, automation handlers, events, pages and sidebar rows. See [[file:docs/plugins.org][plugins]].
 - *Declarative venture types, enforced.* A YAML file adds the fields a kind of venture carries -- =virtual_economy= and =general= ship beside =books=, =etsy= and =newsletter= -- and its =required=, =choices= and bounds are held at the save for every writer. See [[file:docs/extending.org][extending]].
 
-[[file:docs/examples/game-economy.org][The game-economy walkthrough]] models an auction-house trade inside an online game with nothing but these features.
+[[file:docs/examples/game-economy.org][The game-economy walkthrough]] models an auction-house trade inside an online game with nothing but these features, and =make demo= seeds it -- with six realms of generated auction-house data, a dropshipping venture, a bookmakers' feed and five arbitrage trades through the books -- so every page above has something on it.
 
 ** Two binaries
 
@@ -113,11 +118,7 @@ Adding a record type in C is a field table and a registration, and it becomes
 a table, a REST resource, a web view, AI tools and CLI subcommands at once.
 See [[file:docs/data-model.org][the data model]].
 
-There are four ways in, in increasing order of power: a YAML venture type
-(no code), a podomation rule (a DSL), a crispy =.c= script compiled on
-demand, and a native =.so= plugin. All four are loaded by
-=VenturePluginManager= from the same configured directories. See
-[[file:docs/extending.org][extending]].
+There are five ways in, in increasing order of power: a YAML venture type (no code), a podomation rule (a DSL), an exec plugin (any program, spoken to in JSON lines, off unless =plugins.allow_exec= is on), a crispy =.c= script compiled on demand, and a native =.so= plugin. Every plugin is loaded by =VenturePluginManager= from the same configured directories, through a runtime a plugin can add to. See [[file:docs/extending.org][extending]] for the tour and [[file:docs/plugins.org][plugins]] for the loader, the manifest, the protocol and a tutorial that writes a market data provider in each runtime.
 
 *** Everything is a module, and every module is a switch
 
@@ -267,7 +268,12 @@ src/
   report/              reporting engine
   ai/                  provider wiring, tools, sessions, confirmations
   automation/          embedded podomation engine
-  plugin/              plugin host
+  plugin/              plugin host: runtimes, manifests, exec, JSON lines
+  series/              the per-source series store and its math
+  feeds/               data sources, providers, the series worker thread
+  marketdata/          venues, instruments, watchlists, alerts, the
+                       price oracle and the Trading pages
+  arbitrage/           the scan, fee models, calculators, trades and legs
   web/                 REST API and HTMX UI
   util/                JSON, string and time helpers
   cli/                 venturectl
@@ -276,7 +282,13 @@ modules/               out-of-process podomation modules; the `venture`
                        needs the context
 plugins/example/       a worked native plugin, built by `make plugins`
 plugins/scripts/       worked crispy plugins, never built -- the server
-                       compiles them on demand
+                       compiles them on demand (odds-api.c: bookmakers'
+                       odds as a data source)
+plugins/exec/          exec plugins: a manifest and a program
+                       (supplier-csv: a price list as a data source)
+plugins/blizzard-auctions/
+                       Battle.net auction houses, a native plugin built
+                       into plugins-optional/, loaded only when asked
 data/venture-types/    declarative venture type definitions
 docs/                  org-mode documentation
 tests/                 GTest suite
@@ -302,8 +314,7 @@ Working and covered by tests:
 - the AI service, its tools and the write-confirmation policy
 - =venturectl=, including =venturectl mcp= — a stdio MCP server whose tool
   surface is generated from the schema, tested entirely against fixtures
-- =VenturePluginManager= and all four extension mechanisms: native =.so=
-  plugins, crispy =.c= scripts, podomation rules and YAML venture types
+- =VenturePluginManager= and every extension mechanism: native =.so= plugins, crispy =.c= scripts, exec plugins behind =plugins.allow_exec=, podomation rules and YAML venture types, behind runtimes a plugin can add to, with manifests, a provides registry, plugin automation handlers and events, and plugin pages and sidebar rows
 - =VentureAutomation=: the embedded podomation engine, VENTURE's =venture=
   pod module and its record-change events
 - a relational CRM: companies, contacts, deals, interactions, and a detail
@@ -340,7 +351,7 @@ Working and covered by tests:
   pick up via a change signal, no restart
 - users, roles, password changes and session invalidation on sign-out
 - a container image and two compose files
-- modules: fifteen built in, switched from the configuration, the
+- modules: eighty-one built in (=venture --list-modules=), switched from the configuration, the
   environment or the command line, with dependencies resolved and refused
   at startup; a Modules page, =/api/v1/modules=, =venturectl modules= and
   =venture --list-modules=; plugin modules through
@@ -352,6 +363,8 @@ Working and covered by tests:
   deployments and incidents; CI runs and forge releases ingested through
   the webhook; changelogs drafted from tickets and releases published to the
   forge; the =releases=, =lead_time= and =incidents= reports
+- market data: data sources and their runs, built-in and plugin providers, a worker thread with adaptive polling, a per-source SQLite series store with retention and backup copies, venues, instruments, watchlists, alert rules and hits, the price oracle, the Trading pages with SVG charts, and the =market_deals=, =venue_index= and =watchlist= reports
+- arbitrage: fee models, five scan strategies, presets, export formats, odds and flip calculators, trades and legs posted through the ledger's posting-on-save registry, close/reopen/abandon per currency, and the =arbitrage_scan=, =craft_arbitrage= and =arbitrage_performance= reports
 
 Known limits, as opposed to missing pieces:
 

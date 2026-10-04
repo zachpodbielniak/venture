@@ -4,13 +4,13 @@
 #+categories: projects docs
 #+created: [2026-10-04]
 #+updated: [2026-10-04]
-#+version: 0.1.0
+#+version: 0.1.1
 
 * What this is
 
 When two bookmakers disagree enough about a match, backing every outcome -- each where its odds are best -- returns more than the stakes whichever way it goes: the inverse odds add up to less than one. This page is the one =make demo= seeds into its default organization (=seed_trading_desk= in =tools/venture-demo.sh=): a tennis match priced by Northbet and Pinehill Sports, a hundred dollars split the way the calculator splits it, the winner paid, the trade closed.
 
-The rules are in [[file:../arbitrage.org::*Surebet][Arbitrage: surebet]]. For live odds the source is the =odds-api= plugin ([[file:odds-api-feed.org][bookmakers' odds from the-odds-api]]); the generated file below has the same shape.
+The rules are in [[file:../arbitrage.org][Arbitrage]] -- [[file:../arbitrage.org::*=cover=][the cover strategy]], [[file:../arbitrage.org::*Surebet][the surebet arithmetic]] and [[file:../arbitrage.org::*Calculators][the calculators]] in particular -- and the odds are quotes in a series store, described in [[file:../market-data.org][Market data]]. For live odds the source is the =odds_api= provider of the crispy plugin =plugins/scripts/odds-api.c= ([[file:odds-api-feed.org][bookmakers' odds from the-odds-api]]); the generated file below has the same shape.
 
 * The odds
 
@@ -22,7 +22,7 @@ The rules are in [[file:../arbitrage.org::*Surebet][Arbitrage: surebet]]. For li
 {"type":"quote","venue":"northbet","instrument":"evt-varga-okafor:varga","odds":"2.10","format":"decimal","side":"back","taken_at":"..."}
 #+end_example
 
-Two matches. Varga v Okafor was played two days before the demo's anchor: an hour before it, Northbet had Varga at 2.10 and Pinehill had Okafor at 2.15. Lindqvist v Moreau is tomorrow, quoted three hours ago and now, with Lindqvist 1.80 at Northbet against Moreau 2.40 at Pinehill.
+Two matches, each event naming its start as =commence_time=. Varga v Okafor started 47 hours before the demo's anchor; its last quotes, taken 51 hours before it, had Varga at 2.10 at Northbet and Okafor at 2.15 at Pinehill. Lindqvist v Moreau starts 26 hours after the anchor, quoted three hours before it and at it, the newest with Lindqvist 1.80 at Northbet against Moreau 2.40 at Pinehill.
 
 #+begin_src sh
 ODDS=$(new data_source name="Bookmaker odds" provider=file_jsonl schedule=manual currency=USD \
@@ -35,10 +35,13 @@ venturectl feeds sync $ODDS --wait
 * The scan
 
 #+begin_src sh
+venturectl arbitrage scan cover total_stake="100.00 USD"
 venturectl arbitrage scan cover total_stake="100.00 USD" max_age_hours=6
 #+end_src
 
-=cover= takes each event with quotes, the best back odds for every outcome across the books, and the stakes that make every result pay the same. An event whose =commence_time= has passed is left out, and a note says so: Varga v Okafor, the match the trade below settled, started two days ago, and its last quotes -- 6.23 on a hundred (1/2.10 + 1/2.15 = 0.941) -- are a surebet nobody can take any more, because books stop moving a finished match's odds. What is left is Lindqvist v Moreau, tomorrow, 2.85 on a hundred (1/1.80 + 1/2.40 = 0.972). =max_age_hours=6= is about staleness rather than finished matches: odds move, and a six-hour-old price is not one to stake a hundred dollars at; the demo's "Surebets" preset and the Trading desk dashboard's widget carry it. It is also the only guard for an event whose feed names no start time.
+=cover= takes each event with quotes, the best back odds for every outcome across the books, and the stakes that make every result pay the same. An event whose =commence_time= has passed is left out, and a note says so ("1 event that had already started ... was left out"): Varga v Okafor, the match the trade below settled, started two days ago, and its last quotes -- 6.23 on a hundred (1/2.10 + 1/2.15 = 0.941) -- are a surebet nobody can take any more, because books stop moving a finished match's odds. What is left is Lindqvist v Moreau, tomorrow: 57.14 on Lindqvist and 42.86 on Moreau pay at least 102.85, a =net= of 2.85 on a hundred (1/1.80 + 1/2.40 = 0.972), with an =ideal_profit= of 2.86 beside it.
+
+=max_age_hours=6= is about staleness rather than finished matches: odds move, and a six-hour-old price is not one to stake a hundred dollars at; the demo's "Surebets" preset and the Trading desk dashboard's widget carry it. With it, events quoted only before the six hours are not even listed, so the second command answers the same row without the note about Varga. It is also the only guard for an event whose feed names no start time -- the scan keeps such an event and its notes count how many it kept.
 
 #+begin_src sh
 new arbitrage_strategy name="Surebets" strategy=cover data_source_id=$ODDS \
@@ -62,9 +65,10 @@ venturectl update venue $NORTHBET fee_model=none location_id=$NORTH_WALLET
 venturectl update venue $PINEHILL fee_model=none location_id=$PINE_WALLET
 #+end_src
 
-Funding them is an ordinary journal from the bank -- sixty dollars each, a hundred hours before the anchor:
+Funding them is an ordinary journal from the bank -- sixty dollars each, a hundred hours before the anchor (2026-09-30 05:00 in the run the dates below come from):
 
 #+begin_src sh
+HOME_ORG=$(venturectl -f json list organization is_default=true | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
 CASH=$(venturectl -f json list account code=1000 organization_id=$HOME_ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
 JOURNAL=$(new journal memo="Deposits at Northbet and Pinehill" state=draft occurred_at=2026-09-30T05:00:00Z \
     currency=USD source_type=organization source_id=$HOME_ORG)
@@ -87,7 +91,7 @@ venturectl arbitrage calc surebet 2.10 2.15 --stake "100.00 USD"
 | Varga at Northbet  | 2.10 | 50.59 USD | 106.23 USD |
 | Okafor at Pinehill | 2.15 | 49.41 USD | 106.23 USD |
 
-Stakes are rounded to the cent and each payout down to the cent, so the calculator's =payout= is 106.23 -- the least any result pays -- and its =profit= 6.23; the unrounded figures are beside them as =payout_ideal= (106.24) and =profit_ideal= (6.24), never in their place. The demo reads the split from this command rather than typing it.
+Stakes are rounded to the cent and each payout down to the cent, so the calculator's =payout= is 106.23 -- the least any result pays -- and its =profit= 6.23; the unrounded figures are beside them as =payout_ideal= (106.24) and =profit_ideal= (6.24), never in their place. =staked= is 100.00 and =residual= nothing: here the rounding took no cent from the stake. The demo reads the split from this command (=surebet_split= in =tools/venture-demo.sh=, with =-f json=) rather than typing it, and records the trade's expected profit as the sure 6.23.
 
 * The trade
 
@@ -118,11 +122,12 @@ Promoting an outcome promotes its event first, so the records keep the store's p
 | payout            | Dr Northbet balance 106.23 / Cr positions 106.23              |
 | close             | Dr positions 6.23 / Cr Arbitrage gains 6.23                   |
 
-The wallets end on 115.64 at Northbet and 10.59 at Pinehill; the losing stake is simply gone, which is what a surebet costs on one side and earns on the other. =report holdings= shows both, =report arbitrage_performance= the trade (realised 6.23 on 100.00 of capital, 6.23%), and =report income_statement= the gain.
+The wallets end on 115.64 at Northbet and 10.59 at Pinehill; the losing stake is simply gone, which is what a surebet costs on one side and earns on the other. =report holdings= shows both, =report arbitrage_performance= the trade (realised 6.23 on 100.00 of capital, 6.23%), =report income_statement= the gain, and =report pnl= its /Arbitrage gains/ and /Arbitrage result/ lines beside [[file:arbitrage-dropshipping.org][the dropship order]]'s, added to the month's profit.
 
 * Traps
 
-- *Odds have no currency; stakes do.* A =cover= scan needs =total_stake= with its currency, and a quote's odds are never converted.
+- *Odds have no currency; stakes do.* A =cover= scan takes =total_stake= with its currency (without one it stakes 100 in the bookmakers' currency, else the book currency), a bookmaker whose venue names another currency is passed over, and a quote's odds are never converted.
+- *Quote the sure figure, not the ideal one.* =payout= and =profit= are what the rounded stakes return; =payout_ideal= and =profit_ideal= are a cent of arithmetic no bookmaker pays.
 - *A finished match is still quoted.* The scan leaves out an event whose =commence_time= is past; a feed that names no start time leaves only =max_age_hours= to keep a played match from reading as an opportunity, and the scan's notes count such events.
 - *Fund the wallet before the stake.* A wallet is a holding; a stake dated before the deposit is refused, however much is there today.
 - *Record the losing stake too.* The trade's result is every stake against the payout; leaving the loser out books a profit that never happened.

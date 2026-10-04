@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-15]
-#+updated: [2026-10-03]
-#+version: 0.2.0
+#+updated: [2026-10-04]
+#+version: 0.3.0
 
 * Automation
 
@@ -85,6 +85,7 @@ source module".
 | =report_packs_run=  | Deliver the report packs that are due           |
 | =dunning_sweep=     | Send the overdue-invoice reminders              |
 | =backups_run=       | Take the backups that are due                   |
+| =feeds_sync=        | Queue a market data source's sync (=feeds=)     |
 
 ** One registry, built-ins first
 
@@ -120,16 +121,46 @@ program runs, bounded by its manifest's =timeout=.
 ** A plugin's events
 
 #+begin_src
-pod feeds = venture->new();
-feeds->feed_finished => log->write_info("{event->source}: {event->rows} rows");
+pod stock = venture->new();
+stock->price_list_loaded => log->write_info("{event->supplier}: {event->rows} rows");
 #+end_src
 
-A plugin registers =feed_finished= and raises it with
-=venture_automation_emit(context, "feed_finished", data, &error)=, where
+A plugin registers =price_list_loaded= with =venture_automation_handler_registry_add_event()= and raises it with
+=venture_automation_emit(context, "price_list_loaded", data, &error)=, where
 =data= is an =a{sv}= a rule reads as =\{event->member\}=. An unregistered
 event is refused, automation on or off, so a typo surfaces the first time;
 the record events are refused, because only the database may say a record
 was written. With automation off the emit succeeds and nothing happens.
+
+A built-in module registers its events the same way; the feeds module's are next.
+
+** Market data events
+
+The feeds module (see [[file:market-data.org::*Feeds][Market data: feeds]]) adds one handler and two events to the registry, right after the built-ins, whether or not =feeds.enabled= is on -- a registry that changed with the switch would make a rule load or not depending on the day's configuration. A build without SQLite has no feeds at all and registers none of the three.
+
+- =feeds_sync("ID")= queues a sync of data source =ID= and returns at once with =count= 1 and =summary= =queued=: a rule never waits on somebody else's server. The run that follows is recorded with trigger =automation=. The argument is the source's id as text, as the DSL passes every argument; anything else is refused. With the feeds module off it fails with "Market data feeds are off (feeds.enabled)".
+- =feed_synced= is raised after every run that did not fail -- status =ok=, =partial= or =deferred= (a quota window that was spent; nothing went wrong, the source simply waits).
+- =feed_failed= is raised after a run whose status is =failed=.
+
+Both events carry the same members, read in a rule as =\{event->member\}=:
+
+| Member            | Type    | What it is                                                                 |
+|-------------------+---------+----------------------------------------------------------------------------|
+| =data_source_id=  | integer | the source that ran                                                        |
+| =run_id=          | integer | the =data_source_run= record written for it; 0 when it could not be written (its source was deleted mid-run) |
+| =organization_id= | integer | the source's organization                                                  |
+| =status=          | text    | =ok=, =partial=, =deferred= or =failed=                                    |
+| =rows=            | integer | rows the run wrote to the series store                                     |
+| =error=           | text    | why the run failed or stopped short; empty when it did not                 |
+
+They are raised once per run, after the run record and the records it carried are written and before the hooks (alerts among them) run, from the main thread and outside any transaction. A run is not a record change the rule would otherwise see -- =data_source_run= is written as the system, and its =on_created= also fires -- but the event names the outcome directly, so a rule does not need to read the run back:
+
+#+begin_src
+pod feeds = venture->new();
+feeds->feed_failed => ntfy->publish("trading", "Source {event->data_source_id} failed: {event->error}", "Feed failed");
+#+end_src
+
+A failed run is also visible on =/feeds= and from =venturectl feeds runs ID=, so the event is for being told, not for finding out.
 
 * Worked examples
 

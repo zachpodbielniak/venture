@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-10-03]
-#+version: 0.2.0
+#+updated: [2026-10-04]
+#+version: 0.2.1
 
 * Stock that becomes other stock
 
@@ -253,6 +253,8 @@ with the market off is refused rather than ignored. The =priced_by= column
 says which.
 
 *Pricing from market data.* A =price_source= of the form =series:<basis>[@<venue or group>]= -- =series:min@argent-dawn=, =series:region_median@eu=, =series:market_14d= -- is not an observation source: it is parsed first, and asks the price oracle for each product through the instruments that name it (see [[file:market-data.org][Market data]], "The price oracle"). The basis is a price basis (=min=, =market=, =market_14d=, =historical_60d=, =region_median=, =region_p33=, =region_market_avg=, =sale_avg=); the figure is as of =as_of=, strictly in the =currency= option's currency when one is named and otherwise preferring the book currency, and never converted. The never-fall-back rule holds here too: a product no instrument prices is named in the note and its figures left blank, even when an observation of it exists. It needs the marketdata and feeds modules (in a build with SQLite); without them the report is refused, naming what is off.
+
+*Where to buy, not what it costs.* =recipe_margin= prices every component on one basis at one place. Which venue each input is cheapest at, after fees, transfer costs and the depth of each venue's book, is a different question, and the arbitrage module answers it: its =transform= strategy and the =craft_arbitrage= report walk every allowed venue for each input and price the output where it sells best, treating a reusable component as bought once exactly as =goal_materials= does. See [[file:arbitrage.org::*=transform=][Arbitrage: transform]] and [[file:examples/arbitrage-crafting.org][the crafting walkthrough]].
 
 | Column          | What                                                                     |
 |-----------------+--------------------------------------------------------------------------|

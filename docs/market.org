@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-10-03]
-#+version: 0.2.0
+#+updated: [2026-10-04]
+#+version: 0.3.0
 
 * What a sale record cannot tell you
 
@@ -162,6 +162,29 @@ the price source), =GET /api/v1/reports/<name>?currency=…=, =venturectl
 report … currency=TICKET=, and the assistant's and MCP's =venture_report=
 tool. It picks observations only; recorded costs (the market module off)
 are what they are.
+
+** Prices from market data feeds: =series:=
+
+Observations are typed in, or imported, one price at a time. A market watched by a data source -- an auction house polled every hour, a supplier's price list, a bookmaker's odds -- is too much for that, and lives in a series store instead (see [[file:market-data.org][Market data]]); its venues and instruments are records of the =marketdata= module, and an instrument names the product it is (=instrument.product_id=). The two meet in a valuing report's =price_source=, which is read in two ways:
+
+#+begin_example
+market value                       an observation source, matched exactly
+series:min                         the cheapest current listing, across venues
+series:min@thornmere               ... at the venue whose key is thornmere
+series:region_median@evermoor-eu   the median of that group's venues' cheapest
+series:market_14d                  the 14-day weighted market value (the store's only group)
+#+end_example
+
+=series:<basis>[@<venue key or group>]= asks the price oracle, through every instrument that names the product, for a /price/ basis: =min=, =market=, =market_14d=, =historical_60d=, =region_median=, =region_p33=, =region_market_avg= or =sale_avg=. The other three bases -- =sale_rate=, =sold_per_day=, =quantity= -- are numbers, not prices, and are refused ("a number, not a price"); so are an empty basis and an empty place after =@=. Everything that does not start with =series:= is an observation source, as it always was, which is why the prefix is reserved here and an observation may not be saved with it.
+
+Which reports take it, and the rule they keep:
+
+- =recipe_margin= ([[file:production.org][Production]]) and =goal_materials= ([[file:goals.org][Goals]]) parse =price_source= first and price through =venture_marketdata_oracle_source_price()=, the one function both call so they cannot price a component differently.
+- *It never falls back.* A product no instrument prices is named in the report's note and its figures left blank, even when an observation of it exists. Mixing the two silently would make a margin half feed and half hand-typed with nothing saying which half.
+- *It never converts.* With the report's =currency= option the figure must be in that currency; without it the book currency is preferred wherever the product was seen in it. A price in any other currency is no answer.
+- *It needs the feeds.* The =marketdata= and =feeds= modules must be on, in a build with SQLite; without them the report is refused, naming what is off, rather than reading every product as unpriced.
+
+=listing_performance= and =price_history= read records only and do not take the grammar. The oracle itself, its bases and its time rules are in [[file:market-data.org::*The price oracle][Market data: the price oracle]]; the grammar's exact refusals in [[file:market-data.org::*Price sources: the =series:= grammar][Market data: price sources]].
 
 * Listings
 

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-18]
-#+updated: [2026-10-03]
-#+version: 0.7.0
+#+updated: [2026-10-04]
+#+version: 0.7.1
 
 * What this is
 
@@ -16,7 +16,7 @@ This is grouping and labels only. Every page keeps its URL; nothing is moved or 
 
 * The section map
 
-Nine areas after the overview. Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
+Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds a row (below). Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
 
 | Area      | Part              | Pages                                                                                                                                              |
 |-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -38,7 +38,7 @@ Every page is named once. Only the overview (Dashboard, Dashboards, Reports) kee
 
 The link table (=venture_web_navigation()=) is unchanged and stays in the order it was written -- its URLs, labels, icons, module gates and the heading each row carries. The questions are a second table over it, =venture_web_navigation_sections()=: each section is a heading and the paths it gathers, in the order they are drawn. Drawing the sidebar walks the link table once; a row a section has claimed is drawn under its question rather than in place, and the questions are drawn together after the first heading. Each heading after the first is a =details.nav-group= whose summary keeps the =nav-section= class, so it is styled like the heading that does not fold.
 
-Trading holds outside prices and what is done with them: the browse, deal, venue, watchlist and alert pages (=/market/...=, see [[file:market-data.org][Market data]]), then the =arbitrage= module's pages -- /Arbitrage/ (=/arbitrage=, the scan), /Calculators/ (=/arbitrage/calc=) and /Trades/ (=/e/arbitrage_trade=), see [[file:arbitrage.org][Arbitrage]] -- then the feeds themselves. The market pages are gated on the =marketdata= module, which is on by default, so the heading shows on a fresh install; with feeds off they say there are no data sources rather than vanish, because watchlists and alert rules are records worth reaching either way. The /Market data/ row (=/feeds=) is gated on the =feeds= module and appears only when feeds are on. An instrument's own page (=/market/i/SOURCE/KEY=) has no row: it is reached from the others, and it marks Browse as the page you are on.
+Trading holds outside prices and what is done with them: the browse, deal, venue, watchlist and alert pages (=/market/...=, see [[file:market-data.org][Market data]]), then the =arbitrage= module's pages -- /Arbitrage/ (=/arbitrage=, the scan), /Calculators/ (=/arbitrage/calc=) and /Trades/ (=/e/arbitrage_trade=), see [[file:arbitrage.org][Arbitrage]] -- then the feeds themselves -- in that order (=venture_web_nav_trading[]=): Browse, Deals, Venues, Watchlists, Alerts, Arbitrage, Calculators, Trades, Market data. The heading sits between Operations and Build. The market pages are gated on the =marketdata= module, which is on by default, so the heading shows on a fresh install; with feeds off they say there are no data sources rather than vanish, because watchlists and alert rules are records worth reaching either way. The /Market data/ row (=/feeds=) is gated on the =feeds= module and appears only when feeds are on. The three arbitrage rows are gated on the =arbitrage= module (on by default too). An instrument's own page (=/market/i/SOURCE/KEY=) has no row: it is reached from the others, and it marks Browse as the page you are on. Export (=/arbitrage/export=) and recording (=/arbitrage/record=) are reached from the scan and have no row either.
 
 A section's heading follows the first of its rows actually shown, the same rule as before, so a question every one of whose modules is off leaves no heading over nothing. The command palette (Ctrl+K) and the assistant's page context read the link table directly and are unaffected.
 

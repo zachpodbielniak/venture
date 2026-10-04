@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-10-03]
-#+version: 0.2.0
+#+updated: [2026-10-04]
+#+version: 0.2.1
 
 * A number, where it started, and where it should end
 
@@ -279,7 +279,7 @@ number in one bill without saying which, the rule =recipe_margin= keeps.
 With market off, the recorded cost: the first stock item's =unit_cost=,
 else the product's =cost=. =price_source= with market off is refused.
 
-*Prices from market data.* A =price_source= of the form =series:<basis>[@<venue or group>]= asks the price oracle instead, through the instruments that name each product, as =recipe_margin= does with the same function (=venture_marketdata_oracle_source_price()=), so the two cannot price a component differently. Nothing falls back to an observation. It needs the marketdata and feeds modules; see [[file:market-data.org][Market data]], "Price sources".
+*Prices from market data.* A =price_source= of the form =series:<basis>[@<venue or group>]= asks the price oracle instead, through the instruments that name each product, as =recipe_margin= does with the same function (=venture_marketdata_oracle_source_price()=), so the two cannot price a component differently. Nothing falls back to an observation. It needs the marketdata and feeds modules in a build with SQLite; without them the report is refused, naming what is off, rather than reading every product as unpriced. See [[file:market-data.org::*Price sources: the =series:= grammar][Market data: price sources]] and [[file:market.org::*Prices from market data feeds: =series:=][Market: prices from market data feeds]]. The shopping list's cheapest venue per input, after fees and transfer costs, is the arbitrage module's =craft_arbitrage= report ([[file:arbitrage.org][Arbitrage]]).
 
 *Totals, per currency.* One total row per currency, never a sum across
 them: herbs in gold and vials in dollars are two totals. A product with

@@ -1,4 +1,10 @@
 #+title: Transactional mail
+#+description: The durable SMTP outbox, templates, delivery semantics and inbound IMAP sync onto contact timelines
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-13]
+#+updated: [2026-10-04]
+#+version: 0.1.1
 
 * Delivery semantics
 
@@ -340,8 +346,8 @@ title. A file written for a message whose transaction rolls back is deleted.
 
 *** Budgets, deadline and lease
 
-The sweep runs on the main loop (see AGENTS.md: the only background thread
-belongs to coding runs), so every call is bounded:
+The sweep runs on the main loop (see AGENTS.md: no background thread may
+touch the database), so every call is bounded:
 
 - A message budget, =message-budget= on the service (default 200). A sync
   or a sweep stops when it is spent and reports =deferred=; the cursors

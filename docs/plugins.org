@@ -1,14 +1,45 @@
 #+title: Plugins: runtimes, manifests and exec
-#+description: How VENTURE loads plugins, the manifest format, the exec runtime, the JSON-lines protocol and the security model
+#+description: How VENTURE loads plugins, the manifest format, the exec runtime, the JSON-lines protocol, the security model, the reference plugins and a tutorial for writing a data source plugin in each runtime
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
-#+updated: [2026-10-03]
-#+version: 0.2.0
+#+updated: [2026-10-04]
+#+version: 0.3.0
 
 * Plugins
 
-This page is the reference for how a plugin is loaded. [[file:extending.org][Extending VENTURE]] is the tour: what a plugin can register and why everything it registers behaves like a built-in. Read that first if you are writing your first plugin; come here for the loader's rules, the manifest format, exec plugins and the protocol they speak.
+This page is the reference for how a plugin is loaded. [[file:extending.org][Extending VENTURE]] is the tour: what a plugin can register and why everything it registers behaves like a built-in. Read that first if you are writing your first plugin; come here for the loader's rules, the manifest format, exec plugins and the protocol they speak. If what you want is market data from somewhere VENTURE does not reach yet, skip to [[*Writing a data source plugin][Writing a data source plugin]]: it builds the same provider three ways, one per runtime, end to end.
+
+** How it fits together
+
+A plugin is loaded once, at startup, by a runtime; what it does after that it does by registering into the registries that hang off the =VentureContext=. Nothing in the server asks "is this a plugin?" afterwards: a provider, a fee model or an automation handler a plugin registered is looked up by name exactly like a built-in one, which is why a plugin can never replace a built-in (a name is registered once) and why everything a plugin adds is reached through every door the built-ins are.
+
+#+begin_src text
+ plugin directories (VENTURE_PLUGINDIR, VENTURE_PLUGIN_PATH, plugins.paths)
+   |  scanned in sorted order, one level into a plugin's own directory
+   v
+ VenturePluginManager ---- held files wait for a runtime that claims them
+   |  picks a runtime by manifest `runtime:` or by file extension
+   v
+ runtimes:  native (.so)   crispy (.c)   declarative (.yaml)   exec (manifest + program)
+   |            \              /               |                     |
+   |     venture_plugin_register(context)      |          `provides:` entries, handed to
+   |            |                              |          the kind's handler (exec only)
+   v            v                              v                     v
+ registries on the VentureContext
+   record types and modules ........ data-model.org, modules.org
+   venture types (declarative) ..... extending.org
+   reports, widget kinds ........... reporting.org, dashboards.org
+   automation handlers and events .. automation.org
+   web extensions, sidebar rows .... extending.org
+   ledger posting sources .......... ledger.org
+   data source providers ........... market-data.org   (feeds: data in)
+   fee models, strategies,
+   export formats .................. arbitrage.org     (arbitrage: data out)
+   plugin runtimes ................. this page
+#+end_src
+
+The market data path is where plugins matter most, and the one this page carries worked examples for: a *data source provider* fetches prices from somewhere -- an auction house API, a bookmaker, a supplier's CSV -- on the feeds worker's behalf ([[file:market-data.org][Market data]]); the series store keeps what it returns; the arbitrage scan reads it, prices fees through the *fee models* plugins and built-ins registered, and hands opportunities to the *export formats* ([[file:arbitrage.org][Arbitrage]]). One plugin can contribute to every stage: =plugins/blizzard-auctions/= registers a provider, a fee model, an export format and a record action.
 
 ** The short version
 
@@ -218,12 +249,12 @@ protocol: 1
 entry: fetch.sh
 provides:
   - kind: data_source_provider
-    name: supplier_prices
-    label: Supplier price list
+    name: supplier_csv
+    label: Supplier price list (CSV)
     command: fetch
 #+end_src
 
-A =data_source= with =provider: supplier_prices= then runs the program once per unit. The request's =params= carry =unit=, =cursor= (where the unit's last fetch said to resume, from a =cursor= message), =if_modified_since= (an ISO time, when the unit has one) and =source= (the data source's settings); its =secrets= are the source's sealed credentials. The program answers with venues, instruments, snapshots, listings, figures, quotes, entries and records; an =error= after some data makes the unit partial, keeping what came before it.
+A =data_source= with =provider: supplier_csv= then runs the program once per unit. The request's =params= carry =unit=, =cursor= (where the unit's last fetch said to resume, from a =cursor= message), =if_modified_since= (an ISO time, when the unit has one) and =source= (the data source's settings); its =secrets= are the source's sealed credentials -- an exec provider's settings schema has exactly one credential slot, =token=, set on the source's credentials page and handed over as =secrets.token=. The program answers with venues, instruments, snapshots, listings, figures, quotes, entries and records; an =error= after some data makes the unit partial, keeping what came before it.
 
 - Accepted whether or not the feeds module is on, so turning feeds on needs no reload; nothing runs while it is off.
 - The program is frozen with the source on the main thread, with =plugins.allow_exec= as it is then; switching exec off refreezes every source, and the next run is a failure saying so.
@@ -333,15 +364,18 @@ One JSON object per line, UTF-8, each naming its =type=. An exec plugin writes t
 
 ** General rules
 
-- *One object per line.* Lines end with =\n=; a =\r= before it is dropped. Blank lines are skipped. A last line without a newline is read.
+- *One object per line.* Lines end with =\n=; a =\r= before it is dropped. Blank lines, and lines of nothing but whitespace, are skipped. A last line without a newline is read.
+- *Each line is one JSON object.* An array, a bare string, invalid JSON or a line with a NUL byte in it is refused.
 - *=type= is required*, a string, matched exactly and case-sensitively. An unknown type is refused: the vocabulary below is the whole of protocol 1.
-- *Unknown members are ignored*, so a later revision can add optional members without breaking an older reader. =null= is read as absent everywhere.
-- *Money and odds are decimal strings, never JSON numbers*: ="12.50"=, not =12.5=. A JSON number is a double on the way in, and money is never a double. The grammar is digits, optionally a point and more digits, optionally a leading minus where a member allows one; no exponent, no leading plus, no bare point, at most 40 bytes. A price is interpreted in the message's =currency=, else the venue's, else the source's; converting to minor units is the consumer's job, at that currency's exponent.
-- *Counts are JSON integers.* =2.5= units is refused, not truncated.
+- *Unknown members are ignored*, so a later revision can add optional members without breaking an older reader. =null= is read as absent everywhere, because a serialiser with no value for an optional field writes =null=.
+- *Required strings must not be empty.* A string member of the wrong shape (a number where a string belongs) is refused, not coerced.
+- *Money is a decimal string, never a JSON number*: ="12.50"=, not =12.5=, and not even =12=. A JSON number is a double on the way in, and money is never a double. The grammar is at least one digit, then optionally a point and at least one more digit: no exponent, no sign (no member of protocol 1 takes a negative amount), no bare point (=.5=, =5.=), at most 40 bytes. A price is interpreted in the message's =currency=, else its venue's (from a =venue= message earlier in the same stream), else the data source's; converting to minor units is the consumer's job, at that currency's exponent, and an amount with more places than the exponent is refused rather than rounded.
+- *Odds are strings too*, in the quote's =format=: decimal (the default) is a decimal greater than 1; American is digits with an optional sign and a magnitude of at least 100 (=+150=, =-200=, =150=); fractional is two positive whole numbers, =5/2=.
+- *Counts are JSON integers.* =2.5= units is refused, not truncated, and so is ="3"=.
 - *Times are ISO 8601 with a zone*: ="2026-10-03T12:00:00Z"= or ="2026-10-03T14:00:00+02:00"=. A time with no zone means whatever the reader's clock means, and is refused.
-- *Currencies* match =[A-Za-z][A-Za-z0-9_]{1,14}= (VENTURE's currency grammar: =GOLD= and =TICKET= are fine).
-- *Lengths are bounded*: keys and names 512 bytes, free text 16 KiB, a whole line the reader's cap (an exec run uses =max_output=).
-- *The first line that breaks a rule fails the run.* The error names the line number, the type and the member, and never quotes the line, which may carry anything.
+- *Currencies* match VENTURE's currency grammar, a letter then one to fourteen letters, digits or underscores, compared without regard to case (=GOLD= and =TICKET= are fine; they are stored uppercase).
+- *Lengths are bounded*: keys, names, kinds, categories and currencies 512 bytes (=VENTURE_JSONL_MAX_KEY_LENGTH=); titles, summaries, URLs, messages, cursors and details 16 KiB (=VENTURE_JSONL_MAX_TEXT_LENGTH=); a decimal or odds 40 bytes (=VENTURE_JSONL_MAX_DECIMAL_LENGTH=); a whole line the reader's cap (an exec run uses its =max_output=; a =file_jsonl= source allows 1 MiB a line, inside a file held to =feeds.max_response_mb=).
+- *The first line that breaks a rule fails the run.* The error names the line number, the type and the member, and never quotes the line or the value, which may carry anything -- including a secret the producer printed by mistake.
 
 ** Messages
 
@@ -350,31 +384,35 @@ One JSON object per line, UTF-8, each naming its =type=. An exec plugin writes t
 | =venue=        | =key=                            | =name=, =kind=, =group=, =currency=, =attrs= (object)                                          | A place that quotes prices: a realm, a marketplace, a bookmaker. |
 | =instrument=   | =key=                            | =name=, =kind=, =category= (=/=-separated path), =parent= (instrument key), =attrs= (object)  | A thing that is priced: an item, a SKU, an event's outcome. |
 | =snapshot=     | =venue=, =taken_at=              | =complete= (boolean)                                                                           | The start of one venue's snapshot; listings and stats that follow belong to it. |
-| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id=, =side= (=sell= or =buy=), =expires_in_min= (integer, at least 0), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots; =expires_in_min= is the *least* time it had left, in *seconds* ("min" is minimum, not minutes), so one that vanished before it could have expired counts as sold and one that ran out does not. Without it every vanished listing is counted as sold. |
+| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id= (a string), =side= (=sell=, the default, or =buy=), =expires_in_min= (integer, at least 0), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots; =expires_in_min= is the *least* time it had left, in *seconds* ("min" is minimum, not minutes), so one that vanished before it could have expired counts as sold and one that ran out does not. Without it every vanished listing is counted as sold. |
 | =stat=         | =venue=, =instrument=, one figure | =min=, =market=, =mean=, =median=, =sale_avg= (decimals); =quantity=, =listings=, =sold= (integers, at least 0); =currency=, =taken_at= | Precomputed figures when there are no individual listings. At least one figure is required. |
-| =quote=        | =venue=, =instrument=, exactly one of =price= or =odds= | =format= (=decimal=, =american=, =fractional=), =side= (=back=, =lay=, =bid=, =ask=), =liquidity= (decimal), =currency=, =taken_at= | A price or odds. Decimal odds must exceed 1; American odds are =+150= or =-200= with a magnitude of at least 100; fractional are =5/2=. |
+| =quote=        | =venue=, =instrument=, exactly one of =price= (decimal) or =odds= (string) | =format= (=decimal=, the default, =american=, =fractional=; how =odds= is spelt), =side= (=back=, =lay=, =bid=, =ask=), =liquidity= (decimal), =currency=, =taken_at= | A price or odds. Decimal odds must exceed 1; American odds are =+150=, =-200= or =150=, with a magnitude of at least 100; fractional are =5/2=, both parts positive. |
 | =entry=        | =key=, =title=                   | =url= (http or https only), =summary=, =published_at=, =venue=, =instrument=                   | A non-price item: a feed article, a notice. |
-| =record=       | =record_type=, =fields= (object) | =match= (list of field names)                                                                  | An upsert of a main-database record, matched on =match=. =record_type= is a lower-case type name; the consumer decides which types it accepts. |
+| =record=       | =record_type=, =fields= (object) | =match= (list of field names)                                                                  | An upsert of a main-database record, matched on =match= (non-empty field names). =record_type= is a type name -- a lower-case letter, then lower-case letters, digits and =_= -- and the consumer decides which types it accepts. |
 | =cursor=       | =value=                          |                                                                                                | Where the next request should resume; handed back in =params= by the consumer that stores it. |
 | =not_modified= |                                  | =venue=                                                                                        | Nothing changed since last time, for one venue or the whole unit. |
 | =log=          | =message=                        | =level= (=debug=, =info=, =warning=; default =info=)                                          | A diagnostic line. Never a reason to fail a run. |
 | =error=        | =message=                        | =retry_after= (integer seconds, at least 0)                                                    | The producer could not do what was asked. Earlier messages are kept; =retry_after= asks the consumer to back off. |
 | =result=       |                                  | =count= (integer, at least 0), =summary=, =detail= (text)                                      | What a command produced, for a consumer that wants one answer rather than a stream -- an automation handler. The last one wins. |
 
-A minimal exec plugin in bash:
+A complete exec provider that writes these lines, and how to run it, is in [[*An exec plugin: a program][the tutorial below]]; =plugins/exec/supplier-csv/fetch.sh= is the reference one, and =tests/fixtures/exec/probe.sh= is the opposite: every way a plugin can go wrong, one mode each.
 
-#+begin_src bash
-#!/usr/bin/env bash
-set -euo pipefail
+** How a data source reads the messages
 
-IFS= read -r request || true   # one JSON line; parse it with whatever you have
+The protocol says what a line may contain; what a consumer does with a valid line is the consumer's business. For the two consumers that turn lines into market data -- the =exec= data source provider and =file_jsonl= -- the batch builder (=venture_feed_batch_add_jsonl()=) applies these rules, so a producer knows what its stream will mean:
 
-printf '{"type":"venue","key":"supplier","name":"Acme Wholesale","currency":"USD"}\n'
-printf '{"type":"instrument","key":"sku-1001","name":"Widget"}\n'
-printf '{"type":"quote","venue":"supplier","instrument":"sku-1001","price":"4.20","side":"ask"}\n'
-#+end_src
-
-=tests/fixtures/exec/probe.sh= is a fuller example: every way a plugin can go wrong, one mode each.
+- *A snapshot is one venue, one moment and one currency.* =snapshot= opens it; every =listing= and =stat= for that venue after it belongs to it, until another =snapshot= of the same venue. Its currency is the snapshot's own =currency=, else the venue's, else the data source's.
+- *=complete: true= means "this is everything the venue lists".* An instrument the venue had before and this snapshot does not mention is then out of stock (quantity 0, prices blank), and listing ids are compared with the previous complete snapshot to estimate what sold. Leave it false (the default) when the stream is a sample.
+- *A listing or stat with no snapshot before it* opens one for its venue at its own =taken_at= (else the fetch time), and that snapshot is *incomplete*: nothing said it lists everything, and a complete one would zero every instrument the stream happened not to mention.
+- *One snapshot, one currency.* A listing in a currency other than its snapshot's is refused, not converted -- a different currency is a different market.
+- *An amount with more decimal places than its currency's exponent is refused*, not rounded. =12.505 USD= is a producer bug.
+- *A quote without =side=* is =back= when it carries =odds= and =ask= when it carries a =price=. Odds have no currency; a price quote's currency resolves like a listing's.
+- *=not_modified= without a =venue= marks the whole unit unchanged*; with one it is ignored, because a venue with no new snapshot simply keeps the one it had.
+- *=log= lines become the run's notes* (the first twenty), which is where an operator reads them on =/feeds=.
+- *The first =error= makes the unit partial*: everything before and after it is kept, its message is the run's error, and its =retry_after= asks the scheduler to back off. A program that exits non-zero having written data is treated the same way; one that exits non-zero having written nothing failed.
+- *=record= lines reach the main database only for the types the source's =record_types= setting lists* (=price_observation=, =exchange_rate=), matched on =match= or the type's declared keys, deleted rows included.
+- *=result= is ignored*: it answers an automation handler, not a feed.
+- *A valid line the batch cannot use* -- a refused currency, an over-precise amount, a listing for a venue whose snapshot is in another currency -- is counted in the run's =refused= and noted with its line number; it does not fail the run. Only a line that breaks the protocol itself does.
 
 * Security model
 
@@ -422,6 +460,527 @@ A manifest with =kind: data_source_provider= and a bash script that reads one re
 
 =$(OUTDIR)/plugins-optional/= (installed as =$(LIBDIR)/venture/plugins-optional=) holds plugins that are built and shipped but loaded only when the operator asks, by adding the directory to =plugins.paths= (see [[file:configuration.org][Configuration]]). The Blizzard plugin lives there because =VENTURE_PLUGIN_PATH= loads everything in =$(OUTDIR)/plugins/= into every test fixture, and a provider that wants a registered GOLD and credentials has no business in a fixture that did not ask for it. =tests/test-plugin-blizzard.c= loads it by path.
 
+* Writing a data source plugin
+
+This chapter builds a market data provider three times, once per runtime, from nothing to rows on =/market/browse=. Every example below was run against a real server exactly as shown; each is a cut-down copy of one of [[*The reference plugins][the reference plugins]], which are the next thing to read. What the data then feeds -- the store, alerts, the Trading pages, the arbitrage scan -- is in [[file:market-data.org][Market data]] and [[file:arbitrage.org][Arbitrage]].
+
+** What a provider is
+
+A provider is a name, a settings schema and a fetch. The feeds module owns everything else: when to run, which units, the HTTP rules, the budget, the store, the run record, alerts. A provider never sees any of it.
+
+| Part       | What it is                                                                                                                       |
+|------------+----------------------------------------------------------------------------------------------------------------------------------|
+| name       | What a =data_source= names in =provider=: a lower-case word such as =shop_prices=. Registered once; a second registration is refused. |
+| schema     | A JSON schema of the source's settings. A key marked ="x-sensitive": true= is a credential: refused in the settings YAML, set on =/feeds/ID/credentials=, sealed in the integration store and handed to the fetch as a secret. |
+| units      | What one source is split into -- a realm, a sport, a shop. By default the settings' =units= list, or one unit called =default=. Each unit is fetched separately, keeps its own cursor and its own If-Modified-Since, and is scheduled on its own. |
+| fetch      | Given a =VentureFeedRequest= for one unit, return a =VentureFeedBatch= (or, for exec, write JSON lines). Runs off the main thread. |
+| freeze     | Optional, native only: run once on the main thread when the source is saved, the configuration changes or a sync is asked for; whatever it returns is shared, read-only, by every fetch until the next freeze. |
+
+The rules every provider keeps, whatever it is written in:
+
+- *Never touch the database, the configuration or the context from a fetch.* It runs on a pool thread beside the feeds worker; =VentureDatabase= raises a critical when called from a thread that did not open it. Anything the fetch needs comes from the request (settings, secrets, unit, cursor, the frozen data).
+- *Reach the network only through the request's HTTP helper* (=venture_feed_request_http_send()= and friends). It pins the origin to =feeds.allowed_origins= (and the source's own =origins= setting), refuses redirects, caps the body at =feeds.max_response_mb=, enforces the deadline, sends the unit's If-Modified-Since, honours Retry-After and charges the request's cost to the source's budget. A provider that opens its own socket has none of that.
+- *Read files only through the request* (=venture_feed_request_read_file()=), which holds a path to =feeds.file_roots=.
+- *Money is exact.* Decimal text becomes minor units with =venture_feed_decimal_to_minor()=, which refuses a place too many rather than rounding; never parse a price into a =double=.
+- *Times are Unix seconds, UTC*; =expires_in_min= on a listing is the least time the listing had left, in *seconds*, or =-1= when unknown.
+- *Errors name what failed, never a secret.* The worker redacts every credential of six bytes or more from what it records, and =venture_feed_request_redact()= does the same for a note a provider builds, but an address with a key in it should never reach a message in the first place.
+- *Refuse a bad item, not the unit.* Count what you skip with =venture_feed_batch_add_refused()= and carry on; fail the fetch only when nothing it could return would be true.
+
+** Which runtime
+
+| Runtime | Write it as                                               | Build step                  | Switch                       | Choose it when                                                                                     |
+|---------+-----------------------------------------------------------+-----------------------------+------------------------------+----------------------------------------------------------------------------------------------------|
+| exec    | a program in any language, speaking JSON lines            | none                        | =plugins.allow_exec= (off)   | the data comes from a tool or a file you already script, or you do not want to write C              |
+| crispy  | one C function handed to =venture_func_data_source_provider_new()= | none: compiled on demand | =plugins.allow_crispy= (on) | a small HTTP API, and you want the feeds HTTP helper, exact money and the full C API without a Makefile |
+| native  | a =.so=, either the same function or a full GObject provider with =freeze= | =make plugins=  | =plugins.enabled= (on)       | a large connector: OAuth, a frozen cache shared by every fetch, several registries from one plugin |
+
+All three end in the same place: a provider in =venture_context_get_data_source_providers()=, named by a =data_source=.
+
+** Before any of them: feeds on
+
+The feeds module is off by default, and so is every way out of the server:
+
+#+begin_src yaml
+feeds:
+  enabled: true
+  allowed_origins: https://shop.example.com   # only for a provider that fetches over HTTP
+plugins:
+  paths: [/var/lib/venture/plugins]
+#+end_src
+
+=feeds.allowed_origins= is a comma-separated list of exact origins and is deny-by-default; plain =http= is accepted only for =127.0.0.1=, =::1= and =localhost=. Every key is in [[file:configuration.org][Configuration]], and why each is shaped the way it is in [[file:security.org][Security]].
+
+** An exec plugin: a program
+
+The smallest provider is a directory with two files. This one is =plugins/exec/supplier-csv/= with the CSV taken out: it reports one supplier and two SKUs.
+
+=/var/lib/venture/plugins/price-list/price-list.plugin.yaml=:
+
+#+begin_src yaml
+name: price-list
+runtime: exec
+protocol: 1
+description: A supplier's price list, as listings at a supplier venue
+entry: fetch.sh
+exec:
+  timeout: 30
+provides:
+  - kind: data_source_provider
+    name: price_list
+    label: Supplier price list
+    command: fetch
+#+end_src
+
+=/var/lib/venture/plugins/price-list/fetch.sh= (executable):
+
+#+begin_src bash
+#!/usr/bin/env bash
+#
+# fetch.sh - A supplier's price list as JSON lines (protocol 1)
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+set -euo pipefail
+
+main () {
+    local request=''
+    local venue='supplier'
+    local pattern='"venue":"([A-Za-z0-9._-]{1,64})"'
+    local taken_at
+
+    # One request line on standard input. The data source's settings
+    # ride in params.source; this reads one key with a regex, as
+    # plugins/exec/supplier-csv does, so it needs nothing but bash.
+    IFS= read -r request || true
+
+    if [[ "${request}" =~ ${pattern} ]]
+    then
+        venue="${BASH_REMATCH[1]}"
+    fi
+
+    taken_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+    printf '{"type":"venue","key":"%s","name":"Acme Wholesale","kind":"supplier","currency":"USD"}\n' "${venue}"
+    printf '{"type":"snapshot","venue":"%s","taken_at":"%s","complete":true}\n' "${venue}" "${taken_at}"
+    printf '{"type":"instrument","key":"DS-1001","name":"Chef knife","kind":"sku"}\n'
+    printf '{"type":"listing","venue":"%s","instrument":"DS-1001","price":"12.50","quantity":40,"id":"DS-1001"}\n' "${venue}"
+    printf '{"type":"instrument","key":"DS-1002","name":"Cutting board","kind":"sku"}\n'
+    printf '{"type":"listing","venue":"%s","instrument":"DS-1002","price":"8.75","quantity":12,"id":"DS-1002"}\n' "${venue}"
+    printf '{"type":"log","message":"2 lines listed"}\n'
+}
+
+main "$@"
+#+end_src
+
+What each line does, in protocol terms:
+
+- the =venue= message names the supplier and its currency, so the snapshot and listings after it are in dollars;
+- =snapshot= with =complete: true= says this is the supplier's whole list, so a SKU missing next time reads as out of stock and its vanished listing id as sold;
+- =instrument= and =listing= are one SKU and its offer, the price a decimal string, the quantity an integer, the id a string that is the same on every run;
+- =log= becomes a note on the run.
+
+The program can be tried by hand before the server ever runs it -- hand it the one line it will be given:
+
+#+begin_src sh
+printf '%s\n' '{"protocol":1,"plugin":"price-list","command":"fetch","settings":{},"params":{"unit":"default","source":{"venue":"acme"}},"secrets":{}}' \
+    | /var/lib/venture/plugins/price-list/fetch.sh
+#+end_src
+
+Then switch exec on, restart, and check it loaded:
+
+#+begin_src yaml
+plugins:
+  allow_exec: true
+#+end_src
+
+#+begin_src sh
+venturectl plugins          # price-list, runtime exec, provides data_source_provider
+venturectl create data_source name="Acme price list" provider=price_list \
+    schedule=manual currency=USD "settings=venue: acme"
+venturectl feeds sync 1 --wait          # prints the run: status ok, rows, new instruments, notes
+venturectl market browse source=1       # DS-1001 at 12.50 USD, 40 in stock; DS-1002 at 8.75 USD
+#+end_src
+
+The request's =params.source= is the source's settings (here ={"venue":"acme"}=), =params.unit= the unit, =params.cursor= and =params.if_modified_since= the unit's resume point and last Last-Modified when it has them, and =secrets.token= the one credential an exec source can hold. Settings are read with whatever the language has; bash has no JSON parser, so the example (like the reference) matches one key at a time with a regular expression, which works because the request is always compact JSON. A program that needs real parsing should use a language that has one.
+
+Things the server does that the program never has to: run it with an argv array and a cleared environment, in its own directory and process group, with a deadline and output caps; redact its secret from everything it prints; refuse it when =allow_exec= goes off. [[*Exec plugins][Exec plugins]] above has the whole contract, and [[file:examples/dropship-supplier-feed.org][the supplier-csv walk-through]] the full program: a CSV read safely, a file setting held to the plugin's directory, landed prices summed as decimal strings.
+
+** A crispy plugin: one function
+
+Crispy compiles a =.c= file in a plugin directory when the server starts, caches the object by content hash under the state directory, and loads it like a =.so= -- no Makefile. It needs a compiler and the development headers on the machine that runs the server. The function-provider API exists for exactly this: no GObject, no freeze, one fetch that runs on a GTask thread and may block.
+
+This is =plugins/scripts/odds-api.c= reduced to its skeleton, pointed at a shop that answers =GET {api_base}/prices/{unit}= with a JSON array of ={"sku", "name", "price": "12.50", "quantity"}=:
+
+=/var/lib/venture/plugins/shop-prices.c=:
+
+#+begin_src C
+/*
+ * shop-prices.c - A shop's price list over HTTP, as a data source
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Each unit is one shop. The far end answers GET {api_base}/prices/{unit}
+ * with a JSON array of {"sku", "name", "price": "12.50", "quantity"}.
+ */
+
+#include <venture/venture.h>
+
+#ifdef VENTURE_HAVE_SQLITE
+
+/*
+ * One unit. Runs on a GTask thread, so it may block on the request's HTTP
+ * helper; it touches nothing but the request -- never the database, the
+ * configuration or the context.
+ */
+static VentureFeedBatch *
+shop_fetch(
+	VentureFeedRequest	 *request,
+	gpointer		  user_data,
+	GError			**error
+){
+	g_autoptr(VentureFeedBatch) batch = NULL;
+	g_autoptr(VentureFeedHttpResponse) response = NULL;
+	g_autoptr(JsonParser) parser = NULL;
+	g_autofree gchar *url = NULL;
+	JsonObject *settings;
+	JsonArray *items;
+	const gchar *base;
+	const gchar *shop;
+	gint64 taken_at;
+	gint64 refused;
+	guint i;
+
+	(void)user_data;
+
+	settings = venture_feed_request_get_settings(request);
+	base = venture_json_object_get_string(settings, "api_base", "https://shop.example.com");
+	shop = venture_feed_request_get_unit(request);
+
+	/* The unit goes into the address unescaped, so it is held to a
+	 * spelling that needs no escaping. */
+	if (!g_regex_match_simple("^[a-z0-9_-]{1,64}$", shop, 0, 0))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s is not a shop key", shop);
+		return NULL;
+	}
+
+	/* The helper pins the origin, refuses redirects, caps the body,
+	 * sends the unit's If-Modified-Since and charges 1 to the budget. */
+	url = g_strdup_printf("%s/prices/%s", base, shop);
+	response = venture_feed_request_http_send(request, "GET", url, NULL, NULL, NULL, 1,
+	                                          VENTURE_FEED_HTTP_DEFAULT, error);
+
+	if (NULL == response)
+		return NULL;
+
+	batch = venture_feed_batch_new();
+
+	if (304 == response->status)
+	{
+		venture_feed_batch_set_not_modified(batch, TRUE);
+		return g_steal_pointer(&batch);
+	}
+
+	parser = json_parser_new();
+
+	if (!json_parser_load_from_data(parser, g_bytes_get_data(response->body, NULL),
+	                                (gssize)g_bytes_get_size(response->body), NULL) ||
+	    !JSON_NODE_HOLDS_ARRAY(json_parser_get_root(parser)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		            "%s did not answer with a list of prices", shop);
+		return NULL;
+	}
+
+	/* The snapshot is as old as the far end says its data is. */
+	taken_at = (VENTURE_SERIES_NONE != response->last_modified)
+		? response->last_modified : venture_feed_request_get_fetched_at(request);
+
+	/* Complete: an item missing from this answer is out of stock. */
+	if (!venture_feed_batch_add_venue(batch, shop, NULL, "store", NULL, "USD", NULL, error) ||
+	    !venture_feed_batch_begin_snapshot(batch, shop, "USD", taken_at, TRUE, error))
+		return NULL;
+
+	items = json_node_get_array(json_parser_get_root(parser));
+	refused = 0;
+
+	for (i = 0; i < json_array_get_length(items); i++)
+	{
+		JsonNode *node = json_array_get_element(items, i);
+		JsonObject *item;
+		const gchar *sku;
+		gint64 price;
+		gint64 quantity;
+
+		item = JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
+		sku = (NULL != item) ? venture_json_object_get_string(item, "sku", NULL) : NULL;
+		quantity = (NULL != item) ? json_object_get_int_member_with_default(item, "quantity", 0) : 0;
+
+		/* An exact decimal string into minor units: "12.50" is 1250
+		 * cents, and "12.505" is refused rather than rounded. */
+		if ((NULL == sku) ||
+		    !venture_feed_decimal_to_minor(venture_json_object_get_string(item, "price", ""),
+		                                   "USD", &price, NULL) ||
+		    !venture_feed_batch_add_instrument(batch, sku,
+		                                       venture_json_object_get_string(item, "name", NULL),
+		                                       "sku", NULL, NULL, NULL, NULL))
+		{
+			refused++;
+			continue;
+		}
+
+		/* No listing for none in stock: the complete snapshot reads
+		 * the instrument's absence as zero. */
+		if ((quantity > 0) &&
+		    !venture_feed_batch_add_listing(batch, shop, sku, 0, price, quantity,
+		                                    FALSE, -1, NULL))
+			refused++;
+	}
+
+	if (refused > 0)
+		venture_feed_batch_add_refused(batch, refused);
+
+	return g_steal_pointer(&batch);
+}
+
+static const gchar shop_schema[] =
+	"{\"type\":\"object\",\"required\":[\"units\"],\"properties\":{"
+	"\"units\":{\"type\":\"array\",\"title\":\"Shops\"},"
+	"\"api_base\":{\"type\":\"string\",\"title\":\"API origin\"},"
+	"\"requests_per_hour\":{\"type\":\"integer\",\"title\":\"Request budget an hour\"}"
+	"}}";
+
+#endif /* VENTURE_HAVE_SQLITE */
+
+/**
+ * venture_plugin_info:
+ *
+ * Returns: (transfer none): a one-line description
+ */
+const gchar *
+venture_plugin_info(void);
+
+const gchar *
+venture_plugin_info(void)
+{
+	return "A shop's price list over HTTP, as the shop_prices data source";
+}
+
+/**
+ * venture_plugin_register:
+ * @context: the wiring, giving access to every registry
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Registers the `shop_prices` provider.
+ *
+ * Returns: %TRUE if the plugin registered
+ */
+gboolean
+venture_plugin_register(
+	VentureContext	 *context,
+	GError		**error
+);
+
+gboolean
+venture_plugin_register(
+	VentureContext	 *context,
+	GError		**error
+){
+#ifdef VENTURE_HAVE_SQLITE
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+
+	provider = venture_func_data_source_provider_new("shop_prices", "Shop price list",
+	                                                 shop_schema, shop_fetch, NULL, NULL);
+
+	return venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(context), provider, error);
+#else
+	(void)context;
+
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+	                    "shop_prices needs a build with SQLite");
+	return FALSE;
+#endif
+}
+#+end_src
+
+The parts worth copying:
+
+- =#ifdef VENTURE_HAVE_SQLITE=: feeds exist only in a build with SQLite, and a plugin for a build without one should say so at registration instead of failing to compile.
+- The unit is checked before it goes into an address, and a key would be escaped with =g_uri_escape_string()=. (odds-api additionally wipes the address from memory once sent, because its key is in the query string.)
+- =VENTURE_FEED_HTTP_DEFAULT= makes the request /the unit's/: the helper sends the unit's If-Modified-Since and records its Last-Modified and status for the run. A 304 is answered with =venture_feed_batch_set_not_modified()= and nothing else. A side request -- a token, an index, a name lookup -- passes =VENTURE_FEED_HTTP_UNCONDITIONAL= so its date is never mistaken for the unit's; =VENTURE_FEED_HTTP_ANY_STATUS= hands back a 4xx for the provider to explain (odds-api turns 401 into "check api_key").
+- Every money figure goes through =venture_feed_decimal_to_minor()=; a price the far end sends as a JSON number is spelt back in its shortest exact form first (=odds_price()= in odds-api does this for odds).
+- One malformed item is refused and counted, not fatal.
+
+To run it:
+
+#+begin_src sh
+cp shop-prices.c /var/lib/venture/plugins/   # plugins.allow_crispy is on by default
+# feeds.allowed_origins must name the shop's origin; restart, then:
+venturectl create data_source name="Corner shop" provider=shop_prices schedule=hourly \
+    currency=USD "settings=units: [corner-shop]
+api_base: https://shop.example.com"
+venturectl feeds sync 2 --wait          # rows, refused 1 for a price with too many places
+venturectl market browse source=2
+#+end_src
+
+A credential would be one more schema property with ="x-sensitive": true=, read in the fetch with =venture_feed_request_get_secret(request, "api_key")=; [[file:examples/odds-api-feed.org][the odds-api walk-through]] shows that end to end, quota headers included.
+
+** A native plugin: a =.so=, and a provider with a freeze
+
+*The same function, compiled.* The file above builds unchanged into a native plugin: both runtimes call the same =venture_plugin_register()=. Compile it with the flags the server was built with -- the simplest way is in the tree, as a directory of its own under =plugins/=:
+
+#+begin_src sh
+mkdir plugins/shop-prices && cp shop-prices.c plugins/shop-prices/
+make DEBUG=1 plugins         # every .c in plugins/shop-prices/ -> build/debug/plugins/shop-prices.so
+#+end_src
+
+Every =plugins/<dir>/= becomes =$(OUTDIR)/plugins/<dir>.so=, and =make test=, =just start= and =make demo= put that directory on =VENTURE_PLUGIN_PATH=, so the plugin loads into every test fixture and every local instance. A provider that needs configuration or credentials does not belong in every fixture: add its directory to =PLUGIN_OPTIONAL_DIRS= in the =Makefile= (as =plugins/blizzard-auctions= is) and it is built into =$(OUTDIR)/plugins-optional/= instead, loaded only where =plugins.paths= names that directory ([[*The optional plugins directory][below]]). A plugin compiled outside the tree must match the server's build: the same headers and the same =VENTURE_HAVE_SQLITE=.
+
+*A provider with a freeze.* When settings need parsing once, a currency must be checked against the registry, or a token and a name cache should be shared by every fetch of a source, implement the =VentureDataSourceProvider= interface on a GObject instead. This is the shape of =plugins/blizzard-auctions/blizzard-provider.c=:
+
+#+begin_src C
+/* What freeze decides once, on the main thread, for every fetch after. */
+typedef struct
+{
+	gchar	*api_base;
+	gchar	*currency;
+} ShopFrozen;
+
+static void
+shop_frozen_free(gpointer data)
+{
+	ShopFrozen *frozen = data;
+
+	g_free(frozen->api_base);
+	g_free(frozen->currency);
+	g_free(frozen);
+}
+
+#define SHOP_TYPE_PROVIDER (shop_provider_get_type())
+G_DECLARE_FINAL_TYPE(ShopProvider, shop_provider, SHOP, PROVIDER, GObject)
+
+struct _ShopProvider
+{
+	GObject parent_instance;
+};
+
+static void shop_provider_iface_init(VentureDataSourceProviderInterface *iface);
+
+G_DEFINE_FINAL_TYPE_WITH_CODE(ShopProvider, shop_provider, G_TYPE_OBJECT,
+                              G_IMPLEMENT_INTERFACE(VENTURE_TYPE_DATA_SOURCE_PROVIDER,
+                                                    shop_provider_iface_init))
+
+/* class_init, init, get_name ("shop_prices"), get_label and
+ * dup_settings_schema (a JsonNode from json_from_string()) as usual. */
+
+/*
+ * Main thread, whenever the source is saved, the configuration changes or
+ * a sync is asked for: may read the context (a registered currency, say),
+ * and returns plain data the worker's threads only read.
+ */
+static gpointer
+shop_provider_freeze(
+	VentureDataSourceProvider	 *provider,
+	VentureContext			 *context,
+	JsonObject			 *settings,
+	GDestroyNotify			 *out_free,
+	GError				**error
+){
+	ShopFrozen *frozen;
+	const gchar *base;
+
+	(void)provider;
+	(void)context;
+
+	base = venture_json_object_get_string(settings, "api_base", "https://shop.example.com");
+
+	if (!g_str_has_prefix(base, "https://") && !g_str_has_prefix(base, "http://"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "api_base is an origin, such as https://shop.example.com");
+		return NULL;
+	}
+
+	frozen = g_new0(ShopFrozen, 1);
+	frozen->api_base = g_strdup(base);
+	frozen->currency = g_strdup("USD");
+	*out_free = shop_frozen_free;
+
+	return frozen;
+}
+
+static void
+shop_provider_thread(
+	GTask		*task,
+	gpointer	 source,
+	gpointer	 task_data,
+	GCancellable	*cancellable
+){
+	VentureFeedBatch *batch;
+	GError *error = NULL;
+
+	(void)source;
+	(void)cancellable;
+
+	/* shop_fetch_blocking() reads venture_feed_request_get_frozen() and
+	 * then does what shop_fetch() above does. */
+	batch = shop_fetch_blocking(task_data, &error);
+
+	if (NULL == batch)
+		g_task_return_error(task, error);
+	else
+		g_task_return_pointer(task, batch, (GDestroyNotify)venture_feed_batch_unref);
+}
+
+/* A GTask thread from GLib's pool: the requests block, the worker's loop must not. */
+static void
+shop_provider_fetch_async(
+	VentureDataSourceProvider	*provider,
+	VentureFeedRequest		*request,
+	GCancellable			*cancellable,
+	GAsyncReadyCallback		 callback,
+	gpointer			 user_data
+){
+	g_autoptr(GTask) task = NULL;
+
+	task = g_task_new(provider, cancellable, callback, user_data);
+	g_task_set_task_data(task, g_object_ref(request), g_object_unref);
+	g_task_run_in_thread(task, shop_provider_thread);
+}
+
+static void
+shop_provider_iface_init(VentureDataSourceProviderInterface *iface)
+{
+	iface->get_name = shop_provider_name;
+	iface->get_label = shop_provider_label;
+	iface->dup_settings_schema = shop_provider_schema;
+	iface->freeze = shop_provider_freeze;
+	iface->fetch_async = shop_provider_fetch_async;
+}
+#+end_src
+
+and =venture_plugin_register()= registers =g_object_new(SHOP_TYPE_PROVIDER, NULL)= with =venture_data_source_provider_registry_add()=. The interface's other optional members:
+
+- =list_units= -- turn the settings into units (Blizzard: each connected realm id, or one =realms= unit that walks the index, then =commodities=). It is also called when a source is saved, so a provider can refuse bad settings there rather than at the first run.
+- =fetch_finish= -- leave it out; the default propagates the =GTask='s pointer.
+
+A freeze that fails makes every run of the source fail, saying why, until a later freeze succeeds: Blizzard refuses a currency that is not registered with exponent 4 this way, rather than storing copper as something else. A freeze must not register anything itself -- it may run many times.
+
+*More than a provider.* A native or crispy plugin can register into every registry from the same =venture_plugin_register()=. Blizzard's registers its fee model first (a venue naming =wow_auction= is refused at its save until the model exists), then an export format, then the provider, then a record action. Order matters only where one thing validates against another.
+
+** Then: test it the way the reference plugins are tested
+
+- =tests/venture-test-http.h= is a scripted HTTP server for exactly this: routes, fixture files, a 304 when asked with If-Modified-Since, an authorization requirement, and a count of hits. =tests/test-plugin-blizzard.c= and =tests/test-plugin-examples.c= drive the reference plugins with it, including "the credential never appears in the run, the log or the store".
+- A test server binds port 0 and the source's settings point =api_base= at it; =feeds.allowed_origins= names that =http://127.0.0.1:PORT= origin.
+- A manual sync sends no If-Modified-Since and refreezes the source; to test a conditional fetch, switch the schedule to =auto= and wait, as =schedule_and_wait()= in =test-plugin-blizzard.c= does.
+- Drain the worker before the fixture goes: =venture_feeds_service_count_pending()= until zero, bounded.
+
+** And: use what it fetched
+
+Once a source has synced, its venues and instruments are in the store and on =/market/browse=; =venturectl market promote SOURCE venue KEY= (or the instrument page's Promote button) makes a store row a =venue= or =instrument= record that watchlists, alert rules, listings and trades can reference; a =venue= record's =fee_model= prices the arbitrage scan. [[file:market-data.org][Market data]] covers all of that, and the four arbitrage walk-throughs ([[file:examples/arbitrage-wow-cross-realm.org][cross-realm]], [[file:examples/arbitrage-crafting.org][crafting]], [[file:examples/arbitrage-dropshipping.org][dropshipping]], [[file:examples/arbitrage-surebet.org][surebet]]) take a synced source all the way to a closed trade in the books.
+
 * Where things live
 
 | File                                         | What                                                                  |
@@ -433,6 +992,9 @@ A manifest with =kind: data_source_provider= and a bash script that reads one re
 | =src/plugin/venture-jsonl.{h,c}=             | The protocol: message validation and the incremental reader           |
 | =tests/test-plugin-runtime.c=                | Runtimes, manifests, exec and the protocol                            |
 | =src/automation/venture-automation.c=        | The =automation_handler= provides kind                                |
+| =src/feeds/venture-feeds-providers.c=        | The =data_source_provider= provides kind, the exec and =file_jsonl= providers |
+| =src/feeds/venture-data-source-provider.h=   | The provider interface, the function provider, the request and its HTTP helper |
+| =src/feeds/venture-feed-batch.h=             | What a fetch returns, and =venture_feed_batch_add_jsonl()=, the rules for reading the protocol into one |
 | =tests/test-automation.c=                    | Exec automation handlers, =plugins.allow_exec= at every call          |
 | =tests/fixtures/exec/automation-handler.sh=  | The exec plugin those tests drive                                     |
 | =tests/fixtures/exec/probe.sh=               | The misbehaving exec plugin the tests drive                           |

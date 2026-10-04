@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-10-03]
-#+version: 0.6.0
+#+updated: [2026-10-04]
+#+version: 0.7.0
 
 * The interface
 
@@ -133,7 +133,23 @@ Red is not used: a chart is something to read, and red means "look here". A heat
 
 Every chart has a =<title>=, a =<desc>= when it has a sentence to say, =role="img"= with an =aria-label=, and a table of every figure -- a picture of numbers is not the numbers. Every label is escaped; the coordinates are written in the C locale, because a decimal comma would split one SVG number into two.
 
-The Trading pages add =.market-filters= (a filter form), =.market-action-row= and =.form-inline= (a row of small forms), =.market-stats= and =.market-figure= (stat rows), =.market-heat= (two heat maps stacked), =.market-table= (a data table that scrolls inside its card on a phone), =.market-widget= and =.market-hits= (the market dashboard cards).
+The Trading pages add =.market-filters= (a filter form), =.market-action-row= and =.form-inline= (a row of small forms), =.market-stats= (a hook on the shared =.stat-row=, which styles it) and =.market-figure= (stat rows), =.market-heat= (two heat maps stacked), =.market-table= (a data table that scrolls inside its card on a phone), =.market-widget= and =.market-hits= (the market dashboard cards). They are the block /Market data: the charts and the Trading pages/ in each stylesheet.
+
+The arbitrage pages (=/arbitrage=, =/arbitrage/calc=) add the block /Arbitrage: the scan, the presets and the calculators/:
+
+| Class | What it is |
+|-------+------------|
+| =.arbitrage-tabs= | the =<nav>= of strategy tabs over the scan, one per registered strategy (a plugin's included) |
+| =.arbitrage-tab= | one tab: a link in the micro register, ruled; the current one carries =aria-current="page"= and is drawn in =--text=, never in red |
+| =.arbitrage-filters= | the scan's filter form (a =.form-grid=, =role="search"=), its fields aligned on their baseline |
+| =.arbitrage-presets= | the presets card: a picker of the saved =arbitrage_strategy= presets that loads one into the filters, and a link to save the current question as one |
+| =.arbitrage-exports= | the line of export links, one per registered format |
+| =.arbitrage-table= | the opportunities table (a =table.data=), cells top-aligned because a row carries its Record form |
+| =.arbitrage-unquoted= | the muted line under a row naming the inputs or prices nobody quoted |
+| =.arbitrage-calc= | one calculator's card (surebet, back and lay, flip) |
+| =.arbitrage-answer= | the calculator's answer, a =.stat-row= whose figures use tabular digits so stakes line up |
+
+Like every rule here they are written once against the tokens and appended to *both* looks -- =venture-industrial.css= and =venture-classic.css= carry the same two blocks -- so a Trading page is written once and checked in both. =tests/test-market-pages.c= (=/market-pages/doors-and-looks=) greps both stylesheets for a sample of the chart and market classes (the two chart lines, the heat cell, the grid, the axis, the sparkline, the legend, the caption, =.market-action-row= and =.form-inline=); the arbitrage block has no such check, so a new arbitrage class has to be checked in both looks by eye. See [[file:market-data.org::*Browsing: the Trading pages][Market data: the Trading pages]] and [[file:arbitrage.org::*Pages and routes][Arbitrage: pages and routes]].
 
 ** Pickers
 
