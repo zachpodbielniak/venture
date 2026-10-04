@@ -504,7 +504,8 @@ venture_marketdata_attribution_append_answer_html(
  * venture_marketdata_register_reports:
  * @registry: the report registry
  *
- * Registers market_deals, venue_index and watchlist.
+ * Registers market_deals, venue_index, watchlist, accounts, account_holdings and
+ * external_pnl.
  */
 void
 venture_marketdata_register_reports(VentureReportRegistry *registry);

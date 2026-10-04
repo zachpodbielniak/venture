@@ -806,7 +806,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "type", "aggregate: the record type to read.");
 		venture_mcp_catalog_add_string_property(builder, "measure", "aggregate: the field to aggregate, or count.");
 		venture_mcp_catalog_add_string_property(builder, "aggregate", "aggregate: sum, avg, min, max, count or count_distinct.");
-		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference. listing_performance: product, category or channel. session_performance: activity, category, location or venture. arbitrage_performance: strategy, venue_pair, instrument or month.");
+		venture_mcp_catalog_add_string_property(builder, "group_by", "aggregate: up to 3 comma-separated fields; reference.field follows one reference. external_pnl: day, week, month, account, venue, instrument or source. listing_performance: product, category, channel or location. session_performance: activity, category, location or venture. arbitrage_performance: strategy, venue_pair, instrument or month.");
 		venture_mcp_catalog_add_integer_property(builder, "category_depth", "aggregate, listing_performance, session_performance: roll category and location groups up to this level.");
 		venture_mcp_catalog_add_string_property(builder, "date_field", "aggregate: the date field the period bounds.");
 		venture_mcp_catalog_add_string_property(builder, "bucket", "aggregate: day, week, month, quarter or year; price_history: day, week or month.");
@@ -815,7 +815,7 @@ venture_mcp_catalog_add_tool_extras(
 		/* The market reports' questions. */
 		venture_mcp_catalog_add_integer_property(builder, "venture_id", "Narrow to one venture (aggregate, listing_performance, recipe_margin, session_performance, goal_progress, goal_materials).");
 		venture_mcp_catalog_add_integer_property(builder, "product_id", "price_history: the product whose observed prices to show.");
-		venture_mcp_catalog_add_string_property(builder, "source", "price_history: only this price source, matched exactly.");
+		venture_mcp_catalog_add_string_property(builder, "source", "price_history: only this price source, matched exactly. external_pnl: only ledger rows the source labels so, e.g. Auction.");
 		/* The production report's questions. */
 		venture_mcp_catalog_add_string_property(builder, "price_source", "recipe_margin, session_performance, goal_materials: price at the latest observation from this source, matched exactly.");
 		venture_mcp_catalog_add_integer_property(builder, "category_id", "recipe_margin, goal_progress: only records in this category or beneath it.");
@@ -826,13 +826,13 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "location_id", "holdings: only this location and every location beneath it.");
 		venture_mcp_catalog_add_boolean_property(builder, "include_on_hand", "goal_materials: true (default) takes stock on hand off what is needed; false does not.");
 		/* The market data reports' questions. */
-		venture_mcp_catalog_add_integer_property(builder, "data_source_id", "market_deals, venue_index: only this data source; every source of the organization by default.");
-		venture_mcp_catalog_add_string_property(builder, "venue", "market_deals: only this venue, by its key in the store.");
-		venture_mcp_catalog_add_string_property(builder, "group_key", "market_deals, venue_index: only venues in this group (a region).");
-		venture_mcp_catalog_add_string_property(builder, "category_path", "market_deals: only instruments in this store category path and beneath.");
-		venture_mcp_catalog_add_string_property(builder, "min_value", "market_deals: only instruments worth at least this, with its currency, e.g. 10.00 GOLD.");
+		venture_mcp_catalog_add_integer_property(builder, "data_source_id", "market_deals, venue_index, accounts: only this data source; every source of the organization by default. account_holdings, external_pnl: the source to read; the first with accounts by default.");
+		venture_mcp_catalog_add_string_property(builder, "venue", "market_deals, external_pnl: only this venue, by its key in the store.");
+		venture_mcp_catalog_add_string_property(builder, "group_key", "market_deals, venue_index: only venues in this group (a region). accounts: only accounts in this group (a realm).");
+		venture_mcp_catalog_add_string_property(builder, "category_path", "market_deals, account_holdings: only instruments in this store category path and beneath.");
+		venture_mcp_catalog_add_string_property(builder, "min_value", "market_deals, account_holdings: only instruments worth at least this, with its currency, e.g. 10.00 GOLD.");
 		venture_mcp_catalog_add_string_property(builder, "max_pct", "market_deals: only prices at most this percent of the region median, e.g. 80.");
-		venture_mcp_catalog_add_integer_property(builder, "top", "market_deals, arbitrage_scan: how many rows, 1 to 500; 50 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "top", "market_deals, arbitrage_scan, account_holdings: how many rows, 1 to 500; 50 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "watchlist_id", "watchlist: the watchlist to price.");
 		/* The arbitrage report's question. */
 		venture_mcp_catalog_add_string_property(builder, "strategy", "arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's), matched exactly. arbitrage_scan: the strategy to scan with; spread by default.");
@@ -841,7 +841,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "buy_venues", "arbitrage_scan, craft_arbitrage: venue keys to buy at, comma separated.");
 		venture_mcp_catalog_add_string_property(builder, "sell_venues", "arbitrage_scan, craft_arbitrage: venue keys to sell at, comma separated.");
 		venture_mcp_catalog_add_string_property(builder, "kind", "arbitrage_scan: only instruments of this kind.");
-		venture_mcp_catalog_add_string_property(builder, "instrument", "arbitrage_scan: one instrument (or event) key.");
+		venture_mcp_catalog_add_string_property(builder, "instrument", "arbitrage_scan: one instrument (or event) key. external_pnl: one item's ledger rows.");
 		venture_mcp_catalog_add_integer_property(builder, "recipe_id", "arbitrage_scan transform, craft_arbitrage: one recipe.");
 		venture_mcp_catalog_add_integer_property(builder, "units", "arbitrage_scan: units per opportunity; craft_arbitrage: batches. 1 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "buy_sources", "arbitrage_scan spread: the N cheapest buy venues per item, 1 to 10.");
@@ -855,7 +855,15 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "min_confidence", "arbitrage_scan: least confidence, 0 to 1.");
 		venture_mcp_catalog_add_integer_property(builder, "max_age_hours", "arbitrage_scan, craft_arbitrage: leave out prices older than this.");
 		venture_mcp_catalog_add_string_property(builder, "share", "arbitrage_scan: percent of a market's sales a lot can expect; 100 by default.");
-		venture_mcp_catalog_add_string_property(builder, "sort", "arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence.");
+		venture_mcp_catalog_add_string_property(builder, "sort", "arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence.. accounts: attention, name, realm, gold, positions, expiry, inbound, last_seen or freshness. account_holdings: value, quantity, name, unit_value, accounts or days_of_supply.");
+		/* The account operations reports' questions. */
+		venture_mcp_catalog_add_string_property(builder, "basis", "accounts, account_holdings: how holdings are valued: conservative (default), market, min, historical, region_market or region_sale_avg.");
+		venture_mcp_catalog_add_string_property(builder, "account_key", "account_holdings, external_pnl: only this account, by its key in the data source.");
+		venture_mcp_catalog_add_string_property(builder, "place", "account_holdings: only this place: bag, bank, reagent_bank, warbank, guild, mail, auction, void, equipped, currency or other.");
+		venture_mcp_catalog_add_integer_property(builder, "expiring_hours", "accounts: listings expiring within this many hours need a login; 12 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "mail_days", "accounts: mail expiring within this many days needs a login; 3 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "stale_days", "accounts: an account unseen this many days needs a visit; 14 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "dead_days", "account_holdings: dead stock only, items with no sale for this many days.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

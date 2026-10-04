@@ -678,7 +678,7 @@ static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_ty
  * oracle answers from observations when it is allowed to. */
 static const gchar *const marketdata_requires[] = { "market", NULL };
 static const gchar *const marketdata_suggests[] = { "feeds", NULL };
-static const gchar *const marketdata_reports[] = { "market_deals", "venue_index", "watchlist", NULL };
+static const gchar *const marketdata_reports[] = { "market_deals", "venue_index", "watchlist", "accounts", "account_holdings", "external_pnl", NULL };
 static GType (*const marketdata_types[]) (void) = {
 	venture_venue_get_type, venture_instrument_get_type,
 	venture_watchlist_get_type, venture_watchlist_entry_get_type,

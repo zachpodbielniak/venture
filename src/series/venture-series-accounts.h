@@ -661,7 +661,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesHoldingTotal, venture_series_holding_
  *
  * What the operator holds of each instrument, summed over accounts and
  * places, by instrument name, each with its breakdown. Quantities are
- * integers: valuing them is the oracle's business, not the store's.
+ * integers; venture_series_store_value_instruments() is the reader that
+ * values them.
  *
  * Returns: (transfer full) (element-type VentureSeriesHoldingTotal)
  *   (nullable): the totals, or %NULL on error
@@ -1079,6 +1080,451 @@ venture_series_store_txn_totals(
 	VentureSeriesStore		 *self,
 	const VentureSeriesTxnFilter	 *filter,
 	VentureSeriesTxnGroup		  group,
+	GError				**error
+);
+
+/* --- What the holdings are worth -------------------------------------------- */
+
+/**
+ * VentureSeriesValueBasis:
+ * @VENTURE_SERIES_VALUE_CONSERVATIVE: the lower of the region's sale
+ *   average and the market value where the account trades (the region's
+ *   average market value for an account with no venue, or an instrument
+ *   its venue does not list) -- what an item has been selling for, never
+ *   more than it is listed at. Either alone when the other is unknown.
+ * @VENTURE_SERIES_VALUE_MARKET: the market value at the account's venue,
+ *   else the region's average market value
+ * @VENTURE_SERIES_VALUE_MIN: the lowest price on offer at the account's
+ *   venue
+ * @VENTURE_SERIES_VALUE_HISTORICAL: the source's own historical price at
+ *   the account's venue
+ * @VENTURE_SERIES_VALUE_REGION_MARKET: the store's region figure: the mean
+ *   market value across the venue's group
+ * @VENTURE_SERIES_VALUE_REGION_SALE_AVG: what units sold for across the
+ *   region, from the region venue's newest day with a sale average in the
+ *   last sixty
+ *
+ * Which price one unit of a holding is valued at. Every figure is read in
+ * the currency asked for only: a price in another is no price.
+ */
+typedef enum
+{
+	VENTURE_SERIES_VALUE_CONSERVATIVE = 0,
+	VENTURE_SERIES_VALUE_MARKET,
+	VENTURE_SERIES_VALUE_MIN,
+	VENTURE_SERIES_VALUE_HISTORICAL,
+	VENTURE_SERIES_VALUE_REGION_MARKET,
+	VENTURE_SERIES_VALUE_REGION_SALE_AVG
+} VentureSeriesValueBasis;
+
+/**
+ * venture_series_value_basis_from_string:
+ * @name: (nullable): "conservative", "market", "min", "historical",
+ *   "region_market" or "region_sale_avg"
+ * @out: (out): the basis
+ *
+ * Returns: %TRUE when @name is one
+ */
+gboolean
+venture_series_value_basis_from_string(
+	const gchar		*name,
+	VentureSeriesValueBasis	*out
+);
+
+/**
+ * venture_series_value_basis_to_string:
+ * @basis: a basis
+ *
+ * Returns: (transfer none): its name
+ */
+const gchar *
+venture_series_value_basis_to_string(VentureSeriesValueBasis basis);
+
+/**
+ * VentureSeriesValueSort:
+ * @VENTURE_SERIES_VALUE_SORT_VALUE: by total value
+ * @VENTURE_SERIES_VALUE_SORT_QUANTITY: by units held
+ * @VENTURE_SERIES_VALUE_SORT_NAME: by the instrument's name
+ * @VENTURE_SERIES_VALUE_SORT_UNIT_VALUE: by what one unit is worth
+ * @VENTURE_SERIES_VALUE_SORT_ACCOUNTS: by how many accounts hold some
+ * @VENTURE_SERIES_VALUE_SORT_DAYS_OF_SUPPLY: by units held over units
+ *   sold a day
+ *
+ * How venture_series_store_value_instruments() orders its answer. Every
+ * order is computed by SQLite in the one statement that sums, so a page
+ * of the most valuable is a LIMIT, not a sort in C. Unknown values sort
+ * last whichever way the sort runs.
+ */
+typedef enum
+{
+	VENTURE_SERIES_VALUE_SORT_VALUE = 0,
+	VENTURE_SERIES_VALUE_SORT_QUANTITY,
+	VENTURE_SERIES_VALUE_SORT_NAME,
+	VENTURE_SERIES_VALUE_SORT_UNIT_VALUE,
+	VENTURE_SERIES_VALUE_SORT_ACCOUNTS,
+	VENTURE_SERIES_VALUE_SORT_DAYS_OF_SUPPLY
+} VentureSeriesValueSort;
+
+/**
+ * venture_series_value_sort_from_string:
+ * @name: (nullable): "value", "quantity", "name", "unit_value",
+ *   "accounts" or "days_of_supply"
+ * @out: (out): the sort
+ *
+ * Returns: %TRUE when @name is one
+ */
+gboolean
+venture_series_value_sort_from_string(
+	const gchar		*name,
+	VentureSeriesValueSort	*out
+);
+
+/**
+ * venture_series_value_sort_to_string:
+ * @sort: a sort
+ *
+ * Returns: (transfer none): its name
+ */
+const gchar *
+venture_series_value_sort_to_string(VentureSeriesValueSort sort);
+
+/**
+ * VentureSeriesValueFilter:
+ * @currency: what to value in, required: the source's currency
+ * @basis: which price a unit is worth
+ * @region_venue: (nullable): the venue whose figures are the region's
+ *   sale average; %NULL for "region-" and the account's venue's group in
+ *   lower case, the name the region-wide statistics travel under
+ * @default_group: (nullable): the group whose region figures value an
+ *   account that trades on no venue (a shared bank)
+ * @now: the moment the sale average's sixty days count back from
+ * @account_key: (nullable): one account's holdings
+ * @place: (nullable): one place's
+ * @exclude_place: (nullable): every place but this one
+ * @search: (nullable): instruments whose name or key contains this
+ * @category_prefix: (nullable): this category path and the ones beneath
+ * @min_value: only instruments whose total is at least this, or
+ *   %VENTURE_SERIES_NONE
+ * @unsold_since: only instruments with no sale in the ledger at or after
+ *   this moment ("dead stock"), or %VENTURE_SERIES_NONE
+ * @sort: the order
+ * @descending: largest first
+ * @offset: instruments to skip
+ * @count: instruments to return, 0 for %VENTURE_SERIES_DEFAULT_PAGE, at
+ *   most %VENTURE_SERIES_MAX_ACCOUNT_ROWS
+ *
+ * What venture_series_store_value_instruments() and _value_lines() read.
+ * Start from venture_series_value_filter_init(): two "no bound" values are
+ * not zero.
+ */
+typedef struct
+{
+	const gchar		*currency;
+	VentureSeriesValueBasis	 basis;
+	const gchar		*region_venue;
+	const gchar		*default_group;
+	gint64			 now;
+	const gchar		*account_key;
+	const gchar		*place;
+	const gchar		*exclude_place;
+	const gchar		*search;
+	const gchar		*category_prefix;
+	gint64			 min_value;
+	gint64			 unsold_since;
+	VentureSeriesValueSort	 sort;
+	gboolean		 descending;
+	guint			 offset;
+	guint			 count;
+} VentureSeriesValueFilter;
+
+/**
+ * venture_series_value_filter_init:
+ * @filter: (out caller-allocates): a filter to clear
+ *
+ * Every holding, conservatively valued, most valuable first.
+ */
+void
+venture_series_value_filter_init(VentureSeriesValueFilter *filter);
+
+/**
+ * VentureSeriesValuedLine:
+ * @account_key: who holds it
+ * @account_name: (nullable): their name
+ * @account_venue: (nullable): the venue they trade on
+ * @place: where
+ * @instrument_key: what
+ * @instrument_name: (nullable): its name
+ * @category: (nullable): its category path
+ * @quantity: how many
+ * @unit_value: one unit's value, or %VENTURE_SERIES_NONE when unpriced
+ * @value: @quantity times @unit_value, or %VENTURE_SERIES_NONE
+ * @at: as of when
+ *
+ * One holding, valued.
+ */
+typedef struct
+{
+	gchar	*account_key;
+	gchar	*account_name;
+	gchar	*account_venue;
+	gchar	*place;
+	gchar	*instrument_key;
+	gchar	*instrument_name;
+	gchar	*category;
+	gint64	 quantity;
+	gint64	 unit_value;
+	gint64	 value;
+	gint64	 at;
+} VentureSeriesValuedLine;
+
+/**
+ * venture_series_valued_line_free:
+ * @line: (transfer full) (nullable): a valued line
+ */
+void
+venture_series_valued_line_free(VentureSeriesValuedLine *line);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesValuedLine, venture_series_valued_line_free)
+
+/**
+ * VentureSeriesValuedInstrument:
+ * @instrument_key: what
+ * @instrument_name: (nullable): its name
+ * @category: (nullable): its category path
+ * @quantity: units held across every account and place
+ * @accounts: accounts holding some
+ * @lines: holding lines
+ * @priced_lines: of those, the ones with a price
+ * @priced_quantity: units on priced lines
+ * @value: the priced lines' total, or %VENTURE_SERIES_NONE when none is
+ *   priced
+ * @unit_value: @value over @priced_quantity, rounded half to even, or
+ *   %VENTURE_SERIES_NONE
+ * @sold_per_day: units sold a day across the region (else the most of
+ *   any venue the holders trade on), or NAN when unknown
+ * @last_sale: the ledger's newest sale of it, or %VENTURE_SERIES_NONE
+ *
+ * One instrument across the holdings asked about, valued.
+ */
+typedef struct
+{
+	gchar	*instrument_key;
+	gchar	*instrument_name;
+	gchar	*category;
+	gint64	 quantity;
+	gint64	 accounts;
+	gint64	 lines;
+	gint64	 priced_lines;
+	gint64	 priced_quantity;
+	gint64	 value;
+	gint64	 unit_value;
+	gdouble	 sold_per_day;
+	gint64	 last_sale;
+} VentureSeriesValuedInstrument;
+
+/**
+ * venture_series_valued_instrument_free:
+ * @instrument: (transfer full) (nullable): a valued instrument
+ */
+void
+venture_series_valued_instrument_free(VentureSeriesValuedInstrument *instrument);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesValuedInstrument, venture_series_valued_instrument_free)
+
+/**
+ * VentureSeriesValueTotals:
+ * @instruments: instruments matching the filter (every page)
+ * @lines: holding lines
+ * @priced_lines: lines with a price
+ * @quantity: units
+ * @value: the priced lines' total, 0 when none is priced
+ *
+ * The whole answer's totals, whichever page was asked for.
+ */
+typedef struct
+{
+	gint64	instruments;
+	gint64	lines;
+	gint64	priced_lines;
+	gint64	quantity;
+	gint64	value;
+} VentureSeriesValueTotals;
+
+/**
+ * venture_series_store_value_instruments:
+ * @self: a store
+ * @filter: which holdings, valued how, which page
+ * @out_totals: (out caller-allocates) (optional): the totals of every
+ *   instrument the filter matches
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Values the operator's holdings and sums them per instrument, in one
+ * statement: the per-unit figures are joined from the current and region
+ * tables, the products and the sums are integers in SQLite (a sum that
+ * overflows is refused), and the sort and the page are applied there too.
+ * A line whose product would not fit in 64 bits is left unpriced.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesValuedInstrument)
+ *   (nullable): the page, or %NULL on error (INVALID_ARGUMENT without a
+ *   currency)
+ */
+GPtrArray *
+venture_series_store_value_instruments(
+	VentureSeriesStore			 *self,
+	const VentureSeriesValueFilter		 *filter,
+	VentureSeriesValueTotals		 *out_totals,
+	GError					**error
+);
+
+/**
+ * venture_series_store_value_lines:
+ * @self: a store
+ * @filter: which holdings, valued how; the sort, the minimum and the page
+ *   are not read
+ * @instrument_keys: (array zero-terminated=1) (nullable): only these
+ *   instruments (a page's breakdown); %NULL for every one
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The holdings behind venture_series_store_value_instruments(), line by
+ * line and valued the same way, by account, place and instrument name, at
+ * most %VENTURE_SERIES_MAX_ACCOUNT_ROWS.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesValuedLine)
+ *   (nullable): the lines, or %NULL on error
+ */
+GPtrArray *
+venture_series_store_value_lines(
+	VentureSeriesStore			 *self,
+	const VentureSeriesValueFilter		 *filter,
+	const gchar *const			 *instrument_keys,
+	GError					**error
+);
+
+/* --- Balances by day ------------------------------------------------------------ */
+
+/**
+ * VentureSeriesBalanceDay:
+ * @account_key: whose
+ * @day_start: midnight UTC of the day
+ * @amount: the balance at the end of that day
+ *
+ * One account's closing balance on one day.
+ */
+typedef struct
+{
+	gchar	*account_key;
+	gint64	 day_start;
+	gint64	 amount;
+} VentureSeriesBalanceDay;
+
+/**
+ * venture_series_balance_day_free:
+ * @day: (transfer full) (nullable): a balance day
+ */
+void
+venture_series_balance_day_free(VentureSeriesBalanceDay *day);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesBalanceDay, venture_series_balance_day_free)
+
+/**
+ * venture_series_store_balance_days:
+ * @self: a store
+ * @currency: which currency's balances
+ * @since: the first day wanted, any moment in it
+ * @until: the end, exclusive
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every account's closing balance for each day in [@since, @until) on
+ * which it changed, plus, dated the day before @since's, the balance each
+ * account opened that window with: everything a sparkline per account
+ * needs, read in two grouped statements however many points a busy
+ * account stored. A day with no row kept the previous day's balance.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesBalanceDay)
+ *   (nullable): the days, by account key then day; %NULL on error
+ */
+GPtrArray *
+venture_series_store_balance_days(
+	VentureSeriesStore	 *self,
+	const gchar		 *currency,
+	gint64			  since,
+	gint64			  until,
+	GError			**error
+);
+
+/* --- Flips ------------------------------------------------------------------------ */
+
+/**
+ * VentureSeriesFlip:
+ * @instrument_key: what was bought and sold
+ * @instrument_name: (nullable): its name
+ * @currency: the money's currency
+ * @bought_units: units bought in the window
+ * @bought_amount: what they cost
+ * @matched_units: of the units sold, those matched to an earlier buy
+ * @cost: what the matched units cost, first bought first sold
+ * @proceeds: what the matched units sold for, after the source's fees
+ * @profit: @proceeds - @cost
+ * @unmatched_sold_units: units sold with no earlier buy in the window to
+ *   match (made, farmed, or bought before it)
+ * @open_units: units bought and not yet sold in the window
+ * @open_cost: what those cost
+ * @held: units the accounts hold of it now, every place but currency
+ * @first_buy: the window's first buy
+ * @last_sale: the window's last matched sale, or %VENTURE_SERIES_NONE
+ *
+ * One instrument's buys matched to its later sales: what a flip made.
+ */
+typedef struct
+{
+	gchar	*instrument_key;
+	gchar	*instrument_name;
+	gchar	 currency[VENTURE_MONEY_CURRENCY_LEN];
+	gint64	 bought_units;
+	gint64	 bought_amount;
+	gint64	 matched_units;
+	gint64	 cost;
+	gint64	 proceeds;
+	gint64	 profit;
+	gint64	 unmatched_sold_units;
+	gint64	 open_units;
+	gint64	 open_cost;
+	gint64	 held;
+	gint64	 first_buy;
+	gint64	 last_sale;
+} VentureSeriesFlip;
+
+/**
+ * venture_series_flip_free:
+ * @flip: (transfer full) (nullable): a flip
+ */
+void
+venture_series_flip_free(VentureSeriesFlip *flip);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesFlip, venture_series_flip_free)
+
+/**
+ * venture_series_store_flips:
+ * @self: a store
+ * @filter: (nullable): which ledger rows count -- an account, a venue, an
+ *   instrument, the window; the kind and paging are not read
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Matches every instrument's buys to its later sales, first in first out,
+ * across the accounts the filter keeps: a sale takes units from the
+ * oldest buy before it, its proceeds and each buy's cost split between
+ * the units in integers that add back up exactly. Instruments with no buy
+ * in the window are left out. Rows are read in one ordered statement; a
+ * window of more than %VENTURE_SERIES_MAX_ACCOUNT_ROWS buys and sales is
+ * refused (INVALID_ARGUMENT) rather than matched in part.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesFlip) (nullable): one
+ *   per instrument and currency, by profit, largest first; %NULL on error
+ */
+GPtrArray *
+venture_series_store_flips(
+	VentureSeriesStore		 *self,
+	const VentureSeriesTxnFilter	 *filter,
 	GError				**error
 );
 

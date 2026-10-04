@@ -1201,7 +1201,8 @@ test_accessible_shell(Fixture *f, gconstpointer data)
 	static const gchar *const paths[] = {
 		"/tickets", "/invoices/compose", "/quotes/compose", "/bills/compose",
 		"/e/ticket/new", "/e/contact", "/overview", "/market/browse", "/market/deals",
-		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", NULL
+		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc",
+		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
 	g_autofree gchar *page = NULL;
 	guint i;

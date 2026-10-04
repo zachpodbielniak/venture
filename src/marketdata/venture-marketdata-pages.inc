@@ -2424,7 +2424,8 @@ venture_marketdata_web_report_controls(
 	name = venture_report_get_name(report);
 
 	if ((0 != g_strcmp0(name, "market_deals")) && (0 != g_strcmp0(name, "venue_index")) &&
-	    (0 != g_strcmp0(name, "watchlist")))
+	    (0 != g_strcmp0(name, "watchlist")) && (0 != g_strcmp0(name, "accounts")) &&
+	    (0 != g_strcmp0(name, "account_holdings")) && (0 != g_strcmp0(name, "external_pnl")))
 		return;
 
 	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
@@ -2469,6 +2470,38 @@ venture_marketdata_web_report_controls(
 		}
 
 		g_string_append(content, "</select></label></div>");
+	}
+	else if (0 == g_strcmp0(name, "accounts"))
+	{
+		venture_web_goals_input(request, content, "Data source", "data_source_id", "id; every source");
+		venture_web_goals_input(request, content, "Realm", "group_key", "every realm");
+		venture_web_goals_input(request, content, "Value holdings at", "basis", "conservative");
+		venture_web_goals_input(request, content, "Listings expiring within (hours)", "expiring_hours", "12");
+		venture_web_goals_input(request, content, "Mail expiring within (days)", "mail_days", "3");
+		venture_web_goals_input(request, content, "Unvisited after (days)", "stale_days", "14");
+		venture_web_goals_input(request, content, "Order", "sort", "attention");
+	}
+	else if (0 == g_strcmp0(name, "account_holdings"))
+	{
+		venture_web_goals_input(request, content, "Data source", "data_source_id", "id; the first with accounts");
+		venture_web_goals_input(request, content, "Account", "account_key", "every account");
+		venture_web_goals_input(request, content, "Place", "place", "everywhere but currencies");
+		venture_web_goals_input(request, content, "Category", "category_path", "a store category path");
+		venture_web_goals_input(request, content, "Value at", "basis", "conservative");
+		venture_web_goals_input(request, content, "Worth at least", "min_value", "e.g. 100.00 GOLD");
+		venture_web_goals_input(request, content, "Dead stock: no sale for (days)", "dead_days", "every item");
+		venture_web_goals_input(request, content, "Order", "sort", "value");
+		venture_web_goals_input(request, content, "How many", "top", "50");
+	}
+	else if (0 == g_strcmp0(name, "external_pnl"))
+	{
+		venture_web_goals_input(request, content, "Data source", "data_source_id", "id; the first with accounts");
+		venture_web_goals_input(request, content, "Group by", "group_by", "day, week, month, account, venue, "
+		                        "instrument or source");
+		venture_web_goals_input(request, content, "Account", "account_key", "every account");
+		venture_web_goals_input(request, content, "Venue", "venue", "every venue");
+		venture_web_goals_input(request, content, "Item", "instrument", "every item");
+		venture_web_goals_input(request, content, "Source label", "source", "e.g. Auction");
 	}
 	else
 	{

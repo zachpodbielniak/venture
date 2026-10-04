@@ -4313,6 +4313,552 @@ venture_widget_kind_source_health(
 	return g_steal_pointer(&result);
 }
 
+/* --- account operations: attention, summary, holdings, trading P&L ----------- */
+
+/*
+ * The four account cards read the answers the /accounts pages draw
+ * (venture-marketdata-accounts.c) and draw a card and its JSON from one
+ * loop each, as every market card does. Their options are the few
+ * questions the answer takes -- a data source, a basis, a threshold --
+ * checked by the widget validator, so a typo is refused at the save
+ * rather than ignored on the page.
+ */
+
+/* An answer's money array as one line, "12g · 4.00 USD", or NULL. */
+static gchar *
+venture_widget_money_list_text(
+	JsonObject	*object,
+	const gchar	*member
+){
+	g_autoptr(GString) text = NULL;
+	JsonArray *amounts;
+	guint i;
+
+	amounts = ((NULL != object) && json_object_has_member(object, member))
+		? json_object_get_array_member(object, member) : NULL;
+
+	if ((NULL == amounts) || (0 == json_array_get_length(amounts)))
+		return NULL;
+
+	text = g_string_new(NULL);
+
+	for (i = 0; i < json_array_get_length(amounts); i++)
+	{
+		g_autoptr(VentureMoney) money = NULL;
+		g_autofree gchar *shown = NULL;
+
+		money = venture_money_from_json(json_array_get_element(amounts, i), NULL, NULL);
+
+		if (NULL == money)
+			continue;
+
+		shown = venture_money_to_display_string(money, TRUE);
+
+		if (text->len > 0)
+			g_string_append(text, " \xc2\xb7 ");
+
+		g_string_append(text, shown);
+	}
+
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
+static void
+venture_widget_add_text_member(
+	JsonBuilder	*builder,
+	const gchar	*name,
+	const gchar	*value
+){
+	json_builder_set_member_name(builder, name);
+
+	if (NULL != value)
+		json_builder_add_string_value(builder, value);
+	else
+		json_builder_add_null_value(builder);
+}
+
+/* accounts_attention: where to log in next, most urgent first. */
+static VentureWidgetResult *
+venture_widget_kind_accounts_attention(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	VentureMarketdataAccountsQuery query;
+	JsonArray *rows;
+	guint limit;
+	guint i;
+
+	(void)user_data;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != error) && (NULL != *error))
+		return NULL;
+
+	venture_marketdata_accounts_query_init(&query);
+	query.organization_id = venture_widget_primary_organization(context, scope);
+	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
+	query.expiring_hours = venture_widget_option_int(options, "expiring_hours", 0);
+	query.mail_days = venture_widget_option_int(options, "mail_days", 0);
+	query.stale_days = venture_widget_option_int(options, "stale_days", 0);
+	answer = venture_marketdata_accounts(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	rows = json_object_get_array_member(json_node_get_object(answer), "attention");
+	limit = venture_widget_get_limit(widget, 5);
+	result = venture_widget_result_new();
+	result->title = g_strdup("Where to log in");
+	result->link = g_strdup("/accounts");
+	result->link_label = g_strdup("Accounts");
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+	html = g_string_new(NULL);
+
+	if ((NULL == rows) || (0 == json_array_get_length(rows)))
+		g_string_append(html, "<p class=\"muted\">Nothing needs a login.</p>");
+	else
+		g_string_append(html, "<ul class=\"relation-list accounts-widget\">");
+
+	/* One loop draws the card and fills the data, so they agree. */
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)) && (i < limit); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		JsonArray *accounts = json_object_get_array_member(row, "accounts");
+		JsonArray *reasons = json_object_get_array_member(row, "reasons");
+		const gchar *severity = venture_widget_json_text(row, "severity");
+		const gchar *first_url = NULL;
+		guint j;
+
+		json_builder_begin_object(builder);
+		venture_widget_add_text_member(builder, "title", venture_widget_json_text(row, "title"));
+		venture_widget_add_text_member(builder, "severity", severity);
+		venture_widget_add_text_member(builder, "due_at", venture_widget_json_text(row, "due_at"));
+		json_builder_set_member_name(builder, "accounts");
+		json_builder_begin_array(builder);
+
+		for (j = 0; (NULL != accounts) && (j < json_array_get_length(accounts)); j++)
+		{
+			JsonObject *account = json_array_get_object_element(accounts, j);
+
+			if (NULL == first_url)
+				first_url = venture_widget_json_text(account, "url");
+
+			json_builder_add_string_value(builder, venture_widget_json_text(account, "name"));
+		}
+
+		json_builder_end_array(builder);
+		json_builder_set_member_name(builder, "reasons");
+		json_builder_begin_array(builder);
+
+		for (j = 0; (NULL != reasons) && (j < json_array_get_length(reasons)); j++)
+		{
+			JsonObject *reason = json_array_get_object_element(reasons, j);
+			g_autofree gchar *line = g_strdup_printf("%s: %s",
+				venture_widget_json_text(reason, "account_name"),
+				venture_widget_json_text(reason, "text"));
+
+			json_builder_add_string_value(builder, line);
+		}
+
+		json_builder_end_array(builder);
+		json_builder_end_object(builder);
+
+		g_string_append_printf(html, "<li class=\"attention-row is-%s\"><a href=\"",
+		                       (NULL != severity) ? severity : "stale");
+		venture_html_escape_append(html, (NULL != first_url) ? first_url : "/accounts");
+		g_string_append(html, "\">");
+		venture_html_escape_append(html, venture_widget_json_text(row, "title"));
+		g_string_append(html, "</a> <span class=\"muted\">");
+
+		for (j = 0; (NULL != reasons) && (j < json_array_get_length(reasons)) && (j < 2); j++)
+		{
+			JsonObject *reason = json_array_get_object_element(reasons, j);
+
+			if (j > 0)
+				g_string_append(html, "; ");
+
+			venture_html_escape_append(html, venture_widget_json_text(reason, "account_name"));
+			g_string_append(html, ": ");
+			venture_html_escape_append(html, venture_widget_json_text(reason, "text"));
+		}
+
+		if ((NULL != reasons) && (json_array_get_length(reasons) > 2))
+			g_string_append_printf(html, "; %u more", json_array_get_length(reasons) - 2);
+
+		g_string_append(html, "</span></li>");
+	}
+
+	if ((NULL != rows) && (json_array_get_length(rows) > 0))
+		g_string_append(html, "</ul>");
+
+	if (!json_object_get_boolean_member(json_node_get_object(answer), "available"))
+		g_string_append(html, "<p class=\"muted\">No data sources: market data feeds are off.</p>");
+
+	venture_widget_attribute(result, html, json_node_get_object(answer));
+	json_builder_end_array(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
+/* accounts_summary: money on hand, what the bags are worth, what is up. */
+static VentureWidgetResult *
+venture_widget_kind_accounts_summary(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	static const struct
+	{
+		const gchar	*member;
+		const gchar	*label;
+	} figures[] = {
+		{ "balances", "On hand" },
+		{ "inventory_value", "Inventory" },
+		{ "positions_value", "Listed" },
+		{ "inbound_money", "In the mail" },
+		{ "net_30d", "Net, 30 days" },
+	};
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *basis = NULL;
+	VentureMarketdataAccountsQuery query;
+	JsonObject *summary;
+	gsize i;
+
+	(void)user_data;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != error) && (NULL != *error))
+		return NULL;
+
+	if ((NULL != options) && json_object_has_member(json_node_get_object(options), "basis"))
+		basis = g_strdup(venture_json_object_get_string(json_node_get_object(options), "basis", NULL));
+
+	venture_marketdata_accounts_query_init(&query);
+	query.organization_id = venture_widget_primary_organization(context, scope);
+	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
+	query.basis = basis;
+	answer = venture_marketdata_accounts(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	summary = json_object_get_object_member(json_node_get_object(answer), "summary");
+	result = venture_widget_result_new();
+	result->title = g_strdup("Accounts");
+	result->link = g_strdup("/accounts");
+	result->link_label = g_strdup("Open");
+
+	/* One object: each figure, per currency, and the words the card shows. */
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	html = g_string_new("<div class=\"stat-row market-stats accounts-stats\">");
+
+	for (i = 0; i < G_N_ELEMENTS(figures); i++)
+	{
+		g_autofree gchar *text = venture_widget_money_list_text(summary, figures[i].member);
+		g_autofree gchar *formatted = g_strconcat(figures[i].member, "_formatted", NULL);
+
+		json_builder_set_member_name(builder, figures[i].member);
+		json_builder_add_value(builder, venture_widget_json_copy(summary, figures[i].member));
+		venture_widget_add_text_member(builder, formatted, text);
+
+		g_string_append(html, "<div class=\"stat\"><span class=\"stat-label\">");
+		venture_html_escape_append(html, figures[i].label);
+		g_string_append(html, "</span><span class=\"stat-value market-figure\">");
+		venture_html_escape_append(html, (NULL != text) ? text : "\xe2\x80\x94");
+		g_string_append(html, "</span></div>");
+	}
+
+	json_builder_set_member_name(builder, "positions");
+	json_builder_add_int_value(builder, json_object_get_int_member_with_default(summary, "positions", 0));
+	json_builder_set_member_name(builder, "positions_expired");
+	json_builder_add_int_value(builder, json_object_get_int_member_with_default(summary, "positions_expired", 0));
+	json_builder_set_member_name(builder, "needs_login");
+	json_builder_add_int_value(builder, json_object_get_int_member_with_default(summary, "needs_login", 0));
+	json_builder_end_object(builder);
+
+	g_string_append_printf(html, "</div><p class=\"muted\">%" G_GINT64_FORMAT " listings, %" G_GINT64_FORMAT
+	                             " expired; %" G_GINT64_FORMAT " places need a login.</p>",
+	                       json_object_get_int_member_with_default(summary, "positions", 0),
+	                       json_object_get_int_member_with_default(summary, "positions_expired", 0),
+	                       json_object_get_int_member_with_default(summary, "needs_login", 0));
+	venture_widget_attribute(result, html, json_node_get_object(answer));
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
+/* holdings_value: the most valuable things held, across every account. */
+static VentureWidgetResult *
+venture_widget_kind_holdings_value(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autofree gchar *basis = NULL;
+	g_autofree gchar *place = NULL;
+	VentureMarketdataInventoryQuery query;
+	JsonObject *root;
+	JsonArray *rows;
+	guint i;
+
+	(void)user_data;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != error) && (NULL != *error))
+		return NULL;
+
+	if (NULL != options)
+	{
+		basis = g_strdup(venture_json_object_get_string(json_node_get_object(options), "basis", NULL));
+		place = g_strdup(venture_json_object_get_string(json_node_get_object(options), "place", NULL));
+	}
+
+	venture_marketdata_inventory_query_init(&query);
+	query.organization_id = venture_widget_primary_organization(context, scope);
+	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
+	query.basis = basis;
+	query.place = place;
+	query.per_page = venture_widget_get_limit(widget, 8);
+	answer = venture_marketdata_inventory(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	rows = json_object_get_array_member(root, "rows");
+	result = venture_widget_result_new();
+	result->title = g_strdup("Most valuable holdings");
+	result->link = g_strdup("/accounts/inventory");
+	result->link_label = g_strdup("Inventory");
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+	html = g_string_new(NULL);
+
+	if ((NULL == rows) || (0 == json_array_get_length(rows)))
+		g_string_append(html, "<p class=\"muted\">Nothing held yet.</p>");
+	else
+		g_string_append(html, "<table class=\"data market-widget\"><thead><tr>"
+		                      "<th scope=\"col\">Item</th><th scope=\"col\" class=\"num\">Units</th>"
+		                      "<th scope=\"col\" class=\"num\">Value</th></tr></thead><tbody>");
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		g_autofree gchar *value = venture_widget_money_text(row, "value");
+		const gchar *name = venture_widget_json_text(row, "instrument_name");
+
+		if (NULL == name)
+			name = venture_widget_json_text(row, "instrument_key");
+
+		json_builder_begin_object(builder);
+		venture_widget_add_text_member(builder, "instrument", name);
+		venture_widget_add_text_member(builder, "key", venture_widget_json_text(row, "instrument_key"));
+		json_builder_set_member_name(builder, "quantity");
+		json_builder_add_int_value(builder, json_object_get_int_member_with_default(row, "quantity", 0));
+		json_builder_set_member_name(builder, "value");
+		json_builder_add_value(builder, venture_widget_json_copy(row, "value"));
+		venture_widget_add_text_member(builder, "value_formatted", value);
+		json_builder_end_object(builder);
+
+		g_string_append(html, "<tr><td><a href=\"");
+		venture_html_escape_append(html, venture_widget_json_text(row, "url"));
+		g_string_append(html, "\">");
+		venture_html_escape_append(html, name);
+		g_string_append_printf(html, "</a></td><td class=\"num\">%" G_GINT64_FORMAT "</td><td class=\"num\">",
+		                       json_object_get_int_member_with_default(row, "quantity", 0));
+		venture_html_escape_append(html, (NULL != value) ? value : "\xe2\x80\x94");
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL != rows) && (json_array_get_length(rows) > 0))
+		g_string_append(html, "</tbody></table>");
+
+	venture_widget_attribute(result, html, root);
+	json_builder_end_array(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
+/* external_pnl: the period's net from the source's own ledger, and its
+ * shape as a sparkline. */
+static VentureWidgetResult *
+venture_widget_kind_external_pnl(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(GArray) values = NULL;
+	g_autofree gchar *period_text = NULL;
+	g_autofree gchar *account = NULL;
+	g_autofree gchar *net = NULL;
+	g_autofree gchar *sales = NULL;
+	g_autofree gchar *purchases = NULL;
+	VentureMarketdataPnlQuery query;
+	JsonObject *root;
+	JsonObject *total = NULL;
+	JsonArray *totals;
+	JsonNode *trend;
+	GDateTime *start;
+	GDateTime *end;
+	gint64 span;
+	guint i;
+
+	(void)user_data;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != error) && (NULL != *error))
+		return NULL;
+
+	if (NULL != options)
+		account = g_strdup(venture_json_object_get_string(json_node_get_object(options), "account_key", NULL));
+
+	/* The thirty days a trader means by "lately", unless the card says. */
+	period_text = venture_widget_get_string(widget, "period");
+	period = venture_context_parse_period(context, (NULL != period_text) ? period_text : "last_30_days",
+	                                      error);
+
+	if (NULL == period)
+		return NULL;
+
+	start = venture_date_range_get_start(period);
+	end = venture_date_range_get_end(period);
+	venture_marketdata_pnl_query_init(&query);
+	query.organization_id = venture_widget_primary_organization(context, scope);
+	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
+	query.account = account;
+	query.since = (NULL != start) ? MAX(g_date_time_to_unix(start), 1) : -1;
+	query.until = (NULL != end) ? MAX(g_date_time_to_unix(end), 1) : -1;
+	span = ((NULL != start) && (NULL != end)) ? g_date_time_to_unix(end) - g_date_time_to_unix(start) : G_MAXINT64;
+	query.group_by = (span <= 62 * 86400) ? "day" : ((span <= 400 * 86400) ? "week" : "month");
+	query.top = 1;
+	answer = venture_marketdata_external_pnl(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	totals = json_object_get_array_member(root, "totals");
+
+	if ((NULL != totals) && (json_array_get_length(totals) > 0))
+		total = json_array_get_object_element(totals, 0);
+
+	net = venture_widget_money_text(total, "net");
+	sales = venture_widget_money_text(total, "sales_amount");
+	purchases = venture_widget_money_text(total, "buys_amount");
+
+	result = venture_widget_result_new();
+	result->title = g_strdup("Trading profit");
+	result->link = g_strdup("/accounts/pnl");
+	result->link_label = g_strdup("Profit and loss");
+
+	/* The trend's net per period, the sparkline's points. */
+	values = g_array_new(FALSE, FALSE, sizeof(gdouble));
+	trend = json_object_get_member(root, "trend");
+
+	if ((NULL != trend) && JSON_NODE_HOLDS_OBJECT(trend))
+	{
+		JsonArray *points = json_object_get_array_member(json_node_get_object(trend), "points");
+
+		for (i = 0; (NULL != points) && (i < json_array_get_length(points)); i++)
+		{
+			gdouble value = (gdouble)json_object_get_int_member(json_array_get_object_element(points, i),
+			                                                     "net");
+
+			g_array_append_val(values, value);
+		}
+	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	venture_widget_add_text_member(builder, "period", venture_date_range_get_label(period));
+	venture_widget_add_text_member(builder, "currency", venture_widget_json_text(root, "currency"));
+	json_builder_set_member_name(builder, "net");
+	json_builder_add_value(builder, venture_widget_json_copy(total, "net"));
+	venture_widget_add_text_member(builder, "net_formatted", net);
+	json_builder_set_member_name(builder, "sales");
+	json_builder_add_value(builder, venture_widget_json_copy(total, "sales_amount"));
+	venture_widget_add_text_member(builder, "sales_formatted", sales);
+	json_builder_set_member_name(builder, "purchases");
+	json_builder_add_value(builder, venture_widget_json_copy(total, "buys_amount"));
+	venture_widget_add_text_member(builder, "purchases_formatted", purchases);
+	json_builder_set_member_name(builder, "trend");
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < values->len; i++)
+		json_builder_add_int_value(builder, (gint64)g_array_index(values, gdouble, i));
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+
+	html = g_string_new(NULL);
+	g_string_append(html, "<div class=\"stat\"><span class=\"stat-label\">Net, ");
+	venture_html_escape_append(html, venture_date_range_get_label(period));
+	g_string_append(html, "</span><span class=\"stat-value market-figure\">");
+	venture_html_escape_append(html, (NULL != net) ? net : "\xe2\x80\x94");
+	g_string_append(html, "</span>");
+
+	if (values->len > 1)
+	{
+		g_autofree gchar *line = venture_web_chart_sparkline("Net per period",
+			(const gdouble *)(gpointer)values->data, values->len);
+
+		g_string_append(html, line);
+	}
+
+	g_string_append(html, "<span class=\"stat-note\">Sales ");
+	venture_html_escape_append(html, (NULL != sales) ? sales : "\xe2\x80\x94");
+	g_string_append(html, ", purchases ");
+	venture_html_escape_append(html, (NULL != purchases) ? purchases : "\xe2\x80\x94");
+	g_string_append(html, "</span></div>");
+	venture_widget_attribute(result, html, root);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
 /* ==========================================================================
  * The registry
  * ========================================================================== */
@@ -4562,6 +5108,15 @@ static const gchar *const venture_widget_uses_watchlist[] = {
 static const gchar *const venture_widget_uses_market_alerts[] = {
 	"limit", NULL
 };
+static const gchar *const venture_widget_uses_accounts_options[] = {
+	"options", "limit", NULL
+};
+static const gchar *const venture_widget_uses_accounts_summary[] = {
+	"options", NULL
+};
+static const gchar *const venture_widget_uses_external_pnl[] = {
+	"period", "options", NULL
+};
 static const gchar *const venture_widget_uses_opportunities[] = {
 	"record_id", "options", "limit", NULL
 };
@@ -4694,6 +5249,38 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"Each market data source's last run, the rows it brought and "
 		"how many of its venues are late.",
 		"feeds", NULL, venture_widget_kind_source_health
+	},
+	{
+		"accounts_attention", "Where to log in",
+		"The operator's accounts that need a login, most urgent first: "
+		"listings expired or about to, mail about to be lost, money "
+		"waiting, accounts not seen for a while. options: data_source_id, "
+		"expiring_hours, mail_days, stale_days.",
+		"marketdata", venture_widget_uses_accounts_options,
+		venture_widget_kind_accounts_attention
+	},
+	{
+		"accounts_summary", "Accounts at a glance",
+		"Money on hand across the accounts, what their holdings are "
+		"worth, what is listed and what waits in the mail, and the "
+		"thirty days' net. options: data_source_id, basis.",
+		"marketdata", venture_widget_uses_accounts_summary,
+		venture_widget_kind_accounts_summary
+	},
+	{
+		"holdings_value", "Most valuable holdings",
+		"The things the accounts hold that are worth the most, valued on "
+		"a basis. options: data_source_id, basis, place.",
+		"marketdata", venture_widget_uses_accounts_options,
+		venture_widget_kind_holdings_value
+	},
+	{
+		"external_pnl", "Trading profit",
+		"The period's net from the data source's own ledger of trades, "
+		"with sales, purchases and a sparkline of each day's net. "
+		"options: data_source_id, account_key.",
+		"marketdata", venture_widget_uses_external_pnl,
+		venture_widget_kind_external_pnl
 	},
 	{
 		"opportunities", "Opportunities",
@@ -6721,6 +7308,47 @@ static const VentureDashboardTemplate venture_dashboard_templates[] = {
 		" {\"kind\": \"activity\", \"limit\": 8, \"span\": \"full\"}"
 		"]}"
 	},
+	/*
+	 * The operator's own accounts in a game or a marketplace: where to log
+	 * in next first, because that is why the page is opened, then what
+	 * the accounts are worth and made, and the listings about to run out.
+	 */
+	{
+		"operations", "Operations",
+		"Your characters and seller accounts: where to log in next, money "
+		"on hand, what the inventory is worth, what trading made, the "
+		"listings about to expire and the market alerts.",
+		"marketdata",
+		"{"
+		"\"name\": \"Operations\","
+		"\"slug\": \"operations\","
+		"\"description\": \"Where to log in, and how the trading is going.\","
+		"\"purpose\": \"overview\","
+		"\"layout\": \"three_columns\","
+		"\"widgets\": ["
+		" {\"kind\": \"accounts_attention\", \"title\": \"Where to log in\","
+		"  \"limit\": 6, \"span\": \"wide\"},"
+		" {\"kind\": \"external_pnl\", \"title\": \"Trading profit\","
+		"  \"period\": \"last_30_days\"},"
+		" {\"kind\": \"accounts_summary\", \"title\": \"Accounts\","
+		"  \"span\": \"full\"},"
+		" {\"kind\": \"upcoming\", \"title\": \"Listings running out\","
+		"  \"entity_type\": \"listing\", \"field\": \"expires_at\","
+		"  \"filter\": \"outcome=open\","
+		"  \"options\": \"{\\\"days\\\": 2}\", \"limit\": 8,"
+		"  \"span\": \"wide\"},"
+		" {\"kind\": \"market_alerts\", \"title\": \"Alert hits\", \"limit\": 6},"
+		" {\"kind\": \"holdings_value\", \"title\": \"Most valuable holdings\","
+		"  \"limit\": 8, \"span\": \"wide\"},"
+		" {\"kind\": \"report\", \"title\": \"Trading by week\","
+		"  \"report_name\": \"external_pnl\", \"period\": \"last_90_days\","
+		"  \"options\": \"{\\\"group_by\\\": \\\"week\\\", \\\"tiles\\\": false}\"},"
+		" {\"kind\": \"actions\", \"title\": \"Do\","
+		"  \"body\": \"Accounts | /accounts\\nInventory | /accounts/inventory\\n"
+		"Profit and loss | /accounts/pnl\\nAlerts | /market/alerts\\n"
+		"Data sources | /feeds\"}"
+		"]}"
+	},
 	{
 		"overview", "Overview",
 		"A general home page: the month's figures, the tickets, the "
@@ -7087,6 +7715,79 @@ venture_dashboard_validate_report_options(
  * the same rules hold for the editor, the API, an import and the
  * assistant.
  */
+/*
+ * The options an account card reads, by kind, and nothing else: a
+ * data_source_id that is a positive number, a basis the store knows,
+ * thresholds in range and a place or account as text.
+ */
+static gboolean
+venture_dashboard_validate_account_options(
+	const gchar	 *kind,
+	JsonObject	 *options,
+	GError		**error
+){
+	static const gchar *const attention[] = { "data_source_id", "expiring_hours", "mail_days", "stale_days", NULL };
+	static const gchar *const summary[] = { "data_source_id", "basis", NULL };
+	static const gchar *const holdings[] = { "data_source_id", "basis", "place", NULL };
+	static const gchar *const pnl[] = { "data_source_id", "account_key", NULL };
+	const gchar *const *allowed;
+	g_autoptr(GList) members = NULL;
+	GList *l;
+
+	allowed = (0 == g_strcmp0(kind, "accounts_attention")) ? attention
+	        : ((0 == g_strcmp0(kind, "accounts_summary")) ? summary
+	        : ((0 == g_strcmp0(kind, "holdings_value")) ? holdings : pnl));
+	members = json_object_get_members(options);
+
+	for (l = members; NULL != l; l = l->next)
+	{
+		const gchar *name = l->data;
+		JsonNode *node = json_object_get_member(options, name);
+
+		if (!g_strv_contains(allowed, name))
+		{
+			g_autofree gchar *names = g_strjoinv(", ", (gchar **)allowed);
+
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "A %s card takes the options %s, not \"%s\"", kind, names, name);
+			return FALSE;
+		}
+
+		if ((0 == g_strcmp0(name, "basis")) || (0 == g_strcmp0(name, "place")) ||
+		    (0 == g_strcmp0(name, "account_key")))
+		{
+			if (!JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_STRING != json_node_get_value_type(node)))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "options.%s is text", name);
+				return FALSE;
+			}
+
+			if ((0 == g_strcmp0(name, "basis")) &&
+			    !g_strv_contains(venture_marketdata_accounts_bases(), json_node_get_string(node)))
+			{
+				g_autofree gchar *names = g_strjoinv(", ", (gchar **)venture_marketdata_accounts_bases());
+
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "options.basis is one of %s", names);
+				return FALSE;
+			}
+
+			continue;
+		}
+
+		if (!JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_INT64 != json_node_get_value_type(node)) ||
+		    (json_node_get_int(node) < 1) || (json_node_get_int(node) > 3650))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "options.%s is a whole number, at least 1", name);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 static gboolean
 venture_dashboard_validate_widget(
 	VentureDatabase	 *database,
@@ -7190,6 +7891,14 @@ venture_dashboard_validate_widget(
 
 	if (!venture_dashboard_validate_report_options(context, kind, report_name,
 	                                               options, error))
+		return FALSE;
+
+	/* An account card takes the few questions its answer does: a typo
+	 * refused here rather than ignored on the page. */
+	if (((0 == g_strcmp0(kind, "accounts_attention")) || (0 == g_strcmp0(kind, "accounts_summary")) ||
+	     (0 == g_strcmp0(kind, "holdings_value")) || (0 == g_strcmp0(kind, "external_pnl"))) &&
+	    (NULL != options) && !venture_dashboard_validate_account_options(kind, json_node_get_object(options),
+	                                                                     error))
 		return FALSE;
 
 	/* An opportunities card's options are a scan's question, judged by

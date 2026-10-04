@@ -2773,3 +2773,963 @@ venture_series_store_txn_totals(
 
 	return g_steal_pointer(&totals);
 }
+
+/* ==========================================================================
+ * What the holdings are worth
+ * ========================================================================== */
+
+static const gchar *const accounts_value_bases[] = {
+	"conservative", "market", "min", "historical", "region_market", "region_sale_avg", NULL
+};
+static const gchar *const accounts_value_sorts[] = {
+	"value", "quantity", "name", "unit_value", "accounts", "days_of_supply", NULL
+};
+
+/* How far back the region's newest sale average may be: the oracle's
+ * historical window, so a figure from last season does not value today's
+ * bags. */
+#define ACCOUNTS_SALE_AVG_DAYS (60)
+
+gboolean
+venture_series_value_basis_from_string(
+	const gchar		*name,
+	VentureSeriesValueBasis	*out
+){
+	guint i;
+
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	for (i = 0; (NULL != name) && (NULL != accounts_value_bases[i]); i++)
+	{
+		if (0 == strcmp(accounts_value_bases[i], name))
+		{
+			*out = (VentureSeriesValueBasis)i;
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+const gchar *
+venture_series_value_basis_to_string(VentureSeriesValueBasis basis)
+{
+	if ((guint)basis >= G_N_ELEMENTS(accounts_value_bases) - 1)
+		return "conservative";
+
+	return accounts_value_bases[basis];
+}
+
+gboolean
+venture_series_value_sort_from_string(
+	const gchar		*name,
+	VentureSeriesValueSort	*out
+){
+	guint i;
+
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	for (i = 0; (NULL != name) && (NULL != accounts_value_sorts[i]); i++)
+	{
+		if (0 == strcmp(accounts_value_sorts[i], name))
+		{
+			*out = (VentureSeriesValueSort)i;
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+const gchar *
+venture_series_value_sort_to_string(VentureSeriesValueSort sort)
+{
+	if ((guint)sort >= G_N_ELEMENTS(accounts_value_sorts) - 1)
+		return "value";
+
+	return accounts_value_sorts[sort];
+}
+
+void
+venture_series_value_filter_init(VentureSeriesValueFilter *filter)
+{
+	g_return_if_fail(NULL != filter);
+
+	memset(filter, 0, sizeof(*filter));
+	filter->basis = VENTURE_SERIES_VALUE_CONSERVATIVE;
+	filter->min_value = VENTURE_SERIES_NONE;
+	filter->unsold_since = VENTURE_SERIES_NONE;
+	filter->sort = VENTURE_SERIES_VALUE_SORT_VALUE;
+	filter->descending = TRUE;
+}
+
+void
+venture_series_valued_line_free(VentureSeriesValuedLine *line)
+{
+	if (NULL == line)
+		return;
+
+	g_free(line->account_key);
+	g_free(line->account_name);
+	g_free(line->account_venue);
+	g_free(line->place);
+	g_free(line->instrument_key);
+	g_free(line->instrument_name);
+	g_free(line->category);
+	g_free(line);
+}
+
+void
+venture_series_valued_instrument_free(VentureSeriesValuedInstrument *instrument)
+{
+	if (NULL == instrument)
+		return;
+
+	g_free(instrument->instrument_key);
+	g_free(instrument->instrument_name);
+	g_free(instrument->category);
+	g_free(instrument);
+}
+
+/* The price of one unit under @basis, as an SQL expression over the
+ * figures the lines carry. */
+static const gchar *
+accounts_unit_expr(VentureSeriesValueBasis basis)
+{
+	switch (basis)
+	{
+	case VENTURE_SERIES_VALUE_MARKET:
+		return "COALESCE(realm_market, region_market)";
+	case VENTURE_SERIES_VALUE_MIN:
+		return "realm_min";
+	case VENTURE_SERIES_VALUE_HISTORICAL:
+		return "realm_historical";
+	case VENTURE_SERIES_VALUE_REGION_MARKET:
+		return "region_market";
+	case VENTURE_SERIES_VALUE_REGION_SALE_AVG:
+		return "region_sale_avg";
+	case VENTURE_SERIES_VALUE_CONSERVATIVE:
+	default:
+		/* SQLite's two-argument MIN() is NULL when either is: say what
+		 * one known figure alone means instead. */
+		return "CASE WHEN region_sale_avg IS NULL THEN COALESCE(realm_market, region_market)"
+		       " WHEN COALESCE(realm_market, region_market) IS NULL THEN region_sale_avg"
+		       " WHEN region_sale_avg < COALESCE(realm_market, region_market) THEN region_sale_avg"
+		       " ELSE COALESCE(realm_market, region_market) END";
+	}
+}
+
+/*
+ * The valued lines as common table expressions `lines`, `valued` and
+ * `priced`, every value a bound parameter in the order it appears. The
+ * figures are joined per line from the indexes the market half keeps:
+ * current (venue, instrument), region (group, instrument, currency) and
+ * daily's primary key for the newest sale average. A line's value is the
+ * integer product, left unpriced when it would not fit.
+ *
+ * Units sold a day are the store's own estimate unless it is zero, then
+ * the source's: a venue the source describes only by statistics has no
+ * listings to diff, so the store's zero there says "no evidence", not
+ * "nothing sells" -- the reference figures make the same substitution.
+ */
+static gboolean
+accounts_value_cte(
+	const VentureSeriesValueFilter	 *filter,
+	const gchar *const		 *instrument_keys,
+	GString				 *sql,
+	GArray				 *bindings,
+	GError				**error
+){
+	g_autofree gchar *currency = NULL;
+	guint i;
+
+	if ((NULL == filter) || venture_string_is_empty(filter->currency))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Holdings are valued in one currency: name it");
+		return FALSE;
+	}
+
+	if ((guint)filter->basis >= G_N_ELEMENTS(accounts_value_bases) - 1)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Not a basis to value holdings on");
+		return FALSE;
+	}
+
+	currency = g_ascii_strup(filter->currency, -1);
+
+	g_string_append(sql,
+		"WITH lines AS (SELECT a.id AS account_id, a.key AS account_key, a.name AS account_name,"
+		"  a.venue_key AS account_venue, a.group_key AS account_group, h.place AS place,"
+		"  h.instrument_key AS instrument_key, i.name AS instrument_name, i.name_fold AS name_fold,"
+		"  i.category AS category, h.quantity AS quantity, h.at AS at,"
+		"  c.min_price AS realm_min, c.market_value AS realm_market,"
+		"  c.source_historical AS realm_historical,"
+		"  COALESCE(NULLIF(c.sold_per_day, 0), c.source_sold_per_day, c.sold_per_day) AS realm_spd,"
+		"  r.market_avg AS region_market,"
+		"  (SELECT d.sale_avg FROM daily d WHERE d.venue_id = rv.id AND d.instrument_id = i.id"
+		"     AND d.currency = ? AND d.sale_avg IS NOT NULL AND d.day >= ?"
+		"     ORDER BY d.day DESC LIMIT 1) AS region_sale_avg,"
+		"  COALESCE(NULLIF(rc.sold_per_day, 0), rc.source_sold_per_day, rc.sold_per_day) AS region_spd"
+		" FROM account_holdings h"
+		" JOIN accounts a ON a.id = h.account_id"
+		" LEFT JOIN instruments i ON i.key = h.instrument_key"
+		" LEFT JOIN venues v ON v.key = a.venue_key"
+		" LEFT JOIN current c ON c.venue_id = v.id AND c.instrument_id = i.id AND c.currency = ?"
+		" LEFT JOIN region r ON r.group_key = COALESCE(v.group_key, ?) AND r.instrument_id = i.id"
+		"   AND r.currency = ?"
+		" LEFT JOIN venues rv ON rv.key = COALESCE(?, 'region-' || lower(COALESCE(v.group_key, ?)))"
+		" LEFT JOIN current rc ON rc.venue_id = rv.id AND rc.instrument_id = i.id AND rc.currency = ?"
+		" WHERE 1");
+	accounts_bind_add_text(bindings, currency);
+	accounts_bind_add_int(bindings, (filter->now / 86400) - ACCOUNTS_SALE_AVG_DAYS);
+	accounts_bind_add_text(bindings, currency);
+	accounts_bind_add_text(bindings, filter->default_group);
+	accounts_bind_add_text(bindings, currency);
+	accounts_bind_add_text(bindings, filter->region_venue);
+	accounts_bind_add_text(bindings, filter->default_group);
+	accounts_bind_add_text(bindings, currency);
+
+	if (NULL != filter->account_key)
+	{
+		g_string_append(sql, " AND a.key = ?");
+		accounts_bind_add_text(bindings, filter->account_key);
+	}
+
+	if (NULL != filter->place)
+	{
+		if (!accounts_check_choice(filter->place, accounts_places, "place", error))
+			return FALSE;
+
+		g_string_append(sql, " AND h.place = ?");
+		accounts_bind_add_text(bindings, filter->place);
+	}
+
+	if (NULL != filter->exclude_place)
+	{
+		g_string_append(sql, " AND h.place <> ?");
+		accounts_bind_add_text(bindings, filter->exclude_place);
+	}
+
+	if ((NULL != filter->search) && ('\0' != filter->search[0]))
+	{
+		g_autofree gchar *fold = NULL;
+		g_autofree gchar *escaped = NULL;
+		g_autofree gchar *pattern = NULL;
+
+		if (!g_utf8_validate(filter->search, -1, NULL))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "A search must be UTF-8");
+			return FALSE;
+		}
+
+		fold = g_utf8_casefold(filter->search, -1);
+		escaped = accounts_like_escape(fold);
+		pattern = g_strdup_printf("%%%s%%", escaped);
+		g_string_append(sql, " AND (i.name_fold LIKE ? ESCAPE '\\'"
+		                     " OR h.instrument_key LIKE ? ESCAPE '\\')");
+		accounts_bind_add_text(bindings, pattern);
+		accounts_bind_add_text(bindings, pattern);
+	}
+
+	if ((NULL != filter->category_prefix) && ('\0' != filter->category_prefix[0]))
+	{
+		g_autofree gchar *escaped = NULL;
+		g_autofree gchar *pattern = NULL;
+
+		escaped = accounts_like_escape(filter->category_prefix);
+		pattern = g_strdup_printf("%s/%%", escaped);
+		g_string_append(sql, " AND (i.category = ? OR i.category LIKE ? ESCAPE '\\')");
+		accounts_bind_add_text(bindings, filter->category_prefix);
+		accounts_bind_add_text(bindings, pattern);
+	}
+
+	/* Dead stock: nothing of it sold since then, read on the ledger's
+	 * (instrument_key, at) index. */
+	if (VENTURE_SERIES_NONE != filter->unsold_since)
+	{
+		g_string_append(sql, " AND NOT EXISTS (SELECT 1 FROM external_txns t"
+		                     " WHERE t.instrument_key = h.instrument_key AND t.kind = 'sale'"
+		                     " AND t.at >= ?)");
+		accounts_bind_add_int(bindings, filter->unsold_since);
+	}
+
+	if (NULL != instrument_keys)
+	{
+		g_string_append(sql, " AND h.instrument_key IN (''");
+
+		for (i = 0; NULL != instrument_keys[i]; i++)
+		{
+			g_string_append(sql, ", ?");
+			accounts_bind_add_text(bindings, instrument_keys[i]);
+		}
+
+		g_string_append(sql, ")");
+	}
+
+	g_string_append_printf(sql,
+		"), valued AS (SELECT lines.*, (%s) AS unit_value FROM lines),"
+		" priced AS (SELECT valued.*, CASE WHEN unit_value IS NULL OR unit_value < 0 THEN NULL"
+		"   WHEN unit_value > 0 AND quantity > 9223372036854775807 / unit_value THEN NULL"
+		"   ELSE quantity * unit_value END AS line_value FROM valued)",
+		accounts_unit_expr(filter->basis));
+
+	return TRUE;
+}
+
+/* The per-instrument sums of the valued lines, as a SELECT after the
+ * CTE; the minimum is a HAVING, so it bounds instruments, not lines. */
+static void
+accounts_value_grouped(
+	const VentureSeriesValueFilter	*filter,
+	GString				*sql,
+	GArray				*bindings
+){
+	g_string_append(sql,
+		" SELECT instrument_key, MAX(instrument_name) AS instrument_name, MAX(category) AS category,"
+		"  SUM(quantity) AS total_quantity, COUNT(DISTINCT account_id) AS holders,"
+		"  COUNT(*) AS n_lines, COUNT(line_value) AS n_priced,"
+		"  SUM(CASE WHEN line_value IS NOT NULL THEN quantity ELSE 0 END) AS priced_quantity,"
+		"  SUM(line_value) AS total_value,"
+		"  COALESCE(MAX(region_spd), MAX(realm_spd)) AS spd,"
+		"  (SELECT MAX(t.at) FROM external_txns t WHERE t.instrument_key = priced.instrument_key"
+		"     AND t.kind = 'sale') AS last_sale,"
+		"  MAX(name_fold) AS sort_name"
+		" FROM priced GROUP BY instrument_key");
+
+	if (VENTURE_SERIES_NONE != filter->min_value)
+	{
+		g_string_append(sql, " HAVING SUM(line_value) >= ?");
+		accounts_bind_add_int(bindings, filter->min_value);
+	}
+}
+
+GPtrArray *
+venture_series_store_value_instruments(
+	VentureSeriesStore			 *self,
+	const VentureSeriesValueFilter		 *filter,
+	VentureSeriesValueTotals		 *out_totals,
+	GError					**error
+){
+	g_autoptr(GString) sql = NULL;
+	g_autoptr(GArray) bindings = NULL;
+	g_autoptr(SeriesOwnedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	const gchar *order;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (NULL != out_totals)
+		memset(out_totals, 0, sizeof(*out_totals));
+
+	/* The totals of the whole answer first, over the same grouping, so
+	 * a page and its "of N" can never disagree. */
+	if (NULL != out_totals)
+	{
+		sql = g_string_new(NULL);
+		bindings = accounts_bindings_new();
+
+		if (!accounts_value_cte(filter, NULL, sql, bindings, error))
+			return NULL;
+
+		g_string_append(sql, " SELECT COUNT(*), COALESCE(SUM(n_lines), 0), COALESCE(SUM(n_priced), 0),"
+		                     "  COALESCE(SUM(total_quantity), 0), COALESCE(SUM(total_value), 0)"
+		                     " FROM (");
+		accounts_value_grouped(filter, sql, bindings);
+		g_string_append(sql, ")");
+
+		stmt = accounts_prepare_bound(self, sql->str, bindings, error);
+		if (NULL == stmt)
+			return NULL;
+
+		rc = sqlite3_step(stmt);
+
+		if (SQLITE_ROW != rc)
+		{
+			venture_series_store_internal_sqlite_error(self, rc, "valuing the holdings", error);
+			return NULL;
+		}
+
+		out_totals->instruments = sqlite3_column_int64(stmt, 0);
+		out_totals->lines = sqlite3_column_int64(stmt, 1);
+		out_totals->priced_lines = sqlite3_column_int64(stmt, 2);
+		out_totals->quantity = sqlite3_column_int64(stmt, 3);
+		out_totals->value = sqlite3_column_int64(stmt, 4);
+		g_clear_pointer(&stmt, series_owned_stmt_free);
+		g_string_truncate(sql, 0);
+		g_clear_pointer(&bindings, g_array_unref);
+	}
+
+	if (NULL == sql)
+		sql = g_string_new(NULL);
+
+	bindings = accounts_bindings_new();
+
+	if (!accounts_value_cte(filter, NULL, sql, bindings, error))
+		return NULL;
+
+	accounts_value_grouped(filter, sql, bindings);
+
+	switch (filter->sort)
+	{
+	case VENTURE_SERIES_VALUE_SORT_QUANTITY:
+		order = "total_quantity";
+		break;
+	case VENTURE_SERIES_VALUE_SORT_NAME:
+		order = "COALESCE(sort_name, instrument_key)";
+		break;
+	case VENTURE_SERIES_VALUE_SORT_UNIT_VALUE:
+		order = "(CASE WHEN priced_quantity > 0 THEN total_value * 1.0 / priced_quantity END)";
+		break;
+	case VENTURE_SERIES_VALUE_SORT_ACCOUNTS:
+		order = "holders";
+		break;
+	case VENTURE_SERIES_VALUE_SORT_DAYS_OF_SUPPLY:
+		order = "(CASE WHEN spd > 0 THEN total_quantity / spd END)";
+		break;
+	case VENTURE_SERIES_VALUE_SORT_VALUE:
+		order = "total_value";
+		break;
+	default:
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Not a way to sort holdings");
+		return NULL;
+	}
+
+	/* Unknown last whichever way: "x IS NULL" sorts FALSE first. */
+	g_string_append_printf(sql, " ORDER BY %s IS NULL, %s %s, instrument_key LIMIT ? OFFSET ?",
+	                       order, order, filter->descending ? "DESC" : "ASC");
+	accounts_bind_add_int(bindings, accounts_page(filter->count, VENTURE_SERIES_DEFAULT_PAGE));
+	accounts_bind_add_int(bindings, filter->offset);
+
+	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
+	if (NULL == stmt)
+		return NULL;
+
+	rows = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_valued_instrument_free);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		VentureSeriesValuedInstrument *row = g_new0(VentureSeriesValuedInstrument, 1);
+
+		g_ptr_array_add(rows, row);
+		row->instrument_key = series_column_strdup(stmt, 0);
+		row->instrument_name = series_column_strdup(stmt, 1);
+		row->category = series_column_strdup(stmt, 2);
+		row->quantity = sqlite3_column_int64(stmt, 3);
+		row->accounts = sqlite3_column_int64(stmt, 4);
+		row->lines = sqlite3_column_int64(stmt, 5);
+		row->priced_lines = sqlite3_column_int64(stmt, 6);
+		row->priced_quantity = sqlite3_column_int64(stmt, 7);
+		row->value = series_column_figure(stmt, 8);
+		row->sold_per_day = (SQLITE_NULL == sqlite3_column_type(stmt, 9))
+			? NAN : sqlite3_column_double(stmt, 9);
+		row->last_sale = series_column_figure(stmt, 10);
+		row->unit_value = ((VENTURE_SERIES_NONE != row->value) && (row->priced_quantity > 0) &&
+		                   (row->value >= 0))
+			? venture_series_math_div_round(row->value, row->priced_quantity)
+			: VENTURE_SERIES_NONE;
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "valuing the holdings", error);
+		return NULL;
+	}
+
+	return g_steal_pointer(&rows);
+}
+
+GPtrArray *
+venture_series_store_value_lines(
+	VentureSeriesStore			 *self,
+	const VentureSeriesValueFilter		 *filter,
+	const gchar *const			 *instrument_keys,
+	GError					**error
+){
+	g_autoptr(GString) sql = NULL;
+	g_autoptr(GArray) bindings = NULL;
+	g_autoptr(SeriesOwnedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	sql = g_string_new(NULL);
+	bindings = accounts_bindings_new();
+
+	if (!accounts_value_cte(filter, instrument_keys, sql, bindings, error))
+		return NULL;
+
+	g_string_append(sql, " SELECT account_key, account_name, account_venue, place, instrument_key,"
+	                     "  instrument_name, category, quantity, unit_value, line_value, at"
+	                     " FROM priced ORDER BY account_group, COALESCE(account_name, account_key),"
+	                     "  account_key, place, COALESCE(name_fold, instrument_key), instrument_key"
+	                     " LIMIT ?");
+	accounts_bind_add_int(bindings, VENTURE_SERIES_MAX_ACCOUNT_ROWS);
+
+	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
+	if (NULL == stmt)
+		return NULL;
+
+	rows = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_valued_line_free);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		VentureSeriesValuedLine *line = g_new0(VentureSeriesValuedLine, 1);
+
+		g_ptr_array_add(rows, line);
+		line->account_key = series_column_strdup(stmt, 0);
+		line->account_name = series_column_strdup(stmt, 1);
+		line->account_venue = series_column_strdup(stmt, 2);
+		line->place = series_column_strdup(stmt, 3);
+		line->instrument_key = series_column_strdup(stmt, 4);
+		line->instrument_name = series_column_strdup(stmt, 5);
+		line->category = series_column_strdup(stmt, 6);
+		line->quantity = sqlite3_column_int64(stmt, 7);
+		line->unit_value = series_column_figure(stmt, 8);
+		line->value = series_column_figure(stmt, 9);
+		line->at = sqlite3_column_int64(stmt, 10);
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "valuing holding lines", error);
+		return NULL;
+	}
+
+	return g_steal_pointer(&rows);
+}
+
+/* ==========================================================================
+ * Balances by day
+ * ========================================================================== */
+
+void
+venture_series_balance_day_free(VentureSeriesBalanceDay *day)
+{
+	if (NULL == day)
+		return;
+
+	g_free(day->account_key);
+	g_free(day);
+}
+
+/*
+ * SQLite answers a bare column beside MAX() from the row that holds the
+ * maximum, which is exactly "the last point of each day": one grouped
+ * statement instead of every point a busy account stored.
+ */
+static const gchar accounts_sql_balance_openings[] =
+	"SELECT a.key, b.amount, MAX(b.at) FROM account_balances b"
+	" JOIN accounts a ON a.id = b.account_id"
+	" WHERE b.currency = ?1 AND b.at < ?2 GROUP BY b.account_id";
+
+static const gchar accounts_sql_balance_days[] =
+	"SELECT a.key, b.at / 86400, b.amount, MAX(b.at) FROM account_balances b"
+	" JOIN accounts a ON a.id = b.account_id"
+	" WHERE b.currency = ?1 AND b.at >= ?2 AND b.at < ?3"
+	" GROUP BY b.account_id, b.at / 86400";
+
+static gint
+accounts_compare_balance_days(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const VentureSeriesBalanceDay *one = *(VentureSeriesBalanceDay *const *)a;
+	const VentureSeriesBalanceDay *two = *(VentureSeriesBalanceDay *const *)b;
+	gint by_key;
+
+	by_key = g_strcmp0(one->account_key, two->account_key);
+
+	if (0 != by_key)
+		return by_key;
+
+	return (one->day_start < two->day_start) ? -1 : (one->day_start > two->day_start);
+}
+
+GPtrArray *
+venture_series_store_balance_days(
+	VentureSeriesStore	 *self,
+	const gchar		 *currency,
+	gint64			  since,
+	gint64			  until,
+	GError			**error
+){
+	g_autoptr(GPtrArray) days = NULL;
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	g_autofree gchar *code = NULL;
+	gint64 first_day;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (venture_string_is_empty(currency) || (until <= since))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Balances by day need a currency and a window");
+		return NULL;
+	}
+
+	code = g_ascii_strup(currency, -1);
+	first_day = (since / 86400) * 86400;
+	days = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_balance_day_free);
+
+	stmt = venture_series_store_internal_stmt(self, accounts_sql_balance_openings, error);
+	if (NULL == stmt)
+		return NULL;
+
+	series_bind_text(stmt, 1, code);
+	sqlite3_bind_int64(stmt, 2, first_day);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		VentureSeriesBalanceDay *day = g_new0(VentureSeriesBalanceDay, 1);
+
+		day->account_key = series_column_strdup(stmt, 0);
+		day->amount = sqlite3_column_int64(stmt, 1);
+		day->day_start = first_day - 86400;
+		g_ptr_array_add(days, day);
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "reading opening balances", error);
+		return NULL;
+	}
+
+	g_clear_pointer(&stmt, series_cached_stmt_release);
+	stmt = venture_series_store_internal_stmt(self, accounts_sql_balance_days, error);
+	if (NULL == stmt)
+		return NULL;
+
+	series_bind_text(stmt, 1, code);
+	sqlite3_bind_int64(stmt, 2, first_day);
+	sqlite3_bind_int64(stmt, 3, until);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		VentureSeriesBalanceDay *day = g_new0(VentureSeriesBalanceDay, 1);
+
+		day->account_key = series_column_strdup(stmt, 0);
+		day->day_start = sqlite3_column_int64(stmt, 1) * 86400;
+		day->amount = sqlite3_column_int64(stmt, 2);
+		g_ptr_array_add(days, day);
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "reading balances by day", error);
+		return NULL;
+	}
+
+	g_ptr_array_sort(days, accounts_compare_balance_days);
+
+	return g_steal_pointer(&days);
+}
+
+/* ==========================================================================
+ * Flips
+ * ========================================================================== */
+
+void
+venture_series_flip_free(VentureSeriesFlip *flip)
+{
+	if (NULL == flip)
+		return;
+
+	g_free(flip->instrument_key);
+	g_free(flip->instrument_name);
+	g_free(flip);
+}
+
+/*
+ * @amount * @part / @whole, rounded half to even, through 128 bits so no
+ * product overflows; 0 <= @part <= @whole, @whole >= 1, @amount >= 0.
+ * Taking a share and subtracting it from what is left is what makes the
+ * shares of one buy's cost add back up to exactly that cost.
+ */
+static gint64
+accounts_share(
+	gint64	amount,
+	gint64	part,
+	gint64	whole
+){
+	unsigned __int128 product;
+	unsigned __int128 quotient;
+	unsigned __int128 remainder;
+
+	if (part >= whole)
+		return amount;
+
+	product = (unsigned __int128)amount * (unsigned __int128)part;
+	quotient = product / (unsigned __int128)whole;
+	remainder = product % (unsigned __int128)whole;
+
+	if ((remainder * 2 > (unsigned __int128)whole) ||
+	    ((remainder * 2 == (unsigned __int128)whole) && (1 == (quotient & 1))))
+		quotient++;
+
+	return (gint64)quotient;
+}
+
+typedef struct
+{
+	gint64	units;
+	gint64	amount;
+} AccountsLot;
+
+static gint
+accounts_compare_flips(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const VentureSeriesFlip *one = *(VentureSeriesFlip *const *)a;
+	const VentureSeriesFlip *two = *(VentureSeriesFlip *const *)b;
+
+	if (one->profit != two->profit)
+		return (one->profit > two->profit) ? -1 : 1;
+
+	return g_strcmp0(one->instrument_key, two->instrument_key);
+}
+
+static const gchar accounts_sql_held[] =
+	"SELECT COALESCE(SUM(h.quantity), 0) FROM account_holdings h"
+	" WHERE h.instrument_key = ?1 AND h.place <> 'currency'"
+	"   AND (?2 IS NULL OR h.account_id = (SELECT id FROM accounts WHERE key = ?2))";
+
+/* Adds @value to *@total, refusing an overflow by name. */
+static gboolean
+accounts_flip_add(
+	gint64		 *total,
+	gint64		  value,
+	GError		**error
+){
+	if (!venture_series_math_add(*total, value, total))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A flip's total does not fit in a 64-bit integer");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* Closes one instrument's walk: what is still open, and what it holds. */
+static gboolean
+accounts_flip_finish(
+	VentureSeriesStore		 *self,
+	const VentureSeriesTxnFilter	 *filter,
+	VentureSeriesFlip		 *flip,
+	GArray				 *lots,
+	GPtrArray			 *flips,
+	GError				**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	guint i;
+	gint rc;
+
+	/* Sold with nothing bought in the window is not a flip. */
+	if (0 == flip->bought_units)
+	{
+		g_array_set_size(lots, 0);
+		venture_series_flip_free(flip);
+		return TRUE;
+	}
+
+	/* The answer owns it from here, whatever fails next. */
+	g_ptr_array_add(flips, flip);
+
+	for (i = 0; i < lots->len; i++)
+	{
+		AccountsLot *lot = &g_array_index(lots, AccountsLot, i);
+
+		if (!accounts_flip_add(&flip->open_units, lot->units, error) ||
+		    !accounts_flip_add(&flip->open_cost, lot->amount, error))
+			return FALSE;
+	}
+
+	g_array_set_size(lots, 0);
+	flip->profit = flip->proceeds - flip->cost;
+	stmt = venture_series_store_internal_stmt(self, accounts_sql_held, error);
+	if (NULL == stmt)
+		return FALSE;
+
+	series_bind_text(stmt, 1, flip->instrument_key);
+	series_bind_text(stmt, 2, (NULL != filter) ? filter->account_key : NULL);
+	rc = sqlite3_step(stmt);
+
+	if (SQLITE_ROW != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "reading what is held", error);
+		return FALSE;
+	}
+
+	flip->held = sqlite3_column_int64(stmt, 0);
+
+	return TRUE;
+}
+
+GPtrArray *
+venture_series_store_flips(
+	VentureSeriesStore		 *self,
+	const VentureSeriesTxnFilter	 *filter,
+	GError				**error
+){
+	VentureSeriesTxnFilter rows_filter;
+	g_autoptr(GString) sql = NULL;
+	g_autoptr(GArray) bindings = NULL;
+	g_autoptr(SeriesOwnedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) flips = NULL;
+	g_autoptr(GArray) lots = NULL;
+	VentureSeriesFlip *flip = NULL;
+	gint64 read = 0;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (NULL != filter)
+		rows_filter = *filter;
+	else
+		venture_series_txn_filter_init(&rows_filter);
+
+	rows_filter.kind = NULL;
+
+	sql = g_string_new("SELECT t.instrument_key, i.name, COALESCE(t.currency, ''), t.kind,"
+	                   "  t.quantity, t.amount, t.at"
+	                   " FROM external_txns t LEFT JOIN instruments i ON i.key = t.instrument_key");
+	bindings = accounts_bindings_new();
+
+	if (!accounts_txn_where(&rows_filter, sql, bindings, error))
+		return NULL;
+
+	/* A buy and a sale at the same second: the buy first, or a flip done
+	 * within one snapshot would be "sold before it was bought". */
+	g_string_append(sql, " AND t.kind IN ('buy', 'sale') AND t.instrument_key IS NOT NULL"
+	                     " AND t.quantity > 0 AND t.amount IS NOT NULL"
+	                     " ORDER BY t.instrument_key, t.currency, t.at, t.kind = 'sale', t.key"
+	                     " LIMIT ?");
+	accounts_bind_add_int(bindings, (gint64)VENTURE_SERIES_MAX_ACCOUNT_ROWS + 1);
+
+	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
+	if (NULL == stmt)
+		return NULL;
+
+	flips = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_flip_free);
+	lots = g_array_new(FALSE, FALSE, sizeof(AccountsLot));
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		const gchar *key = (const gchar *)sqlite3_column_text(stmt, 0);
+		const gchar *currency = (const gchar *)sqlite3_column_text(stmt, 2);
+		const gchar *kind = (const gchar *)sqlite3_column_text(stmt, 3);
+		gint64 quantity = sqlite3_column_int64(stmt, 4);
+		gint64 amount = sqlite3_column_int64(stmt, 5);
+		gint64 at = sqlite3_column_int64(stmt, 6);
+
+		if (++read > VENTURE_SERIES_MAX_ACCOUNT_ROWS)
+		{
+			venture_series_flip_free(flip);
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "More than %d buys and sales in that window; narrow it to match flips",
+			            VENTURE_SERIES_MAX_ACCOUNT_ROWS);
+			return NULL;
+		}
+
+		/* A new instrument (or currency) closes the one before. */
+		if ((NULL == flip) || (0 != g_strcmp0(flip->instrument_key, key)) ||
+		    (0 != g_ascii_strcasecmp(flip->currency, (NULL != currency) ? currency : "")))
+		{
+			if ((NULL != flip) && !accounts_flip_finish(self, filter, flip, lots, flips, error))
+				return NULL;
+
+			flip = g_new0(VentureSeriesFlip, 1);
+			flip->instrument_key = g_strdup(key);
+			flip->instrument_name = series_column_strdup(stmt, 1);
+			g_strlcpy(flip->currency, (NULL != currency) ? currency : "", sizeof(flip->currency));
+			flip->first_buy = VENTURE_SERIES_NONE;
+			flip->last_sale = VENTURE_SERIES_NONE;
+		}
+
+		if (amount < 0)
+			continue;
+
+		if (0 == g_strcmp0(kind, "buy"))
+		{
+			AccountsLot lot;
+
+			lot.units = quantity;
+			lot.amount = amount;
+			g_array_append_val(lots, lot);
+
+			if (VENTURE_SERIES_NONE == flip->first_buy)
+				flip->first_buy = at;
+
+			if (!accounts_flip_add(&flip->bought_units, quantity, error) ||
+			    !accounts_flip_add(&flip->bought_amount, amount, error))
+			{
+				venture_series_flip_free(flip);
+				return NULL;
+			}
+
+			continue;
+		}
+
+		/* A sale: take units from the oldest buys before it. */
+		{
+			gint64 units_left = quantity;
+			gint64 amount_left = amount;
+
+			while ((units_left > 0) && (lots->len > 0))
+			{
+				AccountsLot *lot = &g_array_index(lots, AccountsLot, 0);
+				gint64 take = MIN(units_left, lot->units);
+				gint64 cost = accounts_share(lot->amount, take, lot->units);
+				gint64 proceeds = accounts_share(amount_left, take, units_left);
+
+				lot->amount -= cost;
+				lot->units -= take;
+				amount_left -= proceeds;
+				units_left -= take;
+
+				if (!accounts_flip_add(&flip->matched_units, take, error) ||
+				    !accounts_flip_add(&flip->cost, cost, error) ||
+				    !accounts_flip_add(&flip->proceeds, proceeds, error))
+				{
+					venture_series_flip_free(flip);
+					return NULL;
+				}
+
+				flip->last_sale = at;
+
+				if (0 == lot->units)
+					g_array_remove_index(lots, 0);
+			}
+
+			if (!accounts_flip_add(&flip->unmatched_sold_units, units_left, error))
+			{
+				venture_series_flip_free(flip);
+				return NULL;
+			}
+		}
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_flip_free(flip);
+		venture_series_store_internal_sqlite_error(self, rc, "matching flips", error);
+		return NULL;
+	}
+
+	g_clear_pointer(&stmt, series_owned_stmt_free);
+
+	if ((NULL != flip) && !accounts_flip_finish(self, filter, flip, lots, flips, error))
+		return NULL;
+
+	g_ptr_array_sort(flips, accounts_compare_flips);
+
+	return g_steal_pointer(&flips);
+}

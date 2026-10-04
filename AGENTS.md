@@ -2043,6 +2043,58 @@ pages").
   chart class goes into both, in the market block at their end, and
   `/market-pages/doors-and-looks` checks the page in both looks.
 
+## The Accounts pages
+
+`/accounts`, `/accounts/SOURCE/KEY`, `/accounts/inventory` and
+`/accounts/pnl` with their `/api/v1/accounts` twins, first under Trading
+(label "Your accounts"). `docs/market-data.org` ("The Accounts pages").
+
+- **One answer per page, computed in core.** Each is one function in
+  `src/marketdata/venture-marketdata-accounts.c`; the page, its twin, the
+  reports (`accounts`, `account_holdings`, `external_pnl`), the widgets and
+  `venturectl accounts` read it. Never compute a figure in
+  `venture-marketdata-accounts-pages.inc` or a widget kind.
+- **Holdings are valued, sorted and paged in the store's SQL.**
+  `venture_series_store_value_instruments()` joins each line's unit price
+  from `current`, `region` and `daily`, multiplies and sums in integers and
+  sorts there; a new inventory sort or filter is an expression in
+  `accounts_value_cte()` / `accounts_value_grouped()`, never a sort in C
+  over store rows. The account table *is* sorted in C: it is bounded by the
+  store's 10 000 accounts.
+- **The region's venue is a convention, not a guess.** The sale average
+  comes from the venue keyed `region-` + the account venue's group in lower
+  case (`region-us`), where tsmctl sends region-wide statistics. An account
+  on no venue (a shared bank) gets the region of the store's *only* group;
+  with several it gets none. Do not make it pick one -- the rule the
+  oracle keeps for group-wide figures.
+- **Everything is in the source's currency.** A bound (`min_value`) must
+  name it; a source with no currency lists holdings unpriced and says so.
+  Nothing converts.
+- **A store's zero units-sold-a-day is "no evidence" on a stats-only
+  venue**, so days of supply prefer the source's figure over a store zero
+  (`COALESCE(NULLIF(sold_per_day, 0), source_sold_per_day, ...)`), the same
+  substitution the reference figures make.
+- **Flips split cost and proceeds by share-and-subtract.** Each take is the
+  remaining amount times units over remaining units, half to even, taken
+  from what remains, so the shares add back to the lot exactly. A buy and
+  a sale in the same second: the buy first. Past 100 000 rows the read is
+  refused, never matched in part.
+- **Pages round money for reading, answers never do.** `acw_money_display()`
+  drops sub-units past a thousand whole units and groups the figure; the
+  JSON keeps minor units. Tests compare the JSON, and a widget's card and
+  data share their own formatting.
+- **Periods are labelled in UTC.** A week starts Monday 00:00 UTC, which a
+  zone west of UTC would label Sunday: period labels use
+  `acw_period_label()`, never `mdw_time_label()`.
+- **`holdings` is the ledger's report.** The inventory report is
+  `account_holdings`; report names are one namespace.
+- **The fixed routes come before `/accounts/:source/*`**, whose key is the
+  rest of the path (escaped `%2F` arrives as two segments); the router takes
+  the first match.
+- **Names in a table row are `td.row-head`, not `th`.** A `th` takes the
+  labels' uppercase micro register, which turned every character's name
+  into capitals.
+
 ## Finding opportunities: the arbitrage scan
 
 `src/arbitrage/` (module `arbitrage`, requires `marketdata` and `ledger`):

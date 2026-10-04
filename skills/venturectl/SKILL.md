@@ -143,6 +143,10 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `market venues [source=N] [group=G] [organization_id=N]` | the venue index: cheaper/equal/dearer than the region, update interval, data age (`venues`) |
 | `market instrument SOURCE_ID KEY [venue=KEY] [units=N] [organization_id=N]` | one instrument: its figures, every venue's row, history; `units=` prices a bulk buy (`bulk`) |
 | `market watchlist [ID] [organization_id=N]` | the watchlists, or one priced now against its targets (`entries`); `watchlists` is the same verb |
+| `accounts [list\|attention] [source=N] [group=REALM] [basis=B] [expiring_hours=N] [mail_days=N] [stale_days=N] [sort=S] [dir=asc\|desc] [organization_id=N]` | the operator's characters and banks, as `/accounts` shows them: `summary` (money on hand, inventory value, listed, mail, 30-day net), `attention` (where to log in next, most urgent first, each with its reasons), `accounts` (one row each). `attention` prints just the places and reasons |
+| `accounts show SOURCE_ID KEY [basis=B] [ledger=N] [organization_id=N]` | one account: listings against the market (`undercut`, `vs_market_pct`, `urgency`), mail, holdings by place valued, the newest ledger rows. KEY is the account's key in the store (`"Drgold-Thorium Brotherhood"`); a `/` in it is fine |
+| `accounts inventory [source=N] [account=KEY] [place=P] [category=PATH] [search=T] [min_value="100.00 GOLD"] [dead=true] [dead_days=N] [basis=B] [sort=S] [dir=asc\|desc] [page=N] [per_page=N] [organization_id=N]` | everything held, per item across accounts, valued (`rows`, `totals`, `portfolio_value`) |
+| `accounts pnl [source=N] [period=P] [group_by=G] [account=KEY] [venue=KEY] [instrument=KEY] [label=TEXT] [top=N] [organization_id=N]` | the source's own trading ledger summed (`totals`, `buckets`, `top_items`) and the `flips` (buys matched to later sales, first in first out) |
 | `market alerts [count=N] [organization_id=N]` | the alert rules and the recent hits |
 | `market alerts evaluate RULE_ID [--dry-run] [organization_id=N]` | what the rule fires now; **writes the hits** (under the cooldown) unless `--dry-run` |
 | `arbitrage scan [STRATEGY] [option=value ...]` | opportunities now (`rows`; the table numbers them); options are the `arbitrage_scan` report's, plus `organization_id=N` |
@@ -1274,6 +1278,47 @@ The Trading pages have JSON twins, and three reports read the same answers:
 - Tables show money with its currency and leave a missing figure blank,
   then the answer's notes (`-q` drops them); `-f json` is the whole answer
   (notes, echoes), `-f csv` the rows.
+
+### The operator's accounts: where to log in, inventory, trading P&L
+
+A data source that reports the operator's own accounts (a `push` source fed
+by tsmctl, say) has four pages under Trading > Your accounts, each with a
+JSON twin and an `accounts` verb (table above):
+
+- **Where to log in next** is `accounts attention`: one row per realm (an
+  account's group; a shared bank is its own place), most urgent first --
+  listings already expired, listings and mail about to expire, then money
+  or items waiting in the mail, then accounts not seen in `stale_days`
+  (14). Thresholds: `expiring_hours` (12, 1-720), `mail_days` (3, 1-60),
+  `stale_days` (14). Each row has `title` ("Log in to Thorium
+  Brotherhood"), `severity` (`overdue`, `soon`, `waiting`, `stale`) and
+  `reasons[]` with `account_name`, `kind` and `text`.
+- **Valuation** (`basis=`): `conservative` (default: the lower of the
+  region's sale average and the realm's market value), `market`, `min`,
+  `historical`, `region_market`, `region_sale_avg`. Anything else is exit 2.
+  Unpriced items count for nothing and are noted. `min_value` must name the
+  **source's** currency (`"100.00 GOLD"`); another currency or none is
+  exit 2. Game currencies (`place=currency`) are left out of the inventory
+  unless asked for by place.
+- **Dead stock** is `accounts inventory dead=true dead_days=N`: items with
+  no sale in the ledger for N days (30).
+- **Trading P&L** is the source's ledger, not the books: `accounts pnl
+  period=last_90_days group_by=week|month|account|instrument|venue|source`.
+  Sales are after the venue's cut; `net` = sales + income - purchases -
+  expenses, per currency, integers. Flips match buys to later sales FIFO;
+  `open_units` is bought and not yet sold, `held` what the accounts hold now.
+- Reports: `report accounts`, `report account_holdings` (**not**
+  `holdings`, which is the ledger's report of what each location holds in
+  the books) and `report external_pnl` (the period is its window), with
+  options `data_source_id`, `group_key`, `basis`, `expiring_hours`,
+  `mail_days`, `stale_days`, `sort` / `account_key`, `place`,
+  `category_path`, `min_value`, `dead_days`, `top` / `group_by`,
+  `account_key`, `venue`, `instrument`, `source`.
+  `report listing_performance group_by=location` gives a sale rate per
+  character (each mirrored account is a location).
+- Dashboard kinds: `accounts_attention`, `accounts_summary`,
+  `holdings_value`, `external_pnl`; the `operations` template puts them
+  together (`dashboard create operations`).
 
 ## Organization sign-in
 

@@ -270,7 +270,8 @@ typedef enum
 {
 	MARKET_GROUP_PRODUCT = 0,
 	MARKET_GROUP_CATEGORY,
-	MARKET_GROUP_CHANNEL
+	MARKET_GROUP_CHANNEL,
+	MARKET_GROUP_LOCATION
 } MarketGroup;
 
 typedef struct
@@ -425,6 +426,41 @@ listing_group_of(
 		}
 
 		*out_label = g_strdup(path);
+		return TRUE;
+	}
+	case MARKET_GROUP_LOCATION:
+	{
+		const gchar *name;
+		gint64 location_id;
+
+		/* Who posted it: a mirrored listing's account, or the place a
+		 * person filed it under -- a sale rate per character. */
+		location_id = 0;
+		g_object_get(listing, "location-id", &location_id, NULL);
+
+		if (location_id <= 0)
+		{
+			*out_key = g_strdup("-");
+			*out_label = g_strdup("No location");
+			return TRUE;
+		}
+
+		*out_key = g_strdup_printf("l:%" G_GINT64_FORMAT, location_id);
+		name = g_hash_table_lookup(paths, *out_key);
+
+		if (NULL == name)
+		{
+			g_autoptr(VentureEntity) location = NULL;
+			gchar *label;
+
+			location = venture_database_get(database, VENTURE_TYPE_LOCATION, location_id, NULL);
+			label = (NULL != location) ? venture_entity_get_display_name(location)
+			                           : g_strdup_printf("Location #%" G_GINT64_FORMAT, location_id);
+			g_hash_table_insert(paths, g_strdup(*out_key), label);
+			name = label;
+		}
+
+		*out_label = g_strdup(name);
 		return TRUE;
 	}
 	case MARKET_GROUP_PRODUCT:
@@ -636,11 +672,16 @@ venture_market_listing_performance(
 		group = MARKET_GROUP_CHANNEL;
 		group_label = "Channel";
 	}
+	else if (0 == g_strcmp0(group_by, "location"))
+	{
+		group = MARKET_GROUP_LOCATION;
+		group_label = "Location";
+	}
 	else
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "listing_performance groups by product, category or "
-		            "channel, not \"%s\"", group_by);
+		            "listing_performance groups by product, category, "
+		            "channel or location, not \"%s\"", group_by);
 		return NULL;
 	}
 
@@ -1211,14 +1252,16 @@ venture_market_register_reports(VentureReportRegistry *registry)
 
 	venture_market_report_add(registry, "listing_performance",
 		"Listing performance",
-		"How listings ended, per product, category or channel and currency: "
+		"How listings ended, per product, category, channel or location (who "
+		"posted them) and currency: "
 		"sale rate over closed listings, days to sell, average sold unit "
 		"price, deposits lost and fees",
 		venture_market_listing_performance,
 		"{\"type\":\"object\",\"properties\":{"
 		"\"group_by\":{\"type\":\"string\",\"enum\":[\"product\",\"category\","
-		"\"channel\"],\"description\":\"What a row is; product by default. "
-		"category uses the product's category, by path\"},"
+		"\"channel\",\"location\"],\"description\":\"What a row is; product by "
+		"default. category uses the product's category, by path; location is "
+		"who posted it (a mirrored account, a shop)\"},"
 		"\"category_depth\":{\"type\":\"integer\",\"description\":\"With "
 		"group_by=category, roll categories up to this level; 0 is the top\"},"
 		"\"period\":{\"type\":\"string\",\"description\":\"Listings opened in "

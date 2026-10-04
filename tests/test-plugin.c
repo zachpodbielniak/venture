@@ -1152,7 +1152,8 @@ test_web_navigation_links_all_resolve(
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
 		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
 		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/deals",
-		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", NULL
+		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc",
+		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1304,6 +1305,9 @@ test_web_navigation_groups_by_question(
 		"/tickets", "/sprints", "/kb", NULL
 	};
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
+	static const gchar *const trading_accounts[] = {
+		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
+	};
 	static const gchar *const trading[] = {
 		"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
 		"/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds", NULL
@@ -1337,7 +1341,8 @@ test_web_navigation_groups_by_question(
 		{ "Growth", NULL, growth },
 		{ "Support", NULL, support },
 		{ "Operations", NULL, operations },
-		{ "Trading", NULL, trading },
+		{ "Your accounts", "Trading", trading_accounts },
+		{ "Markets", "Trading", trading },
 		{ "Ideas", "Build", ideas },
 		{ "Code", "Build", code },
 		{ "Factory", "Build", factory },

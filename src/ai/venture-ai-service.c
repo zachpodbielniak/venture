@@ -2740,9 +2740,10 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"For the categories report, the product field to group by "
 		"(defaults to genre); for aggregate, up to 3 comma-separated "
 		"fields, reference.field following one reference; for "
-		"listing_performance, product, category or channel; for "
+		"listing_performance, product, category, channel or location; for "
 		"session_performance, activity, category, location or venture; for "
-		"arbitrage_performance, strategy, venue_pair, instrument or month", FALSE);
+		"arbitrage_performance, strategy, venue_pair, instrument or month; for "
+		"external_pnl, day, week, month, account, venue, instrument or source", FALSE);
 	/* The aggregate report answers "how much / how many, grouped by
 	 * what" for any type, so it is the report to reach for before
 	 * totalling query results; its options are declared here because a
@@ -2768,7 +2769,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "product_id", "integer",
 		"price_history: the product whose observed prices to show", FALSE);
 	ai_tool_add_parameter(report, "source", "string",
-		"price_history: only this price source, e.g. market value", FALSE);
+		"price_history: only this price source, e.g. market value; external_pnl: only ledger rows the source labels so, e.g. Auction", FALSE);
 	ai_tool_add_parameter(report, "price_source", "string",
 		"recipe_margin, session_performance and goal_materials: price at the latest observation from this source", FALSE);
 	ai_tool_add_parameter(report, "category_id", "integer",
@@ -2782,19 +2783,19 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "include_on_hand", "boolean",
 		"goal_materials: take stock on hand off what is needed; true by default", FALSE);
 	ai_tool_add_parameter(report, "data_source_id", "integer",
-		"market_deals and venue_index: only this data source; every source of the organization by default", FALSE);
+		"market_deals, venue_index and accounts: only this data source (every source of the organization by default); account_holdings and external_pnl: the data source to read (the first with accounts by default)", FALSE);
 	ai_tool_add_parameter(report, "venue", "string",
-		"market_deals: only this venue, by its key in the store", FALSE);
+		"market_deals and external_pnl: only this venue, by its key in the store", FALSE);
 	ai_tool_add_parameter(report, "group_key", "string",
-		"market_deals and venue_index: only venues in this group (a region)", FALSE);
+		"market_deals and venue_index: only venues in this group (a region); accounts: only accounts in this group (a realm)", FALSE);
 	ai_tool_add_parameter(report, "category_path", "string",
-		"market_deals: only instruments in this store category path and beneath, e.g. Trade Goods/Herb", FALSE);
+		"market_deals and account_holdings: only instruments in this store category path and beneath, e.g. Trade Goods/Herb", FALSE);
 	ai_tool_add_parameter(report, "min_value", "string",
-		"market_deals: only instruments worth at least this, with its currency, e.g. 10.00 GOLD", FALSE);
+		"market_deals and account_holdings: only instruments worth at least this, with its currency, e.g. 10.00 GOLD", FALSE);
 	ai_tool_add_parameter(report, "max_pct", "string",
 		"market_deals: only prices at most this percent of the region median, e.g. 80", FALSE);
 	ai_tool_add_parameter(report, "top", "integer",
-		"market_deals, arbitrage_scan: how many rows, 1 to 500; 50 by default", FALSE);
+		"market_deals, arbitrage_scan, account_holdings: how many rows, 1 to 500; 50 by default", FALSE);
 	ai_tool_add_parameter(report, "watchlist_id", "integer",
 		"watchlist: the watchlist to price", FALSE);
 	ai_tool_add_parameter(report, "strategy", "string",
@@ -2811,7 +2812,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "kind", "string",
 		"arbitrage_scan: only instruments of this kind (item, outcome, sku...)", FALSE);
 	ai_tool_add_parameter(report, "instrument", "string",
-		"arbitrage_scan: one instrument (or, for cover, one event) by its key", FALSE);
+		"arbitrage_scan: one instrument (or, for cover, one event) by its key; external_pnl: one item's ledger rows", FALSE);
 	ai_tool_add_parameter(report, "recipe_id", "integer",
 		"arbitrage_scan with strategy transform, craft_arbitrage: one recipe", FALSE);
 	ai_tool_add_parameter(report, "units", "integer",
@@ -2839,7 +2840,23 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "share", "string",
 		"arbitrage_scan: the percent of a market's sales a lot can expect, 100 by default", FALSE);
 	ai_tool_add_parameter(report, "sort", "string",
-		"arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence; profit by default", FALSE);
+		"arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence; profit by default. accounts: attention, name, realm, gold, positions, expiry, inbound, last_seen or freshness. account_holdings: value, quantity, name, unit_value, accounts or days_of_supply", FALSE);
+	/* The account operations reports (accounts, account_holdings,
+	 * external_pnl): the operator's own characters and banks. */
+	ai_tool_add_parameter(report, "basis", "string",
+		"accounts and account_holdings: how holdings are valued: conservative (default: the lower of the region's sale average and the realm's market value), market, min, historical, region_market or region_sale_avg", FALSE);
+	ai_tool_add_parameter(report, "account_key", "string",
+		"account_holdings and external_pnl: only this account, by its key in the data source", FALSE);
+	ai_tool_add_parameter(report, "place", "string",
+		"account_holdings: only this place: bag, bank, reagent_bank, warbank, guild, mail, auction, void, equipped, currency or other", FALSE);
+	ai_tool_add_parameter(report, "expiring_hours", "integer",
+		"accounts: listings expiring within this many hours need a login; 12 by default", FALSE);
+	ai_tool_add_parameter(report, "mail_days", "integer",
+		"accounts: mail expiring within this many days needs a login; 3 by default", FALSE);
+	ai_tool_add_parameter(report, "stale_days", "integer",
+		"accounts: an account unseen this many days needs a visit; 14 by default", FALSE);
+	ai_tool_add_parameter(report, "dead_days", "integer",
+		"account_holdings: dead stock only, items with no sale in the ledger for this many days", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);

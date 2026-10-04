@@ -496,6 +496,416 @@ mdr_watchlist(
 	return g_steal_pointer(&result);
 }
 
+/* --- accounts, holdings, external_pnl ---------------------------------------------- */
+
+/*
+ * The account operations reports read the same answers the /accounts
+ * pages draw (venture-marketdata-accounts.c). Money metrics carry the
+ * first currency of the answer under the plain key -- the source's own,
+ * where the dashboard's metric widget reads it -- and nothing converts.
+ */
+
+/* A money metric from the first object of an answer's money array. */
+static void
+mdr_money_metric(
+	VentureReportResult	*result,
+	const gchar		*key,
+	const gchar		*label,
+	JsonObject		*object,
+	const gchar		*member
+){
+	g_autoptr(VentureMoney) money = NULL;
+	JsonArray *amounts;
+
+	amounts = ((NULL != object) && json_object_has_member(object, member))
+		? json_object_get_array_member(object, member) : NULL;
+
+	if ((NULL != amounts) && (json_array_get_length(amounts) > 0))
+		money = venture_money_from_json(json_array_get_element(amounts, 0), NULL, NULL);
+
+	if (NULL != money)
+		venture_report_result_add_metric(result, venture_metric_new_money(key, label, money));
+}
+
+/* A money member's object directly. */
+static void
+mdr_money_object_metric(
+	VentureReportResult	*result,
+	const gchar		*key,
+	const gchar		*label,
+	JsonObject		*object,
+	const gchar		*member
+){
+	g_autoptr(VentureMoney) money = NULL;
+	JsonNode *node;
+
+	node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+		money = venture_money_from_json(node, NULL, NULL);
+
+	if (NULL != money)
+		venture_report_result_add_metric(result, venture_metric_new_money(key, label, money));
+}
+
+/* The first money of an array member, as a cell. */
+static void
+mdr_set_first_money(
+	VentureReportResult	*result,
+	const gchar		*column,
+	JsonObject		*row,
+	const gchar		*member
+){
+	g_autoptr(VentureMoney) money = NULL;
+	JsonArray *amounts;
+
+	amounts = json_object_has_member(row, member) ? json_object_get_array_member(row, member) : NULL;
+
+	if ((NULL != amounts) && (json_array_get_length(amounts) > 0))
+		money = venture_money_from_json(json_array_get_element(amounts, 0), NULL, NULL);
+
+	if (NULL != money)
+		venture_report_result_set_money(result, column, money);
+}
+
+/* A threshold option: absent is 0 (the answer's default). */
+static gboolean
+mdr_threshold(
+	JsonObject	 *options,
+	const gchar	 *name,
+	gint64		 *out,
+	GError		**error
+){
+	return mdr_integer(options, name, 0, out, error);
+}
+
+static VentureReportResult *
+mdr_accounts(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	VentureMarketdataAccountsQuery query;
+	JsonObject *root;
+	JsonObject *summary;
+	JsonArray *rows;
+	JsonArray *attention;
+	const gchar *sort;
+	guint i;
+
+	venture_marketdata_accounts_query_init(&query);
+
+	if (!mdr_organization(context, options, &query.organization_id, error) ||
+	    !mdr_integer(options, "data_source_id", 0, &query.data_source_id, error) ||
+	    !mdr_threshold(options, "expiring_hours", &query.expiring_hours, error) ||
+	    !mdr_threshold(options, "mail_days", &query.mail_days, error) ||
+	    !mdr_threshold(options, "stale_days", &query.stale_days, error))
+		return NULL;
+
+	query.basis = mdr_string(options, "basis");
+	query.group_key = mdr_string(options, "group_key");
+	sort = mdr_string(options, "sort");
+	query.sort = sort;
+
+	/* A figure is asked for largest first; a name or a deadline in its
+	 * natural order. */
+	query.descending = (0 == g_strcmp0(sort, "gold")) || (0 == g_strcmp0(sort, "positions")) ||
+	                   (0 == g_strcmp0(sort, "inbound"));
+	answer = venture_marketdata_accounts(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	summary = json_object_get_object_member(root, "summary");
+	rows = json_object_get_array_member(root, "accounts");
+	attention = json_object_get_array_member(root, "attention");
+
+	result = venture_report_result_new("Accounts", period);
+	mdr_money_metric(result, "gold", "Money on hand", summary, "balances");
+	mdr_money_metric(result, "inventory_value", "Inventory value", summary, "inventory_value");
+	mdr_money_metric(result, "listed_value", "Listed, at buyout", summary, "positions_value");
+	mdr_money_metric(result, "mail_money", "Waiting in the mail", summary, "inbound_money");
+	mdr_money_metric(result, "net_30d", "Net, 30 days", summary, "net_30d");
+	venture_report_result_add_metric(result, venture_metric_new_count("needs_login", "Places to log in to",
+		(NULL != attention) ? json_array_get_length(attention) : 0));
+	venture_report_result_add_metric(result, venture_metric_new_count("listings", "Listings",
+		json_object_get_int_member_with_default(summary, "positions", 0)));
+	venture_report_result_add_metric(result, venture_metric_new_count("listings_expired", "Listings expired",
+		json_object_get_int_member_with_default(summary, "positions_expired", 0)));
+
+	venture_report_result_add_column(result, "account", "Account", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "realm", "Realm", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "kind", "Kind", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "level", "Level", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "class", "Class", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "gold", "Money", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "listings", "Listings", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "expired", "Expired", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "expiring", "Expiring soon", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "soonest_expiry", "Soonest expiry", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "mail", "Mail", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "mail_money", "In the mail", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "last_seen", "Last seen", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "why", "Log in for", VENTURE_REPORT_COLUMN_TEXT);
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		JsonArray *reasons = json_object_get_array_member(row, "reasons");
+		g_autoptr(GString) why = g_string_new(NULL);
+		guint j;
+
+		for (j = 0; (NULL != reasons) && (j < json_array_get_length(reasons)); j++)
+		{
+			if (j > 0)
+				g_string_append(why, "; ");
+
+			g_string_append(why, json_array_get_string_element(reasons, j));
+		}
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "account", mdr_text(row, "display_name"));
+		venture_report_result_set_text(result, "realm", mdr_text(row, "realm"));
+		venture_report_result_set_text(result, "kind", mdr_text(row, "kind"));
+		mdr_set_number(result, "level", row, "level", 1.0);
+		venture_report_result_set_text(result, "class", mdr_text(row, "class"));
+		mdr_set_money(result, "gold", row, "gold");
+		mdr_set_number(result, "listings", row, "positions", 1.0);
+		mdr_set_number(result, "expired", row, "positions_expired", 1.0);
+		mdr_set_number(result, "expiring", row, "positions_expiring", 1.0);
+		venture_report_result_set_text(result, "soonest_expiry", mdr_text(row, "soonest_expiry"));
+		mdr_set_number(result, "mail", row, "inbound", 1.0);
+		mdr_set_first_money(result, "mail_money", row, "inbound_money");
+		venture_report_result_set_text(result, "last_seen", mdr_text(row, "last_seen"));
+		venture_report_result_set_text(result, "why", (why->len > 0) ? why->str : NULL);
+	}
+
+	/* Where to log in, most urgent first, as the overview lists it. */
+	for (i = 0; (NULL != attention) && (i < json_array_get_length(attention)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(attention, i);
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%s (%s)", mdr_text(row, "title"), mdr_text(row, "severity"));
+		venture_report_result_append_note(result, note);
+	}
+
+	mdr_notes(result, root);
+
+	return g_steal_pointer(&result);
+}
+
+static VentureReportResult *
+mdr_holdings(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	VentureMarketdataInventoryQuery query;
+	JsonObject *root;
+	JsonObject *totals;
+	JsonArray *rows;
+	gint64 value;
+	guint i;
+
+	venture_marketdata_inventory_query_init(&query);
+
+	if (!mdr_organization(context, options, &query.organization_id, error) ||
+	    !mdr_integer(options, "data_source_id", 0, &query.data_source_id, error) ||
+	    !mdr_integer(options, "dead_days", 0, &query.dead_days, error) ||
+	    !mdr_integer(options, "top", 50, &value, error))
+		return NULL;
+
+	if ((value < 1) || (value > VENTURE_MARKETDATA_ACCOUNTS_MAX_PAGE))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "top is 1 to %d", VENTURE_MARKETDATA_ACCOUNTS_MAX_PAGE);
+		return NULL;
+	}
+
+	query.per_page = (guint)value;
+	query.dead = (query.dead_days > 0);
+	query.basis = mdr_string(options, "basis");
+	query.account = mdr_string(options, "account_key");
+	query.place = mdr_string(options, "place");
+	query.category = mdr_string(options, "category_path");
+	query.min_value = mdr_string(options, "min_value");
+	query.sort = mdr_string(options, "sort");
+	query.descending = (0 != g_strcmp0(query.sort, "name"));
+	answer = venture_marketdata_inventory(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	totals = json_object_get_object_member(root, "totals");
+	rows = json_object_get_array_member(root, "rows");
+
+	result = venture_report_result_new("Account holdings", period);
+	mdr_money_object_metric(result, "value", "Value", totals, "value");
+	mdr_money_object_metric(result, "portfolio_value", "Whole inventory", root, "portfolio_value");
+	venture_report_result_add_metric(result, venture_metric_new_count("items", "Items",
+		json_object_get_int_member_with_default(totals, "instruments", 0)));
+	venture_report_result_add_metric(result, venture_metric_new_count("units", "Units",
+		json_object_get_int_member_with_default(totals, "units", 0)));
+
+	venture_report_result_add_column(result, "item", "Item", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "key", "Key", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "category", "Category", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "units", "Units", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "unit_value", "Each", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "value", "Value", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "share", "Of inventory", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "days_of_supply", "Days to sell", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "accounts", "Held by", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "last_sale", "Last sold", VENTURE_REPORT_COLUMN_TEXT);
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		const gchar *name = mdr_text(row, "instrument_name");
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "item", (NULL != name) ? name : mdr_text(row, "instrument_key"));
+		venture_report_result_set_text(result, "key", mdr_text(row, "instrument_key"));
+		venture_report_result_set_text(result, "category", mdr_text(row, "category"));
+		mdr_set_number(result, "units", row, "quantity", 1.0);
+		mdr_set_money(result, "unit_value", row, "unit_value");
+		mdr_set_money(result, "value", row, "value");
+		mdr_set_number(result, "share", row, "share", 1.0);
+		mdr_set_number(result, "days_of_supply", row, "days_of_supply", 1.0);
+		mdr_set_number(result, "accounts", row, "accounts", 1.0);
+		venture_report_result_set_text(result, "last_sale", mdr_text(row, "last_sale"));
+	}
+
+	if (json_object_get_int_member_with_default(root, "total", 0) > (gint64)query.per_page)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("The top %u of %" G_GINT64_FORMAT " items; raise top or narrow to see more.",
+		                       query.per_page, json_object_get_int_member(root, "total"));
+		venture_report_result_append_note(result, note);
+	}
+
+	venture_report_result_append_note(result,
+		"Valued on the basis named (conservative by default: the lower of the region's sale "
+		"average and the market value where the account trades). Nothing converts a currency.");
+	mdr_notes(result, root);
+
+	return g_steal_pointer(&result);
+}
+
+static VentureReportResult *
+mdr_external_pnl(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	VentureMarketdataPnlQuery query;
+	JsonObject *root;
+	JsonArray *buckets;
+	JsonArray *totals;
+	GDateTime *start;
+	GDateTime *end;
+	const gchar *group_by;
+	guint i;
+
+	venture_marketdata_pnl_query_init(&query);
+
+	if (!mdr_organization(context, options, &query.organization_id, error) ||
+	    !mdr_integer(options, "data_source_id", 0, &query.data_source_id, error))
+		return NULL;
+
+	/* The report's period is the window: an unbounded side is no bound. */
+	start = (NULL != period) ? venture_date_range_get_start(period) : NULL;
+	end = (NULL != period) ? venture_date_range_get_end(period) : NULL;
+	query.since = (NULL != start) ? MAX(g_date_time_to_unix(start), 1) : -1;
+	query.until = (NULL != end) ? MAX(g_date_time_to_unix(end), 1) : -1;
+	query.group_by = mdr_string(options, "group_by");
+	query.account = mdr_string(options, "account_key");
+	query.venue = mdr_string(options, "venue");
+	query.instrument = mdr_string(options, "instrument");
+	query.source = mdr_string(options, "source");
+	answer = venture_marketdata_external_pnl(context, &query, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	buckets = json_object_get_array_member(root, "buckets");
+	totals = json_object_get_array_member(root, "totals");
+	group_by = mdr_text(root, "group_by");
+
+	result = venture_report_result_new("Trading profit and loss", period);
+
+	if ((NULL != totals) && (json_array_get_length(totals) > 0))
+	{
+		JsonObject *total = json_array_get_object_element(totals, 0);
+
+		mdr_money_object_metric(result, "sales", "Sales, after the cut", total, "sales_amount");
+		mdr_money_object_metric(result, "purchases", "Purchases", total, "buys_amount");
+		mdr_money_object_metric(result, "income", "Other income", total, "income");
+		mdr_money_object_metric(result, "expenses", "Expenses", total, "expense");
+		mdr_money_object_metric(result, "net", "Net", total, "net");
+		venture_report_result_add_metric(result, venture_metric_new_count("units_sold", "Units sold",
+			json_object_get_int_member_with_default(total, "sold_units", 0)));
+	}
+
+	venture_report_result_add_column(result, "group", (NULL != group_by) ? group_by : "day",
+	                                 VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "sales", "Sales", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "sold_units", "Units sold", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "purchases", "Purchases", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "bought_units", "Units bought", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "income", "Other income", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "expenses", "Expenses", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "net", "Net", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "expired_units", "Units expired", VENTURE_REPORT_COLUMN_NUMBER);
+
+	for (i = 0; (NULL != buckets) && (i < json_array_get_length(buckets)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(buckets, i);
+		const gchar *label = mdr_text(row, "period_start");
+
+		if (NULL == label)
+			label = mdr_text(row, "label");
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "group", venture_string_is_empty(label) ? "(none)" : label);
+		mdr_set_money(result, "sales", row, "sales_amount");
+		mdr_set_number(result, "sold_units", row, "sold_units", 1.0);
+		mdr_set_money(result, "purchases", row, "buys_amount");
+		mdr_set_number(result, "bought_units", row, "bought_units", 1.0);
+		mdr_set_money(result, "income", row, "income");
+		mdr_set_money(result, "expenses", row, "expense");
+		mdr_set_money(result, "net", row, "net");
+		mdr_set_number(result, "expired_units", row, "expired_units", 1.0);
+	}
+
+	venture_report_result_append_note(result,
+		"The source's own ledger, as its addon records it: sales after the venue's cut, purchases, "
+		"other income and expenses. Periods are UTC. Nothing converts a currency.");
+
+	{
+		JsonArray *notes = json_object_get_array_member(root, "notes");
+
+		for (i = 0; (NULL != notes) && (i < json_array_get_length(notes)); i++)
+			venture_report_result_append_note(result, json_array_get_string_element(notes, i));
+	}
+
+	return g_steal_pointer(&result);
+}
+
 /* --- Registration ------------------------------------------------------------ */
 
 /*
@@ -624,5 +1034,76 @@ venture_marketdata_register_reports(VentureReportRegistry *registry)
 		"{\"type\":\"object\",\"required\":[\"watchlist_id\"],\"properties\":{"
 		"\"watchlist_id\":{\"type\":\"integer\",\"description\":\"The watchlist to "
 		"price\"},"
+		MDR_ORGANIZATION "}}");
+	mdr_add(registry, "accounts", "Accounts",
+		"The operator's accounts from every data source that reports them: money on hand, "
+		"listings up and expired, mail waiting, when each was last seen and why it needs a "
+		"login, with the places to log in to, most urgent first, in the notes",
+		mdr_accounts,
+		"{\"type\":\"object\",\"properties\":{"
+		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"Only this data "
+		"source; every source of the organization by default\"},"
+		"\"group_key\":{\"type\":\"string\",\"description\":\"Only accounts in this "
+		"group (a realm)\"},"
+		"\"basis\":{\"type\":\"string\",\"enum\":[\"conservative\",\"market\",\"min\","
+		"\"historical\",\"region_market\",\"region_sale_avg\"],\"description\":\"How "
+		"holdings are valued; conservative by default\"},"
+		"\"expiring_hours\":{\"type\":\"integer\",\"description\":\"Listings expiring "
+		"within this many hours need a login; 12 by default, at most 720\"},"
+		"\"mail_days\":{\"type\":\"integer\",\"description\":\"Mail expiring within "
+		"this many days needs a login; 3 by default, at most 60\"},"
+		"\"stale_days\":{\"type\":\"integer\",\"description\":\"An account unseen this "
+		"many days needs a visit; 14 by default\"},"
+		"\"sort\":{\"type\":\"string\",\"enum\":[\"attention\",\"name\",\"realm\",\"gold\","
+		"\"positions\",\"expiry\",\"inbound\",\"last_seen\",\"freshness\"],"
+		"\"description\":\"The table's order; attention by default\"},"
+		MDR_ORGANIZATION "}}");
+
+	mdr_add(registry, "account_holdings", "Account holdings",
+		"What every account of one data source holds, per item across accounts and places, "
+		"valued on a basis, with its share of the inventory and days to sell at the region's "
+		"pace; most valuable first",
+		mdr_holdings,
+		"{\"type\":\"object\",\"properties\":{"
+		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"The data source; "
+		"the organization's first with accounts by default\"},"
+		"\"account_key\":{\"type\":\"string\",\"description\":\"Only this account's "
+		"holdings, by its key in the source\"},"
+		"\"place\":{\"type\":\"string\",\"description\":\"Only this place: bag, bank, "
+		"reagent_bank, warbank, guild, mail, auction, void, equipped, currency or other\"},"
+		"\"category_path\":{\"type\":\"string\",\"description\":\"Only items in this "
+		"store category path and beneath\"},"
+		"\"basis\":{\"type\":\"string\",\"enum\":[\"conservative\",\"market\",\"min\","
+		"\"historical\",\"region_market\",\"region_sale_avg\"],\"description\":\"How "
+		"items are valued; conservative by default\"},"
+		"\"min_value\":{\"type\":\"string\",\"description\":\"Only items worth at least "
+		"this in total, in the source's currency, e.g. 100.00 GOLD\"},"
+		"\"dead_days\":{\"type\":\"integer\",\"description\":\"Dead stock only: items "
+		"with no sale in the ledger for this many days\"},"
+		"\"sort\":{\"type\":\"string\",\"enum\":[\"value\",\"quantity\",\"name\","
+		"\"unit_value\",\"accounts\",\"days_of_supply\"],\"description\":\"The order; "
+		"value, largest first, by default\"},"
+		"\"top\":{\"type\":\"integer\",\"description\":\"How many items, 1 to 500; 50 "
+		"by default\"},"
+		MDR_ORGANIZATION "}}");
+
+	mdr_add(registry, "external_pnl", "Trading profit and loss",
+		"A data source's own ledger of the operator's trades summed for the period: sales "
+		"after the venue's cut, purchases, other income and expenses, net, by day, week, "
+		"month, account, venue, item or the source's own label",
+		mdr_external_pnl,
+		"{\"type\":\"object\",\"properties\":{"
+		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"The data source; "
+		"the organization's first with accounts by default\"},"
+		"\"group_by\":{\"type\":\"string\",\"enum\":[\"day\",\"week\",\"month\",\"account\","
+		"\"venue\",\"instrument\",\"source\"],\"description\":\"What a row is; day by "
+		"default\"},"
+		"\"account_key\":{\"type\":\"string\",\"description\":\"Only this account's "
+		"rows, by its key\"},"
+		"\"venue\":{\"type\":\"string\",\"description\":\"Only this venue's rows\"},"
+		"\"instrument\":{\"type\":\"string\",\"description\":\"Only this item's rows, by "
+		"its key\"},"
+		"\"source\":{\"type\":\"string\",\"description\":\"Only rows the source labels "
+		"so, e.g. Auction\"},"
 		MDR_ORGANIZATION "}}");
 }

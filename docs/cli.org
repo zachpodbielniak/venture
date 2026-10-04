@@ -116,6 +116,7 @@ venturectl support rollup --from D --to D [--sort C]  # support cost and tickets
 venturectl report packs deliver ID       # re-send a pack's last retained output by email
 venturectl feeds sync|push|runs|due ...  # market data sources; see Market data, arbitrage and plugins
 venturectl market VERB ...               # the price oracle and the Trading pages; market help
+venturectl accounts VERB ...             # the operator's accounts: attention, inventory, P&L; accounts help
 venturectl arbitrage VERB ...            # scan, record, calculate, export; arbitrage help
 venturectl plugins [list]                # what the server loaded; owner only
 #+end_src
@@ -666,7 +667,7 @@ record and is immediate, not staged. See [[file:printing.org][receipt printers]]
 
 * Market data, arbitrage and plugins
 
-Four verb groups reach what is not a record: =feeds= queues a market data source's sync and reads its schedule, =market= asks the price oracle and the Trading pages' questions, =arbitrage= scans for opportunities, records them as trades and runs the calculators, and =plugins= lists what the server loaded. Each is a thin client of a JSON route (=/api/v1/feeds=, =/api/v1/market=, =/api/v1/arbitrage=, =/api/v1/plugins=) or of a record action, asking exactly the question the matching page asks, so the terminal and the page cannot answer differently. The records themselves -- =data_source=, =venue=, =instrument=, =watchlist=, =alert_rule=, =arbitrage_trade=, =arbitrage_strategy= and the rest -- need no verb of their own: =list=, =create=, =update= and =act= cover them like any other type. What the verbs ask about is described in [[file:market-data.org][Market data]] (the series stores, feeds, the price oracle, alerts and the Trading pages), [[file:arbitrage.org][Arbitrage]] (trades and legs, the scan, presets and calculators) and [[file:plugins.org][Plugins]] (runtimes, exec plugins and what a manifest provides).
+Five verb groups reach what is not a record: =accounts= reads the /accounts pages' answers (the operator's characters, inventory and ledger), =feeds= queues a market data source's sync and reads its schedule, =market= asks the price oracle and the Trading pages' questions, =arbitrage= scans for opportunities, records them as trades and runs the calculators, and =plugins= lists what the server loaded. Each is a thin client of a JSON route (=/api/v1/feeds=, =/api/v1/market=, =/api/v1/arbitrage=, =/api/v1/plugins=) or of a record action, asking exactly the question the matching page asks, so the terminal and the page cannot answer differently. The records themselves -- =data_source=, =venue=, =instrument=, =watchlist=, =alert_rule=, =arbitrage_trade=, =arbitrage_strategy= and the rest -- need no verb of their own: =list=, =create=, =update= and =act= cover them like any other type. What the verbs ask about is described in [[file:market-data.org][Market data]] (the series stores, feeds, the price oracle, alerts and the Trading pages), [[file:arbitrage.org][Arbitrage]] (trades and legs, the scan, presets and calculators) and [[file:plugins.org][Plugins]] (runtimes, exec plugins and what a manifest provides).
 
 #+begin_src sh
 venturectl feeds sync 1 --wait                        # queue a data source's sync and wait for its run
@@ -726,6 +727,24 @@ The =market= verbs are the Trading pages' JSON twins (=/api/v1/market/...=) aske
 
 The answers draw as a table on a terminal (named columns, money with its currency, a blank -- never a zero -- for a figure that is not there, then the answer's notes, which =-q= drops), the rows as CSV with =-f csv=, and the whole answer -- notes, echoes of the question and all -- with =-f json= or =-f yaml=, so a script never loses what the table leaves out.
 
+** Accounts
+
+The =accounts= verbs are the /accounts pages' JSON twins (=/api/v1/accounts/...=), asked under the pages' own query names and typed before anything is sent, like =market='s:
+
+#+begin_src sh
+venturectl accounts                                   # the summary, then every account (accounts list)
+venturectl accounts attention                         # where to log in next, each place with its reasons
+venturectl accounts attention expiring_hours=4 mail_days=1
+venturectl accounts list sort=gold dir=desc basis=market
+venturectl accounts show 4 "Drgold-Thorium Brotherhood"     # listings, mail, holdings, ledger
+venturectl accounts inventory place=bank min_value="500.00 GOLD" sort=value
+venturectl accounts inventory dead=true dead_days=45  # nothing sold for 45 days
+venturectl accounts pnl period=last_90_days group_by=week
+venturectl accounts pnl group_by=instrument account="Drgold-Thorium Brotherhood"
+#+end_src
+
+=list= and =attention= take =source=, =group= (a realm), =basis= (=conservative=, =market=, =min=, =historical=, =region_market=, =region_sale_avg=), =expiring_hours=, =mail_days=, =stale_days=, =sort= and =dir=; =show SOURCE_ID KEY= takes the account's key in the store, sent as one path segment whatever it holds, and =basis=, =expiring_hours= and =ledger=; =inventory= takes =source=, =account= (or =account_key=), =place=, =category= (or =category_path=), =search=, =min_value= (with its currency), =dead= (=true=/=false=), =dead_days=, =basis=, =sort=, =dir=, =page= and =per_page=; =pnl= takes =source=, =period=, =group_by=, =account=, =venue=, =instrument=, =label= (the source's own label, =Auction=) and =top=. Every verb takes =organization_id=N=. A table prints on a terminal; =-f json= prints the whole answer, notes and all. See [[file:market-data.org][Market data]], "The Accounts pages".
+
 ** Arbitrage
 
 =arbitrage scan= takes the strategy as its first word (=spread= when there is none) and the scan's options after it (see [[file:arbitrage.org][Arbitrage]], "The question"). Money names its currency (="10.00 GOLD"=; a bare bound is refused by the server rather than read as dollars), percents are plain numbers ("15" is 15%), and the options that are whole numbers -- =preset_id=, =data_source_id=, =recipe_id=, =units=, =buy_sources=, =max_age_hours=, =top=, =organization_id= -- are typed by the CLI. Every other option travels as text for the server to read, and it refuses by name one that neither the scan nor the chosen strategy declares -- the CLI keeps no list of its own, which is how a plugin strategy's own options get through. Options a scan route would quietly ignore or drop are refused instead (exit 2): =venture_id=, =as_of=, =key=, =format= and =calc=. =cover= and =back_lay= leave out an event whose =commence_time= has passed, and say so in a note.
@@ -744,7 +763,7 @@ The table numbers its rows, and =arbitrage record N= with the same options recor
 
 ** Reports
 
-The market and arbitrage reports run through =report= like every other, with their options after the period: =market_deals= (=data_source_id=, =venue=, =group_key=, =category_path=, =min_value=, =max_pct=, =top=), =venue_index= (=data_source_id=, =group_key=), =watchlist= (=watchlist_id=), =arbitrage_performance= (=group_by=, =strategy=, =venture_id=), =arbitrage_scan= (the scan's options, =strategy= included) and =craft_arbitrage= (=recipe_id=, =units=, =data_source_id=, =buy_venues=, =sell_venues=, =group_key=, =sell_basis=, =max_age_hours=); all of them take =organization_id=. The market reports and the scans read the stores as they are now, so the period does not narrow them. =pnl=, =ventures= and =monthly= count the arbitrage trades a period finished (see [[file:arbitrage.org][Arbitrage]], "In the profit and loss").
+The market and arbitrage reports run through =report= like every other, with their options after the period: =accounts= (=data_source_id=, =group_key=, =basis=, =expiring_hours=, =mail_days=, =stale_days=, =sort=), =account_holdings= (=data_source_id=, =account_key=, =place=, =category_path=, =basis=, =min_value=, =dead_days=, =sort=, =top=), =external_pnl= (=data_source_id=, =group_by=, =account_key=, =venue=, =instrument=, =source=; the period is its window), =market_deals= (=data_source_id=, =venue=, =group_key=, =category_path=, =min_value=, =max_pct=, =top=), =venue_index= (=data_source_id=, =group_key=), =watchlist= (=watchlist_id=), =arbitrage_performance= (=group_by=, =strategy=, =venture_id=), =arbitrage_scan= (the scan's options, =strategy= included) and =craft_arbitrage= (=recipe_id=, =units=, =data_source_id=, =buy_venues=, =sell_venues=, =group_key=, =sell_basis=, =max_age_hours=); all of them take =organization_id=. The market reports and the scans read the stores as they are now, so the period does not narrow them. =pnl=, =ventures= and =monthly= count the arbitrage trades a period finished (see [[file:arbitrage.org][Arbitrage]], "In the profit and loss").
 
 #+begin_src sh
 venturectl report market_deals group_key=eu min_value="10.00 GOLD" max_pct=80 top=20

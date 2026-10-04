@@ -1329,6 +1329,16 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/alerts"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/i/1/2770"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/alerts/1/evaluate", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* The account operations pages and their twins. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/accounts"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/accounts/inventory"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/accounts/pnl"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/accounts/1/Drgold-Thorium"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/accounts/1/a/key/with/slashes"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/accounts"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/accounts/inventory"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/accounts/pnl"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/accounts/1/Drgold-Thorium"), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* The arbitrage scan, recording, export and the calculators. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/calc"), ==, SOUP_STATUS_FOUND);
@@ -4571,7 +4581,8 @@ test_orgaccess_report_organization(ServerFixture *fixture, gconstpointer user_da
 	static const gchar *const reports[] = {
 		"recipe_margin", "goal_progress", "goal_materials", "listing_performance",
 		"session_performance", "arbitrage_performance", "arbitrage_scan",
-		"craft_arbitrage", "market_deals", "venue_index", "watchlist", NULL
+		"craft_arbitrage", "market_deals", "venue_index", "watchlist", "accounts",
+		"account_holdings", "external_pnl", NULL
 	};
 	g_autoptr(VentureEntity) other = NULL;
 	g_autoptr(VentureEntity) member = NULL;
@@ -5241,6 +5252,8 @@ test_auth_sidebar_asks_the_five_questions(
 		"<summary class=\"nav-section\">Support</summary>",
 		"<summary class=\"nav-section\">Operations</summary>",
 		"<summary class=\"nav-section\">Trading</summary>",
+		"<div class=\"nav-sub\">Your accounts</div>",
+		"<div class=\"nav-sub\">Markets</div>",
 		"<summary class=\"nav-section\">Build</summary>",
 		"<summary class=\"nav-section\">Settings</summary>",
 	};
@@ -5295,16 +5308,27 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_nonnull(strstr(page, "href=\"/deals\""));
 
 	/* Trading is the marketdata module's pages, on by default; with feeds
-	 * off -- the default -- the feeds row is not among them. */
+	 * off -- the default -- the feeds row is not among them. The account
+	 * pages come first, under their own label, before the markets. */
 	{
 		const gchar *trading = strstr(page, headings[10]);
-		const gchar *build = strstr(page, headings[11]);
+		const gchar *mine = strstr(page, headings[11]);
+		const gchar *markets = strstr(page, headings[12]);
+		const gchar *build = strstr(page, headings[13]);
+		const gchar *overview = strstr(page, "href=\"/accounts\"");
+		const gchar *inventory = strstr(page, "href=\"/accounts/inventory\"");
+		const gchar *pnl = strstr(page, "href=\"/accounts/pnl\"");
+
 		const gchar *browse = strstr(page, "href=\"/market/browse\"");
 		const gchar *alerts = strstr(page, "href=\"/market/alerts\"");
 		const gchar *trades = strstr(page, "href=\"/e/arbitrage_trade\"");
 		const gchar *scan = strstr(page, "href=\"/arbitrage\"");
 		const gchar *calc = strstr(page, "href=\"/arbitrage/calc\"");
 
+		g_assert_nonnull(overview);
+		g_assert_true((overview > mine) && (overview < markets));
+		g_assert_true((inventory > overview) && (pnl > inventory) && (pnl < markets));
+		g_assert_true(browse > markets);
 		g_assert_nonnull(browse);
 		g_assert_nonnull(alerts);
 		g_assert_true((browse > trading) && (browse < build));
@@ -5339,7 +5363,7 @@ test_auth_sidebar_asks_the_five_questions(
 	{
 		const gchar *operations = strstr(page, headings[9]);
 		const gchar *trading = strstr(page, headings[10]);
-		const gchar *build = strstr(page, headings[11]);
+		const gchar *build = strstr(page, headings[13]);
 		const gchar *feeds = strstr(page, "href=\"/feeds\"");
 
 		g_assert_nonnull(trading);
@@ -6069,6 +6093,37 @@ test_auth_trading_organization(
 	}
 	g_clear_pointer(&body, g_free);
 	g_clear_pointer(&json, g_free);
+
+	/* --- Accounts: the overview, an account, the inventory, the P&L --- */
+
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/accounts?source=%"
+	                              G_GINT64_FORMAT, other_source), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/accounts?source=%"
+	                              G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "\"accounts\""));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, &body, "/api/v1/accounts?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_null(strstr(body, "Evermoor"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/accounts/%" G_GINT64_FORMAT
+	                              "/someone", other_source), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/accounts/%" G_GINT64_FORMAT
+	                              "/someone?organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/accounts/inventory?source=%"
+	                              G_GINT64_FORMAT, other_source), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/accounts/pnl?source=%"
+	                              G_GINT64_FORMAT, other_source), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/accounts/pnl?source=%"
+	                              G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_OK);
+	/* A viewer there sees no source at all: an empty overview. */
+	g_assert_cmpuint(trading_call(fixture, "GET", reader, NULL, &body, "/api/v1/accounts?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(body, "Evermoor prices"));
+	g_clear_pointer(&body, g_free);
 
 	/* --- Arbitrage: the scan, an export, a record --- */
 

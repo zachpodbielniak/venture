@@ -1303,10 +1303,16 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "recipe_id")) &&
 				 (0 != g_strcmp0(parts[0], "units")) &&
 				 (0 != g_strcmp0(parts[0], "buy_sources")) &&
-				 (0 != g_strcmp0(parts[0], "max_age_hours"))))
+				 (0 != g_strcmp0(parts[0], "max_age_hours")) &&
+				 (0 != g_strcmp0(parts[0], "account_key")) &&
+				 (0 != g_strcmp0(parts[0], "place")) &&
+				 (0 != g_strcmp0(parts[0], "expiring_hours")) &&
+				 (0 != g_strcmp0(parts[0], "mail_days")) &&
+				 (0 != g_strcmp0(parts[0], "stale_days")) &&
+				 (0 != g_strcmp0(parts[0], "dead_days"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -2325,6 +2331,7 @@ venture_cli_command_factory(
 #include "bankfeed/venture-bankfeed-cli.inc"
 #include "feeds/venture-feeds-cli.inc"
 #include "marketdata/venture-marketdata-cli.inc"
+#include "marketdata/venture-marketdata-accounts-cli.inc"
 #include "commerce/venture-commerce-cli.inc"
 
 static gint
@@ -4266,6 +4273,14 @@ main(
 		"  market alerts [evaluate RULE_ID [--dry-run]]\n"
 		"                               rules and recent hits; test a rule now\n"
 		"  market help                  every market verb, its options and examples\n"
+		"  accounts [list|attention]    the operator's characters and banks: money,\n"
+		"                               listings, mail, where to log in next\n"
+		"  accounts show SOURCE_ID KEY  one account: listings, mail, holdings, ledger\n"
+		"  accounts inventory [name=value ...]\n"
+		"                               everything held, valued; dead=true for dead stock\n"
+		"  accounts pnl [period=P] [group_by=G]\n"
+		"                               the source's own ledger summed, and the flips\n"
+		"  accounts help                every accounts verb, its options and examples\n"
 		"  arbitrage scan [STRATEGY] [option=value ...]\n"
 		"                               opportunities now: spread, deal, transform,\n"
 		"                               cover, back_lay or a plugin's\n"
@@ -4660,6 +4675,8 @@ main(
 		result = venture_cli_command_feeds(&cli, args, feeds_wait, &error);
 	else if (0 == g_strcmp0(args[0], "market"))
 		result = venture_cli_command_market(&cli, args, dry_run, &error);
+	else if (0 == g_strcmp0(args[0], "accounts"))
+		result = venture_cli_command_accounts(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "arbitrage"))
 		result = venture_cli_command_arbitrage(&cli, args, arbitrage_stake, export_output, &error);
 	else if (0 == g_strcmp0(args[0], "plugins"))
