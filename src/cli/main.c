@@ -1269,10 +1269,28 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "max_pct")) &&
 				 (0 != g_strcmp0(parts[0], "top")) &&
 				 (0 != g_strcmp0(parts[0], "watchlist_id")) &&
-				 (0 != g_strcmp0(parts[0], "strategy"))))
+				 (0 != g_strcmp0(parts[0], "strategy")) &&
+				 (0 != g_strcmp0(parts[0], "kind")) &&
+				 (0 != g_strcmp0(parts[0], "buy_venues")) &&
+				 (0 != g_strcmp0(parts[0], "sell_venues")) &&
+				 (0 != g_strcmp0(parts[0], "instrument")) &&
+				 (0 != g_strcmp0(parts[0], "sell_basis")) &&
+				 (0 != g_strcmp0(parts[0], "total_stake")) &&
+				 (0 != g_strcmp0(parts[0], "min_profit")) &&
+				 (0 != g_strcmp0(parts[0], "min_roi")) &&
+				 (0 != g_strcmp0(parts[0], "min_sale_rate")) &&
+				 (0 != g_strcmp0(parts[0], "max_capital")) &&
+				 (0 != g_strcmp0(parts[0], "max_buy_pct")) &&
+				 (0 != g_strcmp0(parts[0], "min_confidence")) &&
+				 (0 != g_strcmp0(parts[0], "share")) &&
+				 (0 != g_strcmp0(parts[0], "preset_id")) &&
+				 (0 != g_strcmp0(parts[0], "recipe_id")) &&
+				 (0 != g_strcmp0(parts[0], "units")) &&
+				 (0 != g_strcmp0(parts[0], "buy_sources")) &&
+				 (0 != g_strcmp0(parts[0], "max_age_hours"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -3855,7 +3873,14 @@ main(
 		"                               market_deals takes data_source_id, venue, group_key, category_path, min_value, max_pct, top;\n"
 		"                               venue_index takes data_source_id, group_key;\n"
 		"                               watchlist takes watchlist_id;\n"
-		"                               arbitrage_performance takes group_by, strategy, venture_id\n"
+		"                               arbitrage_performance takes group_by, strategy, venture_id;\n"
+		"                               arbitrage_scan takes strategy, preset_id, data_source_id,\n"
+		"                               buy_venues, sell_venues, group_key, category_path, kind,\n"
+		"                               instrument, recipe_id, units, buy_sources, sell_basis,\n"
+		"                               total_stake, min_profit, min_roi, min_sale_rate, max_capital,\n"
+		"                               max_buy_pct, min_confidence, max_age_hours, share, sort, top;\n"
+		"                               craft_arbitrage takes recipe_id, units, data_source_id,\n"
+		"                               buy_venues, sell_venues, group_key, sell_basis, max_age_hours\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
@@ -4013,7 +4038,10 @@ main(
 		"  venturectl report goal_progress all status=active category_id=4\n"
 		"  venturectl report goal_materials all goal_id=2 price_source=\"market value\"\n"
 		"  venturectl report market_deals group_key=eu min_value=\"10.00 GOLD\" max_pct=80 top=20\n"
-		"  venturectl report venue_index data_source_id=1\n"		"  venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread\n"
+		"  venturectl report venue_index data_source_id=1\n"
+		"  venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread\n"
+		"  venturectl report arbitrage_scan strategy=spread group_key=eu min_profit=\"10.00 GOLD\" min_roi=15 top=20\n"
+		"  venturectl report craft_arbitrage recipe_id=4 units=10\n"
 		"  venturectl report watchlist watchlist_id=3\n"
 		"  venturectl -f csv report receivables > aging.csv\n"
 		"  venturectl forge settings 1 < protected-settings.json\n"

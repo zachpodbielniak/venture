@@ -1317,6 +1317,18 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/alerts"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/i/1/2770"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/alerts/1/evaluate", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* The arbitrage scan, recording, export and the calculators. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/calc"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/export?format=csv"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/record", NULL, "key=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/scan"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/calc?calc=surebet"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/export?format=csv"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/registries"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/arbitrage/record", NULL, "{\"key\":\"x\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/arbitrage_strategy"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage_strategy"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/calendar_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/mail_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
@@ -5259,6 +5271,8 @@ test_auth_sidebar_asks_the_five_questions(
 		const gchar *browse = strstr(page, "href=\"/market/browse\"");
 		const gchar *alerts = strstr(page, "href=\"/market/alerts\"");
 		const gchar *trades = strstr(page, "href=\"/e/arbitrage_trade\"");
+		const gchar *scan = strstr(page, "href=\"/arbitrage\"");
+		const gchar *calc = strstr(page, "href=\"/arbitrage/calc\"");
 
 		g_assert_nonnull(browse);
 		g_assert_nonnull(alerts);
@@ -5267,6 +5281,11 @@ test_auth_sidebar_asks_the_five_questions(
 		/* Arbitrage trades, the arbitrage module's, after the market pages. */
 		g_assert_nonnull(trades);
 		g_assert_true((trades > alerts) && (trades < build));
+		/* The scan and the calculators, between the alerts and the
+		 * trades they record. */
+		g_assert_nonnull(scan);
+		g_assert_nonnull(calc);
+		g_assert_true((scan > alerts) && (calc > scan) && (trades > calc));
 		g_assert_null(strstr(page, "href=\"/feeds\""));
 	}
 

@@ -1851,6 +1851,50 @@ first: `trades`, `wins`, `hit_rate`, `realised`, `capital`, `roi`, `fees`,
 venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread
 ```
 
+Finding opportunities (read-only until recorded):
+
+- Report `arbitrage_scan` — opportunities **now** (the period is ignored)
+  by one `strategy`: `spread` (default; cross-venue flips, `buy_sources=N`
+  lists the N cheapest suppliers per item), `deal` (under the group's
+  deal price), `transform` (a recipe's inputs at their cheapest venues;
+  `recipe_id`, `units` = batches), `cover` (surebets; `total_stake`),
+  `back_lay`, or a plugin's. Filters: `preset_id`, `data_source_id`,
+  `buy_venues`, `sell_venues` (comma-separated **venue keys**),
+  `group_key`, `category_path`, `kind`, `instrument`, `units`,
+  `sell_basis` (`min`, `market`, `sale_avg`, `region_median`, `bid`),
+  `min_profit`, `max_capital`, `total_stake` (**money names its currency**:
+  `"10.00 GOLD"`; a bare amount is refused), `min_roi`, `min_sale_rate`,
+  `max_buy_pct`, `share` (**percent strings**, `"15"` = 15%),
+  `min_confidence` (0–1), `max_age_hours`, `sort` (`profit` default,
+  `roi`, `roi_per_day`, `annualized`, `ev`, `confidence`), `top` (1–500).
+  **An unknown option is refused by name.** A row with something
+  unquoted has blank figures and names it in `missing`/"Unquoted" — never
+  zero. Mixed currencies convert only through an `exchange_rate`, else
+  the row is skipped and a note says so.
+- Report `craft_arbitrage` — per recipe, each input at its cheapest venue
+  (a shopping list; a reusable input is bought once), the output's best
+  venue and the profit: `recipe_id`, `units`, `data_source_id`,
+  `buy_venues`, `sell_venues`, `group_key`, `sell_basis`, `max_age_hours`.
+- Presets are `arbitrage_strategy` records (`name`, `strategy`,
+  `data_source_id`, `buy_venues`, `sell_venues`, `options` as YAML of the
+  other filters); the save refuses a misspelt filter.
+- To record one, `POST /api/v1/arbitrage/record` with the same options plus
+  the row's `key` (and its `narrow` members): the server re-runs the scan
+  and performs `record` with the plan — a moved opportunity is a 404 "no
+  longer there". `GET /api/v1/arbitrage/calc?calc=surebet|back_lay|flip`
+  is the calculators; `/api/v1/arbitrage/registries` lists strategies,
+  fee models and export formats.
+- A venue's `fee_model` (`percent`, `commission`, `none`, or a plugin's)
+  and `fee_params` YAML are checked when written: `percent` takes
+  `cut_percent`, `fixed_per_unit`, `fixed_per_order`, `min_fee`,
+  `deposit_percent`, `deposit_basis`, `deposit_refundable`, `buy:`;
+  `commission` takes `rate_percent`.
+
+```sh
+venturectl report arbitrage_scan strategy=spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
+venturectl report craft_arbitrage recipe_id=4 units=10
+```
+
 ## Goals: targets, steps and the shopping list
 
 Module `goals` (requires only `core`; suggests `production` and `market`).

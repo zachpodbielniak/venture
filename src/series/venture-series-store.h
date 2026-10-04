@@ -1691,6 +1691,49 @@ venture_series_store_list_quotes(
 );
 
 /**
+ * venture_series_store_list_quoted_parents:
+ * @self: a #VentureSeriesStore
+ * @since: only quotes taken at or after this Unix time
+ * @count: keys to return, 0 for %VENTURE_SERIES_DEFAULT_PAGE, at most
+ *   %VENTURE_SERIES_MAX_PAGE
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The parents (events) of the instruments with quotes, the most recently
+ * quoted first: what a scan for surebets walks, one event at a time with
+ * venture_series_store_list_quotes().
+ *
+ * Returns: (transfer full) (element-type utf8) (nullable): the keys
+ */
+GPtrArray *
+venture_series_store_list_quoted_parents(
+	VentureSeriesStore	 *self,
+	gint64			  since,
+	guint			  count,
+	GError			**error
+);
+
+/**
+ * venture_series_store_list_quoted_instruments:
+ * @self: a #VentureSeriesStore
+ * @side: only instruments quoted on this side (e.g. lay)
+ * @since: only quotes taken at or after this Unix time
+ * @count: keys to return, 0 for %VENTURE_SERIES_DEFAULT_PAGE, at most
+ *   %VENTURE_SERIES_MAX_PAGE
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer full) (element-type utf8) (nullable): the keys, the
+ *   most recently quoted first
+ */
+GPtrArray *
+venture_series_store_list_quoted_instruments(
+	VentureSeriesStore	 *self,
+	VentureSeriesQuoteSide	  side,
+	gint64			  since,
+	guint			  count,
+	GError			**error
+);
+
+/**
  * venture_series_store_list_entries:
  * @self: a #VentureSeriesStore
  * @since: the earliest publication (or fetch) time wanted

@@ -3649,6 +3649,10 @@ venture_arbitrage_install(VentureContext *context)
 
 	database = venture_context_get_database(context);
 
+	/* The engine hands the database this context's registries every
+	 * time, so it runs before the once-per-database guard. */
+	venture_arbitrage_engine_install(context);
+
 	/* The tests build several contexts over one database; validators,
 	 * actions and registrations are per database, so the second one must
 	 * add nothing. */

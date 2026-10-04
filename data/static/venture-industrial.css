@@ -5039,3 +5039,38 @@ input:not([type="hidden"]):focus-visible {
 	.market-action-row { flex-direction: column; align-items: stretch; }
 	.market-table { display: block; overflow-x: auto; }
 }
+
+/* ==========================================================================
+   Arbitrage: the scan, the presets and the calculators
+   ========================================================================== */
+
+/*
+ * The strategy tabs are links, one marked current; a row's unquoted inputs
+ * are named under its title in the muted register, because a blank
+ * figure is information, not an alarm. Nothing here is a literal colour.
+ */
+.arbitrage-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	margin: 0 0 var(--space-3);
+}
+.arbitrage-tab {
+	padding: var(--space-1) var(--space-3);
+	border: 1px solid var(--border);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-muted);
+	text-decoration: none;
+}
+.arbitrage-tab[aria-current="page"] { color: var(--text); border-color: var(--text); }
+.arbitrage-filters { align-items: end; }
+.arbitrage-presets form { margin-bottom: var(--space-3); }
+.arbitrage-exports { margin: 0; font-size: 12.5px; }
+.arbitrage-table td { vertical-align: top; }
+.arbitrage-table form { margin: 0; }
+.arbitrage-unquoted { margin-top: var(--space-1); font-size: 12px; color: var(--text-muted); }
+.arbitrage-calc .stat-row { margin-top: var(--space-3); }
+.arbitrage-answer .figure { font-variant-numeric: tabular-nums; }

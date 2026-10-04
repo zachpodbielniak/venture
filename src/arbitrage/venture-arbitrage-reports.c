@@ -16,6 +16,7 @@
 
 #include "venture.h"
 #include "arbitrage/venture-arbitrage-private.h"
+#include "arbitrage/venture-arbitrage-engine-private.h"
 
 #include <string.h>
 
@@ -648,6 +649,365 @@ venture_arbitrage_performance(
 }
 
 /* ==========================================================================
+ * arbitrage_scan and craft_arbitrage
+ *
+ * The scan as a report, through every door: the same question
+ * venture_arbitrage_scan_run() answers for /arbitrage, written as rows. A
+ * scan reads the latest prices, so the period is not used and says so.
+ * ========================================================================== */
+
+static void
+arb_scan_notes(
+	VentureReportResult	*result,
+	JsonObject		*root
+){
+	JsonArray *notes;
+	JsonObject *excluded;
+	g_autoptr(GList) members = NULL;
+	g_autoptr(GString) left = NULL;
+	GList *member;
+	guint i;
+
+	notes = json_object_get_array_member(root, "notes");
+
+	for (i = 0; (NULL != notes) && (i < json_array_get_length(notes)); i++)
+		venture_report_result_append_note(result, json_array_get_string_element(notes, i));
+
+	excluded = json_object_get_object_member(root, "excluded");
+	members = (NULL != excluded) ? json_object_get_members(excluded) : NULL;
+	left = g_string_new(NULL);
+
+	for (member = members; NULL != member; member = member->next)
+	{
+		if (left->len > 0)
+			g_string_append(left, ", ");
+
+		g_string_append_printf(left, "%s %" G_GINT64_FORMAT, (const gchar *)member->data,
+		                       json_object_get_int_member(excluded, member->data));
+	}
+
+	if (left->len > 0)
+	{
+		g_autofree gchar *note = g_strdup_printf("Left out: %s.", left->str);
+
+		venture_report_result_append_note(result, note);
+	}
+
+	venture_report_result_append_note(result,
+		"A scan reads the latest prices; the period is not used.");
+}
+
+static void
+arb_scan_set_money(
+	VentureReportResult	*result,
+	const gchar		*column,
+	JsonObject		*object,
+	const gchar		*member
+){
+	g_autoptr(VentureMoney) money = NULL;
+	JsonNode *node;
+
+	node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+		return;
+
+	money = venture_money_from_json(node, NULL, NULL);
+
+	if (NULL != money)
+		venture_report_result_set_money(result, column, money);
+}
+
+static void
+arb_scan_set_ratio(
+	VentureReportResult	*result,
+	const gchar		*column,
+	JsonObject		*object,
+	const gchar		*member,
+	gdouble			 scale
+){
+	JsonNode *node;
+
+	node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node))
+		return;
+
+	venture_report_result_set_number(result, column, json_node_get_double(node) * scale);
+}
+
+static const gchar *
+arb_scan_side(
+	JsonObject	*row,
+	const gchar	*side
+){
+	JsonObject *object;
+
+	object = json_object_has_member(row, side) ? json_object_get_object_member(row, side) : NULL;
+
+	return venture_json_object_get_string(object, "venue_name",
+	                                      venture_json_object_get_string(object, "venue_key", NULL));
+}
+
+static gchar *
+arb_scan_missing(JsonObject *row)
+{
+	g_autoptr(GString) text = NULL;
+	JsonArray *missing;
+	guint i;
+
+	missing = json_object_has_member(row, "missing") ? json_object_get_array_member(row, "missing") : NULL;
+	text = g_string_new(NULL);
+
+	for (i = 0; (NULL != missing) && (i < json_array_get_length(missing)); i++)
+	{
+		if (i > 0)
+			g_string_append(text, "; ");
+
+		g_string_append(text, json_array_get_string_element(missing, i));
+	}
+
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
+static VentureReportResult *
+venture_arbitrage_scan_report(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	JsonObject *root;
+	JsonArray *rows;
+	gint64 organization_id;
+	guint i;
+
+	if (!arb_report_organization(context, options, &organization_id, error))
+		return NULL;
+
+	answer = venture_arbitrage_scan_run(context, organization_id, options, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	rows = json_object_get_array_member(root, "rows");
+	result = venture_report_result_new("Arbitrage scan", period);
+	venture_report_result_add_column(result, "strategy", "Strategy", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "title", "Opportunity", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "buy_venue", "Buy at", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "sell_venue", "Sell at", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "units", "Units", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "currency", "Currency", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "capital", "Capital", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "net", "Net", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "roi", "ROI", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "roi_per_day", "ROI a day", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "annualized", "Annualised", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "confidence", "Confidence", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "sale_rate", "Sale rate", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "age_hours", "Data age (hours)", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "missing", "Unquoted", VENTURE_REPORT_COLUMN_TEXT);
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		g_autofree gchar *missing = arb_scan_missing(row);
+		const gchar *buy = arb_scan_side(row, "buy");
+		const gchar *sell = arb_scan_side(row, "sell");
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "strategy", venture_json_object_get_string(row, "strategy", ""));
+		venture_report_result_set_text(result, "title", venture_json_object_get_string(row, "title", ""));
+
+		if (NULL != buy)
+			venture_report_result_set_text(result, "buy_venue", buy);
+
+		if (NULL != sell)
+			venture_report_result_set_text(result, "sell_venue", sell);
+
+		venture_report_result_set_number(result, "units",
+		                                 (gdouble)venture_json_object_get_int(row, "units", 0));
+
+		if (NULL != venture_json_object_get_string(row, "currency", NULL))
+			venture_report_result_set_text(result, "currency",
+			                               venture_json_object_get_string(row, "currency", NULL));
+
+		arb_scan_set_money(result, "capital", row, "capital");
+		arb_scan_set_money(result, "net", row, "net");
+		arb_scan_set_ratio(result, "roi", row, "roi", 1.0);
+		arb_scan_set_ratio(result, "roi_per_day", row, "roi_per_day", 1.0);
+		arb_scan_set_ratio(result, "annualized", row, "annualized", 1.0);
+		arb_scan_set_ratio(result, "confidence", row, "confidence", 1.0);
+		arb_scan_set_ratio(result, "sale_rate", row, "sale_rate", 1.0);
+		venture_report_result_set_number(result, "age_hours",
+			(gdouble)venture_json_object_get_int(row, "age_seconds", 0) / 3600.0);
+
+		if ('\0' != missing[0])
+			venture_report_result_set_text(result, "missing", missing);
+	}
+
+	arb_scan_notes(result, root);
+
+	if (json_object_get_boolean_member(root, "truncated"))
+		venture_report_result_append_note(result, "More opportunities passed the filters than top "
+		                                          "asks for; raise top or narrow the question.");
+
+	return g_steal_pointer(&result);
+}
+
+static gint
+arb_shop_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	JsonObject *x = *(JsonObject *const *)a;
+	JsonObject *y = *(JsonObject *const *)b;
+	gint by_venue;
+
+	/* A shopping list reads venue by venue; unquoted lines last. */
+	by_venue = g_strcmp0(venture_json_object_get_string(x, "venue_name", "\xff"),
+	                     venture_json_object_get_string(y, "venue_name", "\xff"));
+
+	if (0 != by_venue)
+		return by_venue;
+
+	return g_strcmp0(venture_json_object_get_string(x, "name", ""),
+	                 venture_json_object_get_string(y, "name", ""));
+}
+
+static VentureReportResult *
+venture_arbitrage_craft_report(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonObject) asked = NULL;
+	g_autoptr(GList) members = NULL;
+	JsonObject *root;
+	JsonArray *rows;
+	GList *member;
+	gint64 organization_id;
+	guint i;
+	guint j;
+
+	if (!arb_report_organization(context, options, &organization_id, error))
+		return NULL;
+
+	/* The transform strategy with nothing left out for being a loss: a
+	 * craft that loses money is an answer too. */
+	asked = json_object_new();
+
+	if (NULL != options)
+	{
+		members = json_object_get_members(options);
+
+		for (member = members; NULL != member; member = member->next)
+			json_object_set_member(asked, member->data,
+			                       json_node_copy(json_object_get_member(options, member->data)));
+	}
+
+	json_object_set_string_member(asked, "strategy", "transform");
+	answer = venture_arbitrage_scan_run_full(context, organization_id, asked, TRUE, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	rows = json_object_get_array_member(root, "rows");
+	result = venture_report_result_new("Craft arbitrage", period);
+	venture_report_result_add_column(result, "recipe", "Recipe", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "line", "Line", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "item", "Item", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "venue", "Where", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "quantity", "Quantity", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "unit_price", "Unit price", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "amount", "Amount", VENTURE_REPORT_COLUMN_MONEY);
+	venture_report_result_add_column(result, "roi", "ROI", VENTURE_REPORT_COLUMN_PERCENT);
+	venture_report_result_add_column(result, "note", "Note", VENTURE_REPORT_COLUMN_TEXT);
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		JsonArray *inputs = json_object_get_array_member(row, "inputs");
+		JsonObject *sell = json_object_has_member(row, "sell") ? json_object_get_object_member(row, "sell")
+		                                                        : NULL;
+		g_autoptr(GPtrArray) lines = NULL;
+		g_autofree gchar *missing = arb_scan_missing(row);
+		const gchar *recipe = venture_json_object_get_string(row, "title", "");
+
+		lines = g_ptr_array_new();
+
+		for (j = 0; (NULL != inputs) && (j < json_array_get_length(inputs)); j++)
+			g_ptr_array_add(lines, json_array_get_object_element(inputs, j));
+
+		g_ptr_array_sort(lines, arb_shop_compare);
+
+		/* The shopping list: each input at its cheapest venue. */
+		for (j = 0; j < lines->len; j++)
+		{
+			JsonObject *line = g_ptr_array_index(lines, j);
+			const gchar *problem = venture_json_object_get_string(line, "problem", NULL);
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "recipe", recipe);
+			venture_report_result_set_text(result, "line", "input");
+			venture_report_result_set_text(result, "item", venture_json_object_get_string(line, "name", ""));
+
+			if (NULL != venture_json_object_get_string(line, "venue_name", NULL))
+				venture_report_result_set_text(result, "venue",
+				                               venture_json_object_get_string(line, "venue_name", NULL));
+
+			venture_report_result_set_number(result, "quantity",
+			                                 (gdouble)venture_json_object_get_int(line, "quantity", 0));
+			arb_scan_set_money(result, "unit_price", line, "unit_price");
+			arb_scan_set_money(result, "amount", line, "cost");
+
+			if (NULL != problem)
+				venture_report_result_set_text(result, "note", problem);
+			else if (venture_json_object_get_bool(line, "reusable", FALSE))
+				venture_report_result_set_text(result, "note", "Reusable: bought once, whatever the batches");
+		}
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "recipe", recipe);
+		venture_report_result_set_text(result, "line", "output");
+		venture_report_result_set_text(result, "item",
+		                               venture_json_object_get_string(row, "instrument_name", ""));
+
+		if (NULL != sell)
+		{
+			venture_report_result_set_text(result, "venue",
+			                               venture_json_object_get_string(sell, "venue_name", ""));
+			arb_scan_set_money(result, "unit_price", sell, "unit_price");
+			arb_scan_set_money(result, "amount", sell, "amount");
+		}
+
+		venture_report_result_set_number(result, "quantity",
+		                                 (gdouble)venture_json_object_get_int(row, "output_units", 0));
+
+		venture_report_result_begin_row(result);
+		venture_report_result_set_text(result, "recipe", recipe);
+		venture_report_result_set_text(result, "line", "profit");
+		arb_scan_set_money(result, "amount", row, "net");
+		arb_scan_set_ratio(result, "roi", row, "roi", 1.0);
+
+		/* Unquoted is blank, named, and never a zero. */
+		if ('\0' != missing[0])
+			venture_report_result_set_text(result, "note", missing);
+	}
+
+	arb_scan_notes(result, root);
+
+	return g_steal_pointer(&result);
+}
+
+/* ==========================================================================
  * Registration
  *
  * A small report class rather than a function report, like the sessions'
@@ -655,6 +1015,48 @@ venture_arbitrage_performance(
  * what the assistant's report tool, the MCP catalogue and the dashboard
  * widget validator read, and an option they cannot see is one never sent.
  * ========================================================================== */
+
+/* arbitrage_scan's parameters: every common scan option. Ratios travel as
+ * strings ("15" percent), money as "10.00 GOLD"; nothing is `limit`. */
+#define ARB_SCAN_SCHEMA_BEGIN \
+	"{\"type\":\"object\",\"properties\":{" \
+	"\"strategy\":{\"type\":\"string\",\"description\":\"spread, transform, deal, cover, " \
+	"back_lay or a plugin's; spread by default\"}," \
+	"\"preset_id\":{\"type\":\"integer\",\"description\":\"An arbitrage_strategy preset to load; " \
+	"options given beside it win\"}," \
+	"\"data_source_id\":{\"type\":\"integer\",\"description\":\"Only this source's stores\"}," \
+	"\"buy_venues\":{\"type\":\"string\",\"description\":\"Venue keys to buy at, comma separated\"}," \
+	"\"sell_venues\":{\"type\":\"string\",\"description\":\"Venue keys to sell at, comma separated\"}," \
+	"\"group_key\":{\"type\":\"string\",\"description\":\"Only venues in this group\"}," \
+	"\"category_path\":{\"type\":\"string\",\"description\":\"Only instruments under this store " \
+	"category path\"}," \
+	"\"kind\":{\"type\":\"string\",\"description\":\"Only instruments of this kind\"}," \
+	"\"instrument\":{\"type\":\"string\",\"description\":\"One instrument (or event) key\"}," \
+	"\"recipe_id\":{\"type\":\"integer\",\"description\":\"transform: one recipe\"}," \
+	"\"units\":{\"type\":\"integer\",\"description\":\"Units to price each opportunity for (batches " \
+	"for transform); 1 by default\"}," \
+	"\"buy_sources\":{\"type\":\"integer\",\"description\":\"spread: the N cheapest buy venues per " \
+	"item (drop shipping); 1 by default\"}," \
+	"\"sell_basis\":{\"type\":\"string\",\"enum\":[\"min\",\"market\",\"sale_avg\",\"region_median\"," \
+	"\"bid\"],\"description\":\"What a unit sells for; sale_avg is the region's average sale price\"}," \
+	"\"total_stake\":{\"type\":\"string\",\"description\":\"cover and back_lay: the stake, e.g. " \
+	"\\\"100.00 USD\\\"\"}," \
+	"\"min_profit\":{\"type\":\"string\",\"description\":\"Least net profit, e.g. \\\"10.00 GOLD\\\"\"}," \
+	"\"min_roi\":{\"type\":\"string\",\"description\":\"Least ROI, percent, e.g. \\\"15\\\"\"}," \
+	"\"min_sale_rate\":{\"type\":\"string\",\"description\":\"Least sale rate, percent\"}," \
+	"\"max_capital\":{\"type\":\"string\",\"description\":\"Most capital one opportunity may tie " \
+	"up, e.g. \\\"500.00 GOLD\\\"\"}," \
+	"\"max_buy_pct\":{\"type\":\"string\",\"description\":\"Most a unit may cost as a percent of " \
+	"the region's average sale price\"}," \
+	"\"min_confidence\":{\"type\":\"string\",\"description\":\"Least confidence, 0 to 1\"}," \
+	"\"max_age_hours\":{\"type\":\"integer\",\"description\":\"Leave out prices older than this\"}," \
+	"\"share\":{\"type\":\"string\",\"description\":\"The percent of a market's sales a lot can " \
+	"expect; 100 by default\"}," \
+	"\"sort\":{\"type\":\"string\",\"enum\":[\"profit\",\"roi\",\"roi_per_day\",\"annualized\"," \
+	"\"ev\",\"confidence\"],\"description\":\"Order; profit by default\"}," \
+	"\"top\":{\"type\":\"integer\",\"description\":\"How many, 1 to 500; 50 by default\"}," \
+	"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal entity; defaults to the " \
+	"default organization\"}"
 
 #define VENTURE_TYPE_ARBITRAGE_REPORT (venture_arbitrage_report_get_type())
 
@@ -729,6 +1131,46 @@ venture_arbitrage_register_reports(VentureReportRegistry *registry)
 		"trades\"},"
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal "
 		"entity; defaults to the default organization\"}}}";
+	venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
+	venture_report_registry_add(registry, VENTURE_REPORT(report));
+
+	/* The scan's options, in the names every door forwards. */
+	report = g_object_new(VENTURE_TYPE_ARBITRAGE_REPORT, "name", "arbitrage_scan",
+	                      "title", "Arbitrage scan",
+	                      "description", "Opportunities found now by one strategy (spread, "
+	                      "transform, deal, cover, back_lay or a plugin's): net, capital, ROI, "
+	                      "ROI a day, annualised, confidence, and what is unquoted",
+	                      NULL);
+	report->func = venture_arbitrage_scan_report;
+	report->schema = ARB_SCAN_SCHEMA_BEGIN "}}";
+	venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
+	venture_report_registry_add(registry, VENTURE_REPORT(report));
+
+	report = g_object_new(VENTURE_TYPE_ARBITRAGE_REPORT, "name", "craft_arbitrage",
+	                      "title", "Craft arbitrage",
+	                      "description", "Each recipe's inputs at their cheapest venue -- a "
+	                      "shopping list -- against the output's best venue, and the profit",
+	                      NULL);
+	report->func = venture_arbitrage_craft_report;
+	report->schema =
+		"{\"type\":\"object\",\"properties\":{"
+		"\"recipe_id\":{\"type\":\"integer\",\"description\":\"One recipe; every active "
+		"recipe when omitted\"},"
+		"\"units\":{\"type\":\"integer\",\"description\":\"Batches to make; 1 by default\"},"
+		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"Only this source's "
+		"stores\"},"
+		"\"buy_venues\":{\"type\":\"string\",\"description\":\"Venue keys to buy inputs at, "
+		"comma separated\"},"
+		"\"sell_venues\":{\"type\":\"string\",\"description\":\"Venue keys to sell the output "
+		"at, comma separated\"},"
+		"\"group_key\":{\"type\":\"string\",\"description\":\"Only venues in this group\"},"
+		"\"sell_basis\":{\"type\":\"string\",\"enum\":[\"min\",\"market\",\"sale_avg\","
+		"\"region_median\",\"bid\"],\"description\":\"What the output sells for; min by "
+		"default\"},"
+		"\"max_age_hours\":{\"type\":\"integer\",\"description\":\"Leave out prices older "
+		"than this\"},"
+		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal entity; "
+		"defaults to the default organization\"}}}";
 	venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
 	venture_report_registry_add(registry, VENTURE_REPORT(report));
 }

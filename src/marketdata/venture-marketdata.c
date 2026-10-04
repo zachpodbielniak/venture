@@ -259,8 +259,10 @@ marketdata_check_amount(
  * unique in the organization; a currency that is a currency code, stored
  * in capitals as every currency is; references in its own organization;
  * and a transfer that costs nothing negative and takes no negative time.
- * The fee model is only a name until the registry that gives names meaning
- * exists (the arbitrage engine), so it is not checked against one here.
+ * The fee model is judged by the arbitrage engine's own save validator
+ * (venture_arbitrage_fees_validate_venue()), which holds it to the
+ * registry that gives the names meaning; nothing here knows what a model
+ * is.
  */
 static gboolean
 marketdata_validate_venue(

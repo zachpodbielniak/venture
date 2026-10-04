@@ -4397,6 +4397,128 @@ static const gchar *const venture_widget_uses_activity[] = {
 static const gchar *const venture_widget_uses_confirmations[] = {
 	"limit", NULL
 };
+/*
+ * opportunities: the top few rows a scan answers now -- a preset
+ * (record_id) or the question in options, in the scan's own names -- each
+ * with its net and ROI. The same answer /arbitrage draws, so a card and
+ * the page cannot disagree; recording one is the page's button, not the
+ * card's.
+ */
+static VentureWidgetResult *
+venture_widget_kind_opportunities(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonObject) asked = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autoptr(GString) link = NULL;
+	JsonObject *root;
+	JsonArray *rows;
+	gint64 preset;
+	guint i;
+
+	(void)user_data;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != error) && (NULL != *error))
+		return NULL;
+
+	asked = (NULL != options) ? json_object_ref(json_node_get_object(options)) : json_object_new();
+	preset = venture_widget_get_int(widget, "record-id");
+
+	if (preset > 0)
+		json_object_set_int_member(asked, "preset_id", preset);
+
+	json_object_set_int_member(asked, "top", venture_widget_get_limit(widget, 5));
+	answer = venture_arbitrage_scan_run(context, venture_widget_primary_organization(context, scope),
+	                                    asked, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	rows = json_object_get_array_member(root, "rows");
+	link = g_string_new("/arbitrage?strategy=");
+	g_string_append_uri_escaped(link, json_object_get_string_member(root, "strategy"), NULL, FALSE);
+
+	if (preset > 0)
+		g_string_append_printf(link, "&preset_id=%" G_GINT64_FORMAT, preset);
+
+	result = venture_widget_result_new();
+	result->title = g_strdup("Opportunities");
+	result->link = g_string_free(g_steal_pointer(&link), FALSE);
+	result->link_label = g_strdup("Scan");
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+	html = g_string_new(NULL);
+
+	if ((NULL == rows) || (0 == json_array_get_length(rows)))
+		g_string_append(html, "<p class=\"muted\">Nothing passes the filters right now.</p>");
+	else
+		g_string_append(html, "<table class=\"data market-widget\"><thead><tr>"
+		                      "<th scope=\"col\">Opportunity</th><th scope=\"col\" class=\"num\">Net</th>"
+		                      "<th scope=\"col\" class=\"num\">ROI</th></tr></thead><tbody>");
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		const gchar *title = venture_widget_json_text(row, "title");
+		g_autofree gchar *net = venture_widget_money_text(row, "net");
+		JsonNode *roi = json_object_get_member(row, "roi");
+		g_autofree gchar *roi_text = NULL;
+
+		if ((NULL != roi) && JSON_NODE_HOLDS_VALUE(roi))
+			roi_text = venture_web_chart_format_percent(json_node_get_double(roi) * 100.0, NULL);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "key");
+		json_builder_add_string_value(builder, venture_widget_json_text(row, "key"));
+		json_builder_set_member_name(builder, "title");
+		json_builder_add_string_value(builder, (NULL != title) ? title : "");
+		json_builder_set_member_name(builder, "net");
+		json_builder_add_value(builder, venture_widget_json_copy(row, "net"));
+		json_builder_set_member_name(builder, "net_formatted");
+
+		if (NULL != net)
+			json_builder_add_string_value(builder, net);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_set_member_name(builder, "roi");
+		json_builder_add_value(builder, venture_widget_json_copy(row, "roi"));
+		json_builder_end_object(builder);
+
+		g_string_append(html, "<tr><td>");
+		venture_html_escape_append(html, (NULL != title) ? title : "");
+		g_string_append(html, "</td><td class=\"num\">");
+		venture_html_escape_append(html, (NULL != net) ? net : "\xe2\x80\x94");
+		g_string_append(html, "</td><td class=\"num\">");
+		venture_html_escape_append(html, (NULL != roi_text) ? roi_text : "\xe2\x80\x94");
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL != rows) && (json_array_get_length(rows) > 0))
+		g_string_append(html, "</tbody></table>");
+
+	if (!json_object_get_boolean_member(root, "available"))
+		g_string_append(html, "<p class=\"muted\">No data sources: market data feeds are off.</p>");
+
+	json_builder_end_array(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
 static const gchar *const venture_widget_uses_body[] = { "body", NULL };
 static const gchar *const venture_widget_uses_search[] = {
 	"entity_type", NULL
@@ -4418,6 +4540,9 @@ static const gchar *const venture_widget_uses_watchlist[] = {
 };
 static const gchar *const venture_widget_uses_market_alerts[] = {
 	"limit", NULL
+};
+static const gchar *const venture_widget_uses_opportunities[] = {
+	"record_id", "options", "limit", NULL
 };
 
 static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
@@ -4548,6 +4673,14 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"Each market data source's last run, the rows it brought and "
 		"how many of its venues are late.",
 		"feeds", NULL, venture_widget_kind_source_health
+	},
+	{
+		"opportunities", "Opportunities",
+		"The top arbitrage opportunities now, from a preset (record_id) or "
+		"the scan's options (strategy, min_profit, min_roi...), each with "
+		"its net and ROI.",
+		"arbitrage", venture_widget_uses_opportunities,
+		venture_widget_kind_opportunities
 	}
 };
 
@@ -7023,6 +7156,25 @@ venture_dashboard_validate_widget(
 	if (!venture_dashboard_validate_report_options(context, kind, report_name,
 	                                               options, error))
 		return FALSE;
+
+	/* An opportunities card's options are a scan's question, judged by
+	 * the scan's own reader -- only while the module is on, as a hidden
+	 * report is let through. */
+	if ((0 == g_strcmp0(kind, "opportunities")) && (NULL != options) &&
+	    venture_context_module_enabled(context, "arbitrage"))
+	{
+		g_autoptr(JsonObject) normalised = NULL;
+
+		normalised = venture_arbitrage_scan_options_normalise(context,
+			venture_entity_get_organization_id(VENTURE_ENTITY(widget)),
+			json_node_get_object(options), error);
+
+		if (NULL == normalised)
+		{
+			g_prefix_error(error, "options: ");
+			return FALSE;
+		}
+	}
 
 	/* The grid hints must at least be sane numbers; whether they fit the
 	 * layout is decided when the page is laid out, because the layout

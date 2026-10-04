@@ -487,6 +487,18 @@ next royalties report uses it.
 Secrets do not belong in plugin configuration, for the same reason they do
 not belong in =config.yaml=: name an environment variable there instead.
 
+* Arbitrage: fee models, strategies and export formats
+
+The arbitrage engine finds opportunities through three registries on the context, each holding its built-ins first and each open to a plugin's =venture_plugin_register()= with plain functions:
+
+| Registry       | Getter                                        | Add                                          | Built-ins                                        |
+|----------------+-----------------------------------------------+----------------------------------------------+--------------------------------------------------|
+| fee models     | =venture_context_get_fee_models()=            | =venture_fee_model_registry_add()=           | =percent=, =commission=, =none=                  |
+| strategies     | =venture_context_get_arbitrage_strategies()=  | =venture_arbitrage_strategy_registry_add()=  | =spread=, =transform=, =deal=, =cover=, =back_lay= |
+| export formats | =venture_context_get_export_formats()=        | =venture_export_format_registry_add()=       | =csv=, =shopping_list=                           |
+
+A fee model is a compute function (what a side of a trade costs at a venue, from the venue's =fee_params=) and an optional validator, which a venue's save calls when its model or parameters are written. A strategy is a scan function -- it reads the stores through the =VentureArbitrageScan= it is handed and adds opportunities, usually with =venture_arbitrage_scan_add_flip()=, which does every venue's fees, the transfer, the currency conversion and the figures in one call -- and an optional plan, which turns an opportunity into the =record= action's request. An export format turns a scan's rows into bytes, served by =/arbitrage/export?format=NAME=. A plugin's strategy is a tab on =/arbitrage=, a value of =strategy= at every door (the =arbitrage_scan= report, presets, the widget), and its rows are filtered, sorted, exported and recorded exactly like the built-ins'. The contract and a worked crispy strategy are in [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage]].
+
 * What extensions get for free
 
 Anything registered through these mechanisms is indistinguishable from a
@@ -504,6 +516,9 @@ built-in to every consumer:
   a rule cannot tell a plugin's step from a built-in one
 - pages are drawn in the same shell, guarded the same way, and listed in
   the sidebar by the same renderer
+- fee models, arbitrage strategies and export formats sit in the
+  registries the built-ins do, so a venue, a scan and an export cannot
+  tell a plugin's from a built-in one
 
 That is the point of deriving everything from property metadata rather than
 writing it out: there is no second path for extensions to fall short on.

@@ -4,10 +4,10 @@
  * Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * The arbitrage module's two record types. A trade is one attempt to buy
- * low and sell high, or to cover every outcome of an event; its legs are
- * what was actually done, one movement of money (and maybe stock) at one
- * venue each. Both are field tables and nothing else: the rules that span
+ * The arbitrage module's record types. A trade is one attempt to buy low
+ * and sell high, or to cover every outcome of an event; its legs are what
+ * was actually done, one movement of money (and maybe stock) at one venue
+ * each; a preset (`arbitrage_strategy`) is a saved scan. Both are field tables and nothing else: the rules that span
  * rows, the posting rule and the actions live in venture-arbitrage.c.
  */
 
@@ -25,6 +25,9 @@ VENTURE_DECLARE_ENTITY(VentureArbitrageTrade, venture_arbitrage_trade, ARBITRAGE
 
 #define VENTURE_TYPE_ARBITRAGE_LEG (venture_arbitrage_leg_get_type())
 VENTURE_DECLARE_ENTITY(VentureArbitrageLeg, venture_arbitrage_leg, ARBITRAGE_LEG)
+
+#define VENTURE_TYPE_ARBITRAGE_STRATEGY (venture_arbitrage_strategy_get_type())
+VENTURE_DECLARE_ENTITY(VentureArbitrageStrategy, venture_arbitrage_strategy, ARBITRAGE_STRATEGY)
 
 G_END_DECLS
 

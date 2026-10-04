@@ -687,9 +687,12 @@ static GType (*const marketdata_types[]) (void) = {
  * a sell) and goods (stock bought and sold by a leg carries its cost). */
 static const gchar *const arbitrage_requires[] = { "marketdata", "ledger", NULL };
 static const gchar *const arbitrage_suggests[] = { "production", "goods", NULL };
-static const gchar *const arbitrage_reports[] = { "arbitrage_performance", NULL };
+static const gchar *const arbitrage_reports[] = {
+	"arbitrage_performance", "arbitrage_scan", "craft_arbitrage", NULL
+};
 static GType (*const arbitrage_types[]) (void) = {
-	venture_arbitrage_trade_get_type, venture_arbitrage_leg_get_type, NULL
+	venture_arbitrage_trade_get_type, venture_arbitrage_leg_get_type,
+	venture_arbitrage_strategy_get_type, NULL
 };
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
@@ -1350,7 +1353,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Arbitrage trades and their legs -- a flip between realms, a "
 		"drop-shipped order, a surebet across bookmakers -- each leg posted "
 		"through the venue's cash, the position closed to gains per "
-		"currency, and how each strategy performed.",
+		"currency, and how each strategy performed; and the scan that finds "
+		"them, with its fee models, presets and calculators.",
 		arbitrage_requires, arbitrage_suggests, arbitrage_types, arbitrage_reports,
 		NULL, FALSE
 	}

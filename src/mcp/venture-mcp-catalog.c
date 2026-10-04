@@ -832,10 +832,30 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "category_path", "market_deals: only instruments in this store category path and beneath.");
 		venture_mcp_catalog_add_string_property(builder, "min_value", "market_deals: only instruments worth at least this, with its currency, e.g. 10.00 GOLD.");
 		venture_mcp_catalog_add_string_property(builder, "max_pct", "market_deals: only prices at most this percent of the region median, e.g. 80.");
-		venture_mcp_catalog_add_integer_property(builder, "top", "market_deals: how many deals, 1 to 500; 50 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "top", "market_deals, arbitrage_scan: how many rows, 1 to 500; 50 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "watchlist_id", "watchlist: the watchlist to price.");
 		/* The arbitrage report's question. */
-		venture_mcp_catalog_add_string_property(builder, "strategy", "arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's), matched exactly.");
+		venture_mcp_catalog_add_string_property(builder, "strategy", "arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's), matched exactly. arbitrage_scan: the strategy to scan with; spread by default.");
+		/* The scan's question: the names /arbitrage and a preset take. */
+		venture_mcp_catalog_add_integer_property(builder, "preset_id", "arbitrage_scan: load this arbitrage_strategy preset; options given beside it win.");
+		venture_mcp_catalog_add_string_property(builder, "buy_venues", "arbitrage_scan, craft_arbitrage: venue keys to buy at, comma separated.");
+		venture_mcp_catalog_add_string_property(builder, "sell_venues", "arbitrage_scan, craft_arbitrage: venue keys to sell at, comma separated.");
+		venture_mcp_catalog_add_string_property(builder, "kind", "arbitrage_scan: only instruments of this kind.");
+		venture_mcp_catalog_add_string_property(builder, "instrument", "arbitrage_scan: one instrument (or event) key.");
+		venture_mcp_catalog_add_integer_property(builder, "recipe_id", "arbitrage_scan transform, craft_arbitrage: one recipe.");
+		venture_mcp_catalog_add_integer_property(builder, "units", "arbitrage_scan: units per opportunity; craft_arbitrage: batches. 1 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "buy_sources", "arbitrage_scan spread: the N cheapest buy venues per item, 1 to 10.");
+		venture_mcp_catalog_add_string_property(builder, "sell_basis", "arbitrage_scan, craft_arbitrage: min, market, sale_avg, region_median or bid.");
+		venture_mcp_catalog_add_string_property(builder, "total_stake", "arbitrage_scan cover and back_lay: the stake with its currency, e.g. 100.00 USD.");
+		venture_mcp_catalog_add_string_property(builder, "min_profit", "arbitrage_scan: least net profit with its currency, e.g. 10.00 GOLD.");
+		venture_mcp_catalog_add_string_property(builder, "min_roi", "arbitrage_scan: least ROI, a percent, e.g. 15.");
+		venture_mcp_catalog_add_string_property(builder, "min_sale_rate", "arbitrage_scan: least sale rate, a percent.");
+		venture_mcp_catalog_add_string_property(builder, "max_capital", "arbitrage_scan: most capital per opportunity, with its currency.");
+		venture_mcp_catalog_add_string_property(builder, "max_buy_pct", "arbitrage_scan: most a unit may cost as a percent of the region's average sale price.");
+		venture_mcp_catalog_add_string_property(builder, "min_confidence", "arbitrage_scan: least confidence, 0 to 1.");
+		venture_mcp_catalog_add_integer_property(builder, "max_age_hours", "arbitrage_scan, craft_arbitrage: leave out prices older than this.");
+		venture_mcp_catalog_add_string_property(builder, "share", "arbitrage_scan: percent of a market's sales a lot can expect; 100 by default.");
+		venture_mcp_catalog_add_string_property(builder, "sort", "arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

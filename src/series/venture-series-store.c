@@ -5839,6 +5839,96 @@ venture_series_store_list_quotes(
 	                      "listing quotes", error);
 }
 
+/*
+ * The instruments a scan walks quote by quote, newest first and bounded:
+ * the quotes table holds one row per venue, instrument and side (the
+ * latest), so it is the size of the current book, never of the history,
+ * and the LIMIT keeps one request from carrying a whole country's odds.
+ */
+static const gchar series_sql_list_quoted_parents[] =
+	"SELECT i.parent_key FROM quotes q JOIN instruments i ON i.id = q.instrument_id"
+	" WHERE i.parent_key IS NOT NULL AND q.taken_at >= ?1"
+	" GROUP BY i.parent_key ORDER BY MAX(q.taken_at) DESC, i.parent_key LIMIT ?2";
+
+static const gchar series_sql_list_quoted_instruments[] =
+	"SELECT i.key FROM quotes q JOIN instruments i ON i.id = q.instrument_id"
+	" WHERE q.side = ?1 AND q.taken_at >= ?2"
+	" GROUP BY i.key ORDER BY MAX(q.taken_at) DESC, i.key LIMIT ?3";
+
+static gpointer
+series_key_from(sqlite3_stmt *stmt)
+{
+	return series_column_strdup(stmt, 0);
+}
+
+static gboolean
+series_check_count(
+	guint		 *count,
+	GError		**error
+){
+	if (0 == *count)
+		*count = VENTURE_SERIES_DEFAULT_PAGE;
+
+	if (*count > VENTURE_SERIES_MAX_PAGE)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "At most %d keys at a time", VENTURE_SERIES_MAX_PAGE);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+GPtrArray *
+venture_series_store_list_quoted_parents(
+	VentureSeriesStore	 *self,
+	gint64			  since,
+	guint			  count,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (!series_check_count(&count, error))
+		return NULL;
+
+	stmt = series_stmt(self, series_sql_list_quoted_parents, error);
+	if (NULL == stmt)
+		return NULL;
+
+	sqlite3_bind_int64(stmt, 1, since);
+	sqlite3_bind_int64(stmt, 2, (gint64)count);
+
+	return series_collect(self, stmt, series_key_from, g_free, "listing quoted events", error);
+}
+
+GPtrArray *
+venture_series_store_list_quoted_instruments(
+	VentureSeriesStore	 *self,
+	VentureSeriesQuoteSide	  side,
+	gint64			  since,
+	guint			  count,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (!series_check_count(&count, error))
+		return NULL;
+
+	stmt = series_stmt(self, series_sql_list_quoted_instruments, error);
+	if (NULL == stmt)
+		return NULL;
+
+	sqlite3_bind_int(stmt, 1, (gint)side);
+	sqlite3_bind_int64(stmt, 2, since);
+	sqlite3_bind_int64(stmt, 3, (gint64)count);
+
+	return series_collect(self, stmt, series_key_from, g_free, "listing quoted instruments", error);
+}
+
 static const gchar series_sql_list_entries[] =
 	"SELECT e.key, e.title, e.url, e.summary, e.published_at, e.fetched_at,"
 	"       v.key, i.key"

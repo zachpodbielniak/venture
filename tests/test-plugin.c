@@ -1152,7 +1152,7 @@ test_web_navigation_links_all_resolve(
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
 		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
 		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/deals",
-		"/market/venues", "/market/watchlists", "/market/alerts", NULL
+		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1306,7 +1306,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
 	static const gchar *const trading[] = {
 		"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
-		"/market/alerts", "/e/arbitrage_trade", "/feeds", NULL
+		"/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds", NULL
 	};
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
 	static const gchar *const code[] = {

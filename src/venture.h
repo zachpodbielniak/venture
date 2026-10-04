@@ -352,6 +352,9 @@
 #include "feeds/venture-series-worker.h"
 #include "feeds/venture-feeds-service.h"
 #endif
+/* After the series store: the engine's scan API names its handle. */
+#include "arbitrage/venture-arbitrage-math.h"
+#include "arbitrage/venture-arbitrage-engine.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

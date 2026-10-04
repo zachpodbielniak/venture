@@ -2787,11 +2787,52 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "max_pct", "string",
 		"market_deals: only prices at most this percent of the region median, e.g. 80", FALSE);
 	ai_tool_add_parameter(report, "top", "integer",
-		"market_deals: how many deals, 1 to 500; 50 by default", FALSE);
+		"market_deals, arbitrage_scan: how many rows, 1 to 500; 50 by default", FALSE);
 	ai_tool_add_parameter(report, "watchlist_id", "integer",
 		"watchlist: the watchlist to price", FALSE);
 	ai_tool_add_parameter(report, "strategy", "string",
-		"arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's)", FALSE);
+		"arbitrage_performance: only trades of this strategy (spread, transform, deal, cover, back_lay or a plugin's); arbitrage_scan: the strategy to scan with, spread by default", FALSE);
+	/* The scan's question (arbitrage_scan, craft_arbitrage): the same
+	 * names /arbitrage and a preset take. Ratios are percent strings,
+	 * money names its currency. */
+	ai_tool_add_parameter(report, "preset_id", "integer",
+		"arbitrage_scan: load this saved arbitrage_strategy preset; options given beside it win", FALSE);
+	ai_tool_add_parameter(report, "buy_venues", "string",
+		"arbitrage_scan, craft_arbitrage: venue keys to buy at, comma separated", FALSE);
+	ai_tool_add_parameter(report, "sell_venues", "string",
+		"arbitrage_scan, craft_arbitrage: venue keys to sell at, comma separated", FALSE);
+	ai_tool_add_parameter(report, "kind", "string",
+		"arbitrage_scan: only instruments of this kind (item, outcome, sku...)", FALSE);
+	ai_tool_add_parameter(report, "instrument", "string",
+		"arbitrage_scan: one instrument (or, for cover, one event) by its key", FALSE);
+	ai_tool_add_parameter(report, "recipe_id", "integer",
+		"arbitrage_scan with strategy transform, craft_arbitrage: one recipe", FALSE);
+	ai_tool_add_parameter(report, "units", "integer",
+		"arbitrage_scan: units to price each opportunity for; craft_arbitrage: batches. 1 by default", FALSE);
+	ai_tool_add_parameter(report, "buy_sources", "integer",
+		"arbitrage_scan spread: list the N cheapest buy venues per item (drop shipping), 1 to 10", FALSE);
+	ai_tool_add_parameter(report, "sell_basis", "string",
+		"arbitrage_scan, craft_arbitrage: what a unit sells for: min, market, sale_avg (the region's average sale price), region_median or bid", FALSE);
+	ai_tool_add_parameter(report, "total_stake", "string",
+		"arbitrage_scan cover and back_lay: the stake, with its currency, e.g. 100.00 USD", FALSE);
+	ai_tool_add_parameter(report, "min_profit", "string",
+		"arbitrage_scan: least net profit, with its currency, e.g. 10.00 GOLD", FALSE);
+	ai_tool_add_parameter(report, "min_roi", "string",
+		"arbitrage_scan: least ROI as a percent, e.g. 15", FALSE);
+	ai_tool_add_parameter(report, "min_sale_rate", "string",
+		"arbitrage_scan: least sale rate as a percent of listings, e.g. 20", FALSE);
+	ai_tool_add_parameter(report, "max_capital", "string",
+		"arbitrage_scan: most capital one opportunity may tie up, with its currency", FALSE);
+	ai_tool_add_parameter(report, "max_buy_pct", "string",
+		"arbitrage_scan: most a unit may cost as a percent of the region's average sale price", FALSE);
+	ai_tool_add_parameter(report, "min_confidence", "string",
+		"arbitrage_scan: least confidence, 0 to 1, e.g. 0.5", FALSE);
+	ai_tool_add_parameter(report, "max_age_hours", "integer",
+		"arbitrage_scan, craft_arbitrage: leave out prices older than this many hours", FALSE);
+	ai_tool_add_parameter(report, "share", "string",
+		"arbitrage_scan: the percent of a market's sales a lot can expect, 100 by default", FALSE);
+	ai_tool_add_parameter(report, "sort", "string",
+		"arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence; profit by default", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);

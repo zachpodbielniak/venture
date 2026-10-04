@@ -136,3 +136,39 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureArbitrageLeg, venture_arbitrage_leg,
 	venture_arbitrage_leg_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_arbitrage_leg_display_name;
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Arbitrage leg", NULL);)
+
+/* ==========================================================================
+ * Presets
+ *
+ * A saved scan: which strategy, which data source, which venues to buy and
+ * sell at, and the rest of the question (minimum profit, ROI, data age,
+ * how many) as YAML in `options`, in the same names the arbitrage_scan
+ * report and /arbitrage take. Loading one (`preset_id`) fills the
+ * question; anything asked beside it wins. The save validator holds the
+ * strategy to the registry and the options to the scan's own reader, so a
+ * preset that saved is a preset that runs.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_arbitrage_strategy_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What you call this preset: EU herbs, weekend surebets"),
+	VENTURE_FIELD("strategy", "Strategy",
+	              "spread, transform, deal, cover, back_lay, or a plugin's; spread when empty",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("data-source-id", "Data source",
+	                  "Optional: scan only this source's stores; every source when empty",
+	                  "data_source", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("buy-venues", "Buy at",
+	              "Optional: venue keys to buy at, comma separated; every venue when empty",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("sell-venues", "Sell at",
+	              "Optional: venue keys to sell at, comma separated; every venue when empty",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("options", "Filters",
+	              "The rest of the question, as YAML: min_profit: 10.00 GOLD, min_roi: 15, top: 20",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureArbitrageStrategy, venture_arbitrage_strategy,
+	venture_arbitrage_strategy_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Arbitrage preset", NULL);)

@@ -296,6 +296,51 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   refused with the counter-leg message, and so is any financial change to
   an executed leg of a closed or abandoned trade until it is reopened.
 
+## Finding opportunities: the arbitrage scan
+
+- **A scan never adds or compares across currencies.** A sell side in
+  another currency is converted into the buy side's through
+  `venture_arbitrage_scan_convert()` (the organization's `exchange_rate`
+  table on the scan's date, never inverted), or the candidate is skipped
+  and a note counts it. A filter amount in another currency is converted
+  the same way or the row is left out; a profit sort groups by currency
+  first. `venture_money_compare()` across currencies warns, which is fatal
+  in tests.
+- **Unquoted is blank and named, never zero.** An input with no price, a
+  venue whose fee model is not loaded, an outcome nobody allowed quotes:
+  the row keeps `net`/`capital`/`roi` null and says what in `missing`. A
+  blank row is kept only while no numeric bound is asked, and has no plan.
+  A venue with *no record* is different: it charges nothing, and the row
+  warns rather than blanks.
+- **`plan()` and the `record` action are the only path from an
+  opportunity to the books.** `venture_arbitrage_record_opportunity()`
+  re-runs the question (top at its most), finds the key in what the data
+  says now, plans it and calls `venture_action_registry_perform()`, so the
+  organization's roles, second-actor approval and consent apply. Never
+  record from a JSON opportunity a client posted; a moved one is
+  NOT_FOUND "no longer there".
+- **The option table in `venture-arbitrage-scan.c` is the one list of scan
+  options, and every one is a report option.** A new option goes there,
+  into the `arbitrage_scan` schema, and through all five doors in the
+  same commit. An unknown name is refused by the reader -- presets and the
+  `opportunities` widget are judged by it at their save. No option is
+  `limit`.
+- **Fee models and strategies are judged when written, never when kept,**
+  and only while the arbitrage module is on (`venture_arbitrage_fees_validate_venue()`,
+  the preset validator). The registries live on the context; the
+  database holds the last context's (the tests build several contexts per
+  database), and the built-ins are always registered, so a plugin's name
+  written while the plugin is not loaded is refused.
+- **Every strategy read is bounded and indexed.** Candidates come from an
+  indexed store query with a limit (`pct_vs_region`, `deals_only`,
+  `_list_quoted_parents()`, `_list_quoted_instruments()`), then one
+  indexed read each; past a bound the answer notes it. Never walk a
+  region's rows on a request -- the server is single-threaded.
+- **With feeds off, a scan must not query `data_source`.** Its table may
+  not exist (the registry is process-wide and masks types per context);
+  answer "no data sources" without looking. The same holds for any page
+  that reads a module's records while that module is off.
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.
