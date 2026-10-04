@@ -1015,6 +1015,79 @@ test_sale_needs_ids(
 	g_assert_cmpint(result.sold_estimate, ==, 0);
 }
 
+/*
+ * An incomplete snapshot between two complete ones keeps the last
+ * complete listing set, so the next complete one still finds what sold.
+ * The incomplete one never loaded the set and wrote an empty one back,
+ * and every sale since the last complete snapshot was lost -- for every
+ * exec source, whose snapshots are incomplete unless they say otherwise.
+ */
+static void
+test_sale_across_incomplete(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesCommitResult result;
+
+	snapshot = begin(fixture->store, "realm", T0, TRUE);
+	add_listing(snapshot, "herb", 101, 100, 5, 4 * HOUR);
+	add_listing(snapshot, "herb", 102, 110, 5, 4 * HOUR);
+	commit(fixture->store, snapshot);
+
+	snapshot = begin(fixture->store, "realm", T0 + HOUR, FALSE);
+	add_listing(snapshot, "herb", 102, 110, 5, 3 * HOUR);
+	commit(fixture->store, snapshot);
+
+	snapshot = begin(fixture->store, "realm", T0 + 2 * HOUR, TRUE);
+	add_listing(snapshot, "herb", 102, 110, 5, 2 * HOUR);
+	result = commit(fixture->store, snapshot);
+
+	/* 101 left with two of its four hours to run: bought. */
+	g_assert_cmpint(result.sold_estimate, ==, 5);
+}
+
+/*
+ * A provider's sold count has no ceiling and the daily row saturates at
+ * INT64_MAX rather than overflowing. The region recompute then summed two
+ * such days with SQL SUM(), which raises "integer overflow", and the whole
+ * store's sale rates and deal figures stopped updating until the day aged
+ * out of the window.
+ */
+static void
+test_saturated_sales_recompute(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GError) error = NULL;
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesStats stats;
+	guint i;
+
+	for (i = 0; i < 2; i++)
+	{
+		memset(&stats, 0, sizeof(stats));
+		stats.instrument_key = "commodity";
+		stats.min_price = 30;
+		stats.market_value = VENTURE_SERIES_NONE;
+		stats.mean = VENTURE_SERIES_NONE;
+		stats.median = VENTURE_SERIES_NONE;
+		stats.sale_avg = VENTURE_SERIES_NONE;
+		stats.quantity = 10;
+		stats.listings = VENTURE_SERIES_NONE;
+		stats.sold = (0 == i) ? G_MAXINT64 : 1;
+
+		snapshot = begin(fixture->store, "region", T0 + i * DAY, TRUE);
+		g_assert_true(venture_series_snapshot_add_stats(snapshot, &stats, &error));
+		g_assert_no_error(error);
+		commit(fixture->store, snapshot);
+	}
+
+	g_assert_true(venture_series_store_recompute_region(fixture->store, NULL, T0 + 2 * DAY,
+	                                                    VENTURE_SERIES_NONE, NULL, NULL, &error));
+	g_assert_no_error(error);
+}
+
 /* --- Region ---------------------------------------------------------------------- */
 
 /*
@@ -2038,6 +2111,8 @@ main(
 	ADD("stats-snapshot", test_stats_snapshot);
 	ADD("sale-estimate", test_sale_estimate);
 	ADD("sale-needs-ids", test_sale_needs_ids);
+	ADD("sale-across-incomplete", test_sale_across_incomplete);
+	ADD("saturated-sales-recompute", test_saturated_sales_recompute);
 	ADD("precomputed-sales-and-deals", test_precomputed_sales_and_deals);
 	ADD("region-small", test_region_small);
 	ADD("region-deal-price", test_region_deal_price);

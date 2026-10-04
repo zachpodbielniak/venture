@@ -1904,9 +1904,26 @@ venture_series_store_check_file(
 	stmt = NULL;
 	rc = sqlite3_prepare_v2(db, "PRAGMA integrity_check", -1, &stmt, NULL);
 
-	while ((SQLITE_OK == rc) && (SQLITE_ROW == sqlite3_step(stmt)))
+	while (SQLITE_OK == rc)
 	{
-		const gchar *line = (const gchar *)sqlite3_column_text(stmt, 0);
+		const gchar *line;
+		gint step;
+
+		/* The step's own answer: a page too damaged to read ends the
+		 * check with an error, not with SQLITE_DONE, and a loop that
+		 * stopped at "not a row" called that copy intact. */
+		step = sqlite3_step(stmt);
+
+		if (SQLITE_DONE == step)
+			break;
+
+		if (SQLITE_ROW != step)
+		{
+			rc = step;
+			break;
+		}
+
+		line = (const gchar *)sqlite3_column_text(stmt, 0);
 
 		if (0 != g_strcmp0(line, "ok"))
 			g_string_append_printf(problems, "%s\n", (NULL != line) ? line : "");
@@ -3519,7 +3536,11 @@ series_snapshot_apply(
 	                         &venue_id, error))
 		return FALSE;
 
-	if (!series_load_state(self, venue_id, snapshot->complete, &state, error))
+	/* The listings always: an incomplete snapshot writes the last
+	 * complete set back unchanged, and one that never loaded it wrote an
+	 * empty set instead -- so the complete snapshot after it estimated no
+	 * sales at all. */
+	if (!series_load_state(self, venue_id, TRUE, &state, error))
 	{
 		series_venue_state_clear(&state);
 		return FALSE;
@@ -4183,14 +4204,17 @@ static const gchar series_sql_region_orphans[] =
  * since the row's prices are in it. Rows with no history in the window are
  * cleared rather than left with a figure that has aged out.
  */
+/* TOTAL, not SUM: the daily counts saturate at INT64_MAX by design, and
+ * SUM raises "integer overflow" past it, which failed the recompute for
+ * the whole store until the day aged out. Both figures are REAL anyway. */
 static const gchar series_sql_sales_apply[] =
 	"UPDATE current AS c SET sale_rate = s.rate, sold_per_day = s.per_day"
 	" FROM (SELECT d.venue_id, d.instrument_id, d.currency,"
-	"         CASE WHEN SUM(d.sold_estimate) + SUM(d.expired_estimate) > 0"
-	"              THEN SUM(d.sold_estimate) * 1.0"
-	"                   / (SUM(d.sold_estimate) + SUM(d.expired_estimate))"
+	"         CASE WHEN TOTAL(d.sold_estimate) + TOTAL(d.expired_estimate) > 0"
+	"              THEN TOTAL(d.sold_estimate)"
+	"                   / (TOTAL(d.sold_estimate) + TOTAL(d.expired_estimate))"
 	"         END AS rate,"
-	"         SUM(d.sold_estimate) * 1.0 / COUNT(*) AS per_day"
+	"         TOTAL(d.sold_estimate) / COUNT(*) AS per_day"
 	"       FROM daily d"
 	"       WHERE d.day >= ?2 AND d.day <= ?3"
 	"         AND (?1 IS NULL OR d.venue_id IN (SELECT id FROM venues"
@@ -5991,7 +6015,9 @@ venture_series_store_reference(
 	if (sold > 0)
 		out->sale_avg = venture_series_math_div_round(sold_value, sold);
 
-	if (sold + expired > 0)
+	/* Each is checked on its own above; their sum is not, and need not
+	 * be added to know it is above zero. */
+	if ((sold > 0) || (expired > 0))
 		out->sale_rate = (gdouble)sold / ((gdouble)sold + (gdouble)expired);
 
 	if (out->days_14 > 0)
