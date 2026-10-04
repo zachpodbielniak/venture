@@ -432,6 +432,42 @@ test_back_lay(void)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/*
+ * Odds whose decimal form does not end -- American -117 is 217/117, -333
+ * is 433/333 -- are rounded against the person before they multiply a
+ * stake: down for what a bookmaker pays, up for what an exchange holds.
+ * Rounding them to the nearest millionth first claimed a payout a minor
+ * unit above what the bookmaker pays (109266 for 58913 at 217/117, whose
+ * true payout is 109265.99) and a liability a unit below what the
+ * exchange holds (3003 for a lay of 10000 at 433/333, truly 3003.003).
+ */
+static void
+test_odds_rounding(void)
+{
+	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(VentureMoney) stake = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureArbitrageSurebet split;
+	VentureArbitrageBackLay figures;
+	gdouble odds[2];
+
+	odds[0] = 217.0 / 117.0;
+	odds[1] = 217.0 / 117.0;
+	total = money(117826, "USD", 2);
+	g_assert_true(venture_arbitrage_surebet(odds, 2, total, &split, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(minor_of(g_ptr_array_index(split.stakes, 0)), ==, 58913);
+	g_assert_cmpint(minor_of(g_ptr_array_index(split.payouts, 0)), ==, 109265);
+	venture_arbitrage_surebet_clear(&split);
+
+	stake = money(10000, "USD", 2);
+	g_assert_true(venture_arbitrage_back_lay(433.0 / 333.0, 433.0 / 333.0, 0.0, stake, &figures, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(minor_of(figures.lay_stake), ==, 10000);
+	g_assert_cmpint(minor_of(figures.liability), ==, 3004);
+	venture_arbitrage_back_lay_clear(&figures);
+}
+
 /* ==========================================================================
  * Flips
  * ========================================================================== */
@@ -947,6 +983,7 @@ main(
 	g_test_add_func("/arbitrage-math/surebet-table", test_surebet_table);
 	g_test_add_func("/arbitrage-math/surebet-refusals", test_surebet_refusals);
 	g_test_add_func("/arbitrage-math/back-lay", test_back_lay);
+	g_test_add_func("/arbitrage-math/odds-rounding", test_odds_rounding);
 	g_test_add_func("/arbitrage-math/relists", test_relists);
 	g_test_add_func("/arbitrage-math/annualize", test_annualize);
 	g_test_add_func("/arbitrage-math/flip", test_flip);

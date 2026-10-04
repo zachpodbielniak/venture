@@ -1018,6 +1018,85 @@ test_transform(
 			g_assert_cmpint(amount_of(line, "cost"), ==, 6000);
 		}
 	}
+
+	/* The plan pays for the moves the net subtracted: realm-a's 1.00 out
+	 * and realm-b's 0.50 in, as fee legs (realm-c has no record, so no
+	 * cost). A recorded craft without them realised more than expected. */
+	{
+		JsonArray *legs = json_object_get_array_member(row, "legs");
+		guint fees = 0;
+
+		for (i = 0; i < json_array_get_length(legs); i++)
+		{
+			JsonObject *leg = json_array_get_object_element(legs, i);
+
+			if (0 != g_strcmp0(json_object_get_string_member(leg, "kind"), "fee"))
+				continue;
+
+			fees++;
+
+			if (0 == g_strcmp0(json_object_get_string_member(leg, "venue_key"), "realm-a"))
+				g_assert_cmpstr(json_object_get_string_member(leg, "amount"), ==, "1.00 USD");
+			else
+				g_assert_cmpstr(json_object_get_string_member(leg, "amount"), ==, "0.50 USD");
+		}
+
+		g_assert_cmpuint(fees, ==, 2);
+	}
+}
+
+/*
+ * The output venue's transfer cost is converted into the row's currency
+ * like the inputs' are. It was added as it stood, and a cost in another
+ * currency was silently dropped from the total: the row read 0.55 better
+ * than it was. With no rate it is named, and the row is blank.
+ */
+static void
+test_transform_transfer_currency(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) unrated = NULL;
+	g_autoptr(JsonNode) rated = NULL;
+	g_autoptr(VentureEntity) rate = NULL;
+	g_autofree gchar *options = NULL;
+	JsonObject *row;
+	JsonArray *missing;
+	guint i;
+	gboolean named;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	venue_record(fixture, "realm-a", "none", NULL, "1.00 USD");
+	venue_record(fixture, "realm-b", "percent", "cut_percent: 5", "0.50 EUR");
+	seed_recipe(fixture);
+
+	options = g_strdup_printf("{\"strategy\":\"transform\",\"units\":3,\"recipe_id\":%" G_GINT64_FORMAT "}",
+	                          fixture->recipe);
+	unrated = scan(fixture, options);
+	g_assert_cmpuint(json_array_get_length(rows_of(unrated)), ==, 1);
+	row = json_array_get_object_element(rows_of(unrated), 0);
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(row, "net")));
+	missing = json_object_get_array_member(row, "missing");
+	named = FALSE;
+
+	for (i = 0; i < json_array_get_length(missing); i++)
+		named = named || (NULL != strstr(json_array_get_string_element(missing, i), "transfer to realm-b"));
+
+	g_assert_true(named);
+
+	rate = record(fixture, "exchange_rate");
+	g_object_set(rate, "from-currency", "EUR", "to-currency", "USD", "rate-numerator", (gint64)11,
+	             "rate-denominator", (gint64)10, NULL);
+	field(rate, "effective-at", "2026-01-01T00:00:00Z");
+	save(fixture, rate);
+
+	rated = scan(fixture, options);
+	row = json_array_get_object_element(rows_of(rated), 0);
+	g_assert_false(json_object_has_member(row, "missing"));
+	g_assert_cmpint(amount_of(row, "transfer_cost"), ==, 155);
+	g_assert_cmpint(amount_of(row, "net"), ==, 27000 - 1350 - 6800 - 155);
 }
 
 /*
@@ -1125,6 +1204,69 @@ test_back_lay(
 	g_assert_cmpint(amount_of(row, "net"), ==, 393);
 	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(row, "commission"), 0.02, 1e-12);
 	g_assert_cmpint(amount_of(row, "capital"), ==, 20606);
+
+	/* A stake of nothing is refused, as cover refuses it, rather than
+	 * answering no rows. */
+	{
+		g_autoptr(JsonObject) asked = object_of("{\"strategy\":\"back_lay\",\"total_stake\":\"0.00 USD\"}");
+		g_autoptr(GError) error = NULL;
+
+		g_assert_null(venture_arbitrage_scan_run(fixture->context, fixture->org, asked, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+}
+
+/* A plugin's fee model that cannot price anything. */
+static gboolean
+fee_refuses(
+	JsonObject		 *params,
+	VentureFeeSide		  side,
+	const VentureMoney	 *amount,
+	gint64			  units,
+	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
+	VentureFeeQuote		 *out,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)params;
+	(void)side;
+	(void)amount;
+	(void)units;
+	(void)reference;
+	(void)attrs;
+	(void)out;
+	(void)user_data;
+
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "the exchange is not answering");
+	return FALSE;
+}
+
+/*
+ * An exchange whose fee model cannot price the stake drops out of
+ * back_lay, and the answer says which and why: unquoted is named, never
+ * read as no commission. It used to vanish without a word.
+ */
+static void
+test_back_lay_unpriced(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	g_assert_true(venture_fee_model_registry_add(venture_context_get_fee_models(fixture->context),
+	                                             "refusing", "Never prices", fee_refuses, NULL, NULL, NULL,
+	                                             &error));
+	g_assert_no_error(error);
+	venue_record(fixture, "ex-1", "refusing", NULL, NULL);
+
+	answer = scan(fixture, "{\"strategy\":\"back_lay\",\"total_stake\":\"100.00 USD\"}");
+	g_assert_null(row_with_key(answer, key_of(fixture, "back_lay:S:home:bk-1>ex-1")));
+	g_assert_true(noted(answer, "back_lay: ex-1 left out"));
 }
 
 /*
@@ -2047,9 +2189,11 @@ main(
 	ADD("filters", test_filters);
 	ADD("stale", test_stale);
 	ADD("transform", test_transform);
+	ADD("transform-transfer-currency", test_transform_transfer_currency);
 	ADD("deal", test_deal);
 	ADD("cover", test_cover);
 	ADD("back-lay", test_back_lay);
+	ADD("back-lay-unpriced", test_back_lay_unpriced);
 	ADD("started-events", test_started_events);
 	ADD("record-from-plan", test_record_from_plan);
 	ADD("export", test_export);

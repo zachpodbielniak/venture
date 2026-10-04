@@ -76,10 +76,15 @@ venture_arbitrage_money_scale(
 }
 
 /* Decimal odds as an integer at the store's scale, refusing what is not
- * odds. */
+ * odds. Rounded against the person, like every figure the odds produce:
+ * down (@up FALSE) for a payout, up for a liability. Rounding to the
+ * nearest millionth first made -117 (217/117) pay a minor unit more than
+ * a bookmaker would. The thousandth of a step absorbs the double's own
+ * error, so odds of 1.13 stay exactly 1130000 either way. */
 static gboolean
 arb_math_scaled(
 	gdouble		  odds,
+	gboolean	  up,
 	gint64		 *out,
 	GError		**error
 ){
@@ -94,7 +99,7 @@ arb_math_scaled(
 		return FALSE;
 	}
 
-	*out = (gint64)llround(scaled);
+	*out = up ? (gint64)ceil(scaled - 1e-3) : (gint64)floor(scaled + 1e-3);
 
 	return TRUE;
 }
@@ -610,7 +615,7 @@ venture_arbitrage_surebet(
 
 		if (!venture_arbitrage_round_minor((gdouble)total_minor * (1.0 / odds[i]) / sum,
 		                                   &stake, error) ||
-		    !arb_math_scaled(odds[i], &scaled, error) ||
+		    !arb_math_scaled(odds[i], FALSE, &scaled, error) ||
 		    !arb_math_times_odds(stake, scaled, TRUE, &payout, error) ||
 		    !venture_series_math_add(staked, stake, &staked))
 		{
@@ -760,8 +765,8 @@ venture_arbitrage_back_lay(
 	 */
 	if (!venture_arbitrage_round_minor((gdouble)stake * back_odds / (lay_odds - commission),
 	                                   &lay_stake, error) ||
-	    !arb_math_scaled(back_odds, &back_scaled, error) ||
-	    !arb_math_scaled(lay_odds, &lay_scaled, error) ||
+	    !arb_math_scaled(back_odds, FALSE, &back_scaled, error) ||
+	    !arb_math_scaled(lay_odds, TRUE, &lay_scaled, error) ||
 	    !arb_math_times_odds(-lay_stake, lay_scaled - ARB_MATH_ODDS_SCALE, TRUE, &liability, error) ||
 	    !arb_math_times_odds(stake, back_scaled - ARB_MATH_ODDS_SCALE, TRUE, &back_gross, error) ||
 	    !venture_arbitrage_round_minor((gdouble)stake * back_odds * (1.0 - commission) /

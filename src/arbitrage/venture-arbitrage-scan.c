@@ -448,6 +448,15 @@ arb_option_normalise(
 			return FALSE;
 		}
 
+		/* A stake of nothing splits into nothing: cover refused the whole
+		 * scan and back_lay quietly answered no rows. One refusal here. */
+		if ((0 == g_strcmp0(option->name, "total_stake")) && venture_money_is_zero(money))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "total_stake must be more than nothing");
+			return FALSE;
+		}
+
 		written = venture_money_to_string(money);
 		json_object_set_string_member(out, option->name, written);
 		return TRUE;

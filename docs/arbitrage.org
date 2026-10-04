@@ -394,7 +394,7 @@ Crafting arbitrage (TSM's crafting cost). For each recipe, the output's best ven
 - It needs the =production= module: with it off the scan answers no rows and a note says so. An inactive recipe is skipped unless =recipe_id= names it.
 - Options that shape it: =recipe_id= (one recipe, else every active one, at most 200 by name), =units= (batches), =buy_venues= (where inputs may be bought), =sell_venues= (where the output may be sold), =group_key=, =sell_basis=, =max_age_hours=.
 - Key: =transform:<recipe id>:<output source>:<output venue>=, or =transform:<recipe id>:0= when no venue quotes the output.
-- Legs it plans: a buy per input at its venue, then the output's sell. The craft itself is not a leg: it is the recipe's =craft= action, performed between them (see [[file:examples/arbitrage-crafting.org][the crafting example]]).
+- Legs it plans: a buy per input at its venue, then the output's sell, then a =fee= leg for each venue a lot moves from and for the output venue, at its =transfer_cost= in its own currency (the net subtracted them, so a recorded craft pays them too). Every transfer cost, the output venue's included, is converted into the row's currency for the net; one with no rate is named in =missing=. The craft itself is not a leg: it is the recipe's =craft= action, performed between them (see [[file:examples/arbitrage-crafting.org][the crafting example]]).
 
 *** =cover=
 
@@ -411,7 +411,7 @@ A surebet across bookmakers for one event. Events are the parents of quoted inst
 
 A back at one venue matched by a lay of the same outcome at an exchange. Instruments with a lay quote (=venture_series_store_list_quoted_instruments()=); the best back (net of its venue's commission) at the buy set and the cheapest lay, counting the exchange's commission, at the sell set, at two different venues. =net= is the worse of the two results; capital is the back stake plus the lay's liability. An outcome whose event has started (the outcome's own =commence_time=, else its parent event's) is left out as =cover= leaves the event out.
 
-- Options that shape it: =instrument= (one outcome, by its key), =buy_venues= (where to back), =sell_venues= (where to lay), =total_stake= (the back stake), =max_age_hours=.
+- Options that shape it: =instrument= (one outcome, by its key), =buy_venues= (where to back), =sell_venues= (where to lay), =total_stake= (the back stake; zero is refused, as for =cover=), =max_age_hours=. A venue whose fee model cannot price the stake is left out and named in the answer's notes.
 - Key: =back_lay:<source>:<instrument>:<back venue>><lay venue>=.
 - Legs it plans: a =stake= of the back stake at the back venue, and a =stake= of the liability at the exchange (what it holds while the lay is matched). A row also carries =back_odds=, =lay_odds=, =commission=, =rating=, =back_stake=, =lay_stake=, =liability=, =if_back_wins=, =if_lay_wins= and =ideal_profit=.
 
@@ -469,7 +469,7 @@ All of it is =venture-arbitrage-math.h=: pure, money in minor units, ratios as d
 With the best odds d_i for every outcome, S = sum(1/d_i). It is a surebet when S < 1 (by more than 1e-12: three outcomes at 3.0 sum to one in binary too, and that is no edge).
 
 - Stake_i = T x (1/d_i) / S, rounded half to even to the currency's minor unit.
-- Payout_i = stake_i x d_i, rounded down: a bookmaker never pays part of a minor unit.
+- Payout_i = stake_i x d_i, rounded down: a bookmaker never pays part of a minor unit. The odds themselves are taken to the store's millionths downward first, never to the nearest: -117 is 217/117, and rounding it to the nearest millionth claimed a payout of 109266 on a stake of 58913 that truly pays 109265.99.
 - Staked = sum(stake_i); the /residual/ is T - staked (rounding can leave a unit over or take one).
 - /Payout/ = min(payout_i): what the rounded stakes are sure to return, whichever outcome happens. /Profit/ = payout - staked: what they are sure to make. That is the opportunity's =net=.
 - /Ideal/ payout T/S and ideal profit T(1/S - 1), rounded half to even, are shown beside them as =payout_ideal= and =profit_ideal= (a scan row's =ideal_profit=), never instead of them: 1000 yen split over 2.5 and 1.8 stakes 419 and 581, pays 1047 and 1045, so the payout is 1045 and the profit 45, against an ideal 1047 and 47. A calculator that answered the ideal as the payout promised a unit of money no bookmaker pays.
@@ -479,7 +479,7 @@ With the best odds d_i for every outcome, S = sum(1/d_i). It is a surebet when S
 For a back stake B at odds d (already net of the back venue's commission c_b: d = 1 + (d_raw - 1)(1 - c_b)) and a lay at odds L at an exchange keeping c of net winnings:
 
 - Effective back odds 1 + (d - 1)(1 - c); effective lay odds 1 + (L - 1)/(1 - c).
-- Lay stake = B x d / (L - c), rounded half to even; liability = lay stake x (L - 1), rounded up -- the exchange holds all of it.
+- Lay stake = B x d / (L - c), rounded half to even; liability = lay stake x (L - 1), rounded up -- the exchange holds all of it. Lay odds go to millionths upward for this, back odds downward, so a non-terminating price (-333 is 433/333) cannot shave a unit off the liability.
 - If the back wins: B(d - 1), rounded down as every payout is, less the liability. If the lay wins: lay stake x (1 - c), rounded down, less B.
 - /Worst/, the lesser of the two, is what the pair is sure to make: every rounding in it goes against the person, so it is a guarantee and not an estimate. Rounding half to even had shown 3.0 backed against 2.9 laid at 5% as 0.00 and 0.01 when the rounded lay stake costs a cent whichever way it goes.
 - Both equal B x d(1 - c)/(L - c) - B before rounding, the /ideal/, shown beside the worst; the /rating/ d(1 - c)/(L - c) above one is a profit.

@@ -1117,11 +1117,42 @@ arb_price_output(
 	return TRUE;
 }
 
+/* A planned fee leg for moving a lot out of or into @venue, in the venue's
+ * own currency as the flip plans it; nothing when moving there is free. */
+static void
+arb_transfer_leg(
+	JsonArray			*legs,
+	gint64				 source_id,
+	const gchar			*venue_key,
+	const VentureArbitrageVenue	*venue
+){
+	JsonObject *leg;
+	g_autofree gchar *amount = NULL;
+
+	if ((NULL == venue) || (NULL == venue->transfer_cost) || venture_money_is_zero(venue->transfer_cost))
+		return;
+
+	leg = json_object_new();
+	amount = venture_money_to_string(venue->transfer_cost);
+	json_object_set_string_member(leg, "kind", "fee");
+	json_object_set_int_member(leg, "data_source_id", source_id);
+	json_object_set_string_member(leg, "venue_key", venue_key);
+	json_object_set_string_member(leg, "amount", amount);
+	json_object_set_string_member(leg, "notes", "Moving the lot");
+	json_array_add_object_element(legs, leg);
+}
+
+/* Adds @part into @total. Every part is converted into the row's currency
+ * before it gets here, so a refusal is a mismatch or an overflow: named in
+ * @missing, which blanks the row, rather than dropped from the total and
+ * the row shown short of a cost. */
 static void
 arb_add_money(
 	VentureMoney		**total,
-	const VentureMoney	 *part
+	const VentureMoney	 *part,
+	GPtrArray		 *missing
 ){
+	g_autoptr(GError) local_error = NULL;
 	VentureMoney *next;
 
 	if (NULL == part)
@@ -1133,13 +1164,18 @@ arb_add_money(
 		return;
 	}
 
-	next = venture_money_add(*total, part, NULL);
+	next = venture_money_add(*total, part, &local_error);
 
-	if (NULL != next)
+	if (NULL == next)
 	{
-		venture_money_free(*total);
-		*total = next;
+		g_ptr_array_add(missing, g_strdup_printf("cannot add up the costs: %s",
+		                                         (NULL != local_error) ? local_error->message
+		                                                               : "not one currency"));
+		return;
 	}
+
+	venture_money_free(*total);
+	*total = next;
 }
 
 static gboolean
@@ -1269,7 +1305,7 @@ arb_transform_recipe(
 		ArbInput *input = g_ptr_array_index(inputs, i);
 		g_autoptr(VentureMoney) fees = NULL;
 
-		arb_add_money(&cost, input->converted);
+		arb_add_money(&cost, input->converted, missing);
 		oldest = MIN(oldest, input->taken_at);
 
 		if (isfinite(input->depth))
@@ -1295,7 +1331,7 @@ arb_transform_recipe(
 			continue;
 		}
 
-		arb_add_money(&buy_fees, fees);
+		arb_add_money(&buy_fees, fees, missing);
 
 		/* Each venue the inputs come from, other than where the
 		 * output sells, is a lot to move. */
@@ -1373,7 +1409,7 @@ arb_transform_recipe(
 						g_ptr_array_add(missing, g_strdup_printf("transfer from %s: no exchange "
 						                                         "rate to %s", venue->name, currency));
 					else
-						arb_add_money(&transfer, part);
+						arb_add_money(&transfer, part, missing);
 				}
 			}
 
@@ -1382,7 +1418,22 @@ arb_transform_recipe(
 
 				venue = venture_arbitrage_scan_venue(walk->scan, output.source_id, output.row->venue_key);
 				hours += MAX((gint64)0, venue->transfer_hours);
-				arb_add_money(&transfer, venue->transfer_cost);
+
+				/* Converted like the inputs' costs: a venue's transfer
+				 * cost is in its own currency, which need not be the
+				 * output's price. */
+				if (NULL != venue->transfer_cost)
+				{
+					g_autoptr(VentureMoney) part = NULL;
+
+					part = venture_arbitrage_scan_convert(walk->scan, venue->transfer_cost, currency, NULL);
+
+					if (NULL == part)
+						g_ptr_array_add(missing, g_strdup_printf("transfer to %s: no exchange "
+						                                         "rate to %s", venue->name, currency));
+					else
+						arb_add_money(&transfer, part, missing);
+				}
 			}
 		}
 	}
@@ -1535,8 +1586,32 @@ arb_transform_recipe(
 			json_array_add_object_element(legs, leg);
 		}
 
-		arb_add_money(&unwind, deposit);
-		arb_add_money(&unwind, transfer);
+		/* The moves the net already paid for, as the flip plans them: a
+		 * recorded craft whose plan left them out realised the transfer
+		 * cost less than it expected. */
+		if (g_hash_table_size(moved) > 0)
+		{
+			GHashTableIter iter;
+			gpointer where;
+
+			g_hash_table_iter_init(&iter, moved);
+
+			while (g_hash_table_iter_next(&iter, &where, NULL))
+			{
+				g_auto(GStrv) parts = g_strsplit(where, "\037", 2);
+				gint64 source_id = g_ascii_strtoll(parts[0], NULL, 10);
+
+				arb_transfer_leg(legs, source_id, parts[1],
+				                 venture_arbitrage_scan_venue(walk->scan, source_id, parts[1]));
+			}
+
+			arb_transfer_leg(legs, output.source_id, output.row->venue_key,
+			                 venture_arbitrage_scan_venue(walk->scan, output.source_id,
+			                                              output.row->venue_key));
+		}
+
+		arb_add_money(&unwind, deposit, missing);
+		arb_add_money(&unwind, transfer, missing);
 
 		venture_arbitrage_flip_input_init(&input);
 		input.buy_cost = cost;
@@ -2208,6 +2283,21 @@ arb_cover_scan(
 	return ok;
 }
 
+/* A venue back_lay could not price is left out, and the answer says so:
+ * unquoted is named, never read as no commission. Notes are kept once. */
+static void
+arb_back_lay_unpriced(
+	ArbWalk		*walk,
+	const gchar	*venue_key,
+	const GError	*error
+){
+	g_autofree gchar *note = NULL;
+
+	note = g_strdup_printf("back_lay: %s left out, its fees could not be computed: %s", venue_key,
+	                       (NULL != error) ? error->message : "unknown fee model");
+	venture_arbitrage_scan_add_note(walk->scan, note);
+}
+
 static gboolean
 arb_back_lay_instrument(
 	ArbWalk			 *walk,
@@ -2274,8 +2364,12 @@ arb_back_lay_instrument(
 		{
 			gdouble effective;
 
-			if (!arb_commission(walk, source_id, quote->venue_key, stake, &rate, NULL))
+			if (!arb_commission(walk, source_id, quote->venue_key, stake, &rate, &local_error))
+			{
+				arb_back_lay_unpriced(walk, quote->venue_key, local_error);
+				g_clear_error(&local_error);
 				continue;
+			}
 
 			effective = venture_arbitrage_effective_back_odds(value, rate);
 
@@ -2288,8 +2382,12 @@ arb_back_lay_instrument(
 		else if ((VENTURE_SERIES_QUOTE_LAY == quote->side) &&
 		         venture_arbitrage_scan_venue_allowed(walk->scan, FALSE, quote->venue_key))
 		{
-			if (!arb_commission(walk, source_id, quote->venue_key, stake, &rate, NULL))
+			if (!arb_commission(walk, source_id, quote->venue_key, stake, &rate, &local_error))
+			{
+				arb_back_lay_unpriced(walk, quote->venue_key, local_error);
+				g_clear_error(&local_error);
 				continue;
+			}
 
 			/* Cheaper once its commission is counted. */
 			if (venture_arbitrage_effective_lay_odds(value, rate) <
@@ -2306,7 +2404,13 @@ arb_back_lay_instrument(
 		return TRUE;
 
 	if (!venture_arbitrage_back_lay(back_odds, lay_odds, commission, stake, &figures, &local_error))
+	{
+		g_autofree gchar *note = g_strdup_printf("back_lay: %s left out: %s", instrument,
+		                                         local_error->message);
+
+		venture_arbitrage_scan_add_note(walk->scan, note);
 		return TRUE;
+	}
 
 	name = arb_instrument_name(store, instrument);
 	key = g_strdup_printf("back_lay:%" G_GINT64_FORMAT ":%s:%s>%s", source_id, instrument,
