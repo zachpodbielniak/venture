@@ -434,11 +434,18 @@ venture_context_get_default_organization_id(VentureContext *self)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), 0);
 
 	if (0 != self->default_organization_id)
 		return self->default_organization_id;
+
+	/* The workspace's answer, kept for every later caller, so it is looked up
+	 * with trusted internal authority, never through the access of whichever
+	 * request happens to ask first. */
+	internal = venture_access_policy_enter(
+		venture_database_get_access_policy(self->database), NULL);
 
 	/* Prefer the entity explicitly flagged as default. */
 	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
