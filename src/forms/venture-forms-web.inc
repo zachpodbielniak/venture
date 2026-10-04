@@ -1197,7 +1197,11 @@ venture_web_forms_definition(HtmxRequest *request, GHashTable *params, gpointer 
 	if (response != NULL) return response;
 	if (!text || !g_ascii_string_to_signed(text, 10, 1, G_MAXINT64, &id, NULL)) return forms_web_missing();
 	form = venture_database_get(database, VENTURE_TYPE_FORM, id, &error);
-	if (form == NULL) return venture_web_error_response(error);
+	if (form == NULL)
+	{
+		if (error == NULL) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
+		return venture_web_error_response(error);
+	}
 	if (!venture_access_policy_check_read(venture_database_get_access_policy(database), form, &error)) return venture_web_error_response(error);
 	schema = venture_forms_schema(database, form, "", now, &error);
 	if (schema == NULL) return venture_web_error_response(error);

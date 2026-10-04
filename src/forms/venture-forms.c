@@ -2419,6 +2419,22 @@ forms_check_email_limit(VentureDatabase *database, VentureEntity *form,
  * response, in one transaction. */
 #include "venture-forms-receipts.inc"
 
+typedef struct {
+	VentureFormsRelayCheck check;
+	gpointer data;
+	gboolean failed;
+} FormsRelayGuard;
+
+static gboolean
+forms_relay_check(VentureEntity *form, GError **error)
+{
+	FormsRelayGuard *guard = g_object_get_data(G_OBJECT(form), "venture-forms-relay-guard");
+	if (guard == NULL || guard->check == NULL) return TRUE;
+	if (guard->check(guard->data, error)) return TRUE;
+	guard->failed = TRUE;
+	return FALSE;
+}
+
 static gboolean
 forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity **submission_out,
 	GPtrArray *fields, JsonObject *answers, gboolean follow_up, GDateTime *now, JsonObject *refused, GError **error)
@@ -2431,6 +2447,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity **subm
 
 	if (!venture_database_begin(database, error))
 		return FALSE;
+
+	if (!forms_relay_check(form, error)) goto fail;
 
 	/* Recheck under the write lock before any follow-up can run. */
 	{
@@ -2541,6 +2559,7 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity **subm
 		g_object_set(receipt, "response-id", venture_entity_get_id(submission), NULL);
 		if (!venture_database_save(database, receipt, NULL, error)) goto fail;
 	}
+	if (!forms_relay_check(form, error)) goto fail;
 	return venture_database_commit(database, error);
 
 fail:
@@ -2799,7 +2818,14 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	if (!forms_write(database, form, &response, fields, stored, TRUE, now, refused, &follow_error))
 	{
 		g_autofree gchar *note = NULL;
+		FormsRelayGuard *guard = g_object_get_data(G_OBJECT(form), "venture-forms-relay-guard");
 
+		/* An authority failure is never an optional follow-up failure. */
+		if (guard != NULL && guard->failed)
+		{
+			g_propagate_error(error, g_steal_pointer(&follow_error));
+			return FALSE;
+		}
 		venture_forms_translation_errors(fields, refused);
 		if (json_object_get_size(refused) > 0)
 		{

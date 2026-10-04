@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include "forms/venture-forms-private.h"
 #include <libsoup/soup.h>
 #include <string.h>
 #include "sequences/venture-sequence-tracking-private.h"

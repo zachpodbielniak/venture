@@ -72,6 +72,31 @@ static gboolean signature_valid(const gchar *timestamp, const gchar *signature, 
 denied:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Lightsite delivery authentication refused"); return FALSE;
 }
+typedef struct {
+	VentureAttributionService *service;
+	VentureEntity *site;
+	VentureEntity *connection;
+} LightsiteFormGuard;
+
+static gboolean lightsite_form_check(gpointer data, GError **error)
+{
+	LightsiteFormGuard *guard = data;
+	g_autoptr(VentureEntity) site = NULL, connection = NULL;
+	site = site_get(guard->service, venture_entity_get_uuid(guard->site), NULL, TRUE, error);
+	if (site == NULL) return FALSE;
+	connection = get_row(guard->service, VENTURE_TYPE_INTEGRATION_CONNECTION,
+		venture_entity_get_organization_id(guard->site), venture_entity_get_id(guard->connection), error);
+	if (connection == NULL) return FALSE;
+	if (venture_entity_get_version(site) != venture_entity_get_version(guard->site) ||
+	    venture_entity_get_version(connection) != venture_entity_get_version(guard->connection))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"Lightsite pairing changed during delivery; retry");
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static VentureEntity *lightsite_receive(VentureAttributionService *self,
 	const gchar *site_uuid, gint64 connection_id, const gchar *timestamp, const gchar *signature,
 	GBytes *body, GDateTime *now, gboolean form_relay, JsonNode **relay_result, GError **error)
@@ -114,10 +139,18 @@ static VentureEntity *lightsite_receive(VentureAttributionService *self,
 		g_autofree gchar *origin = string(site, "origin");
 		g_autofree gchar *external = string(site, "external-site-id");
 		g_autofree gchar *scope = g_strdup_printf("%s:%s", venture_entity_get_uuid(site), venture_entity_get_uuid(connection));
+		LightsiteFormGuard guard;
 		const gchar *sent_tenant = optional_string(payload, "tenant_id", &local);
 		const gchar *sent_site = local ? NULL : optional_string(payload, "site_id", &local);
 		if (!local && (g_strcmp0(sent_tenant, tenant) || g_strcmp0(sent_site, external))) refuse(&local, "Lightsite form identity mismatch");
-		if (!local) *relay_result = venture_forms_relay(self->database, org, scope, origin, payload, now, &local);
+		if (local) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
+		/* The form service owns its rollback/retry boundary. Revalidate this
+		 * authenticated snapshot inside each write, including after automation. */
+		if (!venture_database_commit(self->database, error)) goto fail;
+		guard.service = self; guard.site = site; guard.connection = connection;
+		*relay_result = venture_forms_relay_checked(self->database, org, scope, origin,
+			payload, now, lightsite_form_check, &guard, error);
+		return NULL;
 	} else result = capture_payload(self, site, connection, version, payload, now, &local);
 	if (local) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
 	/* Automation may disconnect or rotate synchronously during capture. */

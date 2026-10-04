@@ -286,6 +286,13 @@ GBytes *venture_forms_upload_read(VentureDatabase *database, VentureEntity *uplo
 
 gboolean venture_forms_relay_supported(VentureEntity *form, GPtrArray *fields);
 
+/* A paired adapter rechecks its authority around each acceptance attempt.
+ * The callback is synchronous and borrowed only for this relay call. */
+typedef gboolean (*VentureFormsRelayCheck)(gpointer data, GError **error);
+JsonNode *venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
+	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now,
+	VentureFormsRelayCheck check, gpointer check_data, GError **error);
+
 G_END_DECLS
 
 

@@ -16,8 +16,9 @@ venture_forms_relay_supported(VentureEntity *form, GPtrArray *fields)
 }
 
 JsonNode *
-venture_forms_relay(VentureDatabase *database, gint64 organization_id,
-	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now, GError **error)
+venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
+	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now,
+	VentureFormsRelayCheck check, gpointer check_data, GError **error)
 {
 	static const gchar *const names[] = { "version", "tenant_id", "site_id", "submission_id", "form_id", "form_version", "answers", NULL };
 	g_autoptr(VentureEntity) form = NULL, version = NULL, response = NULL;
@@ -32,8 +33,19 @@ venture_forms_relay(VentureDatabase *database, gint64 organization_id,
 	JsonNode *value, *input;
 	gint64 form_id, number;
 	VentureFormsOutcome outcome;
+	FormsRelayGuard guard;
+	gboolean accepted;
 
 	if (organization_id <= 0 || !scope || !origin || !envelope) goto malformed;
+	/* A follow-up refusal rolls back its whole transaction before the shared
+	 * service retries the response alone. An enclosing transaction prevents it. */
+	if (venture_database_has_transaction(database))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Form relay must run outside an enclosing transaction");
+		return NULL;
+	}
+	if (check != NULL && !check(check_data, error)) return NULL;
 	json_object_iter_init(&iter, envelope);
 	while (json_object_iter_next(&iter, &name, &value))
 		if (!g_strv_contains(names, name)) goto malformed;
@@ -56,7 +68,7 @@ venture_forms_relay(VentureDatabase *database, gint64 organization_id,
 		if (g_str_has_prefix(name, "_vf_")) goto malformed;
 	if (!venture_entity_registry_lookup(venture_entity_registry_get_default(), "form")) goto missing;
 	form = venture_database_get(database, VENTURE_TYPE_FORM, form_id, error);
-	if (!form) return NULL;
+	if (!form) { if (error && *error) return NULL; goto missing; }
 	if (venture_entity_get_organization_id(form) != organization_id || venture_entity_is_deleted(form) ||
 	    !forms_is_open(database, form, now) || !venture_forms_origin_allowed(form, origin)) goto missing;
 	version = venture_forms_version_by_number(database, form, number, error);
@@ -78,7 +90,11 @@ venture_forms_relay(VentureDatabase *database, gint64 organization_id,
 	ticket = venture_forms_ticket_new_for_version(form, number, epoch);
 	venture_forms_answers_add(answers, VENTURE_FORMS_PAYMENT_NONCE, nonce);
 	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
-	if (!venture_forms_submit(database, form, answers, origin, now, &outcome, &response, &errors, error)) return NULL;
+	guard.check = check; guard.data = check_data; guard.failed = FALSE;
+	g_object_set_data(G_OBJECT(form), "venture-forms-relay-guard", &guard);
+	accepted = venture_forms_submit(database, form, answers, origin, now, &outcome, &response, &errors, error);
+	g_object_set_data(G_OBJECT(form), "venture-forms-relay-guard", NULL);
+	if (!accepted) return NULL;
 	result = json_from_string("{}", NULL);
 	json_object_set_boolean_member(json_node_get_object(result), "accepted", outcome == VENTURE_FORMS_ACCEPTED);
 	if (errors != NULL) json_object_set_object_member(json_node_get_object(result), "errors", g_steal_pointer(&errors));
@@ -92,4 +108,12 @@ malformed:
 missing:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Form not found");
 	return NULL;
+}
+
+JsonNode *
+venture_forms_relay(VentureDatabase *database, gint64 organization_id,
+	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now, GError **error)
+{
+	return venture_forms_relay_checked(database, organization_id, scope, origin,
+		envelope, now, NULL, NULL, error);
 }

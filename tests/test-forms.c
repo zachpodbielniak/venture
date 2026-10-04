@@ -741,6 +741,14 @@ test_authenticated_definition(Fixture *f, gconstpointer unused)
 	g_assert_null(strstr(reply.body, "submission_nonce"));
 	g_assert_null(strstr(reply.body, "ticket"));
 	reply_clear(&reply);
+	request(f, "/api/v1/forms/9223372036854775807/definition", NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 404);
+	g_assert_true(g_str_has_prefix(reply.content_type, "application/json"));
+	{
+		g_autoptr(JsonNode) problem = json_from_string(reply.body, NULL);
+		g_assert_nonnull(problem); g_assert_true(JSON_NODE_HOLDS_OBJECT(problem));
+	}
+	reply_clear(&reply);
 }
 
 static JsonNode *
@@ -755,6 +763,21 @@ relay_call(Fixture *f, VentureEntity *site, VentureIntegrationConnection *connec
 	g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
 	return venture_attribution_service_receive_form(venture_attribution_service_get(f->db), venture_entity_get_uuid(site),
 		venture_entity_get_id(VENTURE_ENTITY(connection)), stamp, signature, bytes, now, error);
+}
+
+/* Synchronous automation can change the pairing while a response is saved. */
+static void
+relay_change_site(VentureDatabase *database, VentureEntity *entity, gboolean created, gpointer data)
+{
+	VentureEntity *original = data;
+	g_autoptr(VentureEntity) site = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)created;
+	if (!VENTURE_IS_FORM_SUBMISSION(entity)) return;
+	site = venture_database_get(database, VENTURE_TYPE_ATTRIBUTION_SITE, venture_entity_get_id(original), &error);
+	g_assert_no_error(error); g_assert_nonnull(site);
+	g_object_set(site, "name", "Pairing changed during acceptance", NULL);
+	g_assert_true(venture_database_save(database, site, NULL, &error)); g_assert_no_error(error);
 }
 
 /* A daemon retries the same stored submission, not a fresh browser nonce. */
@@ -846,6 +869,11 @@ test_signed_relay(Fixture *f, gconstpointer unused)
 		result = relay_call(f, site, connection, payload, now, &error);
 		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
 		json_object_set_string_member(envelope, "site_id", "site_one");
+		/* An unknown form must be a refusal, never a successful empty reply. */
+		json_object_set_int_member(envelope, "form_id", G_MAXINT64);
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+		json_object_set_int_member(envelope, "form_id", venture_entity_get_id(form));
 		json_object_set_int_member(envelope, "form_version", 999);
 		result = relay_call(f, site, connection, payload, now, &error);
 		g_assert_null(result); g_assert_nonnull(error); g_clear_error(&error);
@@ -897,6 +925,37 @@ test_signed_relay(Fixture *f, gconstpointer unused)
 		result = relay_call(f, site, connection, payload, now, &error);
 		g_assert_no_error(error); g_assert_nonnull(result); g_clear_pointer(&result, json_node_unref);
 		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 2);
+		/* Relay acceptance must retain the ordinary response-only fallback. */
+		g_object_set(form, "on-duplicate", "reject", NULL); save(f, form);
+		json_object_set_string_member(envelope, "submission_id", "refused-follow-up");
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_no_error(error); g_assert_nonnull(result); g_clear_pointer(&result, json_node_unref);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 3);
+		g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 1);
+		{
+			g_autoptr(VentureQuery) responses = venture_query_new(VENTURE_TYPE_FORM_SUBMISSION);
+			g_autoptr(VentureEntity) response = NULL;
+			g_autofree gchar *note = NULL;
+			venture_query_add_order(responses, "id", VENTURE_SORT_DESCENDING, NULL);
+			response = venture_database_find_one(f->db, responses, &error); g_assert_no_error(error);
+			note = venture_forms_get_string(response, "mapping-note");
+			g_assert_nonnull(note); g_assert_true(g_str_has_prefix(note, "Follow-up not done:"));
+			g_assert_cmpint(venture_forms_get_int(response, "lead-id"), ==, 0);
+		}
+		result = relay_call(f, site, connection, payload, now, &error);
+		g_assert_no_error(error); g_assert_nonnull(result); g_clear_pointer(&result, json_node_unref);
+		g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 3);
+		{
+			gulong handler = g_signal_connect(f->db, "entity-saved", G_CALLBACK(relay_change_site), site);
+			json_object_set_string_member(envelope, "submission_id", "changed-pairing");
+			result = relay_call(f, site, connection, payload, now, &error);
+			g_assert_null(result); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+			g_signal_handler_disconnect(f->db, handler);
+			g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 3);
+			result = relay_call(f, site, connection, payload, now, &error);
+			g_assert_no_error(error); g_assert_nonnull(result); g_clear_pointer(&result, json_node_unref);
+			g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 4);
+		}
 		{
 			g_autoptr(JsonNode) erased = venture_forms_erase_person(f->db, f->org, "reader@example.test", NULL, &error);
 			g_assert_no_error(error); g_assert_nonnull(erased);

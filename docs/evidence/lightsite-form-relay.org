@@ -67,3 +67,29 @@ owns browser abuse controls and the stable submission ID; signing credentials
 and Venture API credentials stay server-side. =relay_supported=false= directs
 payments, bookings, uploads and double opt-in to the existing hosted form flow.
 See [[../forms.org][the forms guide]] for the wire contract and failure semantics.
+
+* Review regression evidence
+
+The missing-form definition request returned HTTP 500 before its fix; it now
+returns 404. The signed relay's missing-form case formerly returned neither
+an acceptance result nor an error; it now reports NOT_FOUND.
+
+With duplicate lead capture configured to reject, the relay formerly failed
+with "The transaction was already rolled back" instead of retaining the form
+response. The shared response-only retry now succeeds, records its follow-up
+note, creates no additional lead, and returns the same response on replay.
+
+The regression also changes the paired site synchronously from a response-save
+handler. Acceptance refuses the changed pairing and rolls back the response;
+removing that handler permits the same submission identity to succeed. These
+checks run in =/forms/authenticated-definition= and =/forms/signed-relay=.
+
+The review's complete DEBUG run passed all 153 test binaries, followed by
+litter, version, foreground-demo and clock-demo checks. A separate migration
+run against an owned disposable PostgreSQL 18 instance passed all 21 cases,
+including the nonempty privacy upgrade. Unconfigured optional integrations
+remain explicit skips; no live payment, mail or AI provider was contacted.
+
+The final definition 404 also retains the API's JSON error format. After that
+refinement, a warning-free DEBUG rebuild and both affected regression tests
+passed again. =git diff --check= is clean.

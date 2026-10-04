@@ -1527,10 +1527,15 @@ and its HTTP request bounds.
 HTTP 200 with ={"accepted":true}= means one accepted form response. Venture
 runs the configured lead/mail follow-ups through the ordinary form service;
 a refused follow-up follows that service's existing retained-response/note
-behavior. No CRM identifiers or submitted answers are returned to the caller.
+behavior. Each save attempt rechecks the authenticated site and connection
+before writes and before commit, so a pairing changed by synchronous automation
+rolls the attempt back. The relay service must run outside an enclosing
+transaction to allow the response-only fallback to start a fresh transaction.
+No CRM identifiers or submitted answers are returned to the caller.
 HTTP 422 with =accepted:false= and =errors= names invalid fields. Authentication,
 identity, availability and malformed envelope errors use ordinary HTTP errors;
-changed reuse returns 409. Failures log one cause without the signed payload.
+changed reuse returns 409. Unknown form IDs return 404 from both definition
+lookup and relay acceptance. Failures log one cause without the signed payload.
 
 A receipt identity is derived from the form, paired site, connection identity
 and original submission ID. Identical retries return acceptance without another
