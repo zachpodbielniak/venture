@@ -24,7 +24,9 @@ venturectl health
 Mint a token from the UI (Settings → API tokens, admins only) or with
 `POST /api/v1/tokens`: any signed-in user may mint their own token there
 with a browser session, but a bearer token may mint only if it is admin.
-The token carries the minter's role and memberships. It is shown once.
+The token carries the minter's role and memberships. A non-admin's token
+expires (`expires_in_days`, default 30, 1..90); an expired token is a 401,
+not a missing record. It is shown once.
 
 For an operation requiring an interactive session (including hosted workspace
 administration), `--session-file /private/session.json` accepts an owner-only,

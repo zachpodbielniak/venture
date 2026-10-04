@@ -18711,6 +18711,12 @@ venture_web_ui_chat(
 
 /* --- API tokens ---------------------------------------------------------- */
 
+/* A token minted below the admin role: its default and longest life. */
+#define VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS 30
+#define VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS 90
+/* Bounds an admin's explicit expiry so the date arithmetic cannot overflow. */
+#define VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS 3650
+
 /*
  * Mints an API token and returns the plaintext once.
  *
@@ -18736,6 +18742,8 @@ venture_web_api_mint_token(
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
 	VentureUserRole minimum;
+	gint64 expires_in_days = 0;
+	gboolean days_given = FALSE;
 	const gchar *name = NULL;
 
 	self = user_data;
@@ -18763,13 +18771,76 @@ venture_web_api_mint_token(
 
 	if ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
 	{
-		name = venture_json_object_get_string(json_node_get_object(body),
-		                                      "name", NULL);
+		JsonObject *object = json_node_get_object(body);
+
+		name = venture_json_object_get_string(object, "name", NULL);
+
+		/* Present means a whole number of days; a string, a fraction or
+		 * null is refused rather than read as "no expiry". */
+		if (json_object_has_member(object, "expires_in_days"))
+		{
+			JsonNode *days = json_object_get_member(object,
+			                                        "expires_in_days");
+
+			if (!JSON_NODE_HOLDS_VALUE(days) ||
+			    G_TYPE_INT64 != json_node_get_value_type(days))
+			{
+				g_set_error_literal(&error, VENTURE_ERROR,
+				                    VENTURE_ERROR_VALIDATION,
+				                    "expires_in_days must be a whole "
+				                    "number of days");
+				return venture_web_error_response(error);
+			}
+
+			expires_in_days = json_node_get_int(days);
+			days_given = TRUE;
+		}
+	}
+
+	/*
+	 * A token minted below the admin role expires: thirty days unless
+	 * fewer are asked for, ninety at most. A session somebody stole must
+	 * not become a credential that outlives every sign-out and password
+	 * change. An admin may still mint one that never expires.
+	 */
+	if (VENTURE_USER_ROLE_OWNER != principal->role &&
+	    VENTURE_USER_ROLE_ADMIN != principal->role)
+	{
+		if (!days_given)
+			expires_in_days = VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS;
+
+		if (expires_in_days < 1 ||
+		    expires_in_days > VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS)
+		{
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "expires_in_days must be between 1 and %d",
+			            VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS);
+			return venture_web_error_response(error);
+		}
+	}
+	else if (days_given &&
+	         (expires_in_days < 1 ||
+	          expires_in_days > VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "expires_in_days must be between 1 and %d; omit it "
+		            "for a token that does not expire",
+		            VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS);
+		return venture_web_error_response(error);
 	}
 
 	token = venture_api_token_new();
 	g_object_set(token, "name", (NULL != name) ? name : "api token",
 	             "role", principal->role, NULL);
+
+	if (expires_in_days > 0)
+	{
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_autoptr(GDateTime) expires_at = g_date_time_add_days(now,
+			(gint)expires_in_days);
+
+		g_object_set(token, "expires-at", expires_at, NULL);
+	}
 
 	/* Whose token this is, so the list on /account/tokens can answer that
 	 * for a token minted here as well as for one minted in the browser. */
