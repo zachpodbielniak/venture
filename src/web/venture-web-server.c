@@ -18722,6 +18722,45 @@ venture_web_ui_chat(
 #define VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS 3650
 
 /*
+ * The organization a minted token is filed under. The workspace's default
+ * one when the caller belongs to it (or is not a user), else the first
+ * organization the caller is an active member of: a business owner who is
+ * not in the default organization cannot reference it, and their token is
+ * theirs, not the workspace's. Its authority still comes only from the
+ * membership snapshot taken when it is saved.
+ */
+static gint64
+mint_organization(VentureWebServer *self, const VentureAuthPrincipal *principal)
+{
+	gint64 fallback = venture_context_get_default_organization_id(self->context);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) members = NULL;
+	gint64 first = 0;
+	guint i;
+
+	if (0 == principal->user_id)
+		return fallback;
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ,
+	                             principal->user_id, NULL);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
+	                                "true", NULL);
+	members = venture_database_find(venture_context_get_database(self->context),
+	                                query, NULL);
+	for (i = 0; NULL != members && i < members->len; i++)
+	{
+		gint64 organization = venture_entity_get_organization_id(
+			VENTURE_ENTITY(g_ptr_array_index(members, i)));
+
+		if (organization == fallback)
+			return fallback;
+		if (0 == first)
+			first = organization;
+	}
+	return (0 != first) ? first : fallback;
+}
+
+/*
  * Mints an API token and returns the plaintext once.
  *
  * This is a dedicated route rather than the generic create handler because
@@ -18852,7 +18891,7 @@ venture_web_api_mint_token(
 		g_object_set(token, "user-id", principal->user_id, NULL);
 
 	venture_entity_set_organization_id(VENTURE_ENTITY(token),
-		venture_context_get_default_organization_id(self->context));
+		mint_organization(self, principal));
 
 	secret = venture_api_token_generate(token);
 
