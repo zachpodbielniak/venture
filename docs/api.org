@@ -21,16 +21,32 @@ curl -H "Authorization: Bearer $VENTURE_TOKEN" localhost:8747/api/v1/sale
 #+end_src
 
 Mint a token in the browser at *Your account -> API tokens*
-(=/account/tokens=), which is the easiest route and the only one that does
-not need a token to get a token. The page lists what exists, mints a new one
-with an optional expiry, and revokes any of them.
+(=/account/tokens=), which is the easiest route for an administrator. The
+page lists every token, mints a new one with an optional expiry, and revokes
+any of them, so it is admin-only (in a hosted workspace, a tenant
+administrator signed in with a session).
 
-Or mint one over HTTP with =POST /api/v1/tokens= while holding a session.
-Either way the plaintext is shown exactly once; only its hash is stored.
+Or mint one over HTTP with =POST /api/v1/tokens=. Either way the plaintext is
+shown exactly once; only its hash is stored. Who may call it:
 
-Both routes are admin-only, and a token carries the role of whoever minted
-it. There is no scope parameter: for a token that may do less, sign in as a
-user who may do less and mint it there.
+- *Any signed-in user holding a browser session*, whatever their role, mints
+  a token for themselves. The token belongs to them (its =user_id=), carries
+  their own global role and a snapshot of their active organization
+  memberships at that moment, so it can never do more than the session that
+  minted it. This is how a hosted site owner -- a global editor with a tenant
+  =member= row and an organization owner/admin membership -- gets the bearer
+  token Lightsite uses for =GET /api/v1/account-authority=.
+- *A bearer token* may mint another only if it carries the global admin role
+  or higher. Any other token is refused with 403: a token minting its own
+  successor would outlive its revocation or expiry.
+
+Hosted host pinning, workspace lifecycle (a read-only or suspended workspace
+refuses) and the second-factor requirement apply here as on any other route.
+There is no API route for a member to list or revoke tokens; an administrator
+revokes at =/account/tokens=, and deactivating a user rejects all of theirs.
+
+There is no scope parameter: for a token that may do less, sign in as a user
+who may do less and mint it there.
 
 =venturectl mcp= serves this API to an outside AI agent as an MCP server,
 taking its token from =VENTURE_TOKEN= and generating its tool surface from
