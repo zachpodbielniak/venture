@@ -40,6 +40,7 @@ typedef struct
 	SoupSession		*session;
 	gint64			 org;
 	gint64			 source_id;
+	const gchar		*cookie;	/* sent when set: the sidebar's pick */
 } Fixture;
 
 /* --- Helpers ---------------------------------------------------------------- */
@@ -114,6 +115,9 @@ http(
 
 		soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
 	}
+
+	if (NULL != fixture->cookie)
+		soup_message_headers_append(soup_message_get_request_headers(message), "Cookie", fixture->cookie);
 
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	soup_session_send_and_read_async(fixture->session, message, G_PRIORITY_DEFAULT, NULL, reply_done,
@@ -883,6 +887,27 @@ test_other_organization(
 	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/api/v1/reports/market_deals?period=all&data_source_id=%" G_GINT64_FORMAT, theirs);
 	g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 404);
+	g_clear_pointer(&path, g_free);
+
+	/* The sidebar's "all" answers for the default organization, as the
+	 * scan does: the browse page lists its own source only, and the
+	 * instrument link it draws opens. Passed on as zero, the list read
+	 * every organization and every detail page answered NOT_FOUND. */
+	fixture->cookie = "venture_entity=all";
+	{
+		g_autofree gchar *page = get_page(fixture, "/market/browse");
+		g_autofree gchar *link = NULL;
+		g_autofree gchar *detail = NULL;
+
+		link = g_strdup_printf("href=\"/market/i/%" G_GINT64_FORMAT "/", theirs);
+		g_assert_null(strstr(page, link));
+		g_clear_pointer(&link, g_free);
+		link = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+		g_assert_nonnull(strstr(page, link));
+		detail = get_page(fixture, link);
+		g_assert_nonnull(detail);
+	}
+	fixture->cookie = NULL;
 }
 
 /*

@@ -9176,8 +9176,14 @@ venture_web_active_organization(
  * organization's records would tell them, so the parameter cannot be used
  * to learn which organizations exist. This matters more here than for a
  * report: these routes read the series stores, which are files and not
- * records, so the row-by-row policy never sees them. Zero ("all", a page
- * only) is passed on unjudged.
+ * records, so the row-by-row policy never sees them.
+ *
+ * The sidebar's "all" (zero) answers for the default organization, as the
+ * scan and the Trading widgets always did. Passed on as zero it listed
+ * every organization's sources, watchlists and rules while every detail
+ * page and action compared against zero and answered NOT_FOUND, and a
+ * promotion would have filed records under no organization. A person who
+ * may not read the default organization is told to pick one.
  *
  * Returns: %FALSE with @error set when the organization cannot be used
  */
@@ -9193,6 +9199,7 @@ venture_web_request_organization(
 	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *text = NULL;
 	const gchar *path;
+	gboolean picked_all = FALSE;
 
 	*out = 0;
 	path = htmx_request_get_path(request);
@@ -9227,15 +9234,23 @@ venture_web_request_organization(
 	}
 
 	if (*out <= 0)
-		return TRUE;
+	{
+		*out = venture_context_get_default_organization_id(self->context);
+		picked_all = TRUE;
+	}
 
 	organization = venture_database_get(venture_context_get_database(self->context),
 	                                    VENTURE_TYPE_ORGANIZATION, *out, &local_error);
 
 	if ((NULL == organization) || venture_entity_is_deleted(organization))
 	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no organization %" G_GINT64_FORMAT, *out);
+		if (picked_all)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			                    "The Trading pages answer for one organization at a time; pick one "
+			                    "in the sidebar");
+		else
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "There is no organization %" G_GINT64_FORMAT, *out);
 		return FALSE;
 	}
 

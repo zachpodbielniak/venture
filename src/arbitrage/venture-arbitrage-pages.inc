@@ -278,7 +278,7 @@ arw_tabs(
 static void
 arw_presets(
 	VentureWebServer	*self,
-	HtmxRequest		*request,
+	gint64			 organization_id,
 	GString			*html,
 	JsonObject		*options
 ){
@@ -289,11 +289,9 @@ arw_presets(
 	g_autoptr(JsonNode) node = NULL;
 	g_autofree gchar *text = NULL;
 	GList *member;
-	gint64 organization_id;
 	gint64 chosen;
 	guint i;
 
-	organization_id = venture_web_active_organization(self, request);
 	chosen = venture_json_object_get_int(options, "preset_id", 0);
 	query = venture_query_new(VENTURE_TYPE_ARBITRAGE_STRATEGY);
 	venture_query_set_organization(query, organization_id);
@@ -364,7 +362,7 @@ arw_presets(
 static void
 arw_filters(
 	VentureWebServer	*self,
-	HtmxRequest		*request,
+	gint64			 organization_id,
 	GString			*html,
 	JsonObject		*options
 ){
@@ -379,7 +377,7 @@ arw_filters(
 	strategy = venture_json_object_get_string(options, "strategy", "spread");
 	chosen = venture_json_object_get_int(options, "data_source_id", 0);
 	query = venture_query_new(VENTURE_TYPE_DATA_SOURCE);
-	venture_query_set_organization(query, venture_web_active_organization(self, request));
+	venture_query_set_organization(query, organization_id);
 	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
 	venture_query_set_limit(query, 200);
 	sources = venture_database_find(venture_context_get_database(self->context), query, NULL);
@@ -668,8 +666,10 @@ venture_arbitrage_web_scan(
 	g_string_append(html, "<p class=\"muted\"><a href=\"/arbitrage/calc\">Calculators</a> \xc2\xb7 "
 	                      "<a href=\"/e/arbitrage_trade\">Trades</a> \xc2\xb7 "
 	                      "<a href=\"/reports/arbitrage_performance\">How strategies did</a></p>");
-	arw_filters(self, request, html, options);
-	arw_presets(self, request, html, options);
+	/* The organization the scan answered for, not the sidebar's pick
+	 * read again: the controls must offer what the results came from. */
+	arw_filters(self, organization_id, html, options);
+	arw_presets(self, organization_id, html, options);
 	mdw_notes(html, root);
 	arw_results(self, html, root, options);
 
