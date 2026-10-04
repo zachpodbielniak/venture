@@ -3815,9 +3815,9 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing/"
-		  "arbitrage record|close|reopen|abandon|execute: propose the change for approval "
-		  "instead of making it", NULL },
+		  "create/update/delete/act/dunning sweep/dedupe/journal post/sequence enroll/"
+		  "lead convert/billing/arbitrage record|close|reopen|abandon|execute: propose the "
+		  "change for approval instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
 		{ "license", 0, 0, G_OPTION_ARG_NONE, &show_license,

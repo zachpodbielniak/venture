@@ -549,6 +549,15 @@ test_help(
 	g_assert_nonnull(strstr(market_out, "Examples:"));
 	g_assert_nonnull(strstr(market_out, "venturectl market instrument 1 2589 units=200"));
 
+	/* A verb that reads organization_id at a fixed place says so on its
+	 * own line; the blanket sentence under them does not say where. */
+	g_assert_nonnull(strstr(market_out, "promote SOURCE_ID instrument|venue KEY [organization_id=N]"));
+	g_assert_nonnull(strstr(market_out, "watchlist [ID] [organization_id=N]"));
+	g_assert_nonnull(strstr(market_out, "alerts evaluate RULE_ID [--dry-run] [organization_id=N]"));
+
+	/* --stage lists every verb its gate accepts. */
+	g_assert_nonnull(strstr(out, "dedupe/journal post"));
+
 	/* A bare group is a usage refusal (exit 2) that still shows them. */
 	cli_run(fixture, NULL, bare, &run);
 	g_assert_cmpint(run.status, ==, 2);

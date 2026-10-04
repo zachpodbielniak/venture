@@ -510,11 +510,14 @@ venture_cli_arbitrage_record(
 			g_autoptr(GList) members = json_object_get_members(json_node_get_object(narrow));
 			GList *member;
 
+			/* The row's narrowing wins, as the page's Record button sends
+			 * it (arw_hidden_options() lets narrow override): the record
+			 * re-runs the question narrowed to that row, and a wider
+			 * option left in place plans against a different question. */
 			for (member = members; NULL != member; member = member->next)
-				if (!json_object_has_member(options, member->data))
-					json_object_set_member(options, member->data,
-						json_node_copy(json_object_get_member(json_node_get_object(narrow),
-						                                      member->data)));
+				json_object_set_member(options, member->data,
+					json_node_copy(json_object_get_member(json_node_get_object(narrow),
+					                                      member->data)));
 		}
 	}
 	else
