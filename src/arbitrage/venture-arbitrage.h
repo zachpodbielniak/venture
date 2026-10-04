@@ -99,7 +99,8 @@ venture_arbitrage_leg_direction(
  * The organization's account for one of the module's three roles: the
  * control map's when one is set, else one made on first use under a
  * scoped code (`<org>:1460` positions, `<org>:4960` gains, `<org>:6960`
- * fees) so it can never take a number a chart already uses.
+ * fees) so it can never take a number a chart already uses. For writers
+ * only: a read uses venture_arbitrage_find_account().
  *
  * Returns: the account id, or 0 with @error set
  */
@@ -111,6 +112,34 @@ venture_arbitrage_account(
 	GDateTime		 *when,
 	const VentureActor	 *actor,
 	GError			**error
+);
+
+/**
+ * venture_arbitrage_find_account:
+ * @database: the database
+ * @organization_id: the organization
+ * @classification: `arbitrage_positions`, `arbitrage_gains` or
+ *   `arbitrage_fees`
+ * @when: (nullable): the date a dated control map is read at
+ * @out_account_id: (out): the account, or 0 when there is none yet
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_arbitrage_account() without the making: the control map's
+ * account, else the scoped one if it exists. Every read path -- the trade
+ * page, the summary, a position -- asks this, so looking at a trade never
+ * adds an account to the chart; only writers make one.
+ *
+ * Returns: %TRUE on success (with 0 when no account exists), %FALSE with
+ *   @error set for an unknown classification or a failed query
+ */
+gboolean
+venture_arbitrage_find_account(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	const gchar	 *classification,
+	GDateTime	 *when,
+	gint64		 *out_account_id,
+	GError		**error
 );
 
 /**

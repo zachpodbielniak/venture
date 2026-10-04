@@ -1914,6 +1914,14 @@ has the posting table, close and abandon.
   currency, keyed `arbitrage_close:<trade>:<n>:<CODE>`. Never close by
   original currency (a converted euro section would never reach zero) and
   never add two sections together.
+- **Only writers make an arbitrage account.** `venture_arbitrage_account()`
+  finds or makes `<org>:1460`/`4960`/`6960`; it is for the posting rule
+  (inside the save that posts, so idempotent find-or-create is fine, as
+  the session and holding rules do), execute, close and write-off. Every
+  read -- the trade page, the summary, a position, a report -- uses
+  `venture_arbitrage_find_account()`, where "none" means nothing was ever
+  posted there. A GET that made an account wrote an audited row under a
+  viewer's name; `/arbitrage-ledger/reads-make-no-accounts` pins it.
 - **Leg validators never write the trade.** A derived write bumps the
   trade's version under whoever holds it. The actions (execute opening a
   planned trade, close stamping it) are the writers; their stamps pass the

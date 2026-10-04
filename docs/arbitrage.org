@@ -264,7 +264,7 @@ The module is in the accounting boundary's list of financial modules, so the act
 | =arbitrage_gains=     | income  | =<org>:4960= Arbitrage gains     |
 | =arbitrage_fees=      | expense | =<org>:6960= Arbitrage fees      |
 
-Map them with an =accounting_control_map= (see [[file:setup.org][Accounting setup]]) to use your own chart's accounts. =venture_arbitrage_account()= resolves one; the codes are organization-scoped so they can never take a number a chart already uses. Remapping =arbitrage_positions= while trades are open leaves their balance on the old account: close them first.
+Map them with an =accounting_control_map= (see [[file:setup.org][Accounting setup]]) to use your own chart's accounts. =venture_arbitrage_account()= resolves one; the codes are organization-scoped so they can never take a number a chart already uses. Only a writer makes one -- the leg posting rule inside the save that posts, executing a leg, closing, writing off. Every read (the trade page, =venture_arbitrage_trade_summary()=, =venture_arbitrage_position()=, the reports) asks =venture_arbitrage_find_account()=, which answers 0 when the account does not exist yet; nothing was posted to an account that does not exist, so the position is empty. Opening a trade is therefore never a write to the chart. Remapping =arbitrage_positions= while trades are open leaves their balance on the old account: close them first.
 
 * The trade page
 

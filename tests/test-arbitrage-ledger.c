@@ -2317,6 +2317,79 @@ test_trade_page(Fixture *f, gconstpointer data)
 	venture_web_server_stop(server);
 }
 
+/*
+ * Reading a trade never adds to the chart. An organization that has never
+ * executed a leg has no arbitrage accounts; looking at a trade -- its
+ * summary, its position, its page -- and running arbitrage_performance or
+ * the P&L over it must leave it with none. If this regresses, a viewer
+ * opening a planned trade writes `<org>:1460` into the chart (an audited
+ * write under a reader's name, and a GET that is not safe).
+ */
+static void
+test_reads_make_no_accounts(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureReportResult) pnl = NULL;
+	g_autoptr(JsonNode) summary = NULL;
+	g_autoptr(GPtrArray) balances = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	guint accounts;
+	gint64 id;
+	gint64 found = -1;
+
+	(void)data;
+	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
+	             "security-require-auth", FALSE, NULL);
+
+	id = trade(f, "Only a plan", "spread");
+	leg(f, id, f->market, "buy", "100.00 USD", "2.00 USD", NULL, "2026-03-05T10:00:00Z");
+	accounts = count_rows(f, VENTURE_TYPE_ACCOUNT);
+	g_assert_cmpint(account_by_code(f, "1460"), ==, 0);
+
+	/* The lookup itself answers "none" without an error. */
+	g_assert_true(venture_arbitrage_find_account(f->db, f->org, "arbitrage_positions", NULL,
+	                                             &found, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(found, ==, 0);
+
+	summary = venture_arbitrage_trade_summary(f->db, id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(summary);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+		json_node_get_object(summary), "position")), ==, 0);
+
+	balances = venture_arbitrage_position(f->db, id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(balances);
+	g_assert_cmpuint(balances->len, ==, 0);
+
+	result = performance(f, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	pnl = operational(f, "pnl", "2026-03", 0);
+
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	session = soup_session_new_with_options("timeout", 30, NULL);
+	path = g_strdup_printf("/e/arbitrage_trade/%" G_GINT64_FORMAT, id);
+	g_assert_cmpuint(http(server, session, "GET", path, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "arbitrage-legs"));
+
+	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_ACCOUNT), ==, accounts);
+	g_assert_cmpint(account_by_code(f, "1460"), ==, 0);
+
+	/* Executing the leg is a write, and makes the account it posts to. */
+	execute(f, leg(f, id, f->market, "fee", "1.00 USD", NULL, NULL, "2026-03-05T11:00:00Z"));
+	g_assert_cmpint(account_by_code(f, "6960"), >, 0);
+	venture_web_server_stop(server);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2346,6 +2419,8 @@ main(int argc, char **argv)
 	           teardown);
 	g_test_add("/arbitrage-ledger/trade-page", Fixture, NULL, setup, test_trade_page, teardown);
 	g_test_add("/arbitrage-ledger/module-off", Fixture, NULL, setup, test_module_off, teardown);
+	g_test_add("/arbitrage-ledger/reads-make-no-accounts", Fixture, NULL, setup,
+	           test_reads_make_no_accounts, teardown);
 
 	return g_test_run();
 }

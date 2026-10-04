@@ -288,6 +288,38 @@ venture_arbitrage_leg_direction(
  * Accounts
  * ========================================================================== */
 
+/* An account in @organization_id found by its exact @code: its id, or 0
+ * when there is none (with no error). Deleted rows count, as they do for
+ * the unique index a second account under the code would fail. */
+static gint64
+arb_find_scoped_account(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	const gchar	 *code,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) found = NULL;
+	g_autoptr(GError) local_error = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_include_deleted(query, TRUE);
+
+	if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
+		return -1;
+
+	found = venture_database_find_one(database, query, &local_error);
+
+	if (NULL != local_error)
+	{
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return -1;
+	}
+
+	return (NULL != found) ? venture_entity_get_id(found) : 0;
+}
+
 /* An account in @organization_id found by its exact @code, else made. */
 static gint64
 arb_scoped_account(
@@ -299,28 +331,16 @@ arb_scoped_account(
 	const VentureActor	 *actor,
 	GError			**error
 ){
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(VentureEntity) found = NULL;
 	g_autoptr(VentureAccount) created = NULL;
-	g_autoptr(GError) local_error = NULL;
+	gint64 found;
 
-	query = venture_query_new(VENTURE_TYPE_ACCOUNT);
-	venture_query_set_organization(query, organization_id);
-	venture_query_set_include_deleted(query, TRUE);
+	found = arb_find_scoped_account(database, organization_id, code, error);
 
-	if (!venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, error))
+	if (found < 0)
 		return 0;
 
-	found = venture_database_find_one(database, query, &local_error);
-
-	if (NULL != local_error)
-	{
-		g_propagate_error(error, g_steal_pointer(&local_error));
-		return 0;
-	}
-
-	if (NULL != found)
-		return venture_entity_get_id(found);
+	if (found > 0)
+		return found;
 
 	created = venture_account_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(created), organization_id);
@@ -332,6 +352,104 @@ arb_scoped_account(
 	return venture_entity_get_id(VENTURE_ENTITY(created));
 }
 
+/* What a classification means: the scoped number, the name and the kind
+ * an account made for it takes. FALSE with @error for any other word. */
+static gboolean
+arb_classification(
+	const gchar		 *classification,
+	const gchar		**out_number,
+	const gchar		**out_name,
+	VentureAccountKind	 *out_kind,
+	GError			**error
+){
+	if (0 == g_strcmp0(classification, "arbitrage_positions"))
+	{
+		*out_number = "1460";
+		*out_name = "Arbitrage positions";
+		*out_kind = VENTURE_ACCOUNT_KIND_ASSET;
+	}
+	else if (0 == g_strcmp0(classification, "arbitrage_gains"))
+	{
+		*out_number = "4960";
+		*out_name = "Arbitrage gains";
+		*out_kind = VENTURE_ACCOUNT_KIND_INCOME;
+	}
+	else if (0 == g_strcmp0(classification, "arbitrage_fees"))
+	{
+		*out_number = "6960";
+		*out_name = "Arbitrage fees";
+		*out_kind = VENTURE_ACCOUNT_KIND_EXPENSE;
+	}
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "No arbitrage account is classified \"%s\"",
+		            (NULL != classification) ? classification : "");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_arbitrage_find_account(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	const gchar	 *classification,
+	GDateTime	 *when,
+	gint64		 *out_account_id,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gchar *code = NULL;
+	const gchar *number;
+	const gchar *name;
+	VentureAccountKind kind;
+	gint64 id;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(NULL != out_account_id, FALSE);
+
+	*out_account_id = 0;
+
+	if (!arb_classification(classification, &number, &name, &kind, error))
+		return FALSE;
+
+	if (organization_id <= 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "An arbitrage account belongs to one organization");
+		return FALSE;
+	}
+
+	id = venture_setup_resolve_account(database, organization_id, classification,
+	                                   "organization", 0, when, &local_error);
+
+	if (NULL != local_error)
+	{
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return FALSE;
+	}
+
+	if (id > 0)
+	{
+		*out_account_id = id;
+		return TRUE;
+	}
+
+	/* Scoped, like the session income and currency clearing accounts: a
+	 * code an existing chart cannot already hold. */
+	code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", organization_id, number);
+	id = arb_find_scoped_account(database, organization_id, code, error);
+
+	if (id < 0)
+		return FALSE;
+
+	*out_account_id = id;
+
+	return TRUE;
+}
+
 gint64
 venture_arbitrage_account(
 	VentureDatabase		 *database,
@@ -341,7 +459,6 @@ venture_arbitrage_account(
 	const VentureActor	 *actor,
 	GError			**error
 ){
-	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *code = NULL;
 	const gchar *number;
 	const gchar *name;
@@ -350,53 +467,18 @@ venture_arbitrage_account(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), 0);
 
-	if (0 == g_strcmp0(classification, "arbitrage_positions"))
-	{
-		number = "1460";
-		name = "Arbitrage positions";
-		kind = VENTURE_ACCOUNT_KIND_ASSET;
-	}
-	else if (0 == g_strcmp0(classification, "arbitrage_gains"))
-	{
-		number = "4960";
-		name = "Arbitrage gains";
-		kind = VENTURE_ACCOUNT_KIND_INCOME;
-	}
-	else if (0 == g_strcmp0(classification, "arbitrage_fees"))
-	{
-		number = "6960";
-		name = "Arbitrage fees";
-		kind = VENTURE_ACCOUNT_KIND_EXPENSE;
-	}
-	else
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "No arbitrage account is classified \"%s\"",
-		            (NULL != classification) ? classification : "");
+	if (!venture_arbitrage_find_account(database, organization_id, classification, when,
+	                                    &id, error))
 		return 0;
-	}
-
-	if (organization_id <= 0)
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		                    "An arbitrage account belongs to one organization");
-		return 0;
-	}
-
-	id = venture_setup_resolve_account(database, organization_id, classification,
-	                                   "organization", 0, when, &local_error);
-
-	if (NULL != local_error)
-	{
-		g_propagate_error(error, g_steal_pointer(&local_error));
-		return 0;
-	}
 
 	if (id > 0)
 		return id;
 
-	/* Scoped, like the session income and currency clearing accounts: a
-	 * code an existing chart cannot already hold. */
+	/* Only a writer gets here: the leg posting rule (inside the save that
+	 * posts), executing a leg, closing and writing off. A page, a report
+	 * or a summary asks venture_arbitrage_find_account() instead, so
+	 * looking at a trade never adds to the chart. */
+	arb_classification(classification, &number, &name, &kind, NULL);
 	code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", organization_id, number);
 
 	return arb_scoped_account(database, organization_id, code, name, kind, actor, error);
@@ -1947,11 +2029,15 @@ venture_arbitrage_position(
 		return NULL;
 	}
 
-	positions = venture_arbitrage_account(database, venture_entity_get_organization_id(trade),
-	                                      "arbitrage_positions", NULL, NULL, error);
+	/* Looked up, never made: reading a position is not a reason to add
+	 * an account to the chart. No account means nothing was ever posted
+	 * to one, so the position is empty. */
+	if (!venture_arbitrage_find_account(database, venture_entity_get_organization_id(trade),
+	                                    "arbitrage_positions", NULL, &positions, error))
+		return NULL;
 
 	if (positions <= 0)
-		return NULL;
+		return venture_money_totals_new();
 
 	legs = venture_arbitrage_trade_legs(database, trade_id, TRUE, error);
 
@@ -3274,13 +3360,14 @@ venture_arbitrage_trade_summary(
 	if (NULL == journals)
 		return NULL;
 
-	positions = venture_arbitrage_account(database, venture_entity_get_organization_id(trade),
-	                                      "arbitrage_positions", NULL, NULL, error);
-
-	if (positions <= 0)
+	/* Looked up, never made: a page or an API read of a trade must not
+	 * add an account to the chart (venture_arbitrage_position()). */
+	if (!venture_arbitrage_find_account(database, venture_entity_get_organization_id(trade),
+	                                    "arbitrage_positions", NULL, &positions, error))
 		return NULL;
 
-	position = arb_position_of(database, journals, positions, error);
+	position = (positions > 0) ? arb_position_of(database, journals, positions, error)
+	                           : venture_money_totals_new();
 
 	if (NULL == position)
 		return NULL;
