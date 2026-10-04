@@ -1754,8 +1754,18 @@ venture_marketdata_basis_get_type(void) G_GNUC_CONST;
  *   the cheapest unit the venue now offers
  * @VENTURE_ALERT_KIND_ENTRY_MATCH: a newly arrived entry (news, a patch
  *   note) contains the pattern, ignoring case
+ * @VENTURE_ALERT_KIND_POSITION_EXPIRING: one of the operator's own open
+ *   positions in the store runs out within the threshold number of hours
+ * @VENTURE_ALERT_KIND_INBOUND_EXPIRING: something waiting in an account's
+ *   inbound (a mail) is lost within the threshold number of hours
+ * @VENTURE_ALERT_KIND_ACCOUNT_STALE: an account has not been seen for
+ *   longer than the threshold number of days
+ * @VENTURE_ALERT_KIND_COLLECT_READY: an account has money or goods waiting
+ *   in its inbound, or positions already expired and still to be
+ *   collected at its next login
  *
  * What an alert rule watches for (docs/market-data.org, "Alerts").
+ * Appended only: the kind is stored by number.
  */
 typedef enum
 {
@@ -1768,7 +1778,11 @@ typedef enum
 	VENTURE_ALERT_KIND_SHORTAGE,
 	VENTURE_ALERT_KIND_SPIKE,
 	VENTURE_ALERT_KIND_UNDERCUT,
-	VENTURE_ALERT_KIND_ENTRY_MATCH
+	VENTURE_ALERT_KIND_ENTRY_MATCH,
+	VENTURE_ALERT_KIND_POSITION_EXPIRING,
+	VENTURE_ALERT_KIND_INBOUND_EXPIRING,
+	VENTURE_ALERT_KIND_ACCOUNT_STALE,
+	VENTURE_ALERT_KIND_COLLECT_READY
 } VentureAlertKind;
 
 #define VENTURE_TYPE_ALERT_KIND (venture_alert_kind_get_type())

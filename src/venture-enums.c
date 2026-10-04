@@ -876,6 +876,10 @@ static const GEnumValue venture_alert_kind_values[] = {
 	VE(VENTURE_ALERT_KIND_SPIKE,            "spike"),
 	VE(VENTURE_ALERT_KIND_UNDERCUT,         "undercut"),
 	VE(VENTURE_ALERT_KIND_ENTRY_MATCH,      "entry_match"),
+	VE(VENTURE_ALERT_KIND_POSITION_EXPIRING, "position_expiring"),
+	VE(VENTURE_ALERT_KIND_INBOUND_EXPIRING, "inbound_expiring"),
+	VE(VENTURE_ALERT_KIND_ACCOUNT_STALE,    "account_stale"),
+	VE(VENTURE_ALERT_KIND_COLLECT_READY,    "collect_ready"),
 	VE_END
 };
 

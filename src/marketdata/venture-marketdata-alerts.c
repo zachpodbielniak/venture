@@ -42,14 +42,45 @@
 /* The longest notification title, in characters. */
 #define ALERTS_TITLE_CHARS (200)
 
+/* The longest key a store holds: the push contract's bound. */
+#define ALERTS_MAX_KEY_BYTES (512)
+
+/* Account kinds that judge every account but the shared ones: a warband
+ * bank or a guild bank is opened through a character, so its own last
+ * sighting says nothing about whether anybody has logged in. */
+#define ALERTS_SHARED_KIND "shared"
+#define ALERTS_GUILD_KIND "guild"
+
 /* --- Kinds ----------------------------------------------------------------- */
 
-/* Undercut rules are scoped by the listings they compare and entry_match
- * rules by their pattern; every other kind needs instruments to watch. */
+/* The kinds about the operator's own accounts -- the account tables of a
+ * series store -- rather than about what a venue offers. */
+static gboolean
+alerts_kind_reads_accounts(VentureAlertKind kind)
+{
+	return (VENTURE_ALERT_KIND_POSITION_EXPIRING == kind) ||
+	       (VENTURE_ALERT_KIND_INBOUND_EXPIRING == kind) ||
+	       (VENTURE_ALERT_KIND_ACCOUNT_STALE == kind) || (VENTURE_ALERT_KIND_COLLECT_READY == kind);
+}
+
+/* Undercut rules are scoped by the listings they compare, entry_match
+ * rules by their pattern and the account kinds by the operator's
+ * accounts; every other kind needs instruments to watch. */
 static gboolean
 alerts_kind_needs_scope(VentureAlertKind kind)
 {
-	return (VENTURE_ALERT_KIND_UNDERCUT != kind) && (VENTURE_ALERT_KIND_ENTRY_MATCH != kind);
+	return (VENTURE_ALERT_KIND_UNDERCUT != kind) && (VENTURE_ALERT_KIND_ENTRY_MATCH != kind) &&
+	       !alerts_kind_reads_accounts(kind);
+}
+
+/* Whether a watchlist, an instrument or a category means anything to a
+ * kind. account_stale and collect_ready are about an account as a whole:
+ * an instrument narrows nothing there, so naming one is refused rather
+ * than left looking as if it did. */
+static gboolean
+alerts_kind_takes_scope(VentureAlertKind kind)
+{
+	return (VENTURE_ALERT_KIND_ACCOUNT_STALE != kind) && (VENTURE_ALERT_KIND_COLLECT_READY != kind);
 }
 
 /* The kinds whose threshold is a price. */
@@ -237,6 +268,15 @@ alerts_validate_rule(
 		return FALSE;
 	}
 
+	if (!alerts_kind_takes_scope(kind) && ((watchlist > 0) || (instrument > 0) || (category > 0)))
+	{
+		venture_set_error_validation(error,
+			(watchlist > 0) ? "Watchlist" : (instrument > 0) ? "Instrument" : "Category",
+			"does not apply to a %s rule, which watches accounts, not instruments; clear it",
+			alerts_kind_nick(kind));
+		return FALSE;
+	}
+
 	if ((venue > 0) && !venture_string_is_empty(group_key))
 	{
 		venture_set_error_validation(error, "Group",
@@ -329,6 +369,25 @@ alerts_validate_rule(
 			venture_set_error_validation(error, "Threshold number",
 				"must be a percent change other than 0, at most 100000 either way: 25 fires "
 				"on a rise of a quarter, -25 on a drop of one");
+			return FALSE;
+		}
+		break;
+	case VENTURE_ALERT_KIND_POSITION_EXPIRING:
+	case VENTURE_ALERT_KIND_INBOUND_EXPIRING:
+		if ((number <= 0.0) || (number > (gdouble)VENTURE_ALERTS_MAX_EXPIRING_HOURS))
+		{
+			venture_set_error_validation(error, "Threshold number",
+				"must be the hours ahead to warn, above 0 and at most %d: 2 fires on what "
+				"runs out within two hours", VENTURE_ALERTS_MAX_EXPIRING_HOURS);
+			return FALSE;
+		}
+		break;
+	case VENTURE_ALERT_KIND_ACCOUNT_STALE:
+		if ((number <= 0.0) || (number > (gdouble)VENTURE_ALERTS_MAX_STALE_DAYS))
+		{
+			venture_set_error_validation(error, "Threshold number",
+				"must be the days an account may go unseen, above 0 and at most %d",
+				VENTURE_ALERTS_MAX_STALE_DAYS);
 			return FALSE;
 		}
 		break;
@@ -486,6 +545,21 @@ alerts_validate_hit(
 		return FALSE;
 	}
 
+	/* A store key is at most 512 bytes (the push contract); anything
+	 * longer did not come from a store. */
+	{
+		g_autofree gchar *account_key = NULL;
+
+		g_object_get(entity, "account-key", &account_key, NULL);
+
+		if ((NULL != account_key) && (strlen(account_key) > ALERTS_MAX_KEY_BYTES))
+		{
+			venture_set_error_validation(error, "Account key", "is at most %d bytes",
+			                             ALERTS_MAX_KEY_BYTES);
+			return FALSE;
+		}
+	}
+
 	return TRUE;
 }
 
@@ -566,8 +640,10 @@ typedef struct
 {
 	gint64		 source_id;
 	gint64		 organization_id;
-	GPtrArray	*rules;		/* AlertsRule */
-	GPtrArray	*listings;	/* AlertsListing */
+	GPtrArray	*rules;			/* AlertsRule */
+	GPtrArray	*listings;		/* AlertsListing, newest first */
+	GHashTable	*venue_listings;	/* venue key -> GPtrArray of borrowed AlertsListing */
+	gboolean	 listings_capped;	/* more open listings than were frozen */
 } AlertsFrozen;
 
 static void
@@ -602,6 +678,7 @@ alerts_frozen_free(gpointer data)
 		return;
 
 	g_ptr_array_unref(frozen->rules);
+	g_clear_pointer(&frozen->venue_listings, g_hash_table_unref);
 	g_ptr_array_unref(frozen->listings);
 	g_free(frozen);
 }
@@ -823,8 +900,11 @@ alerts_freeze_rule(
 		watchlist = venture_database_get(database, VENTURE_TYPE_WATCHLIST, watchlist_id, NULL);
 
 		/* The list's group, when the rule names neither a group nor a
-		 * venue of its own. */
-		if ((NULL != watchlist) && (NULL == rule->group_key) && (NULL == rule->venue_key))
+		 * venue of its own. Not for an account kind: a list's group is
+		 * a group of venues, and an account's group is its own (a realm
+		 * where a venue's is a region), so the two would never meet. */
+		if ((NULL != watchlist) && (NULL == rule->group_key) && (NULL == rule->venue_key) &&
+		    !alerts_kind_reads_accounts(rule->kind))
 		{
 			g_autofree gchar *list_group = NULL;
 
@@ -872,113 +952,281 @@ alerts_freeze_rule(
 	return rule;
 }
 
+/* The store instrument a listing the mirror wrote for this source stands
+ * for: its mirror-state names it, so no query is needed. NULL for any
+ * other listing. */
+static gchar *
+alerts_mirrored_instrument(
+	VentureEntity	*record,
+	gint64		 source_id
+){
+	g_autoptr(JsonParser) parser = NULL;
+	g_autofree gchar *state = NULL;
+	JsonNode *root;
+	const gchar *key;
+
+	if (alerts_int(record, "data-source-id") != source_id)
+		return NULL;
+
+	g_object_get(record, "mirror-state", &state, NULL);
+
+	if (venture_string_is_empty(state))
+		return NULL;
+
+	parser = json_parser_new();
+
+	if (!json_parser_load_from_data(parser, state, -1, NULL))
+		return NULL;
+
+	root = json_parser_get_root(parser);
+
+	if ((NULL == root) || !JSON_NODE_HOLDS_OBJECT(root))
+		return NULL;
+
+	key = json_object_get_string_member_with_default(json_node_get_object(root), "instrument", NULL);
+
+	return venture_string_is_empty(key) ? NULL : g_strdup(key);
+}
+
+/* The store keys of the instrument records naming @product_id in this
+ * source, sorted; asked once per product however many listings it has. */
+static GPtrArray *
+alerts_product_keys(
+	VentureDatabase	*database,
+	AlertsFrozen	*frozen,
+	gint64		 product_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) instruments = NULL;
+	g_autoptr(GHashTable) keys = NULL;
+	GPtrArray *sorted;
+	GHashTableIter iter;
+	gpointer key;
+
+	query = venture_query_new(VENTURE_TYPE_INSTRUMENT);
+	venture_query_set_organization(query, frozen->organization_id);
+	venture_query_set_limit(query, 20);
+
+	if (!venture_query_add_filter_int(query, "product-id", VENTURE_FILTER_OP_EQ, product_id, NULL))
+		return NULL;
+
+	instruments = venture_database_find(database, query, NULL);
+	keys = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	alerts_add_instrument_keys(database, instruments, frozen->source_id, keys);
+
+	if (0 == g_hash_table_size(keys))
+		return NULL;
+
+	sorted = g_ptr_array_new_with_free_func(g_free);
+	g_hash_table_iter_init(&iter, keys);
+
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		g_ptr_array_add(sorted, g_strdup(key));
+
+	g_ptr_array_sort(sorted, alerts_compare_keys);
+
+	return sorted;
+}
+
+/* One listing as an undercut rule compares it, or NULL when it means
+ * nothing in this store: no price, a venue priced elsewhere, a product no
+ * instrument here stands for. */
+static AlertsListing *
+alerts_freeze_listing(
+	VentureDatabase	*database,
+	AlertsFrozen	*frozen,
+	VentureEntity	*record,
+	GHashTable	*venues,
+	GHashTable	*products
+){
+	g_autoptr(VentureMoney) price = NULL;
+	g_autofree gchar *mirrored = NULL;
+	AlertsListing *listing;
+	const gchar *venue_key;
+	GPtrArray *keys;
+	gint64 venue_id;
+	gint64 product_id;
+	guint i;
+
+	venue_id = alerts_int(record, "venue-id");
+	product_id = alerts_int(record, "product-id");
+	g_object_get(record, "unit-price", &price, NULL);
+
+	if (NULL == price)
+		return NULL;
+
+	/* The venue's key here, once per venue; "" when it has none. */
+	if (!g_hash_table_contains(venues, &venue_id))
+	{
+		g_autoptr(VentureEntity) venue = NULL;
+		g_autofree gchar *found = NULL;
+		gint64 venue_source = 0;
+
+		venue = venture_database_get(database, VENTURE_TYPE_VENUE, venue_id, NULL);
+
+		if ((NULL != venue) && !venture_entity_is_deleted(venue))
+			g_object_get(venue, "key", &found, "data-source-id", &venue_source, NULL);
+
+		if ((venue_source > 0) && (venue_source != frozen->source_id))
+			g_clear_pointer(&found, g_free);
+
+		g_hash_table_insert(venues, g_memdup2(&venue_id, sizeof(venue_id)),
+		                    g_strdup((NULL != found) ? found : ""));
+	}
+
+	venue_key = g_hash_table_lookup(venues, &venue_id);
+
+	if (venture_string_is_empty(venue_key))
+		return NULL;
+
+	/* What it sells, as store keys: the mirror's own word for a listing
+	 * it wrote here, else the product's instruments, once per product. */
+	mirrored = alerts_mirrored_instrument(record, frozen->source_id);
+	keys = NULL;
+
+	if (NULL == mirrored)
+	{
+		gpointer cached;
+
+		if (product_id <= 0)
+			return NULL;
+
+		if (g_hash_table_lookup_extended(products, &product_id, NULL, &cached))
+		{
+			keys = cached;
+		}
+		else
+		{
+			keys = alerts_product_keys(database, frozen, product_id);
+			g_hash_table_insert(products, g_memdup2(&product_id, sizeof(product_id)), keys);
+		}
+
+		if (NULL == keys)
+			return NULL;
+	}
+
+	listing = g_new0(AlertsListing, 1);
+	listing->id = venture_entity_get_id(record);
+	listing->venue_key = g_strdup(venue_key);
+	listing->instrument_keys = g_ptr_array_new_with_free_func(g_free);
+
+	if (!alerts_minor_units(price, &listing->price, listing->currency))
+	{
+		alerts_listing_free(listing);
+		return NULL;
+	}
+
+	if (NULL != mirrored)
+		g_ptr_array_add(listing->instrument_keys, g_steal_pointer(&mirrored));
+
+	for (i = 0; (NULL != keys) && (i < keys->len); i++)
+		g_ptr_array_add(listing->instrument_keys, g_strdup(g_ptr_array_index(keys, i)));
+
+	return listing;
+}
+
+static void
+alerts_ptr_array_unref_nullable(gpointer array)
+{
+	if (NULL != array)
+		g_ptr_array_unref(array);
+}
+
 /*
  * The organization's open listings at a venue this source prices, with
- * the instrument keys their product comes to here and their asking price
- * in minor units: what an undercut rule compares. A listing whose venue
- * or product means nothing in this store is left out.
+ * the instrument keys they come to here and their asking price in minor
+ * units: what an undercut rule compares. A listing whose venue or product
+ * means nothing in this store is left out.
+ *
+ * Newest first, a page at a time, up to VENTURE_ALERTS_MAX_LISTINGS --
+ * the one just posted is the one most likely to be undercut, and the
+ * oldest-first single read this replaced lost exactly those once an
+ * operator held a thousand. A listing the mirror wrote for this source
+ * names its store instrument in its mirror-state; any other costs one
+ * instrument query per distinct product, never one per listing. Reaching
+ * the bound is remembered and said on the run.
  */
 static void
 alerts_freeze_listings(
 	VentureDatabase	*database,
 	AlertsFrozen	*frozen
 ){
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) listings = NULL;
 	g_autoptr(GHashTable) venues = NULL;
-	guint i;
+	g_autoptr(GHashTable) products = NULL;
+	guint offset;
 
-	query = venture_query_new(VENTURE_TYPE_LISTING);
-	venture_query_set_organization(query, frozen->organization_id);
-	venture_query_set_limit(query, VENTURE_ALERTS_MAX_LISTINGS);
-
-	if (!venture_query_add_filter_int(query, "outcome", VENTURE_FILTER_OP_EQ,
-	                                  VENTURE_LISTING_OUTCOME_OPEN, NULL) ||
-	    !venture_query_add_filter_int(query, "venue-id", VENTURE_FILTER_OP_GT, 0, NULL) ||
-	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL))
-		return;
-
-	listings = venture_database_find(database, query, NULL);
 	venues = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	products = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
+	                                 alerts_ptr_array_unref_nullable);
+	offset = 0;
 
-	for (i = 0; (NULL != listings) && (i < listings->len); i++)
+	/* One row past the bound, so reaching it is told from ending on it. */
+	while (offset <= VENTURE_ALERTS_MAX_LISTINGS)
 	{
-		VentureEntity *record = g_ptr_array_index(listings, i);
-		g_autoptr(VentureMoney) price = NULL;
-		g_autoptr(VentureQuery) instruments_query = NULL;
-		g_autoptr(GPtrArray) instruments = NULL;
-		g_autoptr(GHashTable) keys = NULL;
-		AlertsListing *listing;
-		const gchar *venue_key;
-		gint64 venue_id;
-		gint64 product_id;
-		GHashTableIter iter;
-		gpointer key;
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) page = NULL;
+		guint asked;
+		guint i;
 
-		venue_id = alerts_int(record, "venue-id");
-		product_id = alerts_int(record, "product-id");
-		g_object_get(record, "unit-price", &price, NULL);
+		asked = MIN((guint)ALERTS_PAGE, (guint)VENTURE_ALERTS_MAX_LISTINGS + 1 - offset);
+		query = venture_query_new(VENTURE_TYPE_LISTING);
+		venture_query_set_organization(query, frozen->organization_id);
+		venture_query_set_limit(query, asked);
+		venture_query_set_offset(query, offset);
 
-		if (NULL == price)
-			continue;
+		if (!venture_query_add_filter_int(query, "outcome", VENTURE_FILTER_OP_EQ,
+		                                  VENTURE_LISTING_OUTCOME_OPEN, NULL) ||
+		    !venture_query_add_filter_int(query, "venue-id", VENTURE_FILTER_OP_GT, 0, NULL) ||
+		    !venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL))
+			return;
 
-		/* The venue's key here, once per venue; "" when it has none. */
-		if (!g_hash_table_contains(venues, &venue_id))
+		page = venture_database_find(database, query, NULL);
+
+		if (NULL == page)
+			return;
+
+		for (i = 0; i < page->len; i++)
 		{
-			g_autoptr(VentureEntity) venue = NULL;
-			g_autofree gchar *found = NULL;
-			gint64 venue_source = 0;
+			AlertsListing *listing;
 
-			venue = venture_database_get(database, VENTURE_TYPE_VENUE, venue_id, NULL);
+			if (offset + i >= VENTURE_ALERTS_MAX_LISTINGS)
+			{
+				frozen->listings_capped = TRUE;
+				break;
+			}
 
-			if ((NULL != venue) && !venture_entity_is_deleted(venue))
-				g_object_get(venue, "key", &found, "data-source-id", &venue_source, NULL);
+			listing = alerts_freeze_listing(database, frozen, g_ptr_array_index(page, i), venues,
+			                                products);
 
-			if ((venue_source > 0) && (venue_source != frozen->source_id))
-				g_clear_pointer(&found, g_free);
-
-			g_hash_table_insert(venues, g_memdup2(&venue_id, sizeof(venue_id)),
-			                    g_strdup((NULL != found) ? found : ""));
+			if (NULL != listing)
+				g_ptr_array_add(frozen->listings, listing);
 		}
 
-		venue_key = g_hash_table_lookup(venues, &venue_id);
+		if (frozen->listings_capped || (page->len < asked))
+			break;
 
-		if (venture_string_is_empty(venue_key) || (product_id <= 0))
-			continue;
+		offset += page->len;
+	}
 
-		instruments_query = venture_query_new(VENTURE_TYPE_INSTRUMENT);
-		venture_query_set_organization(instruments_query, frozen->organization_id);
-		venture_query_set_limit(instruments_query, 20);
+	/* By venue, so a venue's evaluation walks its own listings. */
+	{
+		guint i;
 
-		if (!venture_query_add_filter_int(instruments_query, "product-id", VENTURE_FILTER_OP_EQ,
-		                                  product_id, NULL))
-			continue;
-
-		instruments = venture_database_find(database, instruments_query, NULL);
-		keys = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-		alerts_add_instrument_keys(database, instruments, frozen->source_id, keys);
-
-		if (0 == g_hash_table_size(keys))
-			continue;
-
-		listing = g_new0(AlertsListing, 1);
-		listing->id = venture_entity_get_id(record);
-		listing->venue_key = g_strdup(venue_key);
-		listing->instrument_keys = g_ptr_array_new_with_free_func(g_free);
-
-		if (!alerts_minor_units(price, &listing->price, listing->currency))
+		for (i = 0; i < frozen->listings->len; i++)
 		{
-			alerts_listing_free(listing);
-			continue;
+			AlertsListing *listing = g_ptr_array_index(frozen->listings, i);
+			GPtrArray *at;
+
+			at = g_hash_table_lookup(frozen->venue_listings, listing->venue_key);
+
+			if (NULL == at)
+			{
+				at = g_ptr_array_new();
+				g_hash_table_insert(frozen->venue_listings, g_strdup(listing->venue_key), at);
+			}
+
+			g_ptr_array_add(at, listing);
 		}
-
-		g_hash_table_iter_init(&iter, keys);
-
-		while (g_hash_table_iter_next(&iter, &key, NULL))
-			g_ptr_array_add(listing->instrument_keys, g_strdup(key));
-
-		g_ptr_array_sort(listing->instrument_keys, alerts_compare_keys);
-		g_ptr_array_add(frozen->listings, listing);
 	}
 }
 
@@ -1044,6 +1292,8 @@ alerts_freeze(
 	frozen->organization_id = venture_entity_get_organization_id(data_source);
 	frozen->rules = g_ptr_array_new_with_free_func(alerts_rule_free);
 	frozen->listings = g_ptr_array_new_with_free_func(alerts_listing_free);
+	frozen->venue_listings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                               (GDestroyNotify)g_ptr_array_unref);
 	undercut = FALSE;
 
 	for (i = 0; i < records->len; i++)
@@ -1083,7 +1333,26 @@ typedef struct
 {
 	JsonObject	*candidates;
 	guint		 over;
+	GPtrArray	*notes;		/* gchar*, said once each: a bound reached, a read cut short */
 } AlertsSink;
+
+/* A note for the run (or the evaluation's report), once however often the
+ * evaluation reaches it. */
+static void
+alerts_sink_note(
+	AlertsSink	*sink,
+	const gchar	*note
+){
+	guint i;
+
+	for (i = 0; i < sink->notes->len; i++)
+	{
+		if (0 == g_strcmp0(g_ptr_array_index(sink->notes, i), note))
+			return;
+	}
+
+	g_ptr_array_add(sink->notes, g_strdup(note));
+}
 
 static void
 alerts_sink_add(
@@ -1573,7 +1842,8 @@ alerts_in_scope(
  * undercut: each frozen open listing at this venue, against the cheapest
  * unit the venue's newest snapshot offers of the listing's instrument, in
  * the listing's currency. Your own listing is among the units on offer,
- * so a cheapest unit below it is somebody else's.
+ * so a cheapest unit below it is somebody else's. Many listings sell the
+ * same thing at the same venue, so each instrument's row is read once.
  */
 static gboolean
 alerts_evaluate_undercut(
@@ -1585,26 +1855,45 @@ alerts_evaluate_undercut(
 	AlertsSink		 *sink,
 	GError			**error
 ){
+	g_autoptr(GHashTable) rows = NULL;
+	GPtrArray *listings;
 	guint i;
 	guint j;
 
-	for (i = 0; i < frozen->listings->len; i++)
-	{
-		const AlertsListing *listing = g_ptr_array_index(frozen->listings, i);
+	listings = g_hash_table_lookup(frozen->venue_listings, venue_key);
 
-		if (0 != g_strcmp0(listing->venue_key, venue_key))
-			continue;
+	if (NULL == listings)
+		return TRUE;
+
+	rows = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
+	                             (GDestroyNotify)venture_series_row_free);
+
+	for (i = 0; i < listings->len; i++)
+	{
+		const AlertsListing *listing = g_ptr_array_index(listings, i);
 
 		for (j = 0; j < listing->instrument_keys->len; j++)
 		{
-			g_autoptr(VentureSeriesRow) row = NULL;
+			const gchar *instrument_key = g_ptr_array_index(listing->instrument_keys, j);
 			g_autofree gchar *subject = NULL;
+			VentureSeriesRow *row;
 			JsonObject *candidate;
+			gpointer cached;
 
-			if (!venture_series_store_get_current(store, venue_key,
-			                                      g_ptr_array_index(listing->instrument_keys, j),
-			                                      &row, error))
-				return FALSE;
+			/* The listing owns the key for longer than this table. */
+			if (g_hash_table_lookup_extended(rows, instrument_key, NULL, &cached))
+			{
+				row = cached;
+			}
+			else
+			{
+				row = NULL;
+
+				if (!venture_series_store_get_current(store, venue_key, instrument_key, &row, error))
+					return FALSE;
+
+				g_hash_table_insert(rows, (gpointer)instrument_key, row);
+			}
 
 			if ((NULL == row) || (row->taken_at != taken_at) ||
 			    (VENTURE_SERIES_NONE == row->min_price) || (row->quantity <= 0) ||
@@ -1648,7 +1937,7 @@ alerts_evaluate_venue(
 	g_autoptr(GHashTable) seen = NULL;
 	guint examined;
 
-	if ((VENTURE_ALERT_KIND_ENTRY_MATCH == rule->kind) ||
+	if ((VENTURE_ALERT_KIND_ENTRY_MATCH == rule->kind) || alerts_kind_reads_accounts(rule->kind) ||
 	    ((NULL != rule->venue_key) && (0 != g_strcmp0(rule->venue_key, venue_key))) ||
 	    ((NULL != rule->group_key) && (0 != g_strcmp0(rule->group_key, venue_group))))
 		return TRUE;
@@ -1837,6 +2126,643 @@ alerts_venue_groups(
 	return groups;
 }
 
+/* --- The operator's accounts ------------------------------------------------------ */
+
+/* What one account has waiting to be collected, from its inbound rows. */
+typedef struct
+{
+	gint64	 mails;
+	gint64	 items;
+	GArray	*money;		/* VentureSeriesAmount, one per currency */
+} AlertsCollect;
+
+static void
+alerts_collect_free(gpointer data)
+{
+	AlertsCollect *collect = data;
+
+	g_array_unref(collect->money);
+	g_free(collect);
+}
+
+/*
+ * The store's accounts, read once per evaluation for every account rule
+ * in it, and -- only when a collect_ready rule asks -- what each has
+ * waiting. Rows belong to @rows; @by_key borrows them.
+ */
+typedef struct
+{
+	GPtrArray	*rows;		/* VentureSeriesAccountRow; NULL until read */
+	GHashTable	*by_key;	/* key -> borrowed VentureSeriesAccountRow */
+	GHashTable	*collect;	/* account key -> AlertsCollect; NULL until read */
+} AlertsAccounts;
+
+static void
+alerts_accounts_clear(AlertsAccounts *accounts)
+{
+	g_clear_pointer(&accounts->by_key, g_hash_table_unref);
+	g_clear_pointer(&accounts->rows, g_ptr_array_unref);
+	g_clear_pointer(&accounts->collect, g_hash_table_unref);
+}
+
+static gboolean
+alerts_accounts_load(
+	VentureSeriesStore	 *store,
+	AlertsAccounts		 *accounts,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	guint i;
+
+	if (NULL != accounts->rows)
+		return TRUE;
+
+	accounts->rows = venture_series_store_list_accounts(store, NULL, NULL, now, error);
+
+	if (NULL == accounts->rows)
+		return FALSE;
+
+	if (accounts->rows->len >= VENTURE_SERIES_MAX_ACCOUNTS)
+	{
+		g_autofree gchar *note = g_strdup_printf("only the first %d accounts were judged",
+		                                         VENTURE_SERIES_MAX_ACCOUNTS);
+
+		alerts_sink_note(sink, note);
+	}
+
+	accounts->by_key = g_hash_table_new(g_str_hash, g_str_equal);
+
+	for (i = 0; i < accounts->rows->len; i++)
+	{
+		VentureSeriesAccountRow *row = g_ptr_array_index(accounts->rows, i);
+
+		g_hash_table_insert(accounts->by_key, row->key, row);
+	}
+
+	return TRUE;
+}
+
+/*
+ * Whether a row about @account passes the rule's narrowing: the venue (a
+ * position's own, else the account's) and the group (always the
+ * account's). An account the read did not reach has no group, so a rule
+ * narrowed to one says nothing about it.
+ */
+static gboolean
+alerts_account_matches(
+	const AlertsRule		*rule,
+	const VentureSeriesAccountRow	*account,
+	const gchar			*venue_key
+){
+	if (NULL == venue_key)
+		venue_key = (NULL != account) ? account->venue_key : NULL;
+
+	if ((NULL != rule->venue_key) && (0 != g_strcmp0(rule->venue_key, venue_key)))
+		return FALSE;
+
+	if ((NULL != rule->group_key) &&
+	    ((NULL == account) || (0 != g_strcmp0(rule->group_key, account->group_key))))
+		return FALSE;
+
+	return TRUE;
+}
+
+/* "Drgold (Thorium Brotherhood)": the account's name, else its key, and
+ * where it is -- its group, else its venue. */
+static gchar *
+alerts_account_label(
+	const gchar			*key,
+	const VentureSeriesAccountRow	*account
+){
+	const gchar *name;
+	const gchar *where;
+
+	name = ((NULL != account) && !venture_string_is_empty(account->name)) ? account->name : key;
+	where = NULL;
+
+	if (NULL != account)
+		where = !venture_string_is_empty(account->group_key) ? account->group_key
+		      : !venture_string_is_empty(account->venue_key) ? account->venue_key : NULL;
+
+	return (NULL != where) ? g_strdup_printf("%s (%s)", name, where) : g_strdup(name);
+}
+
+static void
+alerts_set_account(
+	JsonObject			*candidate,
+	const gchar			*key,
+	const VentureSeriesAccountRow	*account
+){
+	g_autofree gchar *label = alerts_account_label(key, account);
+
+	json_object_set_string_member(candidate, "account_key", key);
+	json_object_set_string_member(candidate, "account_label", label);
+}
+
+/* Whether a row about @instrument_key is in a scoped rule's scope: the
+ * named keys, or the category, read from the store's instrument. A row
+ * about no instrument is in no scope. */
+static gboolean
+alerts_key_in_scope(
+	VentureSeriesStore	 *store,
+	const AlertsRule	 *rule,
+	const gchar		 *instrument_key,
+	gboolean		 *out,
+	GError			**error
+){
+	g_autoptr(VentureSeriesInstrumentRow) instrument = NULL;
+
+	*out = !rule->scoped;
+
+	if (!rule->scoped || (NULL == instrument_key))
+		return TRUE;
+
+	if (g_hash_table_contains(rule->keys, instrument_key))
+	{
+		*out = TRUE;
+		return TRUE;
+	}
+
+	if (NULL == rule->category_prefix)
+		return TRUE;
+
+	if (!venture_series_store_get_instrument(store, instrument_key, &instrument, error))
+		return FALSE;
+
+	*out = (NULL != instrument) && alerts_category_matches(rule->category_prefix, instrument->category);
+
+	return TRUE;
+}
+
+/* The end of the window an expiring rule watches: @now plus its hours. */
+static gint64
+alerts_horizon(
+	const AlertsRule	*rule,
+	gint64			 now
+){
+	return now + (gint64)floor(rule->number * 3600.0);
+}
+
+/*
+ * position_expiring: each of the operator's open positions whose expiry
+ * is after @now and at most the rule's hours after it. Soonest first, as
+ * the store lists them; positions already expired are skipped, being
+ * collect_ready's to tell. The subject is the position, so one listing is
+ * told about once per cooldown however many runs see it.
+ */
+static gboolean
+alerts_evaluate_positions(
+	VentureSeriesStore	 *store,
+	const AlertsRule	 *rule,
+	AlertsAccounts		 *accounts,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	VentureSeriesPositionFilter filter;
+	guint read;
+	guint i;
+
+	venture_series_position_filter_init(&filter);
+
+	/* The store's bound is strict, the window's end is not. */
+	filter.expires_before = alerts_horizon(rule, now) + 1;
+	filter.venue_key = rule->venue_key;
+	filter.count = ALERTS_PAGE;
+	read = 0;
+
+	for (;;)
+	{
+		g_autoptr(GPtrArray) page = NULL;
+
+		page = venture_series_store_list_positions(store, &filter, error);
+
+		if (NULL == page)
+			return FALSE;
+
+		for (i = 0; i < page->len; i++)
+		{
+			VentureSeriesPositionRow *row = g_ptr_array_index(page, i);
+			const VentureSeriesAccountRow *account;
+			g_autofree gchar *subject = NULL;
+			JsonObject *candidate;
+			gboolean in_scope;
+
+			if (row->expires_at <= now)
+				continue;
+
+			account = g_hash_table_lookup(accounts->by_key, row->account_key);
+
+			if (!alerts_account_matches(rule, account, row->venue_key))
+				continue;
+
+			if (!alerts_key_in_scope(store, rule, row->instrument_key, &in_scope, error))
+				return FALSE;
+
+			if (!in_scope)
+				continue;
+
+			subject = g_strdup_printf("position:%s", row->key);
+			candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
+			                                 row->instrument_name, now);
+			alerts_set_account(candidate, row->account_key, account);
+			json_object_set_string_member(candidate, "position_key", row->key);
+			json_object_set_int_member(candidate, "quantity", row->quantity);
+			json_object_set_int_member(candidate, "expires_at", row->expires_at);
+
+			if ('\0' != row->currency[0])
+				alerts_set_price(candidate, "observed", row->unit_price, row->currency);
+
+			json_object_set_double_member(candidate, "observed_number",
+			                              (gdouble)(row->expires_at - now) / 3600.0);
+			json_object_set_double_member(candidate, "reference_number", rule->number);
+			alerts_sink_add(sink, rule, candidate);
+		}
+
+		read += page->len;
+
+		if (page->len < ALERTS_PAGE)
+			break;
+
+		if (read >= VENTURE_ALERTS_MAX_ACCOUNT_ROWS)
+		{
+			g_autofree gchar *note = g_strdup_printf("only the first %d positions were "
+			                                         "judged", VENTURE_ALERTS_MAX_ACCOUNT_ROWS);
+
+			alerts_sink_note(sink, note);
+			break;
+		}
+
+		filter.offset += page->len;
+	}
+
+	return TRUE;
+}
+
+/*
+ * inbound_expiring: each inbound row -- a mail with money or an item --
+ * lost after @now and at most the rule's hours after it. A scoped rule
+ * hears only about rows carrying an instrument in scope; a venue narrows
+ * by the account's venue, since a mail has none of its own.
+ */
+static gboolean
+alerts_evaluate_inbound(
+	VentureSeriesStore	 *store,
+	const AlertsRule	 *rule,
+	AlertsAccounts		 *accounts,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	VentureSeriesInboundFilter filter;
+	guint read;
+	guint i;
+
+	venture_series_inbound_filter_init(&filter);
+	filter.expires_before = alerts_horizon(rule, now) + 1;
+	filter.count = ALERTS_PAGE;
+	read = 0;
+
+	for (;;)
+	{
+		g_autoptr(GPtrArray) page = NULL;
+
+		page = venture_series_store_list_inbound(store, &filter, error);
+
+		if (NULL == page)
+			return FALSE;
+
+		for (i = 0; i < page->len; i++)
+		{
+			VentureSeriesInboundRow *row = g_ptr_array_index(page, i);
+			const VentureSeriesAccountRow *account;
+			g_autofree gchar *subject = NULL;
+			JsonObject *candidate;
+			gboolean in_scope;
+
+			if (row->expires_at <= now)
+				continue;
+
+			account = g_hash_table_lookup(accounts->by_key, row->account_key);
+
+			if (!alerts_account_matches(rule, account, NULL))
+				continue;
+
+			if (!alerts_key_in_scope(store, rule, row->instrument_key, &in_scope, error))
+				return FALSE;
+
+			if (!in_scope)
+				continue;
+
+			subject = g_strdup_printf("inbound:%s", row->key);
+			candidate = alerts_candidate_new(rule, subject,
+			                                 (NULL != account) ? account->venue_key : NULL,
+			                                 row->instrument_key, row->instrument_name, now);
+			alerts_set_account(candidate, row->account_key, account);
+			json_object_set_string_member(candidate, "inbound_key", row->key);
+			json_object_set_int_member(candidate, "expires_at", row->expires_at);
+			json_object_set_boolean_member(candidate, "returned", row->returned);
+
+			if (NULL != row->sender)
+				json_object_set_string_member(candidate, "sender", row->sender);
+
+			if (NULL != row->subject)
+				json_object_set_string_member(candidate, "mail_subject", row->subject);
+
+			if ((NULL != row->instrument_key) && (VENTURE_SERIES_NONE != row->quantity))
+				json_object_set_int_member(candidate, "quantity", row->quantity);
+
+			if ('\0' != row->currency[0])
+			{
+				if ((VENTURE_SERIES_NONE != row->money) && (row->money > 0))
+					alerts_set_price(candidate, "observed", row->money, row->currency);
+
+				if ((VENTURE_SERIES_NONE != row->cod) && (row->cod > 0))
+					alerts_set_price(candidate, "cod", row->cod, row->currency);
+			}
+
+			json_object_set_double_member(candidate, "observed_number",
+			                              (gdouble)(row->expires_at - now) / 3600.0);
+			json_object_set_double_member(candidate, "reference_number", rule->number);
+			alerts_sink_add(sink, rule, candidate);
+		}
+
+		read += page->len;
+
+		if (page->len < ALERTS_PAGE)
+			break;
+
+		if (read >= VENTURE_ALERTS_MAX_ACCOUNT_ROWS)
+		{
+			g_autofree gchar *note = g_strdup_printf("only the first %d inbound rows were "
+			                                         "judged", VENTURE_ALERTS_MAX_ACCOUNT_ROWS);
+
+			alerts_sink_note(sink, note);
+			break;
+		}
+
+		filter.offset += page->len;
+	}
+
+	return TRUE;
+}
+
+/*
+ * account_stale: each account not seen for longer than the rule's days --
+ * its last sighting by the source, else the store's first. Shared and
+ * guild accounts are opened through a character, so their own sighting
+ * proves nothing and they are not judged. The hit is observed at the
+ * sighting, not at the evaluation: the cooldown never tells the same
+ * spell twice, and seeing the account again starts a new one.
+ */
+static gboolean
+alerts_evaluate_stale(
+	const AlertsRule	*rule,
+	AlertsAccounts		*accounts,
+	gint64			 now,
+	AlertsSink		*sink
+){
+	gint64 cutoff;
+	guint i;
+
+	cutoff = now - (gint64)floor(rule->number * 86400.0);
+
+	for (i = 0; i < accounts->rows->len; i++)
+	{
+		VentureSeriesAccountRow *account = g_ptr_array_index(accounts->rows, i);
+		g_autofree gchar *subject = NULL;
+		JsonObject *candidate;
+		gint64 seen;
+
+		if ((0 == g_strcmp0(account->kind, ALERTS_SHARED_KIND)) ||
+		    (0 == g_strcmp0(account->kind, ALERTS_GUILD_KIND)) ||
+		    !alerts_account_matches(rule, account, NULL))
+			continue;
+
+		seen = (VENTURE_SERIES_NONE != account->last_seen) ? account->last_seen : account->first_seen;
+
+		if (seen >= cutoff)
+			continue;
+
+		subject = g_strdup_printf("account:%s", account->key);
+		candidate = alerts_candidate_new(rule, subject, account->venue_key, NULL, NULL, seen);
+		alerts_set_account(candidate, account->key, account);
+		json_object_set_int_member(candidate, "judged_at", now);
+		json_object_set_double_member(candidate, "observed_number", (gdouble)(now - seen) / 86400.0);
+		json_object_set_double_member(candidate, "reference_number", rule->number);
+		alerts_sink_add(sink, rule, candidate);
+	}
+
+	return TRUE;
+}
+
+/* What every account has waiting in its inbound, read once: rows still to
+ * be had (not expired) with money or an item. Cash on delivery alone is
+ * a bill, not something to collect. */
+static gboolean
+alerts_accounts_load_collect(
+	VentureSeriesStore	 *store,
+	AlertsAccounts		 *accounts,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	VentureSeriesInboundFilter filter;
+	guint read;
+	guint i;
+	guint c;
+
+	if (NULL != accounts->collect)
+		return TRUE;
+
+	accounts->collect = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, alerts_collect_free);
+	venture_series_inbound_filter_init(&filter);
+	filter.count = ALERTS_PAGE;
+	read = 0;
+
+	for (;;)
+	{
+		g_autoptr(GPtrArray) page = NULL;
+
+		page = venture_series_store_list_inbound(store, &filter, error);
+
+		if (NULL == page)
+			return FALSE;
+
+		for (i = 0; i < page->len; i++)
+		{
+			VentureSeriesInboundRow *row = g_ptr_array_index(page, i);
+			gboolean money;
+			AlertsCollect *collect;
+
+			money = (VENTURE_SERIES_NONE != row->money) && (row->money > 0) && ('\0' != row->currency[0]);
+
+			if (((VENTURE_SERIES_NONE != row->expires_at) && (row->expires_at <= now)) ||
+			    (!money && (NULL == row->instrument_key)))
+				continue;
+
+			collect = g_hash_table_lookup(accounts->collect, row->account_key);
+
+			if (NULL == collect)
+			{
+				collect = g_new0(AlertsCollect, 1);
+				collect->money = g_array_new(FALSE, TRUE, sizeof(VentureSeriesAmount));
+				g_hash_table_insert(accounts->collect, g_strdup(row->account_key), collect);
+			}
+
+			collect->mails++;
+
+			if (NULL != row->instrument_key)
+				collect->items += ((VENTURE_SERIES_NONE != row->quantity) && (row->quantity > 0))
+				                  ? row->quantity : 1;
+
+			if (!money)
+				continue;
+
+			for (c = 0; c < collect->money->len; c++)
+			{
+				VentureSeriesAmount *amount = &g_array_index(collect->money, VentureSeriesAmount, c);
+
+				if (0 == g_ascii_strcasecmp(amount->currency, row->currency))
+				{
+					/* Saturating: a total past the integer is still "a lot". */
+					if (__builtin_add_overflow(amount->amount, row->money, &amount->amount))
+						amount->amount = G_MAXINT64;
+					break;
+				}
+			}
+
+			if (c == collect->money->len)
+			{
+				VentureSeriesAmount amount;
+
+				memset(&amount, 0, sizeof(amount));
+				g_strlcpy(amount.currency, row->currency, sizeof(amount.currency));
+				amount.amount = row->money;
+				g_array_append_val(collect->money, amount);
+			}
+		}
+
+		read += page->len;
+
+		if (page->len < ALERTS_PAGE)
+			break;
+
+		if (read >= VENTURE_ALERTS_MAX_ACCOUNT_ROWS)
+		{
+			g_autofree gchar *note = g_strdup_printf("only the first %d inbound rows were "
+			                                         "judged", VENTURE_ALERTS_MAX_ACCOUNT_ROWS);
+
+			alerts_sink_note(sink, note);
+			break;
+		}
+
+		filter.offset += page->len;
+	}
+
+	return TRUE;
+}
+
+/*
+ * collect_ready: each account with something to pick up at its next
+ * login -- mail with money or goods, or positions whose expiry has passed
+ * while the store still holds them ("expired, awaiting login": a game
+ * returns them to the mailbox, and the source learns so only when the
+ * character is next seen). One candidate per account, summarising.
+ */
+static gboolean
+alerts_evaluate_collect(
+	VentureSeriesStore	 *store,
+	const AlertsRule	 *rule,
+	AlertsAccounts		 *accounts,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	guint i;
+	guint c;
+
+	if (!alerts_accounts_load_collect(store, accounts, now, sink, error))
+		return FALSE;
+
+	for (i = 0; i < accounts->rows->len; i++)
+	{
+		VentureSeriesAccountRow *account = g_ptr_array_index(accounts->rows, i);
+		const AlertsCollect *collect;
+		g_autofree gchar *subject = NULL;
+		JsonObject *candidate;
+		JsonArray *money;
+		gint64 mails;
+		gint64 expired;
+
+		if (!alerts_account_matches(rule, account, NULL))
+			continue;
+
+		collect = g_hash_table_lookup(accounts->collect, account->key);
+		mails = (NULL != collect) ? collect->mails : 0;
+		expired = account->positions_expired;
+
+		if ((mails <= 0) && (expired <= 0))
+			continue;
+
+		subject = g_strdup_printf("collect:%s", account->key);
+		candidate = alerts_candidate_new(rule, subject, account->venue_key, NULL, NULL, now);
+		alerts_set_account(candidate, account->key, account);
+		json_object_set_int_member(candidate, "mails", mails);
+		json_object_set_int_member(candidate, "items", (NULL != collect) ? collect->items : 0);
+		json_object_set_int_member(candidate, "expired_positions", expired);
+		money = json_array_new();
+
+		for (c = 0; (NULL != collect) && (c < collect->money->len); c++)
+		{
+			const VentureSeriesAmount *amount = &g_array_index(collect->money, VentureSeriesAmount, c);
+			JsonObject *each = json_object_new();
+
+			json_object_set_int_member(each, "amount", amount->amount);
+			json_object_set_string_member(each, "currency", amount->currency);
+			json_array_add_object_element(money, each);
+
+			if (0 == c)
+				alerts_set_price(candidate, "observed", amount->amount, amount->currency);
+		}
+
+		json_object_set_array_member(candidate, "money", money);
+		json_object_set_double_member(candidate, "observed_number", (gdouble)(mails + expired));
+		alerts_sink_add(sink, rule, candidate);
+	}
+
+	return TRUE;
+}
+
+/* One account rule against the store at @now. */
+static gboolean
+alerts_evaluate_account_rule(
+	VentureSeriesStore	 *store,
+	const AlertsRule	 *rule,
+	AlertsAccounts		 *accounts,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	if (!alerts_accounts_load(store, accounts, now, sink, error))
+		return FALSE;
+
+	switch (rule->kind)
+	{
+	case VENTURE_ALERT_KIND_POSITION_EXPIRING:
+		return alerts_evaluate_positions(store, rule, accounts, now, sink, error);
+	case VENTURE_ALERT_KIND_INBOUND_EXPIRING:
+		return alerts_evaluate_inbound(store, rule, accounts, now, sink, error);
+	case VENTURE_ALERT_KIND_ACCOUNT_STALE:
+		return alerts_evaluate_stale(rule, accounts, now, sink);
+	case VENTURE_ALERT_KIND_COLLECT_READY:
+		return alerts_evaluate_collect(store, rule, accounts, now, sink, error);
+	default:
+		return TRUE;
+	}
+}
+
 /*
  * Every frozen rule at every venue in @venue_keys, and the entry_match
  * rules over @entries. @done remembers "venue@time" so a venue whose
@@ -1850,6 +2776,7 @@ alerts_evaluate(
 	GPtrArray		 *entries,
 	JsonObject		 *done,
 	gint64			  now,
+	gint64			  accounts_now,
 	AlertsSink		 *sink,
 	GError			**error
 ){
@@ -1903,6 +2830,29 @@ alerts_evaluate(
 
 		if ((VENTURE_ALERT_KIND_ENTRY_MATCH == rule->kind) &&
 		    !alerts_evaluate_entries(store, rule, entries, groups, sink, error))
+			return FALSE;
+	}
+
+	/* The account kinds are about the store as it stands, not about a
+	 * venue's snapshot: every evaluation judges them, at @accounts_now. */
+	{
+		AlertsAccounts accounts;
+		gboolean ok;
+
+		memset(&accounts, 0, sizeof(accounts));
+		ok = TRUE;
+
+		for (r = 0; ok && (r < frozen->rules->len); r++)
+		{
+			const AlertsRule *rule = g_ptr_array_index(frozen->rules, r);
+
+			if (alerts_kind_reads_accounts(rule->kind))
+				ok = alerts_evaluate_account_rule(store, rule, &accounts, accounts_now, sink, error);
+		}
+
+		alerts_accounts_clear(&accounts);
+
+		if (!ok)
 			return FALSE;
 	}
 
@@ -1965,6 +2915,7 @@ alerts_hook_commit(
 	JsonNode *payload;
 	JsonObject *root;
 	AlertsSink sink;
+	gint64 accounts_now;
 
 	(void)source;
 	(void)user_data;
@@ -1992,6 +2943,17 @@ alerts_hook_commit(
 	root = json_node_get_object(payload);
 	sink.candidates = json_object_get_object_member(root, "candidates");
 	sink.over = 0;
+	sink.notes = g_ptr_array_new_with_free_func(g_free);
+
+	/* Said once a run, not once a unit. */
+	if (frozen->listings_capped && !json_object_has_member(root, "listings_capped"))
+	{
+		g_autofree gchar *note = g_strdup_printf("alerts: undercut rules compared only the newest %d "
+		                                         "open listings", VENTURE_ALERTS_MAX_LISTINGS);
+
+		json_object_set_boolean_member(root, "listings_capped", TRUE);
+		venture_feed_run_add_note(run, note);
+	}
 
 	if (alerts_frozen_has_kind(frozen, VENTURE_ALERT_KIND_ENTRY_MATCH))
 	{
@@ -2013,14 +2975,49 @@ alerts_hook_commit(
 		}
 	}
 
+	/* The account kinds judge at the run's time: the moment the source was
+	 * asked, which is what the positions it brought are as of. */
+	accounts_now = venture_feed_run_get_started_at(run);
+
+	if (accounts_now <= 0)
+		accounts_now = g_get_real_time() / G_USEC_PER_SEC;
+
 	if (!alerts_evaluate(store, frozen, venture_feed_run_get_venues(run), entries,
 	                     json_object_get_object_member(root, "done"),
-	                     g_get_real_time() / G_USEC_PER_SEC, &sink, &error))
+	                     g_get_real_time() / G_USEC_PER_SEC, accounts_now, &sink, &error))
 	{
 		g_autofree gchar *note = g_strdup_printf("alerts: not evaluated: %s", error->message);
 
 		g_message("%s", note);
 		venture_feed_run_add_note(run, note);
+	}
+
+	/* Each bound reached, once a run however many units reach it. */
+	{
+		JsonObject *noted;
+		guint i;
+
+		if (!json_object_has_member(root, "noted"))
+			json_object_set_object_member(root, "noted", json_object_new());
+
+		noted = json_object_get_object_member(root, "noted");
+
+		for (i = 0; i < sink.notes->len; i++)
+		{
+			const gchar *note = g_ptr_array_index(sink.notes, i);
+
+			if (json_object_has_member(noted, note))
+				continue;
+
+			json_object_set_boolean_member(noted, note, TRUE);
+			{
+				g_autofree gchar *line = g_strdup_printf("alerts: %s", note);
+
+				venture_feed_run_add_note(run, line);
+			}
+		}
+
+		g_ptr_array_unref(sink.notes);
 	}
 
 	if (sink.over > 0)
@@ -2047,6 +3044,7 @@ typedef struct
 	GHashTable	*recipients;		/* rule id -> user id */
 	GHashTable	*instruments;		/* key -> id, this source */
 	GHashTable	*venues;		/* key -> id, this source */
+	gchar		*source_uuid;		/* this source's, for its mirrored listings */
 	guint		 candidates;
 	guint		 written;
 	guint		 cooled;
@@ -2083,11 +3081,18 @@ alerts_write_set_source(
 	AlertsWrite	*w,
 	gint64		 source_id
 ){
+	g_autoptr(VentureEntity) source = NULL;
+
 	w->source_id = source_id;
 	g_clear_pointer(&w->instruments, g_hash_table_unref);
 	g_clear_pointer(&w->venues, g_hash_table_unref);
+	g_clear_pointer(&w->source_uuid, g_free);
 	w->instruments = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	w->venues = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	source = venture_database_get(w->database, VENTURE_TYPE_DATA_SOURCE, source_id, NULL);
+
+	if (NULL != source)
+		w->source_uuid = g_strdup(venture_entity_get_uuid(source));
 }
 
 static void
@@ -2097,6 +3102,7 @@ alerts_write_clear(AlertsWrite *w)
 	g_clear_pointer(&w->recipients, g_hash_table_unref);
 	g_clear_pointer(&w->instruments, g_hash_table_unref);
 	g_clear_pointer(&w->venues, g_hash_table_unref);
+	g_clear_pointer(&w->source_uuid, g_free);
 	g_clear_pointer(&w->hits, json_array_unref);
 	g_clear_pointer(&w->matches, json_array_unref);
 }
@@ -2342,6 +3348,192 @@ alerts_price_money(
 	return venture_money_new_for_currency(json_object_get_int_member(candidate, member), currency);
 }
 
+/* A span of time as a person says it: "45 min", "2 h", "2 h 30 min",
+ * "9 days". */
+static gchar *
+alerts_span(gint64 seconds)
+{
+	gint64 minutes;
+
+	if (seconds < 60)
+		return g_strdup("under a minute");
+
+	if (seconds < 3600)
+		return g_strdup_printf("%" G_GINT64_FORMAT " min", seconds / 60);
+
+	if (seconds < 2 * 86400)
+	{
+		minutes = (seconds % 3600) / 60;
+
+		if (0 == minutes)
+			return g_strdup_printf("%" G_GINT64_FORMAT " h", seconds / 3600);
+
+		return g_strdup_printf("%" G_GINT64_FORMAT " h %" G_GINT64_FORMAT " min", seconds / 3600,
+		                       minutes);
+	}
+
+	return g_strdup_printf("%" G_GINT64_FORMAT " days", seconds / 86400);
+}
+
+/* "1 mail", "3 mails". */
+static gchar *
+alerts_count(
+	gint64		 count,
+	const gchar	*one,
+	const gchar	*many
+){
+	return g_strdup_printf("%" G_GINT64_FORMAT " %s", count, (1 == count) ? one : many);
+}
+
+/* An account kind's sentence. */
+static gchar *
+alerts_describe_account(
+	JsonObject		*candidate,
+	VentureAlertKind	 kind,
+	const gchar		*what
+){
+	const gchar *label;
+	gint64 observed_at;
+
+	label = json_object_get_string_member_with_default(candidate, "account_label", "");
+	observed_at = json_object_get_int_member(candidate, "observed_at");
+
+	switch (kind)
+	{
+	case VENTURE_ALERT_KIND_POSITION_EXPIRING:
+	{
+		g_autofree gchar *left = NULL;
+
+		left = alerts_span(json_object_get_int_member(candidate, "expires_at") - observed_at);
+
+		return g_strdup_printf("%s: %" G_GINT64_FORMAT " x %s expires in %s", label,
+		                       json_object_get_int_member(candidate, "quantity"), what, left);
+	}
+
+	case VENTURE_ALERT_KIND_INBOUND_EXPIRING:
+	{
+		g_autoptr(GString) text = g_string_new(NULL);
+		g_autoptr(GPtrArray) parts = g_ptr_array_new_with_free_func(g_free);
+		g_autofree gchar *left = NULL;
+		g_autofree gchar *money = alerts_price_text(candidate, "observed");
+		g_autofree gchar *cod = alerts_price_text(candidate, "cod");
+		const gchar *sender;
+		const gchar *subject;
+		guint i;
+
+		sender = json_object_get_string_member_with_default(candidate, "sender", NULL);
+		subject = json_object_get_string_member_with_default(candidate, "mail_subject", NULL);
+		left = alerts_span(json_object_get_int_member(candidate, "expires_at") - observed_at);
+
+		g_string_append_printf(text, "%s: %s", label,
+		                       json_object_get_boolean_member_with_default(candidate, "returned", FALSE)
+		                       ? "returned mail" : "mail");
+
+		if (!venture_string_is_empty(sender))
+			g_string_append_printf(text, " from %s", sender);
+
+		if (!venture_string_is_empty(subject))
+			g_string_append_printf(text, " \"%s\"", subject);
+
+		if (NULL != money)
+			g_ptr_array_add(parts, g_steal_pointer(&money));
+
+		if (!venture_string_is_empty(json_object_get_string_member_with_default(candidate,
+		                                                                        "instrument_key", "")))
+			g_ptr_array_add(parts, g_strdup_printf("%" G_GINT64_FORMAT " x %s",
+				json_object_get_int_member_with_default(candidate, "quantity", 1), what));
+
+		if (NULL != cod)
+			g_ptr_array_add(parts, g_strdup_printf("cash on delivery %s", cod));
+
+		for (i = 0; i < parts->len; i++)
+			g_string_append_printf(text, "%s%s", (0 == i) ? " (" : ", ",
+			                       (const gchar *)g_ptr_array_index(parts, i));
+
+		if (parts->len > 0)
+			g_string_append_c(text, ')');
+
+		g_string_append_printf(text, " expires in %s", left);
+
+		return g_string_free(g_steal_pointer(&text), FALSE);
+	}
+
+	case VENTURE_ALERT_KIND_ACCOUNT_STALE:
+	{
+		g_autoptr(GDateTime) seen = NULL;
+		g_autofree gchar *since = NULL;
+		g_autofree gchar *span = NULL;
+
+		seen = g_date_time_new_from_unix_utc(observed_at);
+		since = (NULL != seen) ? g_date_time_format(seen, "%Y-%m-%d") : g_strdup("?");
+		span = alerts_span(json_object_get_int_member(candidate, "judged_at") - observed_at);
+
+		return g_strdup_printf("%s has not been seen for %s (since %s)", label, span, since);
+	}
+
+	case VENTURE_ALERT_KIND_COLLECT_READY:
+	default:
+	{
+		g_autoptr(GString) text = g_string_new(NULL);
+		g_autoptr(GPtrArray) parts = g_ptr_array_new_with_free_func(g_free);
+		JsonArray *money;
+		gint64 mails;
+		gint64 items;
+		gint64 expired;
+		guint i;
+
+		mails = json_object_get_int_member_with_default(candidate, "mails", 0);
+		items = json_object_get_int_member_with_default(candidate, "items", 0);
+		expired = json_object_get_int_member_with_default(candidate, "expired_positions", 0);
+		money = json_object_has_member(candidate, "money")
+		      ? json_object_get_array_member(candidate, "money") : NULL;
+
+		g_string_append_printf(text, "%s:", label);
+
+		if (mails > 0)
+		{
+			g_autofree gchar *count = alerts_count(mails, "mail", "mails");
+
+			g_string_append_printf(text, " %s to collect", count);
+
+			for (i = 0; (NULL != money) && (i < json_array_get_length(money)); i++)
+			{
+				JsonObject *each = json_array_get_object_element(money, i);
+				const gchar *currency = json_object_get_string_member(each, "currency");
+				gint64 amount = json_object_get_int_member(each, "amount");
+				g_autoptr(VentureMoney) value = NULL;
+
+				if (venture_currency_is_valid(currency))
+					value = venture_money_new_for_currency(amount, currency);
+
+				g_ptr_array_add(parts, (NULL != value) ? venture_money_to_string(value)
+				                       : g_strdup_printf("%" G_GINT64_FORMAT " %s", amount, currency));
+			}
+
+			if (items > 0)
+				g_ptr_array_add(parts, alerts_count(items, "item", "items"));
+
+			for (i = 0; i < parts->len; i++)
+				g_string_append_printf(text, "%s%s", (0 == i) ? " (" : ", ",
+				                       (const gchar *)g_ptr_array_index(parts, i));
+
+			if (parts->len > 0)
+				g_string_append_c(text, ')');
+		}
+
+		if (expired > 0)
+		{
+			g_autofree gchar *count = alerts_count(expired, "listing", "listings");
+
+			g_string_append_printf(text, "%s %s expired, awaiting login", (mails > 0) ? ";" : "",
+			                       count);
+		}
+
+		return g_string_free(g_steal_pointer(&text), FALSE);
+	}
+	}
+}
+
 /* What a candidate says, in one sentence: prices formatted here, on the
  * main thread, where the currency registry is. */
 static gchar *
@@ -2433,6 +3625,12 @@ alerts_describe(JsonObject *candidate)
 		                       "there now", json_object_get_int_member(candidate, "listing_id"),
 		                       what, venue, reference, observed);
 
+	case VENTURE_ALERT_KIND_POSITION_EXPIRING:
+	case VENTURE_ALERT_KIND_INBOUND_EXPIRING:
+	case VENTURE_ALERT_KIND_ACCOUNT_STALE:
+	case VENTURE_ALERT_KIND_COLLECT_READY:
+		return alerts_describe_account(candidate, kind, what);
+
 	case VENTURE_ALERT_KIND_ENTRY_MATCH:
 	default:
 	{
@@ -2462,6 +3660,35 @@ alerts_live_listing(
 	return ((NULL != listing) && !venture_entity_is_deleted(listing)) ? listing_id : 0;
 }
 
+/* The live listing the mirror keeps for a position of this source, or 0:
+ * its external id is "<source uuid>:<position key>". A position nobody
+ * mirrored -- mirroring off, no product -- has none, and the hit still
+ * names it by its keys. */
+static gint64
+alerts_position_listing(
+	AlertsWrite	*w,
+	const gchar	*position_key
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) listing = NULL;
+	g_autofree gchar *external_id = NULL;
+
+	if (venture_string_is_empty(position_key) || (NULL == w->source_uuid))
+		return 0;
+
+	external_id = g_strdup_printf("%s:%s", w->source_uuid, position_key);
+	query = venture_query_new(VENTURE_TYPE_LISTING);
+	venture_query_set_organization(query, w->organization_id);
+	venture_query_set_limit(query, 1);
+
+	if (!venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ, external_id, NULL))
+		return 0;
+
+	listing = venture_database_find_one(w->database, query, NULL);
+
+	return (NULL != listing) ? venture_entity_get_id(listing) : 0;
+}
+
 /* One hit, saved as the system, then told to its recipient. */
 static gboolean
 alerts_write_hit(
@@ -2483,6 +3710,14 @@ alerts_write_hit(
 	const gchar *venue_key;
 	VentureActor actor;
 	gint64 user_id;
+	gint64 listing_id;
+
+	listing_id = alerts_live_listing(w->database,
+		json_object_get_int_member_with_default(candidate, "listing_id", 0));
+
+	if (0 == listing_id)
+		listing_id = alerts_position_listing(w,
+			json_object_get_string_member_with_default(candidate, "position_key", NULL));
 
 	instrument_key = json_object_get_string_member_with_default(candidate, "instrument_key", "");
 	venue_key = json_object_get_string_member_with_default(candidate, "venue_key", "");
@@ -2503,8 +3738,8 @@ alerts_write_hit(
 	                                                     instrument_key),
 	             "venue-key", venue_key,
 	             "venue-id", alerts_write_record_id(w, VENTURE_TYPE_VENUE, w->venues, venue_key),
-	             "listing-id", alerts_live_listing(w->database,
-	                 json_object_get_int_member_with_default(candidate, "listing_id", 0)),
+	             "account-key", json_object_get_string_member_with_default(candidate, "account_key", NULL),
+	             "listing-id", listing_id,
 	             "entry-key", json_object_get_string_member_with_default(candidate, "entry_key", NULL),
 	             "url", json_object_get_string_member_with_default(candidate, "url", NULL),
 	             "observed", observed,
@@ -2592,6 +3827,8 @@ alerts_write_candidates(
 				json_object_get_string_member_with_default(candidate, "venue_key", ""));
 			json_object_set_string_member(match, "instrument_key",
 				json_object_get_string_member_with_default(candidate, "instrument_key", ""));
+			json_object_set_string_member(match, "account_key",
+				json_object_get_string_member_with_default(candidate, "account_key", ""));
 			json_object_set_int_member(match, "observed_at", observed_at);
 			json_object_set_int_member(match, "data_source_id", w->source_id);
 			json_array_add_object_element(w->matches, match);
@@ -2817,6 +4054,20 @@ venture_marketdata_alerts_evaluate(
 	JsonNode	**out_report,
 	GError		**error
 ){
+	return venture_marketdata_alerts_evaluate_at(context, rule, record,
+	                                             g_get_real_time() / G_USEC_PER_SEC, out_report,
+	                                             error);
+}
+
+gboolean
+venture_marketdata_alerts_evaluate_at(
+	VentureContext	 *context,
+	VentureEntity	 *rule,
+	gboolean	  record,
+	gint64		  now,
+	JsonNode	**out_report,
+	GError		**error
+){
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ALERT_RULE(rule), FALSE);
 
@@ -2840,6 +4091,7 @@ venture_marketdata_alerts_evaluate(
 
 #ifndef VENTURE_HAVE_SQLITE
 	(void)record;
+	(void)now;
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 	                    "Alert rules read a series store, which this build (without SQLite) "
 	                    "does not have");
@@ -2854,7 +4106,6 @@ venture_marketdata_alerts_evaluate(
 		VentureDatabase *database;
 		AlertsWrite w;
 		gint64 source_id;
-		gint64 now;
 		guint i;
 
 		service = venture_context_get_feeds_service(context);
@@ -2870,7 +4121,6 @@ venture_marketdata_alerts_evaluate(
 		database = venture_context_get_database(context);
 		internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
 		source_id = alerts_int(rule, "data-source-id");
-		now = g_get_real_time() / G_USEC_PER_SEC;
 
 		/* The rule's source, else every source of its organization. */
 		if (source_id > 0)
@@ -2966,10 +4216,25 @@ venture_marketdata_alerts_evaluate(
 			candidates = json_object_new();
 			sink.candidates = candidates;
 			sink.over = 0;
+			sink.notes = g_ptr_array_new_with_free_func(g_free);
 			ok = (NULL != venues) && (NULL == source_error) &&
 			     alerts_evaluate(reader, frozen, (const gchar *const *)keys->pdata, entries,
-			                     NULL, now, &sink, &source_error);
+			                     NULL, now, now, &sink, &source_error);
+
+			if (frozen->listings_capped)
+			{
+				g_autofree gchar *note = g_strdup_printf("undercut compared only the newest %d open "
+				                                         "listings", VENTURE_ALERTS_MAX_LISTINGS);
+
+				json_array_add_string_element(notes, note);
+			}
+
 			alerts_frozen_free(frozen);
+
+			for (v = 0; v < sink.notes->len; v++)
+				json_array_add_string_element(notes, g_ptr_array_index(sink.notes, v));
+
+			g_ptr_array_unref(sink.notes);
 
 			if (!ok)
 			{

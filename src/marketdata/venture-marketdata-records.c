@@ -204,7 +204,8 @@ static const VentureFieldDecl venture_alert_rule_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "What it watches for: cheap copper ore, my listings undercut"),
 	VENTURE_FIELD_ENUM("kind", "Kind",
 	                   "below, above, pct_vs_reference, spread, out_of_stock, back_in_stock, "
-	                   "shortage, spike, undercut or entry_match",
+	                   "shortage, spike, undercut, entry_match, position_expiring, "
+	                   "inbound_expiring, account_stale or collect_ready",
 	                   venture_alert_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("enabled", "Enabled",
 	              "Evaluated after every feed run; switched off, it keeps its hits and fires no more",
@@ -220,16 +221,18 @@ static const VentureFieldDecl venture_alert_rule_fields[] = {
 	VENTURE_FIELD_REF("data-source-id", "Data source",
 	                  "Optional: only this source's data; empty for every source of the organization",
 	                  "data_source", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("venue-id", "Venue", "Optional: only at this venue",
+	VENTURE_FIELD_REF("venue-id", "Venue",
+	                  "Optional: only at this venue (an account kind: the position's venue, else the account's)",
 	                  "venue", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("group-key", "Group",
-	              "Optional: only at venues in this group -- a region",
+	              "Optional: only at venues in this group -- a region; an account kind: accounts in this group",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("threshold", "Threshold price",
 	                    "below and above: the line the cheapest unit crosses; spread: the least gap worth hearing about"),
 	VENTURE_FIELD("threshold-number", "Threshold number",
 	              "pct_vs_reference: a percent of the reference (80 is 20% under it); shortage: units; "
-	              "spike: a percent change, negative for a drop",
+	              "spike: a percent change, negative for a drop; position_expiring and "
+	              "inbound_expiring: hours ahead, up to 720; account_stale: days unseen, up to 365",
 	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("pattern", "Pattern",
 	              "entry_match: text an entry's title or summary contains, ignoring case",
@@ -304,7 +307,12 @@ static const VentureFieldDecl venture_alert_hit_fields[] = {
 	                  "venue", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("venue-key", "Venue key", "The venue's key in the store",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("listing-id", "Listing", "undercut: the listing that was undercut",
+	VENTURE_FIELD("account-key", "Account key",
+	              "The operator's account in the store, for a kind about one: position_expiring, "
+	              "inbound_expiring, account_stale, collect_ready",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("listing-id", "Listing",
+	                  "undercut: the listing that was undercut; position_expiring: the position's listing",
 	                  "listing", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("entry-key", "Entry", "entry_match: the entry's key in the store",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
@@ -320,7 +328,8 @@ static const VentureFieldDecl venture_alert_hit_fields[] = {
 	              "The rule's threshold number it was held against",
 	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("subject", "Subject",
-	              "What the cooldown is kept per: the venue, the instrument, and the listing or entry",
+	              "What the cooldown is kept per: the venue, the instrument, and the listing or entry; "
+	              "or the position, inbound row or account",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL)
 };

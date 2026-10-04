@@ -266,6 +266,49 @@ report_message(
 		"message");
 }
 
+/* Evaluates @rule as of @now -- the account kinds' clock -- and hands
+ * back the report. */
+static JsonObject *
+evaluate_at(
+	Fixture		*fixture,
+	VentureEntity	*rule,
+	gboolean	 record,
+	gint64		 now
+){
+	g_autoptr(JsonNode) report = NULL;
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_marketdata_alerts_evaluate_at(fixture->context, rule, record, now, &report,
+	                                                    &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(report);
+
+	return json_object_ref(json_node_get_object(report));
+}
+
+/* The message of the match about @subject; fails the test without one. */
+static const gchar *
+report_says(
+	JsonObject	*report,
+	const gchar	*subject
+){
+	JsonArray *matches;
+	guint i;
+
+	matches = json_object_get_array_member(report, "matches");
+
+	for (i = 0; i < json_array_get_length(matches); i++)
+	{
+		JsonObject *match = json_array_get_object_element(matches, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(match, "subject"), subject))
+			return json_object_get_string_member(match, "message");
+	}
+
+	g_error("no match about %s", subject);
+	return NULL;
+}
+
 /* --- The store -------------------------------------------------------------- */
 
 static VentureSeriesStore *
@@ -574,7 +617,9 @@ typedef struct
  * What breaks if this regresses: a rule saved without its threshold never
  * fires and never says why; a price left on an out_of_stock rule reads as
  * if it mattered; a spike over a basis the hourly series does not keep
- * compares nothing; an unbounded pattern is work nobody bounded.
+ * compares nothing; an unbounded pattern is work nobody bounded; an
+ * expiring rule with no hours watches nothing, and an instrument on a
+ * collect_ready rule reads as if it narrowed what is waiting.
  */
 static void
 test_alerts_rule_validation(
@@ -607,6 +652,22 @@ test_alerts_rule_validation(
 		{ "a pattern only for a match", VENTURE_ALERT_KIND_BACK_IN_STOCK, NULL, 0, "nerf", 0, 0, 60, TRUE, "does not apply" },
 		{ "undercut is fine unscoped", VENTURE_ALERT_KIND_UNDERCUT, NULL, 0, NULL, 0, 0, 60, FALSE, NULL },
 		{ "cooldown bounded", VENTURE_ALERT_KIND_UNDERCUT, NULL, 0, NULL, 0, 0, -1, FALSE, "Cooldown" },
+		{ "expiring needs hours", VENTURE_ALERT_KIND_POSITION_EXPIRING, NULL, 0, NULL, 0, 0, 60, FALSE, "hours ahead" },
+		{ "expiring hours bounded", VENTURE_ALERT_KIND_POSITION_EXPIRING, NULL, 721, NULL, 0, 0, 60, FALSE, "at most 720" },
+		{ "expiring reads no price", VENTURE_ALERT_KIND_POSITION_EXPIRING, "1.00 USD", 2, NULL, 0, 0, 60, FALSE, "does not apply" },
+		{ "expiring is fine unscoped", VENTURE_ALERT_KIND_POSITION_EXPIRING, NULL, 2, NULL, 0, 0, 60, FALSE, NULL },
+		{ "expiring may be scoped", VENTURE_ALERT_KIND_POSITION_EXPIRING, NULL, 720, NULL, 0, 0, 60, TRUE, NULL },
+		{ "mail expiring takes part hours", VENTURE_ALERT_KIND_INBOUND_EXPIRING, NULL, 0.5, NULL, 0, 0, 60, FALSE, NULL },
+		{ "mail expiring needs hours", VENTURE_ALERT_KIND_INBOUND_EXPIRING, NULL, -1, NULL, 0, 0, 60, FALSE, "hours ahead" },
+		{ "stale needs days", VENTURE_ALERT_KIND_ACCOUNT_STALE, NULL, 0, NULL, 0, 0, 60, FALSE, "days an account" },
+		{ "stale days bounded", VENTURE_ALERT_KIND_ACCOUNT_STALE, NULL, 366, NULL, 0, 0, 60, FALSE, "at most 365" },
+		{ "stale watches accounts", VENTURE_ALERT_KIND_ACCOUNT_STALE, NULL, 7, NULL, 0, 0, 60, TRUE, "watches accounts" },
+		{ "stale reads no pattern", VENTURE_ALERT_KIND_ACCOUNT_STALE, NULL, 7, "x", 0, 0, 60, FALSE, "does not apply" },
+		{ "stale is fine", VENTURE_ALERT_KIND_ACCOUNT_STALE, NULL, 7, NULL, 0, 0, 60, FALSE, NULL },
+		{ "collect reads no number", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 1, NULL, 0, 0, 60, FALSE, "does not apply" },
+		{ "collect watches accounts", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 0, NULL, 0, 0, 60, TRUE, "watches accounts" },
+		{ "collect reads no window", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 0, NULL, 0, 6, 60, FALSE, "does not apply" },
+		{ "collect is fine", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 0, NULL, 0, 0, 60, FALSE, NULL },
 	};
 
 	(void)user_data;
@@ -1128,6 +1189,443 @@ test_alerts_cap(
 	                VENTURE_ALERTS_MAX_HITS_PER_RUN);
 }
 
+/*
+ * More open listings than the old single read took, newest last: the one
+ * just posted is undercut, and a thousand older ones at a price nobody
+ * beats are ahead of it by id.
+ *
+ * What breaks if this regresses: the freeze reads oldest first with a
+ * bound of a thousand again, and an operator with a big book is never
+ * told about the listing a rival undercut a minute after it went up --
+ * silently, because nothing said the bound was reached.
+ */
+static void
+test_alerts_undercut_many_listings(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) product = NULL;
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(GDateTime) listed = NULL;
+	g_autoptr(JsonObject) report = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 realm_a;
+	gint64 newest = 0;
+	guint total;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture);
+
+	product = VENTURE_ENTITY(venture_product_new());
+	venture_entity_set_organization_id(product, fixture->org);
+	g_object_set(product, "name", "Copper Ore", NULL);
+	save(fixture, product);
+	instrument(fixture, "ore", ID(product));
+	realm_a = venue(fixture, "realm-a");
+	listed = g_date_time_new_now_utc();
+	total = 1200;
+
+	/* One transaction: twelve hundred saves, one commit. */
+	g_assert_true(venture_database_begin(fixture->database, &error));
+	g_assert_no_error(error);
+
+	for (i = 0; i < total; i++)
+	{
+		g_autoptr(VentureEntity) listing = VENTURE_ENTITY(venture_listing_new());
+		g_autoptr(VentureMoney) price = NULL;
+
+		/* 1.10 is under realm-a's cheapest (1.20): nobody undercuts it.
+		 * The last, at 1.25, is undercut. */
+		price = money_of((i + 1 < total) ? "1.10 USD" : "1.25 USD");
+		venture_entity_set_organization_id(listing, fixture->org);
+		g_object_set(listing, "product-id", ID(product), "quantity", (gint64)1,
+		             "unit-price", price, "listed-at", listed, "venue-id", realm_a,
+		             "outcome", VENTURE_LISTING_OUTCOME_OPEN, NULL);
+		save(fixture, listing);
+		newest = ID(listing);
+	}
+
+	g_assert_true(venture_database_commit(fixture->database, &error));
+	g_assert_no_error(error);
+
+	rule = new_rule(fixture, "my listings", VENTURE_ALERT_KIND_UNDERCUT);
+	save(fixture, rule);
+	report = evaluate(fixture, rule, FALSE);
+	g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+
+	{
+		g_autofree gchar *subject = g_strdup_printf("realm-a|ore|listing:%" G_GINT64_FORMAT, newest);
+
+		g_assert_true(report_has(report, subject));
+	}
+
+	/* Under the bound, nothing is said about one. */
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(report, "notes")), ==, 0);
+}
+
+/* --- The operator's accounts --------------------------------------------------- */
+
+/*
+ * The store an account rule reads, all relative to @now:
+ *
+ * - Drgold (character, Thorium Brotherhood, at thorium), last seen ten
+ *   days ago, with 3 ore listed until exactly two hours on (p-inside),
+ *   herbs until a second past that (p-outside), a mail with 12.50 lost
+ *   in exactly five hours (m1) and one with 4 ore a second past that (m2);
+ * - Mule (character, same realm), seen yesterday, with ore whose listing
+ *   ran out a minute ago (p-expired) and a mail of 5.00 lost ten seconds
+ *   ago (m4);
+ * - Alt (character, Argent Dawn, at argent), never seen by the source,
+ *   first heard of eight days ago, with a bar listed until an hour on
+ *   (p-argent), one listed until exactly now (p-now) and a cash-on-delivery
+ *   bill lost in an hour (m3);
+ * - the warband bank (shared), seen thirty days ago.
+ */
+static void
+seed_accounts(
+	Fixture	*fixture,
+	gint64	 now
+){
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesAccountBatch batch;
+	VentureSeriesAccountResult result;
+	gint64 at;
+	const VentureSeriesAccount accounts[] = {
+		{ "Drgold-Thorium", "Drgold", "character", "Thorium Brotherhood", "thorium", NULL, now - 10 * 86400 },
+		{ "Mule-Thorium", "Mule", "character", "Thorium Brotherhood", "thorium", NULL, now - 86400 },
+		{ "Alt-Argent", "Alt", "character", "Argent Dawn", "argent", NULL, VENTURE_SERIES_NONE },
+		{ "Warband", "Warband bank", "shared", NULL, NULL, NULL, now - 30 * 86400 },
+	};
+	VentureSeriesPosition positions[] = {
+		{ "p-inside", "Drgold-Thorium", "thorium", "ore", 3, 150, VENTURE_SERIES_NONE, now + 7200, VENTURE_SERIES_NONE, 0 },
+		{ "p-outside", "Drgold-Thorium", "thorium", "herb", 1, 80, VENTURE_SERIES_NONE, now + 7201, VENTURE_SERIES_NONE, 0 },
+		{ "p-expired", "Mule-Thorium", "thorium", "ore", 2, 140, VENTURE_SERIES_NONE, now - 60, VENTURE_SERIES_NONE, 0 },
+		{ "p-argent", "Alt-Argent", "argent", "bar", 1, 500, VENTURE_SERIES_NONE, now + 3600, VENTURE_SERIES_NONE, 0 },
+		{ "p-now", "Alt-Argent", "argent", "bar", 1, 500, VENTURE_SERIES_NONE, now, VENTURE_SERIES_NONE, 0 },
+	};
+	VentureSeriesInbound inbound[] = {
+		{ "m1", "Drgold-Thorium", "Auction House", "Auction successful", 1250, VENTURE_SERIES_NONE, NULL, VENTURE_SERIES_NONE, now + 5 * 3600, FALSE, 0 },
+		{ "m2", "Drgold-Thorium", "Auction House", "Auction expired", VENTURE_SERIES_NONE, VENTURE_SERIES_NONE, "ore", 4, now + 5 * 3600 + 1, TRUE, 0 },
+		{ "m3", "Alt-Argent", "Trader", "Bill", VENTURE_SERIES_NONE, 100, NULL, VENTURE_SERIES_NONE, now + 3600, FALSE, 0 },
+		{ "m4", "Mule-Thorium", "Auction House", "Auction successful", 500, VENTURE_SERIES_NONE, NULL, VENTURE_SERIES_NONE, now - 10, FALSE, 0 },
+	};
+	guint i;
+
+	at = now - 8 * 86400;
+
+	for (i = 0; i < G_N_ELEMENTS(positions); i++)
+		positions[i].at = at;
+
+	for (i = 0; i < G_N_ELEMENTS(inbound); i++)
+		inbound[i].at = at;
+
+	store = writer(fixture);
+	add_instrument(store, "ore", "Copper Ore", "Materials/Ore", at);
+	add_instrument(store, "herb", "Peacebloom", "Herbs", at);
+	add_instrument(store, "bar", "Copper Bar", "Materials/Bars", at);
+
+	memset(&batch, 0, sizeof(batch));
+	batch.currency = "USD";
+	batch.accounts = accounts;
+	batch.n_accounts = G_N_ELEMENTS(accounts);
+	batch.positions = positions;
+	batch.n_positions = G_N_ELEMENTS(positions);
+	batch.inbound = inbound;
+	batch.n_inbound = G_N_ELEMENTS(inbound);
+	g_assert_true(venture_series_store_apply_accounts(store, &batch, at, &result, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(result.positions, ==, G_N_ELEMENTS(positions));
+	g_assert_cmpint(result.inbound, ==, G_N_ELEMENTS(inbound));
+}
+
+/*
+ * position_expiring and inbound_expiring fire on what runs out after now
+ * and at most the rule's hours on -- the boundary itself inside, a second
+ * past it out, an expiry exactly now out -- narrowed by the account's
+ * group or the position's venue, and by an instrument when scoped.
+ *
+ * What breaks if this regresses: the operator hears about a listing that
+ * already lapsed (it is collect_ready's), never hears about the one that
+ * lapses on the hour, or a rule narrowed to one realm reports every
+ * realm's listings.
+ */
+static void
+test_alerts_expiring(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	gint64 now;
+
+	(void)user_data;
+
+	now = fixture->now;
+	seed_accounts(fixture, now);
+
+	{
+		g_autoptr(VentureEntity) rule = new_rule(fixture, "expiring", VENTURE_ALERT_KIND_POSITION_EXPIRING);
+		g_autoptr(JsonObject) report = NULL;
+
+		g_object_set(rule, "threshold-number", 2.0, NULL);
+		save(fixture, rule);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 2);
+		g_assert_true(report_has(report, "position:p-inside"));
+		g_assert_true(report_has(report, "position:p-argent"));
+		g_assert_cmpstr(report_says(report, "position:p-inside"), ==,
+		                "Drgold (Thorium Brotherhood): 3 x Copper Ore expires in 2 h");
+		g_assert_cmpstr(report_says(report, "position:p-argent"), ==,
+		                "Alt (Argent Dawn): 1 x Copper Bar expires in 1 h");
+
+		/* A group narrows to its accounts. */
+		g_object_set(rule, "group-key", "Thorium Brotherhood", NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+		g_assert_true(report_has(report, "position:p-inside"));
+
+		/* A venue narrows to its positions. */
+		g_object_set(rule, "group-key", NULL, "venue-id", venue(fixture, "argent"), NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+		g_assert_true(report_has(report, "position:p-argent"));
+
+		/* An instrument narrows to what sells it: ore at no venue but
+		 * thorium, so nothing at argent. A category reaches the store's
+		 * own filing. */
+		g_object_set(rule, "venue-id", (gint64)0, "instrument-id", instrument(fixture, "ore", 0), NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+		g_assert_true(report_has(report, "position:p-inside"));
+
+		/* An hour and a half on, p-argent has lapsed and p-outside has
+		 * come inside the window beside p-inside. */
+		g_object_set(rule, "instrument-id", (gint64)0, NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate_at(fixture, rule, FALSE, now + 5400);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 2);
+		g_assert_true(report_has(report, "position:p-inside"));
+		g_assert_true(report_has(report, "position:p-outside"));
+	}
+
+	/* Mail: five hours reaches m1 (on the boundary) and m3, not m2 (a
+	 * second past) nor m4 (lost already). */
+	{
+		g_autoptr(VentureEntity) rule = new_rule(fixture, "mail", VENTURE_ALERT_KIND_INBOUND_EXPIRING);
+		g_autoptr(JsonObject) report = NULL;
+		const gchar *message;
+
+		g_object_set(rule, "threshold-number", 5.0, NULL);
+		save(fixture, rule);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 2);
+		g_assert_true(report_has(report, "inbound:m1"));
+		g_assert_true(report_has(report, "inbound:m3"));
+		message = report_says(report, "inbound:m1");
+		g_assert_cmpstr(message, ==,
+		                "Drgold (Thorium Brotherhood): mail from Auction House \"Auction successful\" "
+		                "(12.50 USD) expires in 5 h");
+		g_assert_nonnull(strstr(report_says(report, "inbound:m3"), "cash on delivery 1.00 USD"));
+
+		/* Scoped to ore: only a mail carrying ore, m2, which needs the
+		 * extra second. */
+		g_object_set(rule, "instrument-id", instrument(fixture, "ore", 0), "threshold-number", 6.0, NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+		g_assert_true(report_has(report, "inbound:m2"));
+		g_assert_nonnull(strstr(report_says(report, "inbound:m2"), "returned mail"));
+		g_assert_nonnull(strstr(report_says(report, "inbound:m2"), "4 x Copper Ore"));
+	}
+}
+
+/*
+ * account_stale fires on a character not seen for longer than the rule's
+ * days (one never seen counts from when the store first heard of it),
+ * never on a shared bank, and once per spell; collect_ready fires per
+ * account with money or goods in its mail or positions already expired,
+ * and not for a bill or a mail already lost.
+ *
+ * What breaks if this regresses: a warband bank nobody opens reads as an
+ * abandoned character; a stale account nags every hour of its absence;
+ * an expired listing waiting at the mailbox is never mentioned, or a
+ * cash-on-delivery bill reads as money to collect.
+ */
+static void
+test_alerts_accounts(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	gint64 now;
+
+	(void)user_data;
+
+	now = fixture->now;
+	seed_accounts(fixture, now);
+
+	{
+		g_autoptr(VentureEntity) rule = new_rule(fixture, "stale", VENTURE_ALERT_KIND_ACCOUNT_STALE);
+		g_autoptr(JsonObject) report = NULL;
+		g_autoptr(JsonObject) later = NULL;
+		g_autoptr(JsonObject) narrower = NULL;
+
+		/* Seven days: Drgold (ten) and Alt (eight, from first heard of). */
+		g_object_set(rule, "threshold-number", 7.0, NULL);
+		save(fixture, rule);
+		report = evaluate_at(fixture, rule, TRUE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 2);
+		g_assert_cmpint(report_int(report, "written"), ==, 2);
+		g_assert_true(report_has(report, "account:Drgold-Thorium"));
+		g_assert_true(report_has(report, "account:Alt-Argent"));
+		g_assert_true(g_str_has_prefix(report_says(report, "account:Drgold-Thorium"),
+		                               "Drgold (Thorium Brotherhood) has not been seen for 10 days (since "));
+
+		/* Two days on, the same spells: nothing new to say. */
+		later = evaluate_at(fixture, rule, TRUE, now + 2 * 86400);
+		g_assert_cmpint(report_int(later, "written"), ==, 0);
+		g_assert_cmpint(report_int(later, "cooled"), ==, 2);
+
+		/* Eight days exactly is not older than eight days. */
+		g_object_set(rule, "threshold-number", 8.0, NULL);
+		save(fixture, rule);
+		narrower = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(narrower, "candidates"), ==, 1);
+		g_assert_true(report_has(narrower, "account:Drgold-Thorium"));
+
+		/* The hit names the account and where it is. */
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ALERT_HIT);
+			g_autoptr(VentureEntity) hit = NULL;
+			g_autoptr(GDateTime) observed_at = NULL;
+			g_autofree gchar *account_key = NULL;
+			g_autofree gchar *venue_key = NULL;
+
+			g_assert_true(venture_query_add_filter_string(query, "subject", VENTURE_FILTER_OP_EQ,
+			                                              "account:Drgold-Thorium", NULL));
+			hit = venture_database_find_one(fixture->database, query, NULL);
+			g_assert_nonnull(hit);
+			g_object_get(hit, "account-key", &account_key, "venue-key", &venue_key,
+			             "observed-at", &observed_at, NULL);
+			g_assert_cmpstr(account_key, ==, "Drgold-Thorium");
+			g_assert_cmpstr(venue_key, ==, "thorium");
+			g_assert_cmpint(g_date_time_to_unix(observed_at), ==, now - 10 * 86400);
+		}
+	}
+
+	{
+		g_autoptr(VentureEntity) rule = new_rule(fixture, "collect", VENTURE_ALERT_KIND_COLLECT_READY);
+		g_autoptr(JsonObject) report = NULL;
+
+		save(fixture, rule);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 3);
+		g_assert_cmpstr(report_says(report, "collect:Drgold-Thorium"), ==,
+		                "Drgold (Thorium Brotherhood): 2 mails to collect (12.50 USD, 4 items)");
+		g_assert_cmpstr(report_says(report, "collect:Mule-Thorium"), ==,
+		                "Mule (Thorium Brotherhood): 1 listing expired, awaiting login");
+		g_assert_cmpstr(report_says(report, "collect:Alt-Argent"), ==,
+		                "Alt (Argent Dawn): 1 listing expired, awaiting login");
+
+		/* Narrowed to a group. */
+		g_object_set(rule, "group-key", "Argent Dawn", NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate_at(fixture, rule, FALSE, now);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+		g_assert_true(report_has(report, "collect:Alt-Argent"));
+	}
+}
+
+/*
+ * A position told about once per cooldown: the same moment again says
+ * nothing, half an hour on is inside the hour's quiet (while one that
+ * only now came into the window is told), an hour and a minute on it
+ * speaks again -- and the one that has since lapsed does not.
+ *
+ * What breaks if this regresses: every feed run in the last two hours of
+ * a listing's life sends the same warning, or the warning is never
+ * repeated however long the cooldown has run.
+ */
+static void
+test_alerts_expiring_cooldown(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(JsonObject) first = NULL;
+	g_autoptr(JsonObject) again = NULL;
+	g_autoptr(JsonObject) half = NULL;
+	g_autoptr(JsonObject) later = NULL;
+	gint64 now;
+
+	(void)user_data;
+
+	now = fixture->now;
+	seed_accounts(fixture, now);
+	rule = new_rule(fixture, "expiring", VENTURE_ALERT_KIND_POSITION_EXPIRING);
+	g_object_set(rule, "threshold-number", 2.0, NULL);
+	save(fixture, rule);
+
+	first = evaluate_at(fixture, rule, TRUE, now);
+	g_assert_cmpint(report_int(first, "written"), ==, 2);
+
+	again = evaluate_at(fixture, rule, TRUE, now);
+	g_assert_cmpint(report_int(again, "written"), ==, 0);
+	g_assert_cmpint(report_int(again, "cooled"), ==, 2);
+
+	/* Half an hour on, the two told are inside the hour's quiet; p-outside
+	 * has come into the window and is told for the first time. */
+	half = evaluate_at(fixture, rule, TRUE, now + 1800);
+	g_assert_cmpint(report_int(half, "candidates"), ==, 3);
+	g_assert_cmpint(report_int(half, "written"), ==, 1);
+	g_assert_cmpint(report_int(half, "cooled"), ==, 2);
+
+	/* An hour and a minute on: p-argent lapsed at now + 3600 and is not
+	 * a candidate; p-inside's hour is up and it speaks again; p-outside
+	 * was told half an hour ago and stays quiet. */
+	later = evaluate_at(fixture, rule, TRUE, now + 3660);
+	g_assert_cmpint(report_int(later, "candidates"), ==, 2);
+	g_assert_cmpint(report_int(later, "written"), ==, 1);
+	g_assert_cmpint(report_int(later, "cooled"), ==, 1);
+	g_assert_true(report_has(later, "position:p-inside"));
+	g_assert_true(report_has(later, "position:p-outside"));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, "rule-id", ID(rule)), ==, 4);
+
+	/* The hit carries the account and the position's keys. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ALERT_HIT);
+		g_autoptr(VentureEntity) hit = NULL;
+		g_autoptr(VentureMoney) observed = NULL;
+		g_autofree gchar *observed_text = NULL;
+		g_autofree gchar *account_key = NULL;
+		g_autofree gchar *venue_key = NULL;
+		g_autofree gchar *instrument_key = NULL;
+		VentureAlertKind kind;
+
+		g_assert_true(venture_query_add_filter_string(query, "subject", VENTURE_FILTER_OP_EQ,
+		                                              "position:p-inside", NULL));
+		hit = venture_database_find_one(fixture->database, query, NULL);
+		g_assert_nonnull(hit);
+		g_object_get(hit, "account-key", &account_key, "venue-key", &venue_key,
+		             "instrument-key", &instrument_key, "kind", &kind, "observed", &observed, NULL);
+		g_assert_cmpint(kind, ==, VENTURE_ALERT_KIND_POSITION_EXPIRING);
+		g_assert_cmpstr(account_key, ==, "Drgold-Thorium");
+		g_assert_cmpstr(venue_key, ==, "thorium");
+		g_assert_cmpstr(instrument_key, ==, "ore");
+		observed_text = venture_money_to_string(observed);
+		g_assert_cmpstr(observed_text, ==, "1.50 USD");
+	}
+}
+
 /* --- Delivery ------------------------------------------------------------------- */
 
 typedef struct
@@ -1589,6 +2087,198 @@ test_alerts_worker_path(
 	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, NULL, 0), ==, 2);
 }
 
+static gchar *
+iso(gint64 unix_time)
+{
+	g_autoptr(GDateTime) when = g_date_time_new_from_unix_utc(unix_time);
+
+	return g_date_time_format(when, "%Y-%m-%dT%H:%M:%SZ");
+}
+
+/* Pushes @text to push source @source_id and waits, bounded, for its run;
+ * the hooks' main-thread halves run inside the wait. */
+static VentureEntity *
+push_and_wait(
+	Fixture		*fixture,
+	gint64		 source_id,
+	const gchar	*text
+){
+	VentureFeedsService *service;
+	g_autoptr(GBytes) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *push_id = NULL;
+	VentureDataSourceRunStatus status;
+	VentureEntity *run;
+	gint64 run_id = 0;
+
+	service = venture_context_get_feeds_service(fixture->context);
+	body = g_bytes_new(text, strlen(text));
+	g_assert_true(venture_feeds_service_push(service, source_id, body, &push_id, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_feeds_service_wait_push(service, push_id, 60, &run_id));
+	g_assert_cmpint(run_id, >, 0);
+	settle(fixture);
+
+	run = reread(fixture, VENTURE_TYPE_DATA_SOURCE_RUN, run_id);
+	g_object_get(run, "status", &status, NULL);
+	g_assert_cmpint(status, !=, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+
+	return run;
+}
+
+/*
+ * The account kinds on the real path: a push of the operator's accounts
+ * through the feeds worker, the rules frozen with the source, candidates
+ * found after the commit at the run's time, hits written on the main
+ * thread. The mirror then makes the position a listing, and a later
+ * evaluation links the hit to it; an undercut rule finds that listing
+ * from its mirror-state alone, with the instrument's product link gone.
+ * The same push again is inside the cooldown.
+ *
+ * What breaks if this regresses: account alerts only ever fire by hand;
+ * a push repeats every warning; a mirrored listing is never compared
+ * unless a product query happens to find it.
+ */
+static void
+test_alerts_accounts_worker_path(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) venture = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) expiring = NULL;
+	g_autoptr(VentureEntity) collect = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(GString) body = NULL;
+	g_autofree gchar *settings = NULL;
+	g_autofree gchar *taken = NULL;
+	g_autofree gchar *expires = NULL;
+	g_autofree gchar *mail_expires = NULL;
+	gint64 listing_id = 0;
+
+	(void)user_data;
+
+	venture = VENTURE_ENTITY(venture_venture_new());
+	venture_entity_set_organization_id(venture, fixture->org);
+	g_object_set(venture, "name", "Gold", NULL);
+	save(fixture, venture);
+
+	settings = g_strdup_printf("create_products: true\nproducts_venture_id: %" G_GINT64_FORMAT "\n",
+	                           ID(venture));
+	source = VENTURE_ENTITY(venture_data_source_new());
+	venture_entity_set_organization_id(source, fixture->org);
+	g_object_set(source, "name", "Characters", "provider", "push", "settings", settings,
+	             "schedule", "manual", "currency", "USD", "instrument-namespace", "wow-item",
+	             "venue-namespace", "wow-realm", NULL);
+	save(fixture, source);
+
+	expiring = new_rule(fixture, "expiring", VENTURE_ALERT_KIND_POSITION_EXPIRING);
+	g_object_set(expiring, "threshold-number", 2.0, "data-source-id", ID(source), NULL);
+	save(fixture, expiring);
+	collect = new_rule(fixture, "collect", VENTURE_ALERT_KIND_COLLECT_READY);
+	save(fixture, collect);
+
+	taken = iso(fixture->now - 60);
+	expires = iso(fixture->now + 3600);
+	mail_expires = iso(fixture->now + 86400);
+	body = g_string_new(NULL);
+	g_string_append_printf(body,
+		"{\"type\":\"instrument\",\"key\":\"2770\",\"name\":\"Copper Ore\",\"kind\":\"item\"}\n"
+		"{\"type\":\"venue\",\"key\":\"thorium\",\"name\":\"Thorium Brotherhood\",\"kind\":\"auction_house\",\"group\":\"us\",\"currency\":\"USD\"}\n"
+		"{\"type\":\"snapshot\",\"venue\":\"thorium\",\"taken_at\":\"%s\",\"complete\":true}\n"
+		"{\"type\":\"listing\",\"venue\":\"thorium\",\"instrument\":\"2770\",\"price\":\"1.20\",\"quantity\":5,\"id\":\"x1\"}\n"
+		"{\"type\":\"listing\",\"venue\":\"thorium\",\"instrument\":\"2770\",\"price\":\"1.50\",\"quantity\":3,\"id\":\"x2\"}\n"
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium\",\"name\":\"Drgold\",\"kind\":\"character\",\"group\":\"Thorium Brotherhood\",\"venue\":\"thorium\"}\n"
+		"{\"type\":\"position\",\"account\":\"Drgold-Thorium\",\"venue\":\"thorium\",\"id\":\"p1\",\"instrument\":\"2770\",\"quantity\":3,\"price\":\"1.50\",\"expires_at\":\"%s\"}\n"
+		"{\"type\":\"inbound\",\"account\":\"Drgold-Thorium\",\"id\":\"m1\",\"sender\":\"Auction House\",\"money\":\"12.50\",\"expires_at\":\"%s\"}\n",
+		taken, expires, mail_expires);
+
+	run = push_and_wait(fixture, ID(source), body->str);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, "rule-id", ID(expiring)), ==, 1);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, "rule-id", ID(collect)), ==, 1);
+
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ALERT_HIT);
+		g_autoptr(VentureEntity) hit = NULL;
+		g_autofree gchar *account_key = NULL;
+		g_autofree gchar *subject = NULL;
+		g_autofree gchar *message = NULL;
+		gint64 source_id;
+
+		g_assert_true(venture_query_add_filter_int(query, "rule-id", VENTURE_FILTER_OP_EQ,
+		                                           ID(collect), NULL));
+		hit = venture_database_find_one(fixture->database, query, NULL);
+		g_object_get(hit, "account-key", &account_key, "subject", &subject, "message", &message,
+		             "data-source-id", &source_id, NULL);
+		g_assert_cmpstr(account_key, ==, "Drgold-Thorium");
+		g_assert_cmpstr(subject, ==, "collect:Drgold-Thorium");
+		g_assert_cmpstr(message, ==, "Drgold (Thorium Brotherhood): 1 mail to collect (12.50 USD)");
+		g_assert_cmpint(source_id, ==, ID(source));
+	}
+
+	/* The mirror made the position a listing; a hit written now names it. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LISTING);
+		g_autoptr(VentureEntity) listing = NULL;
+		g_autoptr(VentureEntity) rule = NULL;
+		g_autoptr(VentureEntity) hit = NULL;
+		g_autoptr(VentureQuery) hits = NULL;
+		g_autoptr(JsonObject) report = NULL;
+		g_autofree gchar *external_id = NULL;
+		gint64 hit_listing;
+
+		external_id = g_strdup_printf("%s:p1", venture_entity_get_uuid(source));
+		g_assert_true(venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ,
+		                                              external_id, NULL));
+		listing = venture_database_find_one(fixture->database, query, NULL);
+		g_assert_nonnull(listing);
+		listing_id = ID(listing);
+
+		rule = new_rule(fixture, "expiring again", VENTURE_ALERT_KIND_POSITION_EXPIRING);
+		g_object_set(rule, "threshold-number", 2.0, NULL);
+		save(fixture, rule);
+		report = evaluate(fixture, rule, TRUE);
+		g_assert_cmpint(report_int(report, "written"), ==, 1);
+
+		hits = venture_query_new(VENTURE_TYPE_ALERT_HIT);
+		g_assert_true(venture_query_add_filter_int(hits, "rule-id", VENTURE_FILTER_OP_EQ, ID(rule), NULL));
+		hit = venture_database_find_one(fixture->database, hits, NULL);
+		g_object_get(hit, "listing-id", &hit_listing, NULL);
+		g_assert_cmpint(hit_listing, ==, listing_id);
+	}
+
+	/* Undercut from the mirror-state: the instrument no longer names the
+	 * product, so only the listing's own word says what it sells. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INSTRUMENT);
+		g_autoptr(VentureEntity) instrument_record = NULL;
+		g_autoptr(VentureEntity) rule = NULL;
+		g_autoptr(JsonObject) report = NULL;
+		g_autofree gchar *subject = NULL;
+
+		g_assert_true(venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, "2770", NULL));
+		instrument_record = venture_database_find_one(fixture->database, query, NULL);
+		g_assert_nonnull(instrument_record);
+		g_object_set(instrument_record, "product-id", (gint64)0, NULL);
+		save(fixture, instrument_record);
+
+		rule = new_rule(fixture, "undercut", VENTURE_ALERT_KIND_UNDERCUT);
+		g_object_set(rule, "data-source-id", ID(source), NULL);
+		save(fixture, rule);
+		report = evaluate(fixture, rule, FALSE);
+		subject = g_strdup_printf("thorium|2770|listing:%" G_GINT64_FORMAT, listing_id);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+		g_assert_true(report_has(report, subject));
+	}
+
+	/* The same push again: inside the hour's quiet. */
+	again = push_and_wait(fixture, ID(source), body->str);
+	g_assert_cmpint(ID(again), >, ID(run));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, "rule-id", ID(expiring)), ==, 1);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, "rule-id", ID(collect)), ==, 1);
+}
+
 /*
  * With feeds off there is no store, and an evaluation says so; with
  * marketdata off the types are gone and a feed run evaluates nothing.
@@ -1651,11 +2341,16 @@ main(
 	ADD("/alerts/rule-validation", test_alerts_rule_validation);
 	ADD("/alerts/kinds", test_alerts_kinds);
 	ADD("/alerts/undercut", test_alerts_undercut);
+	ADD("/alerts/undercut-many-listings", test_alerts_undercut_many_listings);
+	ADD("/alerts/expiring", test_alerts_expiring);
+	ADD("/alerts/expiring-cooldown", test_alerts_expiring_cooldown);
+	ADD("/alerts/accounts", test_alerts_accounts);
 	ADD("/alerts/cooldown", test_alerts_cooldown);
 	ADD("/alerts/cap", test_alerts_cap);
 	ADD("/alerts/delivery", test_alerts_delivery);
 	ADD("/alerts/not-inside-automation", test_alerts_not_inside_automation);
 	ADD("/alerts/worker-path", test_alerts_worker_path);
+	ADD("/alerts/accounts-worker-path", test_alerts_accounts_worker_path);
 	ADD("/alerts/modules-off", test_alerts_modules_off);
 
 #undef ADD

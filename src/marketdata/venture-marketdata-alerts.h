@@ -77,9 +77,37 @@ G_BEGIN_DECLS
 /**
  * VENTURE_ALERTS_MAX_LISTINGS:
  *
- * The most open listings frozen with one source for undercut rules.
+ * The most open listings frozen with one source for undercut rules, read
+ * newest first: past it the oldest are the ones left out, and the run's
+ * notes (or the evaluation's) say the bound was reached. An operator
+ * mirroring a game's auction house holds thousands of positions; the
+ * listing just posted is the one most likely to be undercut.
  */
-#define VENTURE_ALERTS_MAX_LISTINGS (1000)
+#define VENTURE_ALERTS_MAX_LISTINGS (20000)
+
+/**
+ * VENTURE_ALERTS_MAX_ACCOUNT_ROWS:
+ *
+ * The most positions, and separately the most inbound rows, one
+ * evaluation reads from a store for the account kinds. Past it the rest
+ * are not judged and the notes say so.
+ */
+#define VENTURE_ALERTS_MAX_ACCOUNT_ROWS (100000)
+
+/**
+ * VENTURE_ALERTS_MAX_EXPIRING_HOURS:
+ *
+ * The furthest ahead a position_expiring or inbound_expiring rule looks:
+ * thirty days, the longest a game keeps a mail.
+ */
+#define VENTURE_ALERTS_MAX_EXPIRING_HOURS (720)
+
+/**
+ * VENTURE_ALERTS_MAX_STALE_DAYS:
+ *
+ * The longest an account_stale rule may wait: a year.
+ */
+#define VENTURE_ALERTS_MAX_STALE_DAYS (365)
 
 /**
  * VENTURE_ALERTS_MAX_ROWS:
@@ -166,6 +194,36 @@ venture_marketdata_alerts_evaluate(
 	VentureContext	 *context,
 	VentureEntity	 *rule,
 	gboolean	  record,
+	JsonNode	**out_report,
+	GError		**error
+);
+
+/**
+ * venture_marketdata_alerts_evaluate_at:
+ * @context: the wiring
+ * @rule: an alert_rule record
+ * @record: %TRUE to write what fires as hits; %FALSE to only say what would
+ * @now: the moment to judge at, Unix seconds: what "expires within",
+ *   "not seen for" and "already expired" are measured from, and the
+ *   time a hit about an account is observed at
+ * @out_report: (out) (optional) (transfer full): as for
+ *   venture_marketdata_alerts_evaluate()
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_marketdata_alerts_evaluate() at a moment of the caller's
+ * choosing rather than the wall clock -- what a test needs to put an
+ * expiry exactly on a rule's boundary. The market kinds judge each
+ * venue's newest snapshot whatever @now is; @now only moves the account
+ * kinds and the entries' look-back.
+ *
+ * Returns: %TRUE on success, including when nothing fired
+ */
+gboolean
+venture_marketdata_alerts_evaluate_at(
+	VentureContext	 *context,
+	VentureEntity	 *rule,
+	gboolean	  record,
+	gint64		  now,
 	JsonNode	**out_report,
 	GError		**error
 );

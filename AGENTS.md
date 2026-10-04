@@ -1940,6 +1940,23 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   `VENTURE_CATEGORY_APPLIES_AS_QDATA` type qdata to "instrument" so the
   generic category check judges it as an instrument's reference; do not
   list the type in the validator.
+- **The account kinds read the store as it stands, at a moment, and
+  their moment decides the cooldown.** `position_expiring`,
+  `inbound_expiring`, `account_stale` and `collect_ready` are judged
+  after every commit whatever the unit brought (time passing is what
+  makes a position expire), at the run's start on the worker and at
+  `now` by hand (`venture_marketdata_alerts_evaluate_at()` pins it for
+  tests). The expiring kinds and collect_ready are observed at that
+  moment, so they repeat once per cooldown; account_stale is observed at
+  the account's last sighting, so one absence is told once -- observing
+  it "now" would nag hourly for a month. An account's group is a realm,
+  not a venue's region: a watchlist's group is never inherited by them.
+- **Undercut freezes listings newest first and never one query each.**
+  Pages of `ALERTS_PAGE` up to `VENTURE_ALERTS_MAX_LISTINGS` (20000),
+  a mirrored listing's instrument from its `mirror-state`, anyone
+  else's per distinct product. The bound reached is a run note. The old
+  oldest-first read of a thousand silently dropped the listing just
+  posted -- the one a rival undercuts.
 
 ## Accounts and positions as records
 

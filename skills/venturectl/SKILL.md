@@ -1222,11 +1222,22 @@ thresholds, and the others must be left empty or the save is refused:
   `pct_vs_reference` (a percent: 80 fires 20% under), `shortage` (units) and
   `spike` (a percent change, negative for a drop) take `threshold_number`;
   `spike` also needs `window_hours` (1-336); `entry_match` takes `pattern`
-  (plain text, not a regex); `out_of_stock`, `back_in_stock` and
-  `undercut` take none.
-- Every kind but `undercut` and `entry_match` needs a scope: `watchlist_id`,
-  `instrument_id` or `category_id`. `venue_id` or `group_key` narrows, never
-  both. `enabled` starts true and `cooldown_minutes` 60.
+  (plain text, not a regex); `out_of_stock`, `back_in_stock`,
+  `undercut` and `collect_ready` take none.
+- The operator's-account kinds read a store's accounts, positions and
+  mail: `position_expiring` and `inbound_expiring` take
+  `threshold_number` = **hours** ahead (0 < n <= 720, fractions fine:
+  2 fires on what lapses within two hours); `account_stale` takes
+  `threshold_number` = **days** unseen (0 < n <= 365; shared and guild
+  accounts are never judged); `collect_ready` (mail with money or goods,
+  or positions expired awaiting login) takes nothing. Their hits carry
+  `account_key`; `group_key` narrows by the *account's* group (a realm).
+- Every market kind but `undercut` and `entry_match` needs a scope:
+  `watchlist_id`, `instrument_id` or `category_id`. The two expiring
+  kinds may take one (it narrows by instrument); `account_stale` and
+  `collect_ready` refuse one.
+  `venue_id` or `group_key` narrows, never both. `enabled` starts true
+  and `cooldown_minutes` 60.
 - **The two ways to evaluate a rule default opposite ways.** `act
   alert_rule ID evaluate` only looks; `record=true` writes. `market alerts
   evaluate RULE_ID` **writes** the hits (the cooldown applies, a webhook
