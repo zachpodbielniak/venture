@@ -2513,6 +2513,220 @@ test_feeds_credentials_follow_their_origin(
 	}
 }
 
+/* --- Threading: bounded waits, kept windows, one main context ----------------- */
+
+/* A provider that ignores its cancellable: it answers only when the test
+ * lets it, at most thirty seconds on. */
+static GMutex stubborn_lock;
+static GCond stubborn_cond;
+static gboolean stubborn_released;
+
+static VentureFeedBatch *
+stubborn_fetch(
+	VentureFeedRequest	 *request,
+	gpointer		  user_data,
+	GError			**error
+){
+	gint64 end;
+
+	(void)request;
+	(void)user_data;
+
+	end = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+	g_mutex_lock(&stubborn_lock);
+
+	while (!stubborn_released)
+	{
+		if (!g_cond_wait_until(&stubborn_cond, &stubborn_lock, end))
+			break;
+	}
+
+	g_mutex_unlock(&stubborn_lock);
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "let go at last");
+
+	return NULL;
+}
+
+/*
+ * The data_source Test action waits for its fetch, on the request's thread
+ * -- the main thread. Its deadline cancels the fetch; a provider that
+ * ignores the cancellation is given a short grace and then the action
+ * answers with a timeout instead of waiting for it.
+ *
+ * What breaks if this regresses: one crispy provider blocked in a read
+ * holds the main thread, and every request the server is serving, for as
+ * long as it likes.
+ */
+static void
+test_feeds_test_action_is_bounded(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *report = NULL;
+	gint64 started;
+	gint64 elapsed;
+	gint64 id;
+
+	(void)user_data;
+
+	stubborn_released = FALSE;
+	provider = venture_func_data_source_provider_new("stubborn", NULL, NULL, stubborn_fetch,
+	                                                 NULL, NULL);
+	g_assert_true(venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(fixture->context), provider, &error));
+	g_assert_no_error(error);
+	g_object_set(fixture->config, "feeds-request-timeout", (gint64)1, NULL);
+	id = create_source(fixture, "Stubborn", "stubborn", "", "manual");
+
+	started = g_get_monotonic_time();
+	report = venture_feeds_service_test(service_of(fixture), id, NULL, &error);
+	elapsed = (g_get_monotonic_time() - started) / G_TIME_SPAN_SECOND;
+
+	g_assert_null(report);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_TIMEOUT);
+	g_assert_nonnull(strstr(error->message, "did not stop"));
+	g_assert_cmpint(elapsed, <, 15);
+
+	g_mutex_lock(&stubborn_lock);
+	stubborn_released = TRUE;
+	g_cond_broadcast(&stubborn_cond);
+	g_mutex_unlock(&stubborn_lock);
+}
+
+/* Waits, bounded, for a scheduled pass to have written to @id's store
+ * and finished. */
+static void
+wait_for_a_pass(
+	Fixture	*fixture,
+	gint64	 id
+){
+	gint64 deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+	while (store_rows(fixture, id) <= 0)
+	{
+		g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(2000);
+	}
+
+	settle(fixture);
+}
+
+/*
+ * Scheduled passes are gathered into one run per window, and the run is
+ * written when the window closes. A source taken off the worker before
+ * then -- it can no longer be frozen -- and a worker stopped where the
+ * main loop still runs (the server's signal handler) write the window
+ * there and then.
+ *
+ * What breaks if this regresses: the last quarter hour of scheduled
+ * fetches before a restart, or before a source broke, has no run: data in
+ * the store that no run accounts for.
+ */
+static void
+test_feeds_window_is_written_not_dropped(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) removed_run = NULL;
+	g_autoptr(VentureEntity) stopped_run = NULL;
+	g_autoptr(VentureDataSourceProvider) http_json = NULL;
+	g_autofree gchar *first = NULL;
+	g_autofree gchar *second = NULL;
+	gint64 removed;
+	gint64 stopped;
+
+	(void)user_data;
+
+	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15, NULL);
+	scripted_add(&fixture->http, "/first.json", 200, auction_body);
+	scripted_add(&fixture->http, "/second.json", 200, auction_body);
+	first = http_settings(fixture, "/first.json", NULL);
+	second = http_settings(fixture, "/second.json", NULL);
+
+	removed = create_source(fixture, "Removed", "http_json", first, "auto");
+	wait_for_a_pass(fixture, removed);
+	g_assert_cmpint(count_runs(fixture, removed), ==, 0);
+
+	/* No provider by that name any more: the source cannot be frozen
+	 * and comes off the worker, its open window written as it goes. */
+	http_json = g_object_ref(venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(fixture->context), "http_json"));
+	g_assert_true(venture_data_source_provider_registry_remove(
+		venture_context_get_data_source_providers(fixture->context), "http_json"));
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "*is not scheduled*");
+	venture_feeds_service_refresh(service_of(fixture));
+	settle(fixture);
+	g_test_assert_expected_messages();
+	g_assert_cmpint(count_runs(fixture, removed), ==, 1);
+	removed_run = latest_run(fixture, removed);
+	g_assert_cmpint(run_status(removed_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(removed_run, "trigger"), ==, VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE);
+
+	/* Stopped where the loop still runs: written there. */
+	g_assert_true(venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(fixture->context), http_json, NULL));
+	stopped = create_source(fixture, "Stopped", "http_json", second, "auto");
+	wait_for_a_pass(fixture, stopped);
+	g_assert_cmpint(count_runs(fixture, stopped), ==, 0);
+	venture_feeds_stop(fixture->context);
+	g_assert_cmpint(count_runs(fixture, stopped), ==, 1);
+	stopped_run = latest_run(fixture, stopped);
+	g_assert_cmpint(run_int(stopped_run, "trigger"), ==, VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE);
+	g_assert_cmpint(run_int(stopped_run, "rows"), >, 0);
+}
+
+/*
+ * Runs come back on the default main context, whatever context was pushed
+ * when the worker started: the service's own retries are on the default
+ * one, and a run delivered anywhere else is never written.
+ *
+ * What breaks if this regresses: a worker first started from inside a
+ * nested loop delivers every run to a context nobody iterates again; the
+ * syncs happen and no run is ever recorded.
+ */
+static void
+test_feeds_runs_reach_the_default_context(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GMainContext) private_context = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *settings = NULL;
+	gint64 deadline;
+	gint64 id;
+
+	(void)user_data;
+
+	scripted_add(&fixture->http, "/realm.json", 200, auction_body);
+	settings = http_settings(fixture, "/realm.json", NULL);
+	id = create_source(fixture, "Nested", "http_json", settings, "manual");
+	g_assert_false(venture_feeds_service_is_running(service_of(fixture)));
+
+	private_context = g_main_context_new();
+	g_main_context_push_thread_default(private_context);
+	g_assert_true(venture_feeds_service_sync(service_of(fixture), id,
+	                                         VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL, &error));
+	g_main_context_pop_thread_default(private_context);
+	g_assert_no_error(error);
+	g_assert_true(venture_feeds_service_is_running(service_of(fixture)));
+
+	deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+	while (count_runs(fixture, id) < 1)
+	{
+		g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(2000);
+	}
+
+	settle(fixture);
+}
+
 int
 main(
 	int	 argc,
@@ -2567,6 +2781,12 @@ main(
 	           test_feeds_actions_and_automation, fixture_tear_down);
 	g_test_add("/feeds/track-known-instrument-records", Fixture, NULL, fixture_set_up,
 	           test_feeds_track_known_instrument_records, fixture_tear_down);
+	g_test_add("/feeds/test-action-is-bounded", Fixture, NULL, fixture_set_up,
+	           test_feeds_test_action_is_bounded, fixture_tear_down);
+	g_test_add("/feeds/window-is-written-not-dropped", Fixture, NULL, fixture_set_up,
+	           test_feeds_window_is_written_not_dropped, fixture_tear_down);
+	g_test_add("/feeds/runs-reach-the-default-context", Fixture, NULL, fixture_set_up,
+	           test_feeds_runs_reach_the_default_context, fixture_tear_down);
 
 	return g_test_run();
 }

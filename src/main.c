@@ -71,6 +71,7 @@ typedef struct
 	GMainLoop		*loop;
 	VentureWebServer	*server;
 	VentureAutomation	*automation;
+	VentureContext		*context;
 } VentureServerMain;
 
 /*
@@ -86,6 +87,14 @@ venture_on_signal(gpointer user_data)
 	application = user_data;
 
 	g_message("Shutting down");
+
+#ifdef VENTURE_HAVE_SQLITE
+	/* First, while the loop runs and automation still listens: the last
+	 * window of scheduled feed fetches is written as a run here, and
+	 * would be lost at the context's dispose. */
+	if (NULL != application->context)
+		venture_feeds_stop(application->context);
+#endif
 
 	if (NULL != application->automation)
 		venture_automation_stop(application->automation);
@@ -218,7 +227,7 @@ main(
 	g_autoptr(VenturePluginManager) plugins = NULL;
 	g_autoptr(VentureAutomation) automation = NULL;
 	g_autoptr(GError) error = NULL;
-	VentureServerMain application = { NULL, NULL, NULL };
+	VentureServerMain application = { NULL, NULL, NULL, NULL };
 	g_autofree gchar *config_path = NULL;
 	g_autofree gchar *database_uri = NULL;
 	g_autofree gchar *state_dir = NULL;
@@ -907,6 +916,7 @@ main(
 	application.loop = g_main_loop_new(NULL, FALSE);
 	application.server = server;
 	application.automation = automation;
+	application.context = context;
 
 	g_unix_signal_add(SIGINT, venture_on_signal, &application);
 	g_unix_signal_add(SIGTERM, venture_on_signal, &application);

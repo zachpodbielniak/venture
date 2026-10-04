@@ -15,10 +15,14 @@
  *   the HTTP session. No lock guards them because nothing else reads them.
  * - The one thing both sides read is the published status and the live
  *   count, under a mutex.
- * - A finished run goes back by g_main_context_invoke_full() on the main
- *   context, holding a reference on the worker, and is emitted there as
- *   #VentureSeriesWorker::run-finished. The worker never writes the
- *   database; the service does, on the main thread.
+ * - A finished run goes back by g_main_context_invoke_full() on the
+ *   default main context, holding a reference on the worker, and is
+ *   emitted there as #VentureSeriesWorker::run-finished. The worker never
+ *   writes the database; the service does, on the main thread.
+ * - A store copy runs on a short-lived thread of its own (a GTask), which
+ *   touches nothing but its own SQLite connections: a copy of a large
+ *   store would otherwise hold this loop -- every fetch, every command --
+ *   for as long as it takes.
  *
  * A source's units are fetched one after another, never at once: the
  * quota is per source, the store has one writer, and the far end is one
@@ -294,22 +298,25 @@ struct _VentureSeriesWorker
 {
 	GObject			 parent_instance;
 
-	GMainContext		*main_context;	/* where runs are delivered */
+	GMainContext		*main_context;	/* the default one: where runs are delivered */
 	GMainContext		*context;
 	GMainLoop		*loop;
 	GThread			*thread;
 	GAsyncQueue		*started;
 	GCancellable		*cancellable;
 
-	GMutex			 lock;		/* guards status and live */
+	GMutex			 lock;		/* guards status, live, pending, flushed */
 	gchar			*status;	/* JSON text: nested JSON-GLib nodes
 						 * are not safe to share between threads */
 	guint			 live;
+	GPtrArray		*pending;	/* WorkerDelivery: handed back, not yet emitted */
+	GPtrArray		*flushed;	/* VentureFeedRun: kept for the service at stop */
 
 	/* The thread's alone. */
 	GHashTable		*sources;	/* gint64* -> WorkerSource */
 	SoupSession		*session;
 	GSource			*timer;
+	guint			 copies;	/* store copies on their own threads */
 
 	/* Set by stop() on the main thread, read here: atomic. */
 	gint			 stopping;
@@ -426,7 +433,7 @@ static void worker_pass_next(WorkerPass *pass);
 typedef struct
 {
 	VentureSeriesWorker	*worker;
-	VentureFeedRun		*run;
+	VentureFeedRun		*run;		/* NULL once stop() took it */
 } WorkerDelivery;
 
 static void
@@ -435,7 +442,7 @@ worker_delivery_free(gpointer data)
 	WorkerDelivery *delivery = data;
 
 	worker_live_add(delivery->worker, -1);
-	venture_feed_run_unref(delivery->run);
+	g_clear_pointer(&delivery->run, venture_feed_run_unref);
 	g_object_unref(delivery->worker);
 	g_free(delivery);
 }
@@ -444,18 +451,42 @@ static gboolean
 worker_deliver(gpointer data)
 {
 	WorkerDelivery *delivery = data;
+	VentureSeriesWorker *self = delivery->worker;
+	g_autoptr(VentureFeedRun) run = NULL;
 
-	/* After stop() nobody is listening for this run any more. */
-	if (!g_atomic_int_get(&delivery->worker->stopping))
-		g_signal_emit(delivery->worker, worker_signals[SIGNAL_RUN_FINISHED], 0, delivery->run);
+	/* stop() takes every run not yet emitted for the service to write
+	 * itself; one it took is gone from the list and from here. */
+	g_mutex_lock(&self->lock);
+
+	if (g_ptr_array_remove_fast(self->pending, delivery))
+		run = g_steal_pointer(&delivery->run);
+
+	g_mutex_unlock(&self->lock);
+
+	if (NULL != run)
+		g_signal_emit(self, worker_signals[SIGNAL_RUN_FINISHED], 0, run);
 
 	return G_SOURCE_REMOVE;
+}
+
+/* Keeps a run for venture_series_worker_take_flushed(): the loop it would
+ * have been delivered on is stopping. */
+static void
+worker_keep_flushed(
+	VentureSeriesWorker	*self,
+	VentureFeedRun		*run
+){
+	g_mutex_lock(&self->lock);
+	g_ptr_array_add(self->flushed, venture_feed_run_ref(run));
+	g_mutex_unlock(&self->lock);
 }
 
 /*
  * Hands a finished run to the main context. The reference on the worker
  * keeps it alive until the main thread has seen the run, however long the
- * main loop takes to get there.
+ * main loop takes to get there. While stopping, the run is kept for the
+ * service instead: stop() is about to join this thread, and the service
+ * writes what it is handed then.
  */
 static void
 worker_hand_back(
@@ -464,18 +495,41 @@ worker_hand_back(
 ){
 	WorkerDelivery *delivery;
 
-	/* Nobody listens after stop(), and stop() may be finalize's: a
-	 * reference taken now would be on an object already going away. */
 	if (g_atomic_int_get(&self->stopping))
+	{
+		worker_keep_flushed(self, run);
 		return;
+	}
 
 	delivery = g_new0(WorkerDelivery, 1);
 	delivery->worker = g_object_ref(self);
 	delivery->run = venture_feed_run_ref(run);
 	worker_live_add(self, 1);
 
+	g_mutex_lock(&self->lock);
+	g_ptr_array_add(self->pending, delivery);
+	g_mutex_unlock(&self->lock);
+
 	g_main_context_invoke_full(self->main_context, G_PRIORITY_DEFAULT, worker_deliver,
 	                           delivery, worker_delivery_free);
+}
+
+/*
+ * A scheduled window still gathering passes, finished now and handed
+ * back: the source is going (removed, or the worker stopping), and a
+ * window dropped here was a run nobody ever recorded.
+ */
+static void
+worker_flush_open_run(WorkerSource *source)
+{
+	VentureFeedRun *open = source->open_run;
+
+	if (NULL == open)
+		return;
+
+	venture_feed_run_finish(open, worker_now());
+	worker_hand_back(source->worker, open);
+	g_clear_pointer(&source->open_run, venture_feed_run_unref);
 }
 
 /* A store copy's answer, plain data for the main context. */
@@ -515,12 +569,98 @@ worker_backup_deliver(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* One store copy, on its own thread. */
+typedef struct
+{
+	VentureSeriesWorker	*worker;	/* not owned: stop() waits for copies */
+	gint64			 tag;
+	gchar			*store_dir;
+	gchar			*destination;
+	gchar			*sha256;
+	guint64			 size;
+	gchar			*error;
+} WorkerCopy;
+
+static void
+worker_copy_free(gpointer data)
+{
+	WorkerCopy *copy = data;
+
+	g_free(copy->store_dir);
+	g_free(copy->destination);
+	g_free(copy->sha256);
+	g_free(copy->error);
+	g_free(copy);
+}
+
+/* The copy itself: its own connections to the store and the file, and
+ * nothing of the worker's. */
+static void
+worker_copy_thread(
+	GTask		*task,
+	gpointer	 source_object,
+	gpointer	 task_data,
+	GCancellable	*cancellable
+){
+	WorkerCopy *copy = task_data;
+	g_autoptr(GError) error = NULL;
+
+	(void)source_object;
+
+	if (!venture_series_store_backup(copy->store_dir, copy->destination, 0, cancellable,
+	                                 &copy->sha256, &copy->size, &error))
+		copy->error = g_strdup(error->message);
+
+	g_task_return_boolean(task, TRUE);
+}
+
+/* Back on the worker's loop: the answer goes on to the main context. */
+static void
+worker_copy_done(
+	GObject		*source_object,
+	GAsyncResult	*result,
+	gpointer	 user_data
+){
+	WorkerCopy *copy = g_task_get_task_data(G_TASK(result));
+	VentureSeriesWorker *self = copy->worker;
+	WorkerBackupDelivery *delivery;
+
+	(void)source_object;
+	(void)user_data;
+
+	self->copies--;
+
+	if (NULL != copy->error)
+		g_message("feeds: backup %" G_GINT64_FORMAT " of %s failed: %s",
+		          copy->tag, copy->store_dir, copy->error);
+
+	if (g_atomic_int_get(&self->stopping))
+	{
+		worker_live_add(self, -1);
+		return;
+	}
+
+	/* The live count taken when the copy started is handed on to the
+	 * delivery, so a test never sees zero between the two. */
+	delivery = g_new0(WorkerBackupDelivery, 1);
+	delivery->worker = g_object_ref(self);
+	delivery->tag = copy->tag;
+	delivery->destination = g_strdup(copy->destination);
+	delivery->sha256 = g_steal_pointer(&copy->sha256);
+	delivery->size = copy->size;
+	delivery->error = g_steal_pointer(&copy->error);
+
+	g_main_context_invoke_full(self->main_context, G_PRIORITY_DEFAULT, worker_backup_deliver,
+	                           delivery, worker_backup_delivery_free);
+}
+
 /*
- * Copies one store, here on the worker, and hands the answer back. The
- * copy happens between fetches -- a command runs only when no fetch
- * callback is -- so it never sees a unit's writes half done, and a source
- * whose writer is open keeps it open: the copy reads through a connection
- * of its own.
+ * Copies one store on a thread of its own and hands the answer back.
+ * The copy reads through a connection of its own, inside one read
+ * transaction, so a source whose writer is open keeps writing and the
+ * copy is the store as of one commit. It used to run here, on the loop:
+ * a gigabyte store held every fetch and every command -- and with them
+ * every sync somebody was waiting for -- until it was done.
  */
 static void
 worker_backup_store(
@@ -529,32 +669,22 @@ worker_backup_store(
 	const gchar		*store_dir,
 	const gchar		*destination
 ){
-	WorkerBackupDelivery *delivery;
-	g_autoptr(GError) error = NULL;
-	g_autofree gchar *sha256 = NULL;
-	guint64 size;
+	g_autoptr(GTask) task = NULL;
+	WorkerCopy *copy;
 
-	size = 0;
+	copy = g_new0(WorkerCopy, 1);
+	copy->worker = self;
+	copy->tag = tag;
+	copy->store_dir = g_strdup(store_dir);
+	copy->destination = g_strdup(destination);
 
-	if (!venture_series_store_backup(store_dir, destination, 0, self->cancellable,
-	                                 &sha256, &size, &error))
-		g_message("feeds: backup %" G_GINT64_FORMAT " of %s failed: %s",
-		          tag, store_dir, error->message);
-
-	if (g_atomic_int_get(&self->stopping))
-		return;
-
-	delivery = g_new0(WorkerBackupDelivery, 1);
-	delivery->worker = g_object_ref(self);
-	delivery->tag = tag;
-	delivery->destination = g_strdup(destination);
-	delivery->sha256 = g_steal_pointer(&sha256);
-	delivery->size = size;
-	delivery->error = (NULL != error) ? g_strdup(error->message) : NULL;
+	self->copies++;
 	worker_live_add(self, 1);
 
-	g_main_context_invoke_full(self->main_context, G_PRIORITY_DEFAULT, worker_backup_deliver,
-	                           delivery, worker_backup_delivery_free);
+	/* Made on this thread, so it completes on this thread's loop. */
+	task = g_task_new(NULL, self->cancellable, worker_copy_done, NULL);
+	g_task_set_task_data(task, copy, worker_copy_free);
+	g_task_run_in_thread(task, worker_copy_thread);
 }
 
 /* --- Stores ---------------------------------------------------------------------- */
@@ -1486,6 +1616,7 @@ worker_pass_finish(WorkerPass *pass)
 
 	if (source->removed)
 	{
+		worker_flush_open_run(source);
 		worker_source_set_manual(source, FALSE);
 		g_hash_table_remove(self->sources, &source->spec->id);
 	}
@@ -1987,6 +2118,7 @@ worker_command(gpointer data)
 			}
 			else
 			{
+				worker_flush_open_run(source);
 				worker_source_set_manual(source, FALSE);
 				g_hash_table_remove(self->sources, &command->id);
 			}
@@ -2203,7 +2335,9 @@ worker_thread(gpointer data)
 			GHashTableIter iter;
 			gpointer value;
 
-			busy = FALSE;
+			/* A store copy's thread is cancelled too, and ends at its
+			 * next step; its completion lands on this context. */
+			busy = (self->copies > 0);
 			g_hash_table_iter_init(&iter, self->sources);
 
 			while (g_hash_table_iter_next(&iter, NULL, &value))
@@ -2215,6 +2349,18 @@ worker_thread(gpointer data)
 
 		g_source_destroy(wake);
 		g_source_unref(wake);
+
+		/* Every window still gathering passes is a run: finished now and
+		 * kept for the service, which writes it once stop() returns. */
+		{
+			GHashTableIter iter;
+			gpointer value;
+
+			g_hash_table_iter_init(&iter, self->sources);
+
+			while (g_hash_table_iter_next(&iter, NULL, &value))
+				worker_flush_open_run(value);
+		}
 
 		if (busy)
 		{
@@ -2265,6 +2411,36 @@ venture_series_worker_stop(VentureSeriesWorker *self)
 	g_main_context_invoke(self->context, worker_quit, self->loop);
 	g_thread_join(self->thread);
 	self->thread = NULL;
+
+	/* Runs handed back but not yet emitted -- their idle has not run --
+	 * are the service's to write now; the idle finds itself gone from
+	 * the list and does nothing. */
+	g_mutex_lock(&self->lock);
+
+	while (self->pending->len > 0)
+	{
+		WorkerDelivery *delivery = g_ptr_array_steal_index(self->pending, self->pending->len - 1);
+
+		if (NULL != delivery->run)
+			g_ptr_array_add(self->flushed, g_steal_pointer(&delivery->run));
+	}
+
+	g_mutex_unlock(&self->lock);
+}
+
+GPtrArray *
+venture_series_worker_take_flushed(VentureSeriesWorker *self)
+{
+	GPtrArray *runs;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_WORKER(self), NULL);
+
+	g_mutex_lock(&self->lock);
+	runs = g_steal_pointer(&self->flushed);
+	self->flushed = g_ptr_array_new_with_free_func((GDestroyNotify)venture_feed_run_unref);
+	g_mutex_unlock(&self->lock);
+
+	return runs;
 }
 
 static void
@@ -2279,6 +2455,8 @@ venture_series_worker_finalize(GObject *object)
 	g_clear_pointer(&self->main_context, g_main_context_unref);
 	g_clear_pointer(&self->started, g_async_queue_unref);
 	g_clear_object(&self->cancellable);
+	g_clear_pointer(&self->pending, g_ptr_array_unref);
+	g_clear_pointer(&self->flushed, g_ptr_array_unref);
 	g_free(self->status);
 	g_mutex_clear(&self->lock);
 
@@ -2295,7 +2473,7 @@ venture_series_worker_class_init(VentureSeriesWorkerClass *klass)
 	 * @self: the worker
 	 * @run: what the run did
 	 *
-	 * Emitted on the context that made the worker, never on the thread.
+	 * Emitted on the default main context, never on the thread.
 	 */
 	worker_signals[SIGNAL_RUN_FINISHED] =
 		g_signal_new("run-finished", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
@@ -2310,7 +2488,7 @@ venture_series_worker_class_init(VentureSeriesWorkerClass *klass)
 	 * @size: the copy's size in bytes
 	 * @error: (nullable): why it failed, or %NULL
 	 *
-	 * Emitted on the context that made the worker, never on the thread.
+	 * Emitted on the default main context, never on the thread.
 	 */
 	worker_signals[SIGNAL_BACKUP_FINISHED] =
 		g_signal_new("backup-finished", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST,
@@ -2322,6 +2500,8 @@ static void
 venture_series_worker_init(VentureSeriesWorker *self)
 {
 	g_mutex_init(&self->lock);
+	self->pending = g_ptr_array_new();
+	self->flushed = g_ptr_array_new_with_free_func((GDestroyNotify)venture_feed_run_unref);
 }
 
 VentureSeriesWorker *
@@ -2330,7 +2510,15 @@ venture_series_worker_new(void)
 	VentureSeriesWorker *self;
 
 	self = g_object_new(VENTURE_TYPE_SERIES_WORKER, NULL);
-	self->main_context = g_main_context_ref_thread_default();
+	/*
+	 * The default main context, never the caller's thread-default: the
+	 * service's own retries -- a run waiting for a transaction to end, a
+	 * store copy's answer, a refresh -- are g_timeout_add()/g_idle_add()
+	 * on the default context, and a worker first started while somebody
+	 * had a private context pushed (a nested loop, the Test action's)
+	 * delivered its runs to a context nobody iterated again.
+	 */
+	self->main_context = g_main_context_ref(g_main_context_default());
 	self->context = g_main_context_new();
 	self->loop = g_main_loop_new(self->context, FALSE);
 	self->cancellable = g_cancellable_new();

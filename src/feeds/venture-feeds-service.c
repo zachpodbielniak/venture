@@ -1241,10 +1241,25 @@ static void feeds_service_backup_finished(VentureSeriesWorker *worker, gint64 ta
                                           guint64 size, const gchar *failure, gpointer user_data);
 static void feeds_backup_answer_free(gpointer data);
 
-void
-venture_feeds_service_shutdown(VentureFeedsService *self)
-{
-	g_return_if_fail(VENTURE_IS_FEEDS_SERVICE(self));
+static void feeds_service_write_run(VentureFeedsService *self, VentureFeedRun *run);
+
+/*
+ * Stops everything. With @write, the runs the worker still held -- a
+ * scheduled window gathering passes, a run handed back and not yet
+ * emitted -- and the runs waiting for a transaction are written now, on
+ * this thread, which is only right where the main loop still runs and the
+ * feeds types are still visible: the server's signal handler. Without it
+ * (the context's dispose, the module switched off, when a data_source_run
+ * can no longer be written) they are dropped with a message saying how
+ * many; the store has their data.
+ */
+static void
+feeds_service_halt(
+	VentureFeedsService	*self,
+	gboolean		 write
+){
+	g_autoptr(GPtrArray) flushed = NULL;
+	guint i;
 
 	self->shut_down = TRUE;
 
@@ -1259,8 +1274,6 @@ venture_feeds_service_shutdown(VentureFeedsService *self)
 		g_source_remove(self->waiting_source);
 		self->waiting_source = 0;
 	}
-
-	g_queue_clear_full(&self->waiting, (GDestroyNotify)venture_feed_run_unref);
 
 	/* Answers not yet written, and copies never answered, leave their
 	 * runs running; the next installation backup marks them interrupted. */
@@ -1282,8 +1295,43 @@ venture_feeds_service_shutdown(VentureFeedsService *self)
 		g_signal_handler_disconnect(self->worker, self->backup_handler);
 		self->backup_handler = 0;
 		venture_series_worker_stop(self->worker);
+		flushed = venture_series_worker_take_flushed(self->worker);
 		g_clear_object(&self->worker);
 	}
+
+	for (i = 0; (NULL != flushed) && (i < flushed->len); i++)
+		g_queue_push_tail(&self->waiting, venture_feed_run_ref(g_ptr_array_index(flushed, i)));
+
+	while (write && !g_queue_is_empty(&self->waiting) &&
+	       !venture_database_has_transaction(venture_context_get_database(self->context)))
+	{
+		g_autoptr(VentureFeedRun) run = g_queue_pop_head(&self->waiting);
+
+		feeds_service_write_run(self, run);
+	}
+
+	if (!g_queue_is_empty(&self->waiting))
+		g_message("feeds: %u run(s) not recorded as the feeds module stopped; the series "
+		          "stores have their data", g_queue_get_length(&self->waiting));
+
+	g_queue_clear_full(&self->waiting, (GDestroyNotify)venture_feed_run_unref);
+}
+
+void
+venture_feeds_service_shutdown(VentureFeedsService *self)
+{
+	g_return_if_fail(VENTURE_IS_FEEDS_SERVICE(self));
+
+	feeds_service_halt(self, FALSE);
+}
+
+void
+venture_feeds_service_stop(VentureFeedsService *self)
+{
+	g_return_if_fail(VENTURE_IS_FEEDS_SERVICE(self));
+
+	if (!self->shut_down)
+		feeds_service_halt(self, TRUE);
 }
 
 static void
@@ -1915,12 +1963,25 @@ venture_feeds_service_sync(
 	return TRUE;
 }
 
+/* How long the Test action waits, past cancelling, for a provider to
+ * notice; long enough for one that checks between steps. */
+#define FEEDS_TEST_GRACE_SECONDS (2)
+
 typedef struct
 {
 	gboolean		 done;
+	gboolean		 given_up;
 	VentureFeedBatch	*batch;
 	GError			*error;
 } FeedsTestWait;
+
+static gboolean
+feeds_test_give_up(gpointer data)
+{
+	((FeedsTestWait *)data)->given_up = TRUE;
+
+	return G_SOURCE_REMOVE;
+}
 
 static void
 feeds_test_done(
@@ -1960,8 +2021,9 @@ venture_feeds_service_test(
 	g_autoptr(JsonObject) secrets = NULL;
 	g_autofree gchar *summary = NULL;
 	g_autofree gchar *report = NULL;
-	FeedsTestWait wait;
+	FeedsTestWait *wait;
 	GSource *deadline;
+	GSource *give_up;
 	const gchar *chosen;
 
 	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), NULL);
@@ -1990,7 +2052,7 @@ venture_feeds_service_test(
 	 * it alone: nothing else of the main loop's -- an HTTP request, an
 	 * automation -- runs nested inside a test fetch.
 	 */
-	memset(&wait, 0, sizeof(wait));
+	wait = g_new0(FeedsTestWait, 1);
 	context = g_main_context_new();
 	g_main_context_push_thread_default(context);
 	session = venture_feeds_session_new();
@@ -2015,36 +2077,66 @@ venture_feeds_service_test(
 	g_source_set_callback(deadline, feeds_test_deadline, g_object_ref(cancellable), g_object_unref);
 	g_source_attach(deadline, context);
 
-	venture_data_source_provider_fetch_async(spec->provider, request, cancellable,
-	                                         feeds_test_done, &wait);
+	/*
+	 * And a bound on the wait itself. Cancelling is a request: a provider
+	 * that ignores its cancellable -- a crispy script blocked in a read --
+	 * held this request, and the main thread under it, for as long as it
+	 * liked. Past the grace the answer is a timeout.
+	 */
+	give_up = g_timeout_source_new_seconds(spec->request_timeout + 5 + FEEDS_TEST_GRACE_SECONDS);
+	g_source_set_callback(give_up, feeds_test_give_up, wait, NULL);
+	g_source_attach(give_up, context);
 
-	while (!wait.done)
+	venture_data_source_provider_fetch_async(spec->provider, request, cancellable,
+	                                         feeds_test_done, wait);
+
+	while (!wait->done && !wait->given_up)
 		g_main_context_iteration(context, TRUE);
 
 	g_source_destroy(deadline);
 	g_source_unref(deadline);
+	g_source_destroy(give_up);
+	g_source_unref(give_up);
 	g_clear_object(&request);
 	g_clear_object(&session);
+
+	if (!wait->done)
+	{
+		/*
+		 * Abandoned, as the worker abandons a fetch that will not stop:
+		 * its completion is due on this private context, which is never
+		 * iterated again, so it is never dispatched and @wait -- which it
+		 * would write -- is left to it rather than freed under it.
+		 */
+		g_main_context_pop_thread_default(context);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_TIMEOUT,
+		            "%s: the %s provider did not answer within %u seconds and did not stop "
+		            "when asked to", chosen, spec->provider_name,
+		            spec->request_timeout + 5 + FEEDS_TEST_GRACE_SECONDS);
+		return NULL;
+	}
 
 	while (g_main_context_iteration(context, FALSE))
 		;
 
 	g_main_context_pop_thread_default(context);
 
-	if (NULL == wait.batch)
+	if (NULL == wait->batch)
 	{
-		g_autofree gchar *message = venture_feed_source_redact(spec, wait.error->message);
+		g_autofree gchar *message = venture_feed_source_redact(spec, wait->error->message);
 
-		g_set_error(error, wait.error->domain, wait.error->code, "%s: %s", chosen, message);
-		g_error_free(wait.error);
+		g_set_error(error, wait->error->domain, wait->error->code, "%s: %s", chosen, message);
+		g_error_free(wait->error);
+		g_free(wait);
 		return NULL;
 	}
 
-	summary = venture_feed_batch_describe(wait.batch);
+	summary = venture_feed_batch_describe(wait->batch);
 	report = g_strdup_printf("%s: %s%s%s", chosen, summary,
-	                         (NULL != wait.batch->error) ? "; then: " : "",
-	                         (NULL != wait.batch->error) ? wait.batch->error : "");
-	venture_feed_batch_unref(wait.batch);
+	                         (NULL != wait->batch->error) ? "; then: " : "",
+	                         (NULL != wait->batch->error) ? wait->batch->error : "");
+	venture_feed_batch_unref(wait->batch);
+	g_free(wait);
 
 	return venture_feed_source_redact(spec, report);
 }
@@ -2631,6 +2723,19 @@ venture_context_get_data_source_providers(VentureContext *self)
 	}
 
 	return registry;
+}
+
+void
+venture_feeds_stop(VentureContext *context)
+{
+	VentureFeedsService *service;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(context));
+
+	service = feeds_service_slot(context);
+
+	if (NULL != service)
+		venture_feeds_service_stop(service);
 }
 
 void

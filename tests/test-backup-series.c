@@ -23,6 +23,8 @@
 
 #ifdef VENTURE_HAVE_SQLITE
 
+#include <sqlite3.h>
+
 typedef struct
 {
 	gchar		*state_dir;
@@ -1165,6 +1167,143 @@ test_interrupted_and_overlapping(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 }
 
+/* --- A copy does not hold the worker ----------------------------------------- */
+
+/* The status of the series run for @uuid. */
+static gchar *
+series_status(
+	Fixture		*fixture,
+	const gchar	*uuid
+){
+	g_autoptr(GPtrArray) series = runs_of_scope(fixture, "series");
+	guint i;
+
+	for (i = 0; i < series->len; i++)
+	{
+		g_autofree gchar *store = text(g_ptr_array_index(series, i), "store-uuid");
+
+		if (0 == g_strcmp0(store, uuid))
+			return text(g_ptr_array_index(series, i), "status");
+	}
+
+	return NULL;
+}
+
+static gint64
+count_source_runs(
+	Fixture	*fixture,
+	gint64	 source_id
+){
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DATA_SOURCE_RUN);
+	g_autoptr(GError) error = NULL;
+	gint64 count;
+
+	g_assert_true(venture_query_add_filter_int(query, "data-source-id", VENTURE_FILTER_OP_EQ,
+	                                           source_id, &error));
+	count = venture_database_count(fixture->database, query, &error);
+	g_assert_no_error(error);
+
+	return count;
+}
+
+/*
+ * A store copy runs beside the worker's loop, not on it. One store is held
+ * locked by another connection, so its copy waits in SQLite's busy handler;
+ * meanwhile a sync of another source is asked for, fetched and recorded.
+ * When the lock goes, the copy finishes and is recorded too.
+ *
+ * What breaks if this regresses: copying a large store -- or one that is
+ * busy -- holds every fetch and every command for as long as it takes, so
+ * a sync someone is waiting for, or a schedule, stalls until a backup is
+ * done.
+ */
+static void
+test_sync_during_copy(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) schedule = NULL;
+	g_autoptr(VentureEntity) main_run = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *held_uuid = NULL;
+	g_autofree gchar *held_dir = NULL;
+	g_autofree gchar *held_path = NULL;
+	g_autofree gchar *status = NULL;
+	g_autofree gchar *path = NULL;
+	sqlite3 *lock;
+	sqlite3 *probe;
+	gint64 held;
+	gint64 other;
+	gint64 runs_before;
+	gint64 deadline;
+
+	(void)user_data;
+
+	held = create_source(fixture, "Argent", "argent.jsonl");
+	feed(fixture, held, "argent.jsonl", "2026-10-03T12:00:00Z", "1.25", 20);
+	other = create_source(fixture, "Brisk", "brisk.jsonl");
+	feed(fixture, other, "brisk.jsonl", "2026-10-03T12:00:00Z", "2.50", 4);
+	held_uuid = uuid_of(fixture, held);
+
+	/* Off the worker -- deleted sources' stores are still copied -- so
+	 * nothing of the worker's has the file open, and locked by a
+	 * connection that never lets go until told. */
+	record = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, held, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_delete(fixture->database, record, NULL, &error));
+	g_assert_no_error(error);
+	venture_feeds_service_refresh(service_of(fixture));
+	settle(fixture);
+
+	held_dir = venture_feeds_store_dir(fixture->config, held_uuid);
+	held_path = g_build_filename(held_dir, VENTURE_SERIES_STORE_FILENAME, NULL);
+	g_assert_cmpint(sqlite3_open(held_path, &lock), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(lock, "PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;",
+	                             NULL, NULL, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_open(held_path, &probe), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(probe, "SELECT count(*) FROM sqlite_schema", NULL, NULL, NULL),
+	                ==, SQLITE_BUSY);
+	sqlite3_close(probe);
+
+	schedule = make_schedule(fixture, 3);
+	main_run = run_backup(fixture, schedule, "2026-10-04T01:00:00Z");
+
+	/* A sync asked for after the copies were queued is recorded while
+	 * the held copy is still waiting. */
+	runs_before = count_source_runs(fixture, other);
+	path = g_build_filename(fixture->file_root, "brisk.jsonl", NULL);
+	g_assert_true(g_file_set_contents(path,
+		"{\"type\":\"venue\",\"key\":\"argent\",\"name\":\"Argent Dawn\",\"currency\":\"GOLD\"}\n"
+		"{\"type\":\"instrument\",\"key\":\"ore\",\"name\":\"Iron ore\"}\n"
+		"{\"type\":\"snapshot\",\"venue\":\"argent\",\"taken_at\":\"2026-10-03T13:00:00Z\",\"complete\":true}\n"
+		"{\"type\":\"listing\",\"venue\":\"argent\",\"instrument\":\"ore\",\"price\":\"2.40\",\"quantity\":3,\"id\":\"b2\"}\n",
+		-1, NULL));
+	g_assert_true(venture_feeds_service_sync(service_of(fixture), other,
+	                                         VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL, &error));
+	g_assert_no_error(error);
+
+	deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+
+	while (count_source_runs(fixture, other) == runs_before)
+	{
+		g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(2000);
+	}
+
+	status = series_status(fixture, held_uuid);
+	g_assert_cmpstr(status, ==, "running");
+	g_clear_pointer(&status, g_free);
+
+	/* Let go: the copy finishes and is recorded. */
+	sqlite3_close(lock);
+	settle(fixture);
+	status = series_status(fixture, held_uuid);
+	g_assert_cmpstr(status, ==, "succeeded");
+}
+
 int
 main(
 	int	 argc,
@@ -1183,6 +1322,8 @@ main(
 	           test_feeds_off, fixture_tear_down);
 	g_test_add("/backup-series/failure-is-recorded", Fixture, GINT_TO_POINTER(TRUE), fixture_set_up,
 	           test_failure_is_recorded, fixture_tear_down);
+	g_test_add("/backup-series/sync-during-copy", Fixture, GINT_TO_POINTER(TRUE), fixture_set_up,
+	           test_sync_during_copy, fixture_tear_down);
 	g_test_add("/backup-series/interrupted-and-overlapping", Fixture, GINT_TO_POINTER(TRUE),
 	           fixture_set_up, test_interrupted_and_overlapping, fixture_tear_down);
 

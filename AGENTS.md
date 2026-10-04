@@ -1663,6 +1663,19 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   `feeds.run_window_minutes`; do not make every pass a row.
 - **A sync never waits.** The action, the API, `feeds_sync` and the page
   queue and return; `venturectl feeds sync --wait` is the client polling.
+  The Test action does wait, on the main thread, so its wait is bounded
+  past the cancel (`FEEDS_TEST_GRACE_SECONDS`) and a provider that ignores
+  cancellation is abandoned with a timeout, never waited for.
+- **Runs come back on the default main context.** The worker delivers
+  there, not to the caller's thread-default, because the service's
+  retries (`g_timeout_add`/`g_idle_add`) are there; a worker first started
+  inside a pushed context delivered to one nobody iterated.
+- **A run window is written, not dropped.** A source coming off the worker
+  hands its open window back; `venture_feeds_stop()` (the server's signal
+  handler, loop still running) writes the windows and undelivered runs
+  `venture_series_worker_take_flushed()` returns. Dispose and module-off
+  cannot write a run (context going, types masked) and say how many they
+  drop.
 - **Later modules hook in, they do not edit the worker.**
   `venture_feeds_add_hook()` gives a main-thread freeze, a worker-side
   after-commit with the store's writer, and a main-thread after-run.
@@ -1677,9 +1690,12 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   loop read zero and look for a run that did not exist yet -- one
   test-alerts run in five, under load. `/feeds/pending-covers-a-queued-sync`
   polls without sleeping and fails within a few syncs if a gap returns.
-- **A series store is copied on the feeds worker, never the main thread,
-  and the copy never makes the installation backup wait.** A store can be
-  gigabytes. The backup service knows nothing about stores: the feeds
+- **A series store is copied on a thread of its own, never the main
+  thread nor the worker's loop, and the copy never makes the installation
+  backup wait.** A store can be gigabytes; on the loop it held every sync
+  behind it (`/backup-series/sync-during-copy`). The copy's GTask touches
+  only its own SQLite connections; the worker counts it (`copies`) and
+  its join waits for it, bounded. The backup service knows nothing about stores: the feeds
   module registers a companion
   (`venture_backup_schedule_service_add_companion()`) that records each
   store's `backup_run` as running, queues the copy and returns; the answer

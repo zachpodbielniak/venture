@@ -325,11 +325,39 @@ VentureFeedsService *
 venture_context_get_feeds_service(VentureContext *self);
 
 /**
+ * venture_feeds_service_stop:
+ * @self: a service
+ *
+ * Stops the worker and writes, now, every run it still held -- a scheduled
+ * window gathering passes, a run handed back and not yet written -- and
+ * every run waiting for a transaction to end; a transaction still open
+ * leaves them unwritten, with a message. For where the main loop still
+ * runs and the feeds module is still on: the server's signal handler. The
+ * service does nothing more afterwards. Idempotent.
+ */
+void
+venture_feeds_service_stop(VentureFeedsService *self);
+
+/**
+ * venture_feeds_stop:
+ * @context: a context
+ *
+ * venture_feeds_service_stop() on the context's service, if it has one.
+ * The server calls it on SIGINT and SIGTERM before the loop ends, so the
+ * last window of scheduled fetches is recorded rather than lost.
+ */
+void
+venture_feeds_stop(VentureContext *context);
+
+/**
  * venture_feeds_shutdown:
  * @context: a context
  *
  * Stops the context's feeds worker, if one runs, and drops the service.
- * Called when the context is disposed and when the module is switched off.
+ * Called when the context is disposed and when the module is switched off
+ * -- where a data_source_run can no longer be written (the context is
+ * going, or the feeds types are masked), so the runs the worker still held
+ * are dropped with a message; venture_feeds_stop() before it writes them.
  */
 void
 venture_feeds_shutdown(VentureContext *context);

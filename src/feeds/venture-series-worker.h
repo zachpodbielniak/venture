@@ -240,8 +240,10 @@ G_DECLARE_FINAL_TYPE(VentureSeriesWorker, venture_series_worker, VENTURE, SERIES
 /**
  * venture_series_worker_new:
  *
- * Starts the thread. The context current on the calling thread is where
- * #VentureSeriesWorker::run-finished is emitted.
+ * Starts the thread. #VentureSeriesWorker::run-finished and
+ * #VentureSeriesWorker::backup-finished are emitted on the default main
+ * context, where the feeds service's own retries run too, whatever context
+ * the caller had pushed.
  *
  * Returns: (transfer full): the worker, running
  */
@@ -268,7 +270,8 @@ venture_series_worker_set_source(
  * @source_id: a data_source id
  *
  * Forgets a source and closes its store. A fetch in flight finishes and
- * its run is still handed back.
+ * its run is still handed back, and so is a scheduled window still
+ * gathering passes: finished now rather than dropped.
  */
 void
 venture_series_worker_remove_source(
@@ -316,12 +319,15 @@ venture_series_worker_purge(
  * @store_dir: the store's directory
  * @destination: the file to write
  *
- * Queues a copy of a store with venture_series_store_backup(), taken on the
- * worker thread -- a store can be gigabytes, and the main thread serves
- * requests -- between fetches, so it never sees a write half done. The
- * answer comes back on the main context as
- * #VentureSeriesWorker::backup-finished. A copy still queued when the worker
- * stops is dropped unanswered; its caller must notice that itself.
+ * Queues a copy of a store with venture_series_store_backup(), taken on a
+ * short-lived thread of its own -- a store can be gigabytes, the main
+ * thread serves requests and the worker's loop serves every fetch -- that
+ * touches nothing but its own SQLite connections. The copy is the store as
+ * of one commit (venture_series_store_backup() pins a read), so it never
+ * sees a write half done. The answer comes back on the main context as
+ * #VentureSeriesWorker::backup-finished. A copy still running when the
+ * worker stops is cancelled and left unanswered; its caller must notice
+ * that itself.
  */
 void
 venture_series_worker_backup(
@@ -360,11 +366,26 @@ venture_series_worker_count_live(VentureSeriesWorker *self);
  * venture_series_worker_stop:
  * @self: a worker
  *
- * Cancels every fetch, stops the loop and joins the thread. Runs not yet
- * delivered are dropped. Idempotent.
+ * Cancels every fetch and store copy, stops the loop and joins the thread.
+ * Runs not yet delivered, and every scheduled window still gathering
+ * passes (finished now), are kept for venture_series_worker_take_flushed()
+ * rather than emitted. Idempotent.
  */
 void
 venture_series_worker_stop(VentureSeriesWorker *self);
+
+/**
+ * venture_series_worker_take_flushed:
+ * @self: a stopped worker
+ *
+ * The runs venture_series_worker_stop() kept: finished, never emitted. The
+ * caller writes them -- or says why it could not.
+ *
+ * Returns: (transfer full) (element-type VentureFeedRun): the runs, oldest
+ *   first as they were kept; empty when there were none
+ */
+GPtrArray *
+venture_series_worker_take_flushed(VentureSeriesWorker *self);
 
 /**
  * venture_series_worker_delete_store:
