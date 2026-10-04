@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-28]
-#+version: 0.1.0
+#+updated: [2026-10-03]
+#+version: 0.2.0
 
 * Stock that becomes other stock
 
@@ -232,7 +232,7 @@ source.
 
 | Option            | Meaning                                                                          |
 |-------------------+----------------------------------------------------------------------------------|
-| =price_source=    | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
+| =price_source=    | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module. =series:<basis>[@<venue or group>]= prices from market data feeds instead (below) |
 | =as_of=           | prices and stock as they stood at this date; now by default                     |
 | =currency=        | only prices observed in this currency count; left out, the book currency's price wins wherever the product was seen in it, else the newest in any. See [[file:market.org][Market]] |
 | =venture_id=      | only this venture's recipes                                                      |
@@ -251,6 +251,8 @@ figures: a component at its first inventory item's =unit_cost=, else the
 product's =cost=; the output at the product's =list_price=. =price_source=
 with the market off is refused rather than ignored. The =priced_by= column
 says which.
+
+*Pricing from market data.* A =price_source= of the form =series:<basis>[@<venue or group>]= -- =series:min@argent-dawn=, =series:region_median@eu=, =series:market_14d= -- is not an observation source: it is parsed first, and asks the price oracle for each product through the instruments that name it (see [[file:market-data.org][Market data]], "The price oracle"). The basis is a price basis (=min=, =market=, =market_14d=, =historical_60d=, =region_median=, =region_p33=, =region_market_avg=, =sale_avg=); the figure is as of =as_of=, strictly in the =currency= option's currency when one is named and otherwise preferring the book currency, and never converted. The never-fall-back rule holds here too: a product no instrument prices is named in the note and its figures left blank, even when an observation of it exists. It needs the marketdata and feeds modules (in a build with SQLite); without them the report is refused, naming what is off.
 
 | Column          | What                                                                     |
 |-----------------+--------------------------------------------------------------------------|

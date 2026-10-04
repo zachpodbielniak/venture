@@ -31869,6 +31869,7 @@ venture_web_api_ticket_draft(
 #ifdef VENTURE_HAVE_SQLITE
 #include "feeds/venture-feeds-web.inc"
 #endif
+#include "marketdata/venture-marketdata-web.inc"
 #include "commerce/venture-commerce-web.inc"
 #include "budgets/venture-budget-web.inc"
 #include "equity/venture-equity-web.inc"
@@ -32396,6 +32397,8 @@ venture_web_server_new(
 	/* Before the generic record routes: /api/v1/feeds is not a type. */
 	venture_feeds_web_register(self);
 #endif
+	/* Likewise /api/v1/market: the oracle and promotion, not a type. */
+	venture_marketdata_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);

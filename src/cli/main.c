@@ -2281,6 +2281,7 @@ venture_cli_command_factory(
 #include "banking/venture-bank-cli.inc"
 #include "bankfeed/venture-bankfeed-cli.inc"
 #include "feeds/venture-feeds-cli.inc"
+#include "marketdata/venture-marketdata-cli.inc"
 #include "commerce/venture-commerce-cli.inc"
 
 static gint
@@ -3911,6 +3912,11 @@ main(
 		"                               --wait prints the run it records\n"
 		"  feeds runs ID                a data source's runs, newest first\n"
 		"  feeds due                    every unit and when it is checked next\n"
+		"  market quote ID [basis=B] [venue=KEY|GROUP] [at=DATE] [currency=C]\n"
+		"                               the price oracle for an instrument (or\n"
+		"                               product=ID); fallback=true reads observations\n"
+		"  market promote SOURCE_ID instrument|venue KEY\n"
+		"                               make a record of what a source's store saw\n"
 		"  commerce import [JSON]       import orders; JSON organization_id selects the account\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  deal quote ID                create or revise a quote from the deal's lines\n"
@@ -4257,6 +4263,8 @@ main(
 		result = venture_cli_command_bankfeed(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "feeds"))
 		result = venture_cli_command_feeds(&cli, args, feeds_wait, &error);
+	else if (0 == g_strcmp0(args[0], "market"))
+		result = venture_cli_command_market(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "commerce"))
 		result = venture_cli_command_commerce(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))

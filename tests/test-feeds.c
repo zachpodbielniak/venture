@@ -753,16 +753,21 @@ test_feeds_settings_are_validated(
 			        refused[i].problem);
 	}
 
-	/* track: known with nothing known keeps nothing, and says so. */
+	/* track: known with nothing known keeps nothing, and says so -- with
+	 * marketdata off. With it on, the source's instrument records are
+	 * known too, and they can only be made once the source exists, so an
+	 * empty list is accepted (test-marketdata covers that half). */
 	{
 		g_autoptr(VentureDataSource) source = venture_data_source_new();
 
+		venture_config_set_module_enabled(fixture->config, "marketdata", FALSE);
 		venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
 		g_object_set(source, "name", "Known", "provider", "file_jsonl", "settings", "file: x.jsonl",
 		             "track", VENTURE_DATA_SOURCE_TRACK_KNOWN, NULL);
 		g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(source), NULL, &error));
 		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 		g_clear_error(&error);
+		venture_config_set_module_enabled(fixture->config, "marketdata", TRUE);
 	}
 
 	/* And a good one saves, with a cron schedule. */
@@ -1388,6 +1393,63 @@ install_exec_provider(Fixture *fixture)
  * What breaks if this regresses: a scripted supplier feed that never
  * runs, or one that keeps running after the operator switched exec off.
  */
+/*
+ * track: known keeps the instruments the settings list and, with the
+ * marketdata module on, the instrument records filed under the source --
+ * read when the source is frozen, on the main thread.
+ *
+ * What breaks if this regresses: promoting an instrument does not make
+ * the source keep it, so a known-only source stores nothing but its
+ * hand-typed list.
+ */
+static void
+test_feeds_track_known_instrument_records(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(VentureSeriesRow) ore = NULL;
+	g_autoptr(VentureSeriesRow) herb = NULL;
+	g_autoptr(VentureInstrument) instrument = NULL;
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+
+	(void)user_data;
+
+	path = write_root_file(fixture, "known.jsonl",
+		"{\"type\":\"snapshot\",\"venue\":\"argent\",\"taken_at\":\"2026-10-03T12:00:00Z\",\"complete\":true}\n"
+		"{\"type\":\"listing\",\"venue\":\"argent\",\"instrument\":\"ore\",\"price\":\"1.25\",\"quantity\":2}\n"
+		"{\"type\":\"listing\",\"venue\":\"argent\",\"instrument\":\"herb\",\"price\":\"0.50\",\"quantity\":4}\n");
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", "Known only", "provider", "file_jsonl",
+	             "settings", "file: known.jsonl\n", "schedule", "manual", "currency", "USD",
+	             "track", VENTURE_DATA_SOURCE_TRACK_KNOWN, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(source), NULL, &error));
+	g_assert_no_error(error);
+
+	instrument = venture_instrument_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(instrument), fixture->org);
+	g_object_set(instrument, "name", "Ore", "key", "ore",
+	             "data-source-id", venture_entity_get_id(VENTURE_ENTITY(source)), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(instrument), NULL, &error));
+	g_assert_no_error(error);
+
+	run = sync_and_wait(fixture, venture_entity_get_id(VENTURE_ENTITY(source)));
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+
+	reader = venture_feeds_service_open_reader(service_of(fixture),
+	                                           venture_entity_get_id(VENTURE_ENTITY(source)), &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_series_store_get_current(reader, "argent", "ore", &ore, &error));
+	g_assert_nonnull(ore);
+	g_assert_true(venture_series_store_get_current(reader, "argent", "herb", &herb, &error));
+	g_assert_null(herb);
+}
+
 static void
 test_feeds_exec_provider(
 	Fixture		*fixture,
@@ -2032,6 +2094,8 @@ main(
 	           test_feeds_worker_lifecycle, fixture_tear_down);
 	g_test_add("/feeds/actions-and-automation", Fixture, NULL, fixture_set_up,
 	           test_feeds_actions_and_automation, fixture_tear_down);
+	g_test_add("/feeds/track-known-instrument-records", Fixture, NULL, fixture_set_up,
+	           test_feeds_track_known_instrument_records, fixture_tear_down);
 
 	return g_test_run();
 }

@@ -668,6 +668,17 @@ static GType (*const feeds_types[]) (void) = {
 	venture_data_source_get_type, venture_data_source_run_get_type, NULL
 };
 static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_type, NULL };
+/* Venues, instruments and watchlists, and the price oracle over them. It
+ * requires market, whose observations the oracle falls back to and whose
+ * listings name a venue; it suggests feeds, whose series stores are what
+ * the oracle reads first. With feeds off the records still work and the
+ * oracle answers from observations when it is allowed to. */
+static const gchar *const marketdata_requires[] = { "market", NULL };
+static const gchar *const marketdata_suggests[] = { "feeds", NULL };
+static GType (*const marketdata_types[]) (void) = {
+	venture_venue_get_type, venture_instrument_get_type,
+	venture_watchlist_get_type, venture_watchlist_entry_get_type, NULL
+};
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
 
@@ -852,6 +863,10 @@ static GType (*const market_types[]) (void) = {
 	venture_price_observation_get_type, venture_listing_get_type, NULL
 };
 static const gchar *const market_reports[] = { "listing_performance", "price_history", NULL };
+/* A listing may name the market data venue it is listed at; with
+ * marketdata off that reference is refused when written, like any other
+ * into a hidden module, and listings work as they always did. */
+static const gchar *const market_suggests[] = { "marketdata", NULL };
 
 /* Stock turned into other stock. It requires sales because a recipe names
  * products and crafting moves inventory, both of which sales owns; it
@@ -1275,7 +1290,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"market", "Market",
 		"Prices seen from named sources over time, and listings that end sold, "
 		"partly sold, expired or cancelled: sale rate, time to sell and price history.",
-		venture_module_requires_sales, NULL, market_types, market_reports, NULL, FALSE
+		venture_module_requires_sales, market_suggests, market_types, market_reports, NULL, FALSE
 	},
 	{
 		"production", "Production",
@@ -1308,6 +1323,15 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"providers for JSON, CSV and JSON-lines files, and plugins.",
 		venture_module_requires_core, NULL, feeds_types, NULL,
 		"feeds-enabled", FALSE
+	},
+	{
+		"marketdata", "Market data",
+		"Venues and instruments promoted from market data, watchlists, and "
+		"the price oracle every valuing report can ask through a series: "
+		"price source: min, market, 14-day and 60-day averages, region "
+		"figures, sale rate and quantity.",
+		marketdata_requires, marketdata_suggests, marketdata_types, NULL,
+		NULL, FALSE
 	}
 };
 

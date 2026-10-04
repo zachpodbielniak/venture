@@ -809,6 +809,54 @@ VENTURE_DEFINE_ENUM_TYPE(venture_data_source_run_trigger_get_type,
                          "VentureDataSourceRunTrigger",
                          venture_data_source_run_trigger_values)
 
+static const GEnumValue venture_venue_kind_values[] = {
+	VE(VENTURE_VENUE_KIND_OTHER,         "other"),
+	VE(VENTURE_VENUE_KIND_MARKETPLACE,   "marketplace"),
+	VE(VENTURE_VENUE_KIND_AUCTION_HOUSE, "auction_house"),
+	VE(VENTURE_VENUE_KIND_BOOKMAKER,     "bookmaker"),
+	VE(VENTURE_VENUE_KIND_EXCHANGE,      "exchange"),
+	VE(VENTURE_VENUE_KIND_SUPPLIER,      "supplier"),
+	VE(VENTURE_VENUE_KIND_STORE,         "store"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_venue_kind_get_type,
+                         "VentureVenueKind",
+                         venture_venue_kind_values)
+
+static const GEnumValue venture_instrument_kind_values[] = {
+	VE(VENTURE_INSTRUMENT_KIND_OTHER,   "other"),
+	VE(VENTURE_INSTRUMENT_KIND_ITEM,    "item"),
+	VE(VENTURE_INSTRUMENT_KIND_OUTCOME, "outcome"),
+	VE(VENTURE_INSTRUMENT_KIND_EVENT,   "event"),
+	VE(VENTURE_INSTRUMENT_KIND_ASSET,   "asset"),
+	VE(VENTURE_INSTRUMENT_KIND_SKU,     "sku"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_instrument_kind_get_type,
+                         "VentureInstrumentKind",
+                         venture_instrument_kind_values)
+
+static const GEnumValue venture_marketdata_basis_values[] = {
+	VE(VENTURE_MARKETDATA_BASIS_MARKET,            "market"),
+	VE(VENTURE_MARKETDATA_BASIS_MIN,               "min"),
+	VE(VENTURE_MARKETDATA_BASIS_MARKET_14D,        "market_14d"),
+	VE(VENTURE_MARKETDATA_BASIS_HISTORICAL_60D,    "historical_60d"),
+	VE(VENTURE_MARKETDATA_BASIS_REGION_MEDIAN,     "region_median"),
+	VE(VENTURE_MARKETDATA_BASIS_REGION_P33,        "region_p33"),
+	VE(VENTURE_MARKETDATA_BASIS_REGION_MARKET_AVG, "region_market_avg"),
+	VE(VENTURE_MARKETDATA_BASIS_SALE_AVG,          "sale_avg"),
+	VE(VENTURE_MARKETDATA_BASIS_SALE_RATE,         "sale_rate"),
+	VE(VENTURE_MARKETDATA_BASIS_SOLD_PER_DAY,      "sold_per_day"),
+	VE(VENTURE_MARKETDATA_BASIS_QUANTITY,          "quantity"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_marketdata_basis_get_type,
+                         "VentureMarketdataBasis",
+                         venture_marketdata_basis_values)
+
 static const GEnumValue venture_dashboard_layout_values[] = {
 	VE(VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS, "three_columns"),
 	VE(VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,   "two_columns"),

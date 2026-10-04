@@ -207,6 +207,11 @@ CORE_SRCS += src/feeds/venture-feeds-records.c
 ifeq ($(SQLITE),1)
 SERVER_ONLY_SRCS += $(filter-out src/feeds/venture-feeds-records.c,$(wildcard src/feeds/*.c))
 endif
+# Market data records and the price oracle. The oracle is built with or
+# without SQLite: without a series store it answers from price
+# observations only, so the module and its records still work.
+CORE_SRCS += src/marketdata/venture-marketdata-records.c
+SERVER_ONLY_SRCS += $(filter-out src/marketdata/venture-marketdata-records.c,$(wildcard src/marketdata/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -323,6 +328,7 @@ PUBLIC_HDRS += $(wildcard src/sessions/*.h)
 PUBLIC_HDRS += $(wildcard src/goals/*.h)
 PUBLIC_HDRS += src/series/venture-series-math.h
 PUBLIC_HDRS += src/feeds/venture-feeds-records.h
+PUBLIC_HDRS += $(wildcard src/marketdata/*.h)
 ifeq ($(SQLITE),1)
 PUBLIC_HDRS += src/series/venture-series-store.h
 PUBLIC_HDRS += $(filter-out src/feeds/venture-feeds-records.h %-private.h,$(wildcard src/feeds/*.h))

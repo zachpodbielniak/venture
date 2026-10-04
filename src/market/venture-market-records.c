@@ -91,6 +91,10 @@ static const VentureFieldDecl venture_listing_fields[] = {
 	              "Where it is listed: an auction house, a marketplace, a shop",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("venue-id", "Venue",
+	                  "Optional: the market data venue it is listed at, so it can be held "
+	                  "against that venue's prices",
+	                  "venue", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("quantity", "Quantity", "Units offered; at least one",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("quantity-sold", "Sold",

@@ -1,16 +1,16 @@
 #+title: Market data: feeds and the series store
-#+description: How outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract
+#+description: How outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract; venues, instruments, watchlists, promotion and the price oracle
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
 #+updated: [2026-10-03]
-#+version: 0.2.0
+#+version: 0.3.0
 
 * Market data
 
 A market data source -- an auction house API, a bookmaker's odds feed, a supplier's price list -- returns far more than the main database is for. One World of Warcraft region is some 186 realms times ten thousand items, every hour, out of a hundred thousand listings per realm. VENTURE keeps all of it, reduced to compact figures as it arrives, in a *series store*: one SQLite file per data source, outside the main database.
 
-This page documents the feeds that fill it -- data sources, providers, the worker thread, the transport rules, scheduling, the records sink -- and the store itself: its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract. The pages that browse it and the price oracle that reads it are built on top of it and documented where they live. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]].
+This page documents the feeds that fill it -- data sources, providers, the worker thread, the transport rules, scheduling, the records sink -- and the store itself: its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract. The marketdata module -- venue and instrument records, watchlists, promotion and the price oracle that reads the stores -- is documented at the end of this page; the pages that browse it are built on top of it. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]].
 
 ** Why it is not entity tables
 
@@ -297,10 +297,10 @@ A =data_source= record says where the data comes from:
 | =enabled=              | Off means it never runs on its own; it can still be synced by hand. A new source starts enabled (the column's zero value, FALSE, means off).      |
 | =currency=             | What a price that names no currency is in.                                                                                                         |
 | =venue-namespace=, =instrument-namespace= | Written onto the store's venue and instrument rows, so two sources' "1001" can be told apart when records are promoted.         |
-| =track=                | =all= (the zero value: store everything, as the store's design intends) or =known= (only the keys in the settings' =instruments= list).            |
+| =track=                | =all= (the zero value: store everything, as the store's design intends) or =known= (only the keys in the settings' =instruments= list, and with marketdata on the instrument records filed under the source; see "Known instruments"). |
 | =min-value=            | Money with its currency: below it an instrument is left out of region deal prices.                                                                 |
 
-Writes need an administrator, through the same =venture-access-admin-write= type data the currency uses: which host the server calls is configuration. The save validator (=feeds_validate_source()=) parses the settings, checks them against the provider's schema -- a setting the schema marks =x-sensitive= is refused outright, it belongs in the sealed store -- checks declared types and required settings, the schedule, the currency, the namespaces, =track: known= with something known, =record_types= against what a feed may write, and that the provider can list its units from them.
+Writes need an administrator, through the same =venture-access-admin-write= type data the currency uses: which host the server calls is configuration. The save validator (=feeds_validate_source()=) parses the settings, checks them against the provider's schema -- a setting the schema marks =x-sensitive= is refused outright, it belongs in the sealed store -- checks declared types and required settings, the schedule, the currency, the namespaces, =track: known= with something known (with marketdata off; with it on the source's instrument records count, and an empty list is accepted), =record_types= against what a feed may write, and that the provider can list its units from them.
 
 A source's store is always =<state_dir>/series/<uuid>/=, derived by =venture_feeds_store_dir()= every time it is needed. No record holds a path.
 
@@ -399,3 +399,114 @@ A hook added while the worker runs refreezes every source.
 - =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N=, =POST /api/v1/feeds/ID/sync= (202, =queued=).
 - =venturectl feeds sync ID [--wait]=, =feeds runs ID=, =feeds due=.
 - =venture_feeds_service_open_reader()= opens a read-only handle on a source's store from the main thread, for pages and the price oracle.
+
+* Venues, instruments and the price oracle
+
+The =marketdata= module (requires =market=, suggests =feeds=, on by default, no switch of its own) joins the series stores to the books. It owns four record types and one lookup: the price oracle, which answers "what is this worth" from a store, and which every valuing report can ask through a =series:= price source.
+
+** Records
+
+*** =venue=
+
+A place things are priced and traded: one realm's auction house, a bookmaker, an exchange, a supplier, your own shop.
+
+- =name=, and =kind=: =other= (the zero value, deliberately -- a venue nobody classified is not silently a marketplace, and a later fee model or strategy keyed on the kind must not apply a marketplace's cut to it), =marketplace=, =auction_house=, =bookmaker=, =exchange=, =supplier=, =store=.
+- =namespace=, =key= and =group-key=: the venue's row in its store, and the group (a region) it is compared within.
+- =external-ref=: =namespace:key= (=:key= with no namespace), derived at every save, unique in the organization with deleted rows included (=VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION=; the partition is the integer organization id). A record with no key has no reference and nothing to keep unique. A namespace may not contain a colon, or ="a:b" + "c"= and ="a" + "b:c"= would be one reference.
+- =data-source-id=: optional; the source whose store has this venue.
+- =location-id=, else =account-id=: where money moves when you trade there -- a location's holding, or an account when the venue has no location.
+- =currency=: optional, a currency code, stored in capitals.
+- =fee-model= and =fee-params=: a name and its YAML parameters. Stored as text now; the registry that gives the names meaning arrives with the arbitrage engine, which validates them then.
+- =transfer-cost= (money, not negative) and =transfer-hours= (not negative): what moving one lot to or from the venue costs and how long it takes.
+
+*** =instrument=
+
+A thing that is priced: =kind= =other= (the zero value, for the same reason), =item=, =outcome=, =event=, =asset=, =sku=. It has the same =namespace=, =key=, derived =external-ref= and optional =data-source-id= as a venue, and:
+
+- =product-id=: the product it is. This is what joins outside prices to recipes, stock and goals: the oracle answers for a product through every instrument that names it.
+- =category-id= and =parent-id=: where it is filed, and what it belongs to (an outcome's event). The tree is held to the category rules -- no loop, one organization, bounded depth -- by =venture_category_check_tree_node()=.
+- =attrs=: what the source said about it, as YAML or JSON.
+
+*** =watchlist= and =watchlist_entry=
+
+A named list of instruments, optionally in one venue group and for one venture, shared in the organization rather than owned by a person: alerts read watchlists, and a record with a personal owner is one webhooks and automation are kept quiet about. An entry names a watchlist and an instrument of its own organization, once per list, with an optional =target-buy= and =target-sell= that are not negative and, when both are given, in one currency.
+
+*** Listings
+
+The market module's =listing= gained an optional =venue-id=, held to the listing's organization, so an undercut alert has a venue to compare an open listing with. The reference is to a type of this module: with marketdata off it is refused when written, like any reference into a hidden module, and listings work as before. The column is additive; reconciliation adds it, and no migration script is needed.
+
+** Promotion
+
+=venture_marketdata_promote_instrument(context, organization, data_source_id, key, actor, &record, &error)= and =venture_marketdata_promote_venue(...)= turn a row a store has seen into a record:
+
+- The source must be the organization's and not deleted; its store is read through =venture_feeds_service_open_reader()=, so promotion needs the feeds module (and a build with SQLite). A store with nothing in it yet, or a key it has not seen, is =VENTURE_ERROR_NOT_FOUND=.
+- The namespace is the row's, else the source's =instrument-namespace= (or =venue-namespace=). The reference is looked up *deleted rows included*: a live record is returned as it is, edits kept; a deleted one is restored, never shadowed by a duplicate that would fail the unique index on every later attempt.
+- A new record takes the row's name, its kind (free text read as a nick: "Auction House" is =auction_house=, anything unknown is =other=), its group and currency (venues) or its attributes (instruments). An instrument's category is the existing category whose computed path matches the row's ="Materials/Ore"=, if any, and that may group instruments; categories are never made here, because a store's taxonomy would otherwise grow a branch per string a provider ever sent. An instrument's parent is promoted first; a parent the store does not know is left out, and a loop in the store's own data ends at =VENTURE_CATEGORY_MAX_DEPTH=.
+
+=POST /api/v1/market/promote= ={"data_source_id": N, "kind": "instrument"|"venue", "key": "..."}= (editors) and =venturectl market promote SOURCE_ID instrument|venue KEY= call it.
+
+** Known instruments
+
+A data source with =track: known= stores only the instruments its settings list under =instruments= and, with marketdata on, the instrument records filed under the source -- promoted, or typed in with their key. The feeds service reads those keys (=venture_marketdata_known_keys()=) when it freezes the source, on the main thread, so the worker only ever sees a frozen set; saving or deleting an instrument queues a coalesced refreeze. With marketdata on, a known-only source may therefore be saved with an empty list.
+
+** The price oracle
+
+=venture_marketdata_reference_price(context, &question, &price, &evidence, &error)= answers one question; =venture_marketdata_reference_number()= answers the three number bases. A =VentureMarketdataOracle= object (=venture_marketdata_oracle_new()=) does the same and keeps the store handles it opens for as long as it lives, so a report that asks about a hundred products opens each store once; make one per report or request and drop it after, so a purged store is never read through a stale handle. Every read is on the main thread.
+
+The question (=VentureMarketdataQuestion=, always cleared with =venture_marketdata_question_init()= first):
+
+- =organization_id=; =instrument_id=, or =product_id= to ask through every instrument naming the product, oldest first, until one answers.
+- =venue_id= (a venue record) or =where= (a key or group in the instrument's store; a key the store knows as a venue is a venue, anything else a group), not both. A venue record answers only for its own store.
+- =basis=, =at= (%NULL for now), =currency= (only that currency answers), =prefer_currency= (among several instruments, the first in it wins), =allow_fallback= and =fallback_source=.
+
+Its evidence (=VentureMarketdataEvidence=, also JSON through =venture_marketdata_evidence_to_json()=) says where the answer came from: =origin= =series= or =observation=, the data source, instrument, venue or group, when the figure was taken, the observation and its source, and a note -- why nothing answered, when nothing did.
+
+*** Bases
+
+| Basis | At a venue | Across a group (or every venue, with none named) |
+|-------+------------+------------------------------------------------|
+| =market= (the zero value) | the venue's market value | the group's =region_market_avg= |
+| =min= | the cheapest unit on offer | the cheapest venue's minimum, in one currency |
+| =market_14d= | the 14-day weighted market value | the same over the group's per-day means |
+| =historical_60d= | the 60-day mean market value | likewise |
+| =region_median=, =region_p33=, =region_market_avg= | the venue's group's figure | the group's figure |
+| =sale_avg= | the average estimated sale price, 14 days | sales summed across the group |
+| =sale_rate= (number) | sold / (sold + expired), 14 days | likewise |
+| =sold_per_day= (number) | units sold a day | likewise |
+| =quantity= (number) | units on offer now | units on offer at every venue, summed |
+
+The formulas are the store's (see "The figures" above); the oracle only chooses which and reads it. A group-wide figure with no group named uses the store's only group, and a store whose venues sit in several groups refuses (=VENTURE_ERROR_INVALID_ARGUMENT=, naming them): guessing would price an EU recipe from US realms. The cheapest across venues is in the currency asked for, else the preferred one when a venue offers in it, else the cheapest venue's.
+
+*** Time
+
+With =at= set, a current figure answers only when it was taken at or before =at=; otherwise the newest hourly point at or before it (14 days back), then the newest day that began at or before it (60 days back). The daily-history bases are computed as of the day =at= falls in. Region figures are current only: a region computed after =at= does not answer for it.
+
+*** Never a conversion
+
+A figure in another currency than =currency= is no answer; the evidence names both currencies and says nothing was converted. Nothing observed is not an error: the call succeeds with no price, exactly as =venture_market_latest_price()= does. Feeds off, a source with nothing stored, an instrument with no data source and key, and the marketdata module off are all "nothing observed", with the reason in the note. Only a store that cannot be read (a newer schema) is an error.
+
+*** The fallback
+
+Only when =allow_fallback= is set, only for prices, and only when no store answered: the newest =price_observation= of the product at or before =at= (=fallback_source= matched exactly), strictly in =currency= when it is set and otherwise preferring =prefer_currency=. The evidence's origin is then =observation=. Numbers never fall back: observations carry no rates.
+
+** Price sources: the =series:= grammar
+
+A valuing report's =price_source= is parsed by =venture_marketdata_parse_price_source()= *before* it is matched against observation sources:
+
+#+begin_example
+series:<basis>[@<venue key or group>]
+#+end_example
+
+- Text that does not start with =series:= is an exact observation source, as before; the market module refuses to save an observation whose source starts with =series:=, which could never be asked for.
+- The basis must be a price basis; =series:quantity= is refused as "a number, not a price", and an empty basis or an empty place after =@= is refused.
+- A series source needs the marketdata and feeds modules in a build with SQLite (=venture_marketdata_series_available()=); without them the report refuses, naming what is off, rather than reading every product as unpriced.
+
+=recipe_margin= and =goal_materials= accept it (=venture_marketdata_oracle_source_price()=, shared so the two cannot disagree): each product is priced through its instruments on that basis, at that place, as of the report's =as_of=, strictly in the =currency= option when one is given and otherwise preferring the book currency. Never an observation in its place -- =recipe_margin='s never-fall-back rule holds: a product the feeds have not priced is named and its figures left blank.
+
+** Surfaces
+
+- =GET /api/v1/market/quote= (viewers): =instrument_id= or =product_id=, =venue_id= or =where=, =basis=, =at=, =currency=, =prefer_currency=, =fallback= (=true=), =source=. Answers ={"basis", "found", "price" (money or null), "value" (number or null), "evidence"}=.
+- =POST /api/v1/market/promote= (editors), above.
+- =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]= and =venturectl market promote=.
+- The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. Pages to browse a store arrive with the browse pages.
+- All of it is gone with the module off: the routes answer 404, the types are hidden.

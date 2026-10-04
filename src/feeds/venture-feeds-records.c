@@ -50,7 +50,7 @@ static const VentureFieldDecl venture_data_source_fields[] = {
 	              "The same for its instruments: wow-item, sku, event",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("track", "Track",
-	                   "all stores every instrument the source reports; known only the ones in the settings' instruments list",
+	                   "all stores every instrument the source reports; known only the ones in the settings' instruments list and the instrument records filed under the source",
 	                   venture_data_source_track_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("min-value", "Minimum value",
 	                    "Optional: an instrument worth less than this, in this currency, is left out of deal prices"),

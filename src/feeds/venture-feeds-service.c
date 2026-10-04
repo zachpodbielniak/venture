@@ -621,6 +621,17 @@ feeds_freeze(
 
 		for (i = 0; (NULL != known) && (NULL != known[i]); i++)
 			g_hash_table_add(spec->known, g_strdup(known[i]));
+
+		/* And the instrument records filed under this source: promoting
+		 * one, or typing one in with its key, is how it becomes known.
+		 * Read now, on the main thread, so the worker only ever sees
+		 * the frozen set. */
+		{
+			g_autoptr(GPtrArray) promoted = venture_marketdata_known_keys(context, record);
+
+			for (i = 0; i < promoted->len; i++)
+				g_hash_table_add(spec->known, g_strdup(g_ptr_array_index(promoted, i)));
+		}
 	}
 
 	/* The limits, from the configuration now. */
@@ -1851,7 +1862,16 @@ feeds_validate_source(
 	if (NULL == settings)
 		return FALSE;
 
-	if (VENTURE_DATA_SOURCE_TRACK_KNOWN == track)
+	/*
+	 * With marketdata on, the instrument records filed under the source
+	 * are known too, so an empty list is a source that keeps exactly
+	 * those; the source is made before any instrument can name it. With
+	 * it off the list is all there is, and an empty one would keep
+	 * nothing at all.
+	 */
+	if ((VENTURE_DATA_SOURCE_TRACK_KNOWN == track) &&
+	    (G_TYPE_INVALID == venture_entity_registry_lookup(venture_entity_registry_get_default(),
+	                                                      "instrument")))
 	{
 		g_auto(GStrv) known = feeds_string_list(settings, "instruments");
 
@@ -2178,7 +2198,11 @@ feeds_entity_changed(
 ){
 	VentureFeedsService *service;
 
-	if (!VENTURE_IS_DATA_SOURCE(entity) && !VENTURE_IS_INTEGRATION_CONNECTION(entity))
+	/* An instrument record may make a key known to a source that tracks
+	 * only those; the refresh is coalesced, so promoting a thousand is one
+	 * refreeze. */
+	if (!VENTURE_IS_DATA_SOURCE(entity) && !VENTURE_IS_INTEGRATION_CONNECTION(entity) &&
+	    !VENTURE_IS_INSTRUMENT(entity))
 		return;
 
 	service = venture_context_get_feeds_service(context);

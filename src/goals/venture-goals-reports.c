@@ -965,7 +965,9 @@ goals_materials_on_hand(
 }
 
 /*
- * What one unit costs to buy. With the market module on, the latest
+ * What one unit costs to buy. With a `series:` price source (@series
+ * set), the price oracle's figure for the product's instruments and
+ * nothing else, by the same rule. With the market module on, the latest
  * observation from @source at or before @as_of and nothing else -- falling
  * back to a recorded cost would mix two kinds of number in one total
  * without saying which, the rule recipe_margin keeps. With it off, the
@@ -974,7 +976,10 @@ goals_materials_on_hand(
  */
 static gboolean
 goals_materials_price(
-	VentureDatabase	 *database,
+	VentureDatabase			 *database,
+	VentureMarketdataOracle		 *series,
+	VentureMarketdataBasis		  basis,
+	const gchar			 *where,
 	gint64		  organization_id,
 	VentureEntity	 *product,
 	GPtrArray	 *items,
@@ -989,6 +994,12 @@ goals_materials_price(
 	guint i;
 
 	*out_price = NULL;
+
+	if (NULL != series)
+		return venture_marketdata_oracle_source_price(series, organization_id,
+		                                              venture_entity_get_id(product), basis,
+		                                              where, currency, strict, as_of,
+		                                              out_price, error);
 
 	/* Only prices in the currency option's currency when one is named;
 	 * otherwise the book currency's wherever the product was seen in it,
@@ -1117,6 +1128,9 @@ goals_materials_goals(
 static gboolean
 goals_materials_line(
 	VentureContext		 *context,
+	VentureMarketdataOracle	 *series,
+	VentureMarketdataBasis	  basis,
+	const gchar		 *where,
 	VentureReportResult	 *result,
 	GoalsNeed		 *need,
 	gint64			  organization_id,
@@ -1178,8 +1192,9 @@ goals_materials_line(
 	venture_report_result_set_number(result, "to_acquire", (gdouble)to_acquire);
 
 	if ((NULL != product) &&
-	    !goals_materials_price(database, organization_id, product, items, market,
-	                           source, currency, strict, as_of, &price, error))
+	    !goals_materials_price(database, series, basis, where, organization_id, product,
+	                           items, market, source, currency, strict, as_of, &price,
+	                           error))
 		return FALSE;
 
 	if (NULL == price)
@@ -1330,8 +1345,12 @@ venture_goals_materials(
 	g_autoptr(GString) skipped = NULL;
 	g_autoptr(GList) currencies = NULL;
 	g_autofree gchar *currency = NULL;
+	g_autofree gchar *where = NULL;
+	g_autoptr(VentureMarketdataOracle) series = NULL;
+	VentureMarketdataBasis basis;
 	VentureDatabase *database;
 	const gchar *source;
+	gboolean is_series;
 	gboolean include_on_hand;
 	gboolean market;
 	gboolean strict;
@@ -1366,7 +1385,20 @@ venture_goals_materials(
 	source = (NULL != options)
 		? venture_json_object_get_string(options, "price_source", NULL) : NULL;
 
-	if (!venture_string_is_empty(source) && !market)
+	/* A series: source is a question for the price oracle, decided before
+	 * anything matches it as an observation source. */
+	if (!venture_marketdata_parse_price_source(source, &is_series, &basis, &where, error))
+		return NULL;
+
+	if (is_series)
+	{
+		if (!venture_marketdata_series_available(context, error))
+			return NULL;
+
+		series = venture_marketdata_oracle_new(context);
+	}
+
+	if (!is_series && !venture_string_is_empty(source) && !market)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		                    "price_source reads the market module's price "
@@ -1537,7 +1569,8 @@ venture_goals_materials(
 
 	for (i = 0; i < ordered->len; i++)
 	{
-		if (!goals_materials_line(context, result, g_ptr_array_index(ordered, i),
+		if (!goals_materials_line(context, series, basis, where, result,
+		                          g_ptr_array_index(ordered, i),
 		                          organization_id, include_on_hand, market, source,
 		                          currency, strict, as_of, totals, unpriced, error))
 			return NULL;
@@ -1595,7 +1628,14 @@ venture_goals_materials(
 		venture_report_result_append_note(result,
 			"Stock on hand is not taken off: include_on_hand is false.");
 
-	if (market)
+	if (is_series)
+		venture_report_result_append_note(result,
+			"Unit prices come from market data feeds: the price oracle's figure on "
+			"the price source's basis for the instruments that name each product, at "
+			"the named venue or group, as it stood at as_of. Never an observation "
+			"instead: a product the feeds have not priced is named and its cost left "
+			"blank, never read as zero.");
+	else if (market)
 		venture_report_result_append_note(result,
 			"Unit prices are the latest price seen at or before as_of, from the named "
 			"source (any source when none is named). A product never seen priced is "
@@ -1727,7 +1767,10 @@ venture_goals_register_reports(VentureReportRegistry *registry)
 		"venture's goals\"},"
 		"\"price_source\":{\"type\":\"string\",\"description\":\"Price at the "
 		"latest observation from this source, matched exactly; any source by "
-		"default. Needs the market module\"},"
+		"default. Needs the market module. series:<basis>[@<venue or group>] "
+		"prices from market data feeds instead (basis min, market, market_14d, "
+		"historical_60d, region_median, region_p33, region_market_avg or "
+		"sale_avg); needs the marketdata and feeds modules\"},"
 		"\"include_on_hand\":{\"type\":\"boolean\",\"description\":\"Take "
 		"stock on hand in every location off what is needed; true by default\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Count stock and "

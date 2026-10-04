@@ -186,6 +186,11 @@ venture_context_new(
 	 * outcome, a closing time that follows it, one currency per listing. */
 	venture_market_install(self);
 
+	/* Venues and instruments with one derived reference each, an
+	 * instrument tree with no loop, and watchlists that name an
+	 * instrument once. */
+	venture_marketdata_install(self);
+
 	/* Recipes that make a product in their own organization and never
 	 * take it, and the craft action that turns stock into other stock. */
 	venture_production_install(self);

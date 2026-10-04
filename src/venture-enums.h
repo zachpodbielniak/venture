@@ -1523,9 +1523,10 @@ venture_dashboard_purpose_get_type(void) G_GNUC_CONST;
  *   reports; the zero value, because the store keeps everything unless told
  *   otherwise and a source saved before the field existed meant exactly that
  * @VENTURE_DATA_SOURCE_TRACK_KNOWN: store only the instruments the source
- *   names in its settings' `instruments` list (and, once the marketdata
- *   module exists, the ones promoted to records); every other one is
- *   skipped before it reaches the store
+ *   names in its settings' `instruments` list and, with the marketdata
+ *   module on, the instrument records filed under the source (promoted or
+ *   typed in with their key); every other one is skipped before it
+ *   reaches the store
  *
  * Which instruments a market data source writes into its series store.
  */
@@ -1588,6 +1589,122 @@ typedef enum
 
 GType
 venture_data_source_run_trigger_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureVenueKind:
+ * @VENTURE_VENUE_KIND_OTHER: not classified; the zero value, because a
+ *   venue nobody said anything about is "other", not a guess -- a later
+ *   fee model or strategy keyed on the kind must not apply a marketplace's
+ *   cut to a venue that was never called one
+ * @VENTURE_VENUE_KIND_MARKETPLACE: a marketplace of many sellers (eBay,
+ *   Etsy, a game's trading post)
+ * @VENTURE_VENUE_KIND_AUCTION_HOUSE: an auction house: listings that expire
+ *   and a deposit lost when they do
+ * @VENTURE_VENUE_KIND_BOOKMAKER: a bookmaker offering odds
+ * @VENTURE_VENUE_KIND_EXCHANGE: an exchange: backing and laying, bids and
+ *   asks
+ * @VENTURE_VENUE_KIND_SUPPLIER: somebody you buy from: a wholesaler, a
+ *   drop-ship supplier, a vendor NPC
+ * @VENTURE_VENUE_KIND_STORE: a shop of your own or somebody else's, at
+ *   fixed prices
+ *
+ * What kind of place a market data venue is.
+ */
+typedef enum
+{
+	VENTURE_VENUE_KIND_OTHER = 0,
+	VENTURE_VENUE_KIND_MARKETPLACE,
+	VENTURE_VENUE_KIND_AUCTION_HOUSE,
+	VENTURE_VENUE_KIND_BOOKMAKER,
+	VENTURE_VENUE_KIND_EXCHANGE,
+	VENTURE_VENUE_KIND_SUPPLIER,
+	VENTURE_VENUE_KIND_STORE
+} VentureVenueKind;
+
+#define VENTURE_TYPE_VENUE_KIND (venture_venue_kind_get_type())
+
+GType
+venture_venue_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureInstrumentKind:
+ * @VENTURE_INSTRUMENT_KIND_OTHER: not classified; the zero value, for the
+ *   same reason as a venue's: an instrument nobody classified is not
+ *   silently an item or an outcome
+ * @VENTURE_INSTRUMENT_KIND_ITEM: a thing that is bought and sold: a game
+ *   item, a trading card
+ * @VENTURE_INSTRUMENT_KIND_OUTCOME: one outcome of an event, which carries
+ *   odds; its parent is the event
+ * @VENTURE_INSTRUMENT_KIND_EVENT: a match or a race, the parent of its
+ *   outcomes
+ * @VENTURE_INSTRUMENT_KIND_ASSET: a share, a coin, a commodity
+ * @VENTURE_INSTRUMENT_KIND_SKU: a supplier's or a marketplace's stock
+ *   keeping unit
+ *
+ * What a market data instrument is.
+ */
+typedef enum
+{
+	VENTURE_INSTRUMENT_KIND_OTHER = 0,
+	VENTURE_INSTRUMENT_KIND_ITEM,
+	VENTURE_INSTRUMENT_KIND_OUTCOME,
+	VENTURE_INSTRUMENT_KIND_EVENT,
+	VENTURE_INSTRUMENT_KIND_ASSET,
+	VENTURE_INSTRUMENT_KIND_SKU
+} VentureInstrumentKind;
+
+#define VENTURE_TYPE_INSTRUMENT_KIND (venture_instrument_kind_get_type())
+
+GType
+venture_instrument_kind_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureMarketdataBasis:
+ * @VENTURE_MARKETDATA_BASIS_MARKET: the venue's market value now (TSM's
+ *   DBMarket for one snapshot: the cheapest 15-30% of units, trimmed and
+ *   averaged); the zero value, because it is what "the price" means when a
+ *   question names no basis
+ * @VENTURE_MARKETDATA_BASIS_MIN: the cheapest unit on offer now
+ * @VENTURE_MARKETDATA_BASIS_MARKET_14D: the market value averaged over 14
+ *   days with a half-life of about two days
+ * @VENTURE_MARKETDATA_BASIS_HISTORICAL_60D: the mean daily market value
+ *   over 60 days
+ * @VENTURE_MARKETDATA_BASIS_REGION_MEDIAN: the median of the group's
+ *   venues' cheapest prices
+ * @VENTURE_MARKETDATA_BASIS_REGION_P33: the 33rd percentile of the group's
+ *   venues' cheapest prices
+ * @VENTURE_MARKETDATA_BASIS_REGION_MARKET_AVG: the mean of the group's
+ *   venues' market values
+ * @VENTURE_MARKETDATA_BASIS_SALE_AVG: the average price of estimated sales
+ * @VENTURE_MARKETDATA_BASIS_SALE_RATE: a number, not a price: the share of
+ *   listings that ended sold rather than expired
+ * @VENTURE_MARKETDATA_BASIS_SOLD_PER_DAY: a number: units estimated sold a
+ *   day
+ * @VENTURE_MARKETDATA_BASIS_QUANTITY: a number: units on offer now
+ *
+ * Which figure the price oracle answers with (docs/market-data.org, "The
+ * price oracle"). The first eight are prices; the last three are numbers
+ * (venture_marketdata_basis_is_number()).
+ */
+typedef enum
+{
+	VENTURE_MARKETDATA_BASIS_MARKET = 0,
+	VENTURE_MARKETDATA_BASIS_MIN,
+	VENTURE_MARKETDATA_BASIS_MARKET_14D,
+	VENTURE_MARKETDATA_BASIS_HISTORICAL_60D,
+	VENTURE_MARKETDATA_BASIS_REGION_MEDIAN,
+	VENTURE_MARKETDATA_BASIS_REGION_P33,
+	VENTURE_MARKETDATA_BASIS_REGION_MARKET_AVG,
+	VENTURE_MARKETDATA_BASIS_SALE_AVG,
+	VENTURE_MARKETDATA_BASIS_SALE_RATE,
+	VENTURE_MARKETDATA_BASIS_SOLD_PER_DAY,
+	VENTURE_MARKETDATA_BASIS_QUANTITY
+} VentureMarketdataBasis;
+
+#define VENTURE_TYPE_MARKETDATA_BASIS (venture_marketdata_basis_get_type())
+
+GType
+venture_marketdata_basis_get_type(void) G_GNUC_CONST;
 
 /**
  * VentureDashboardLayout:

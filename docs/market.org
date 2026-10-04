@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-28]
-#+version: 0.1.0
+#+updated: [2026-10-03]
+#+version: 0.2.0
 
 * What a sale record cannot tell you
 
@@ -78,7 +78,13 @@ form, the API, an approved staged change, the assistant:
 - a negative price. Zero is allowed: a thing can be seen to fetch nothing;
 - a negative volume;
 - a product in another organization (a location there is refused by the
-  location rule in [[file:taxonomy.org][Taxonomy]]).
+  location rule in [[file:taxonomy.org][Taxonomy]]);
+- a source, when written, that starts with =series:=. A report's
+  =price_source= starting so is read as a question for the price oracle
+  before it is matched against observation sources (see
+  [[file:market-data.org][Market data]], "Price sources"), so such an
+  observation could never be asked for. A row saved before the rule stays
+  editable.
 
 ** The latest price
 
@@ -166,6 +172,7 @@ are what they are.
 | =product_id=        | reference | what is on offer; required                                           |
 | =inventory_item_id= | reference | optional: the stock the units come from                              |
 | =channel=           | string    | where it is listed: an auction house, a marketplace, a shop; indexed |
+| =venue_id=          | reference | optional: the market data =venue= it is listed at (marketdata module) |
 | =quantity=          | integer   | units offered; at least 1                                            |
 | =quantity_sold=     | integer   | units sold so far, 0 to =quantity=                                   |
 | =unit_price=        | money     | asking price for one unit; required                                  |
@@ -185,13 +192,21 @@ A listing does not create a sale, move stock or post to the books. Link the
 sale it became with =sale_id= when there is one; the sale is still what
 revenue reports read.
 
+=venue_id= names the market data venue the listing is at, so an open
+listing can be held against that venue's prices (an undercut alert compares
+the two). The venue is a type of the =marketdata= module, which =market=
+suggests: with marketdata off the reference is refused when written, like
+any reference into a hidden module, and a listing without it works exactly
+as before. The column was added by schema reconciliation; nothing was
+backfilled, because no older listing named a venue.
+
 ** What the save refuses, and what it fills in
 
 In the order a person would fix them:
 
 1. *What is offered.* A product, at least one unit, a unit price that is
    not negative, and a deposit and fees that are not negative. The
-   product, the stock and the sale, when written, must be this
+   product, the stock, the sale and the venue, when written, must be this
    organization's.
 2. *One currency.* The deposit and fees, when set, must be in the unit
    price's currency. A mix is refused rather than converted: a listing is

@@ -133,6 +133,7 @@
 #include "sessions/venture-sessions-records.h"
 #include "goals/venture-goals-records.h"
 #include "feeds/venture-feeds-records.h"
+#include "marketdata/venture-marketdata-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -336,6 +337,8 @@
 #include "production/venture-production.h"
 #include "sessions/venture-sessions.h"
 #include "goals/venture-goals.h"
+#include "marketdata/venture-marketdata.h"
+#include "marketdata/venture-marketdata-oracle.h"
 #include "series/venture-series-math.h"
 #ifdef VENTURE_HAVE_SQLITE
 #include "series/venture-series-store.h"

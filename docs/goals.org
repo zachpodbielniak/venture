@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-28]
-#+version: 0.1.0
+#+updated: [2026-10-03]
+#+version: 0.2.0
 
 * A number, where it started, and where it should end
 
@@ -236,7 +236,7 @@ of anybody), and multiplies them out.
 |--------------------+-------------------------------------------------------------------------|
 | =goal_id=          | only this goal and its sub-goals, however deep; every open goal by default |
 | =venture_id=       | only this venture's goals                                               |
-| =price_source=     | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module |
+| =price_source=     | price at the latest observation from this source, matched exactly; any source when left out. Needs the market module. =series:<basis>[@<venue or group>]= prices from market data feeds instead (below) |
 | =include_on_hand=  | =true= (default) takes stock on hand off what is needed; =false= does not. Accepts true/false, yes/no, on/off, 1/0; anything else is refused |
 | =as_of=            | count stock and read prices at this date instead of now                 |
 | =currency=         | only prices observed in this currency count; left out, the book currency's price wins wherever the product was seen in it, else the newest in any |
@@ -278,6 +278,8 @@ currency's wherever the product was seen in it -- and nothing else -- falling ba
 number in one bill without saying which, the rule =recipe_margin= keeps.
 With market off, the recorded cost: the first stock item's =unit_cost=,
 else the product's =cost=. =price_source= with market off is refused.
+
+*Prices from market data.* A =price_source= of the form =series:<basis>[@<venue or group>]= asks the price oracle instead, through the instruments that name each product, as =recipe_margin= does with the same function (=venture_marketdata_oracle_source_price()=), so the two cannot price a component differently. Nothing falls back to an observation. It needs the marketdata and feeds modules; see [[file:market-data.org][Market data]], "Price sources".
 
 *Totals, per currency.* One total row per currency, never a sum across
 them: herbs in gold and vials in dollars are two totals. A product with

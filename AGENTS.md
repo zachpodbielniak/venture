@@ -126,6 +126,44 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   the context is disposed, so a test that drops its context leaves no
   thread behind.
 
+## Market data records and the price oracle
+
+`src/marketdata/` (module `marketdata`, requires `market`, suggests
+`feeds`) holds venue, instrument and watchlist records and the price oracle.
+`docs/market-data.org` ("Venues, instruments and the price oracle").
+
+- **The oracle never converts a currency.** A figure in another currency
+  than the one asked for is no answer, and the evidence names both. Nothing
+  observed is TRUE with a NULL price, as `venture_market_latest_price()`
+  answers -- feeds off, an empty store, the module off are notes, not
+  errors. Only an unreadable store is an error.
+- **`series:` is a grammar, parsed before any exact match.**
+  `venture_marketdata_parse_price_source()` runs first on every
+  `price_source`; text without the prefix is an observation source matched
+  exactly, as before. Never widen either half into a search, and keep the
+  market validator refusing an observation source that starts with
+  `series:` -- it could never be asked for. A report reached through
+  `series:` never falls back to observations (`recipe_margin`'s rule), and
+  `recipe_margin` and `goal_materials` share
+  `venture_marketdata_oracle_source_price()` so they cannot disagree.
+- **Promotion looks up deleted rows and restores them.** `external-ref`
+  (namespace:key) is `UNIQUE_ORGANIZATION`, which counts soft-deleted rows;
+  a lookup that skipped them would insert a duplicate and fail the index on
+  every retry. An existing record is returned as it is -- never overwritten
+  from the store -- so edits survive a second promotion.
+- **A group-wide figure needs one group.** With nothing named the oracle
+  uses the store's only group and refuses a store with several, naming
+  them. Do not make it pick one: an EU recipe priced from US realms reads
+  like a good answer.
+- **Oracle objects are per report.** `VentureMarketdataOracle` caches store
+  read handles for its lifetime; a long-lived one would read a purged store
+  through a stale handle. Main thread only: stores are opened through the
+  feeds service.
+- **`track: known` reads instrument records at freeze time.**
+  `venture_marketdata_known_keys()` runs in `feeds_freeze()` on the main
+  thread; the worker sees only the frozen set. An instrument save queues a
+  coalesced refreeze -- keep it coalesced, promotion saves in bulk.
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.

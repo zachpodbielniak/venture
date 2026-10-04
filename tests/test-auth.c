@@ -1283,6 +1283,17 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/1/runs"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/sync", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 #endif
+	/* Market data: the records through the generic routes, and the
+	 * oracle and promotion, which are not records. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/venue"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/instrument"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/watchlist"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/watchlist_entry"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/venue"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/instrument"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/quote?product_id=1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", NULL,
+		"{\"data_source_id\":1,\"kind\":\"instrument\",\"key\":\"1\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/calendar_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/mail_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
@@ -5544,6 +5555,48 @@ static void test_auth_feeds(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/feeds", admin, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 }
 #endif
+/*
+ * The price oracle and promotion through the server: viewers may ask,
+ * editors may promote, and both are gone with the module.
+ *
+ * What breaks if this regresses: a viewer creates records by promoting,
+ * the quote route is swallowed by the generic /api/v1/:type routes, or the
+ * routes answer with marketdata off.
+ */
+static void test_auth_marketdata(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL, *editor = NULL, *page = NULL;
+	(void)unused;
+	server_fixture_create_user(fixture, "md-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "md-viewer", "viewer-long-password");
+	server_fixture_create_member(fixture, "md-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "md-editor", "editor-long-password");
+
+	/* A product nothing names: asked, answered with nothing. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/quote?product_id=999&basis=min",
+		editor, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "\"found\" : false"));
+	g_assert_nonnull(strstr(page, "\"evidence\""));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/quote?product_id=1&basis=cheapest",
+		editor, NULL, NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/quote?instrument_id=999",
+		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+
+	/* Promotion creates records: not a viewer's. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", viewer,
+		"{\"data_source_id\":1,\"kind\":\"instrument\",\"key\":\"1\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", editor,
+		"{\"kind\":\"thing\"}", NULL, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* Off: gone, not an error. */
+	venture_config_set_module_enabled(fixture->config, "marketdata", FALSE);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/quote?product_id=1",
+		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/instrument",
+		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	venture_config_set_module_enabled(fixture->config, "marketdata", TRUE);
+}
 static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -6016,6 +6069,7 @@ main(
 #ifdef VENTURE_HAVE_SQLITE
 	g_test_add("/auth/feeds", ServerFixture, NULL, server_fixture_set_up, test_auth_feeds, server_fixture_tear_down);
 #endif
+	g_test_add("/auth/marketdata", ServerFixture, NULL, server_fixture_set_up, test_auth_marketdata, server_fixture_tear_down);
 	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);
 	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
 	return g_test_run();

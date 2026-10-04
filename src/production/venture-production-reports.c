@@ -123,6 +123,10 @@ production_on_hand(
 /*
  * What one unit of @product_id is worth for this report.
  *
+ * With a `series:` price source (@series set), the price oracle's figure
+ * for the product's instruments on that basis and nothing else -- never
+ * an observation in its place, for the reason below.
+ *
  * With the market module on, the latest observation from @source at or
  * before @as_of and nothing else: falling back to a recorded cost when
  * the source has never priced a thing would mix two kinds of number in
@@ -134,7 +138,10 @@ production_on_hand(
  */
 static gboolean
 production_unit_price(
-	VentureDatabase	 *database,
+	VentureDatabase			 *database,
+	VentureMarketdataOracle		 *series,
+	VentureMarketdataBasis		  basis,
+	const gchar			 *where,
 	gint64		  organization_id,
 	gint64		  product_id,
 	gboolean	  market,
@@ -149,6 +156,11 @@ production_unit_price(
 	g_autoptr(VentureEntity) product = NULL;
 
 	*out_price = NULL;
+
+	if (NULL != series)
+		return venture_marketdata_oracle_source_price(series, organization_id, product_id,
+		                                              basis, where, currency, strict, as_of,
+		                                              out_price, error);
 
 	/* Asked for a currency, only prices seen in it count; otherwise the
 	 * book currency's price wins wherever there is one, so a margin is
@@ -234,6 +246,9 @@ production_list_add(
 static gboolean
 production_margin_row(
 	VentureDatabase		 *database,
+	VentureMarketdataOracle	 *series,
+	VentureMarketdataBasis	  basis,
+	const gchar		 *where,
 	VentureReportResult	 *result,
 	VentureEntity		 *recipe,
 	gint64			  organization_id,
@@ -337,9 +352,9 @@ production_margin_row(
 				craftable = batches;
 		}
 
-		if (!production_unit_price(database, organization_id, product_id, market,
-		                           source, value_in, strict, as_of, FALSE, &price,
-		                           error))
+		if (!production_unit_price(database, series, basis, where, organization_id,
+		                           product_id, market, source, value_in, strict, as_of,
+		                           FALSE, &price, error))
 			return FALSE;
 
 		if (NULL == price)
@@ -381,9 +396,9 @@ production_margin_row(
 
 	/* --- The output: valued the same way --- */
 
-	if (!production_unit_price(database, organization_id, output_id, market,
-	                           source, value_in, strict, as_of, TRUE, &output_price,
-	                           error))
+	if (!production_unit_price(database, series, basis, where, organization_id,
+	                           output_id, market, source, value_in, strict, as_of,
+	                           TRUE, &output_price, error))
 		return FALSE;
 
 	if (NULL == output_price)
@@ -514,6 +529,9 @@ venture_production_recipe_margin(
 	g_autoptr(GDateTime) as_of = NULL;
 	g_autoptr(GError) as_of_error = NULL;
 	g_autofree gchar *currency = NULL;
+	g_autofree gchar *where = NULL;
+	g_autoptr(VentureMarketdataOracle) series = NULL;
+	VentureMarketdataBasis basis;
 	VentureDatabase *database;
 	const gchar *source;
 	gint64 organization_id;
@@ -521,6 +539,7 @@ venture_production_recipe_margin(
 	gint64 category_id;
 	gboolean market;
 	gboolean strict;
+	gboolean is_series;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -536,9 +555,23 @@ venture_production_recipe_margin(
 	source = (NULL != options)
 		? venture_json_object_get_string(options, "price_source", NULL) : NULL;
 
+	/* The grammar is decided before any exact-match lookup: a series:
+	 * source is a question for the price oracle, never an observation
+	 * source of that name. */
+	if (!venture_marketdata_parse_price_source(source, &is_series, &basis, &where, error))
+		return NULL;
+
+	if (is_series)
+	{
+		if (!venture_marketdata_series_available(context, error))
+			return NULL;
+
+		series = venture_marketdata_oracle_new(context);
+	}
+
 	/* Asked for a source nobody can read: refused, not answered from the
 	 * recorded costs as though the question had been a different one. */
-	if (!venture_string_is_empty(source) && !market)
+	if (!is_series && !venture_string_is_empty(source) && !market)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		                    "price_source reads the market module's price "
@@ -650,12 +683,22 @@ venture_production_recipe_margin(
 
 		recipe = g_ptr_array_index(recipes, i);
 
-		if (!production_margin_row(database, result, recipe, organization_id,
+		if (!production_margin_row(database, series, basis, where, result, recipe,
+		                           organization_id,
 		                           market, source, currency, strict, as_of, error))
 			return NULL;
 	}
 
-	if (market)
+	if (is_series)
+		venture_report_result_append_note(result,
+			"Components and output are priced from market data feeds: the price "
+			"oracle's figure on the price source's basis for the instruments that "
+			"name each product, at the named venue or group, as it stood at the "
+			"cutoff, in the currency option's currency when one is given and "
+			"otherwise in the book currency wherever an instrument is priced in it. "
+			"Never an observation instead: a product the feeds have not priced is "
+			"named in the note and its figures are left blank.");
+	else if (market)
 		venture_report_result_append_note(result,
 			"Components and output are priced at the latest price seen at or "
 			"before the cutoff, from the named source (any source when none is "
@@ -753,7 +796,11 @@ venture_production_register_reports(VentureReportRegistry *registry)
 		"{\"type\":\"object\",\"properties\":{"
 		"\"price_source\":{\"type\":\"string\",\"description\":\"Price at the "
 		"latest observation from this source, matched exactly, e.g. market "
-		"value; any source by default. Needs the market module\"},"
+		"value; any source by default. Needs the market module. "
+		"series:<basis>[@<venue or group>] prices from market data feeds "
+		"instead (basis min, market, market_14d, historical_60d, region_median, "
+		"region_p33, region_market_avg or sale_avg); needs the marketdata and "
+		"feeds modules\"},"
 		"\"as_of\":{\"type\":\"string\",\"description\":\"Prices and stock as "
 		"they stood at this date; now by default\"},"
 		"\"currency\":{\"type\":\"string\",\"description\":\"Only prices "

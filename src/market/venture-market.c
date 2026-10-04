@@ -129,6 +129,32 @@ venture_market_validate_observation(
 		return FALSE;
 	}
 
+	/*
+	 * A report's price_source is read as the series: grammar before it is
+	 * matched against observation sources, so an observation filed under
+	 * "series:min" could never be asked for. Refused when written; a row
+	 * saved before the rule stays editable.
+	 */
+	{
+		g_autofree gchar *source = NULL;
+		g_autofree gchar *was = NULL;
+
+		g_object_get(entity, "source", &source, NULL);
+
+		if (NULL != previous)
+			g_object_get(previous, "source", &was, NULL);
+
+		if ((NULL != source) && g_str_has_prefix(source, VENTURE_MARKETDATA_SERIES_PREFIX) &&
+		    ((NULL == previous) || (0 != g_strcmp0(source, was))))
+		{
+			venture_set_error_validation(error, "Source",
+				"cannot start with \"%s\": a price_source starting so asks the price "
+				"oracle for market data, so this observation could never be named",
+				VENTURE_MARKETDATA_SERIES_PREFIX);
+			return FALSE;
+		}
+	}
+
 	return TRUE;
 }
 
@@ -227,6 +253,8 @@ venture_market_validate_listing(
 
 	if (!venture_market_same_organization(database, entity, previous, "product-id",
 	                                      VENTURE_TYPE_PRODUCT, "Product", error) ||
+	    !venture_market_same_organization(database, entity, previous, "venue-id",
+	                                      VENTURE_TYPE_VENUE, "Venue", error) ||
 	    !venture_market_same_organization(database, entity, previous,
 	                                      "inventory-item-id",
 	                                      VENTURE_TYPE_INVENTORY_ITEM, "Stock", error) ||

@@ -131,6 +131,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `feeds sync ID [--wait]` | queue a market data source's sync (`data_source` ID); answers `queued` at once. `--wait` polls the source's runs once a second, up to five minutes, and prints the run the sync recorded |
 | `feeds runs ID` | a data source's runs, newest first: status, units, rows, error |
 | `feeds due` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
+| `market quote ID [basis=B] [venue=KEY\|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]` | the price oracle for an `instrument` ID (or `product=ID` instead of ID): `{basis, found, price, value, evidence}`. Bases: `market` (default), `min`, `market_14d`, `historical_60d`, `region_median`, `region_p33`, `region_market_avg`, `sale_avg`, and the numbers `sale_rate`, `sold_per_day`, `quantity` (in `value`) |
+| `market promote SOURCE_ID instrument\|venue KEY` | make (or find, or restore) the record for a venue or instrument a data source's store has seen |
 | `ticket ID sla` | a ticket's service-level clocks: state and seconds remaining for first reply and resolution |
 | `ticket ID macro NAME` | apply a macro (canned reply plus field changes) — not stageable |
 | `ticket ID worklog HOURS [NOTE]` | log time; the ticket's `logged_hours` follows |
@@ -1030,6 +1032,33 @@ needs an administrator: it decides which outside host the server calls.
   one is refused (403).
 - The data lands in a series store per source, not in records; there is no
   `list` for it yet.
+
+### Market data records and the price oracle
+
+The `marketdata` module (on by default; needs `market`) has `venue`,
+`instrument`, `watchlist` and `watchlist_entry`, all generic records. An
+instrument names its store row (`data_source_id` + `key`) and the
+`product_id` it is; that link is what lets reports price a product from feeds.
+
+- `market promote SOURCE_ID instrument|venue KEY` is how a store's row
+  becomes a record. Run it twice and you get the same record; a deleted one
+  is restored. Do not `create instrument` with a key a record already has:
+  `external_ref` (namespace:key) is unique per organization *including
+  deleted rows*, so the save is refused -- restore or promote instead.
+- `market quote` never converts currencies. `currency=EUR` with a figure in
+  USD is `found: false` and the evidence's `note` says why. Nothing observed
+  is `found: false`, not an error; read `evidence.note`.
+- Without `venue=`, a group-wide basis (`region_*`, `market`, the 14/60-day
+  figures) uses the store's only group; a store with several groups is
+  refused -- name one (`venue=eu`). `venue=` is a venue key when the store
+  knows one by that name, otherwise a group.
+- `fallback=true` lets the newest `price_observation` answer when no store
+  does (prices only); the evidence's `origin` is then `observation`.
+- `recipe_margin` and `goal_materials` take `price_source=series:<basis>[@<venue or group>]`,
+  e.g. `price_source=series:min@realm-a`. It needs `marketdata` and `feeds`
+  on, never falls back to observations, and a number basis (`quantity`) is
+  refused. An observation's own `source` may not start with `series:`.
+- A `listing` may name its `venue_id`; refused while marketdata is off.
 
 ## Organization sign-in
 
