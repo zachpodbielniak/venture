@@ -11554,6 +11554,16 @@ venture_web_append_incident_block(
 #include "attribution/venture-attribution-settings-web.inc"
 #include "arbitrage/venture-arbitrage-web.inc"
 
+#ifdef VENTURE_HAVE_SQLITE
+/* In feeds/venture-feeds-web.inc, which comes in with the feeds routes. */
+static void
+venture_feeds_web_append_source_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+#endif
+
 static HtmxResponse *
 venture_web_ui_detail(
 	HtmxRequest	*request,
@@ -11703,6 +11713,13 @@ venture_web_ui_detail(
 	if ((VENTURE_TYPE_ARBITRAGE_TRADE == entity_type) &&
 	    venture_web_module_enabled(self, "arbitrage"))
 		venture_web_append_arbitrage_block(self, content, principal, record);
+
+#ifdef VENTURE_HAVE_SQLITE
+	/* The line a source's provider asks to be named by wherever its data
+	 * is shown, which the settings fields cannot say. */
+	if (VENTURE_TYPE_DATA_SOURCE == entity_type)
+		venture_feeds_web_append_source_block(self, content, record);
+#endif
 
 	/*
 	 * The other half of a polymorphic relation. On a ticket the panel

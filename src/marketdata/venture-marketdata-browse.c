@@ -160,6 +160,49 @@ md_node(JsonObject *root)
 	return node;
 }
 
+/*
+ * The answer's `attribution`: the lines of the providers whose data it
+ * shows. Every answer here gets the member, empty for none, so a reader
+ * never has to ask whether it is there.
+ */
+
+/* An answer about one source, which shows that source's data only when
+ * its store could be read. */
+static void
+md_attribute_source(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonObject	*root
+){
+	g_autoptr(GPtrArray) attributions = NULL;
+
+	attributions = g_ptr_array_new_with_free_func(g_free);
+
+	if (json_object_get_boolean_member_with_default(root, "available", FALSE))
+		venture_marketdata_attribution_add_source(context, organization_id,
+		                                          json_object_get_int_member_with_default(
+		                                                  root, "data_source_id", 0),
+		                                          attributions);
+
+	venture_marketdata_attribution_set(root, attributions);
+}
+
+/* An answer whose @member lists rows from any number of sources. */
+static void
+md_attribute_member(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonObject	*root,
+	const gchar	*member
+){
+	g_autoptr(GPtrArray) attributions = NULL;
+
+	attributions = g_ptr_array_new_with_free_func(g_free);
+	venture_marketdata_attribution_collect(context, organization_id,
+	                                       json_object_get_member(root, member), attributions);
+	venture_marketdata_attribution_set(root, attributions);
+}
+
 gchar *
 venture_marketdata_instrument_path(
 	gint64		 data_source_id,
@@ -684,6 +727,7 @@ venture_marketdata_browse(
 	json_object_set_int_member(root, "pages", (total + per_page - 1) / per_page);
 	json_object_set_array_member(root, "rows", rows);
 	json_object_set_array_member(root, "notes", notes);
+	md_attribute_source(context, query->organization_id, root);
 
 	return md_node(root);
 }
@@ -1235,6 +1279,7 @@ venture_marketdata_instrument(
 	}
 
 	json_object_set_array_member(root, "notes", notes);
+	md_attribute_source(context, query->organization_id, root);
 
 	return md_node(root);
 
@@ -1483,6 +1528,7 @@ venture_marketdata_deals(
 
 	json_object_set_array_member(root, "rows", rows);
 	json_object_set_array_member(root, "notes", notes);
+	md_attribute_member(context, query->organization_id, root, "rows");
 
 	return md_node(root);
 
@@ -1656,6 +1702,7 @@ venture_marketdata_venue_index(
 	json_object_set_array_member(root, "groups", groups);
 	json_object_set_array_member(root, "venues", venues);
 	json_object_set_array_member(root, "notes", notes);
+	md_attribute_member(context, organization_id, root, "venues");
 
 	return md_node(root);
 
@@ -1754,6 +1801,10 @@ venture_marketdata_watchlists(
 	}
 
 	json_object_set_array_member(root, "watchlists", array);
+
+	/* Names and counts of the organization's own lists: no source's
+	 * data, so nothing to attribute. */
+	venture_marketdata_attribution_set(root, NULL);
 
 	return md_node(root);
 }
@@ -2048,6 +2099,27 @@ venture_marketdata_watchlist_view(
 	json_object_set_array_member(root, "entries", array);
 	json_object_set_array_member(root, "notes", notes);
 
+	/* An entry shows its source's data only when the store gave it
+	 * venues; one linked to a source with nothing stored shows none. */
+	{
+		g_autoptr(GPtrArray) attributions = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			JsonObject *entry = json_array_get_object_element(array, i);
+			JsonNode *venues = json_object_get_member(entry, "venues");
+
+			if ((NULL != venues) && JSON_NODE_HOLDS_ARRAY(venues) &&
+			    (json_array_get_length(json_node_get_array(venues)) > 0))
+				venture_marketdata_attribution_add_source(
+					context, organization_id,
+					json_object_get_int_member_with_default(entry, "data_source_id", 0),
+					attributions);
+		}
+
+		venture_marketdata_attribution_set(root, attributions);
+	}
+
 	return md_node(root);
 }
 
@@ -2190,6 +2262,10 @@ venture_marketdata_alerts_overview(
 	}
 
 	json_object_set_array_member(root, "hits", array);
+
+	/* A hit is a reading of its source's data; a rule naming a source is
+	 * only a setting, so the rules are not walked. */
+	md_attribute_member(context, organization_id, root, "hits");
 
 	return md_node(root);
 }
@@ -2366,6 +2442,22 @@ venture_marketdata_source_health(
 
 	json_object_set_array_member(root, "sources", array);
 	json_object_set_array_member(root, "notes", notes);
+
+	/* Health is about each source as a whole -- its venues, its newest
+	 * snapshot -- so every source listed is named by its provider. */
+	{
+		g_autoptr(GPtrArray) attributions = g_ptr_array_new_with_free_func(g_free);
+		guint k;
+
+		for (k = 0; k < json_array_get_length(array); k++)
+			venture_marketdata_attribution_add_provider(
+				context,
+				json_object_get_string_member_with_default(
+					json_array_get_object_element(array, k), "provider", NULL),
+				attributions);
+
+		venture_marketdata_attribution_set(root, attributions);
+	}
 
 	return md_node(root);
 }

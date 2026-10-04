@@ -39,6 +39,7 @@ venture_widget_result_copy(const VentureWidgetResult *self)
 	copy->link = g_strdup(self->link);
 	copy->link_label = g_strdup(self->link_label);
 	copy->error = g_strdup(self->error);
+	copy->attribution = g_strdupv(self->attribution);
 	return copy;
 }
 
@@ -54,6 +55,7 @@ venture_widget_result_free(VentureWidgetResult *self)
 	g_free(self->link);
 	g_free(self->link_label);
 	g_free(self->error);
+	g_strfreev(self->attribution);
 	g_free(self);
 }
 
@@ -3941,6 +3943,21 @@ venture_widget_json_copy(
  * buy or a sell against the targets. Read from the same answer the
  * watchlist page draws.
  */
+/*
+ * A market card's attribution: the answer's lines, kept on the result and
+ * drawn under the card's body, so the card and its JSON name the same
+ * sources the page they link to does.
+ */
+static void
+venture_widget_attribute(
+	VentureWidgetResult	*result,
+	GString			*html,
+	JsonObject		*answer
+){
+	result->attribution = venture_marketdata_attribution_dup(answer);
+	venture_marketdata_attribution_append_html(html, (const gchar *const *)result->attribution);
+}
+
 static VentureWidgetResult *
 venture_widget_kind_watchlist(
 	VentureContext			 *context,
@@ -4102,6 +4119,7 @@ venture_widget_kind_watchlist(
 	if (!json_object_get_boolean_member(root, "available"))
 		g_string_append(html, "<p class=\"muted\">No data sources: market data feeds are off.</p>");
 
+	venture_widget_attribute(result, html, root);
 	json_builder_end_array(builder);
 	result->data = json_builder_get_root(builder);
 	result->html = g_string_free(g_steal_pointer(&html), FALSE);
@@ -4195,6 +4213,7 @@ venture_widget_kind_market_alerts(
 	if ((NULL != hits) && (json_array_get_length(hits) > 0))
 		g_string_append(html, "</ul>");
 
+	venture_widget_attribute(result, html, json_node_get_object(answer));
 	json_builder_end_array(builder);
 	result->data = json_builder_get_root(builder);
 	result->html = g_string_free(g_steal_pointer(&html), FALSE);
@@ -4286,6 +4305,7 @@ venture_widget_kind_source_health(
 	if ((NULL != sources) && (json_array_get_length(sources) > 0))
 		g_string_append(html, "</tbody></table>");
 
+	venture_widget_attribute(result, html, root);
 	json_builder_end_array(builder);
 	result->data = json_builder_get_root(builder);
 	result->html = g_string_free(g_steal_pointer(&html), FALSE);
@@ -4512,6 +4532,7 @@ venture_widget_kind_opportunities(
 	if (!json_object_get_boolean_member(root, "available"))
 		g_string_append(html, "<p class=\"muted\">No data sources: market data feeds are off.</p>");
 
+	venture_widget_attribute(result, html, root);
 	json_builder_end_array(builder);
 	result->data = json_builder_get_root(builder);
 	result->html = g_string_free(g_steal_pointer(&html), FALSE);
@@ -6151,6 +6172,20 @@ venture_dashboard_describe(
 
 			json_builder_set_member_name(builder, "data");
 			json_builder_add_value(builder, json_node_ref(result->data));
+
+			/* Beside the data, as on the card: who to name for it. */
+			json_builder_set_member_name(builder, "attribution");
+			json_builder_begin_array(builder);
+
+			if (NULL != result->attribution)
+			{
+				guint k;
+
+				for (k = 0; NULL != result->attribution[k]; k++)
+					json_builder_add_string_value(builder, result->attribution[k]);
+			}
+
+			json_builder_end_array(builder);
 		}
 
 		json_builder_end_object(builder);

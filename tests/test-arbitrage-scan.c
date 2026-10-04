@@ -2072,6 +2072,157 @@ test_widget(
 	g_assert_nonnull(strstr(result->html, "Peacebloom"));
 }
 
+/* The scan's source behind a provider here never fetches: the store is
+ * written directly. */
+static VentureFeedBatch *
+attribution_no_fetch(
+	VentureFeedRequest	 *request,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)request;
+	(void)user_data;
+
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN, "not in this test");
+
+	return NULL;
+}
+
+/* The answer's attribution lines, as one string joined by '|'. */
+static gchar *
+attribution_of(JsonNode *answer)
+{
+	g_autoptr(GStrvBuilder) builder = g_strv_builder_new();
+	g_auto(GStrv) lines = NULL;
+	JsonArray *array;
+	guint i;
+
+	array = json_object_get_array_member(json_node_get_object(answer), "attribution");
+	g_assert_nonnull(array);
+
+	for (i = 0; i < json_array_get_length(array); i++)
+		g_strv_builder_add(builder, json_array_get_string_element(array, i));
+
+	lines = g_strv_builder_end(builder);
+
+	return g_strjoinv("|", lines);
+}
+
+/*
+ * A scan names the providers of the rows it shows -- the page, its API
+ * twin and the opportunities card alike -- escaped on the page, and only
+ * those: a source that declares no line, or a scan whose filters keep
+ * nothing, names nobody.
+ *
+ * What breaks if this regresses: an opportunity priced from Blizzard's
+ * auctions shown without the attribution Blizzard's terms (section 2.13)
+ * require, or a provider's line injecting markup into the scan page.
+ */
+static void
+test_attribution(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar credit[] = "Prices from <b>Example</b> & \"Co\"";
+	static const gchar escaped[] = "Prices from &lt;b&gt;Example&lt;/b&gt; &amp; &quot;Co&quot;";
+	static const gchar herbs[] = "{\"strategy\":\"spread\",\"units\":2,\"category_path\":\"Herbs\"}";
+	static const gchar query[] = "strategy=spread&units=2&category_path=Herbs";
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) card = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *lines = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	VentureWidgetScope scope;
+	gint64 orgs[1];
+
+	(void)user_data;
+
+	provider = venture_func_data_source_provider_new("credited_feed", NULL, NULL, attribution_no_fetch,
+	                                                 NULL, NULL);
+	g_assert_true(venture_func_data_source_provider_set_attribution(provider, credit, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(fixture->context), provider, &error));
+	g_assert_no_error(error);
+
+	seed_store(fixture, NULL);
+	seed_venues(fixture);
+
+	/* file_jsonl names nobody: rows, and no line. */
+	answer = scan(fixture, herbs);
+	g_assert_cmpuint(json_array_get_length(rows_of(answer)), >, 0);
+	lines = attribution_of(answer);
+	g_assert_cmpstr(lines, ==, "");
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&lines, g_free);
+	path = g_strconcat("/arbitrage?", query, NULL);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, &page, NULL, NULL), ==, 200);
+	g_assert_null(strstr(page, "class=\"source-attribution\""));
+	g_clear_pointer(&page, g_free);
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	g_object_set(source, "provider", "credited_feed", "settings", "", NULL);
+	save(fixture, source);
+
+	answer = scan(fixture, herbs);
+	lines = attribution_of(answer);
+	g_assert_cmpstr(lines, ==, credit);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&lines, g_free);
+
+	/* Read, but nothing kept: nothing shown, nobody named. */
+	answer = scan(fixture, "{\"strategy\":\"spread\",\"units\":2,\"min_profit\":\"100000.00 USD\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(answer)), ==, 0);
+	lines = attribution_of(answer);
+	g_assert_cmpstr(lines, ==, "");
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&lines, g_free);
+
+	/* The twin and the page. */
+	g_clear_pointer(&path, g_free);
+	path = g_strconcat("/api/v1/arbitrage/scan?", query, NULL);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, &body, NULL, NULL), ==, 200);
+	answer = json_from_string(body, &error);
+	g_assert_no_error(error);
+	lines = attribution_of(answer);
+	g_assert_cmpstr(lines, ==, credit);
+	g_clear_pointer(&answer, json_node_unref);
+
+	g_clear_pointer(&path, g_free);
+	path = g_strconcat("/arbitrage?", query, NULL);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, &page, NULL, NULL), ==, 200);
+	g_assert_nonnull(strstr(page, escaped));
+	g_assert_null(strstr(page, credit));
+
+	/* The opportunities card. */
+	dashboard = venture_dashboard_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(dashboard), fixture->org);
+	g_object_set(dashboard, "name", "Arbitrage", "slug", "arbitrage", NULL);
+	save(fixture, dashboard);
+	card = venture_dashboard_widget_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(card), fixture->org);
+	g_object_set(card, "dashboard-id", ID(dashboard), "kind", "opportunities", "limit", (gint64)3,
+	             "options", "{\"units\":2,\"instrument\":\"herb\"}", NULL);
+	save(fixture, card);
+
+	orgs[0] = fixture->org;
+	memset(&scope, 0, sizeof(scope));
+	scope.organization_ids = orgs;
+	scope.n_organizations = 1;
+	result = venture_dashboard_render_widget(fixture->context, card, &scope);
+	g_assert_null(result->error);
+	g_assert_nonnull(result->attribution);
+	g_assert_cmpuint(g_strv_length(result->attribution), ==, 1);
+	g_assert_cmpstr(result->attribution[0], ==, credit);
+	g_assert_nonnull(strstr(result->html, escaped));
+}
+
 /*
  * Every arbitrage-* class @page's markup uses must have a rule in the
  * stylesheet the page inlined. Returns how many distinct classes it
@@ -2206,6 +2357,7 @@ main(
 	ADD("looks", test_looks);
 	ADD("reports", test_reports);
 	ADD("widget", test_widget);
+	ADD("attribution", test_attribution);
 
 	return g_test_run();
 }

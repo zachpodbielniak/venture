@@ -376,6 +376,19 @@ mdw_notes(
 	}
 }
 
+/*
+ * The answer's attribution lines, under the data they name. Every page
+ * that shows a source's data calls this; the answer decides which lines
+ * (none when no source shown declares one).
+ */
+static void
+mdw_attribution(
+	GString		*html,
+	JsonObject	*root
+){
+	venture_marketdata_attribution_append_answer_html(html, root);
+}
+
 static void
 mdw_head(
 	GString		*html,
@@ -786,6 +799,8 @@ venture_marketdata_web_browse(
 
 	g_string_append(html, "</div>");
 
+	mdw_attribution(html, root);
+
 	return venture_web_html_response(venture_web_page(self, request, "/market/browse", "Browse",
 	                                                  html->str), 200);
 }
@@ -1150,6 +1165,10 @@ venture_marketdata_web_instrument(
 	}
 
 	g_string_append(html, "</p></div></div>");
+
+	/* At the top: the whole page is the source's data, and a line at the
+	 * foot of the charts would be anything but conspicuous. */
+	mdw_attribution(html, root);
 	mdw_notes(html, root);
 
 	/* Where to look at it, and what to do with it. */
@@ -1695,6 +1714,7 @@ venture_marketdata_web_deals(
 		                       "question or ask for more to see the rest.</p>", query.count);
 
 	g_string_append(html, "</div>");
+	mdw_attribution(html, root);
 
 	return venture_web_html_response(venture_web_page(self, request, "/market/deals", "Deals", html->str),
 	                                 200);
@@ -1853,6 +1873,7 @@ venture_marketdata_web_venues(
 		g_string_append(html, "<tr><td colspan=\"12\" class=\"muted\">No venues yet.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
+	mdw_attribution(html, root);
 
 	return venture_web_html_response(venture_web_page(self, request, "/market/venues", "Venues", html->str),
 	                                 200);
@@ -2088,6 +2109,7 @@ venture_marketdata_web_watchlist(
 		g_string_append(html, "<tr><td colspan=\"10\" class=\"muted\">Nothing on this list yet.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
+	mdw_attribution(html, root);
 
 	return venture_web_html_response(venture_web_page(self, request, "/market/watchlists",
 	                                                  mdw_text(list, "name"), html->str), 200);
@@ -2210,6 +2232,26 @@ mdw_alerts_page(
 		g_string_append(html, "<tr><td colspan=\"5\" class=\"muted\">Nothing has fired yet.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
+
+	/* Under the hits: the overview's sources, and any an evaluation just
+	 * read for the matches shown above, each once. */
+	{
+		g_auto(GStrv) shown = venture_marketdata_attribution_dup(root);
+		g_auto(GStrv) matched = venture_marketdata_attribution_dup(evaluated);
+		g_autoptr(GStrvBuilder) lines = g_strv_builder_new();
+		g_auto(GStrv) all = NULL;
+
+		g_strv_builder_addv(lines, (const gchar **)shown);
+
+		for (i = 0; NULL != matched[i]; i++)
+		{
+			if (!g_strv_contains((const gchar *const *)shown, matched[i]))
+				g_strv_builder_add(lines, matched[i]);
+		}
+
+		all = g_strv_builder_end(lines);
+		venture_marketdata_attribution_append_html(html, (const gchar *const *)all);
+	}
 
 	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Rules</h2></div>"
 	                      "<div class=\"table-wrap\"><table class=\"data\"><thead><tr><th scope=\"col\">Rule</th>"
@@ -2336,6 +2378,18 @@ venture_marketdata_web_evaluate(
 
 	if (!venture_marketdata_alerts_evaluate(self->context, rule, record, &report, &error))
 		return venture_web_error_response(error);
+
+	/* The matches are readings of their sources' data: name them, for the
+	 * API and for the page that lists the matches. */
+	{
+		g_autoptr(GPtrArray) attributions = g_ptr_array_new_with_free_func(g_free);
+
+		venture_marketdata_attribution_collect(self->context, organization_id,
+		                                       json_object_get_member(json_node_get_object(report),
+		                                                              "matches"),
+		                                       attributions);
+		venture_marketdata_attribution_set(json_node_get_object(report), attributions);
+	}
 
 	if (api)
 		return venture_web_json_response(report, 200);

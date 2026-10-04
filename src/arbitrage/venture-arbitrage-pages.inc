@@ -615,6 +615,9 @@ arw_results(
 		g_string_append(html, "<tr><td colspan=\"11\" class=\"muted\">Nothing passes the filters right now.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
+
+	/* Under the opportunities: the providers of the rows shown. */
+	mdw_attribution(html, root);
 }
 
 static HtmxResponse *

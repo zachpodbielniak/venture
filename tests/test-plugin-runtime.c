@@ -1120,6 +1120,101 @@ test_provides_all_or_nothing(
 	g_assert_true(venture_automation_handler_registry_has(handlers, "whole_step"));
 }
 
+/*
+ * An exec plugin's data_source_provider may carry an `attribution`: the
+ * line every page shows beside the provider's data. It is plain text,
+ * judged when the manifest loads: a string of one line under the cap is
+ * kept (trimmed), anything else -- a number, a list, a line with a
+ * newline in it, a paragraph past the cap -- refuses the whole plugin
+ * with the reason, rather than putting something mangled on every page.
+ *
+ * What breaks if this regresses: a plugin whose provider's terms require
+ * attribution loads without it, or one whose manifest says `attribution:
+ * 42` shows "42" as the credit line on every Trading page.
+ */
+static void
+test_provides_attribution(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const struct
+	{
+		const gchar	*value;
+		const gchar	*says;
+	} refused[] = {
+		{ "42", "must be a string" },
+		{ "true", "must be a string" },
+		{ "[one, two]", "must be a string" },
+		{ "\"two\\nlines\"", "one line" },
+		{ "\"   \"", "blank" },
+	};
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *good = NULL;
+	g_autofree gchar *none = NULL;
+	g_autofree gchar *overlong = NULL;
+	g_autofree gchar *long_manifest = NULL;
+	VentureDataSourceProviderRegistry *providers;
+	guint i;
+
+	(void)user_data;
+
+	allow_exec(fixture, TRUE);
+	providers = venture_context_get_data_source_providers(fixture->context);
+
+	good = write_exec_plugin(fixture, "credited", "echo", NULL,
+	                         "provides:\n"
+	                         "  - kind: data_source_provider\n    name: credited_feed\n"
+	                         "    attribution: \"  Prices from <Example> & 'Co'.  \"\n");
+	g_assert_true(venture_plugin_manager_load_file(fixture->manager, good, &error));
+	g_assert_no_error(error);
+	g_assert_cmpstr(venture_data_source_provider_get_attribution(
+		venture_data_source_provider_registry_lookup(providers, "credited_feed")), ==,
+		"Prices from <Example> & 'Co'.");
+
+	none = write_exec_plugin(fixture, "uncredited", "echo", NULL,
+	                         "provides:\n"
+	                         "  - kind: data_source_provider\n    name: uncredited_feed\n");
+	g_assert_true(venture_plugin_manager_load_file(fixture->manager, none, &error));
+	g_assert_no_error(error);
+	g_assert_null(venture_data_source_provider_get_attribution(
+		venture_data_source_provider_registry_lookup(providers, "uncredited_feed")));
+
+	for (i = 0; i < G_N_ELEMENTS(refused); i++)
+	{
+		g_autofree gchar *name = g_strdup_printf("refused%u", i);
+		g_autofree gchar *feed = g_strdup_printf("refused_feed_%u", i);
+		g_autofree gchar *extra = NULL;
+		g_autofree gchar *path = NULL;
+
+		extra = g_strdup_printf("provides:\n"
+		                        "  - kind: data_source_provider\n    name: %s\n"
+		                        "    attribution: %s\n", feed, refused[i].value);
+		path = write_exec_plugin(fixture, name, "echo", NULL, extra);
+		g_assert_false(venture_plugin_manager_load_file(fixture->manager, path, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+
+		if (NULL == strstr(error->message, refused[i].says))
+			g_error("attribution %s refused with \"%s\", not \"%s\"", refused[i].value,
+			        error->message, refused[i].says);
+
+		g_clear_error(&error);
+		g_assert_null(venture_data_source_provider_registry_lookup(providers, feed));
+	}
+
+	/* Past the cap: refused, never cut short. */
+	overlong = g_strnfill(VENTURE_DATA_SOURCE_ATTRIBUTION_MAX + 1, 'x');
+	long_manifest = g_strdup_printf("provides:\n"
+	                                "  - kind: data_source_provider\n    name: wordy_feed\n"
+	                                "    attribution: %s\n", overlong);
+	g_clear_pointer(&good, g_free);
+	good = write_exec_plugin(fixture, "wordy", "echo", NULL, long_manifest);
+	g_assert_false(venture_plugin_manager_load_file(fixture->manager, good, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+	g_assert_nonnull(strstr(error->message, "at most"));
+	g_clear_error(&error);
+	g_assert_null(venture_data_source_provider_registry_lookup(providers, "wordy_feed"));
+}
+
 /* --- A plugin whose register function fails ------------------------------ */
 
 static gboolean
@@ -2490,6 +2585,7 @@ main(
 	ADD("/plugin-runtime/provides/dispatched-to-registered-kind",
 	    test_provides_dispatched_to_registered_kind);
 	ADD("/plugin-runtime/provides/all-or-nothing", test_provides_all_or_nothing);
+	ADD("/plugin-runtime/provides/attribution", test_provides_attribution);
 	ADD("/plugin-runtime/failed-register-takes-back", test_failed_register_takes_back);
 
 	ADD("/plugin-runtime/exec/round-trip", test_exec_round_trip);

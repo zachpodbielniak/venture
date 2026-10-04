@@ -389,6 +389,117 @@ venture_marketdata_parse_amount(
 	GError		**error
 );
 
+/* --- Source attribution ------------------------------------------------- */
+
+/**
+ * venture_marketdata_attribution_add_provider:
+ * @context: the context
+ * @provider: (nullable): a provider's registry name
+ * @attributions: (element-type utf8): the distinct lines so far, owned
+ *   strings; the provider's line is added unless it is already there
+ *
+ * Adds a provider's attribution line (see
+ * venture_data_source_provider_get_attribution()), normalised. A provider
+ * that declares none, or is not loaded, adds nothing. Main thread.
+ */
+void
+venture_marketdata_attribution_add_provider(
+	VentureContext	*context,
+	const gchar	*provider,
+	GPtrArray	*attributions
+);
+
+/**
+ * venture_marketdata_attribution_add_source:
+ * @context: the context
+ * @organization_id: the organization the answer is for
+ * @data_source_id: a data_source record whose data is shown
+ * @attributions: (element-type utf8): the distinct lines so far
+ *
+ * Adds the line of the source's provider. A deleted source still counts
+ * (its data may still be on the page); another organization's never
+ * does.
+ */
+void
+venture_marketdata_attribution_add_source(
+	VentureContext	*context,
+	gint64		 organization_id,
+	gint64		 data_source_id,
+	GPtrArray	*attributions
+);
+
+/**
+ * venture_marketdata_attribution_collect:
+ * @context: the context
+ * @organization_id: the organization the answer is for
+ * @node: (nullable): part of an answer: rows, hits, opportunities
+ * @attributions: (element-type utf8): the distinct lines so far
+ *
+ * Adds the line of every source named by a `data_source_id` member
+ * anywhere inside @node. Hand it the part of an answer that is data --
+ * not a picker listing every source -- so only the sources actually
+ * shown are named.
+ */
+void
+venture_marketdata_attribution_collect(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonNode	*node,
+	GPtrArray	*attributions
+);
+
+/**
+ * venture_marketdata_attribution_set:
+ * @answer: an answer object
+ * @attributions: (nullable) (element-type utf8): the lines
+ *
+ * Writes the lines as the answer's `attribution` array (empty for none),
+ * which every door -- page, API twin, dashboard card -- reads.
+ */
+void
+venture_marketdata_attribution_set(
+	JsonObject	*answer,
+	GPtrArray	*attributions
+);
+
+/**
+ * venture_marketdata_attribution_dup:
+ * @answer: (nullable): an answer object
+ *
+ * Returns: (transfer full) (array zero-terminated=1): the answer's
+ *   `attribution` lines; empty when it has none
+ */
+gchar **
+venture_marketdata_attribution_dup(JsonObject *answer);
+
+/**
+ * venture_marketdata_attribution_append_html:
+ * @html: the page being built
+ * @attributions: (nullable) (array zero-terminated=1): the lines
+ *
+ * Appends one visible, escaped `<p class="source-attribution">` per line,
+ * to sit right under the data it names. Nothing for none.
+ */
+void
+venture_marketdata_attribution_append_html(
+	GString			*html,
+	const gchar *const	*attributions
+);
+
+/**
+ * venture_marketdata_attribution_append_answer_html:
+ * @html: the page being built
+ * @answer: (nullable): an answer object
+ *
+ * venture_marketdata_attribution_append_html() of the answer's
+ * `attribution` array.
+ */
+void
+venture_marketdata_attribution_append_answer_html(
+	GString		*html,
+	JsonObject	*answer
+);
+
 /**
  * venture_marketdata_register_reports:
  * @registry: the report registry

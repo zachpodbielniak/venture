@@ -1284,6 +1284,8 @@ test_alerts(
 	answer = get_json(fixture, "/api/v1/market/alerts", 200);
 	root = root_of(answer);
 	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "hits")), ==, 1);
+	/* file_jsonl asks to be named by nobody: present, and empty. */
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "attribution")), ==, 0);
 	g_assert_cmpstr(json_object_get_string_member(
 		json_array_get_object_element(json_object_get_array_member(root, "hits"), 0), "rule_name"),
 		==, "Cheap <ore>");
@@ -1405,6 +1407,382 @@ test_widgets(
 	g_assert_nonnull(result->error);
 }
 
+
+/* --- Source attribution ------------------------------------------------------ */
+
+/* A provider's line written to break out of the page, and what it must
+ * become on one. */
+static const gchar hostile_credit[] = "Data from <script>alert(\"x\")</script> & 'Co'";
+static const gchar escaped_credit[] =
+	"<p class=\"source-attribution\" role=\"note\"><span class=\"source-attribution-label\">Source:</span> "
+	"Data from &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;Co&#39;</p>";
+static const gchar exchange_credit[] = "Prices courtesy of Example Exchange.";
+
+/* The providers here never fetch: their stores are written directly. */
+static VentureFeedBatch *
+attribution_no_fetch(
+	VentureFeedRequest	 *request,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)request;
+	(void)user_data;
+
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN, "not in this test");
+
+	return NULL;
+}
+
+static void
+attribution_provider(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*credit
+){
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+	g_autoptr(GError) error = NULL;
+
+	provider = venture_func_data_source_provider_new(name, NULL, NULL, attribution_no_fetch, NULL, NULL);
+	g_assert_true(venture_func_data_source_provider_set_attribution(provider, credit, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(fixture->context), provider, &error));
+	g_assert_no_error(error);
+}
+
+/* Another source of the organization, its store holding one venue that
+ * offers copper ore. */
+static gint64
+attribution_source(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*provider,
+	const gchar	*venue
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	const Offer offers[] = { { "2770", 90, 105, 3 } };
+	gint64 now;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", name, "provider", provider, "schedule", "manual", "currency", "USD",
+	             NULL);
+	save(fixture, source);
+
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(VENTURE_ENTITY(source)));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	now = g_get_real_time() / G_USEC_PER_SEC;
+	add_venue(store, venue, "eu", "USD", now - 7200);
+	add_instrument(store, "2770", "Copper Ore", "Materials/Ore", now - 7200);
+	snapshot(store, venue, "USD", now - 3600, offers, G_N_ELEMENTS(offers));
+
+	return ID(source);
+}
+
+/* The answer's attribution is exactly @expected, in any order. */
+static void
+assert_attribution(
+	JsonNode		*answer,
+	const gchar *const	*expected
+){
+	JsonArray *lines;
+	guint n;
+	guint i;
+	guint j;
+
+	lines = json_object_get_array_member(root_of(answer), "attribution");
+	g_assert_nonnull(lines);
+	n = (NULL != expected) ? g_strv_length((gchar **)expected) : 0;
+	g_assert_cmpuint(json_array_get_length(lines), ==, n);
+
+	for (i = 0; i < n; i++)
+	{
+		gboolean found = FALSE;
+
+		for (j = 0; j < json_array_get_length(lines); j++)
+			found = found || (0 == g_strcmp0(json_array_get_string_element(lines, j), expected[i]));
+
+		if (!found)
+			g_error("the answer does not name \"%s\"", expected[i]);
+	}
+}
+
+/*
+ * A provider that declares an attribution line is named on every page,
+ * API answer and card that shows its data -- once, escaped, and only
+ * there: a page drawing on two providers names both, a page drawing on a
+ * provider with no line (or on nothing) shows no line at all.
+ *
+ * What breaks if this regresses: Blizzard's terms (section 2.13) require
+ * the source be named clearly and conspicuously wherever its data is
+ * shown; a page that drops the line, or a plugin whose line injects a
+ * script into every Trading page, is a breach or a hole.
+ */
+static void
+test_attribution(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const credited[] = { hostile_credit, NULL };
+	static const gchar *const exchange[] = { exchange_credit, NULL };
+	static const gchar *const both[] = { hostile_credit, exchange_credit, NULL };
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureEntity) list = NULL;
+	g_autoptr(VentureEntity) entry = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) health = NULL;
+	g_autoptr(VentureDashboardWidget) watch = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	VentureWidgetScope scope;
+	JsonArray *sources;
+	gint64 orgs[1];
+	gint64 exchange_id;
+	gint64 plain_id;
+	guint i;
+
+	(void)user_data;
+
+	attribution_provider(fixture, "credited_feed", hostile_credit);
+	attribution_provider(fixture, "exchange_feed", exchange_credit);
+	attribution_provider(fixture, "plain_feed", NULL);
+	seed_store(fixture);
+
+	/* file_jsonl declares no line: the data is shown, and nothing names it. */
+	answer = get_json(fixture, "/api/v1/market/browse", 200);
+	g_assert_true(json_object_get_boolean_member(root_of(answer), "available"));
+	assert_attribution(answer, NULL);
+	g_clear_pointer(&answer, json_node_unref);
+	page = get_page(fixture, "/market/browse");
+	g_assert_null(strstr(page, "class=\"source-attribution\""));
+	g_clear_pointer(&page, g_free);
+
+	/* The same source behind a provider that asks to be named. */
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	g_object_set(source, "provider", "credited_feed", "settings", "", NULL);
+	save(fixture, source);
+
+	answer = get_json(fixture, "/api/v1/market/browse", 200);
+	assert_attribution(answer, credited);
+	g_clear_pointer(&answer, json_node_unref);
+	page = get_page(fixture, "/market/browse");
+	g_assert_nonnull(strstr(page, escaped_credit));
+	g_assert_null(strstr(page, hostile_credit));
+	g_assert_null(strstr(page, "<script>alert(\"x\")"));
+	/* Once, however many rows it supplied. */
+	g_assert_null(strstr(strstr(page, escaped_credit) + strlen(escaped_credit),
+	                   "class=\"source-attribution\""));
+	g_clear_pointer(&page, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, escaped_credit));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	assert_attribution(answer, credited);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/market/deals", 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "rows")), >, 0);
+	assert_attribution(answer, credited);
+	g_clear_pointer(&answer, json_node_unref);
+	page = get_page(fixture, "/market/deals");
+	g_assert_nonnull(strstr(page, escaped_credit));
+	g_clear_pointer(&page, g_free);
+
+	/* Two more sources: one named by its provider, one not. */
+	exchange_id = attribution_source(fixture, "Exchange", "exchange_feed", "x-venue");
+	plain_id = attribution_source(fixture, "Plain", "plain_feed", "p-venue");
+
+	/* Every source's venues on one page: both lines, never a third. */
+	answer = get_json(fixture, "/api/v1/market/venues", 200);
+	assert_attribution(answer, both);
+	g_clear_pointer(&answer, json_node_unref);
+	page = get_page(fixture, "/market/venues");
+	g_assert_nonnull(strstr(page, escaped_credit));
+	g_assert_nonnull(strstr(page, exchange_credit));
+	g_clear_pointer(&page, g_free);
+
+	/* One source at a time names that source only. */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/browse?source=%" G_GINT64_FORMAT, exchange_id);
+	answer = get_json(fixture, path, 200);
+	assert_attribution(answer, exchange);
+	g_clear_pointer(&answer, json_node_unref);
+
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/browse?source=%" G_GINT64_FORMAT, plain_id);
+	answer = get_json(fixture, path, 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "rows")), >, 0);
+	assert_attribution(answer, NULL);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/browse?source=%" G_GINT64_FORMAT, plain_id);
+	page = get_page(fixture, path);
+	g_assert_null(strstr(page, "class=\"source-attribution\""));
+	g_clear_pointer(&page, g_free);
+
+	/* A list of the organization's watchlists shows nobody's data. */
+	answer = get_json(fixture, "/api/v1/market/watchlists", 200);
+	assert_attribution(answer, NULL);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* The feeds: each source with its own line, every distinct one once. */
+	answer = get_json(fixture, "/api/v1/feeds", 200);
+	assert_attribution(answer, both);
+	sources = json_object_get_array_member(root_of(answer), "sources");
+
+	for (i = 0; i < json_array_get_length(sources); i++)
+	{
+		JsonObject *one = json_array_get_object_element(sources, i);
+		gint64 id = json_object_get_int_member(one, "id");
+
+		if (id == plain_id)
+			g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(one, "attribution")));
+		else if (id == exchange_id)
+			g_assert_cmpstr(json_object_get_string_member(one, "attribution"), ==, exchange_credit);
+		else
+			g_assert_cmpstr(json_object_get_string_member(one, "attribution"), ==, hostile_credit);
+	}
+
+	g_clear_pointer(&answer, json_node_unref);
+	page = get_page(fixture, "/feeds");
+	g_assert_nonnull(strstr(page, escaped_credit));
+	g_assert_nonnull(strstr(page, exchange_credit));
+	g_assert_null(strstr(page, hostile_credit));
+	g_clear_pointer(&page, g_free);
+
+	/* The data_source record page says what its provider will show. */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/e/data_source/%" G_GINT64_FORMAT, fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, escaped_credit));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/e/data_source/%" G_GINT64_FORMAT, plain_id);
+	page = get_page(fixture, path);
+	g_assert_null(strstr(page, "class=\"source-attribution\""));
+	g_clear_pointer(&page, g_free);
+
+	/* The cards: the health card lists every source, so names both; a
+	 * watchlist of the credited source's ore names that one. */
+	g_assert_true(venture_marketdata_promote_instrument(fixture->context, fixture->org, fixture->source_id,
+	                                                    "2770", NULL, &record, NULL));
+	list = VENTURE_ENTITY(venture_watchlist_new());
+	venture_entity_set_organization_id(list, fixture->org);
+	g_object_set(list, "name", "Ores", "group-key", "eu", NULL);
+	save(fixture, list);
+	entry = VENTURE_ENTITY(venture_watchlist_entry_new());
+	venture_entity_set_organization_id(entry, fixture->org);
+	g_object_set(entry, "watchlist-id", ID(list), "instrument-id", ID(record), NULL);
+	save(fixture, entry);
+
+	dashboard = venture_dashboard_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(dashboard), fixture->org);
+	g_object_set(dashboard, "name", "Trading", "slug", "trading", NULL);
+	save(fixture, dashboard);
+	health = venture_dashboard_widget_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(health), fixture->org);
+	g_object_set(health, "dashboard-id", ID(dashboard), "kind", "source_health", NULL);
+	save(fixture, health);
+	watch = venture_dashboard_widget_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(watch), fixture->org);
+	g_object_set(watch, "dashboard-id", ID(dashboard), "kind", "watchlist", "record-id", ID(list), NULL);
+	save(fixture, watch);
+
+	orgs[0] = fixture->org;
+	memset(&scope, 0, sizeof(scope));
+	scope.organization_ids = orgs;
+	scope.n_organizations = 1;
+
+	result = venture_dashboard_render_widget(fixture->context, health, &scope);
+	g_assert_null(result->error);
+	g_assert_nonnull(result->attribution);
+	g_assert_cmpuint(g_strv_length(result->attribution), ==, 2);
+	g_assert_true(g_strv_contains((const gchar *const *)result->attribution, hostile_credit));
+	g_assert_true(g_strv_contains((const gchar *const *)result->attribution, exchange_credit));
+	g_assert_nonnull(strstr(result->html, escaped_credit));
+	g_clear_pointer(&result, venture_widget_result_free);
+
+	result = venture_dashboard_render_widget(fixture->context, watch, &scope);
+	g_assert_null(result->error);
+	g_assert_cmpuint(g_strv_length(result->attribution), ==, 1);
+	g_assert_cmpstr(result->attribution[0], ==, hostile_credit);
+	g_assert_nonnull(strstr(result->html, escaped_credit));
+	g_assert_null(strstr(result->html, exchange_credit));
+	g_clear_pointer(&result, venture_widget_result_free);
+
+	/* An alert's hits are readings of the credited source: the evaluation,
+	 * the overview, its page and the hits card all name it. */
+	{
+		g_autoptr(VentureEntity) rule = NULL;
+		g_autoptr(VentureMoney) threshold = NULL;
+		g_autoptr(VentureDashboardWidget) hits = NULL;
+		g_autofree gchar *body = NULL;
+
+		threshold = money_of("1.15 USD");
+		rule = VENTURE_ENTITY(venture_alert_rule_new());
+		venture_entity_set_organization_id(rule, fixture->org);
+		g_object_set(rule, "name", "Cheap ore", "kind", VENTURE_ALERT_KIND_BELOW, "instrument-id", ID(record),
+		             "threshold", threshold, NULL);
+		save(fixture, rule);
+
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/api/v1/market/alerts/%" G_GINT64_FORMAT "/evaluate", ID(rule));
+		g_assert_cmpuint(http(fixture, "POST", path, "{}", &body, NULL), ==, 200);
+		answer = json_from_string(body, NULL);
+		g_assert_cmpint(json_object_get_int_member(root_of(answer), "written"), ==, 1);
+		assert_attribution(answer, credited);
+		g_clear_pointer(&answer, json_node_unref);
+
+		answer = get_json(fixture, "/api/v1/market/alerts", 200);
+		assert_attribution(answer, credited);
+		g_clear_pointer(&answer, json_node_unref);
+		page = get_page(fixture, "/market/alerts");
+		g_assert_nonnull(strstr(page, escaped_credit));
+		g_clear_pointer(&page, g_free);
+
+		hits = venture_dashboard_widget_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(hits), fixture->org);
+		g_object_set(hits, "dashboard-id", ID(dashboard), "kind", "market_alerts", NULL);
+		save(fixture, hits);
+		result = venture_dashboard_render_widget(fixture->context, hits, &scope);
+		g_assert_null(result->error);
+		g_assert_cmpuint(g_strv_length(result->attribution), ==, 1);
+		g_assert_nonnull(strstr(result->html, escaped_credit));
+		g_clear_pointer(&result, venture_widget_result_free);
+	}
+
+	/* The watchlist page and its twin name the same source the card does. */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/watchlists/%" G_GINT64_FORMAT, ID(list));
+	answer = get_json(fixture, path, 200);
+	assert_attribution(answer, credited);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* The dashboard's JSON carries each card's lines beside its data. */
+	{
+		g_autoptr(JsonNode) dumped = NULL;
+		g_autofree gchar *text = NULL;
+		g_autoptr(GError) error = NULL;
+
+		dumped = venture_dashboard_describe(fixture->context, dashboard, &scope, TRUE, &error);
+		g_assert_no_error(error);
+		text = json_to_string(dumped, FALSE);
+		g_assert_nonnull(strstr(text, "\"attribution\":["));
+		g_assert_nonnull(strstr(text, "Prices courtesy of Example Exchange."));
+	}
+}
+
 typedef struct
 {
 	gboolean	 done;
@@ -1443,7 +1821,8 @@ test_doors_and_looks(
 	};
 	static const gchar *const classes[] = {
 		".chart-line-1", ".chart-line-2", ".chart-heat-cell", ".chart-grid", ".chart-axis",
-		".sparkline", ".market-action-row", ".form-inline", ".chart-legend", ".chart-caption", NULL
+		".sparkline", ".market-action-row", ".form-inline", ".chart-legend", ".chart-caption",
+		".source-attribution", ".source-attribution-label", NULL
 	};
 	g_autoptr(VentureMcpCatalog) catalog = NULL;
 	g_autoptr(JsonNode) schema = NULL;
@@ -1557,6 +1936,7 @@ main(
 	ADD("watchlist-and-actions", test_watchlist_and_actions);
 	ADD("alerts", test_alerts);
 	ADD("widgets", test_widgets);
+	ADD("attribution", test_attribution);
 	ADD("doors-and-looks", test_doors_and_looks);
 
 	return g_test_run();

@@ -1370,6 +1370,106 @@ venture_data_source_provider_get_label(VentureDataSourceProvider *self)
 	return (NULL != label) ? label : venture_data_source_provider_get_name(self);
 }
 
+const gchar *
+venture_data_source_provider_get_attribution(VentureDataSourceProvider *self)
+{
+	VentureDataSourceProviderInterface *iface;
+
+	g_return_val_if_fail(VENTURE_IS_DATA_SOURCE_PROVIDER(self), NULL);
+
+	/* Optional: the built-in providers read whatever the operator points
+	 * them at, and have nobody's terms to repeat. */
+	iface = VENTURE_DATA_SOURCE_PROVIDER_GET_IFACE(self);
+
+	return (NULL != iface->get_attribution) ? iface->get_attribution(self) : NULL;
+}
+
+gboolean
+venture_data_source_attribution_check(
+	const gchar	 *text,
+	GError		**error
+){
+	const gchar *cursor;
+	gboolean blank;
+
+	if ((NULL == text) || !g_utf8_validate(text, -1, NULL))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "An attribution is a line of UTF-8 text");
+		return FALSE;
+	}
+
+	if (strlen(text) > VENTURE_DATA_SOURCE_ATTRIBUTION_MAX)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "An attribution is at most %d bytes", VENTURE_DATA_SOURCE_ATTRIBUTION_MAX);
+		return FALSE;
+	}
+
+	/* One line: a page shows it as a sentence beside a table, and a
+	 * newline or an escape sequence has no business in either. */
+	blank = TRUE;
+
+	for (cursor = text; '\0' != *cursor; cursor = g_utf8_next_char(cursor))
+	{
+		gunichar c = g_utf8_get_char(cursor);
+
+		if (g_unichar_iscntrl(c))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "An attribution is one line with no control characters");
+			return FALSE;
+		}
+
+		if (!g_unichar_isspace(c))
+			blank = FALSE;
+	}
+
+	if (blank)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "An attribution may not be blank; leave it out for none");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gchar *
+venture_data_source_attribution_normalise(const gchar *text)
+{
+	g_autoptr(GString) line = NULL;
+	const gchar *cursor;
+
+	if ((NULL == text) || !g_utf8_validate(text, -1, NULL))
+		return NULL;
+
+	line = g_string_new(NULL);
+
+	for (cursor = text; '\0' != *cursor; cursor = g_utf8_next_char(cursor))
+	{
+		gunichar c = g_utf8_get_char(cursor);
+		gsize width = (gsize)(g_utf8_next_char(cursor) - cursor);
+
+		/* Cut at a character, never inside one. */
+		if (line->len + width > VENTURE_DATA_SOURCE_ATTRIBUTION_MAX)
+			break;
+
+		if (g_unichar_iscntrl(c))
+			g_string_append_c(line, ' ');
+		else
+			g_string_append_len(line, cursor, (gssize)width);
+	}
+
+	g_strstrip(line->str);
+	line->len = strlen(line->str);
+
+	if (0 == line->len)
+		return NULL;
+
+	return g_string_free(g_steal_pointer(&line), FALSE);
+}
+
 JsonNode *
 venture_data_source_provider_dup_settings_schema(VentureDataSourceProvider *self)
 {
@@ -1545,6 +1645,7 @@ typedef struct
 	gchar				*name;
 	gchar				*label;
 	gchar				*schema_json;
+	gchar				*attribution;
 	VentureFuncDataSourceFetch	 fetch;
 	gpointer			 user_data;
 	GDestroyNotify			 destroy;
@@ -1574,6 +1675,7 @@ venture_func_data_source_provider_finalize(GObject *object)
 	g_free(self->name);
 	g_free(self->label);
 	g_free(self->schema_json);
+	g_free(self->attribution);
 
 	G_OBJECT_CLASS(venture_func_data_source_provider_parent_class)->finalize(object);
 }
@@ -1600,6 +1702,12 @@ static const gchar *
 func_provider_label(VentureDataSourceProvider *provider)
 {
 	return ((VentureFuncDataSourceProvider *)provider)->label;
+}
+
+static const gchar *
+func_provider_attribution(VentureDataSourceProvider *provider)
+{
+	return ((VentureFuncDataSourceProvider *)provider)->attribution;
 }
 
 static JsonNode *
@@ -1662,6 +1770,7 @@ venture_func_data_source_provider_iface_init(VentureDataSourceProviderInterface 
 	iface->get_label = func_provider_label;
 	iface->dup_settings_schema = func_provider_schema;
 	iface->fetch_async = func_provider_fetch_async;
+	iface->get_attribution = func_provider_attribution;
 }
 
 VentureDataSourceProvider *
@@ -1687,6 +1796,36 @@ venture_func_data_source_provider_new(
 	self->destroy = destroy;
 
 	return VENTURE_DATA_SOURCE_PROVIDER(self);
+}
+
+gboolean
+venture_func_data_source_provider_set_attribution(
+	VentureDataSourceProvider	 *provider,
+	const gchar			 *attribution,
+	GError				**error
+){
+	VentureFuncDataSourceProvider *self;
+
+	g_return_val_if_fail(VENTURE_IS_DATA_SOURCE_PROVIDER(provider), FALSE);
+
+	/* The type is private to this file, so a provider of another kind is
+	 * a caller's mistake worth saying, not a crash. */
+	if (!G_TYPE_CHECK_INSTANCE_TYPE(provider, venture_func_data_source_provider_get_type()))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Only a provider made by venture_func_data_source_provider_new() "
+		                    "takes an attribution this way; others implement get_attribution");
+		return FALSE;
+	}
+
+	if ((NULL != attribution) && !venture_data_source_attribution_check(attribution, error))
+		return FALSE;
+
+	self = (VentureFuncDataSourceProvider *)provider;
+	g_free(self->attribution);
+	self->attribution = (NULL != attribution) ? g_strstrip(g_strdup(attribution)) : NULL;
+
+	return TRUE;
 }
 
 /* --- The registry -------------------------------------------------------------- */

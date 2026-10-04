@@ -2764,6 +2764,101 @@ test_feeds_runs_reach_the_default_context(
 	settle(fixture);
 }
 
+/*
+ * A provider's attribution line: built-in providers declare none, a
+ * function provider takes one through its setter, and the setter refuses
+ * anything that is not one plain line -- a newline, a control character,
+ * a blank, a line past the cap -- rather than cutting it, because the
+ * half cut off could be exactly the "not endorsed by" a provider's terms
+ * require. What a page shows is normalised again on the way out, for a
+ * native provider whose vfunc nobody judged.
+ *
+ * What breaks if this regresses: a plugin's line that breaks a page's
+ * layout or drops the disclaimer its provider's terms demand.
+ */
+static void
+test_feeds_attribution_is_one_line(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *overlong = NULL;
+	g_autofree gchar *normalised = NULL;
+	g_autofree gchar *cut = NULL;
+	VentureDataSourceProviderRegistry *registry;
+	static const gchar *const refused[] = {
+		"two\nlines", "a tab\there", "an escape \x1b[31m", "   ", "", "bad \xff utf-8", NULL
+	};
+	guint i;
+
+	(void)user_data;
+
+	registry = venture_context_get_data_source_providers(fixture->context);
+	g_assert_null(venture_data_source_provider_get_attribution(
+		venture_data_source_provider_registry_lookup(registry, "http_json")));
+	g_assert_null(venture_data_source_provider_get_attribution(
+		venture_data_source_provider_registry_lookup(registry, "file_jsonl")));
+
+	provider = venture_func_data_source_provider_new("credited", NULL, NULL, stubborn_fetch, NULL, NULL);
+	g_assert_null(venture_data_source_provider_get_attribution(provider));
+
+	g_assert_true(venture_func_data_source_provider_set_attribution(provider,
+		"  Prices from <Example> & \"Co\".  ", &error));
+	g_assert_no_error(error);
+	/* Kept as text, trimmed: escaping is the page's job, not the setter's. */
+	g_assert_cmpstr(venture_data_source_provider_get_attribution(provider), ==,
+	                "Prices from <Example> & \"Co\".");
+
+	for (i = 0; NULL != refused[i]; i++)
+	{
+		g_assert_false(venture_func_data_source_provider_set_attribution(provider, refused[i], &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+	}
+
+	overlong = g_strnfill(VENTURE_DATA_SOURCE_ATTRIBUTION_MAX + 1, 'x');
+	g_assert_false(venture_func_data_source_provider_set_attribution(provider, overlong, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	overlong[VENTURE_DATA_SOURCE_ATTRIBUTION_MAX] = '\0';
+	g_assert_true(venture_data_source_attribution_check(overlong, NULL));
+
+	/* A refusal leaves the line it had; NULL takes it away. */
+	g_assert_cmpstr(venture_data_source_provider_get_attribution(provider), ==,
+	                "Prices from <Example> & \"Co\".");
+	g_assert_true(venture_func_data_source_provider_set_attribution(provider, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_null(venture_data_source_provider_get_attribution(provider));
+
+	/* Only a function provider takes one this way. */
+	g_assert_false(venture_func_data_source_provider_set_attribution(
+		venture_data_source_provider_registry_lookup(registry, "csv"), "x", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* What a page shows of a vfunc's line: one line, at most the cap,
+	 * never cut inside a character, nothing for blank or broken text. */
+	normalised = venture_data_source_attribution_normalise(" a\nb\tc ");
+	g_assert_cmpstr(normalised, ==, "a b c");
+	g_assert_null(venture_data_source_attribution_normalise("  \n "));
+	g_assert_null(venture_data_source_attribution_normalise("\xff"));
+	g_assert_null(venture_data_source_attribution_normalise(NULL));
+	{
+		g_autoptr(GString) wide = g_string_new("x");
+
+		/* Two-byte characters after one byte: the cap falls inside one,
+		 * and the cut must land before it. */
+		while (wide->len <= VENTURE_DATA_SOURCE_ATTRIBUTION_MAX + 4)
+			g_string_append(wide, "\xc3\xa9");
+
+		cut = venture_data_source_attribution_normalise(wide->str);
+		g_assert_nonnull(cut);
+		g_assert_cmpuint(strlen(cut), ==, VENTURE_DATA_SOURCE_ATTRIBUTION_MAX - 1);
+		g_assert_true(g_utf8_validate(cut, -1, NULL));
+	}
+}
+
 int
 main(
 	int	 argc,
@@ -2824,6 +2919,8 @@ main(
 	           test_feeds_test_action_is_bounded, fixture_tear_down);
 	g_test_add("/feeds/window-is-written-not-dropped", Fixture, NULL, fixture_set_up,
 	           test_feeds_window_is_written_not_dropped, fixture_tear_down);
+	g_test_add("/feeds/attribution-is-one-line", Fixture, NULL, fixture_set_up,
+	           test_feeds_attribution_is_one_line, fixture_tear_down);
 	g_test_add("/feeds/runs-reach-the-default-context", Fixture, NULL, fixture_set_up,
 	           test_feeds_runs_reach_the_default_context, fixture_tear_down);
 

@@ -1948,6 +1948,21 @@ blizzard_provider_label(VentureDataSourceProvider *provider)
 }
 
 /*
+ * Blizzard's API terms (section 2.13) require the application to name
+ * Blizzard, clearly and conspicuously, as the source of the data -- and
+ * to do it so the application does not appear endorsed by or affiliated
+ * with Blizzard. Every page that shows this provider's data shows this
+ * line, which says both halves.
+ */
+static const gchar *
+blizzard_provider_attribution(VentureDataSourceProvider *provider)
+{
+	(void)provider;
+
+	return BLIZZARD_ATTRIBUTION;
+}
+
+/*
  * The settings, as the data source form and docs show them. client_secret
  * is the one credential: marked sensitive, it is refused in the settings
  * YAML and sealed in the integration store on the source's credentials
@@ -2114,6 +2129,7 @@ blizzard_provider_iface_init(VentureDataSourceProviderInterface *iface)
 	iface->freeze = blizzard_provider_freeze;
 	iface->list_units = blizzard_provider_units;
 	iface->fetch_async = blizzard_provider_fetch_async;
+	iface->get_attribution = blizzard_provider_attribution;
 }
 
 VentureDataSourceProvider *

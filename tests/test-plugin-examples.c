@@ -682,6 +682,16 @@ test_odds_api_cover(
 	g_assert_nonnull(found);
 	g_assert_true(json_object_get_boolean_member(found, "is_surebet"));
 	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(found, "legs")), ==, 3);
+
+	/* The script names its service, and the scan that read its odds
+	 * carries the line for whatever shows them. */
+	{
+		JsonArray *lines = json_object_get_array_member(json_node_get_object(answer), "attribution");
+
+		g_assert_cmpuint(json_array_get_length(lines), ==, 1);
+		g_assert_cmpstr(json_array_get_string_element(lines, 0), ==,
+		                "Odds data from The Odds API (the-odds-api.com).");
+	}
 }
 
 /* ==========================================================================
@@ -742,6 +752,24 @@ test_supplier_csv(
 	run = sync_and_wait(fixture, id);
 	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
 	reader = reader_of(fixture, id);
+
+	/* The operator's own price list owes nobody a credit line: the
+	 * manifest declares none, and a page of it shows none. */
+	g_assert_null(venture_data_source_provider_get_attribution(venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(fixture->context), "supplier_csv")));
+	{
+		g_autoptr(JsonNode) browsed = NULL;
+		VentureMarketdataBrowseQuery query;
+
+		venture_marketdata_browse_query_init(&query);
+		query.organization_id = fixture->org;
+		query.data_source_id = id;
+		browsed = venture_marketdata_browse(fixture->context, &query, &error);
+		g_assert_no_error(error);
+		g_assert_true(json_object_get_boolean_member(json_node_get_object(browsed), "available"));
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			json_node_get_object(browsed), "attribution")), ==, 0);
+	}
 
 	{
 		g_autoptr(VentureSeriesRow) board = NULL;

@@ -65,6 +65,10 @@ typedef struct
  * @link: (nullable): where "all" leads, a site-relative path
  * @link_label: (nullable): what to call that link
  * @error: (nullable): why the widget could not be shown, in words
+ * @attribution: (nullable) (array zero-terminated=1): the lines naming
+ *   the data sources whose data the card shows, when their providers ask
+ *   to be named (venture_data_source_provider_get_attribution()); the
+ *   kind also draws them in @html, from the same answer
  *
  * What a widget kind produces. A failure is a result too: one widget
  * pointing at a report that no longer exists must not take the page down,
@@ -78,6 +82,7 @@ struct _VentureWidgetResult
 	gchar		*link;
 	gchar		*link_label;
 	gchar		*error;
+	gchar	       **attribution;
 };
 
 /**

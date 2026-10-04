@@ -526,6 +526,12 @@ venture_plugin_register(
 	provider = venture_func_data_source_provider_new("odds_api", "Bookmakers' odds (the-odds-api.com)",
 	                                                 odds_api_schema, odds_api_fetch, NULL, NULL);
 
+	/* Shown wherever these odds are, naming the service they came from:
+	 * set before the provider is registered, as the setter requires. */
+	if (!venture_func_data_source_provider_set_attribution(provider,
+		"Odds data from The Odds API (the-odds-api.com).", error))
+		return FALSE;
+
 	return venture_data_source_provider_registry_add(venture_context_get_data_source_providers(context),
 	                                                 provider, error);
 #else

@@ -2237,6 +2237,17 @@ venture_arbitrage_scan_run_full(
 	json_object_set_array_member(root, "rows", rows);
 	json_object_set_array_member(root, "notes", json_array_ref(scan->notes));
 
+	/* The providers of the rows kept -- a buy side from one source and a
+	 * sell side from another names both -- never of every source the
+	 * scan read: a source that answered nothing shown is not on the page. */
+	{
+		g_autoptr(GPtrArray) attributions = g_ptr_array_new_with_free_func(g_free);
+
+		venture_marketdata_attribution_collect(context, organization_id,
+		                                       json_object_get_member(root, "rows"), attributions);
+		venture_marketdata_attribution_set(root, attributions);
+	}
+
 	node = json_node_new(JSON_NODE_OBJECT);
 	json_node_take_object(node, root);
 

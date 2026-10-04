@@ -31,6 +31,13 @@ G_BEGIN_DECLS
 #define BLIZZARD_EXPORT_NAME		"tsm"
 #define BLIZZARD_ACTION_NAME		"import_recipes"
 
+/* The line shown wherever this provider's data is: Blizzard's API terms
+ * (section 2.13) want Blizzard named as the source, without the page
+ * looking endorsed by or affiliated with Blizzard. */
+#define BLIZZARD_ATTRIBUTION \
+	"Auction house data provided by Blizzard Entertainment via the Battle.net API. " \
+	"Not affiliated with or endorsed by Blizzard Entertainment."
+
 /* The namespace instrument keys live in, and the default currency. */
 #define BLIZZARD_INSTRUMENT_NAMESPACE	"wow-item"
 #define BLIZZARD_DEFAULT_CURRENCY	"GOLD"

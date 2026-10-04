@@ -1221,6 +1221,7 @@ typedef struct
 	gchar		*label;
 	gchar		*plugin;
 	gchar		*command;
+	gchar		*attribution;	/* the manifest's line, judged; NULL for none */
 } FeedExecProvider;
 
 typedef struct { GObjectClass parent_class; } FeedExecProviderClass;
@@ -1241,6 +1242,7 @@ feed_exec_provider_finalize(GObject *object)
 	g_free(self->label);
 	g_free(self->plugin);
 	g_free(self->command);
+	g_free(self->attribution);
 
 	G_OBJECT_CLASS(feed_exec_provider_parent_class)->finalize(object);
 }
@@ -1292,6 +1294,12 @@ static const gchar *
 feed_exec_label(VentureDataSourceProvider *provider)
 {
 	return ((FeedExecProvider *)provider)->label;
+}
+
+static const gchar *
+feed_exec_attribution(VentureDataSourceProvider *provider)
+{
+	return ((FeedExecProvider *)provider)->attribution;
 }
 
 static JsonNode *
@@ -1486,6 +1494,7 @@ feed_exec_provider_iface_init(VentureDataSourceProviderInterface *iface)
 	iface->dup_settings_schema = feed_exec_schema;
 	iface->freeze = feed_exec_freeze;
 	iface->fetch_async = feed_exec_fetch_async;
+	iface->get_attribution = feed_exec_attribution;
 }
 
 /*
@@ -1508,7 +1517,7 @@ feed_validate_provider(
 	GError			**error
 ){
 	static const gchar *const allowed[] = {
-		"kind", "name", "label", "command", "description", NULL
+		"kind", "name", "label", "command", "description", "attribution", NULL
 	};
 	g_autoptr(GList) members = NULL;
 	const gchar *name;
@@ -1527,7 +1536,7 @@ feed_validate_provider(
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
 			            "a data_source_provider entry has no \"%s\" "
-			            "(it takes name, label, command and description)",
+			            "(it takes name, label, command, description and attribution)",
 			            (const gchar *)l->data);
 			return FALSE;
 		}
@@ -1550,6 +1559,32 @@ feed_validate_provider(
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
 		            "data_source_provider %s has an empty or overlong command", name);
 		return FALSE;
+	}
+
+	/*
+	 * The line every page shows beside this provider's data, which the
+	 * far end's terms may require. Plain text, judged here so a manifest
+	 * that would put a paragraph, a newline or a number on every page is
+	 * refused at load with its reason, rather than shown mangled.
+	 */
+	if (json_object_has_member(entry, "attribution"))
+	{
+		g_autoptr(GError) attribution_error = NULL;
+		const gchar *attribution = feed_setting_string(entry, "attribution");
+
+		if (NULL == attribution)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			            "data_source_provider %s: attribution must be a string", name);
+			return FALSE;
+		}
+
+		if (!venture_data_source_attribution_check(attribution, &attribution_error))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+			            "data_source_provider %s: %s", name, attribution_error->message);
+			return FALSE;
+		}
 	}
 
 	if (NULL == venture_plugin_manager_lookup_exec(manager, plugin))
@@ -1586,6 +1621,7 @@ feed_accept_provider(
 	const gchar *name;
 	const gchar *command;
 	const gchar *label;
+	const gchar *attribution;
 
 	if (!feed_validate_provider(manager, manifest, entry, user_data, error))
 		return FALSE;
@@ -1599,6 +1635,8 @@ feed_accept_provider(
 	provider->label = g_strdup((NULL != label) ? label : name);
 	provider->plugin = g_strdup(venture_plugin_manifest_get_name(manifest));
 	provider->command = g_strdup((NULL != command) ? command : "fetch");
+	attribution = feed_setting_string(entry, "attribution");
+	provider->attribution = (NULL != attribution) ? g_strstrip(g_strdup(attribution)) : NULL;
 
 	if (!venture_data_source_provider_registry_add(
 		venture_context_get_data_source_providers(venture_plugin_manager_get_context(manager)),

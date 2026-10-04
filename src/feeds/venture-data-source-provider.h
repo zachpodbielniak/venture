@@ -625,6 +625,10 @@ G_DECLARE_INTERFACE(VentureDataSourceProvider, venture_data_source_provider,
  *   is the settings' `units` list, else one unit called "default"
  * @fetch_async: fetch one unit; complete on the calling thread's context
  * @fetch_finish: optional; the default propagates a #GTask's pointer
+ * @get_attribution: optional; the line naming where the data comes from,
+ *   which a provider's terms may require wherever its data is shown;
+ *   plain text, never markup; %NULL for none. Main thread; must not
+ *   change once the provider is registered
  *
  * A source of market data. See the header comment for which thread runs
  * which method.
@@ -652,8 +656,9 @@ struct _VentureDataSourceProviderInterface
 	VentureFeedBatch * (*fetch_finish)	(VentureDataSourceProvider *self,
 						 GAsyncResult *result,
 						 GError **error);
+	const gchar *	(*get_attribution)	(VentureDataSourceProvider *self);
 
-	gpointer padding[8];
+	gpointer padding[7];
 };
 
 /**
@@ -673,6 +678,63 @@ venture_data_source_provider_get_name(VentureDataSourceProvider *self);
  */
 const gchar *
 venture_data_source_provider_get_label(VentureDataSourceProvider *self);
+
+/**
+ * VENTURE_DATA_SOURCE_ATTRIBUTION_MAX:
+ *
+ * The most bytes an attribution line may hold. Long enough for a name, a
+ * service and a "not affiliated with" sentence; a paragraph is not a line
+ * a page can show beside its data.
+ */
+#define VENTURE_DATA_SOURCE_ATTRIBUTION_MAX (400)
+
+/**
+ * venture_data_source_provider_get_attribution:
+ * @self: a provider
+ *
+ * The line a page shows wherever this provider's data appears -- "Odds
+ * data from The Odds API", say -- because the far end's terms ask for it
+ * (Blizzard's API terms, for one, require it to be clear and conspicuous).
+ * It is plain text: every page escapes it, nothing renders it as markup.
+ *
+ * Returns: (transfer none) (nullable): the line, or %NULL when the
+ *   provider declares none
+ */
+const gchar *
+venture_data_source_provider_get_attribution(VentureDataSourceProvider *self);
+
+/**
+ * venture_data_source_attribution_check:
+ * @text: (nullable): a candidate attribution line
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Judges a line a plugin declares: valid UTF-8, one line with no control
+ * characters, not blank, and at most %VENTURE_DATA_SOURCE_ATTRIBUTION_MAX
+ * bytes. Refused rather than cut: shortening a line a provider's terms
+ * dictate could drop exactly the "not endorsed by" half of it.
+ *
+ * Returns: %TRUE when it may be shown; %VENTURE_ERROR_VALIDATION otherwise
+ */
+gboolean
+venture_data_source_attribution_check(
+	const gchar	 *text,
+	GError		**error
+);
+
+/**
+ * venture_data_source_attribution_normalise:
+ * @text: (nullable): what a provider returned
+ *
+ * What a page shows for a provider's line: surrounding space trimmed,
+ * control characters turned into spaces, and anything past
+ * %VENTURE_DATA_SOURCE_ATTRIBUTION_MAX cut at a character boundary. For
+ * a native provider's vfunc, which nothing judged when it registered.
+ *
+ * Returns: (transfer full) (nullable): the line, or %NULL when there is
+ *   nothing to show (blank, or not UTF-8)
+ */
+gchar *
+venture_data_source_attribution_normalise(const gchar *text);
 
 /**
  * venture_data_source_provider_dup_settings_schema:
@@ -795,6 +857,29 @@ venture_func_data_source_provider_new(
 	VentureFuncDataSourceFetch	 fetch,
 	gpointer			 user_data,
 	GDestroyNotify			 destroy
+);
+
+/**
+ * venture_func_data_source_provider_set_attribution:
+ * @provider: a provider made by venture_func_data_source_provider_new()
+ * @attribution: (nullable): the line naming where its data comes from, or
+ *   %NULL for none
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Gives a function provider the line every page shows beside its data
+ * (see venture_data_source_provider_get_attribution()). Call it before
+ * the provider is added to the registry: the line is read by pages from
+ * then on and is not guarded against changing underneath them.
+ *
+ * Returns: %TRUE when it was set; %VENTURE_ERROR_VALIDATION for a line
+ *   venture_data_source_attribution_check() refuses,
+ *   %VENTURE_ERROR_INVALID_ARGUMENT for a provider of another kind
+ */
+gboolean
+venture_func_data_source_provider_set_attribution(
+	VentureDataSourceProvider	 *provider,
+	const gchar			 *attribution,
+	GError				**error
 );
 
 /* --- The registry -------------------------------------------------------------- */

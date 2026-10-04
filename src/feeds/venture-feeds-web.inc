@@ -232,6 +232,58 @@ venture_feeds_web_append_timers(
 	g_string_append(html, "</tbody></table></div>");
 }
 
+/* The distinct attribution lines of @sources' providers, in order. */
+static GPtrArray *
+venture_feeds_web_attributions(
+	VentureWebServer	*self,
+	GPtrArray		*sources
+){
+	GPtrArray *attributions;
+	guint i;
+
+	attributions = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; i < sources->len; i++)
+	{
+		g_autofree gchar *provider = NULL;
+
+		g_object_get(g_ptr_array_index(sources, i), "provider", &provider, NULL);
+		venture_marketdata_attribution_add_provider(self->context, provider, attributions);
+	}
+
+	return attributions;
+}
+
+/*
+ * A data_source's own page: the line its provider asks to be named by,
+ * under the record's fields. The settings form cannot show it -- it is
+ * the provider's, not the record's -- and an operator choosing a provider
+ * should see what it will put on every page.
+ */
+static void
+venture_feeds_web_append_source_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(GPtrArray) attributions = NULL;
+	g_autofree gchar *provider = NULL;
+
+	g_object_get(record, "provider", &provider, NULL);
+	attributions = g_ptr_array_new_with_free_func(g_free);
+	venture_marketdata_attribution_add_provider(self->context, provider, attributions);
+
+	if (0 == attributions->len)
+		return;
+
+	g_ptr_array_add(attributions, NULL);
+	g_string_append(content, "<div class=\"card\"><div class=\"card-head\"><h2>Attribution</h2></div>"
+	                         "<div class=\"card-body\"><p class=\"muted\">Shown wherever this "
+	                         "source's data is, as its provider asks.</p>");
+	venture_marketdata_attribution_append_html(content, (const gchar *const *)attributions->pdata);
+	g_string_append(content, "</div></div>");
+}
+
 static HtmxResponse *
 venture_feeds_web_page(
 	HtmxRequest	*request,
@@ -361,6 +413,15 @@ venture_feeds_web_page(
 	}
 
 	g_string_append(html, "</div>");
+
+	/* Under the sources: the line each listed source's provider asks to
+	 * be named by, once per provider. */
+	{
+		g_autoptr(GPtrArray) attributions = venture_feeds_web_attributions(self, sources);
+
+		g_ptr_array_add(attributions, NULL);
+		venture_marketdata_attribution_append_html(html, (const gchar *const *)attributions->pdata);
+	}
 
 	for (i = 0; i < sources->len; i++)
 		venture_feeds_web_append_timers(self, html, g_ptr_array_index(sources, i));
@@ -507,6 +568,7 @@ venture_feeds_web_api_list(
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) status = NULL;
 	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GPtrArray) attributions = NULL;
 	VentureFeedsService *service;
 	JsonObject *root;
 	JsonArray *list;
@@ -538,6 +600,7 @@ venture_feeds_web_api_list(
 	status = (NULL != service) ? venture_feeds_service_dup_status(service) : NULL;
 	root = json_object_new();
 	list = json_array_new();
+	attributions = venture_feeds_web_attributions(self, sources);
 
 	for (i = 0; i < sources->len; i++)
 	{
@@ -574,10 +637,26 @@ venture_feeds_web_api_list(
 		else
 			json_object_set_null_member(object, "worker");
 
+		/* Each source's own line beside it, and every distinct one in
+		 * the answer's attribution below. */
+		{
+			g_autoptr(GPtrArray) own = g_ptr_array_new_with_free_func(g_free);
+			g_autofree gchar *provider = NULL;
+
+			g_object_get(source, "provider", &provider, NULL);
+			venture_marketdata_attribution_add_provider(self->context, provider, own);
+
+			if (own->len > 0)
+				json_object_set_string_member(object, "attribution", g_ptr_array_index(own, 0));
+			else
+				json_object_set_null_member(object, "attribution");
+		}
+
 		json_array_add_element(list, serialized);
 	}
 
 	json_object_set_array_member(root, "sources", list);
+	venture_marketdata_attribution_set(root, attributions);
 	json_object_set_boolean_member(root, "running",
 	                               (NULL != service) && venture_feeds_service_is_running(service));
 	node = json_node_new(JSON_NODE_OBJECT);

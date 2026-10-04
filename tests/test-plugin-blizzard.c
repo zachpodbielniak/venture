@@ -1501,6 +1501,130 @@ test_import_recipes(
 
 }
 
+/* One GET on this thread's main context, which the server answering it
+ * runs on too. */
+typedef struct
+{
+	gboolean	 done;
+	GBytes		*body;
+	GError		*error;
+} PageReply;
+
+static void
+page_done(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 data
+){
+	PageReply *reply = data;
+
+	reply->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &reply->error);
+	reply->done = TRUE;
+}
+
+static gchar *
+get_page(
+	VentureWebServer	*server,
+	SoupSession		*session,
+	const gchar		*path
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	gchar *body;
+	PageReply reply;
+
+	memset(&reply, 0, sizeof(reply));
+	url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	message = soup_message_new("GET", url);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, page_done, &reply);
+
+	while (!reply.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(reply.error);
+
+	if (200 != soup_message_get_status(message))
+		g_error("GET %s answered %u", path, soup_message_get_status(message));
+
+	body = g_strndup(g_bytes_get_data(reply.body, NULL), g_bytes_get_size(reply.body));
+	g_bytes_unref(reply.body);
+
+	return body;
+}
+
+/*
+ * Blizzard's API terms (section 2.13) require Blizzard to be named,
+ * clearly and conspicuously, as the source of the data, without the
+ * application appearing endorsed by or affiliated with Blizzard. After a
+ * real sync the Trading pages that show the auctions say so -- with both
+ * halves of the sentence -- and their JSON twins carry the same line.
+ *
+ * What breaks if this regresses: an install showing Blizzard's auction
+ * data without the attribution its terms make a condition of using it.
+ */
+static void
+test_attribution(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar line[] =
+		"Auction house data provided by Blizzard Entertainment via the Battle.net API. "
+		"Not affiliated with or endorsed by Blizzard Entertainment.";
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *json = NULL;
+	g_autofree gchar *path = NULL;
+	JsonArray *lines;
+	gint64 id;
+
+	(void)user_data;
+
+	g_assert_cmpstr(venture_data_source_provider_get_attribution(
+		venture_data_source_provider_registry_lookup(
+			venture_context_get_data_source_providers(fixture->context), "blizzard_auctions")), ==, line);
+
+	serve_battle_net(fixture);
+	id = create_source(fixture, "connected_realm_ids: [11]\ninclude_commodities: true\n", client_secret,
+	                   "manual");
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+
+	g_object_set(fixture->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
+	             "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(fixture->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	session = soup_session_new_with_options("timeout", 30, NULL);
+
+	page = get_page(server, session, "/market/browse");
+	g_assert_nonnull(strstr(page, "Copper Ore"));
+	g_assert_nonnull(strstr(page, "<p class=\"source-attribution\" role=\"note\">"));
+	g_assert_nonnull(strstr(page, line));
+	g_clear_pointer(&page, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/" KEY_ORE, id);
+	page = get_page(server, session, path);
+	g_assert_nonnull(strstr(page, line));
+	g_clear_pointer(&page, g_free);
+
+	page = get_page(server, session, "/feeds");
+	g_assert_nonnull(strstr(page, line));
+
+	json = get_page(server, session, "/api/v1/market/browse");
+	answer = json_from_string(json, &error);
+	g_assert_no_error(error);
+	lines = json_object_get_array_member(json_node_get_object(answer), "attribution");
+	g_assert_cmpuint(json_array_get_length(lines), ==, 1);
+	g_assert_cmpstr(json_array_get_string_element(lines, 0), ==, line);
+
+	venture_web_server_stop(server);
+}
+
 #endif /* VENTURE_HAVE_SQLITE */
 
 /*
@@ -1584,6 +1708,7 @@ main(
 	ADD("fee-model", test_fee_model);
 	ADD("tsm-export", test_tsm_export);
 	ADD("import-recipes", test_import_recipes);
+	ADD("attribution", test_attribution);
 #undef ADD
 #endif
 
