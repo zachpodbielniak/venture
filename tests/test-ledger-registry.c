@@ -39,6 +39,13 @@ static const VentureFieldDecl venture_ledger_toy_fields[] = {
 
 VENTURE_DEFINE_ENTITY(VentureLedgerToy, venture_ledger_toy, venture_ledger_toy_fields)
 
+/* The same leg, registered as a type that refuses to lose a posted amount,
+ * as sale and expense are. */
+#define VENTURE_TYPE_LEDGER_STRICT_TOY (venture_ledger_strict_toy_get_type())
+
+VENTURE_DECLARE_ENTITY(VentureLedgerStrictToy, venture_ledger_strict_toy, LEDGER_STRICT_TOY)
+VENTURE_DEFINE_ENTITY(VentureLedgerStrictToy, venture_ledger_strict_toy, venture_ledger_toy_fields)
+
 #define TOY_RULE_NAME "toy_leg"
 
 /* How many times the toy rule has been built, to show a save builds it for
@@ -879,6 +886,50 @@ test_toy_ledger_off(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count_journals(f, leg, TOY_RULE_NAME, VENTURE_JOURNAL_POSTED), ==, 1);
 }
 
+/*
+ * A type registered with REFUSE_UNPOST keeps what it posted when its rule
+ * builds nothing, exactly as when it stops being postable: the registry
+ * promises both. Only the not-postable door was guarded, so a rule
+ * replacing sale's that returned no lines would silently reverse a posted
+ * sale. A record that never posted may still build nothing.
+ */
+static void
+test_toy_refuse_unpost(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) leg = VENTURE_ENTITY(venture_ledger_strict_toy_new());
+	g_autoptr(VentureEntity) idle = VENTURE_ENTITY(venture_ledger_strict_toy_new());
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+	g_assert_true(venture_ledger_register_source_type(f->db, VENTURE_TYPE_LEDGER_STRICT_TOY, TOY_RULE_NAME,
+		toy_postable, "occurred-at", VENTURE_LEDGER_SOURCE_REFUSE_UNPOST, &toy_builds, NULL, &error));
+	g_assert_no_error(error);
+
+	venture_entity_set_organization_id(leg, f->org);
+	g_object_set(leg, "name", "Leg", "state", "executed", NULL);
+	field(leg, "occurred-at", "2026-03-02");
+	field(leg, "amount", "100 USD");
+	save(f, leg);
+	g_assert_cmpuint(count_journals(f, leg, TOY_RULE_NAME, VENTURE_JOURNAL_POSTED), ==, 1);
+
+	field(leg, "amount", "0 USD");
+	g_assert_false(venture_database_save(f->db, leg, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_cmpuint(count_journals(f, leg, TOY_RULE_NAME, VENTURE_JOURNAL_POSTED), ==, 1);
+	g_assert_cmpuint(all_journals(f, leg), ==, 1);
+
+	/* Nothing posted, nothing to keep: building nothing again is fine. */
+	venture_entity_set_organization_id(idle, f->org);
+	g_object_set(idle, "name", "Idle", "state", "executed", NULL);
+	field(idle, "occurred-at", "2026-03-02");
+	field(idle, "amount", "0 USD");
+	save(f, idle);
+	g_object_set(idle, "name", "Idle, renamed", NULL);
+	save(f, idle);
+	g_assert_cmpuint(all_journals(f, idle), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -887,6 +938,9 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(),
 		VENTURE_TYPE_LEDGER_TOY, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_entity_registry_register(venture_entity_registry_get_default(),
+		VENTURE_TYPE_LEDGER_STRICT_TOY, &error));
 	g_assert_no_error(error);
 #define PLAIN(name, fn) g_test_add("/ledger-registry/" name, Fixture, NULL, setup_plain, fn, teardown)
 #define GAME(name, fn) g_test_add("/ledger-registry/" name, Fixture, NULL, setup_game, fn, teardown)
@@ -900,6 +954,7 @@ main(int argc, char **argv)
 	GAME("toy-currencies", test_toy_currencies);
 	PLAIN("toy-consent", test_toy_consent);
 	PLAIN("toy-ledger-off", test_toy_ledger_off);
+	PLAIN("toy-refuse-unpost", test_toy_refuse_unpost);
 #undef GAME
 #undef PLAIN
 	return g_test_run();

@@ -2128,6 +2128,24 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		goto fail;
 	if (0 == rows->len)
 	{
+		/* A rule that builds nothing takes the record out of the books
+		 * just as a version that is not postable does, and a type that
+		 * refuses to lose a posted amount refuses this too. Judged on
+		 * what the earlier version left, so a record whose every version
+		 * built nothing stays editable. */
+		if (previous != NULL && 0 != (source->flags & VENTURE_LEDGER_SOURCE_REFUSE_UNPOST))
+		{
+			gboolean trace = FALSE;
+
+			if (!source_left_trace(self, db, source, copy, &trace, error))
+				goto fail;
+			if (trace)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+					"A posted source cannot lose its amount");
+				goto fail;
+			}
+		}
 		if (!unpost_source(self, db, source, previous, copy, actor, error))
 			goto fail;
 		goto commit;
