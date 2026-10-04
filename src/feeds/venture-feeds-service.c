@@ -1508,6 +1508,52 @@ venture_feeds_service_test(
 	return venture_feed_source_redact(spec, report);
 }
 
+VentureFeedRequest *
+venture_feeds_service_open_request(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	const gchar		 *unit,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureFeedSource) spec = NULL;
+	g_autoptr(JsonNode) settings = NULL;
+	g_autoptr(JsonNode) secrets = NULL;
+	const gchar *chosen;
+
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), NULL);
+
+	record = feeds_get_source(self, data_source_id, error);
+
+	if (NULL == record)
+		return NULL;
+
+	spec = feeds_freeze(self->context, record, error);
+
+	if (NULL == spec)
+		return NULL;
+
+	chosen = (NULL != unit) ? unit : spec->units[0];
+
+	if (!g_strv_contains((const gchar *const *)spec->units, chosen))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "The source has no unit called %s", chosen);
+		return NULL;
+	}
+
+	settings = json_from_string(spec->settings_json, NULL);
+	secrets = json_from_string(spec->secrets_json, NULL);
+
+	/* No session: the blocking helper makes one on a private context for
+	 * each call, so nothing of the main loop's runs nested inside it. No
+	 * quota either -- the budget belongs to the worker's runs. */
+	return venture_feed_request_new_internal(spec, chosen, json_node_get_object(settings),
+	                                         json_node_get_object(secrets), NULL, NULL, NULL,
+	                                         VENTURE_SERIES_NONE,
+	                                         g_get_real_time() / G_USEC_PER_SEC, NULL);
+}
+
 gboolean
 venture_feeds_service_purge_history(
 	VentureFeedsService	 *self,

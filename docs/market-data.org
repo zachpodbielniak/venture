@@ -225,7 +225,7 @@ Walk the tiers from the cheapest, buying min(tier, remaining) at each price unti
 
 The listing set of each complete snapshot is kept: every listing with an id, sorted by id. Between two complete snapshots of a venue, elapsed seconds apart, a merge over the two sorted lists finds:
 
-- *Vanished, and could not have expired* -- its =expires_in_min= exceeds the elapsed time, or the source gives no expiry at all (-1): *sold*, all of its quantity at its price.
+- *Vanished, and could not have expired* -- its =expires_in_min= exceeds the elapsed time, or the source gives no expiry at all (-1): *sold*, all of its quantity at its price. =expires_in_min= is the *least* time the listing had left, in *seconds*: "min" is minimum, not minutes. A source that gives a bucket gives its lower bound (a World of Warcraft LONG auction, two to twelve hours, is 7200), because the question is whether the listing could have run out -- the upper bound would count expiries as sales.
 - *Vanished, and might have expired*: *expired*.
 - *Still there with less quantity*: sold the difference.
 
@@ -323,7 +323,7 @@ Every string the worker records -- an error, a note -- and every name, attribute
 
 The threading contract is the point of the interface. Names, schemas and units are pure. =freeze= runs on the main thread and may read anything there -- an exec plugin's program and stored settings -- returning immutable data handed to another thread. =fetch_async= runs on the worker (or on a private context, for a test fetch) and touches nothing but its =VentureFeedRequest=. A provider object is shared by every source and both threads, so it holds no per-fetch state.
 
-=venture_func_data_source_provider_new(name, label, schema_json, fetch, user_data, destroy)= builds one from a blocking function, for a crispy script or a small native plugin: the function runs on a GTask thread and may call the blocking =venture_feed_request_http_get()=.
+=venture_func_data_source_provider_new(name, label, schema_json, fetch, user_data, destroy)= builds one from a blocking function, for a crispy script or a small native plugin: the function runs on a GTask thread and may call the blocking =venture_feed_request_http_get()= or =venture_feed_request_http_send()=. A provider that needs a freeze step or units of its own writes the GObject; =plugins/blizzard-auctions/= is the worked example of that, =plugins/scripts/odds-api.c= of the function form (see [[file:plugins.org::*The reference plugins][Plugins: the reference plugins]]).
 
 The batch is plain data: venues, instruments, snapshots of listings or figures, quotes, entries, record upserts, a cursor, not-modified, notes, a refused count and an optional error that makes it partial. Prices go in as minor units (=venture_feed_decimal_to_minor()=, exact: more places than the currency has is refused, never rounded); odds as decimal odds times =VENTURE_SERIES_ODDS_SCALE= (=venture_feed_decimal_to_odds()= reads decimal, American and fractional, rounding half to even at the sixth place). =venture_feed_batch_add_jsonl()= reads the JSON-lines protocol of [[file:plugins.org][Plugins]] into a batch; =file_jsonl= and exec plugins share it.
 
@@ -348,7 +348,21 @@ Every HTTP fetch goes through the request's helper (=venture_feed_request_http_g
 - *One deadline* for the whole exchange (=feeds.request_timeout=), through a cancellable of its own, so a timeout is told apart from the worker stopping.
 - *If-Modified-Since* from the unit's last =Last-Modified= (kept in the store's meta as =ims:<unit>=); a 304 is a not-modified unit. A manual sync sends none: whoever asked wants the data.
 - *Retry-After* on a 429 (seconds or an HTTP date, at most a day) is kept and the unit waits at least that long.
-- *A request budget*: the settings' =requests_per_hour=; each request costs what the provider declares (=cost=, default 1). A unit that would overspend is deferred to the next hour's window, not failed. The budget is kept in the store's meta, so a restart is not a fresh hour.
+- *A request budget*: the settings' =requests_per_hour=; each request costs what the provider declares (=cost=, default 1). A unit that would overspend is deferred to the next hour's window, not failed. The budget is kept in the store's meta, so a restart is not a fresh hour. The cost is spent *before* the request goes out and never refunded, which is right for a far end that charges a 304 too (Blizzard's commodity market costs 25 either way).
+
+The general form is =venture_feed_request_http_send(request, method, url, headers, body, content_type, cost, flags, error)= (and =_send_async= / =_send_finish=), under the same rules, for a provider that has to POST -- an OAuth client-credentials token -- or make requests that are not the unit's own answer. Only GET and POST exist, and a body only on a POST. The flags:
+
+| Flag                              | Means                                                                                                                                                                                                                         |
+|-----------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =VENTURE_FEED_HTTP_DEFAULT=       | The unit's own request: the unit's If-Modified-Since goes out, and the answer's Last-Modified and status become the unit's.                                                                                                    |
+| =VENTURE_FEED_HTTP_UNCONDITIONAL= | A side request -- a token, an index, an item's name. No If-Modified-Since is added (the provider may send its own header), and its Last-Modified and status are left out of the unit's: an item endpoint's date must not become the question the next fetch asks of the auctions. |
+| =VENTURE_FEED_HTTP_ANY_STATUS=    | Hand back any final answer that is neither a redirect nor a 429 as a response, body included, so the provider can say what a 401 means ("the client credentials were refused") instead of "HTTP 401". |
+
+A response carries every header, names folded to lower case, read with =venture_feed_http_response_get_header()= -- how the-odds-api's quota headers are read. =venture_feed_request_redact(request, text)= applies the source's redaction to a message a provider builds, so a message is safe wherever else it goes; the worker redacts again regardless.
+
+A provider that reads the far end's own count of its quota (x-requests-used and x-requests-remaining) hands it over with =venture_feed_batch_set_remote_quota(batch, used, remaining)=. The run then records that count as its quota used and limit in place of the source's own budget -- it is the one the far end enforces -- and notes it per unit.
+
+A main-thread action that must reach the far end -- the Blizzard plugin's recipe import -- asks the service for a request with =venture_feeds_service_open_request(service, data_source_id, unit, error)=: the source frozen exactly as for a run (credentials, allowlist, deadline, cap, the provider's own frozen data), with no session, no cursor, no If-Modified-Since and no budget, used only with the blocking =venture_feed_request_http_send()=. Each call blocks the main loop for at most the deadline, on a private main context, so nothing else of the main loop runs nested inside it; bound how many one action makes.
 
 ** The worker thread
 

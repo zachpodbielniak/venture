@@ -1252,7 +1252,7 @@ arb_transform_recipe(
 
 		if (!venture_arbitrage_scan_fees(walk->scan, input->source_id, input->venue_key,
 		                                 VENTURE_FEE_SIDE_BUY, input->amount, input->quantity, NULL,
-		                                 &quote, &local_error))
+		                                 input->instrument_key, &quote, &local_error))
 		{
 			g_ptr_array_add(missing, g_strdup_printf("fees: %s", local_error->message));
 			g_clear_error(&local_error);
@@ -1307,7 +1307,7 @@ arb_transform_recipe(
 
 		if (!venture_arbitrage_scan_fees(walk->scan, output.source_id, output.row->venue_key,
 		                                 VENTURE_FEE_SIDE_SELL, gross_native, sold_units, reference,
-		                                 &quote, &local_error))
+		                                 output.row->instrument_key, &quote, &local_error))
 		{
 			g_ptr_array_add(missing, g_strdup_printf("fees: %s", local_error->message));
 			g_clear_error(&local_error);
@@ -1719,7 +1719,7 @@ arb_commission(
 	VentureFeeQuote quote;
 
 	if (!venture_arbitrage_scan_fees(walk->scan, source_id, venue_key, VENTURE_FEE_SIDE_SELL, stake, 1,
-	                                 NULL, &quote, error))
+	                                 NULL, NULL, &quote, error))
 		return FALSE;
 
 	*out = quote.commission;

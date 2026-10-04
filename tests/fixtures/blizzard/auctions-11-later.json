@@ -1,0 +1,7 @@
+{
+  "auctions": [
+    {"id": 1001, "item": {"id": 2770}, "quantity": 20, "unit_price": 1000, "time_left": "VERY_LONG"},
+    {"id": 1003, "item": {"id": 19019, "bonus_lists": [1472, 6646], "modifiers": [{"type": 9, "value": 70}, {"type": 28, "value": 2}]}, "quantity": 1, "buyout": 25000000, "time_left": "SHORT"},
+    {"id": 1008, "item": {"id": 2770}, "quantity": 10, "unit_price": 1050, "time_left": "VERY_LONG"}
+  ]
+}

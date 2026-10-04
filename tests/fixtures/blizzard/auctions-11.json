@@ -1,0 +1,13 @@
+{
+  "_links": {"self": {"href": "https://us.api.blizzard.com/data/wow/connected-realm/11/auctions?namespace=dynamic-us"}},
+  "connected_realm": {"href": "https://us.api.blizzard.com/data/wow/connected-realm/11?namespace=dynamic-us"},
+  "auctions": [
+    {"id": 1001, "item": {"id": 2770}, "quantity": 20, "unit_price": 1000, "time_left": "VERY_LONG"},
+    {"id": 1002, "item": {"id": 2770}, "quantity": 5, "buyout": 6000, "time_left": "LONG"},
+    {"id": 1003, "item": {"id": 19019, "bonus_lists": [6646, 1472, 6646], "modifiers": [{"type": 28, "value": 2}, {"type": 9, "value": 70}]}, "quantity": 1, "buyout": 25000000, "time_left": "MEDIUM"},
+    {"id": 1004, "item": {"id": 82800, "pet_species_id": 39, "pet_breed_id": 5, "pet_level": 1, "pet_quality_id": 3}, "quantity": 1, "buyout": 1500000, "time_left": "SHORT"},
+    {"id": 1005, "item": {"id": 2589}, "quantity": 1, "bid": 500, "time_left": "LONG"},
+    {"id": 1006, "item": {"id": 2589}, "quantity": 3, "time_left": "LONG"},
+    {"id": 1007, "item": {"id": 2770}, "quantity": 0, "unit_price": 900, "time_left": "LONG"}
+  ]
+}

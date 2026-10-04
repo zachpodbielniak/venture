@@ -799,6 +799,7 @@ struct _VentureArbitrageScan
 	GPtrArray			*rows;		/* JsonObject */
 	VentureExchangePolicy		*policy;
 	GHashTable			*no_rate;	/* "FROM>TO" -> count */
+	GHashTable			*attrs;		/* "id\037key" -> JsonObject, or NULL */
 	guint				 never_sells;
 };
 
@@ -825,6 +826,13 @@ arb_unref_store(gpointer store)
 }
 
 static void
+arb_unref_attrs(gpointer attrs)
+{
+	if (NULL != attrs)
+		json_object_unref(attrs);
+}
+
+static void
 arb_scan_free(VentureArbitrageScan *scan)
 {
 	if (NULL == scan)
@@ -842,6 +850,7 @@ arb_scan_free(VentureArbitrageScan *scan)
 	g_clear_pointer(&scan->rows, g_ptr_array_unref);
 	g_clear_object(&scan->policy);
 	g_clear_pointer(&scan->no_rate, g_hash_table_unref);
+	g_clear_pointer(&scan->attrs, g_hash_table_unref);
 	g_free(scan);
 }
 
@@ -1007,6 +1016,54 @@ venture_arbitrage_scan_venue(
 	return venue;
 }
 
+/*
+ * An instrument's stored attributes, for a fee model keyed on the thing
+ * itself (an auction house's deposit is a share of the vendor price). Read
+ * once per scan; an unknown instrument, a store that cannot be read and
+ * attributes that are not an object are all "none", remembered as NULL.
+ */
+static JsonObject *
+arb_instrument_attrs(
+	VentureArbitrageScan	*scan,
+	gint64			 data_source_id,
+	const gchar		*instrument_key
+){
+	g_autofree gchar *cache_key = NULL;
+	JsonObject *attrs = NULL;
+	gpointer found;
+
+	if (NULL == instrument_key)
+		return NULL;
+
+	cache_key = g_strdup_printf("%" G_GINT64_FORMAT "\037%s", data_source_id, instrument_key);
+
+	if (g_hash_table_lookup_extended(scan->attrs, cache_key, NULL, &found))
+		return found;
+
+#ifdef VENTURE_HAVE_SQLITE
+	{
+		g_autoptr(VentureSeriesInstrumentRow) row = NULL;
+		VentureSeriesStore *store;
+
+		store = venture_arbitrage_scan_open_store(scan, data_source_id);
+
+		if ((NULL != store) &&
+		    venture_series_store_get_instrument(store, instrument_key, &row, NULL) &&
+		    (NULL != row) && (NULL != row->attrs_json))
+		{
+			g_autoptr(JsonNode) node = json_from_string(row->attrs_json, NULL);
+
+			if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+				attrs = json_object_ref(json_node_get_object(node));
+		}
+	}
+#endif
+
+	g_hash_table_insert(scan->attrs, g_steal_pointer(&cache_key), attrs);
+
+	return attrs;
+}
+
 gboolean
 venture_arbitrage_scan_fees(
 	VentureArbitrageScan	 *scan,
@@ -1016,6 +1073,7 @@ venture_arbitrage_scan_fees(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	const gchar		 *instrument_key,
 	VentureFeeQuote		 *out,
 	GError			**error
 ){
@@ -1034,7 +1092,9 @@ venture_arbitrage_scan_fees(
 	}
 
 	if (!venture_fee_model_registry_compute(scan->fees, venue->fee_model, venue->fee_params, side,
-	                                        amount, units, reference, out, error))
+	                                        amount, units, reference,
+	                                        arb_instrument_attrs(scan, data_source_id, instrument_key),
+	                                        out, error))
 	{
 		g_prefix_error(error, "%s: ", (NULL != venue->name) ? venue->name : venue_key);
 		return FALSE;
@@ -1357,7 +1417,8 @@ venture_arbitrage_scan_add_flip(
 		                                          sell->venue_key));
 
 	if (!venture_arbitrage_scan_fees(scan, buy->data_source_id, buy->venue_key, VENTURE_FEE_SIDE_BUY,
-	                                 buy_amount, buy->units, NULL, &buy_quote, &local_error))
+	                                 buy_amount, buy->units, NULL, buy->instrument_key, &buy_quote,
+	                                 &local_error))
 	{
 		g_ptr_array_add(missing, g_strdup_printf("fees: %s", local_error->message));
 		g_clear_error(&local_error);
@@ -1375,7 +1436,8 @@ venture_arbitrage_scan_add_flip(
 	}
 
 	if (!venture_arbitrage_scan_fees(scan, sell->data_source_id, sell->venue_key, VENTURE_FEE_SIDE_SELL,
-	                                 sell_native, sell->units, reference, &sell_quote, &local_error))
+	                                 sell_native, sell->units, reference, sell->instrument_key,
+	                                 &sell_quote, &local_error))
 	{
 		g_ptr_array_add(missing, g_strdup_printf("fees: %s", local_error->message));
 		g_clear_error(&local_error);
@@ -2032,6 +2094,7 @@ venture_arbitrage_scan_run_full(
 	scan->notes = json_array_new();
 	scan->rows = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
 	scan->no_rate = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	scan->attrs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, arb_unref_attrs);
 
 	available = TRUE;
 

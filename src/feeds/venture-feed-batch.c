@@ -142,6 +142,8 @@ venture_feed_batch_new(void)
 	self->entries = g_ptr_array_new_with_free_func(feed_batch_entry_free);
 	self->records = g_ptr_array_new_with_free_func(feed_batch_record_free);
 	self->notes = g_ptr_array_new_with_free_func(g_free);
+	self->remote_used = -1;
+	self->remote_remaining = -1;
 
 	return self;
 }
@@ -718,6 +720,42 @@ venture_feed_batch_add_refused(
 
 	if (count > 0)
 		self->refused += count;
+}
+
+void
+venture_feed_batch_set_remote_quota(
+	VentureFeedBatch	*self,
+	gint64			 used,
+	gint64			 remaining
+){
+	g_return_if_fail(NULL != self);
+
+	/* Both or neither: half an account is a number nobody can read. */
+	if ((used < 0) || (remaining < 0))
+		return;
+
+	self->remote_used = used;
+	self->remote_remaining = remaining;
+}
+
+gboolean
+venture_feed_batch_get_remote_quota(
+	VentureFeedBatch	*self,
+	gint64			*out_used,
+	gint64			*out_remaining
+){
+	g_return_val_if_fail(NULL != self, FALSE);
+
+	if (self->remote_used < 0)
+		return FALSE;
+
+	if (NULL != out_used)
+		*out_used = self->remote_used;
+
+	if (NULL != out_remaining)
+		*out_remaining = self->remote_remaining;
+
+	return TRUE;
 }
 
 gint64

@@ -1,0 +1,7 @@
+{
+  "_links": {"self": {"href": "https://us.api.blizzard.com/data/wow/auctions/commodities?namespace=dynamic-us"}},
+  "auctions": [
+    {"id": 9001, "item": {"id": 2770}, "quantity": 200, "unit_price": 1100, "time_left": "VERY_LONG"},
+    {"id": 9002, "item": {"id": 2840}, "quantity": 40, "unit_price": 4200, "time_left": "LONG"}
+  ]
+}

@@ -130,8 +130,11 @@ venture_fee_quote_clear(VentureFeeQuote *quote);
  *   commission model, the net winnings
  * @units: how many units
  * @reference: (nullable): the price a deposit is a share of, for all the
- *   units, when the venue bases it on a reference (an auction house's
- *   vendor price) rather than the listing price
+ *   units, when the venue bases it on a reference rather than the listing
+ *   price; a scan passes the sell venue's market value
+ * @attrs: (nullable): the instrument's attributes as its source stored
+ *   them -- what a model keyed on the thing itself reads, such as an
+ *   auction house's vendor price; %NULL when unknown
  * @out: (out caller-allocates): the quote, zeroed by the caller
  * @user_data: the data given at registration
  * @error: (out) (optional): return location for a #GError
@@ -146,6 +149,7 @@ typedef gboolean (*VentureFeeModelComputeFunc)(JsonObject		 *params,
                                                const VentureMoney	 *amount,
                                                gint64			  units,
                                                const VentureMoney	 *reference,
+                                               JsonObject		 *attrs,
                                                VentureFeeQuote		 *out,
                                                gpointer			  user_data,
                                                GError			**error);
@@ -290,6 +294,7 @@ venture_fee_model_registry_validate(
  * @amount: the gross amount
  * @units: how many units, at least one
  * @reference: (nullable): the deposit reference for all the units
+ * @attrs: (nullable): the instrument's stored attributes
  * @out: (out caller-allocates): the quote; clear with
  *   venture_fee_quote_clear()
  * @error: (out) (optional): return location for a #GError
@@ -308,6 +313,7 @@ venture_fee_model_registry_compute(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
 	VentureFeeQuote		 *out,
 	GError			**error
 );
@@ -688,6 +694,9 @@ venture_arbitrage_scan_venue(
  * @amount: the gross amount
  * @units: how many units
  * @reference: (nullable): a deposit's reference for all the units
+ * @instrument_key: (nullable): what is traded, so a model can read its
+ *   stored attributes (a vendor price); %NULL when the side is not one
+ *   instrument
  * @out: (out caller-allocates): the quote
  * @error: (out) (optional): return location for a #GError
  *
@@ -707,6 +716,7 @@ venture_arbitrage_scan_fees(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	const gchar		 *instrument_key,
 	VentureFeeQuote		 *out,
 	GError			**error
 );

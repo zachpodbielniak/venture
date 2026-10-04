@@ -450,6 +450,7 @@ arb_percent_compute(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
 	VentureFeeQuote		 *out,
 	gpointer		  user_data,
 	GError			**error
@@ -467,6 +468,7 @@ arb_percent_compute(
 	gint64 deposit;
 	gboolean refundable;
 
+	(void)attrs;
 	(void)user_data;
 
 	currency = venture_money_get_currency(amount);
@@ -603,6 +605,7 @@ arb_commission_compute(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
 	VentureFeeQuote		 *out,
 	gpointer		  user_data,
 	GError			**error
@@ -611,6 +614,7 @@ arb_commission_compute(
 
 	(void)units;
 	(void)reference;
+	(void)attrs;
 	(void)user_data;
 
 	if (!venture_arbitrage_member_percent(params, "rate_percent", 0, FALSE, &ppm, error))
@@ -637,6 +641,7 @@ arb_none_compute(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
 	VentureFeeQuote		 *out,
 	gpointer		  user_data,
 	GError			**error
@@ -645,6 +650,7 @@ arb_none_compute(
 	(void)side;
 	(void)units;
 	(void)reference;
+	(void)attrs;
 	(void)user_data;
 	(void)error;
 
@@ -956,6 +962,7 @@ venture_fee_model_registry_compute(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
 	VentureFeeQuote		 *out,
 	GError			**error
 ){
@@ -983,7 +990,7 @@ venture_fee_model_registry_compute(
 	if (NULL == params)
 		params = empty = json_object_new();
 
-	if (!entry->compute(params, side, amount, MAX(units, (gint64)1), reference, out,
+	if (!entry->compute(params, side, amount, MAX(units, (gint64)1), reference, attrs, out,
 	                    entry->user_data, error))
 	{
 		venture_fee_quote_clear(out);

@@ -1,0 +1,1 @@
+{"id": 2657, "name": "Smelt Copper", "crafted_item": {"key": {"href": "https://us.api.blizzard.com/data/wow/item/2840?namespace=static-us"}, "name": "Copper Bar", "id": 2840}, "reagents": [{"reagent": {"name": "Copper Ore", "id": 2770}, "quantity": 1}], "crafted_quantity": {"value": 1}}

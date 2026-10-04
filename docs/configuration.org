@@ -229,7 +229,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *ai* — provider, model, policy, auto-approved tools, prompt extras, and
   the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
-- *plugins* — paths, crispy (=allow_crispy=, on), exec plugins (=allow_exec=, *off*: programs named by a =*.plugin.yaml= manifest, run as the server's user; see [[file:plugins.org][Plugins]]), declarative venture types, required plugins
+- *plugins* — paths (also how an optional plugin is switched on; see below), crispy (=allow_crispy=, on), exec plugins (=allow_exec=, *off*: programs named by a =*.plugin.yaml= manifest, run as the server's user; see [[file:plugins.org][Plugins]]), declarative venture types, required plugins
 - *ui* — look (=classic= or =industrial=, the two designs; the default
   until a person picks one with the switch in the sidebar), theme
   (=system=, =light=, =dark= or =mocha=, the Catppuccin palette; the
@@ -368,6 +368,18 @@ point it at the tree's =build/docs-site=. Render the site with =make
 docs-site= or =venturectl docs build=; the server reads it and never
 writes it. =modules.docs: false= switches =/docs= off. See
 [[file:docs-site.org][The documentation site]].
+
+** Optional plugins: =plugins.paths=
+
+Some plugins are built and installed but load only where the operator asks. They live in their own directory -- =$(OUTDIR)/plugins-optional/= in a build tree, =$(LIBDIR)/venture/plugins-optional= (=PLUGINOPTDIR=) once installed -- which nothing scans by default. The World of Warcraft auction house connector (=blizzard-auctions.so=) is the one there today. Enable it by naming the directory:
+
+#+begin_src yaml
+plugins:
+  paths:
+    - /usr/local/lib64/venture/plugins-optional
+#+end_src
+
+or, from a build tree, by adding it to =VENTURE_PLUGIN_PATH= (colon-separated): =VENTURE_PLUGIN_PATH=build/debug/plugins:build/debug/plugins-optional=. The plugin then needs =feeds.enabled=, its API origins on =feeds.allowed_origins= and a registered currency; [[file:examples/wow-auction-house-feed.org][the walk-through]] has the whole setup.
 
 * HTTP receive and connection limits
 

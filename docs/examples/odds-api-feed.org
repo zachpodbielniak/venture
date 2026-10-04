@@ -1,0 +1,90 @@
+#+title: Worked example: bookmakers' odds from the-odds-api
+#+description: Syncing head-to-head odds from the-odds-api.com with the odds-api crispy plugin, keeping its query-string key sealed, reading its quota headers, and finding surebets with the cover strategy
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+=plugins/scripts/odds-api.c= is a crispy plugin: a C file the server compiles on demand, with no build step. It registers one data source provider, =odds_api=, that fetches head-to-head odds for the sports a source names from the-odds-api.com's v4 API and stores them as quotes: every bookmaker a venue, every match an event, every result an outcome. The arbitrage =cover= strategy then finds surebets -- matches whose best odds across bookmakers imply probabilities summing to less than one -- and splits a stake across them.
+
+It is also the reference example of a provider written as one function with =venture_func_data_source_provider_new()=; [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] covers the code.
+
+* Turning it on
+
+Copy the script into a plugin directory (crispy is on by default, =plugins.allow_crispy=), allow the API's origin and switch feeds on:
+
+#+begin_src sh
+cp plugins/scripts/odds-api.c /var/lib/venture/plugins/
+#+end_src
+
+#+begin_src yaml
+plugins:
+  paths: [/var/lib/venture/plugins]
+
+feeds:
+  enabled: true
+  allowed_origins: https://api.the-odds-api.com
+#+end_src
+
+On the next start the server compiles it (a compiler and the development headers must be present; the object is cached by content hash under the state directory) and logs =Loaded plugin .../odds-api.c=. Odds need no currency: they are stored as decimal odds.
+
+* The data source
+
+#+begin_src sh
+venturectl create data_source name="EPL odds" provider=odds_api schedule=hourly \
+    "settings=units: [soccer_epl, basketball_nba]
+regions: uk
+requests_per_hour: 20"
+#+end_src
+
+Then set =api_key= on =/feeds/ID/credentials=.
+
+| Setting             | Default                          | Meaning                                                                                       |
+|---------------------+----------------------------------+-----------------------------------------------------------------------------------------------|
+| =units=             | required                         | the-odds-api's sport keys, one unit each: =soccer_epl=, =basketball_nba=, =americanfootball_nfl= |
+| =regions=           | =us=                             | whose bookmakers: =us=, =uk=, =eu=, =au=, comma-separated; every venue's group                 |
+| =requests_per_hour= | none                             | the source's own hourly budget; the far end's is a monthly quota                               |
+| =api_base=          | =https://api.the-odds-api.com=   | an origin override, for a scripted test server; still held to =feeds.allowed_origins=          |
+| =api_key=           | --                               | *credential*: set on the credentials page, never in the settings                               |
+
+the-odds-api charges by the request and by the markets and regions in it, so poll by schedule (=hourly=, or a cron line), not =auto=: there is no Last-Modified to learn from.
+
+* What lands in the store
+
+Each fetch is =GET /v4/sports/{sport}/odds?regions=...&markets=h2h&oddsFormat=decimal=:
+
+| From the answer            | In the store                                                                                          |
+|----------------------------+-------------------------------------------------------------------------------------------------------|
+| an event                   | an instrument of kind =event=, keyed by its id, called "Home vs Away", with =commence_time=, =sport_key= and the teams in its attributes, filed under the sport's title |
+| each outcome of its h2h market | an instrument of kind =outcome= under the event, keyed =<event id>:<outcome name>= (a team, or =Draw=) |
+| a bookmaker                | a venue of kind =bookmaker=, keyed by the bookmaker's key, named by its title, grouped by =regions=     |
+| a price                    | a back quote, in decimal odds, at that bookmaker, dated by its market's =last_update=                   |
+
+Only the head-to-head market is read: a spread or a total is a different bet on the same match, and mixing them would make surebets out of unrelated prices. A malformed price is refused and counted, not stored.
+
+* The quota
+
+Every answer carries =x-requests-used=, =x-requests-remaining= and =x-requests-last=. The provider hands the first two to the run (=venture_feed_batch_set_remote_quota()=), which records them as its quota used and limit -- the far end's count, which is the one it will enforce -- and notes what the request cost.
+
+* The key, which travels in the address
+
+the-odds-api takes its key only as =?apiKey== in the query string, and an address is where keys leak. The key is a sealed credential, the helper's errors name only the origin, the script never puts the address or the far end's words in a message, and the worker redacts any credential from everything it records; [[file:../security.org::*A key in a query string: the-odds-api][Security]] has the whole list and what it cannot cover (keep =https=; no URL-logging proxy; no =SOUP_DEBUG= in production).
+
+* Finding surebets
+
+#+begin_src sh
+venturectl report arbitrage_scan strategy=cover data_source_id=4 total_stake="100.00 USD"
+#+end_src
+
+For each event, =cover= takes every outcome's best odds anywhere; when 1/d₁ + 1/d₂ + 1/d₃ < 1 it is a surebet, and the stake splits across the outcomes so every result pays the same. With Arsenal 2.10 at one bookmaker, Chelsea 4.20 and the draw 3.80 at another, S = 0.977 and 100.00 returns about 102.31 whatever happens. An event missing an outcome's odds is listed blank, naming it. =/arbitrage= has the same as its =cover= tab, and "Record attempt" records the stakes as a trade (see [[file:../arbitrage.org][Arbitrage]]).
+
+* Where things live
+
+| File                                      | What                                                       |
+|-------------------------------------------+------------------------------------------------------------|
+| =plugins/scripts/odds-api.c=              | the plugin                                                 |
+| =tests/test-plugin-examples.c=            | compiled with crispy and run against a scripted server; the key never leaks; the planted surebet is found |
+| =tests/fixtures/odds-api/soccer_epl.json= | the answer those tests serve                               |

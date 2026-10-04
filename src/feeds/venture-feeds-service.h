@@ -159,6 +159,31 @@ venture_feeds_service_sync(
 );
 
 /**
+ * venture_feeds_service_open_request:
+ * @self: the service
+ * @data_source_id: a data_source
+ * @unit: (nullable): the unit the request is for; %NULL for the first
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Freezes the source as a run would -- its credentials, the allowlist,
+ * the limits, its provider's own frozen data -- and makes one request for
+ * a main-thread action that has to reach the far end (a provider's own
+ * import, say). Use it with venture_feed_request_http_send(), which blocks
+ * on a private main context for at most the deadline per call; there is
+ * no session for the async form. It does not count against the source's
+ * budget, has no cursor and no If-Modified-Since, and writes nothing.
+ *
+ * Returns: (transfer full) (nullable): the request
+ */
+VentureFeedRequest *
+venture_feeds_service_open_request(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	const gchar		 *unit,
+	GError			**error
+);
+
+/**
  * venture_feeds_service_test:
  * @self: the service
  * @data_source_id: a data_source

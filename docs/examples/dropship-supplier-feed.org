@@ -1,0 +1,103 @@
+#+title: Worked example: a dropshipping supplier's price list as a feed
+#+description: The supplier-csv exec plugin: a bash program that turns a supplier's CSV price list into a supplier venue, SKU instruments and listings at the landed price, run under the exec rules
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+A dropshipper buys from a supplier and sells on a marketplace without holding stock. The buy side is a price list -- a CSV the supplier exports or emails -- and =plugins/exec/supplier-csv/= turns one into market data: the supplier as a venue, every SKU as an instrument, every line in stock as a listing at its *landed* price, price plus shipping. Against a marketplace's prices (another source, or listings) the arbitrage =spread= strategy then finds what is worth listing, net of the marketplace's =percent= fee.
+
+It is the reference example of an exec plugin: a manifest and a bash script, no C, no build. [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] and the exec chapters there have the rules it runs under.
+
+* Turning it on
+
+Exec plugins are off by default, and should stay off wherever someone other than the operator can write a plugin directory: a program runs as the server's user.
+
+#+begin_src yaml
+plugins:
+  allow_exec: true
+  paths: [/var/lib/venture/plugins]
+
+feeds:
+  enabled: true
+#+end_src
+
+#+begin_src sh
+cp -r plugins/exec/supplier-csv /var/lib/venture/plugins/
+cp acme-2026-10.csv /var/lib/venture/plugins/supplier-csv/
+#+end_src
+
+The scan loads the directory's =supplier-csv.plugin.yaml=, which provides =supplier_csv=. No file root and no allowed origin are needed: the program reads its own directory.
+
+* The price list
+
+#+begin_example
+sku,name,price,currency,quantity,shipping
+DS-1001,Bamboo cutting board,6.40,USD,120,1.95
+DS-1002,"Silicone baking mat, set of 2",3.15,USD,300,0.85
+DS-1004,"Ceramic pour-over cone ""V60"" style",4.75,USD,64,2.10
+DS-1005,Cast iron trivet,5.90,USD,0,2.40
+DS-1006,Linen tea towel,2.35,USD,410,
+#+end_example
+
+The header must be exactly that. =price= and =shipping= are decimals in the line's =currency= (up to four places; an empty shipping is free), =quantity= the supplier's stock. A field in double quotes may hold commas, and =""= inside one is a quote. A line that breaks a rule is skipped and logged (the first twenty), never guessed at. =sample-price-list.csv= in the plugin's directory is the example the demo uses.
+
+* The data source
+
+#+begin_src sh
+venturectl create data_source name="Acme Wholesale" provider=supplier_csv schedule=hourly \
+    currency=USD venue_namespace=supplier instrument_namespace=sku \
+    "settings=file: acme-2026-10.csv
+venue: acme
+venue_name: Acme Wholesale
+group: us"
+#+end_src
+
+| Setting            | Default                   | Meaning                                                                          |
+|--------------------+---------------------------+----------------------------------------------------------------------------------|
+| =file=             | =sample-price-list.csv=   | the price list, a plain name in the plugin's directory                           |
+| =venue=            | =supplier=                | the venue's key                                                                  |
+| =venue_name=       | =Supplier=                | its name                                                                         |
+| =group=            | none                      | its group, for region figures beside other suppliers                             |
+| =include_shipping= | =true=                    | list at price plus shipping; =false= lists the supplier's bare price             |
+
+=file= is held to the plugin's directory by the program itself: a plain relative name, no =..=, then =realpath= and a comparison against the directory plus a separator, so a symlink out of it or a sibling named =<dir>-evil= is refused too. An editor writes the setting; this check is what keeps it from making the server's user read something else.
+
+* What lands in the store
+
+- the supplier, a venue of kind =supplier=;
+- each SKU, an instrument of kind =sku=, with =price=, =shipping= and =currency= in its attributes;
+- one complete snapshot, dated by the file's modification time -- a list nobody re-exported is yesterday's prices, and the store says so;
+- one listing per SKU in stock, keyed by its SKU, at the landed price, added as exact decimals (=6.40 + 1.95 = 8.35=). A SKU with no stock has no listing and, the snapshot being complete, shows out of stock; a SKU whose stock falls between two lists counts as sold at the supplier, which is a demand signal worth having.
+
+* Using it
+
+Promote the SKUs you sell (=venturectl market promote SOURCE instrument DS-1001=), link each to its =product=, and give the marketplace venue its fee (=fee_model=percent=, =fee_params: "cut_percent: 15"=). Then:
+
+#+begin_src sh
+venturectl report arbitrage_scan strategy=spread buy_venues=acme sell_venues=marketplace min_roi=0.2
+#+end_src
+
+lists what is worth listing at the marketplace's prices, after its cut, with the supplier's landed price as the cost. "Record attempt" on =/arbitrage= records it as a trade with a buy leg at the supplier and a sell leg at the marketplace.
+
+* Running it by hand
+
+The program is an ordinary script; it reads one JSON request line and writes JSON lines:
+
+#+begin_src sh
+cd /var/lib/venture/plugins/supplier-csv
+printf '%s\n' '{"protocol":1,"command":"fetch","params":{"unit":"default","source":{"venue":"acme"}}}' | ./fetch.sh
+./fetch.sh --help
+#+end_src
+
+* Where things live
+
+| File                                                  | What                                          |
+|-------------------------------------------------------+-----------------------------------------------|
+| =plugins/exec/supplier-csv/supplier-csv.plugin.yaml=  | the manifest                                  |
+| =plugins/exec/supplier-csv/fetch.sh=                  | the program (ShellCheck-clean)                |
+| =plugins/exec/supplier-csv/sample-price-list.csv=     | the sample list                               |
+| =tests/test-plugin-examples.c=                        | run with =allow_exec= on and off, a file outside the directory refused |

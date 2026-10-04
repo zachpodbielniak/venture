@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-03]
+#+updated: [2026-10-04]
 #+version: 0.6.2
 
 * VENTURE
@@ -58,6 +58,9 @@ New to VENTURE? Two pages, in this order:
 - [[file:arbitrage.org][Arbitrage]] — trades and their legs, each leg posted through the venue's cash and an arbitrage positions account, stock legs executed once through the inventory service, closing a position to gains per book section, recording an attempt in one stageable action, and the =arbitrage_performance= report
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record
 - [[file:examples/game-economy.org][Worked example: a game economy]] — every generic feature above, end to end, in a game's gold
+- [[file:examples/wow-auction-house-feed.org][Worked example: World of Warcraft auction houses as a feed]] — the optional =blizzard-auctions= plugin: GOLD at exponent 4, the data source and its sealed client secret, realms and the commodity market (25 requests even on a 304), the instrument key format, recipe import, the =wow_auction= fee model and the =tsm= export
+- [[file:examples/odds-api-feed.org][Worked example: bookmakers' odds from the-odds-api]] — the =odds-api.c= crispy plugin: events, outcomes and bookmakers as quotes, the far end's quota, a key that has to travel in the address, and surebets with =cover=
+- [[file:examples/dropship-supplier-feed.org][Worked example: a dropshipping supplier's price list]] — the =supplier-csv= exec plugin: a bash program reading a CSV in its own directory into listings at the landed price
 - [[file:sales-orders.org][Sales orders]] — allocate, ship and invoice fulfilled quantity
 - [[file:reporting.org][Reporting]] — the built-in reports, the generic =aggregate= report (sum, average, count of any field of any type, grouped and bucketed, money per currency), and how to write one
 - [[file:forge.org][Git forges]] — linking tickets to repositories, and letting an agent do the work
@@ -72,7 +75,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:harness.org][The agent harness]] — a coding agent kept open in a workspace: sessions, providers, and what an operator has to switch on
 - [[file:interface.org][The interface]] — the design system behind the web UI: substrates, the two registers of type, geometry, and the tokens a plugin builds on
 - [[file:extending.org][Extending]] — plugins, crispy scripts, declarative venture types, plugin modules
-- [[file:plugins.org][Plugins: runtimes, manifests and exec]] — the loader's reference: runtimes and how a plugin adds one, =*.plugin.yaml= manifests, what a plugin provides, exec plugins, the JSON-lines protocol and the security model
+- [[file:plugins.org][Plugins: runtimes, manifests and exec]] — the loader's reference: runtimes and how a plugin adds one, =*.plugin.yaml= manifests, what a plugin provides, exec plugins, the JSON-lines protocol, the security model and the three reference plugins (Blizzard as a native =.so=, the-odds-api as crispy, a supplier price list as exec)
 - [[file:containers.org][Containers]] — the Containerfile, local compose, and a deployment example
 - [[file:reconciliation.org][Reconciliation suggestions]] — pluggable matching and operator approval
 - [[file:mail.org][Transactional mail]] — durable outbox, SMTP, templates, operator-resolved uncertainty, and inbound IMAP sync onto contact timelines and the capture inbox

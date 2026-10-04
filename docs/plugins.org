@@ -350,7 +350,7 @@ One JSON object per line, UTF-8, each naming its =type=. An exec plugin writes t
 | =venue=        | =key=                            | =name=, =kind=, =group=, =currency=, =attrs= (object)                                          | A place that quotes prices: a realm, a marketplace, a bookmaker. |
 | =instrument=   | =key=                            | =name=, =kind=, =category= (=/=-separated path), =parent= (instrument key), =attrs= (object)  | A thing that is priced: an item, a SKU, an event's outcome. |
 | =snapshot=     | =venue=, =taken_at=              | =complete= (boolean)                                                                           | The start of one venue's snapshot; listings and stats that follow belong to it. |
-| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id=, =side= (=sell= or =buy=), =expires_in_min= (integer, at least 0), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots; =expires_in_min= says how long it had left, so one that vanished before it could have expired counts as sold and one that ran out does not. Without it every vanished listing is counted as sold. |
+| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id=, =side= (=sell= or =buy=), =expires_in_min= (integer, at least 0), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots; =expires_in_min= is the *least* time it had left, in *seconds* ("min" is minimum, not minutes), so one that vanished before it could have expired counts as sold and one that ran out does not. Without it every vanished listing is counted as sold. |
 | =stat=         | =venue=, =instrument=, one figure | =min=, =market=, =mean=, =median=, =sale_avg= (decimals); =quantity=, =listings=, =sold= (integers, at least 0); =currency=, =taken_at= | Precomputed figures when there are no individual listings. At least one figure is required. |
 | =quote=        | =venue=, =instrument=, exactly one of =price= or =odds= | =format= (=decimal=, =american=, =fractional=), =side= (=back=, =lay=, =bid=, =ask=), =liquidity= (decimal), =currency=, =taken_at= | A price or odds. Decimal odds must exceed 1; American odds are =+150= or =-200= with a magnitude of at least 100; fractional are =5/2=. |
 | =entry=        | =key=, =title=                   | =url= (http or https only), =summary=, =published_at=, =venue=, =instrument=                   | A non-price item: a feed article, a notice. |
@@ -387,6 +387,41 @@ What the loader promises, and what it does not:
 - *It is not a sandbox.* An exec program runs as the server's user and can read whatever that user can, including the database file and =/proc= entries of the server process. The rules keep the server from *handing* it more than it asked for, which is a different promise from containing it. Treat a plugin directory with exec enabled as you would =~/bin=: only what you trust goes there.
 - *Native and crispy code is fully trusted.* It runs inside the server process with the full API; =plugins.allow_crispy= exists because crispy runs a compiler over whatever is in the directory.
 
+* The reference plugins
+
+Three plugins in the tree are both real connectors and the worked examples of the three ways to write a data source provider. Each is a complete, commented file to copy from; each has its own walk-through under =docs/examples/=.
+
+| Plugin                         | Runtime          | Provides                                                                                     | Built                                   | Walk-through |
+|--------------------------------+------------------+----------------------------------------------------------------------------------------------+-----------------------------------------+--------------|
+| =plugins/blizzard-auctions/=   | native =.so=     | provider =blizzard_auctions=, fee model =wow_auction=, export =tsm=, action =import_recipes= | into =$(OUTDIR)/plugins-optional/=      | [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses]] |
+| =plugins/scripts/odds-api.c=   | crispy (=.c=)    | provider =odds_api=                                                                          | never: compiled on demand by the server | [[file:examples/odds-api-feed.org][Bookmakers' odds]] |
+| =plugins/exec/supplier-csv/=   | exec (bash)      | provider =supplier_csv=                                                                      | never: a manifest and a script          | [[file:examples/dropship-supplier-feed.org][A dropshipping supplier]] |
+
+** Blizzard: a provider as a GObject, and four registries from one plugin
+
+=blizzard-plugin.c= registers everything in =venture_plugin_register()=; the fee model first, because a venue naming =wow_auction= is refused at its save until the model exists. =blizzard-provider.c= implements the whole =VentureDataSourceProvider= interface:
+
+- =list_units= turns the settings into units -- each connected realm id, or one =realms= unit that walks the index when none is listed, then =commodities= -- and judges the settings, so a bad region is refused when the source is saved.
+- =freeze= runs on the main thread: it parses the settings once and checks that the currency it will emit (=GOLD= by default) is *registered with exponent 4*, because Blizzard prices are copper. It never registers a currency itself; that is the operator's (or the demo's) to do, as a =currency= record. What it returns -- the settings, and a token and name cache under a mutex -- is shared by every fetch of the source until the source is next frozen (saved, a configuration change, a manual sync).
+- =fetch_async= hands the fetch to a GTask thread, where every request is the blocking =venture_feed_request_http_send()=. The OAuth token is a client-credentials grant (=POST {oauth_base}/token=, HTTP Basic =client_id:client_secret=), cached for its lifetime, sent only as a bearer header, wiped from memory when the state is freed, and never put in an error, a note, a log line or the batch.
+- Side requests -- the token, the realm index, a realm's name, an item's name -- are =VENTURE_FEED_HTTP_UNCONDITIONAL=, so their dates and statuses are never mistaken for the unit's. The every-realm unit keeps each realm's Last-Modified in its own cursor and sends it as that realm's If-Modified-Since.
+
+The instrument key format, the price rule, the =time_left= bounds and the fee model's formula are documented in the walk-through and in the source, which is where they are decided.
+
+=import_recipes= is a record action on =data_source= (registered once per database, refused on any source whose provider is not this one). It writes the database, so it runs on the main thread, and reaches Battle.net through =venture_feeds_service_open_request()=: the same frozen request a run would make, the allowlist and deadline included.
+
+** odds-api: a provider as one function
+
+The script is one =fetch= function handed to =venture_func_data_source_provider_new()=, with a JSON schema string; there is no GObject and no freeze. The function runs on a GTask thread and makes one blocking request per unit (a sport). Two things worth copying: the quota headers become =venture_feed_batch_set_remote_quota()=, and the API key -- which this API takes only in the query string -- is a sealed credential that never appears in a message the script builds (see [[file:security.org::*Market data feeds: where the server may reach][Security]]).
+
+** supplier-csv: a provider as a program
+
+A manifest with =kind: data_source_provider= and a bash script that reads one request line and writes JSON lines. It shows the exec rules from the program's side: settings arrive in =params.source=, the working directory is the plugin's own, and a path a setting names is held to that directory by the program itself (a plain relative name, =realpath= and a comparison with the directory plus a separator), because an editor writes the setting and the program runs as the server's user. Money is added as decimal strings, never as floats. It is ShellCheck-clean and answers =--help= and =--license=.
+
+** The optional plugins directory
+
+=$(OUTDIR)/plugins-optional/= (installed as =$(LIBDIR)/venture/plugins-optional=) holds plugins that are built and shipped but loaded only when the operator asks, by adding the directory to =plugins.paths= (see [[file:configuration.org][Configuration]]). The Blizzard plugin lives there because =VENTURE_PLUGIN_PATH= loads everything in =$(OUTDIR)/plugins/= into every test fixture, and a provider that wants a registered GOLD and credentials has no business in a fixture that did not ask for it. =tests/test-plugin-blizzard.c= loads it by path.
+
 * Where things live
 
 | File                                         | What                                                                  |
@@ -401,5 +436,11 @@ What the loader promises, and what it does not:
 | =tests/test-automation.c=                    | Exec automation handlers, =plugins.allow_exec= at every call          |
 | =tests/fixtures/exec/automation-handler.sh=  | The exec plugin those tests drive                                     |
 | =tests/fixtures/exec/probe.sh=               | The misbehaving exec plugin the tests drive                           |
+| =plugins/blizzard-auctions/=                 | The Blizzard auction house plugin (native, optional)                  |
+| =plugins/scripts/odds-api.c=                 | The-odds-api provider (crispy)                                        |
+| =plugins/exec/supplier-csv/=                 | The supplier price list provider (exec)                               |
+| =tests/test-plugin-blizzard.c=               | The Blizzard plugin against a scripted Battle.net                     |
+| =tests/test-plugin-examples.c=               | odds-api compiled and run, supplier-csv run, a cover scan over the odds |
+| =tests/venture-test-http.h=                  | The scripted HTTP server those two use                                |
 
-In the source tree, =plugins/exec/= holds exec plugins and is not compiled; =plugins/blizzard-auctions/= is a native plugin built into =$(OUTDIR)/plugins-optional/= rather than =$(OUTDIR)/plugins/=, so that it does not load into every test fixture through =VENTURE_PLUGIN_PATH=. The Makefile keeps both out of the generic one-directory-one-=.so= rule.
+In the source tree, =plugins/exec/= holds exec plugins and is not compiled; =plugins/blizzard-auctions/= is a native plugin built into =$(OUTDIR)/plugins-optional/= rather than =$(OUTDIR)/plugins/=, so that it does not load into every test fixture through =VENTURE_PLUGIN_PATH=. The Makefile keeps both out of the generic one-directory-one-=.so= rule; =PLUGIN_OPTIONAL_DIRS= lists the optional ones, which =make plugins= (and so =make test=) builds, and =make install= installs into =PLUGINOPTDIR=.

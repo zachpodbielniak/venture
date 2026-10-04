@@ -387,6 +387,9 @@ $(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
 # a real server: both binaries, and the docs it renders are the real ones.
 $(OUTDIR)/tests/test-docs: | $(OUTDIR)/venturectl $(OUTDIR)/venture
 $(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
+# The Blizzard test loads the optional plugin by path; it is built first so
+# `make test-one T=test-plugin-blizzard` does not skip itself on a fresh tree.
+$(OUTDIR)/tests/test-plugin-blizzard: | $(OUTDIR)/plugins-optional/blizzard-auctions.so
 
 # ---------------------------------------------------------------------------
 # Plugin and module discovery
@@ -404,11 +407,16 @@ $(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
 #   - plugins/blizzard-auctions/ is a native plugin that must not land in
 #     $(OUTDIR)/plugins, because VENTURE_PLUGIN_PATH loads everything there
 #     into every test fixture. It is built into $(OUTDIR)/plugins-optional/
-#     by its own rule, added with the plugin.
-PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec plugins/blizzard-auctions
+#     by its own rule (PLUGIN_OPTIONAL_DIRS below); an operator enables it
+#     by naming that directory in plugins.paths, and the test that drives
+#     it loads the .so by path.
+PLUGIN_OPTIONAL_DIRS := plugins/blizzard-auctions
+PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec $(PLUGIN_OPTIONAL_DIRS)
 PLUGIN_DIRS := $(filter-out $(PLUGIN_EXCLUDED_DIRS), \
                  $(patsubst %/,%,$(sort $(dir $(wildcard plugins/*/)))))
 PLUGIN_SOS := $(patsubst plugins/%,$(OUTDIR)/plugins/%.so,$(PLUGIN_DIRS))
+PLUGIN_OPTIONAL_SOS := $(patsubst plugins/%,$(OUTDIR)/plugins-optional/%.so,$(PLUGIN_OPTIONAL_DIRS))
+$(OUTDIR)/plugins-optional/blizzard-auctions.so: $(wildcard plugins/blizzard-auctions/*.h)
 
 #
 # Only directories. `wildcard modules/*` also matches modules/README.org,
@@ -458,7 +466,7 @@ venturectl: $(OUTDIR)/venturectl
 .PHONY: gir
 gir: $(OUTDIR)/$(GIR_FILE) $(OUTDIR)/$(TYPELIB_FILE)
 
-plugins: $(OUTDIR)/$(LIB_STATIC) $(PLUGIN_SOS)
+plugins: $(OUTDIR)/$(LIB_STATIC) $(PLUGIN_SOS) $(PLUGIN_OPTIONAL_SOS)
 
 pod-modules: $(OUTDIR)/$(LIB_STATIC) $(POD_MODULE_SOS)
 

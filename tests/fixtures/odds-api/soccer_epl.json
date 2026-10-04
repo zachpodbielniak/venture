@@ -1,0 +1,74 @@
+[
+  {
+    "id": "ev-ars-che",
+    "sport_key": "soccer_epl",
+    "sport_title": "EPL",
+    "commence_time": "2026-10-10T14:00:00Z",
+    "home_team": "Arsenal",
+    "away_team": "Chelsea",
+    "bookmakers": [
+      {
+        "key": "williamhill",
+        "title": "William Hill",
+        "last_update": "2026-10-04T09:58:00Z",
+        "markets": [
+          {"key": "h2h", "last_update": "2026-10-04T09:58:00Z", "outcomes": [
+            {"name": "Arsenal", "price": 2.1},
+            {"name": "Chelsea", "price": 3.6},
+            {"name": "Draw", "price": 3.4}
+          ]}
+        ]
+      },
+      {
+        "key": "betfair_sb_uk",
+        "title": "Betfair Sportsbook",
+        "last_update": "2026-10-04T09:59:00Z",
+        "markets": [
+          {"key": "h2h", "last_update": "2026-10-04T09:59:30Z", "outcomes": [
+            {"name": "Arsenal", "price": 1.95},
+            {"name": "Chelsea", "price": 4.2},
+            {"name": "Draw", "price": 3.8}
+          ]},
+          {"key": "spreads", "last_update": "2026-10-04T09:59:30Z", "outcomes": [
+            {"name": "Arsenal", "price": 9.5, "point": -1.5},
+            {"name": "Chelsea", "price": 9.5, "point": 1.5}
+          ]}
+        ]
+      }
+    ]
+  },
+  {
+    "id": "ev-liv-eve",
+    "sport_key": "soccer_epl",
+    "sport_title": "EPL",
+    "commence_time": "2026-10-11T16:30:00Z",
+    "home_team": "Liverpool",
+    "away_team": "Everton",
+    "bookmakers": [
+      {
+        "key": "williamhill",
+        "title": "William Hill",
+        "last_update": "2026-10-04T09:58:00Z",
+        "markets": [
+          {"key": "h2h", "last_update": "2026-10-04T09:58:00Z", "outcomes": [
+            {"name": "Liverpool", "price": 1.5},
+            {"name": "Everton", "price": 6.0},
+            {"name": "Draw", "price": 4.0}
+          ]}
+        ]
+      },
+      {
+        "key": "betfair_sb_uk",
+        "title": "Betfair Sportsbook",
+        "last_update": "2026-10-04T09:59:00Z",
+        "markets": [
+          {"key": "h2h", "last_update": "2026-10-04T09:59:00Z", "outcomes": [
+            {"name": "Liverpool", "price": 1.55},
+            {"name": "Everton", "price": 5.5},
+            {"name": "Draw", "price": "bad"}
+          ]}
+        ]
+      }
+    ]
+  }
+]

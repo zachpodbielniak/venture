@@ -188,8 +188,13 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureFeedSource, venture_feed_source_unref)
  * @last_modified: its Last-Modified as Unix seconds, or
  *   %VENTURE_SERIES_NONE
  * @content_type: (nullable): its Content-Type
+ * @headers: (array zero-terminated=1): every response header as name,
+ *   value, name, value..., names in lower case; read them with
+ *   venture_feed_http_response_get_header()
  *
- * A successful answer. Anything else is a #GError.
+ * A successful answer -- or, asked for with
+ * %VENTURE_FEED_HTTP_ANY_STATUS, any final answer that is neither a
+ * redirect nor a 429. Anything else is a #GError.
  */
 typedef struct
 {
@@ -197,6 +202,7 @@ typedef struct
 	GBytes	*body;
 	gint64	 last_modified;
 	gchar	*content_type;
+	gchar  **headers;
 } VentureFeedHttpResponse;
 
 /**
@@ -207,6 +213,42 @@ void
 venture_feed_http_response_free(VentureFeedHttpResponse *self);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureFeedHttpResponse, venture_feed_http_response_free)
+
+/**
+ * venture_feed_http_response_get_header:
+ * @self: a response
+ * @name: a header name, in any case
+ *
+ * Returns: (transfer none) (nullable): the header's first value
+ */
+const gchar *
+venture_feed_http_response_get_header(
+	const VentureFeedHttpResponse	*self,
+	const gchar			*name
+);
+
+/**
+ * VentureFeedHttpFlags:
+ * @VENTURE_FEED_HTTP_DEFAULT: the unit's own request: If-Modified-Since
+ *   goes out when the unit has a Last-Modified, and the answer's
+ *   Last-Modified and status become the unit's
+ * @VENTURE_FEED_HTTP_UNCONDITIONAL: a side request -- a token, an index, a
+ *   name lookup -- that is not the unit's answer: no If-Modified-Since is
+ *   added, and its Last-Modified and status are left out of the unit's
+ *   (a provider may still send its own If-Modified-Since header)
+ * @VENTURE_FEED_HTTP_ANY_STATUS: hand back any final answer other than a
+ *   redirect or a 429 as a response, body included, so the provider can
+ *   say what a 401 or a 404 means for it; without it those are
+ *   %VENTURE_FEEDS_ERROR_HTTP
+ *
+ * How one request of a fetch is made.
+ */
+typedef enum
+{
+	VENTURE_FEED_HTTP_DEFAULT	= 0,
+	VENTURE_FEED_HTTP_UNCONDITIONAL	= 1 << 0,
+	VENTURE_FEED_HTTP_ANY_STATUS	= 1 << 1
+} VentureFeedHttpFlags;
 
 #define VENTURE_TYPE_FEED_REQUEST (venture_feed_request_get_type())
 
@@ -462,6 +504,105 @@ venture_feed_request_http_get(
 	const gchar *const	 *headers,
 	guint			  cost,
 	GError			**error
+);
+
+/**
+ * venture_feed_request_http_send_async:
+ * @self: a request
+ * @method: "GET" or "POST"
+ * @url: an absolute http or https address
+ * @headers: (nullable) (array zero-terminated=1): name, value pairs
+ * @body: (nullable): a POST's body; refused on a GET
+ * @content_type: (nullable): the body's type, e.g.
+ *   "application/x-www-form-urlencoded"
+ * @cost: the request's cost against the source's hourly budget; 0 is 1
+ * @flags: how the request is made
+ * @callback: (scope async): called on the calling thread's context
+ * @user_data: (closure): data for @callback
+ *
+ * The general form of venture_feed_request_http_get_async(), under the
+ * same rules -- the allowlist, no redirects, the pinned address, the body
+ * cap, the deadline and the budget -- for a provider that has to POST (an
+ * OAuth token) or make requests that are not the unit's own answer.
+ */
+void
+venture_feed_request_http_send_async(
+	VentureFeedRequest	*self,
+	const gchar		*method,
+	const gchar		*url,
+	const gchar *const	*headers,
+	GBytes			*body,
+	const gchar		*content_type,
+	guint			 cost,
+	VentureFeedHttpFlags	 flags,
+	GAsyncReadyCallback	 callback,
+	gpointer		 user_data
+);
+
+/**
+ * venture_feed_request_http_send_finish:
+ * @self: a request
+ * @result: the result
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: (transfer full) (nullable): the answer
+ */
+VentureFeedHttpResponse *
+venture_feed_request_http_send_finish(
+	VentureFeedRequest	 *self,
+	GAsyncResult		 *result,
+	GError			**error
+);
+
+/**
+ * venture_feed_request_http_send:
+ * @self: a request
+ * @method: "GET" or "POST"
+ * @url: an absolute http or https address
+ * @headers: (nullable) (array zero-terminated=1): name, value pairs
+ * @body: (nullable): a POST's body
+ * @content_type: (nullable): the body's type
+ * @cost: the request's cost against the budget
+ * @flags: how the request is made
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The same, blocking, on a private main context with a session of its
+ * own: for a provider on a #GTask worker, or for a main-thread action
+ * that must reach the far end (it then blocks the main loop for at most
+ * the deadline, and nothing else of the main loop runs nested inside).
+ *
+ * Returns: (transfer full) (nullable): the answer
+ */
+VentureFeedHttpResponse *
+venture_feed_request_http_send(
+	VentureFeedRequest	 *self,
+	const gchar		 *method,
+	const gchar		 *url,
+	const gchar *const	 *headers,
+	GBytes			 *body,
+	const gchar		 *content_type,
+	guint			  cost,
+	VentureFeedHttpFlags	  flags,
+	GError			**error
+);
+
+/**
+ * venture_feed_request_redact:
+ * @self: a request
+ * @text: (nullable): text a provider is about to put in an error or a note
+ *
+ * Replaces every credential the source holds (six bytes or longer) with a
+ * marker. The worker does this to everything it records; a provider that
+ * builds a message from something the far end said -- or from a URL that
+ * carries a key in its query, as some APIs insist on -- should do it too,
+ * so the message is safe wherever else it goes.
+ *
+ * Returns: (transfer full) (nullable): the redacted text
+ */
+gchar *
+venture_feed_request_redact(
+	VentureFeedRequest	*self,
+	const gchar		*text
 );
 
 /* --- The provider interface ------------------------------------------------------ */

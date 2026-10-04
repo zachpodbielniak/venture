@@ -450,7 +450,7 @@ arb_calc_flip(
 	models = venture_fee_model_registry_new();
 
 	if (!venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_SELL, gross,
-	                                        units, NULL, &quote, error))
+	                                        units, NULL, NULL, &quote, error))
 		return NULL;
 
 	if ((NULL != transfer) &&

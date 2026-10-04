@@ -160,7 +160,9 @@ venture_feed_batch_begin_snapshot(
  * @unit_price: one unit's price, minor units
  * @quantity: units, at least 1
  * @buy: %TRUE for a buy order, %FALSE for an offer to sell
- * @expires_in_min: minutes the listing has left, or -1 when unknown
+ * @expires_in_min: the least time the listing has left, in *seconds* --
+ *   "min" is minimum, not minutes -- or -1 when unknown; a listing that
+ *   vanishes sooner than this could not have expired, so it counts as sold
  * @error: (out) (optional): return location for a #GError
  *
  * Returns: %TRUE when it was added; a malformed listing is refused with
@@ -388,6 +390,39 @@ void
 venture_feed_batch_add_refused(
 	VentureFeedBatch	*self,
 	gint64			 count
+);
+
+/**
+ * venture_feed_batch_set_remote_quota:
+ * @self: a batch
+ * @used: requests the far end says this account has spent, at least 0
+ * @remaining: requests it says are left, at least 0
+ *
+ * The far end's own account of its quota -- the-odds-api's
+ * x-requests-used and x-requests-remaining headers. The run records it in
+ * place of the source's hourly budget, because it is the count the far end
+ * will enforce. A negative figure is ignored.
+ */
+void
+venture_feed_batch_set_remote_quota(
+	VentureFeedBatch	*self,
+	gint64			 used,
+	gint64			 remaining
+);
+
+/**
+ * venture_feed_batch_get_remote_quota:
+ * @self: a batch
+ * @out_used: (out) (optional): requests spent
+ * @out_remaining: (out) (optional): requests left
+ *
+ * Returns: whether the batch carries the far end's quota
+ */
+gboolean
+venture_feed_batch_get_remote_quota(
+	VentureFeedBatch	*self,
+	gint64			*out_used,
+	gint64			*out_remaining
 );
 
 /**

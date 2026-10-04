@@ -58,6 +58,8 @@ venture_feed_run_new_internal(
 	self->started_at = started_at;
 	self->finished_at = started_at;
 	self->quota_limit = source->requests_per_hour;
+	self->remote_used = -1;
+	self->remote_limit = -1;
 	self->max_records = source->max_records;
 	self->notes = g_ptr_array_new_with_free_func(g_free);
 	self->records = g_ptr_array_new_with_free_func(venture_feeds_record_free);
@@ -1129,6 +1131,32 @@ worker_unit_reschedule(
 	}
 }
 
+/*
+ * The far end's quota, as a provider read it from the answer: kept on the
+ * run (the newest wins) and said once per unit in its notes, so the run
+ * page shows how close the account is to its limit.
+ */
+static void
+worker_run_remote_quota(
+	WorkerSource		*source,
+	VentureFeedRun		*run,
+	const gchar		*unit_name,
+	VentureFeedBatch	*batch
+){
+	g_autofree gchar *note = NULL;
+	gint64 used;
+	gint64 remaining;
+
+	if (!venture_feed_batch_get_remote_quota(batch, &used, &remaining))
+		return;
+
+	run->remote_used = used;
+	run->remote_limit = (remaining > G_MAXINT64 - used) ? G_MAXINT64 : used + remaining;
+	note = g_strdup_printf("the far end counts %" G_GINT64_FORMAT " requests used and %"
+	                       G_GINT64_FORMAT " left", used, remaining);
+	worker_run_note(source, run, unit_name, note);
+}
+
 static void
 worker_unit_fetched(
 	GObject		*object,
@@ -1190,6 +1218,7 @@ worker_unit_fetched(
 	}
 	else if (venture_feed_batch_get_not_modified(batch))
 	{
+		worker_run_remote_quota(source, run, unit_name, batch);
 		run->not_modified++;
 		run->succeeded++;
 		outcome = UNIT_SAME;
@@ -1205,6 +1234,7 @@ worker_unit_fetched(
 
 		ingest.venues = venues;
 		run->refused += batch->refused;
+		worker_run_remote_quota(source, run, unit_name, batch);
 
 		for (i = 0; i < batch->notes->len; i++)
 			worker_run_note(source, run, unit_name, g_ptr_array_index(batch->notes, i));
@@ -1332,7 +1362,15 @@ worker_pass_finish(WorkerPass *pass)
 		worker_quota_save(source);
 	}
 
-	pass->run->quota_used = source->quota.spent;
+	/* The far end's own count, when a provider read one, is the one it
+	 * will enforce; otherwise the source's own hourly budget. */
+	if (pass->run->remote_used >= 0)
+	{
+		pass->run->quota_used = pass->run->remote_used;
+		pass->run->quota_limit = pass->run->remote_limit;
+	}
+	else
+		pass->run->quota_used = source->quota.spent;
 
 	if (pass->manual)
 	{

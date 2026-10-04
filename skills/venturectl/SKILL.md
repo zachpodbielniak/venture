@@ -1032,6 +1032,18 @@ needs an administrator: it decides which outside host the server calls.
   one is refused (403).
 - The data lands in a series store per source, not in records; there is no
   `list` for it yet.
+- Plugins add providers: `blizzard_auctions` (World of Warcraft auction
+  houses; optional plugin, needs a registered `GOLD` with exponent 4 and
+  `client_secret` on the credentials page), `odds_api` (bookmakers' odds;
+  `units` are sport keys, `api_key` on the credentials page) and
+  `supplier_csv` (an exec plugin; needs `plugins.allow_exec`). Read a
+  source's provider with `get data_source ID` before guessing its settings.
+- A `blizzard_auctions` source has one more action:
+  `act data_source ID import_recipes max_recipes=50 create_products=true venture_id=N`
+  reads Battle.net's professions into `recipe` records; the `result` ends
+  with `cursor=P/T/O` when more remain -- pass it back as `cursor=...`.
+  Without `create_products` recipes whose items have no product are
+  skipped, and say which.
 
 ### Market data records and the price oracle
 

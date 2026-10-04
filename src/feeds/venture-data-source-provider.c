@@ -190,7 +190,30 @@ venture_feed_http_response_free(VentureFeedHttpResponse *self)
 
 	g_clear_pointer(&self->body, g_bytes_unref);
 	g_free(self->content_type);
+	g_strfreev(self->headers);
 	g_free(self);
+}
+
+const gchar *
+venture_feed_http_response_get_header(
+	const VentureFeedHttpResponse	*self,
+	const gchar			*name
+){
+	guint i;
+
+	g_return_val_if_fail(NULL != self, NULL);
+
+	if (NULL == name)
+		return NULL;
+
+	for (i = 0; (NULL != self->headers) && (NULL != self->headers[i]) &&
+	            (NULL != self->headers[i + 1]); i += 2)
+	{
+		if (0 == g_ascii_strcasecmp(self->headers[i], name))
+			return self->headers[i + 1];
+	}
+
+	return NULL;
 }
 
 /* --- The request --------------------------------------------------------------- */
@@ -442,6 +465,16 @@ venture_feed_request_get_quota(
 }
 
 gchar *
+venture_feed_request_redact(
+	VentureFeedRequest	*self,
+	const gchar		*text
+){
+	g_return_val_if_fail(VENTURE_IS_FEED_REQUEST(self), NULL);
+
+	return venture_feed_source_redact(self->source, text);
+}
+
+gchar *
 venture_feed_request_expand(
 	VentureFeedRequest	 *self,
 	const gchar		 *template_text,
@@ -677,6 +710,7 @@ typedef struct
 	SoupMessage		*message;
 	GUri			*uri;
 	gchar			*origin;
+	VentureFeedHttpFlags	 flags;
 	GCancellable		*cancellable;	/* the deadline's, child of the request's */
 	gulong			 parent_handler;
 	GSource			*deadline;
@@ -808,8 +842,33 @@ feed_http_finish_ok(
 		if (NULL != when)
 		{
 			response->last_modified = g_date_time_to_unix(when);
-			get->request->last_modified = response->last_modified;
+
+			/* Only the unit's own answer dates the unit: a token's or
+			 * an item name's Last-Modified would make the next fetch
+			 * ask "anything newer than the item database?". */
+			if (0 == (get->flags & VENTURE_FEED_HTTP_UNCONDITIONAL))
+				get->request->last_modified = response->last_modified;
 		}
+	}
+
+	/* Every header, for a provider that reads a quota or a request id
+	 * out of them; names folded so a lookup has one spelling. */
+	{
+		g_autoptr(GPtrArray) pairs = g_ptr_array_new();
+		SoupMessageHeadersIter iter;
+		const gchar *name;
+		const gchar *value;
+
+		soup_message_headers_iter_init(&iter, headers);
+
+		while (soup_message_headers_iter_next(&iter, &name, &value))
+		{
+			g_ptr_array_add(pairs, g_ascii_strdown(name, -1));
+			g_ptr_array_add(pairs, g_strdup(value));
+		}
+
+		g_ptr_array_add(pairs, NULL);
+		response->headers = (gchar **)g_ptr_array_free(g_steal_pointer(&pairs), FALSE);
 	}
 
 	content_type = soup_message_headers_get_content_type(headers, NULL);
@@ -913,7 +972,9 @@ feed_http_sent(
 	}
 
 	status = soup_message_get_status(get->message);
-	get->request->http_status = (gint)status;
+
+	if (0 == (get->flags & VENTURE_FEED_HTTP_UNCONDITIONAL))
+		get->request->http_status = (gint)status;
 
 	/* Pinned: the address answered must be the address asked. With
 	 * redirects off this cannot differ, and this is what says so if a
@@ -955,7 +1016,10 @@ feed_http_sent(
 		return;
 	}
 
-	if (!SOUP_STATUS_IS_SUCCESSFUL(status))
+	/* A provider that asked to judge the status itself gets the answer,
+	 * body and all, under the same cap. */
+	if (!SOUP_STATUS_IS_SUCCESSFUL(status) &&
+	    (0 == (get->flags & VENTURE_FEED_HTTP_ANY_STATUS)))
 	{
 		g_task_return_new_error(task, VENTURE_FEEDS_ERROR, VENTURE_FEEDS_ERROR_HTTP,
 		                        "%s answered HTTP %u", get->origin, status);
@@ -986,22 +1050,52 @@ venture_feed_request_http_get_async(
 	GAsyncReadyCallback	 callback,
 	gpointer		 user_data
 ){
+	venture_feed_request_http_send_async(self, "GET", url, headers, NULL, NULL, cost,
+	                                     VENTURE_FEED_HTTP_DEFAULT, callback, user_data);
+}
+
+void
+venture_feed_request_http_send_async(
+	VentureFeedRequest	*self,
+	const gchar		*method,
+	const gchar		*url,
+	const gchar *const	*headers,
+	GBytes			*body,
+	const gchar		*content_type,
+	guint			 cost,
+	VentureFeedHttpFlags	 flags,
+	GAsyncReadyCallback	 callback,
+	gpointer		 user_data
+){
 	g_autoptr(GTask) task = NULL;
 	g_autoptr(GError) local_error = NULL;
 	FeedHttpGet *get;
 	SoupMessageHeaders *request_headers;
+	gboolean is_post;
 	gint64 now;
 	guint i;
 
 	g_return_if_fail(VENTURE_IS_FEED_REQUEST(self));
 
 	task = g_task_new(self, self->cancellable, callback, user_data);
-	g_task_set_source_tag(task, venture_feed_request_http_get_async);
+	g_task_set_source_tag(task, venture_feed_request_http_send_async);
 	g_task_set_check_cancellable(task, FALSE);
 
 	get = g_new0(FeedHttpGet, 1);
 	get->request = g_object_ref(self);
+	get->flags = flags;
 	g_task_set_task_data(task, get, feed_http_get_free);
+
+	/* Two methods and no more: a feed reads, and the one write a provider
+	 * needs is a token request. A body on a GET is a mistake to name. */
+	is_post = (0 == g_strcmp0(method, "POST"));
+
+	if ((!is_post && (0 != g_strcmp0(method, "GET"))) || (!is_post && (NULL != body)))
+	{
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                        "A feed request is a GET, or a POST with a body");
+		return;
+	}
 
 	if (NULL == self->session)
 	{
@@ -1060,11 +1154,18 @@ venture_feed_request_http_get_async(
 		self->quota.spent += cost;
 	}
 
-	get->message = soup_message_new_from_uri("GET", get->uri);
+	get->message = soup_message_new_from_uri(is_post ? "POST" : "GET", get->uri);
 	soup_message_add_flags(get->message, SOUP_MESSAGE_NO_REDIRECT);
 	request_headers = soup_message_get_request_headers(get->message);
 
-	if (VENTURE_SERIES_NONE != self->if_modified_since)
+	if (is_post)
+		soup_message_set_request_body_from_bytes(get->message,
+		                                         (NULL != content_type) ? content_type
+		                                                                : "application/octet-stream",
+		                                         body);
+
+	if (!is_post && (0 == (flags & VENTURE_FEED_HTTP_UNCONDITIONAL)) &&
+	    (VENTURE_SERIES_NONE != self->if_modified_since))
 	{
 		g_autoptr(GDateTime) since = NULL;
 		g_autofree gchar *text = NULL;
@@ -1100,6 +1201,15 @@ venture_feed_request_http_get_finish(
 	GAsyncResult		 *result,
 	GError			**error
 ){
+	return venture_feed_request_http_send_finish(self, result, error);
+}
+
+VentureFeedHttpResponse *
+venture_feed_request_http_send_finish(
+	VentureFeedRequest	 *self,
+	GAsyncResult		 *result,
+	GError			**error
+){
 	g_return_val_if_fail(g_task_is_valid(result, self), NULL);
 
 	return g_task_propagate_pointer(G_TASK(result), error);
@@ -1122,8 +1232,8 @@ feed_http_wait_done(
 ){
 	FeedHttpWait *wait = data;
 
-	wait->response = venture_feed_request_http_get_finish(VENTURE_FEED_REQUEST(object),
-	                                                      result, &wait->error);
+	wait->response = venture_feed_request_http_send_finish(VENTURE_FEED_REQUEST(object),
+	                                                       result, &wait->error);
 	wait->done = TRUE;
 }
 
@@ -1148,6 +1258,22 @@ venture_feed_request_http_get(
 	guint			  cost,
 	GError			**error
 ){
+	return venture_feed_request_http_send(self, "GET", url, headers, NULL, NULL, cost,
+	                                      VENTURE_FEED_HTTP_DEFAULT, error);
+}
+
+VentureFeedHttpResponse *
+venture_feed_request_http_send(
+	VentureFeedRequest	 *self,
+	const gchar		 *method,
+	const gchar		 *url,
+	const gchar *const	 *headers,
+	GBytes			 *body,
+	const gchar		 *content_type,
+	guint			  cost,
+	VentureFeedHttpFlags	  flags,
+	GError			**error
+){
 	g_autoptr(GMainContext) context = NULL;
 	SoupSession *previous;
 	FeedHttpWait wait;
@@ -1161,7 +1287,8 @@ venture_feed_request_http_get(
 	previous = g_steal_pointer(&self->session);
 	self->session = venture_feeds_session_new();
 
-	venture_feed_request_http_get_async(self, url, headers, cost, feed_http_wait_done, &wait);
+	venture_feed_request_http_send_async(self, method, url, headers, body, content_type, cost, flags,
+	                                     feed_http_wait_done, &wait);
 
 	while (!wait.done)
 		g_main_context_iteration(context, TRUE);

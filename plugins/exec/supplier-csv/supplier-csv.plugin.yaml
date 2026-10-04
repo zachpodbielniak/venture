@@ -1,0 +1,27 @@
+# supplier-csv.plugin.yaml - A supplier's price list as a market data source
+#
+# Copyright (C) 2026 Zach Podbielniak
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The reference exec plugin: a bash program beside this manifest, spoken to
+# in the JSON-lines protocol of docs/plugins.org. It provides one data
+# source provider, `supplier_csv`, which reads a dropshipping supplier's
+# price list (a CSV file in this directory) and answers with the supplier
+# as a venue, each SKU as an instrument and each line as a listing: the
+# buy side of a dropshipping trade.
+#
+# Nothing runs unless plugins.allow_exec is on. See
+# docs/examples/dropship-supplier-feed.org for a walk-through.
+name: supplier-csv
+runtime: exec
+protocol: 1
+description: A dropshipping supplier's CSV price list, as listings at a supplier venue
+entry: fetch.sh
+exec:
+  timeout: 30
+provides:
+  - kind: data_source_provider
+    name: supplier_csv
+    label: Supplier price list (CSV)
+    command: fetch
+    description: Reads sku,name,price,currency,quantity,shipping from a CSV in the plugin's directory

@@ -63,6 +63,9 @@ SYSCONFDIR ?= /etc
 
 # Where the server looks for things at runtime.
 PLUGINDIR ?= $(LIBDIR)/venture/plugins
+# Plugins installed but not loaded unless plugins.paths names this
+# directory: the Blizzard auction house connector is one.
+PLUGINOPTDIR ?= $(LIBDIR)/venture/plugins-optional
 PODMODULEDIR ?= $(LIBDIR)/venture/pod-modules
 VENTUREDATADIR ?= $(DATADIR)/venture
 
@@ -318,6 +321,15 @@ CFLAGS_PLUGIN_DEPS := -DVENTURE_SERVER_BUILD=1 -DVENTURE_HAVE_CRISPY=1 \
                       $(CFLAGS_AI_GLIB) $(CFLAGS_CRISPY) \
                       $(CFLAGS_PODOMATION) $(CFLAGS_ORM_GLIB)
 
+#
+# The umbrella header shows the series store and the feeds API only to a
+# build that has SQLite. A crispy script registering a data source
+# provider (plugins/scripts/odds-api.c) needs to see them exactly as the
+# server that loads it does, so the define travels with the other flags.
+ifeq ($(SQLITE),1)
+    CFLAGS_PLUGIN_DEPS += -DVENTURE_HAVE_SQLITE=1
+endif
+
 CFLAGS_BASE += -DVENTURE_CRISPY_PLUGIN_CFLAGS="\"$(CFLAGS_PLUGIN_DEPS)\""
 
 # Sub-make flags for each dependency.
@@ -474,7 +486,9 @@ VENDOR_SHARED_LIBS := $(ORM_GLIB_SHARED) $(AI_GLIB_SHARED) $(HTMX_GLIB_SHARED)
 TEST_CFLAGS = $(CFLAGS) -I$(CURDIR)/tests \
                -DVENTURE_TEST_FIXTURES=\"$(CURDIR)/tests/fixtures\" \
                -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\" \
-               -DVENTURE_TEST_VENTURE_TYPES=\"$(CURDIR)/data/venture-types\"
+               -DVENTURE_TEST_VENTURE_TYPES=\"$(CURDIR)/data/venture-types\" \
+               -DVENTURE_TEST_PLUGIN_SOURCES=\"$(CURDIR)/plugins\" \
+               -DVENTURE_TEST_OPTIONAL_PLUGINS=\"$(CURDIR)/$(OUTDIR)/plugins-optional\"
 TEST_LDFLAGS = $(LDFLAGS)
 
 # ---------------------------------------------------------------------------

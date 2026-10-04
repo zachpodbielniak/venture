@@ -161,6 +161,16 @@ $(OUTDIR)/plugins/%.so: plugins/%/*.c | $(OUTDIR)/plugins $(VENDOR_LIBS_SERVER)
 	@echo "  LD[plug] $@"
 	$(Q)$(CC) $(PLUGIN_CFLAGS) $(PLUGIN_LDFLAGS) -o $@ $^
 
+# Optional native plugins: the same, into a directory nothing loads by
+# default. Every .c of the directory is one .so; the Makefile adds each
+# plugin's headers as prerequisites (filtered out of the compile line), so
+# editing one rebuilds the plugin -- -MMD has no depfile to offer a
+# one-step compile-and-link.
+$(OUTDIR)/plugins-optional/%.so: plugins/%/*.c | $(OUTDIR)/plugins-optional $(VENDOR_LIBS_SERVER)
+	@$(MKDIR_P) $(dir $@)
+	@echo "  LD[plug] $@"
+	$(Q)$(CC) $(PLUGIN_CFLAGS) $(PLUGIN_LDFLAGS) -o $@ $(filter %.c,$^)
+
 # podomation modules: modules/<name>/*.c -> $(OUTDIR)/pod-modules/libpod-module-<name>.so
 #
 # The naming matches podomation's own convention so its module manager picks
@@ -312,6 +322,9 @@ $(OUTDIR)/tests:
 
 $(OUTDIR)/plugins:
 	@$(MKDIR_P) $(OUTDIR)/plugins
+
+$(OUTDIR)/plugins-optional:
+	@$(MKDIR_P) $(OUTDIR)/plugins-optional
 
 $(OUTDIR)/pod-modules:
 	@$(MKDIR_P) $(OUTDIR)/pod-modules
@@ -527,6 +540,10 @@ install-plugins:
 	@for p in $(OUTDIR)/plugins/*.so; do \
 		if [ -f "$$p" ]; then $(INSTALL_DATA) "$$p" $(DESTDIR)$(PLUGINDIR)/; fi \
 	done
+	$(MKDIR_P) $(DESTDIR)$(PLUGINOPTDIR)
+	@for p in $(OUTDIR)/plugins-optional/*.so; do \
+		if [ -f "$$p" ]; then $(INSTALL_DATA) "$$p" $(DESTDIR)$(PLUGINOPTDIR)/; fi \
+	done
 
 #
 # Both VENTURE's own pod modules and podomation's.
@@ -586,6 +603,7 @@ uninstall:
 	rm -rf $(DESTDIR)$(INCLUDEDIR)/venture
 	rm -f $(DESTDIR)$(PKGCONFIGDIR)/venture-$(API_VERSION).pc
 	rm -rf $(DESTDIR)$(PLUGINDIR)
+	rm -rf $(DESTDIR)$(PLUGINOPTDIR)
 	rm -rf $(DESTDIR)$(PODMODULEDIR)
 	rm -rf $(DESTDIR)$(VENTUREDATADIR)
 	rm -f $(DESTDIR)$(MANDIR)/man1/venture.1

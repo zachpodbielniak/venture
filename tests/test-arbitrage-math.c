@@ -666,7 +666,7 @@ test_percent_model(void)
 		                                         "fixed_per_order: 0.50\ndeposit_percent: 15\n");
 
 		if (!venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_SELL,
-		                                        amount, 3, NULL, &quote, &error))
+		                                        amount, 3, NULL, NULL, &quote, &error))
 			g_error("percent refused: %s", error->message);
 		g_assert_cmpint(minor_of(quote.fee), ==, 500 + 30 + 50);
 		g_assert_cmpint(minor_of(quote.deposit), ==, 1500);
@@ -675,7 +675,7 @@ test_percent_model(void)
 
 		/* Buying is free here. */
 		g_assert_true(venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_BUY,
-		                                                 amount, 3, NULL, &quote, NULL));
+		                                                 amount, 3, NULL, NULL, &quote, NULL));
 		g_assert_cmpint(minor_of(quote.fee), ==, 0);
 		g_assert_null(quote.deposit);
 		venture_fee_quote_clear(&quote);
@@ -687,13 +687,13 @@ test_percent_model(void)
 		                                         "buy:\n  fixed_per_order: 2.00\n");
 
 		g_assert_true(venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_SELL,
-		                                                 amount, 1, NULL, &quote, NULL));
+		                                                 amount, 1, NULL, NULL, &quote, NULL));
 		g_assert_cmpint(minor_of(quote.fee), ==, 700);
 		g_assert_false(quote.deposit_refundable);
 		venture_fee_quote_clear(&quote);
 
 		g_assert_true(venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_BUY,
-		                                                 amount, 1, NULL, &quote, NULL));
+		                                                 amount, 1, NULL, NULL, &quote, NULL));
 		g_assert_cmpint(minor_of(quote.fee), ==, 200);
 		venture_fee_quote_clear(&quote);
 	}
@@ -702,7 +702,7 @@ test_percent_model(void)
 		g_autoptr(JsonObject) params = params_of("fixed_per_order: 0.50 EUR\n");
 
 		g_assert_false(venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_SELL,
-		                                                  amount, 1, NULL, &quote, &error));
+		                                                  amount, 1, NULL, NULL, &quote, &error));
 		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 		g_clear_error(&error);
 	}
@@ -711,7 +711,7 @@ test_percent_model(void)
 		g_autoptr(JsonObject) params = params_of("deposit_percent: 5\ndeposit_basis: reference\n");
 
 		g_assert_false(venture_fee_model_registry_compute(models, "percent", params, VENTURE_FEE_SIDE_SELL,
-		                                                  amount, 1, NULL, &quote, &error));
+		                                                  amount, 1, NULL, NULL, &quote, &error));
 		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 		g_clear_error(&error);
 	}
@@ -732,6 +732,7 @@ flat_two(
 	const VentureMoney	 *amount,
 	gint64			  units,
 	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
 	VentureFeeQuote		 *out,
 	gpointer		  user_data,
 	GError			**error
@@ -740,6 +741,7 @@ flat_two(
 	(void)side;
 	(void)units;
 	(void)reference;
+	(void)attrs;
 	(void)error;
 
 	g_assert_cmpstr(user_data, ==, "plugin");
@@ -778,7 +780,7 @@ test_fee_registry(void)
 	g_clear_error(&error);
 
 	g_assert_true(venture_fee_model_registry_compute(models, "flat_two", NULL, VENTURE_FEE_SIDE_SELL,
-	                                                 winnings, 1, NULL, &quote, NULL));
+	                                                 winnings, 1, NULL, NULL, &quote, NULL));
 	g_assert_cmpint(minor_of(quote.fee), ==, 200);
 	venture_fee_quote_clear(&quote);
 
@@ -811,23 +813,23 @@ test_fee_registry(void)
 		g_autoptr(JsonObject) params = params_of("rate_percent: 5");
 
 		g_assert_true(venture_fee_model_registry_compute(models, "commission", params, VENTURE_FEE_SIDE_SELL,
-		                                                 winnings, 1, NULL, &quote, NULL));
+		                                                 winnings, 1, NULL, NULL, &quote, NULL));
 		g_assert_cmpfloat_with_epsilon(quote.commission, 0.05, 1e-12);
 		g_assert_cmpint(minor_of(quote.fee), ==, 250);
 		venture_fee_quote_clear(&quote);
 		g_assert_true(venture_fee_model_registry_compute(models, "commission", params, VENTURE_FEE_SIDE_SELL,
-		                                                 loss, 1, NULL, &quote, NULL));
+		                                                 loss, 1, NULL, NULL, &quote, NULL));
 		g_assert_cmpint(minor_of(quote.fee), ==, 0);
 		venture_fee_quote_clear(&quote);
 	}
 
 	/* Empty is none; an unloaded model is never no fee. */
 	g_assert_true(venture_fee_model_registry_compute(models, NULL, NULL, VENTURE_FEE_SIDE_SELL, winnings, 1,
-	                                                 NULL, &quote, NULL));
+	                                                 NULL, NULL, &quote, NULL));
 	g_assert_cmpint(minor_of(quote.fee), ==, 0);
 	venture_fee_quote_clear(&quote);
 	g_assert_false(venture_fee_model_registry_compute(models, "wow_auction", NULL, VENTURE_FEE_SIDE_SELL,
-	                                                  winnings, 1, NULL, &quote, &error));
+	                                                  winnings, 1, NULL, NULL, &quote, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 }
 

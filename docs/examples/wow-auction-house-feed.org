@@ -1,0 +1,217 @@
+#+title: Worked example: World of Warcraft auction houses as a market data feed
+#+description: Syncing Battle.net's auction houses into a series store with the optional blizzard-auctions plugin: the currency, the data source and its credentials, the units and their budget, what lands in the store, recipes, fees and the TSM export
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+The =blizzard-auctions= plugin turns Blizzard's Game Data API into a VENTURE data source: every connected realm's auction house and the region's commodity market, hour by hour, into the source's series store, where the Trading pages browse it, alerts watch it and the arbitrage scan prices flips, crafts and dropship-style buys between realms. It also reads the crafting professions into recipe records, prices auction-house fees, and exports a scan's items as a TradeSkillMaster group.
+
+It is the reference example of a native plugin that reaches several extension points at once; [[file:../plugins.org::*The reference plugins][Plugins: the reference plugins]] walks through the code. This page is the operator's side: what to set up, in what order, and what to expect.
+
+Nothing about World of Warcraft is in VENTURE's core. Venues, instruments, listings, fee models and export formats are generic; this plugin is what knows a realm, a bonus id and copper.
+
+* Before you start
+
+You need a Battle.net API client: sign in at =develop.battle.net=, create a client, and keep its *client id* and *client secret*. The id is not a secret; the secret is, and VENTURE seals it.
+
+| Need                         | Why                                                                                                    |
+|------------------------------+--------------------------------------------------------------------------------------------------------|
+| the plugin loaded            | it is built into =plugins-optional/=, which nothing loads by default                                   |
+| =feeds.enabled: true=        | the feeds module is off by default                                                                     |
+| the API origins allowlisted  | =feeds.allowed_origins= is deny by default                                                             |
+| a =GOLD= currency, exponent 4 | Blizzard prices are copper, a ten-thousandth of a gold; the plugin refuses to run against anything else |
+| the =marketdata= module      | on by default: venues, instruments, browsing                                                           |
+| =production= and =arbitrage= | on by default: recipes, the scan, the fee model's use                                                  |
+
+* Turning it on
+
+In the configuration (see [[file:../configuration.org][Configuration]]):
+
+#+begin_src yaml
+plugins:
+  paths:
+    - /usr/local/lib64/venture/plugins-optional
+
+feeds:
+  enabled: true
+  allowed_origins: https://us.api.blizzard.com,https://oauth.battle.net
+#+end_src
+
+Use the region's API origin: =https://eu.api.blizzard.com=, =https://kr.api.blizzard.com= or =https://tw.api.blizzard.com=. The token endpoint is =https://oauth.battle.net= for every region. From a build tree, =VENTURE_PLUGIN_PATH=build/debug/plugins:build/debug/plugins-optional= loads it without installing. The server's log says =Loaded plugin .../blizzard-auctions.so=, and =/api/v1/arbitrage/registries= lists =wow_auction= and =tsm=.
+
+* The currency
+
+The plugin emits prices in the currency its settings name, =GOLD= by default, and never registers one itself: a currency is a record an organization owns, and a worker thread must not write records. Register it once, as an administrator, with its coins so amounts read the way the game shows them:
+
+#+begin_src sh
+venturectl create currency code=GOLD name=Gold kind=virtual exponent=4 book_treatment=separate_book \
+    symbol_position=suffix \
+    denominations='[{"suffix":"g","units":10000},{"suffix":"s","units":100},{"suffix":"c","units":1}]'
+#+end_src
+
+=separate_book= keeps gold in a journal of its own; see [[file:../currencies.org][Currencies]] and [[file:game-economy.org][the game economy example]]. With exponent 4, a price of 12345 copper is =1.2345 GOLD= -- =1g 23s 45c=. A source whose currency is not registered, or registered with another exponent, fails its run with a message saying exactly this.
+
+* The data source
+
+#+begin_src sh
+cat > settings.yaml <<'EOF'
+region: us
+client_id: 0123456789abcdef0123456789abcdef
+connected_realm_ids: [11, 3676]
+include_commodities: true
+requests_per_hour: 36000
+EOF
+
+venturectl create data_source name="US auction houses" provider=blizzard_auctions \
+    schedule=auto currency=GOLD venue_namespace=us-realm instrument_namespace=wow-item \
+    "settings=$(cat settings.yaml)"
+#+end_src
+
+Then set the client secret on the source's credentials page, =/feeds/ID/credentials= (owner or administrator): it is sealed in the integration store as =feed-<uuid>=, never shown again, and refused if typed into the settings. The settings, all optional except =client_id=:
+
+| Setting                | Default                          | Meaning                                                                                                                       |
+|------------------------+----------------------------------+-------------------------------------------------------------------------------------------------------------------------------|
+| =region=               | =us=                             | =us=, =eu=, =kr= or =tw=: the API origin, the namespaces and every venue's group                                                |
+| =client_id=            | none                             | the Battle.net client's id                                                                                                    |
+| =client_secret=        | --                               | *credential*: set on the credentials page, never here                                                                         |
+| =connected_realm_ids=  | empty                            | connected realm ids, each its own unit; empty reads every realm the index lists, through one =realms= unit                     |
+| =include_commodities=  | =true=                           | the region-wide commodity market as a unit                                                                                    |
+| =include_bid_only=     | =true=                           | list an auction with a bid and no buyout at its bid (the least it can be had for)                                             |
+| =currency=             | =GOLD=                           | the registered currency, exponent 4, prices are emitted in                                                                    |
+| =locale=               | =en_US=                          | the locale item and realm names are asked in                                                                                  |
+| =item_names_per_fetch= | 100                              | item detail lookups one fetch may make (0 for none)                                                                           |
+| =realms_per_fetch=     | 10                               | in the =realms= unit, how many realms with new data one fetch reads before it stops                                            |
+| =key_modifier_types=   | every type                       | the modifier types that make an item a variant (see the key format below)                                                     |
+| =requests_per_hour=    | none                             | the hourly budget; Blizzard allows 36,000 per client                                                                          |
+| =dynamic_namespace=, =static_namespace= | =dynamic-<region>=, =static-<region>= | overrides, for a classic realm (=dynamic-classic-us=) or a test                                               |
+| =api_base=, =oauth_base= | the region's, =https://oauth.battle.net= | origin overrides, for a mirror or a scripted test server; still held to =feeds.allowed_origins=                     |
+
+=act data_source ID test unit=11= fetches one unit and says what came back, writing nothing.
+
+* Units, schedule and budget
+
+Each unit is fetched on its own schedule. With =schedule: auto=, a unit is checked 45 seconds before its learned update time -- Blizzard publishes a realm's auctions about hourly -- with =If-Modified-Since= from the last =Last-Modified=, and a 304 costs no parsing. A manual sync asks for everything regardless.
+
+| Unit                  | Fetches                                     | Budget cost |
+|-----------------------+---------------------------------------------+-------------|
+| a connected realm id  | =/data/wow/connected-realm/{id}/auctions=    | 1           |
+| =commodities=         | =/data/wow/auctions/commodities=            | 25          |
+| =realms= (no ids set) | the index, then each realm in id order      | 1 per realm, plus 1 |
+
+*The commodity market costs 25, even when it answers 304.* Blizzard charges it either way, so the budget is spent before the request goes out and never refunded. A source polling commodities every hour spends 600 of its 36,000. Name lookups, the token and a realm's name cost 1 each. A unit that would overspend the hour waits for the next one (the run says =deferred=); a 429 is honoured with its =Retry-After=.
+
+Listing realms in =connected_realm_ids= is better for a whole region than leaving it empty: each realm gets its own unit, schedule and adaptive polling. The =realms= unit walks them a few at a time instead (=realms_per_fetch= with new data per fetch; 304s are skipped cheaply), keeping each realm's =Last-Modified= in its cursor.
+
+* What lands in the store
+
+- *Venues*: one per connected realm, keyed by its id, named from =/data/wow/connected-realm/{id}= (its realms' names, joined: "Area 52, Ner'zhul"), and one =commodities= venue ("US commodities"). All are =auction_house= venues in the region's group, so region medians compare realms of one region.
+- *Instruments*: one per item, and one per variant of an item, in the =wow-item= namespace (the source's instrument namespace). A variant is filed under its plain item.
+- *Listings*: one per auction, with its id, so the store can tell what sold between two snapshots. Each snapshot is complete -- an item that vanished is out of stock -- and dated by Blizzard's =Last-Modified=.
+- *Names and details*, lazily: up to =item_names_per_fetch= items a fetch has not named yet are looked up at =/data/wow/item/{id}=, lowest id first; the name, a category =Item class/Subclass= and attributes (=vendor_sell= in copper, =quality=, =level=) are stored once known and kept after.
+
+** The instrument key
+
+#+begin_example
+<item id>[:b<bonus>,<bonus>...][:m<type>=<value>,...][:p<species>[.<breed>]]
+
+2770                              Copper Ore
+19019:b1472,6646:m9=70,28=2       one variant of an item: two bonuses, two modifiers
+82800:p39.5                       a caged battle pet: species 39, breed 5
+#+end_example
+
+Bonus ids are sorted ascending with repeats dropped, modifiers sorted by type then value: the API lists both in no meaningful order, and two spellings of one variant would split its history. Some modifiers (the player level an item dropped at) split goods a buyer thinks of as one; list the types that matter in =key_modifier_types= to drop the rest. A pet's level and quality are left out of its key.
+
+** The price
+
+In copper, the auction's =unit_price= when it has one (commodities, and stackables on a realm); otherwise its =buyout= divided by its quantity, rounded half to even; otherwise, with =include_bid_only=, its current =bid= divided the same way -- the run notes how many were listed at a bid. An auction with no item, no quantity or none of the three is refused and counted.
+
+** time_left, and what counts as sold
+
+Blizzard gives each auction a bucket, and the store keeps the *least* time the auction still has, in seconds:
+
+| =time_left= | Means           | Stored |
+|-------------+-----------------+--------|
+| =SHORT=     | under 30 min    | 0      |
+| =MEDIUM=    | 30 min to 2 h   | 1800   |
+| =LONG=      | 2 to 12 h       | 7200   |
+| =VERY_LONG= | 12 to 48 h      | 43200  |
+
+The lower bound, because the store's sale estimate asks whether an auction that vanished between two hourly snapshots *could* have expired: a LONG auction gone within the hour cannot have, so it sold (or was cancelled -- the estimate's known bias); a SHORT one may have, so it counts as expired. The upper bound would count every expiry as a sale and inflate every sale rate the arbitrage scan reads.
+
+* Recipes
+
+The =import_recipes= action reads the professions into =recipe= and =recipe_component= records, for crafting and for the arbitrage =transform= strategy:
+
+#+begin_src sh
+venturectl act data_source 3 import_recipes max_recipes=50 create_products=true venture_id=2
+# Read 50 recipes: 47 created, 0 updated, 0 unchanged, 3 skipped. ...
+# More remain: run again with cursor=164/2437/50
+
+venturectl act data_source 3 import_recipes max_recipes=50 create_products=true venture_id=2 cursor=164/2437/50
+#+end_src
+
+| Parameter         | Meaning                                                                                          |
+|-------------------+--------------------------------------------------------------------------------------------------|
+| =max_recipes=     | recipes this call reads, 1 to 500; 50 by default                                                 |
+| =profession_id=   | only this profession (Blizzard's id: 164 Blacksmithing, 186 Mining...)                           |
+| =cursor=          | what the last call said to continue with                                                         |
+| =create_products= | make a product for an item that has none                                                         |
+| =venture_id=      | the venture new products and recipes belong to; required with =create_products=                  |
+
+Each item a recipe names becomes an =instrument= record under the source (promoted from the store when the auctions have seen it, made outright when not), and the recipe points at that instrument's product. Without =create_products=, a recipe whose items have no product is skipped and the result names the item -- link its instrument to a product, or run again with it. A recipe that makes no item (an enchant) is skipped. Two slots of one reagent become one line; a proc's range (=crafted_quantity= minimum and maximum) is read as its minimum. Running it again changes nothing it made: a recipe is found by its output product and name, a line by its recipe and product, and only a quantity that moved is written; a line someone added by hand is left alone.
+
+It runs on the main thread -- it writes records -- and blocks for the requests it makes, each within =feeds.request_timeout=, which is what =max_recipes= bounds. It needs an editor.
+
+* Fees: =wow_auction=
+
+Give each realm's =venue= record the fee model, so a scan nets the auction house's cut and deposit out of every flip:
+
+#+begin_src sh
+venturectl market promote 3 venue 3676
+venturectl update venue 12 fee_model=wow_auction "fee_params=cut_percent: 5
+duration_hours: 48"
+#+end_src
+
+| Parameter                | Default | Meaning                                                                                      |
+|--------------------------+---------+----------------------------------------------------------------------------------------------|
+| =cut_percent=            | 5       | the auction house's share of a sale                                                          |
+| =duration_hours=         | 48      | 12, 24 or 48: the listing's duration, which sets the deposit share                           |
+| =deposit_factor_percent= | by duration | the deposit as a percent of the vendor price, replacing the classic shares               |
+
+The deposit is the classic formula, 15% of the item's vendor price per 12 hours (15%, 30%, 60%), times the units, refunded when the auction sells and lost when it expires -- which the scan's listing loss counts against the sale rate. Retail has charged commodities differently since Dragonflight; set =deposit_factor_percent= to what your realms charge. The vendor price is the instrument's =vendor_sell= attribute; an item the source has not looked up yet is quoted with no deposit rather than a guessed one. The sale must be in a currency with exponent 4. Buying is free.
+
+* Browsing, scanning, exporting
+
+Once a sync has run: =/market/browse= lists every item at every realm with its price against the region median; =/market/i/SOURCE/2770= is one item's history, heat map and other realms; =/market/deals= and =/market/venues= work as for any source (see [[file:../market-data.org][Market data]]). On =/arbitrage=, the =spread= tab finds cross-realm flips net of =wow_auction= fees, =transform= prices imported recipes from the cheapest realm, and =Export= offers *TSM group import*:
+
+#+begin_example
+i:2770,i:2589,i:19019,p:39
+#+end_example
+
+one TradeSkillMaster item string per item a row names -- the row's item and a craft's reagents -- each once, a variant as its item, a pet as =p:<species>=; paste it into TSM's group import. =venturectl report arbitrage_scan strategy=spread data_source_id=3= gives the same rows on the command line.
+
+* When it goes wrong
+
+| The run says                                              | Do                                                                                     |
+|-----------------------------------------------------------+----------------------------------------------------------------------------------------|
+| =... must be a registered currency with exponent 4=        | register GOLD (above), or name another in =currency=                                    |
+| =Battle.net needs a client=                               | set =client_id= in the settings and =client_secret= on the credentials page             |
+| =Battle.net refused the client credentials (HTTP 401)=     | the id and secret do not match; rotate the secret on the credentials page              |
+| =https://us.api.blizzard.com is not one of feeds.allowed_origins= | add the region's API origin and =https://oauth.battle.net=                    |
+| =... answered 429 Too Many Requests; retry after N seconds= | nothing: the unit waits; lower the realms or the budget if it recurs                  |
+| =Battle.net has no connected realm 1234 (HTTP 404)=        | the id is wrong for the region; the index at =/data/wow/connected-realm/index= lists them |
+| =item names: N items still to name=                        | nothing: later fetches name them, =item_names_per_fetch= at a time                      |
+
+* Where things live
+
+| File                                            | What                                                    |
+|-------------------------------------------------+---------------------------------------------------------|
+| =plugins/blizzard-auctions/blizzard-plugin.c=   | registration, the =wow_auction= fee model, the =tsm= export |
+| =plugins/blizzard-auctions/blizzard-provider.c= | the provider: settings, token, units, auctions, keys     |
+| =plugins/blizzard-auctions/blizzard-recipes.c=  | the =import_recipes= action                              |
+| =tests/test-plugin-blizzard.c=                  | all of it against a scripted Battle.net                  |
+| =tests/fixtures/blizzard/=                      | the Battle.net answers those tests serve                 |

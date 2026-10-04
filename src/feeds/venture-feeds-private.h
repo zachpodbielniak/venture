@@ -122,6 +122,8 @@ struct _VentureFeedBatch
 	gchar		*error;
 	gint64		 retry_after;
 	gint64		 refused;
+	gint64		 remote_used;		/* -1: the far end said nothing */
+	gint64		 remote_remaining;
 };
 
 /* --- The frozen source ------------------------------------------------------ */
@@ -231,6 +233,8 @@ struct _VentureFeedRun
 	gint64				 bytes;
 	gint64				 quota_used;
 	gint64				 quota_limit;
+	gint64				 remote_used;	/* -1: none reported */
+	gint64				 remote_limit;
 	gint				 http_status;
 
 	/* Units by outcome, which decide the status. */

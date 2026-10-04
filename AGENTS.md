@@ -341,6 +341,62 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   answer "no data sources" without looking. The same holds for any page
   that reads a module's records while that module is off.
 
+## The reference plugins: Blizzard, the-odds-api, supplier-csv
+
+Three plugins are both connectors and the worked examples of a provider
+as a GObject (`plugins/blizzard-auctions/`, native), as one function
+(`plugins/scripts/odds-api.c`, crispy) and as a program
+(`plugins/exec/supplier-csv/`, exec). `docs/plugins.org` "The reference
+plugins" and `docs/examples/*-feed.org` have the rest.
+
+- **The Blizzard plugin lives in `plugins-optional` and must never load in
+  a fixture.** `PLUGIN_OPTIONAL_DIRS` keeps it out of `$(OUTDIR)/plugins`,
+  which `VENTURE_PLUGIN_PATH` loads into every test; it wants a registered
+  GOLD and credentials no other fixture has. `make plugins` builds it,
+  `tests/test-plugin-blizzard.c` loads it by path
+  (`VENTURE_TEST_OPTIONAL_PLUGINS`), and an operator adds the directory to
+  `plugins.paths`.
+- **The commodity market costs 25 even on a 304.** Blizzard charges it
+  either way, and the feeds budget is spent before a request goes out and
+  never refunded; do not "fix" that into charging only for a 200.
+- **`expires_in_min` is seconds, and a minimum.** "min" is minimum, not
+  minutes: the store, the batch and the JSON-lines protocol all mean the
+  least time a listing has left, in seconds. A bucketed source gives the
+  lower bound (WoW LONG is 7200): the sale estimate asks whether a vanished
+  listing *could* have expired, and the upper bound counts expiries as
+  sales.
+- **A request that is not the unit's own answer is
+  `VENTURE_FEED_HTTP_UNCONDITIONAL`.** A token, an index, a name lookup:
+  otherwise its Last-Modified becomes the unit's If-Modified-Since and the
+  next fetch asks the auctions "anything newer than the item database?".
+  The every-realm unit keeps each realm's date in its cursor and sends it
+  itself, unconditionally.
+- **A manual sync sends no If-Modified-Since, and refreezes the source.**
+  A test of a conditional fetch needs a scheduled run (switch the source to
+  `auto` and wait for the run, as `schedule_and_wait()` does); a token or
+  name cache lives as long as the frozen source, not across manual syncs.
+- **A provider never registers a currency.** Blizzard's freeze refuses one
+  that is not registered with exponent 4 (prices are copper); the operator
+  or the demo makes the `currency` record. A worker that created records
+  would be writing the database from another thread.
+- **Fee models get the instrument's attributes.** `wow_auction`'s deposit
+  is a share of `vendor_sell`, which only the store knows:
+  `VentureFeeModelComputeFunc` takes `attrs`, and
+  `venture_arbitrage_scan_fees()` takes the side's instrument key and reads
+  them (cached per scan). A new strategy pricing one instrument passes its
+  key; a calculator passes none.
+- **A key in a query string never reaches a message.** the-odds-api
+  takes its key only as `?apiKey=`; the script names a sport and a status
+  in its errors, never the address or the far end's body, and redacts its
+  own notes. `test-plugin-examples` greps the run, the log and the store.
+- **A crispy script sees the feeds API only with SQLite in its flags.**
+  `CFLAGS_PLUGIN_DEPS` carries `-DVENTURE_HAVE_SQLITE=1` for that; it is
+  baked into the server, so after changing it touch
+  `src/plugin/venture-crispy-host.c`.
+- **An exec program holds its own paths.** supplier-csv's `file` setting
+  is an editor's to write, so the script itself refuses anything but a
+  plain name and compares the realpath against its directory plus `/`.
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.

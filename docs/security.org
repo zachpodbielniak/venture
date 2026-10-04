@@ -216,3 +216,18 @@ A data source makes the server fetch from outside on a schedule, so the feeds mo
 - *Who.* Writing a =data_source= needs an administrator; its credentials need an organization owner or administrator and are sealed in the integration store under =feed-<uuid>=, write-only. A credential written into a source's settings is refused at the save.
 - *Leaks.* Every credential value is redacted out of what a run records, what the store keeps and what is logged; errors name an origin, never an address with its query.
 - *Bounds.* One deadline per fetch, a byte cap judged on what arrives, an hourly request budget per source, at most =feeds.max_records_per_run= record writes per run, and a worker that never touches the database: its runs are written on the main thread, as the system.
+
+** A key in a query string: the-odds-api
+
+Some APIs take their key only in the address. the-odds-api is one (=?apiKey=...=), and its provider (=plugins/scripts/odds-api.c=) has no other way to send it. An address is where keys leak: a proxy's access log, an HTTP library's debug output, an error that quotes what it was asked for. What VENTURE does about it:
+
+- the key is a sealed credential (=x-sensitive= in the provider's schema): refused in the settings YAML, stored encrypted under =feed-<uuid>=, handed to the fetch on the worker and nowhere else;
+- the feeds HTTP helper names only the origin in every error it builds, never the address;
+- the provider never puts the address, or anything the far end answered, in a message -- only the sport and a status -- and runs its own messages through =venture_feed_request_redact()=; it wipes the address from memory after the request;
+- the worker replaces every credential value of six bytes or more with =[redacted]= in every error, note, name and attribute it records, so even a far end that echoed the key into a name would not get it into the store.
+
+What VENTURE cannot do is protect the address on the wire and at the far end. Keep the default =https= origin, do not route the feed through a proxy that logs full URLs, and do not run the server with libsoup's debug logging (=SOUP_DEBUG=) on in production. =tests/test-plugin-examples.c= pins that the key reaches no run (good or refused), no log line and no byte of the store.
+
+** OAuth tokens: Blizzard
+
+The Blizzard plugin's client secret is sealed the same way; the access token it obtains with it (client credentials, HTTP Basic, against the operator-allowlisted =oauth_base=) lives only in the source's frozen state, under a lock, for its lifetime. It is sent as a bearer header, never in an address, wiped from memory when the state is freed, and never written to a run, a note, a log line or the store -- =tests/test-plugin-blizzard.c= greps the store's bytes for it.

@@ -453,16 +453,18 @@ A dashboard card of the top rows (=limit=, 5 by default) a scan answers now: a p
 
 All three registries hang off the context, hold the built-ins first and take a plugin's additions with plain functions -- no GObject subclass -- from =venture_plugin_register()=. A name is lower case letters, digits and underscores, never registered twice, so a plugin cannot replace a built-in. The database is handed the context's fee model and strategy registries when the module installs (the last context over a database wins), which is what the venue and preset validators read.
 
-A fee model is a compute function and an optional validator:
+A fee model is a compute function and an optional validator. The compute function is handed the venue's parameters, the side, the gross amount, the units, a reference (the sell venue's market value for all the units, in a scan) and the instrument's *attributes* as its source stored them -- what a model keyed on the thing itself reads. A scan looks the attributes up by the side's instrument key in that source's store (=venture_arbitrage_scan_fees()= takes the key); a calculator passes none. A shortened version of the Blizzard plugin's model:
 
 #+begin_src C
-/* wow_auction: 5% of the sale, and a deposit of 15% of the item's vendor
- * price per 12 hours listed, lost when the auction expires. */
+/* 5% of the sale, and a refundable deposit of 60% of the item's vendor
+ * price (48 hours listed), read from the instrument's attributes. */
 static gboolean
 wow_auction_compute(JsonObject *params, VentureFeeSide side, const VentureMoney *amount,
-                    gint64 units, const VentureMoney *reference, VentureFeeQuote *out,
-                    gpointer user_data, GError **error)
+                    gint64 units, const VentureMoney *reference, JsonObject *attrs,
+                    VentureFeeQuote *out, gpointer user_data, GError **error)
 {
+	gint64 vendor_sell;
+
 	if (VENTURE_FEE_SIDE_BUY == side)
 	{
 		out->fee = venture_money_new(0, venture_money_get_currency(amount),
@@ -471,9 +473,16 @@ wow_auction_compute(JsonObject *params, VentureFeeSide side, const VentureMoney 
 	}
 
 	out->fee = venture_money_multiply_rational(amount, 5, 100, error);
-	out->deposit = (NULL != reference)
-		? venture_money_multiply_rational(reference, 15, 100, error) : NULL;
-	out->deposit_refundable = TRUE;
+	vendor_sell = (NULL != attrs) ? json_object_get_int_member_with_default(attrs, "vendor_sell", -1) : -1;
+
+	if (vendor_sell >= 0)
+	{
+		g_autoptr(VentureMoney) vendor = venture_money_new(vendor_sell * units,
+			venture_money_get_currency(amount), venture_money_get_exponent(amount));
+
+		out->deposit = venture_money_multiply_rational(vendor, 60, 100, error);
+		out->deposit_refundable = TRUE;
+	}
 
 	return NULL != out->fee;
 }
@@ -482,6 +491,8 @@ venture_fee_model_registry_add(venture_context_get_fee_models(context), "wow_auc
 	"The auction house's 5% cut and its listing deposit",
 	wow_auction_compute, NULL, NULL, NULL, error);
 #+end_src
+
+The real one, with its parameters (=cut_percent=, =duration_hours=, =deposit_factor_percent=) and their validation, is =plugins/blizzard-auctions/blizzard-plugin.c=; its =tsm= export format is beside it.
 
 A strategy is a scan function and an optional plan. The scan reads the stores through the scan it is handed and adds what it finds; =venture_arbitrage_scan_add_flip()= prices a buy at one venue against a sell at another with every venue's fees, the transfer, the conversion, the relists, the figures, the confidence and the legs, so most strategies are a candidate search and one call. A crispy script:
 
@@ -610,7 +621,7 @@ gboolean venture_fee_model_registry_add(VentureFeeModelRegistry *self, const gch
     GError **error);
 gboolean venture_fee_model_registry_compute(VentureFeeModelRegistry *self, const gchar *name,
     JsonObject *params, VentureFeeSide side, const VentureMoney *amount, gint64 units,
-    const VentureMoney *reference, VentureFeeQuote *out, GError **error);
+    const VentureMoney *reference, JsonObject *attrs, VentureFeeQuote *out, GError **error);
 gboolean venture_fee_model_registry_validate(VentureFeeModelRegistry *self, const gchar *name,
     const gchar *params_text, GError **error);
 gboolean venture_arbitrage_strategy_registry_add(VentureArbitrageStrategyRegistry *self,
@@ -647,7 +658,8 @@ const VentureArbitrageVenue *venture_arbitrage_scan_venue(VentureArbitrageScan *
     gint64 data_source_id, const gchar *venue_key);
 gboolean venture_arbitrage_scan_fees(VentureArbitrageScan *scan, gint64 data_source_id,
     const gchar *venue_key, VentureFeeSide side, const VentureMoney *amount, gint64 units,
-    const VentureMoney *reference, VentureFeeQuote *out, GError **error);
+    const VentureMoney *reference, const gchar *instrument_key, VentureFeeQuote *out,
+    GError **error);
 VentureMoney *venture_arbitrage_scan_convert(VentureArbitrageScan *scan,
     const VentureMoney *amount, const gchar *currency, GError **error);
 gboolean venture_arbitrage_scan_add_flip(VentureArbitrageScan *scan, const gchar *key,
