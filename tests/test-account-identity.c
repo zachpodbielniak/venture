@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <libsoup/soup.h>
+#include <string.h>
 #include <unistd.h>
 #include "venture-test-accounting.h"
 #include "venture-test-util.h"
@@ -232,9 +233,138 @@ static void identity_http(void)
 	venture_test_accounting_database_cleanup(db);
 	venture_test_remove_tree(directory);
 }
+/* One exchange with an optional session cookie, bearer token and JSON body;
+ * the reply's status is the point, so the body is handed back unparsed. */
+static guint exchange(SoupSession *session, const gchar *base, const gchar *method, const gchar *path,
+	const gchar *cookie, const gchar *token, const gchar *content_type, const gchar *payload,
+	gchar **out_cookie, gchar **out_body)
+{
+	g_autofree gchar *url = g_strconcat(base, path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new(method, url);
+	SoupMessageHeaders *headers = soup_message_get_request_headers(message);
+	Reply reply = { FALSE, NULL, NULL };
+	gsize length;
+	const gchar *bytes;
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_headers_replace(headers, "Host", "127.0.0.1:8443");
+	if (cookie) soup_message_headers_replace(headers, "Cookie", cookie);
+	if (token) {
+		g_autofree gchar *header = g_strconcat("Bearer ", token, NULL);
+		soup_message_headers_replace(headers, "Authorization", header);
+	}
+	if (payload) {
+		g_autoptr(GBytes) body = g_bytes_new(payload, strlen(payload));
+		soup_message_set_request_body_from_bytes(message, content_type, body);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, received, &reply);
+	while (!reply.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(reply.error);
+	if (out_cookie) {
+		const gchar *set = soup_message_headers_get_one(soup_message_get_response_headers(message), "Set-Cookie");
+		*out_cookie = set ? g_strndup(set, strcspn(set, ";")) : NULL;
+	}
+	bytes = g_bytes_get_data(reply.body, &length);
+	if (out_body) *out_body = g_strndup(bytes, length);
+	g_bytes_unref(reply.body);
+	return soup_message_get_status(message);
+}
+/* Lightsite is told to use the signed-in owner's own bearer token, so an
+ * ordinary hosted member must be able to mint one from a browser session.
+ * The token is theirs: their role, their memberships at the moment of
+ * minting, and nothing a token can use to mint another. */
+static void member_mint_http(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_test_accounting_database(&error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) org = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Member account", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Somebody else", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "site-owner",
+		"role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+	g_autoptr(VentureEntity) tenant_member = NULL;
+	g_autoptr(VentureEntity) org_member = NULL;
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 10, NULL);
+	g_autoptr(JsonNode) minted = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-member-XXXXXX", &error);
+	g_autofree gchar *cookie = NULL, *body = NULL, *secret = NULL;
+	const gchar *base;
+	VentureTenantService *service;
+	gboolean ok;
+	g_assert_no_error(error);
+	g_object_set(config, "hosted-enabled", TRUE, "hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
+		"hosted-origin", "http://127.0.0.1:8443", "security-password-iterations", (gint64)2000,
+		"state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0, NULL);
+	ok = venture_database_migrate(db, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error); g_assert_true(ok);
+	service = venture_tenant_service_get(db);
+	g_assert_true(venture_tenant_service_configure(service, config, &error)); g_assert_no_error(error);
+	g_assert_true(venture_tenant_service_initialize(service, &error)); g_assert_no_error(error);
+	g_assert_true(venture_tenant_service_bootstrap_admin(service, config, "provisioner", "private-test-password",
+		FALSE, "Member fixture", &error)); g_assert_no_error(error);
+	g_assert_true(venture_database_save(db, org, NULL, &error)); g_assert_no_error(error);
+	g_assert_true(venture_database_save(db, other, NULL, &error)); g_assert_no_error(error);
+	g_assert_true(venture_user_set_password(VENTURE_USER(user), "member-test-password", 2000, &error));
+	{
+		/* Accounts are made under maintenance in a hosted workspace; an
+		 * invitation is the production path, and this is its outcome. */
+		g_autoptr(VentureTenantMaintenance) maintenance = venture_tenant_service_enter_maintenance(service, "Provision a site owner", &error);
+		g_assert_no_error(error); g_assert_nonnull(maintenance);
+		g_assert_true(venture_database_save(db, user, NULL, &error)); g_assert_no_error(error);
+		tenant_member = g_object_new(VENTURE_TYPE_TENANT_MEMBERSHIP, "name", "site-owner",
+			"user-id", venture_entity_get_id(user), "role", VENTURE_TENANT_ROLE_MEMBER, "active", TRUE, NULL);
+		g_assert_true(venture_database_save(db, tenant_member, NULL, &error)); g_assert_no_error(error);
+		org_member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", venture_entity_get_id(org),
+			"user-id", venture_entity_get_id(user), "role", VENTURE_ORGANIZATION_ROLE_ADMIN, "active", TRUE, NULL);
+		g_assert_true(venture_database_save(db, org_member, NULL, &error)); g_assert_no_error(error);
+		g_assert_true(venture_tenant_maintenance_finish(maintenance, &error)); g_assert_no_error(error);
+	}
+	context = venture_context_new(config, db);
+	server = venture_web_server_new(context, &error); g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	base = venture_web_server_get_base_url(server);
+	g_assert_cmpuint(exchange(session, base, "POST", "/login", NULL, NULL, "application/x-www-form-urlencoded",
+		"username=site-owner&password=member-test-password", &cookie, NULL), ==, 302);
+	g_assert_nonnull(cookie);
+	g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", NULL, NULL, "application/json",
+		"{\"name\":\"Lightsite\"}", NULL, NULL), ==, 401);
+	g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", cookie, NULL, "application/json",
+		"{\"name\":\"Lightsite\"}", NULL, &body), ==, 201);
+	minted = venture_json_parse(body, &error); g_assert_no_error(error);
+	secret = g_strdup(json_object_get_string_member(json_node_get_object(minted), "token"));
+	g_assert_nonnull(secret);
+	result = request(session, base, "/api/v1/account-authority", secret, "127.0.0.1:8443", 200);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(result), "user_id"), ==, venture_entity_get_id(user));
+	authority_entry(result, venture_entity_get_id(org), "admin", TRUE);
+	authority_entry(result, venture_entity_get_id(other), NULL, FALSE);
+	{
+		g_autoptr(VentureApiToken) stored = VENTURE_API_TOKEN(venture_database_get(db, VENTURE_TYPE_API_TOKEN,
+			json_object_get_int_member(json_node_get_object(minted), "id"), &error));
+		gint64 owner = 0;
+		gint role = 0;
+		g_assert_no_error(error); g_assert_nonnull(stored);
+		g_object_get(stored, "user-id", &owner, "role", &role, NULL);
+		g_assert_cmpint(owner, ==, venture_entity_get_id(user));
+		g_assert_cmpint(role, ==, VENTURE_USER_ROLE_EDITOR);
+	}
+	/* A bearer token never mints another one for a non-administrator. */
+	g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", NULL, secret, "application/json",
+		"{\"name\":\"Second\"}", NULL, NULL), ==, 403);
+	/* Lifecycle still governs the session: no minting from a read-only workspace. */
+	sql(db, "UPDATE tenant_workspaces SET state='read_only'");
+	g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", cookie, NULL, "application/json",
+		"{\"name\":\"Frozen\"}", NULL, NULL), ==, 403);
+	sql(db, "UPDATE tenant_workspaces SET state='active'");
+	venture_web_server_stop(server); g_clear_object(&server); g_clear_object(&context);
+	venture_test_accounting_database_cleanup(db);
+	venture_test_remove_tree(directory);
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/account-identity/http-authority", identity_http);
+	g_test_add_func("/account-identity/member-mints-own-token", member_mint_http);
 	return g_test_run();
 }
