@@ -499,6 +499,29 @@ series:
   # refused. 0 for no cap.
   max_store_mb: 0
 
+# Market data feeds: data sources fetched on a schedule, on a worker thread,
+# into the series stores above. Off unless turned on, because a source
+# makes this server call outside hosts. See docs/market-data.org.
+# feeds:
+#   enabled: false
+#   # Exact origins a source may fetch from, comma-separated:
+#   # "https://api.example.com,https://eu.api.example.com". Empty denies
+#   # every HTTP source. Plain http is accepted only for loopback hosts.
+#   allowed_origins: ""
+#   # Directories a file source (csv, file_jsonl) may read under,
+#   # comma-separated. Empty denies every file source.
+#   file_roots: ""
+#   # Largest answer or file one fetch reads, in MiB.
+#   max_response_mb: 64
+#   # Seconds one fetch may take, start to finish.
+#   request_timeout: 60
+#   # Most main-database records (price observations, exchange rates) one
+#   # run may write.
+#   max_records_per_run: 500
+#   # Scheduled fetches within this many minutes are recorded as one run;
+#   # 0 records every pass.
+#   run_window_minutes: 15
+
 # Scheduled backups. See docs/backup.org.
 backup:
   # Where scheduled backups are written when a schedule names no

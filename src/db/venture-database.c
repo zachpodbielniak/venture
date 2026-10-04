@@ -67,6 +67,17 @@ struct _VentureDatabase
 	GRecMutex		 lock;
 
 	/*
+	 * The thread that made the database, which is the only one that may
+	 * write through it. The lock keeps two threads from interleaving one
+	 * statement, but not from what a write sets off: entity-saved runs
+	 * the automation engine, the inbox and webhooks, all of which belong
+	 * to the main loop. Coding runs, mail and bank-feed transports and
+	 * the feeds worker each hand their results back as plain data; this
+	 * is what says so loudly if one ever stops.
+	 */
+	GThread			*home_thread;
+
+	/*
 	 * Save validators, run inside the lock before a write. A record type
 	 * whose invariants span rows -- a link whose both ends must exist --
 	 * cannot check them from venture_entity_validate(), which has no
@@ -243,6 +254,7 @@ venture_database_init(VentureDatabase *self)
 	/* Recursive, because a write inside a transaction re-enters through
 	 * the same lock and a plain mutex would deadlock on itself. */
 	g_rec_mutex_init(&self->lock);
+	self->home_thread = g_thread_self();
 	self->validators = g_ptr_array_new_with_free_func(
 		venture_database_validator_free);
 	self->activities = venture_activity_service_new(self);
@@ -525,6 +537,24 @@ venture_database_dialect(VentureDatabase *self)
 
 /* --- Raw access ---------------------------------------------------------- */
 
+/*
+ * A write from the wrong thread is a g_critical, which the test harness
+ * makes fatal: the bug it catches -- a worker saving a record and running
+ * the main loop's handlers on its own thread -- shows up nowhere near the
+ * call otherwise. Reads (count, find) are not checked; a read under the
+ * lock does nothing that belongs to another thread, and a test probes the
+ * lock from a second thread on purpose.
+ */
+static void
+venture_database_check_thread(
+	VentureDatabase	*self,
+	const gchar	*what
+){
+	if (G_UNLIKELY(g_thread_self() != self->home_thread))
+		g_critical("%s called on a thread other than the one that opened the "
+		           "database; hand the result to the main thread instead", what);
+}
+
 gboolean
 venture_database_execute(
 	VentureDatabase	 *self,
@@ -537,6 +567,8 @@ venture_database_execute(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(NULL != sql, FALSE);
+
+	venture_database_check_thread(self, "venture_database_execute()");
 
 	g_rec_mutex_lock(&self->lock);
 
@@ -621,6 +653,8 @@ venture_database_begin(
 
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 
+	venture_database_check_thread(self, "venture_database_begin()");
+
 	g_rec_mutex_lock(&self->lock);
 
 	if (self->transaction_depth > 0 && NULL == self->transaction)
@@ -665,6 +699,8 @@ venture_database_begin(
 gboolean
 venture_database_begin_serializable(VentureDatabase *self, GError **error)
 {
+	venture_database_check_thread(self, "venture_database_begin_serializable()");
+
 	g_rec_mutex_lock(&self->lock);
 	if (self->transaction_depth != 0)
 	{
@@ -1577,6 +1613,7 @@ venture_database_save(VentureDatabase *self, VentureEntity *entity,
 	gboolean ok;
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	venture_database_check_thread(self, "venture_database_save()");
 	/* A failed child poisons the enclosing transaction. SQL after its
 	 * rollback would otherwise run in autocommit and escape the operation. */
 	g_rec_mutex_lock(&self->lock);

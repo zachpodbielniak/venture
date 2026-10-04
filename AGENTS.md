@@ -86,6 +86,46 @@ audit, versions and validators per row would cost more than the data.
   that overflows into a REAL: sums in its SQL saturate (`SERIES_SAT_ADD`),
   and sums in C are checked or 128-bit (`venture-series-math.c`).
 
+## Market data feeds
+
+`src/feeds/` (module `feeds`, opt-in) fetches outside data into the series
+stores. `docs/market-data.org` has the whole of it; these are the traps.
+
+- **Providers never touch the database.** A `VentureDataSourceProvider`'s
+  `fetch_async` runs on the feeds worker (or a test fetch's private
+  context) and sees only its `VentureFeedRequest`; anything from the main
+  thread -- an exec plugin's program, its stored settings -- is taken in
+  `freeze`, on the main thread, and must be immutable. JSON crosses threads
+  as text and each thread parses its own: JSON-GLib's reference counts are
+  not atomic, and `json_node_copy()` shares nested objects.
+- **Every outside fetch goes through the request's helper.** Origin on
+  `feeds.allowed_origins` (deny by default), no redirect followed and the
+  final address compared, a byte cap judged on what arrives, one deadline,
+  If-Modified-Since, Retry-After, the hourly budget. A provider that opens
+  its own socket skips all of it. Errors name an origin, never an address:
+  a query string may carry a key.
+- **Files only under `feeds.file_roots`,** realpath()'d and compared
+  against `root + "/"`. No record holds a path: a store is always
+  `<state_dir>/series/<uuid>/` (`venture_feeds_store_dir()`).
+- **Credentials never go in `settings`.** The save refuses a setting the
+  provider's schema marks `x-sensitive`; they are sealed under
+  `feed-<uuid>` and redacted out of every run, note, store string and log
+  line. A template names one as `{secret:NAME}`.
+- **A run is written once, on the main thread, as the system,** and never
+  inside somebody else's transaction: a run that arrives while one is open
+  waits (`feeds_service_drain()`). `data_source_run` refuses writes from the
+  generic routes. Scheduled passes share a run per
+  `feeds.run_window_minutes`; do not make every pass a row.
+- **A sync never waits.** The action, the API, `feeds_sync` and the page
+  queue and return; `venturectl feeds sync --wait` is the client polling.
+- **Later modules hook in, they do not edit the worker.**
+  `venture_feeds_add_hook()` gives a main-thread freeze, a worker-side
+  after-commit with the store's writer, and a main-thread after-run.
+- **Tests drain the worker.** `venture_feeds_service_count_pending()` to
+  zero, bounded, iterating the default context; the worker is joined when
+  the context is disposed, so a test that drops its context leaves no
+  thread behind.
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.
@@ -240,12 +280,30 @@ audit, versions and validators per row would cost more than the data.
   obeys. podomation's git module uses `g_spawn_command_line_sync`; do not
   copy it. The push credential goes in the environment, never in argv, which
   is world-readable through `/proc`.
-- **Coding runs get the only background thread, and it must not touch the
+- **Every background thread is in this list, and none touches the
   database.** Writing a record emits `entity-saved`, whose automation handler
   enters podomation, which runs a nested main loop on the *default* context —
   driving that from a second thread is a context-ownership failure, not
-  merely a data race. Progress crosses back as plain data and is applied on
-  the main thread.
+  merely a data race. So results cross back as plain data and are applied on
+  the main thread. The threads:
+  - the **coding run** thread (`venture-work`, `venture-work-service.c`);
+  - `g_task_run_in_thread` in the **bank-feed transport** and the **mailer**
+    (`send_task`): network only, the result handed back by the task;
+  - the **feeds worker** (`venture-feeds`, `venture-series-worker.c`): its
+    own `GMainContext`, `SoupSession` and every series store's writer; it is
+    handed frozen sources and hands back runs, and the service writes them
+    on the main thread;
+  - `g_task_run_in_thread` under the feeds worker: provider parsing, exec
+    providers and `venture_func_data_source_provider_new()` fetches. They
+    see only their `VentureFeedRequest`.
+
+  None of them may touch `VentureDatabase`, the entity registry, the
+  configuration, a plugin's settings or a non-atomic counter of the main
+  loop's. `VentureDatabase` remembers the thread that made it, and `save`,
+  `begin`, `begin_serializable` and `execute` from any other raise a
+  `g_critical` (fatal in tests). `count` and `find` are not checked:
+  `tests/test-database.c` probes the lock from a second thread on purpose.
+  A new thread goes into this list in the same commit.
 - **Customer subscription mail is queued inside the billing instruction.**
   The trial reminder (renewal sweep) and the price-change notice
   (`change`/`change-seats`) enqueue through the outbox in the service's own
@@ -316,7 +374,7 @@ audit, versions and validators per row would cost more than the data.
   indexed with, and only one of those can be changed freely. Sharing them
   would mean switching chat models silently invalidated the index.
 - **Knowledge-base indexing is synchronous, and there is nowhere to move it.**
-  Coding runs hold the only background thread and may not touch the database,
+  No background thread may touch the database (see the thread list above),
   so an article is embedded on the request that saved it and bulk work is an
   explicit command. `kb sweep`-style operations take a limit for this reason.
 - **A chunk and a link are purged, not soft deleted.** Both are derived and
@@ -1050,9 +1108,8 @@ than one that fails.
   `previous` is non-NULL. Do not "fix" a stale deadline by recomputing it
   on priority change -- a deadline that moves is not a deadline.
 - **The sweep is lazy and bounded.** `venture_sla_sweep()` runs from the
-  board, the inbox and `POST /api/v1/sla/sweep`, never from a timer:
-  coding runs hold the only background thread and may not touch the
-  database.
+  board, the inbox and `POST /api/v1/sla/sweep`, never from a timer: no
+  background thread may touch the database.
 - **A bulk edit is one transaction and re-uses the single-record path.**
   `venture_desk_bulk_update()` calls `venture_entity_set_field_from_string()`
   and `venture_database_save()` per record inside one `begin`/`commit`, so

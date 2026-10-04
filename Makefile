@@ -200,6 +200,13 @@ SERVER_ONLY_SRCS += src/series/venture-series-math.c
 ifeq ($(SQLITE),1)
 SERVER_ONLY_SRCS += src/series/venture-series-store.c
 endif
+# Market data feeds: the records are core (venturectl describes them);
+# the providers, the worker thread and the service write into a series
+# store, so they come and go with SQLite like the store does.
+CORE_SRCS += src/feeds/venture-feeds-records.c
+ifeq ($(SQLITE),1)
+SERVER_ONLY_SRCS += $(filter-out src/feeds/venture-feeds-records.c,$(wildcard src/feeds/*.c))
+endif
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -315,8 +322,10 @@ PUBLIC_HDRS += $(wildcard src/production/*.h)
 PUBLIC_HDRS += $(wildcard src/sessions/*.h)
 PUBLIC_HDRS += $(wildcard src/goals/*.h)
 PUBLIC_HDRS += src/series/venture-series-math.h
+PUBLIC_HDRS += src/feeds/venture-feeds-records.h
 ifeq ($(SQLITE),1)
 PUBLIC_HDRS += src/series/venture-series-store.h
+PUBLIC_HDRS += $(filter-out src/feeds/venture-feeds-records.h %-private.h,$(wildcard src/feeds/*.h))
 endif
 PUBLIC_HDRS += $(wildcard src/docs/*.h)
 

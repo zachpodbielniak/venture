@@ -742,6 +742,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_session_yield_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_goal_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_goal_step_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_data_source_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_data_source_run_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_plugin_config_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_user_get_type, VENTURE_DATA_CLASS_PERSONAL },
 		{ venture_api_token_get_type, VENTURE_DATA_CLASS_PERSONAL },

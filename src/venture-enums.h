@@ -1518,6 +1518,78 @@ GType
 venture_dashboard_purpose_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureDataSourceTrack:
+ * @VENTURE_DATA_SOURCE_TRACK_ALL: store every instrument the source
+ *   reports; the zero value, because the store keeps everything unless told
+ *   otherwise and a source saved before the field existed meant exactly that
+ * @VENTURE_DATA_SOURCE_TRACK_KNOWN: store only the instruments the source
+ *   names in its settings' `instruments` list (and, once the marketdata
+ *   module exists, the ones promoted to records); every other one is
+ *   skipped before it reaches the store
+ *
+ * Which instruments a market data source writes into its series store.
+ */
+typedef enum
+{
+	VENTURE_DATA_SOURCE_TRACK_ALL = 0,
+	VENTURE_DATA_SOURCE_TRACK_KNOWN
+} VentureDataSourceTrack;
+
+#define VENTURE_TYPE_DATA_SOURCE_TRACK (venture_data_source_track_get_type())
+
+GType
+venture_data_source_track_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureDataSourceRunStatus:
+ * @VENTURE_DATA_SOURCE_RUN_STATUS_OK: every unit fetched and was stored, or
+ *   answered that nothing had changed
+ * @VENTURE_DATA_SOURCE_RUN_STATUS_PARTIAL: some units were stored and some
+ *   failed
+ * @VENTURE_DATA_SOURCE_RUN_STATUS_FAILED: nothing was stored and something
+ *   went wrong
+ * @VENTURE_DATA_SOURCE_RUN_STATUS_DEFERRED: the source's request budget for
+ *   the hour was spent, so its units wait for the next hour; not a failure
+ *
+ * How a run of a market data source ended. A run is written once, when it
+ * has ended, so there is no "running" value.
+ */
+typedef enum
+{
+	VENTURE_DATA_SOURCE_RUN_STATUS_OK = 0,
+	VENTURE_DATA_SOURCE_RUN_STATUS_PARTIAL,
+	VENTURE_DATA_SOURCE_RUN_STATUS_FAILED,
+	VENTURE_DATA_SOURCE_RUN_STATUS_DEFERRED
+} VentureDataSourceRunStatus;
+
+#define VENTURE_TYPE_DATA_SOURCE_RUN_STATUS (venture_data_source_run_status_get_type())
+
+GType
+venture_data_source_run_status_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureDataSourceRunTrigger:
+ * @VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE: the source's own schedule
+ * @VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL: somebody asked: the sync action,
+ *   the page's button, the API or `venturectl feeds sync`
+ * @VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION: an automation rule's
+ *   `feeds_sync` step
+ *
+ * What started a run of a market data source.
+ */
+typedef enum
+{
+	VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE = 0,
+	VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL,
+	VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION
+} VentureDataSourceRunTrigger;
+
+#define VENTURE_TYPE_DATA_SOURCE_RUN_TRIGGER (venture_data_source_run_trigger_get_type())
+
+GType
+venture_data_source_run_trigger_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureDashboardLayout:
  * @VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS: three across, the default
  * @VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS: two across

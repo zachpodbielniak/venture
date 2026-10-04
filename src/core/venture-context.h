@@ -467,6 +467,19 @@ void venture_context_set_stripe_service(VentureContext *self, VentureStripeServi
  */
 gboolean venture_context_start_stripe(VentureContext *self, GError **error);
 /**
+ * venture_context_start_feeds:
+ * @self: a #VentureContext
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Starts market data feeds when the module is on and a source runs on its
+ * own schedule; does nothing otherwise, and nothing in a build without
+ * SQLite, which has no series store.
+ *
+ * Returns: %TRUE
+ */
+gboolean venture_context_start_feeds(VentureContext *self, GError **error);
+
+/**
  * venture_context_get_bankfeed_service:
  * @self: the service or registry instance
  *

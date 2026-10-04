@@ -661,6 +661,12 @@ static const gchar *const venture_module_reports_payables[] = { "payables", "ven
 static const gchar *const banking_reports[] = { "bank_reconciliation", NULL };
 static const gchar *const banking_requires[] = { "ledger", NULL };
 static const gchar *const bankfeed_requires[] = { "banking", NULL };
+/* Market data feeds need nothing but core: a source's data lands in its
+ * own series store, and the records sink checks the module of every type
+ * it writes as any writer does. */
+static GType (*const feeds_types[]) (void) = {
+	venture_data_source_get_type, venture_data_source_run_get_type, NULL
+};
 static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_type, NULL };
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
@@ -1294,6 +1300,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"forecast, and the shopping list for recipe steps still ahead.",
 		venture_module_requires_core, goals_suggests, goals_types,
 		goals_reports, NULL, FALSE
+	},
+	{
+		"feeds", "Market data feeds",
+		"Pull prices, listings, odds and news from outside sources on a "
+		"schedule into a series store per source, on a worker thread: "
+		"providers for JSON, CSV and JSON-lines files, and plugins.",
+		venture_module_requires_core, NULL, feeds_types, NULL,
+		"feeds-enabled", FALSE
 	}
 };
 

@@ -1,16 +1,16 @@
-#+title: Market data: the series store
-#+description: Where outside market data lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract
+#+title: Market data: feeds and the series store
+#+description: How outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
 #+updated: [2026-10-03]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * Market data
 
 A market data source -- an auction house API, a bookmaker's odds feed, a supplier's price list -- returns far more than the main database is for. One World of Warcraft region is some 186 realms times ten thousand items, every hour, out of a hundred thousand listings per realm. VENTURE keeps all of it, reduced to compact figures as it arrives, in a *series store*: one SQLite file per data source, outside the main database.
 
-This page documents the store itself: its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract. The feeds that fill it, the pages that browse it and the price oracle that reads it are built on top of it and documented where they live. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]].
+This page documents the feeds that fill it -- data sources, providers, the worker thread, the transport rules, scheduling, the records sink -- and the store itself: its layout, its schema, the arithmetic behind every figure it holds, retention and the threading contract. The pages that browse it and the price oracle that reads it are built on top of it and documented where they live. For the =market= module's own records (price observations, listings, sale rate), see [[file:market.org][Market]].
 
 ** Why it is not entity tables
 
@@ -280,3 +280,122 @@ The cap counts pages that hold data. Past it, snapshots of known instruments car
 ** Builds without SQLite
 
 A =SQLITE=0= build has no store: =venture-series-store.c= is left out by the Makefile and its header is not included by =<venture.h>=, so nothing can call it. The math (=venture-series-math.c=) has no database and is always built. =tests/test-series-store.c= becomes an empty plan.
+
+* Feeds
+
+The =feeds= module (=src/feeds/=) fetches market data on a schedule and writes it into each source's store. It is off unless the operator sets =feeds.enabled: true=, because a source makes the server call outside hosts. It requires only =core=.
+
+** Data sources
+
+A =data_source= record says where the data comes from:
+
+| Field                  | Meaning                                                                                                                                            |
+|------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
+| =provider=             | A registered provider: =http_json=, =csv=, =file_jsonl=, or one a plugin added.                                                                       |
+| =settings=             | The provider's settings as YAML. Never credentials, never a store path.                                                                            |
+| =schedule=             | =auto= (the default when empty: learn when each venue updates), =hourly=, =manual=, or five cron fields read by the report packs' grammar.        |
+| =enabled=              | Off means it never runs on its own; it can still be synced by hand. A new source starts enabled (the column's zero value, FALSE, means off).      |
+| =currency=             | What a price that names no currency is in.                                                                                                         |
+| =venue-namespace=, =instrument-namespace= | Written onto the store's venue and instrument rows, so two sources' "1001" can be told apart when records are promoted.         |
+| =track=                | =all= (the zero value: store everything, as the store's design intends) or =known= (only the keys in the settings' =instruments= list).            |
+| =min-value=            | Money with its currency: below it an instrument is left out of region deal prices.                                                                 |
+
+Writes need an administrator, through the same =venture-access-admin-write= type data the currency uses: which host the server calls is configuration. The save validator (=feeds_validate_source()=) parses the settings, checks them against the provider's schema -- a setting the schema marks =x-sensitive= is refused outright, it belongs in the sealed store -- checks declared types and required settings, the schedule, the currency, the namespaces, =track: known= with something known, =record_types= against what a feed may write, and that the provider can list its units from them.
+
+A source's store is always =<state_dir>/series/<uuid>/=, derived by =venture_feeds_store_dir()= every time it is needed. No record holds a path.
+
+** Credentials
+
+A provider's sensitive settings are sealed in the integration store under the provider key =feed-<uuid>=, per organization, through =/feeds/ID/credentials= (organization owners and administrators; write-only, nothing saved is shown back). They are resolved on the main thread when the source is frozen and travel to the worker inside the frozen source, never in a record, an argv or an environment. A template names one as ={secret:NAME}=; a template naming one the source has not been given is refused rather than sent empty.
+
+Every string the worker records -- an error, a note -- and every name, attribute, title and summary a provider hands over is passed through the source's redaction, which replaces each credential value of six bytes or more with =[redacted]=, before it reaches a run, the store or a log. Errors are built to name only an origin, never a full address, because a query string may carry a key.
+
+** Providers
+
+=VentureDataSourceProvider= is a GInterface: =get_name=, =get_label=, =dup_settings_schema= (a JSON schema, =x-sensitive= on credentials), an optional =freeze= (main thread), an optional =list_units= (default: the settings' =units= list, else one unit called =default=), and =fetch_async= of one unit into a =VentureFeedBatch=. Providers register on the context (=venture_context_get_data_source_providers()=) whether or not the module is on; a held name is never replaced.
+
+The threading contract is the point of the interface. Names, schemas and units are pure. =freeze= runs on the main thread and may read anything there -- an exec plugin's program and stored settings -- returning immutable data handed to another thread. =fetch_async= runs on the worker (or on a private context, for a test fetch) and touches nothing but its =VentureFeedRequest=. A provider object is shared by every source and both threads, so it holds no per-fetch state.
+
+=venture_func_data_source_provider_new(name, label, schema_json, fetch, user_data, destroy)= builds one from a blocking function, for a crispy script or a small native plugin: the function runs on a GTask thread and may call the blocking =venture_feed_request_http_get()=.
+
+The batch is plain data: venues, instruments, snapshots of listings or figures, quotes, entries, record upserts, a cursor, not-modified, notes, a refused count and an optional error that makes it partial. Prices go in as minor units (=venture_feed_decimal_to_minor()=, exact: more places than the currency has is refused, never rounded); odds as decimal odds times =VENTURE_SERIES_ODDS_SCALE= (=venture_feed_decimal_to_odds()= reads decimal, American and fractional, rounding half to even at the sixth place). =venture_feed_batch_add_jsonl()= reads the JSON-lines protocol of [[file:plugins.org][Plugins]] into a batch; =file_jsonl= and exec plugins share it.
+
+*** The ones that ship
+
+- =http_json=: =url= (={unit}= and ={secret:NAME}= filled in, percent-escaped), =headers= (a mapping of templates; a value with a line break is refused), =items= (a dotted path to the list), =record_as= (=listing=, =stat= or =quote=), =fields= (target to dotted path: =instrument= required; =venue= defaults to the unit; =name=, =category=, =kind=, =parent=, =price=, =quantity=, =id=, =side=, =expires_in_min=, =currency=, figures for =stat=, =odds= and =liquidity= for =quote=), =price_units= (=major= decimals or =minor= integers), =odds_format=, =complete= (true: each fetch lists everything at its venue), =cost=. A JSON number with a fraction is spelt back in its shortest exact decimal form and parsed as a decimal -- no arithmetic happens on the double. The snapshot is dated by =Last-Modified= when the far end sends one.
+- =csv=: the same mapping over an RFC 4180 CSV (quoted fields, doubled quotes, =delimiter=, =header=), from =url= or from =file=. A row with no header uses column numbers as names.
+- =file_jsonl=: =file=, a JSON-lines file in the plugin protocol. A line that breaks the protocol fails the unit, as it fails an exec run; an =error= message makes the batch partial.
+- exec plugins: a manifest entry =kind: data_source_provider= with =name=, =label=, =command= (default =fetch=), =description=. The program gets =params.unit=, =params.cursor=, =params.if_modified_since= and =params.source= (the settings), and its credentials as =secrets=; =plugins.allow_exec= is frozen with the source and checked at every run.
+
+** Files
+
+A file provider resolves its path with =venture_feed_request_resolve_file()=: realpath()'d and compared against each of =feeds.file_roots= plus a separator, so =../x=, a sibling named =<root>-evil= and a symlink out of the root are all refused. No roots configured means no file is readable. A file is refused before it is read if it is larger than =feeds.max_response_mb=.
+
+** Transport
+
+Every HTTP fetch goes through the request's helper (=venture_feed_request_http_get_async()=, or the blocking form on a GTask thread), so a plugin's provider gets all of it by calling one function:
+
+- *An allowlisted origin.* The origin (scheme, host, port) must be on =feeds.allowed_origins=, deny by default, narrowed -- never widened -- by the source's own =origins= setting. Plain http only for a loopback host. Frozen with the source, so a configuration change refreezes every source.
+- *No redirects.* The message carries =SOUP_MESSAGE_NO_REDIRECT=; a 3xx is a failure naming the status, and the final address is compared with the one asked. A redirect would otherwise carry the source's =Authorization= header to a host the answer chose.
+- *A byte cap*: =Content-Length= first, then what actually arrives, chunk by chunk.
+- *One deadline* for the whole exchange (=feeds.request_timeout=), through a cancellable of its own, so a timeout is told apart from the worker stopping.
+- *If-Modified-Since* from the unit's last =Last-Modified= (kept in the store's meta as =ims:<unit>=); a 304 is a not-modified unit. A manual sync sends none: whoever asked wants the data.
+- *Retry-After* on a 429 (seconds or an HTTP date, at most a day) is kept and the unit waits at least that long.
+- *A request budget*: the settings' =requests_per_hour=; each request costs what the provider declares (=cost=, default 1). A unit that would overspend is deferred to the next hour's window, not failed. The budget is kept in the store's meta, so a restart is not a fresh hour.
+
+** The worker thread
+
+=VentureSeriesWorker= is one thread with its own =GMainContext=, its own =SoupSession= and the writer handle of every source's store. It starts lazily -- when a source is enabled and runs on its own schedule, or when somebody asks for a sync -- and is joined when the context is disposed or the module switched off.
+
+- *What it never touches*: =VentureDatabase=, the entity registry, the configuration, a plugin's settings. Everything it needs is frozen first, on the main thread, into a =VentureFeedSource=: the record, its credentials, the provider's frozen data, every limit, and every hook's frozen copy. The JSON in it is kept as text and parsed by each thread for itself, because JSON-GLib's reference counts are not atomic.
+- *Commands* reach it through =g_main_context_invoke_full()= on its context; *runs* come back through the main context and are emitted as =VentureSeriesWorker::run-finished= there. The only shared state is the published status (as JSON text) and a live count, under a mutex.
+- *A source's units are fetched one after another*, never at once: one quota, one writer, one far end. Different sources interleave on the loop. Parsing and exec programs run on GTask threads so a large answer never stops another source's timers.
+- *It logs with =g_message()=*, never =g_warning()=, which the test harness makes fatal from any thread; a failure is recorded in the run.
+
+*** Scheduling
+
+| Schedule | When a unit is next checked                                                                                                               |
+|----------+-------------------------------------------------------------------------------------------------------------------------------------------|
+| =auto=   | After new data: 45 seconds before the store expects its venue to update (its newest snapshot plus its learned interval), or in a minute if that has passed, or in an hour if nothing has been learned. After nothing new (a 304, a snapshot already held, a failure): 1, 5, 15, then 30 minutes. Never sooner than a Retry-After. |
+| =hourly= | An hour after the last pass began.                                                                                                        |
+| cron     | Looked at each minute with =venture_report_pack_schedule_due()=, the report packs' catch-up-once rule.                                   |
+| =manual= | Never on its own.                                                                                                                         |
+
+The rule is =venture_feeds_schedule_next_auto()=, a pure function the tests drive directly. The worker sleeps until the earliest due unit, at most a minute.
+
+*** After each pass
+
+Region figures are recomputed when the pass wrote something and half an hour has passed (or the sync was asked for), with the source's =min-value=; retention is purged once a day with =series.hourly_days= and =series.daily_days=; the quota is written to meta.
+
+** Runs
+
+A =data_source_run= is written once, when a run ends, by the service on the main thread, as the system actor, from the plain figures the worker handed back: units, not-modified, rows, new instruments, refused, records written, requests, bytes, quota used and limit, the last notable HTTP status, the first error and notes. The generic write routes refuse it (=venture_web_type_accepts_writes()=). Webhooks hear about it like any other record: a run is publishable, and is not on the quiet list.
+
+A manual sync, an automation's and the API's are each a run of their own. Scheduled passes are gathered into one run per =feeds.run_window_minutes= (default 15; 0 records every pass), so a source polling a hundred venues a minute apart writes a few rows an hour rather than a hundred; a failing pass closes its run at once so the failure is seen. The status follows from the units: all deferred is =deferred=, none failed is =ok=, none succeeded is =failed=, the rest =partial=.
+
+A run that arrives while a transaction is open on the main thread waits for it to close -- it is queued and retried every 50 ms -- rather than joining somebody else's transaction and being rolled back with it. A source that cannot be frozen (its provider gone, exec switched off) gets a failed run at once when a sync is asked for, saying why.
+
+After the run is written the service emits =feed_synced= (or =feed_failed= for a failed run) to automation, with =data_source_id=, =run_id=, =organization_id=, =status=, =rows= and =error=, and calls every hook's after-run function.
+
+** The records sink
+
+A batch may carry =record= upserts. The worker keeps those whose type the source accepts (its settings' =record_types=, from what a feed may write: =price_observation= and =exchange_rate=), up to =feeds.max_records_per_run=, and the main thread writes them as the system, through every validator, before the run: matched in the source's organization on the record's =match= fields, or the type's declared keys (=product_id=, =source=, =observed_at= for an observation; =from_currency=, =to_currency=, =effective_at=, =source= for a rate), deleted rows included. A match updates the row, restoring it first if it was deleted -- a deleted row would otherwise be shadowed by a duplicate that fails a unique index on every later run. A record refused is a note on the run, never a failure of it.
+
+** Hooks
+
+=venture_feeds_add_hook(context, name, freeze, commit, run, user_data, destroy)= lets a later module (alerts, promotion) ride every run without the feeds module knowing it:
+
+- =freeze= runs on the main thread when a source is frozen and returns that module's frozen copy -- alert rules, watched instruments -- read on the worker through =venture_feed_source_get_hook_data()=.
+- =commit= runs on the worker after each unit's batch is committed, with the store's writer handle, and may attach plain JSON to the run with =venture_feed_run_set_payload()=.
+- =run= runs on the main thread after the run record is written, outside any transaction, and reads the payload back with =venture_feed_run_get_payload()=.
+
+A hook added while the worker runs refreezes every source.
+
+** Surfaces
+
+- Actions on =data_source=: =sync= (queues, never waits; editors), =test= (fetches one unit on a private main context and reports what came back, writing nothing, not counted against the budget; editors), =purge_history= (deletes the store on the thread that holds its writer; administrators). None is stageable: a sync reaches outside, a test writes nothing, a purge cannot be taken back.
+- Automation: =feeds_sync("ID")= queues and returns; =feed_synced= and =feed_failed= events.
+- =/feeds=, under *Trading* in the sidebar: the organization's sources, each one's last run, next check and quota, an upload timer per store (each venue's last update, learned interval and expected next update, read through a read-only store handle on the main thread), and the recent runs.
+- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N=, =POST /api/v1/feeds/ID/sync= (202, =queued=).
+- =venturectl feeds sync ID [--wait]=, =feeds runs ID=, =feeds due=.
+- =venture_feeds_service_open_reader()= opens a read-only handle on a source's store from the main thread, for pages and the price oracle.

@@ -83,9 +83,25 @@ venture_context_finalize(GObject *object)
 	G_OBJECT_CLASS(venture_context_parent_class)->finalize(object);
 }
 
+/*
+ * The feeds worker is joined here, while everything it was handed is
+ * still alive, rather than in finalize when the database may already be
+ * gone: a thread must never outlive the context that started it.
+ */
+static void
+venture_context_dispose(GObject *object)
+{
+#ifdef VENTURE_HAVE_SQLITE
+	venture_feeds_shutdown(VENTURE_CONTEXT(object));
+#endif
+
+	G_OBJECT_CLASS(venture_context_parent_class)->dispose(object);
+}
+
 static void
 venture_context_class_init(VentureContextClass *klass)
 {
+	G_OBJECT_CLASS(klass)->dispose = venture_context_dispose;
 	G_OBJECT_CLASS(klass)->finalize = venture_context_finalize;
 }
 
@@ -188,6 +204,7 @@ venture_context_new(
 	 * loop, and achieved and done times that follow the status. */
 	venture_goals_install(self);
 
+
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as
 	 * the assistant's, but a change proposed by an outside agent holding
@@ -265,6 +282,14 @@ venture_context_new(
 	                        self, G_CONNECT_SWAPPED);
 	venture_period_service_install(self);
 	venture_close_service_install(self);
+
+#ifdef VENTURE_HAVE_SQLITE
+	/* Market data sources: their settings checked against their provider,
+	 * the sync, test and purge actions, and the listeners that keep the
+	 * feeds worker in step with the records. Last, because it listens to
+	 * the module registry made above. */
+	venture_feeds_install(self);
+#endif
 
 	return self;
 }
@@ -608,6 +633,9 @@ venture_context_get_plugin_provides(VentureContext *self)
 
 		/* The kinds core understands, before any plugin can name one. */
 		venture_automation_register_provides(self->plugin_provides);
+#ifdef VENTURE_HAVE_SQLITE
+		venture_feeds_register_provides(self->plugin_provides);
+#endif
 	}
 
 	return self->plugin_provides;
@@ -623,6 +651,9 @@ venture_context_get_automation_handlers(VentureContext *self)
 	{
 		self->automation_handlers = venture_automation_handler_registry_new();
 		venture_automation_register_builtins(self->automation_handlers);
+#ifdef VENTURE_HAVE_SQLITE
+		venture_feeds_register_automation(self->automation_handlers);
+#endif
 	}
 
 	return self->automation_handlers;
@@ -764,6 +795,22 @@ venture_context_set_bankfeed_service(VentureContext *self, VentureBankFeedServic
 {
 	g_set_object(&self->bankfeed, service);
 }
+gboolean
+venture_context_start_feeds(VentureContext *self, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), FALSE);
+
+	(void)error;
+
+#ifdef VENTURE_HAVE_SQLITE
+	/* Made now so a source that runs on its own starts on its own; with
+	 * the module off this is nothing at all. */
+	(void)venture_context_get_feeds_service(self);
+#endif
+
+	return TRUE;
+}
+
 gboolean
 venture_context_start_bankfeed(VentureContext *self, GError **error)
 {

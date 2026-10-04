@@ -256,6 +256,30 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_BOOL("group-enabled", "group", "enabled", FALSE,
 	        "Enable intercompany links, eliminations and consolidated statements"),
 
+	/*
+	 * Market data feeds (docs/market-data.org). Off unless asked for: a
+	 * source makes this server call outside hosts on a schedule. Every
+	 * limit here is read on the main thread and frozen into the source
+	 * before the worker thread sees it.
+	 */
+	VC_BOOL("feeds-enabled", "feeds", "enabled", FALSE,
+	        "Enable market data feeds: scheduled fetches into per-source series stores"),
+	VC_STR ("feeds-allowed-origins", "feeds", "allowed_origins", "",
+	        "Origins a data source may fetch from, comma-separated, such as "
+	        "https://api.example.com; empty denies every HTTP source"),
+	VC_STR ("feeds-file-roots", "feeds", "file_roots", "",
+	        "Directories a data source may read files from, comma-separated; "
+	        "empty denies every file source"),
+	VC_INT ("feeds-max-response-mb", "feeds", "max_response_mb", 64,
+	        "Largest answer or file a fetch reads, in MiB"),
+	VC_INT ("feeds-request-timeout", "feeds", "request_timeout", 60,
+	        "Seconds one fetch may take, start to finish"),
+	VC_INT ("feeds-max-records-per-run", "feeds", "max_records_per_run", 500,
+	        "Most main-database records one run may create or update"),
+	VC_INT ("feeds-run-window-minutes", "feeds", "run_window_minutes", 15,
+	        "Minutes of scheduled fetches gathered into one recorded run; "
+	        "0 records every pass"),
+
 	VC_BOOL("forge-enabled", "forge", "enabled", TRUE,
 	        "Enable git forge integration"),
 	VC_INT ("forge-request-timeout", "forge", "request_timeout", 30,
@@ -1727,6 +1751,43 @@ venture_config_validate(
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 			                    "series.hourly_days, series.daily_days and "
 			                    "series.max_store_mb must be zero or more");
+			return FALSE;
+		}
+	}
+
+	{
+		gint64 max_response_mb;
+		gint64 request_timeout;
+		gint64 max_records;
+		gint64 run_window;
+
+		g_object_get(self,
+		             "feeds-max-response-mb", &max_response_mb,
+		             "feeds-request-timeout", &request_timeout,
+		             "feeds-max-records-per-run", &max_records,
+		             "feeds-run-window-minutes", &run_window,
+		             NULL);
+
+		/*
+		 * The worker takes these frozen into each source; a zero cap or
+		 * deadline would make every fetch fail in a way that looks like
+		 * the far end's fault, so it is refused here, at startup.
+		 */
+		if ((max_response_mb < 1) || (max_response_mb > 4096) ||
+		    (request_timeout < 1) || (request_timeout > 3600))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "feeds.max_response_mb must be 1 to 4096 and "
+			                    "feeds.request_timeout 1 to 3600 seconds");
+			return FALSE;
+		}
+
+		if ((max_records < 0) || (max_records > 100000) ||
+		    (run_window < 0) || (run_window > 1440))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "feeds.max_records_per_run must be 0 to 100000 "
+			                    "and feeds.run_window_minutes 0 to 1440");
 			return FALSE;
 		}
 	}

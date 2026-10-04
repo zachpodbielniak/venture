@@ -128,6 +128,9 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
 | `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
 | `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs |
+| `feeds sync ID [--wait]` | queue a market data source's sync (`data_source` ID); answers `queued` at once. `--wait` polls the source's runs once a second, up to five minutes, and prints the run the sync recorded |
+| `feeds runs ID` | a data source's runs, newest first: status, units, rows, error |
+| `feeds due` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
 | `ticket ID sla` | a ticket's service-level clocks: state and seconds remaining for first reply and resolution |
 | `ticket ID macro NAME` | apply a macro (canned reply plus field changes) — not stageable |
 | `ticket ID worklog HOURS [NOTE]` | log time; the ticket's `logged_hours` follows |
@@ -1004,6 +1007,29 @@ statement evidence. This is a real sync, not a dry run. The existing
 `VENTURE_BANKFEED_TELLER_KEY` is ignored; an administrator must configure an
 explicit connection. A saved connection's provider, account and organization
 cannot be reassigned. Create a new connection for a different identity.
+
+### Market data feeds
+
+A `data_source` is a provider (`http_json`, `csv`, `file_jsonl`, or one a
+plugin registered) plus YAML `settings`, a `schedule` (`auto`, `hourly`,
+`manual` or five cron fields) and `enabled`. The module is off unless the
+operator sets `feeds.enabled: true`; with it off every `/feeds` route is a
+404 and `feeds` verbs fail the same way. Creating or changing a source
+needs an administrator: it decides which outside host the server calls.
+
+- Credentials never go in `settings`: the save refuses a setting the
+  provider marks sensitive (`token`, `api_key`). Set them on
+  `/feeds/ID/credentials`; templates use `{secret:token}`.
+- An address must be on `feeds.allowed_origins` and a file under
+  `feeds.file_roots`, both operator settings; a run says so when not.
+- A sync never waits. `feeds sync ID --wait` is the CLI waiting, not the
+  server. `act data_source ID test` fetches one unit and reports what came
+  back, writing nothing; `act data_source ID purge_history` deletes the
+  source's stored history and cannot be undone.
+- `data_source_run` is written by the server only; creating or updating
+  one is refused (403).
+- The data lands in a series store per source, not in records; there is no
+  `list` for it yet.
 
 ## Organization sign-in
 

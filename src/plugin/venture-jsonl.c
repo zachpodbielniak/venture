@@ -541,6 +541,8 @@ jsonl_validate(
 		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
 		       jsonl_check_choice(object, type, "side", jsonl_listing_sides,
 		                          line, error) &&
+		       jsonl_check_int(object, type, "expires_in_min", 0, line,
+		                       error) &&
 		       jsonl_check_time(object, type, "taken_at", FALSE, line, error);
 
 	case VENTURE_JSONL_MESSAGE_STAT:

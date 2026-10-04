@@ -1151,7 +1151,7 @@ test_web_navigation_links_all_resolve(
 		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation", "/deals",
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
 		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
-		"/money/calendar", "/customers/duplicates", NULL
+		"/money/calendar", "/customers/duplicates", "/feeds", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1303,6 +1303,7 @@ test_web_navigation_groups_by_question(
 		"/tickets", "/sprints", "/kb", NULL
 	};
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
+	static const gchar *const trading[] = { "/feeds", NULL };
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
 	static const gchar *const code[] = {
 		"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge", NULL
@@ -1332,6 +1333,7 @@ test_web_navigation_groups_by_question(
 		{ "Growth", NULL, growth },
 		{ "Support", NULL, support },
 		{ "Operations", NULL, operations },
+		{ "Trading", NULL, trading },
 		{ "Ideas", "Build", ideas },
 		{ "Code", "Build", code },
 		{ "Factory", "Build", factory },

@@ -168,6 +168,7 @@ The kinds that ship:
 | Kind                 | Registered by          | Entry keys                          | Means                                                         |
 |----------------------+------------------------+-------------------------------------+---------------------------------------------------------------|
 | =automation_handler= | the automation engine  | =name=, =command=, =description=    | A step an automation rule can call, run as the plugin's program; exec plugins only. See below. |
+| =data_source_provider= | the feeds module     | =name=, =label=, =command=, =description= | A market data provider a =data_source= can name, run as the plugin's program; exec plugins only. See below. |
 
 * Automation handlers from an exec plugin
 
@@ -203,6 +204,28 @@ nightly->on_schedule => venture->price_check("gold", "weekly")
 - *Failure.* A run that does not complete, exits non-zero or writes an =error= message fails the handler with that error; from a pod the failure is logged, from =venture_automation_invoke()= it is returned.
 - *=plugins.allow_exec= at every call.* Off at load, the plugin and its handler do not exist; switched off later, the next call is refused, with no restart.
 - *It blocks.* Automation handlers run synchronously on the main thread (the engine's handler timeout is deliberately zero; see [[file:automation.org][Automating VENTURE]]), so the server waits for the program. The manifest's =timeout= is the bound: keep it short, and do slow work in a feed rather than a handler.
+
+* Data source providers from an exec plugin
+
+An exec plugin can be a market data provider (see [[file:market-data.org][Market data]]). The manifest names it:
+
+#+begin_src yaml
+name: supplier-csv
+runtime: exec
+protocol: 1
+entry: fetch.sh
+provides:
+  - kind: data_source_provider
+    name: supplier_prices
+    label: Supplier price list
+    command: fetch
+#+end_src
+
+A =data_source= with =provider: supplier_prices= then runs the program once per unit. The request's =params= carry =unit=, =cursor= (where the unit's last fetch said to resume, from a =cursor= message), =if_modified_since= (an ISO time, when the unit has one) and =source= (the data source's settings); its =secrets= are the source's sealed credentials. The program answers with venues, instruments, snapshots, listings, figures, quotes, entries and records; an =error= after some data makes the unit partial, keeping what came before it.
+
+- Accepted whether or not the feeds module is on, so turning feeds on needs no reload; nothing runs while it is off.
+- The program is frozen with the source on the main thread, with =plugins.allow_exec= as it is then; switching exec off refreezes every source, and the next run is a failure saying so.
+- It runs on a GTask thread, never on the feeds worker's loop, with the plugin's own deadline and caps.
 
 * Exec plugins
 
@@ -325,7 +348,7 @@ One JSON object per line, UTF-8, each naming its =type=. An exec plugin writes t
 | =venue=        | =key=                            | =name=, =kind=, =group=, =currency=, =attrs= (object)                                          | A place that quotes prices: a realm, a marketplace, a bookmaker. |
 | =instrument=   | =key=                            | =name=, =kind=, =category= (=/=-separated path), =parent= (instrument key), =attrs= (object)  | A thing that is priced: an item, a SKU, an event's outcome. |
 | =snapshot=     | =venue=, =taken_at=              | =complete= (boolean)                                                                           | The start of one venue's snapshot; listings and stats that follow belong to it. |
-| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id=, =side= (=sell= or =buy=), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots. |
+| =listing=      | =venue=, =instrument=, =price=   | =quantity= (integer, at least 1, default 1), =currency=, =id=, =side= (=sell= or =buy=), =expires_in_min= (integer, at least 0), =taken_at= | One order or listing. =id= lets a consumer see which listings vanished between snapshots; =expires_in_min= says how long it had left, so one that vanished before it could have expired counts as sold and one that ran out does not. Without it every vanished listing is counted as sold. |
 | =stat=         | =venue=, =instrument=, one figure | =min=, =market=, =mean=, =median=, =sale_avg= (decimals); =quantity=, =listings=, =sold= (integers, at least 0); =currency=, =taken_at= | Precomputed figures when there are no individual listings. At least one figure is required. |
 | =quote=        | =venue=, =instrument=, exactly one of =price= or =odds= | =format= (=decimal=, =american=, =fractional=), =side= (=back=, =lay=, =bid=, =ask=), =liquidity= (decimal), =currency=, =taken_at= | A price or odds. Decimal odds must exceed 1; American odds are =+150= or =-200= with a magnitude of at least 100; fractional are =5/2=. |
 | =entry=        | =key=, =title=                   | =url= (http or https only), =summary=, =published_at=, =venue=, =instrument=                   | A non-price item: a feed article, a notice. |

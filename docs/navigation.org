@@ -16,7 +16,7 @@ This is grouping and labels only. Every page keeps its URL; nothing is moved or 
 
 * The section map
 
-Eight areas after the overview. Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
+Nine areas after the overview. Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
 
 | Area      | Part              | Pages                                                                                                                                              |
 |-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -28,6 +28,7 @@ Eight areas after the overview. Money is one area -- the money that comes in, go
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
 | Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |
+| Trading   |                   | Market data                                                                                                                                        |
 | Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Milestones, Releases, Builds, Environments, Deployments, Incidents |
 | Settings  | Your business, People and access, System | Ventures, Entities, Modules; Your account, API tokens, Users, Assistant; Settings, Automations, Plugins, Webhooks, Federation, Mail outbox, Audit log |
 
@@ -36,6 +37,8 @@ Every page is named once. Only the overview (Dashboard, Dashboards, Reports) kee
 * How it is built
 
 The link table (=venture_web_navigation()=) is unchanged and stays in the order it was written -- its URLs, labels, icons, module gates and the heading each row carries. The questions are a second table over it, =venture_web_navigation_sections()=: each section is a heading and the paths it gathers, in the order they are drawn. Drawing the sidebar walks the link table once; a row a section has claimed is drawn under its question rather than in place, and the questions are drawn together after the first heading. Each heading after the first is a =details.nav-group= whose summary keeps the =nav-section= class, so it is styled like the heading that does not fold.
+
+Trading holds outside prices and what is done with them: market data feeds now, and the browse, deal and arbitrage pages as they arrive. Its only row so far is gated on the =feeds= module, which is off by default, so an install that never turned feeds on sees no Trading heading at all.
 
 A section's heading follows the first of its rows actually shown, the same rule as before, so a question every one of whose modules is off leaves no heading over nothing. The command palette (Ctrl+K) and the assistant's page context read the link table directly and are unaffected.
 

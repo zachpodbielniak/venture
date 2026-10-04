@@ -887,6 +887,12 @@ main(
 		g_printerr("Commerce: %s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
 	}
+	/* After the plugins, which may have registered providers. */
+	if (!venture_context_start_feeds(context, &error))
+	{
+		g_printerr("Feeds: %s\n", error->message);
+		return venture_error_to_exit_code(VENTURE_ERROR_CONFIG);
+	}
 
 	if (!venture_web_server_start(server, &error))
 	{

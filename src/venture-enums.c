@@ -776,6 +776,39 @@ VENTURE_DEFINE_ENUM_TYPE(venture_dashboard_purpose_get_type,
                          "VentureDashboardPurpose",
                          venture_dashboard_purpose_values)
 
+static const GEnumValue venture_data_source_track_values[] = {
+	VE(VENTURE_DATA_SOURCE_TRACK_ALL,   "all"),
+	VE(VENTURE_DATA_SOURCE_TRACK_KNOWN, "known"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_data_source_track_get_type,
+                         "VentureDataSourceTrack",
+                         venture_data_source_track_values)
+
+static const GEnumValue venture_data_source_run_status_values[] = {
+	VE(VENTURE_DATA_SOURCE_RUN_STATUS_OK,       "ok"),
+	VE(VENTURE_DATA_SOURCE_RUN_STATUS_PARTIAL,  "partial"),
+	VE(VENTURE_DATA_SOURCE_RUN_STATUS_FAILED,   "failed"),
+	VE(VENTURE_DATA_SOURCE_RUN_STATUS_DEFERRED, "deferred"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_data_source_run_status_get_type,
+                         "VentureDataSourceRunStatus",
+                         venture_data_source_run_status_values)
+
+static const GEnumValue venture_data_source_run_trigger_values[] = {
+	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE,   "schedule"),
+	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL,     "manual"),
+	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION, "automation"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_data_source_run_trigger_get_type,
+                         "VentureDataSourceRunTrigger",
+                         venture_data_source_run_trigger_values)
+
 static const GEnumValue venture_dashboard_layout_values[] = {
 	VE(VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS, "three_columns"),
 	VE(VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,   "two_columns"),

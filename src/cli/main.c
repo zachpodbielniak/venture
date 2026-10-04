@@ -2280,6 +2280,7 @@ venture_cli_command_factory(
 #include "calendar/venture-calendar-cli.inc"
 #include "banking/venture-bank-cli.inc"
 #include "bankfeed/venture-bankfeed-cli.inc"
+#include "feeds/venture-feeds-cli.inc"
 #include "commerce/venture-commerce-cli.inc"
 
 static gint
@@ -3763,6 +3764,7 @@ main(
 	gboolean dry_run = FALSE;
 	gboolean release_replace = FALSE;
 	gboolean release_prerelease = FALSE;
+	gboolean feeds_wait = FALSE;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -3797,6 +3799,8 @@ main(
 		  "release changelog: replace a changelog that is already there", NULL },
 		{ "prerelease", 0, 0, G_OPTION_ARG_NONE, &release_prerelease,
 		  "release publish: publish as a pre-release", NULL },
+		{ "wait", 0, 0, G_OPTION_ARG_NONE, &feeds_wait,
+		  "feeds sync: wait for the run and print it", NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill or billing: validate without retaining writes", NULL },
 		/* One --from/--to pair serves every span-taking verb. Registering
@@ -3903,6 +3907,10 @@ main(
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
 		"                               preview enable reverse; bank match AUTO ID\n"
 		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
+		"  feeds sync ID [--wait]       queue a market data source's sync;\n"
+		"                               --wait prints the run it records\n"
+		"  feeds runs ID                a data source's runs, newest first\n"
+		"  feeds due                    every unit and when it is checked next\n"
 		"  commerce import [JSON]       import orders; JSON organization_id selects the account\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  deal quote ID                create or revise a quote from the deal's lines\n"
@@ -4035,6 +4043,12 @@ main(
 		help = g_option_context_get_help(options, TRUE, NULL);
 		g_print("%s", help);
 
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+
+	if (feeds_wait && (0 != g_strcmp0(args[0], "feeds")))
+	{
+		g_printerr("venturectl: --wait belongs to feeds sync\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -4241,6 +4255,8 @@ main(
 		result = venture_cli_command_bank(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "bankfeed"))
 		result = venture_cli_command_bankfeed(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "feeds"))
+		result = venture_cli_command_feeds(&cli, args, feeds_wait, &error);
 	else if (0 == g_strcmp0(args[0], "commerce"))
 		result = venture_cli_command_commerce(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))

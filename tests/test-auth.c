@@ -1271,6 +1271,18 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/attribution", NULL, "operation=disconnect", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/mail", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/bankfeed/1/settings"), ==, SOUP_STATUS_FOUND);
+#ifdef VENTURE_HAVE_SQLITE
+	/* Market data feeds: pages redirect and the API refuses before the
+	 * module is even consulted. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/feeds"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/feeds/1/credentials"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/feeds/1/credentials", NULL, "operation=configure", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/feeds/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/due"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/1/runs"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/sync", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+#endif
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/calendar_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/mail_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
@@ -5203,6 +5215,7 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_null(strstr(page, "class=\"nav-section\">Accounting<"));
 	g_assert_null(strstr(page, "class=\"nav-section\">Business<"));
 	g_assert_nonnull(strstr(page, "href=\"/deals\""));
+	g_assert_null(strstr(page, "<summary class=\"nav-section\">Trading</summary>"));
 
 	/* Reports is an overview page: no question is open over it. */
 	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
@@ -5214,6 +5227,27 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_nonnull(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
 	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"customers\" open>"));
 	g_clear_pointer(&page, g_free);
+
+	/* Trading holds only module-gated pages; with feeds off -- the
+	 * default -- it is not drawn over nothing (asserted on /reports
+	 * above), and with them on it sits between Operations and Build. */
+	g_object_set(fixture->config, "feeds-enabled", TRUE, NULL);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/reports",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	{
+		const gchar *operations = strstr(page, headings[9]);
+		const gchar *trading = strstr(page, "<summary class=\"nav-section\">Trading</summary>");
+		const gchar *build = strstr(page, headings[10]);
+		const gchar *feeds = strstr(page, "href=\"/feeds\"");
+
+		g_assert_nonnull(trading);
+		g_assert_true(trading > operations);
+		g_assert_true(trading < build);
+		g_assert_true(feeds > trading);
+		g_assert_true(feeds < build);
+	}
+	g_clear_pointer(&page, g_free);
+	g_object_set(fixture->config, "feeds-enabled", FALSE, NULL);
 
 	/* Module off: the row goes, the question stays. */
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
@@ -5433,6 +5467,83 @@ static void test_auth_bankfeed_settings(ServerFixture *fixture, gconstpointer un
 		"operation=configure&binding_id=0&version=0&environment=sandbox&access_token=stale-secret", &page, NULL), ==, SOUP_STATUS_BAD_REQUEST);
 	g_assert_null(strstr(page, "stale-secret"));
 }
+#ifdef VENTURE_HAVE_SQLITE
+/*
+ * Market data feeds through the server: module-gated, sources written by
+ * administrators only, runs written by nobody, credentials sealed.
+ *
+ * What breaks if this regresses: an editor points the server at a host of
+ * their choosing, a run is rewritten to read as fine, a credential comes
+ * back in a page, or the feeds pages answer while the module is off.
+ */
+static void test_auth_feeds(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autofree gchar *editor = NULL, *admin = NULL, *page = NULL, *path = NULL, *created = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	gint64 id;
+	(void)unused;
+	server_fixture_create_member(fixture, "feeds-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	editor = server_fixture_login(fixture, "feeds-editor", "editor-long-password");
+	server_fixture_create_member(fixture, "feeds-admin", "admin-long-password", VENTURE_USER_ROLE_ADMIN, NULL);
+	admin = server_fixture_login(fixture, "feeds-admin", "admin-long-password");
+
+	/* Off by default: the pages are a module-off 404, not an error. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/feeds", admin, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/feeds", admin, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_null(venture_context_get_feeds_service(fixture->context));
+
+	g_object_set(fixture->config, "feeds-enabled", TRUE, NULL);
+	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
+
+	/* Where the server fetches from is configuration: administrators. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/data_source", editor,
+		"{\"name\":\"Editor's\",\"provider\":\"file_jsonl\",\"settings\":\"file: x.jsonl\",\"schedule\":\"manual\"}",
+		NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/data_source", admin,
+		"{\"name\":\"Prices\",\"provider\":\"file_jsonl\",\"settings\":\"file: x.jsonl\",\"schedule\":\"manual\"}",
+		&created, NULL), ==, SOUP_STATUS_CREATED);
+	node = json_from_string(created, &error);
+	g_assert_no_error(error);
+	id = json_object_get_int_member(json_node_get_object(node), "id");
+	g_assert_true(json_object_get_boolean_member(json_node_get_object(node), "enabled"));
+
+	/* A run is evidence: nobody writes one through the API. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/data_source_run", admin,
+		"{\"data_source_id\":1,\"status\":\"ok\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/feeds", editor, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Prices"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/feeds", editor, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "\"sources\""));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/feeds/due", editor, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+
+	/* A sync is queued and answered at once. */
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/sync", id);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, editor, "{}", &page, NULL), ==, 202);
+	g_assert_nonnull(strstr(page, "\"queued\""));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/runs", id);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, editor, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_clear_pointer(&path, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/feeds/999999/runs", editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+
+	/* Credentials: administrators of the organization, write-only. */
+	path = g_strdup_printf("/feeds/%" G_GINT64_FORMAT "/credentials", id);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, editor, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+	/* Back off: gone again, and the worker with it. */
+	g_object_set(fixture->config, "feeds-enabled", FALSE, NULL);
+	g_assert_null(venture_context_get_feeds_service(fixture->context));
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/feeds", admin, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+}
+#endif
 static void test_auth_connector_settings(ServerFixture *fixture, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -5902,6 +6013,9 @@ main(
 	g_test_add("/auth/mail-settings-administration", ServerFixture, NULL, server_fixture_set_up, test_auth_mail_settings_administration, server_fixture_tear_down);
 	g_test_add("/auth/connector-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_connector_settings, server_fixture_tear_down);
 	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
+#ifdef VENTURE_HAVE_SQLITE
+	g_test_add("/auth/feeds", ServerFixture, NULL, server_fixture_set_up, test_auth_feeds, server_fixture_tear_down);
+#endif
 	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);
 	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
 	return g_test_run();

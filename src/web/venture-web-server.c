@@ -857,6 +857,18 @@ venture_web_type_accepts_writes(
 		return FALSE;
 	}
 
+	/* A data source run is what a feed did, written once by the feeds
+	 * service as the system when the run ended. An edited one would make
+	 * a failed fetch read as fine, or invent rows the store never had. */
+	if (VENTURE_TYPE_DATA_SOURCE_RUN == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "A data source run is written by the feeds "
+		                    "service when the run ends; it cannot be edited");
+		return FALSE;
+	}
+
 	/* A calendar_event row is the sync's memory of what both sides looked
 	 * like; editing one would make the next sweep overwrite or duplicate. */
 	if (VENTURE_TYPE_CALENDAR_EVENT == entity_type)
@@ -1658,6 +1670,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	},
 	{ "/accounting", "Books", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Accounting", "accounting" },
 	{ "/bankfeed", "Bank feeds", VENTURE_ICON("<path d=\"M4 12h16M4 7h16M4 17h10\"/>"), NULL, "bankfeed" },
+	{ "/feeds", "Market data", VENTURE_ICON("<path d=\"M3 17l5-6 4 4 8-9\"/><path d=\"M14 6h6v6\"/>"), NULL, "feeds" },
 	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
 	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
 	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
@@ -1751,6 +1764,13 @@ static const gchar *const venture_web_nav_operations[] = {
 	NULL
 };
 
+/* Outside prices and what is done with them: feeds now, and the browse,
+ * deal and arbitrage pages that read them. */
+static const gchar *const venture_web_nav_trading[] = {
+	"/feeds",
+	NULL
+};
+
 static const gchar *const venture_web_nav_ideas[] = {
 	"/e/idea", "/e/research_note",
 	NULL
@@ -1792,6 +1812,7 @@ static const VentureWebNavSection venture_web_nav_sections[] = {
 	{ "Growth", NULL, venture_web_nav_growth },
 	{ "Support", NULL, venture_web_nav_support },
 	{ "Operations", NULL, venture_web_nav_operations },
+	{ "Trading", NULL, venture_web_nav_trading },
 	{ "Ideas", "Build", venture_web_nav_ideas },
 	{ "Code", "Build", venture_web_nav_code },
 	{ "Factory", "Build", venture_web_nav_factory },
@@ -31845,6 +31866,9 @@ venture_web_api_ticket_draft(
 #include "capture/venture-capture-web.inc"
 #include "accounting/venture-accounting-web.inc"
 #include "bankfeed/venture-bankfeed-web.inc"
+#ifdef VENTURE_HAVE_SQLITE
+#include "feeds/venture-feeds-web.inc"
+#endif
 #include "commerce/venture-commerce-web.inc"
 #include "budgets/venture-budget-web.inc"
 #include "equity/venture-equity-web.inc"
@@ -32368,6 +32392,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
 
+#ifdef VENTURE_HAVE_SQLITE
+	/* Before the generic record routes: /api/v1/feeds is not a type. */
+	venture_feeds_web_register(self);
+#endif
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
