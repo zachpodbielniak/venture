@@ -1972,8 +1972,8 @@ blizzard_provider_schema(VentureDataSourceProvider *provider)
 		"\"key_modifier_types\":{\"type\":\"array\",\"title\":\"Modifier types that make a variant\"},"
 		"\"dynamic_namespace\":{\"type\":\"string\",\"title\":\"Dynamic namespace override\"},"
 		"\"static_namespace\":{\"type\":\"string\",\"title\":\"Static namespace override\"},"
-		"\"api_base\":{\"type\":\"string\",\"title\":\"API origin override\"},"
-		"\"oauth_base\":{\"type\":\"string\",\"title\":\"OAuth origin override\"},"
+		"\"api_base\":{\"type\":\"string\",\"title\":\"API origin override\",\"x-endpoint-override\":true},"
+		"\"oauth_base\":{\"type\":\"string\",\"title\":\"OAuth origin override\",\"x-endpoint-override\":true},"
 		"\"requests_per_hour\":{\"type\":\"integer\",\"title\":\"Request budget an hour\",\"default\":36000}"
 		"}}", NULL);
 }

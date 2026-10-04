@@ -422,6 +422,361 @@ feeds_apply_schema_defaults(
 	}
 }
 
+/* --- Where a credential goes ----------------------------------------------------- */
+
+/*
+ * The sealed member that records where a source's credentials were meant
+ * to go. Written by venture_feeds_set_credentials() beside the values,
+ * never shown, never handed to a provider and never a redaction value
+ * (an origin appears in every error a fetch makes).
+ */
+#define FEEDS_BOUND_ORIGINS "x-bound-origins"
+
+/* Whether a schema property declares @flag true. */
+static gboolean
+feeds_property_flag(
+	JsonNode	*declared,
+	const gchar	*flag
+){
+	return (NULL != declared) && JSON_NODE_HOLDS_OBJECT(declared) &&
+	       venture_json_object_get_bool(json_node_get_object(declared), flag, FALSE);
+}
+
+/* The provider schema's properties object, or NULL. */
+static JsonObject *
+feeds_schema_properties(JsonNode *schema)
+{
+	JsonNode *properties;
+
+	if ((NULL == schema) || !JSON_NODE_HOLDS_OBJECT(schema))
+		return NULL;
+
+	properties = json_object_get_member(json_node_get_object(schema), "properties");
+
+	return ((NULL != properties) && JSON_NODE_HOLDS_OBJECT(properties))
+		? json_node_get_object(properties) : NULL;
+}
+
+/*
+ * The origin a URL template sends to, when its scheme, host and port are
+ * fixed: a placeholder there ({unit}, {secret:api_key}) or userinfo would
+ * let the request -- and the credential in it -- go somewhere decided
+ * after the credential was bound, so such a template has no origin.
+ */
+static gchar *
+feeds_template_origin(const gchar *url)
+{
+	g_autofree gchar *prefix = NULL;
+	const gchar *start;
+	const gchar *end;
+
+	if (NULL == url)
+		return NULL;
+
+	start = strstr(url, "://");
+
+	if (NULL == start)
+		return NULL;
+
+	for (end = start + 3; ('\0' != *end) && ('/' != *end) && ('?' != *end) && ('#' != *end); end++)
+		;
+
+	prefix = g_strndup(url, (gsize)(end - url));
+
+	if (NULL != strpbrk(prefix, "{}@"))
+		return NULL;
+
+	return feeds_normalise_origin(prefix);
+}
+
+static gint
+feeds_compare_strings(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	return g_strcmp0(*(const gchar *const *)a, *(const gchar *const *)b);
+}
+
+/*
+ * Where a source's settings send its requests: the origins of every
+ * setting the provider's schema marks `x-endpoint` or
+ * `x-endpoint-override`, deduplicated, sorted and joined by commas; "" when
+ * none is set. *@out_declared says whether the provider marks any. FALSE
+ * when one is set but names no fixed origin.
+ */
+static gboolean
+feeds_endpoint_origins(
+	VentureDataSourceProvider	 *provider,
+	JsonObject			 *settings,
+	gboolean			 *out_declared,
+	gchar				**out_origins,
+	GError				**error
+){
+	g_autoptr(JsonNode) schema = NULL;
+	g_autoptr(GPtrArray) origins = NULL;
+	JsonObject *properties;
+	JsonObjectIter iter;
+	const gchar *name;
+	JsonNode *declared;
+
+	*out_declared = FALSE;
+	*out_origins = NULL;
+	schema = venture_data_source_provider_dup_settings_schema(provider);
+	properties = feeds_schema_properties(schema);
+	origins = g_ptr_array_new_with_free_func(g_free);
+
+	if (NULL != properties)
+	{
+		json_object_iter_init(&iter, properties);
+
+		while (json_object_iter_next(&iter, &name, &declared))
+		{
+			JsonNode *value;
+			gchar *origin;
+			guint i;
+			gboolean seen;
+
+			if (!feeds_property_flag(declared, "x-endpoint") &&
+			    !feeds_property_flag(declared, "x-endpoint-override"))
+				continue;
+
+			*out_declared = TRUE;
+			value = json_object_get_member(settings, name);
+
+			if ((NULL == value) || JSON_NODE_HOLDS_NULL(value))
+				continue;
+
+			origin = (JSON_NODE_HOLDS_VALUE(value) &&
+			          (G_TYPE_STRING == json_node_get_value_type(value)))
+				? feeds_template_origin(json_node_get_string(value)) : NULL;
+
+			if (NULL == origin)
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				            "%s names no fixed origin: a credential is bound to the "
+				            "scheme, host and port it is sent to, so they cannot hold a "
+				            "placeholder, a user or a password", name);
+				return FALSE;
+			}
+
+			for (seen = FALSE, i = 0; !seen && (i < origins->len); i++)
+				seen = (0 == g_strcmp0(g_ptr_array_index(origins, i), origin));
+
+			if (seen)
+				g_free(origin);
+			else
+				g_ptr_array_add(origins, origin);
+		}
+	}
+
+	g_ptr_array_sort(origins, feeds_compare_strings);
+	g_ptr_array_add(origins, NULL);
+	*out_origins = g_strjoinv(",", (gchar **)origins->pdata);
+
+	return TRUE;
+}
+
+/*
+ * A setting the provider's schema marks `x-endpoint-override` replaces
+ * the fixed, official origin its credential is sent to. It is honoured
+ * only with feeds.allow_endpoint_overrides, which is for test and
+ * development: otherwise whoever may edit the source could point the
+ * secret at any allowlisted origin and read it there. With @previous
+ * (the stored settings) only an override written now is judged -- the
+ * reference rule, so a source saved while overrides were on stays
+ * editable; the freeze judges every one, so it never runs.
+ */
+static gboolean
+feeds_check_overrides(
+	VentureConfig			 *config,
+	VentureDataSourceProvider	 *provider,
+	JsonObject			 *settings,
+	JsonObject			 *previous,
+	GError				**error
+){
+	g_autoptr(JsonNode) schema = NULL;
+	JsonObject *properties;
+	JsonObjectIter iter;
+	const gchar *name;
+	JsonNode *declared;
+	gboolean allowed = FALSE;
+
+	g_object_get(config, "feeds-allow-endpoint-overrides", &allowed, NULL);
+
+	if (allowed)
+		return TRUE;
+
+	schema = venture_data_source_provider_dup_settings_schema(provider);
+	properties = feeds_schema_properties(schema);
+
+	if (NULL == properties)
+		return TRUE;
+
+	json_object_iter_init(&iter, properties);
+
+	while (json_object_iter_next(&iter, &name, &declared))
+	{
+		JsonNode *value;
+		JsonNode *before;
+
+		if (!feeds_property_flag(declared, "x-endpoint-override"))
+			continue;
+
+		value = json_object_get_member(settings, name);
+
+		if ((NULL == value) || JSON_NODE_HOLDS_NULL(value))
+			continue;
+
+		before = (NULL != previous) ? json_object_get_member(previous, name) : NULL;
+
+		if ((NULL != before) && json_node_equal(before, value))
+			continue;
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s replaces the address the %s provider sends its credential to; it is "
+		            "honoured only with feeds.allow_endpoint_overrides on, which is for test "
+		            "and development. Leave it out to use the provider's own address",
+		            name, venture_data_source_provider_get_name(provider));
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * Hands a source's credentials over only to the origins they were bound
+ * to. A provider whose settings choose where requests go (the built-in
+ * http_json and csv `url`, an endpoint override) must not send a sealed
+ * credential somewhere chosen after it was sealed: changing the address
+ * to another origin -- even an allowlisted one -- needs the credential
+ * entered again. Takes the bound-origins member out of @secrets either way.
+ */
+static gboolean
+feeds_check_bound_origins(
+	VentureDataSourceProvider	 *provider,
+	JsonObject			 *settings,
+	JsonObject			 *secrets,
+	GError				**error
+){
+	g_autofree gchar *bound = NULL;
+	g_autofree gchar *current = NULL;
+	g_autoptr(GError) where_error = NULL;
+	gboolean declared = FALSE;
+
+	if (json_object_has_member(secrets, FEEDS_BOUND_ORIGINS))
+	{
+		bound = g_strdup(json_object_get_string_member_with_default(secrets, FEEDS_BOUND_ORIGINS, ""));
+		json_object_remove_member(secrets, FEEDS_BOUND_ORIGINS);
+	}
+
+	if (0 == json_object_get_size(secrets))
+		return TRUE;
+
+	/* A failure leaves current NULL; the provider declares an endpoint
+	 * then, since only a declared one can fail. */
+	(void)feeds_endpoint_origins(provider, settings, &declared, &current, &where_error);
+
+	if (!declared)
+		return TRUE;
+
+	if (NULL == bound)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "The source's credentials were set before they were bound to an "
+		                    "address: set them again on its credentials page");
+		return FALSE;
+	}
+
+	if (NULL == current)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "The source's credentials are not sent: %s", where_error->message);
+		return FALSE;
+	}
+
+	if (0 != g_strcmp0(bound, current))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "The source's credentials were set for %s and its settings now send "
+		            "requests to %s: set them again on its credentials page to send them there",
+		            ('\0' != bound[0]) ? bound : "no address",
+		            ('\0' != current[0]) ? current : "no address");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+VentureIntegrationConnection *
+venture_feeds_set_credentials(
+	VentureContext		 *context,
+	VentureEntity		 *source,
+	JsonObject		 *values,
+	gint64			  expected_version,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(JsonObject) settings = NULL;
+	g_autoptr(JsonObject) sealed = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *provider_name = NULL;
+	g_autofree gchar *settings_text = NULL;
+	g_autofree gchar *origins = NULL;
+	g_autofree gchar *key = NULL;
+	VentureDataSourceProvider *provider;
+	JsonObjectIter iter;
+	const gchar *member;
+	JsonNode *value;
+	gboolean declared = FALSE;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(VENTURE_IS_DATA_SOURCE(source), NULL);
+	g_return_val_if_fail(NULL != values, NULL);
+
+	g_object_get(source, "provider", &provider_name, "settings", &settings_text, NULL);
+	provider = venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(context), provider_name);
+
+	if (NULL == provider)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No data source provider named %s is registered", provider_name);
+		return NULL;
+	}
+
+	settings = venture_feeds_parse_settings(settings_text, error);
+
+	if (NULL == settings)
+		return NULL;
+
+	feeds_apply_schema_defaults(provider, settings);
+
+	/* Bound now, to where the settings send requests now. */
+	if (!feeds_endpoint_origins(provider, settings, &declared, &origins, error))
+		return NULL;
+
+	sealed = json_object_new();
+	json_object_iter_init(&iter, values);
+
+	while (json_object_iter_next(&iter, &member, &value))
+	{
+		if (0 != g_strcmp0(member, FEEDS_BOUND_ORIGINS))
+			json_object_set_member(sealed, member, json_node_copy(value));
+	}
+
+	if (declared)
+		json_object_set_string_member(sealed, FEEDS_BOUND_ORIGINS, origins);
+
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, sealed);
+	key = g_strconcat("feed-", venture_entity_get_uuid(source), NULL);
+
+	return venture_integration_service_configure(
+		venture_integration_service_get(venture_context_get_database(context)),
+		venture_entity_get_organization_id(source), key, venture_entity_get_uuid(source),
+		"live", node, expected_version, actor, error);
+}
+
 /*
  * The origins a source may reach: the operator's feeds.allowed_origins,
  * narrowed by the source's own `origins` when it gives them. A source
@@ -670,6 +1025,9 @@ feeds_freeze(
 
 	feeds_apply_schema_defaults(provider, settings);
 
+	if (!feeds_check_overrides(config, provider, settings, NULL, error))
+		return NULL;
+
 	spec = g_new0(VentureFeedSource, 1);
 	g_atomic_ref_count_init(&spec->ref);
 	spec->id = venture_entity_get_id(record);
@@ -723,6 +1081,9 @@ feeds_freeze(
 
 	if (NULL == secrets)
 		secrets = json_object_new();
+
+	if (!feeds_check_bound_origins(provider, settings, secrets, error))
+		return NULL;
 
 	{
 		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
@@ -2455,7 +2816,6 @@ feeds_validate_source(
 	g_autofree gchar *instrument_namespace = NULL;
 	VentureDataSourceTrack track;
 
-	(void)previous;
 	(void)user_data;
 
 	g_object_get(entity, "provider", &provider_name, "settings", &settings_text,
@@ -2568,6 +2928,28 @@ feeds_validate_source(
 
 		if (!feeds_check_settings(provider, settings, error))
 			return FALSE;
+
+		/* An endpoint override is judged when it is written, against the
+		 * stored settings of the same provider. */
+		{
+			g_autoptr(JsonObject) before = NULL;
+
+			if (NULL != previous)
+			{
+				g_autofree gchar *previous_provider = NULL;
+				g_autofree gchar *previous_text = NULL;
+
+				g_object_get(previous, "provider", &previous_provider,
+				             "settings", &previous_text, NULL);
+
+				if (0 == g_strcmp0(previous_provider, provider_name))
+					before = venture_feeds_parse_settings(previous_text, NULL);
+			}
+
+			if (!feeds_check_overrides(venture_context_get_config(context), provider,
+			                           settings, before, error))
+				return FALSE;
+		}
 
 		units = venture_data_source_provider_list_units(provider, settings, error);
 

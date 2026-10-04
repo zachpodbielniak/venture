@@ -471,7 +471,7 @@ A provider is a name, a settings schema and a fetch. The feeds module owns every
 | Part       | What it is                                                                                                                       |
 |------------+----------------------------------------------------------------------------------------------------------------------------------|
 | name       | What a =data_source= names in =provider=: a lower-case word such as =shop_prices=. Registered once; a second registration is refused. |
-| schema     | A JSON schema of the source's settings. A key marked ="x-sensitive": true= is a credential: refused in the settings YAML, set on =/feeds/ID/credentials=, sealed in the integration store and handed to the fetch as a secret. |
+| schema     | A JSON schema of the source's settings. A key marked ="x-sensitive": true= is a credential: refused in the settings YAML, set on =/feeds/ID/credentials=, sealed in the integration store and handed to the fetch as a secret. A setting that decides where a credential is sent is marked too: ="x-endpoint-override": true= for one that replaces the provider's own fixed address (honoured only with =feeds.allow_endpoint_overrides=), ="x-endpoint": true= for an address that is the source's own choice (the credential is bound to its origin when it is set). See [[file:security.org::*Where a credential is sent][Where a credential is sent]]. |
 | units      | What one source is split into -- a realm, a sport, a shop. By default the settings' =units= list, or one unit called =default=. Each unit is fetched separately, keeps its own cursor and its own If-Modified-Since, and is scheduled on its own. |
 | fetch      | Given a =VentureFeedRequest= for one unit, return a =VentureFeedBatch= (or, for exec, write JSON lines). Runs off the main thread. |
 | freeze     | Optional, native only: run once on the main thread when the source is saved, the configuration changes or a sync is asked for; whatever it returns is shared, read-only, by every fetch until the next freeze. |
@@ -747,7 +747,7 @@ shop_fetch(
 static const gchar shop_schema[] =
 	"{\"type\":\"object\",\"required\":[\"units\"],\"properties\":{"
 	"\"units\":{\"type\":\"array\",\"title\":\"Shops\"},"
-	"\"api_base\":{\"type\":\"string\",\"title\":\"API origin\"},"
+	"\"api_base\":{\"type\":\"string\",\"title\":\"API origin\",\"x-endpoint-override\":true},"
 	"\"requests_per_hour\":{\"type\":\"integer\",\"title\":\"Request budget an hour\"}"
 	"}}";
 
@@ -973,7 +973,7 @@ A freeze that fails makes every run of the source fail, saying why, until a late
 ** Then: test it the way the reference plugins are tested
 
 - =tests/venture-test-http.h= is a scripted HTTP server for exactly this: routes, fixture files, a 304 when asked with If-Modified-Since, an authorization requirement, and a count of hits. =tests/test-plugin-blizzard.c= and =tests/test-plugin-examples.c= drive the reference plugins with it, including "the credential never appears in the run, the log or the store".
-- A test server binds port 0 and the source's settings point =api_base= at it; =feeds.allowed_origins= names that =http://127.0.0.1:PORT= origin.
+- A test server binds port 0 and the source's settings point =api_base= at it; =feeds.allowed_origins= names that =http://127.0.0.1:PORT= origin and =feeds.allow_endpoint_overrides= is on, since =api_base= is marked =x-endpoint-override=.
 - A manual sync sends no If-Modified-Since and refreezes the source; to test a conditional fetch, switch the schedule to =auto= and wait, as =schedule_and_wait()= in =test-plugin-blizzard.c= does.
 - Drain the worker before the fixture goes: =venture_feeds_service_count_pending()= until zero, bounded.
 

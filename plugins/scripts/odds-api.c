@@ -469,7 +469,7 @@ static const gchar odds_api_schema[] =
 	"\"description\":\"the-odds-api's sport keys, one unit each: soccer_epl, basketball_nba\"},"
 	"\"regions\":{\"type\":\"string\",\"title\":\"Regions\",\"default\":\"us\","
 	"\"description\":\"Whose bookmakers: us, uk, eu, au, comma separated\"},"
-	"\"api_base\":{\"type\":\"string\",\"title\":\"API origin override\"},"
+	"\"api_base\":{\"type\":\"string\",\"title\":\"API origin override\",\"x-endpoint-override\":true},"
 	"\"requests_per_hour\":{\"type\":\"integer\",\"title\":\"Request budget an hour\"},"
 	"\"api_key\":{\"type\":\"string\",\"title\":\"API key\",\"x-sensitive\":true}"
 	"}}";

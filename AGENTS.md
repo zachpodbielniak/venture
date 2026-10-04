@@ -1625,6 +1625,19 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   provider's schema marks `x-sensitive`; they are sealed under
   `feed-<uuid>` and redacted out of every run, note, store string and log
   line. A template names one as `{secret:NAME}`.
+- **A credential goes only where it was sent when it was set.** A setting
+  that replaces a provider's fixed address is `x-endpoint-override` in
+  its schema (Blizzard `api_base`/`oauth_base`, odds `api_base`) and is
+  honoured only with `feeds.allow_endpoint_overrides` (test/dev, default
+  off): refused when written, refused again at every freeze. An address
+  that is the source's own choice is `x-endpoint` (http_json/csv `url`):
+  `venture_feeds_set_credentials()` seals the credentials with the
+  origins those settings name (`x-bound-origins`, never handed to the
+  provider) and the freeze withholds them when the origins moved. Seal a
+  feed credential only through that function -- tests included; a
+  binding made with `venture_integration_service_configure()` directly is
+  unbound and never sent. The allowlist alone did not stop an editor
+  pointing the secret at another allowlisted origin.
 - **A run is written once, on the main thread, as the system,** and never
   inside somebody else's transaction: a run that arrives while one is open
   waits (`feeds_service_drain()`). `data_source_run` refuses writes from the

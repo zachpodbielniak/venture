@@ -917,13 +917,8 @@ venture_feeds_web_credentials(
 				g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 				                    "Fill in at least one credential");
 			else if (NULL != values)
-			{
-				g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
-
-				json_node_set_object(node, values);
-				updated = venture_integration_service_configure(integrations, org, key,
-					venture_entity_get_uuid(source), "live", node, version, &actor, &error);
-			}
+				updated = venture_feeds_set_credentials(self->context, source, values, version,
+				                                        &actor, &error);
 
 			if (NULL != updated)
 				g_string_append(content, "<p>Credentials saved and sealed. The next run uses them.</p>");

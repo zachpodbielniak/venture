@@ -95,6 +95,7 @@ fixture_set_up(
 	             "state-dir", fixture->state_dir,
 	             "feeds-enabled", TRUE,
 	             "feeds-allowed-origins", fixture->http.origin,
+	             "feeds-allow-endpoint-overrides", TRUE,
 	             "feeds-run-window-minutes", (gint64)0,
 	             "feeds-request-timeout", (gint64)5,
 	             NULL);
@@ -203,14 +204,10 @@ create_source(
 	{
 		g_autoptr(VentureIntegrationConnection) binding = NULL;
 		g_autoptr(JsonObject) values = json_object_new();
-		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
-		g_autofree gchar *key = g_strconcat("feed-", venture_entity_get_uuid(VENTURE_ENTITY(source)), NULL);
 
 		json_object_set_string_member(values, secret_name, secret);
-		json_node_set_object(node, values);
-		binding = venture_integration_service_configure(venture_integration_service_get(fixture->database),
-			fixture->org, key, venture_entity_get_uuid(VENTURE_ENTITY(source)), "live", node, 0, NULL,
-			&error);
+		binding = venture_feeds_set_credentials(fixture->context, VENTURE_ENTITY(source), values, 0,
+		                                        NULL, &error);
 		g_assert_no_error(error);
 		g_assert_nonnull(binding);
 	}
@@ -844,6 +841,75 @@ test_supplier_csv_needs_allow_exec(
 
 #endif /* VENTURE_HAVE_SQLITE */
 
+/*
+ * odds_api's api_base replaces the address its key is sent to. It is
+ * honoured only with feeds.allow_endpoint_overrides, which is for test
+ * and development: with the switch off a source naming one is refused
+ * when it is saved, and one saved while it was on fails its run without
+ * a request. A source with no api_base uses the official address and
+ * saves either way.
+ *
+ * What breaks if this regresses: whoever may edit a data source points
+ * api_base at another allowlisted origin and reads the paid key there.
+ */
+static void
+test_odds_api_override_needs_the_switch(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSource) refused = NULL;
+	g_autoptr(VentureDataSource) plain = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *settings = NULL;
+	g_autofree gchar *message = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	if (!load_odds_api(fixture))
+		return;
+
+	g_free(serve_odds(fixture));
+	settings = odds_settings(fixture);
+	g_object_set(fixture->config, "feeds-allow-endpoint-overrides", FALSE, NULL);
+
+	refused = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(refused), fixture->org);
+	g_object_set(refused, "name", "Redirected", "provider", "odds_api", "settings", settings,
+	             "schedule", "manual", NULL);
+	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(refused), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "feeds.allow_endpoint_overrides"));
+	g_assert_nonnull(strstr(error->message, "api_base"));
+	g_clear_error(&error);
+
+	plain = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(plain), fixture->org);
+	g_object_set(plain, "name", "Official", "provider", "odds_api",
+	             "settings", "units: [soccer_epl]\n", "schedule", "manual", NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(plain), NULL, &error));
+	g_assert_no_error(error);
+
+	/* Saved while the switch was on, then the switch goes off: an edit
+	 * that leaves api_base alone still saves, and the run refuses. */
+	g_object_set(fixture->config, "feeds-allow-endpoint-overrides", TRUE, NULL);
+	id = create_source(fixture, "Was allowed", "odds_api", settings, "api_key", api_key);
+	g_object_set(fixture->config, "feeds-allow-endpoint-overrides", FALSE, NULL);
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, id, &error);
+	g_assert_no_error(error);
+	g_object_set(source, "name", "Was allowed, renamed", NULL);
+	g_assert_true(venture_database_save(fixture->database, source, NULL, &error));
+	g_assert_no_error(error);
+
+	run = sync_and_wait(fixture, id);
+	message = run_text(run, "error");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "feeds.allow_endpoint_overrides"));
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/v4/sports/soccer_epl/odds"), ==, 0);
+}
+
 int
 main(
 	int	 argc,
@@ -858,6 +924,7 @@ main(
 	ADD("odds-api/sync", test_odds_api_sync);
 	ADD("odds-api/key-never-leaks", test_odds_api_key_never_leaks);
 	ADD("odds-api/cover-finds-the-surebet", test_odds_api_cover);
+	ADD("odds-api/override-needs-the-switch", test_odds_api_override_needs_the_switch);
 	ADD("supplier-csv/sync", test_supplier_csv);
 	ADD("supplier-csv/needs-allow-exec", test_supplier_csv_needs_allow_exec);
 #undef ADD

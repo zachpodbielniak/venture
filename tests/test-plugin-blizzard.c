@@ -135,6 +135,7 @@ fixture_set_up(
 	             "state-dir", fixture->state_dir,
 	             "feeds-enabled", TRUE,
 	             "feeds-allowed-origins", fixture->http.origin,
+	             "feeds-allow-endpoint-overrides", TRUE,
 	             "feeds-run-window-minutes", (gint64)0,
 	             "feeds-request-timeout", (gint64)5,
 	             "feeds-max-response-mb", (gint64)4,
@@ -355,14 +356,10 @@ create_source(
 	{
 		g_autoptr(VentureIntegrationConnection) binding = NULL;
 		g_autoptr(JsonObject) values = json_object_new();
-		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
-		g_autofree gchar *key = g_strconcat("feed-", venture_entity_get_uuid(VENTURE_ENTITY(source)), NULL);
 
 		json_object_set_string_member(values, "client_secret", secret);
-		json_node_set_object(node, values);
-		binding = venture_integration_service_configure(venture_integration_service_get(fixture->database),
-			fixture->org, key, venture_entity_get_uuid(VENTURE_ENTITY(source)), "live", node, 0, NULL,
-			&error);
+		binding = venture_feeds_set_credentials(fixture->context, VENTURE_ENTITY(source), values, 0,
+		                                        NULL, &error);
 		g_assert_no_error(error);
 		g_assert_nonnull(binding);
 	}
@@ -1496,6 +1493,66 @@ test_import_recipes(
 
 #endif /* VENTURE_HAVE_SQLITE */
 
+/*
+ * api_base and oauth_base replace the addresses the client secret and its
+ * token are sent to. They are honoured only with
+ * feeds.allow_endpoint_overrides (test and development): off, a source
+ * naming one is refused at the save, and one saved while it was on fails
+ * its run before the token request. A source that names neither uses
+ * Blizzard's own addresses and saves either way.
+ *
+ * What breaks if this regresses: whoever may edit a data source points
+ * oauth_base at an allowlisted origin they read and receives the client
+ * secret in the token request's Basic header.
+ */
+static void
+test_override_needs_the_switch(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSource) refused = NULL;
+	g_autoptr(VentureDataSource) official = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *settings = NULL;
+	g_autofree gchar *message = NULL;
+	g_autofree gchar *plain = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	g_object_set(fixture->config, "feeds-allow-endpoint-overrides", FALSE, NULL);
+	settings = settings_text(fixture, "connected_realm_ids: [11]\n");
+	refused = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(refused), fixture->org);
+	g_object_set(refused, "name", "Redirected", "provider", "blizzard_auctions", "settings", settings,
+	             "schedule", "manual", NULL);
+	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(refused), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "feeds.allow_endpoint_overrides"));
+	g_clear_error(&error);
+
+	plain = g_strdup_printf("region: eu\nclient_id: %s\n", client_id);
+	official = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(official), fixture->org);
+	g_object_set(official, "name", "Official", "provider", "blizzard_auctions", "settings", plain,
+	             "schedule", "manual", NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(official), NULL, &error));
+	g_assert_no_error(error);
+
+	g_object_set(fixture->config, "feeds-allow-endpoint-overrides", TRUE, NULL);
+	id = create_source(fixture, "connected_realm_ids: [11]\n", client_secret, "manual");
+	g_object_set(fixture->config, "feeds-allow-endpoint-overrides", FALSE, NULL);
+	serve_battle_net(fixture);
+
+	run = sync_and_wait(fixture, id);
+	message = run_text(run, "error");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "feeds.allow_endpoint_overrides"));
+	g_assert_null(strstr(message, client_secret));
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/token"), ==, 0);
+}
+
 int
 main(
 	int	 argc,
@@ -1513,6 +1570,7 @@ main(
 	ADD("commodities-cost-25-even-on-304", test_commodities_cost);
 	ADD("rate-limited", test_rate_limited);
 	ADD("bad-credentials", test_bad_credentials);
+	ADD("override-needs-the-switch", test_override_needs_the_switch);
 	ADD("fee-model", test_fee_model);
 	ADD("tsm-export", test_tsm_export);
 	ADD("import-recipes", test_import_recipes);

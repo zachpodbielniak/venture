@@ -47,7 +47,7 @@ Then set =api_key= on =/feeds/ID/credentials=.
 | =units=             | required                         | the-odds-api's sport keys, one unit each: =soccer_epl=, =basketball_nba=, =americanfootball_nfl= |
 | =regions=           | =us=                             | whose bookmakers: =us=, =uk=, =eu=, =au=, comma-separated; every venue's group                 |
 | =requests_per_hour= | none                             | the source's own hourly budget; the far end's is a monthly quota                               |
-| =api_base=          | =https://api.the-odds-api.com=   | an origin override, for a scripted test server; still held to =feeds.allowed_origins=          |
+| =api_base=          | =https://api.the-odds-api.com=   | an origin override, for a scripted test server; honoured only with =feeds.allow_endpoint_overrides= on (test and development), and still held to =feeds.allowed_origins= |
 | =api_key=           | --                               | *credential*: set on the credentials page, never in the settings                               |
 
 the-odds-api charges by the request and by the markets and regions in it, so poll by schedule (=hourly=, or a cron line), not =auto=: there is no Last-Modified to learn from.

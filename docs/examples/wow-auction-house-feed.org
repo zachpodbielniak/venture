@@ -88,7 +88,7 @@ Then set the client secret on the source's credentials page, =/feeds/ID/credenti
 | =key_modifier_types=   | every type                       | the modifier types that make an item a variant (see the key format below)                                                     |
 | =requests_per_hour=    | 36000                            | the hourly budget; Blizzard allows 36,000 per client, and the schema's default applies when the setting is left out |
 | =dynamic_namespace=, =static_namespace= | =dynamic-<region>=, =static-<region>= | overrides, for a classic realm (=dynamic-classic-us=) or a test                                               |
-| =api_base=, =oauth_base= | the region's, =https://oauth.battle.net= | origin overrides, for a mirror or a scripted test server; still held to =feeds.allowed_origins=                     |
+| =api_base=, =oauth_base= | the region's, =https://oauth.battle.net= | origin overrides, for a scripted test server; honoured only with =feeds.allow_endpoint_overrides= on (test and development), and still held to =feeds.allowed_origins= |
 
 =act data_source ID test unit=11= fetches one unit and says what came back, writing nothing.
 

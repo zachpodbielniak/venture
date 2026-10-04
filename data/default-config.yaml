@@ -516,6 +516,11 @@ series:
 #   # "https://api.example.com,https://eu.api.example.com". Empty denies
 #   # every HTTP source. Plain http is accepted only for loopback hosts.
 #   allowed_origins: ""
+#   # Honour a provider's endpoint override settings (Blizzard's api_base
+#   # and oauth_base, the odds API's api_base), which decide where the
+#   # source's credential is sent. Test and development only: off, a
+#   # source naming one is refused.
+#   allow_endpoint_overrides: false
 #   # Directories a file source (csv, file_jsonl) may read under,
 #   # comma-separated. Empty denies every file source.
 #   file_roots: ""

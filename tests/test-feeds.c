@@ -1983,11 +1983,9 @@ test_feeds_credentials_never_leak(
 	g_autoptr(VentureEntity) source = NULL;
 	g_autoptr(VentureIntegrationConnection) binding = NULL;
 	g_autoptr(JsonObject) values = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(JsonNode) serialized = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *settings = NULL;
-	g_autofree gchar *key = NULL;
 	g_autofree gchar *json = NULL;
 	g_autofree gchar *store = NULL;
 	g_autofree gchar *wal = NULL;
@@ -2009,14 +2007,10 @@ test_feeds_credentials_never_leak(
 	id = create_source(fixture, "Keyed", "http_json", settings, "manual");
 
 	source = get_source(fixture, id);
-	key = g_strconcat("feed-", venture_entity_get_uuid(source), NULL);
 	values = json_object_new();
 	json_object_set_string_member(values, "token", token);
 	json_object_set_string_member(values, "api_key", api_key);
-	node = json_node_new(JSON_NODE_OBJECT);
-	json_node_set_object(node, values);
-	binding = venture_integration_service_configure(venture_integration_service_get(fixture->database),
-		fixture->org, key, venture_entity_get_uuid(source), "live", node, 0, NULL, &error);
+	binding = venture_feeds_set_credentials(fixture->context, source, values, 0, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(binding);
 
@@ -2387,6 +2381,138 @@ test_feeds_actions_and_automation(
 	g_assert_false(venture_entity_is_deleted(source));
 }
 
+/*
+ * A sealed credential goes only to the origin it was bound to. The
+ * built-in http_json's `url` decides where its token goes, and anybody
+ * who may edit the source may change it: pointing it at another origin
+ * -- even one on feeds.allowed_origins -- withholds the credential until
+ * it is entered again, and the run says so. A credential sealed with no
+ * binding (as every one was before) is withheld too, and an address whose
+ * host holds a placeholder names no origin to bind to.
+ *
+ * What breaks if this regresses: whoever can edit a data source points
+ * its address at a server they read and receives the sealed token.
+ */
+static void
+test_feeds_credentials_follow_their_origin(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar token[] = "tok-BOUND-5151";
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(VentureIntegrationConnection) again = NULL;
+	g_autoptr(JsonObject) values = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *allowed = NULL;
+	g_autofree gchar *settings = NULL;
+	g_autofree gchar *moved = NULL;
+	g_autofree gchar *message = NULL;
+	Script *script;
+	gint64 id;
+
+	(void)user_data;
+
+	script = scripted_add(&fixture->http, "/echo.json", 200, NULL);
+	script->echo_authorization = TRUE;
+	allowed = g_strdup_printf("%s,%s", fixture->http.origin, fixture->http.neighbor);
+	g_object_set(fixture->config, "feeds-allowed-origins", allowed, NULL);
+
+	settings = g_strdup_printf("url: %s/echo.json\n"
+	                           "items: items\n"
+	                           "headers: {Authorization: \"Bearer {secret:token}\"}\n"
+	                           "fields: {instrument: id, name: name, price: price}\n",
+	                           fixture->http.origin);
+	id = create_source(fixture, "Bound", "http_json", settings, "manual");
+	source = get_source(fixture, id);
+	values = json_object_new();
+	json_object_set_string_member(values, "token", token);
+	binding = venture_feeds_set_credentials(fixture->context, source, values, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
+
+	/* Where it was bound, it is sent. */
+	settle(fixture);
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_mutex_lock(&fixture->http.lock);
+	g_assert_cmpstr(fixture->http.last_authorization, ==, "Bearer tok-BOUND-5151");
+	g_mutex_unlock(&fixture->http.lock);
+
+	/* Pointed at another allowlisted origin, it is withheld. */
+	moved = g_strdup_printf("url: %s/echo.json\n"
+	                        "items: items\n"
+	                        "headers: {Authorization: \"Bearer {secret:token}\"}\n"
+	                        "fields: {instrument: id, name: name, price: price}\n",
+	                        fixture->http.neighbor);
+	g_object_set(source, "settings", moved, NULL);
+	g_assert_true(venture_database_save(fixture->database, source, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&run);
+	run = sync_and_wait(fixture, id);
+	message = run_text(run, "error");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "set them again"));
+	g_assert_nonnull(strstr(message, fixture->http.neighbor));
+	g_assert_null(strstr(message, token));
+	g_assert_cmpint(g_atomic_int_get(&fixture->http.neighbor_hits), ==, 0);
+
+	/* Entered again, it is bound to the new origin and sent there. */
+	again = venture_feeds_set_credentials(fixture->context, source, values,
+	                                      venture_entity_get_version(VENTURE_ENTITY(binding)),
+	                                      NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(again);
+	g_clear_object(&run);
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(g_atomic_int_get(&fixture->http.neighbor_hits), ==, 1);
+
+	/* A placeholder in the host names nothing to bind to. */
+	{
+		g_autoptr(VentureEntity) wild = NULL;
+		g_autoptr(VentureIntegrationConnection) refused = NULL;
+		gint64 wild_id;
+
+		wild_id = create_source(fixture, "Wild", "http_json",
+		                        "url: \"http://{unit}.example/x\"\nunits: [a]\n"
+		                        "fields: {instrument: id}\n", "manual");
+		wild = get_source(fixture, wild_id);
+		refused = venture_feeds_set_credentials(fixture->context, wild, values, 0, NULL, &error);
+		g_assert_null(refused);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "no fixed origin"));
+		g_clear_error(&error);
+	}
+
+	/* Sealed with no binding, it is never sent. */
+	{
+		g_autoptr(VentureEntity) old = NULL;
+		g_autoptr(VentureEntity) old_run = NULL;
+		g_autoptr(VentureIntegrationConnection) unbound = NULL;
+		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+		g_autofree gchar *key = NULL;
+		g_autofree gchar *old_message = NULL;
+		gint64 old_id;
+		gint before;
+
+		old_id = create_source(fixture, "Old", "http_json", settings, "manual");
+		old = get_source(fixture, old_id);
+		key = g_strconcat("feed-", venture_entity_get_uuid(old), NULL);
+		json_node_set_object(node, values);
+		unbound = venture_integration_service_configure(
+			venture_integration_service_get(fixture->database), fixture->org, key,
+			venture_entity_get_uuid(old), "live", node, 0, NULL, &error);
+		g_assert_no_error(error);
+		before = scripted_hits(&fixture->http, "/echo.json");
+		old_run = sync_and_wait(fixture, old_id);
+		old_message = run_text(old_run, "error");
+		g_assert_cmpint(run_status(old_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+		g_assert_nonnull(strstr(old_message, "before they were bound"));
+		g_assert_cmpint(scripted_hits(&fixture->http, "/echo.json"), ==, before);
+	}
+}
+
 int
 main(
 	int	 argc,
@@ -2429,6 +2555,8 @@ main(
 	           test_feeds_records_sink, fixture_tear_down);
 	g_test_add("/feeds/credentials-never-leak", Fixture, NULL, fixture_set_up,
 	           test_feeds_credentials_never_leak, fixture_tear_down);
+	g_test_add("/feeds/credentials-follow-their-origin", Fixture, NULL, fixture_set_up,
+	           test_feeds_credentials_follow_their_origin, fixture_tear_down);
 	g_test_add("/feeds/handoff-waits-for-the-transaction", Fixture, NULL, fixture_set_up,
 	           test_feeds_handoff_waits_for_the_transaction, fixture_tear_down);
 	g_test_add("/feeds/pending-covers-a-queued-sync", Fixture, NULL, fixture_set_up,

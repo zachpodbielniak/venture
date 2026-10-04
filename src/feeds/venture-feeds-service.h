@@ -407,6 +407,39 @@ void
 venture_feeds_register_provides(VenturePluginProvidesRegistry *registry);
 
 /**
+ * venture_feeds_set_credentials:
+ * @context: the context; main thread
+ * @source: the data_source record
+ * @values: the credential values by setting name (the provider's
+ *   `x-sensitive` settings)
+ * @expected_version: 0 to create the binding; its current version to
+ *   replace it
+ * @actor: (nullable): audit actor; authority comes from the access scope
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Seals @values in the integration store under `feed-<uuid>`, bound to
+ * the origins the source's settings send requests to now -- every setting
+ * its provider's schema marks `x-endpoint` (the built-in http_json and
+ * csv `url`) or `x-endpoint-override`. A run hands the credentials to
+ * the provider only while those origins are unchanged, so pointing the
+ * address at another origin needs the credential entered again. A
+ * setting whose scheme, host or port holds a placeholder is refused: it
+ * names no origin to bind to. The credentials page and every test call
+ * this; nothing else should seal a feed credential.
+ *
+ * Returns: (transfer full) (nullable): the binding, or %NULL with @error
+ */
+VentureIntegrationConnection *
+venture_feeds_set_credentials(
+	VentureContext		 *context,
+	VentureEntity		 *source,
+	JsonObject		 *values,
+	gint64			  expected_version,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
  * venture_feeds_parse_settings:
  * @text: (nullable): YAML text; empty is an empty mapping
  * @error: (out) (optional): return location for a #GError

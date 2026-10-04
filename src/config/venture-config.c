@@ -271,6 +271,15 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR ("feeds-allowed-origins", "feeds", "allowed_origins", "",
 	        "Origins a data source may fetch from, comma-separated, such as "
 	        "https://api.example.com; empty denies every HTTP source"),
+	/*
+	 * Off by default, and for test and development only. A provider's
+	 * endpoint override (Blizzard's api_base and oauth_base, the odds
+	 * API's api_base) decides where its credential is sent; with this off
+	 * a source naming one is refused, so whoever may edit a source cannot
+	 * point the secret at another allowlisted origin and read it there.
+	 */
+	VC_BOOL("feeds-allow-endpoint-overrides", "feeds", "allow_endpoint_overrides", FALSE,
+	        "Honour a provider's endpoint override settings (test and development only)"),
 	VC_STR ("feeds-file-roots", "feeds", "file_roots", "",
 	        "Directories a data source may read files from, comma-separated; "
 	        "empty denies every file source"),

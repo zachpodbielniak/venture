@@ -1075,7 +1075,9 @@ feed_builtin_label(VentureDataSourceProvider *provider)
  * The settings each built-in reads. Two credential slots, `token` and
  * `api_key`, both sensitive: a template names them as {secret:token} in a
  * header or {secret:api_key} in the address, and neither is ever stored
- * in the record's settings.
+ * in the record's settings. `url` is `x-endpoint`: it decides where those
+ * credentials go, so they are bound to its origin when they are set
+ * (venture_feeds_set_credentials()) and withheld once it names another.
  */
 static const gchar feed_mapping_schema_properties[] =
 	"\"record_as\":{\"type\":\"string\",\"title\":\"Items become\",\"enum\":[\"listing\",\"stat\",\"quote\"],\"default\":\"listing\"},"
@@ -1110,7 +1112,7 @@ feed_builtin_schema(VentureDataSourceProvider *provider)
 	case FEED_PARSE_CSV:
 		text = g_strdup_printf(
 			"{\"type\":\"object\",\"required\":[\"fields\"],\"properties\":{"
-			"\"url\":{\"type\":\"string\",\"title\":\"Address\"},"
+			"\"url\":{\"type\":\"string\",\"title\":\"Address\",\"x-endpoint\":true},"
 			"\"file\":{\"type\":\"string\",\"title\":\"File\",\"description\":\"Under feeds.file_roots\"},"
 			"\"headers\":{\"type\":\"object\",\"title\":\"Request headers\"},"
 			"\"delimiter\":{\"type\":\"string\",\"title\":\"Delimiter\",\"default\":\",\"},"
@@ -1123,7 +1125,7 @@ feed_builtin_schema(VentureDataSourceProvider *provider)
 	default:
 		text = g_strdup_printf(
 			"{\"type\":\"object\",\"required\":[\"url\",\"fields\"],\"properties\":{"
-			"\"url\":{\"type\":\"string\",\"title\":\"Address\",\"description\":\"{unit} and {secret:api_key} are filled in\"},"
+			"\"url\":{\"type\":\"string\",\"title\":\"Address\",\"description\":\"{unit} and {secret:api_key} are filled in\",\"x-endpoint\":true},"
 			"\"headers\":{\"type\":\"object\",\"title\":\"Request headers\",\"description\":\"Authorization: Bearer {secret:token}\"},"
 			"\"items\":{\"type\":\"string\",\"title\":\"Path to the list of items\",\"default\":\"\"},"
 			"\"cost\":{\"type\":\"integer\",\"title\":\"Budget cost of one request\",\"default\":1},"
