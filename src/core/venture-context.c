@@ -157,6 +157,10 @@ venture_context_new(
 	venture_sla_install(self);
 	venture_desk_install(self);
 
+	/* A comment stays on its record, in its record's organization, under
+	 * the author it was written by -- whichever door wrote it. */
+	venture_comment_install(self);
+
 	/* The factory's timestamps follow its statuses, so the reports that
 	 * measure the loop see every record whoever wrote it. */
 	venture_factory_install(self);

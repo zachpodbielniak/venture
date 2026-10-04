@@ -1170,6 +1170,17 @@ test_auth_pages_refuse_anonymous_requests(
 		NULL, "id=0", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/watch",
 		NULL, "type=ticket&id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* A record's discussion: what was said about it, and the doors that
+	 * add to it. Signed out, every one is the way to sign in. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/comments",
+		NULL, "subject_type=company&subject_id=1&body=x", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/comments/1"),
+	                 ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/comments/1/edit",
+		NULL, "body=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/comments/1/delete",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/look",
 		NULL, "look=classic", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/views",
@@ -1433,6 +1444,12 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/activities.ics",
 		"/api/v1/watching/ticket/1",
 		"/api/v1/activity/ticket/1",
+		/* A record's discussion, one comment of it, and who the @ menu
+		 * would offer -- each a piece of the record. */
+		"/api/v1/comments?subject_type=company&subject_id=1",
+		"/api/v1/comments/1",
+		"/api/v1/comments/mentions?subject_type=company&subject_id=1&q=a",
+		"/api/v1/comment",
 		"/api/v1/tickets/1/sla",
 		"/api/v1/sprints",
 		"/api/v1/sprints/1",
@@ -1791,6 +1808,18 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/watch", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/comments", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/comments/preview", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "PATCH",
+		"/api/v1/comments/1", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "DELETE",
+		"/api/v1/comments/1", NULL, NULL, NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/tickets/1/macro", NULL, "{}", NULL, NULL),

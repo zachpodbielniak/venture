@@ -151,6 +151,20 @@ The arbitrage pages (=/arbitrage=, =/arbitrage/calc=) add the block /Arbitrage: 
 
 Like every rule here they are written once against the tokens and appended to *both* looks -- =venture-industrial.css= and =venture-classic.css= carry the same two blocks -- so a Trading page is written once and checked in both. =tests/test-market-pages.c= (=/market-pages/doors-and-looks=) greps both stylesheets for a sample of the chart and market classes (the two chart lines, the heat cell, the grid, the axis, the sparkline, the legend, the caption, =.market-action-row= and =.form-inline=); the arbitrage block has no such check, so a new arbitrage class has to be checked in both looks by eye. See [[file:market-data.org::*Browsing: the Trading pages][Market data: the Trading pages]] and [[file:arbitrage.org::*Pages and routes][Arbitrage: pages and routes]].
 
+** The discussion
+
+Every record page that takes comments draws a *Discussion* card ([[file:comments.org][Comments]]). It is a transcript, and both looks read it as one:
+
+- *Who* is two letters in a square -- ink on the ground in the industrial look, the reader's own comment drawn in outline; a circle washed in the accent in the classic look -- and a name in the prose register. A badge in the micro register says "You", "Owner" or "Admin"; "via API token #N" says a token wrote it.
+- *When* is a reading: the micro register, "3 hours ago", with the exact time in the configured zone on hover. It is the permalink.
+- *What* is prose at reading size, drawn by the markdown renderer: headings at h3 and below, lists, quotes ruled on the left, code on the sunken ground, tables with micro-register headers, a mention as a ruled chip in the mono (a pill in the accent wash in classic), a record reference as a link marked with a faint =#=.
+- *Replies* hang one step smaller from a single rule dropped from the avatar of the comment they answer, each tied to it with a short tick.
+- *Actions* -- Reply, Copy link, Edit, Delete -- are micro-register text that brightens to the accent under the pointer; on a pointer that hovers they rest dimmed until the comment is looked at, and on a phone or from the keyboard they are always there.
+- *The comment a link lands on* (=:target=, or one just posted) is the one accent outline on the page, with a brief wash that fades.
+- *The composer* is one ruled field: a bar of Write and Preview tabs and the formatting tools above the text (shown only with scripting), the hint and the button below. It takes the accent ring on focus as a whole. The @ menu is a floating list on the hard ring.
+
+Its classes: =.discussion= (the card), =.discussion-threads=, =.discussion-thread=, =.discussion-replies=, =.discussion-comment= (=.is-reply=, =.is-own=, =.is-deleted=), =.discussion-avatar=, =.discussion-main=, =.discussion-head=, =.discussion-author=, =.discussion-badge=, =.discussion-via=, =.discussion-when=, =.discussion-edited=, =.discussion-body=, =.discussion-gone=, =.discussion-actions=, =.discussion-action= (=.is-danger=), =.discussion-edit=, =.discussion-delete=, =.discussion-reply=, =.discussion-new=, =.discussion-empty=, =.discussion-composer=, =.discussion-bar=, =.discussion-tabs=, =.discussion-tab=, =.discussion-tools=, =.discussion-tool=, =.discussion-field=, =.discussion-preview=, =.discussion-menu=, =.discussion-foot=, =.discussion-hint=, =.discussion-buttons=; =.markdown= for rendered prose with =.md-table=, =.md-left=, =.md-center=, =.md-right=; =.mention=; =.record-ref=; and =.timeline-link= for the activity's link to a comment. They are the block /Discussion: comments on every record/ at the end of each stylesheet, written once against the tokens; =/comments/both-looks= in =tests/test-comments.c= checks a sample in both. The script's hooks are =data-discussion-*= attributes, never these classes.
+
 ** Pickers
 
 A native =<select>= draws its popup with the operating system, and no stylesheet reaches it: on a dark theme it opens as a grey slab in somebody else's font, and with sixty record types in it there is nothing to type into.

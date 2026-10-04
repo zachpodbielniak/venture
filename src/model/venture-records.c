@@ -604,7 +604,9 @@ static const VentureFieldDecl venture_ledger_entry_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureLedgerEntry, venture_ledger_entry, venture_ledger_entry_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);
+	/* A projection of a journal line; the journal is what to discuss. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 static const VentureFieldDecl venture_tax_category_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
@@ -1318,8 +1320,9 @@ static const VentureFieldDecl venture_kb_chunk_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureKbChunk, venture_kb_chunk,
-                      venture_kb_chunk_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureKbChunk, venture_kb_chunk, venture_kb_chunk_fields,
+	/* A derived passage; nobody discusses one. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * A computed connection between an article and any other record.
@@ -1371,7 +1374,9 @@ static const VentureFieldDecl venture_kb_link_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureKbLink, venture_kb_link, venture_kb_link_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureKbLink, venture_kb_link, venture_kb_link_fields,
+	/* A computed connection, purged and remade by a reindex. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * A ticket: something to do, in a state, assigned to somebody.
@@ -1513,7 +1518,15 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);
+	/*
+	 * A ticket has a conversation of its own -- ticket_comment, with the
+	 * internal note that keeps a reply to the customer apart from a note
+	 * to the team, the portal that shows the customer their half, and
+	 * the service-level clock its first reply stops. A second, generic
+	 * thread beside it would split one conversation in two.
+	 */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * One message on a ticket.
@@ -1537,7 +1550,9 @@ static const VentureFieldDecl venture_ticket_comment_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicketComment, venture_ticket_comment, venture_ticket_comment_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);
+	/* A line of the ticket's conversation, answered there. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * A ticket related to anything else in the system.
@@ -1588,8 +1603,78 @@ static const VentureFieldDecl venture_ticket_relation_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureTicketRelation, venture_ticket_relation,
-                      venture_ticket_relation_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicketRelation, venture_ticket_relation,
+                      venture_ticket_relation_fields,
+	/* A link between two records is not somewhere to talk. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
+
+/*
+ * A comment on any record: an invoice, a trade, a company, a plugin's
+ * type the day it registers.
+ *
+ * The subject is a type name and an id, the same shape as a ticket
+ * relation and a watch, because the set of things that can be discussed is
+ * the set of registered types, which no field table can name. The cost is
+ * the same and stated in the same place: no picker, no reverse section, no
+ * rendered link. The comments panel on every record page is written by
+ * hand against this type (src/web/venture-web-comments.inc) and the
+ * service in src/core/venture-comment.c is the only way one is made.
+ *
+ * Threads are one level deep. A reply names the comment it answers; a
+ * reply to a reply is filed under the same top-level comment, because a
+ * conversation indented ten times is a conversation nobody can read, and
+ * the reply box carries the @name of whoever it answers instead.
+ *
+ * Who wrote it is never an input. The save validator takes it from the
+ * principal the write is made under, so a client that posts "author" is
+ * ignored rather than believed.
+ */
+static const VentureFieldDecl venture_comment_fields[] = {
+	VENTURE_FIELD("subject-type", "Record type", "Which kind of record",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("subject-id", "Record", "Its id",
+	              VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	/* What the record was called when the comment was made, so a list of
+	 * comments and an inbox line read without resolving anything -- and
+	 * still read after the record is renamed or deleted. */
+	VENTURE_FIELD("subject-label", "On", "What the record was called",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("parent-id", "In reply to",
+	                  "The top-level comment this answers", "comment",
+	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("body", "Comment", "Markdown"),
+	/* The actor string the comment was written under: a username, or
+	 * "API token #N" for machine traffic, never a token's name. */
+	VENTURE_FIELD("author", "Author", NULL, VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	/* The account, by number rather than as a reference: it is stamped
+	 * from the principal by the save, so there is nothing for a
+	 * reference check to judge, and a reference would be judged -- and
+	 * refused -- under the writer's scope before the stamp, whenever a
+	 * client sent somebody else's id. */
+	VENTURE_FIELD("author-user-id", "Author's account",
+	              "The person who wrote it, or whose token did",
+	              VENTURE_FIELD_KIND_INTEGER,
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL),
+	/* Stamped by the validator whenever the body changes after the
+	 * comment was first written; empty means never edited. */
+	VENTURE_FIELD("edited-at", "Edited", NULL, VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_NONE),
+	/* The usernames the body names that may read the record, comma
+	 * separated: derived at the save, and what the inbox and the chips
+	 * read. Someone named who may not read the record is not here. */
+	VENTURE_FIELD("mentions", "Mentions", "Who it names",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureComment, venture_comment,
+                                venture_comment_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass),
+	                                "Comment", "Comments");
+	/* A comment is answered with a reply, not commented on. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /* ==========================================================================
  * The software factory
@@ -1881,6 +1966,8 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRecordLink, venture_record_link,
                                 venture_record_link_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name =
 		venture_record_link_get_display_name;
+	/* A link between two records is not somewhere to talk. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);
 )
 
 /* ==========================================================================
@@ -2143,7 +2230,9 @@ static const VentureFieldDecl venture_watch_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureWatch, venture_watch, venture_watch_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureWatch, venture_watch, venture_watch_fields,
+	/* Bookkeeping for the inbox, and personal. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * One thing one person is told. Written by the machinery -- a mention, an
@@ -2173,8 +2262,9 @@ static const VentureFieldDecl venture_notification_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureNotification, venture_notification,
-                      venture_notification_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureNotification, venture_notification, venture_notification_fields,
+	/* An inbox line is personal, and is what a comment produces. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * How quickly a ticket must be answered and resolved. Matched on the
@@ -2379,8 +2469,9 @@ static const VentureFieldDecl venture_webhook_delivery_fields[] = {
 	VENTURE_FIELD_TEXT("failure-reason", "Error", "Why it did not arrive")
 };
 
-VENTURE_DEFINE_ENTITY(VentureWebhookDelivery, venture_webhook_delivery,
-                      venture_webhook_delivery_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureWebhookDelivery, venture_webhook_delivery, venture_webhook_delivery_fields,
+	/* Evidence of a delivery, written by the sender alone. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * Who a new ticket goes to.
@@ -3142,8 +3233,9 @@ static const VentureFieldDecl venture_chat_thread_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
 };
 
-VENTURE_DEFINE_ENTITY(VentureChatThread, venture_chat_thread,
-                      venture_chat_thread_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureChatThread, venture_chat_thread, venture_chat_thread_fields,
+	/* A conversation already, and personal. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * One line of a conversation, either side.
@@ -3161,8 +3253,9 @@ static const VentureFieldDecl venture_chat_message_fields[] = {
 	VENTURE_FIELD_TEXT("body", "Message", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureChatMessage, venture_chat_message,
-                      venture_chat_message_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureChatMessage, venture_chat_message, venture_chat_message_fields,
+	/* A conversation already, and personal. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 /*
  * A skill is a saved way of asking: a slash trigger, and the prompt it
@@ -3511,8 +3604,9 @@ static const VentureFieldDecl venture_audit_entry_fields[] = {
 	              VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureAuditEntry, venture_audit_entry,
-                      venture_audit_entry_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAuditEntry, venture_audit_entry, venture_audit_entry_fields,
+	/* The record of what happened, not a thing to discuss. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 
 VentureAuditEntry *
 venture_audit_entry_new_for_change(

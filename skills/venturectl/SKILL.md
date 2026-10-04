@@ -127,7 +127,11 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `dashboard create TEMPLATE` | `today`, `factory`, `reporting`, `progress`, `work` or `overview`; `dashboard templates` and `dashboard kinds` list what is accepted |
 | `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
 | `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
-| `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs |
+| `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs, and any other record's discussion comments (each with a `url` to the comment) |
+| `comments list TYPE ID` | a record's discussion, threaded: top-level comments oldest first, each with its replies; `-f json` gives `{subject, count, comments}` |
+| `comments add TYPE ID BODY` | say something on any record that takes comments; BODY is markdown, `-` reads it from stdin. `@username` tells somebody **who may read the record** (anybody else stays text, silently); `#type/id` links a record |
+| `comments reply ID BODY` | answer comment ID; it lands in that comment's thread (one level deep) |
+| `comments edit ID BODY` / `comments delete ID` / `comments get ID` | change your own (only the author may), delete yours (or any, as an organization owner/admin), read one |
 | `feeds sync ID [--wait] [organization_id=N]` | queue a market data source's sync (`data_source` ID); answers `{"status": "queued", "data_source_id": ID}` at once. `--wait` polls the source's runs once a second and prints the run the sync recorded; after five minutes it gives up with exit 7 (the sync stays queued) |
 | `feeds runs ID [organization_id=N]` | a data source's runs, newest first: status, units, rows, error |
 | `feeds due [organization_id=N]` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
@@ -274,6 +278,16 @@ an install may define `GOLD` or `POINTS` as a `currency` record, and then
 `gross="12g 34s 56c"` (or `"12g 34s 56c GOLD"`) is accepted. `.formatted`
 stays the canonical decimal (`"12.3456 GOLD"`). See "User-defined
 currencies" below.
+
+**Comments are not `create comment`.** The generic routes refuse the
+`comment` type (403) and list it only to the owner; use `comments add`,
+which takes the author from your token -- a comment made with a token reads
+"API token #N" with its owner's name beside it. A ticket keeps its own
+conversation (`create ticket_comment`, with `internal`), and has no generic
+discussion. A record you cannot read is "not found" to every `comments`
+verb, never "forbidden". Nothing about comments stages: `--stage` does not
+apply, because a comment changes no business record. A token minted with
+the viewer role may read a discussion but not add to it.
 
 ## What it cannot do, by design
 

@@ -192,8 +192,12 @@ venture_webhook_build_body(
 	{
 		g_autofree gchar *url = NULL;
 
-		url = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, target_type,
-		                      target_id);
+		/* A comment's address is its permalink, which lands on its
+		 * record's page at the comment for whoever may read it. */
+		url = (0 == g_strcmp0(target_type, "comment"))
+			? venture_comment_permalink(target_id)
+			: g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, target_type,
+			                  target_id);
 		json_builder_add_string_value(builder, url);
 	}
 	else

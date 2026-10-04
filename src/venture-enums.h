@@ -1960,6 +1960,8 @@ venture_link_kind_get_type(void) G_GNUC_CONST;
  * @VENTURE_NOTIFICATION_KIND_ALERT: a market data alert rule fired; appended
  *   last, because the kind is stored as its number and every older row must
  *   keep reading as what it was
+ * @VENTURE_NOTIFICATION_KIND_REPLY: somebody answered your comment; appended
+ *   after alert for the same reason
  *
  * Why a notification exists. The inbox groups and colours by it, and a
  * filter on it is how "just the mentions" is answered.
@@ -1973,7 +1975,8 @@ typedef enum
 	VENTURE_NOTIFICATION_KIND_BUDGET,
 	VENTURE_NOTIFICATION_KIND_RUN,
 	VENTURE_NOTIFICATION_KIND_SYSTEM,
-	VENTURE_NOTIFICATION_KIND_ALERT
+	VENTURE_NOTIFICATION_KIND_ALERT,
+	VENTURE_NOTIFICATION_KIND_REPLY
 } VentureNotificationKind;
 
 #define VENTURE_TYPE_NOTIFICATION_KIND (venture_notification_kind_get_type())

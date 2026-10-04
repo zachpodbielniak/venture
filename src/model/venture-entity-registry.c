@@ -682,6 +682,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_company_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_document_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_record_link_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_comment_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_chat_thread_get_type, VENTURE_DATA_CLASS_PERSONAL },
 		{ venture_chat_message_get_type, VENTURE_DATA_CLASS_PERSONAL },
 		{ venture_ai_skill_get_type, VENTURE_DATA_CLASS_TENANT },

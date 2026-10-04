@@ -64,6 +64,7 @@
 #include "util/venture-time-util.h"
 #include "util/venture-json-util.h"
 #include "util/venture-pdf.h"
+#include "util/venture-markdown.h"
 
 /* --- Domain model -------------------------------------------------------- */
 
@@ -279,6 +280,8 @@
  * signatures, and before the web server, which uses both. */
 #include "web/venture-auth.h"
 #include "orgaccess/venture-access-policy.h"
+/* Comments name VentureAuthPrincipal: who may read, write and mention. */
+#include "core/venture-comment.h"
 #include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"

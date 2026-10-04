@@ -585,6 +585,39 @@ venture_entity_type_get_create_path(GType type)
 		g_quark_from_static_string("venture-entity-create-path"));
 }
 
+/*
+ * Stored as an opt-out so that the absence of any qdata -- every type
+ * that never thought about comments -- reads as "takes them".
+ */
+void
+venture_entity_class_set_commentable(
+	VentureEntityClass	*klass,
+	gboolean		 commentable
+){
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass),
+		g_quark_from_static_string("venture-entity-no-comments"),
+		commentable ? NULL : GINT_TO_POINTER(1));
+}
+
+gboolean
+venture_entity_type_is_commentable(GType type)
+{
+	g_autoptr(GTypeClass) klass = NULL;
+
+	if (!g_type_is_a(type, VENTURE_TYPE_ENTITY) ||
+	    G_TYPE_IS_ABSTRACT(type))
+		return FALSE;
+
+	/* The flag is set in class_init, which has not run for a type
+	 * nobody has instantiated yet. */
+	klass = g_type_class_ref(type);
+
+	return NULL == g_type_get_qdata(type,
+		g_quark_from_static_string("venture-entity-no-comments"));
+}
+
 gchar *
 venture_entity_type_dup_label(
 	GType		type,

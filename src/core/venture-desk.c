@@ -1217,6 +1217,71 @@ venture_desk_activity(
 		}
 	}
 
+	/*
+	 * A record's discussion, woven in: who said something, when, a line
+	 * of it and the way to it. A comment's own audit entries name the
+	 * comment, not the record, so nothing here is listed twice; the page
+	 * shows the thread in full in its own panel and this says when.
+	 */
+	{
+		GType subject_type;
+
+		subject_type = venture_entity_registry_lookup(
+			venture_entity_registry_get_default(), target_type);
+
+		if ((G_TYPE_INVALID != subject_type) &&
+		    venture_entity_type_is_commentable(subject_type))
+		{
+			g_autoptr(VentureQuery) query = NULL;
+			g_autoptr(GPtrArray) comments = NULL;
+
+			query = venture_query_new(VENTURE_TYPE_COMMENT);
+			venture_query_add_filter_string(query, "subject-type",
+			                                VENTURE_FILTER_OP_EQ, target_type,
+			                                NULL);
+			venture_query_add_filter_int(query, "subject-id",
+			                             VENTURE_FILTER_OP_EQ, target_id, NULL);
+			venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+			venture_query_set_limit(query, limit);
+			comments = venture_database_find(database, query, NULL);
+
+			for (i = 0; (NULL != comments) && (i < comments->len); i++)
+			{
+				VentureEntity *comment;
+				g_autoptr(JsonBuilder) builder = NULL;
+				g_autofree gchar *author = NULL;
+				g_autofree gchar *excerpt = NULL;
+				g_autofree gchar *url = NULL;
+				g_autofree gchar *permalink = NULL;
+				g_autoptr(GDateTime) when = NULL;
+				gint64 parent_id = 0;
+
+				comment = g_ptr_array_index(comments, i);
+				g_object_get(comment, "parent-id", &parent_id, NULL);
+				when = g_date_time_ref(venture_entity_get_created_at(comment));
+				author = venture_comment_author_name(context, comment);
+				excerpt = venture_comment_excerpt(comment, 200);
+				url = venture_comment_anchor_url(comment);
+				permalink = venture_comment_permalink(venture_entity_get_id(comment));
+
+				builder = json_builder_new();
+				json_builder_begin_object(builder);
+				venture_desk_builder_add_optional(builder, "kind", "comment");
+				json_builder_set_member_name(builder, "id");
+				json_builder_add_int_value(builder, venture_entity_get_id(comment));
+				venture_desk_builder_add_optional(builder, "actor", author);
+				venture_desk_builder_add_optional(builder, "body", excerpt);
+				json_builder_set_member_name(builder, "reply");
+				json_builder_add_boolean_value(builder, 0 != parent_id);
+				venture_desk_builder_add_optional(builder, "url", url);
+				venture_desk_builder_add_optional(builder, "permalink", permalink);
+				venture_desk_builder_add_when(builder, when);
+				json_builder_end_object(builder);
+				venture_desk_add_event(events, when, json_builder_get_root(builder));
+			}
+		}
+	}
+
 	venture_dunning_append_timeline(context, target_type, target_id, limit, venture_desk_add_event, events);
 	{
 		g_autoptr(JsonNode) calls = venture_activity_call_timeline(context, target_type, target_id, limit, error);

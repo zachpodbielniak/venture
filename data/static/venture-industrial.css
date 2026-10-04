@@ -5102,3 +5102,426 @@ input:not([type="hidden"]):focus-visible {
 	color: var(--text-muted);
 }
 .dash-card .source-attribution { margin: var(--space-2) 0 0; }
+
+/* ==========================================================================
+   Discussion: comments on every record
+   ========================================================================== */
+
+/*
+ * A discussion reads like a transcript on the instrument panel: an ink
+ * block with two letters for who spoke, their name in the prose register,
+ * everything about the remark -- when, edited, by which token -- in the
+ * micro register, and the words themselves at reading size. Replies hang
+ * from a single rule dropped from the avatar above them. The comment a
+ * link lands on is the one red outline on the page, because that is
+ * where to look. Nothing here is a literal colour.
+ */
+.discussion .card-head { align-items: baseline; }
+.discussion-count {
+	font-family: var(--font-mono);
+	font-size: var(--micro-size);
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+	color: var(--text-faint);
+}
+
+.discussion-threads, .discussion-replies { list-style: none; margin: 0; padding: 0; }
+.discussion-thread { padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
+.discussion-thread:first-child { padding-top: 0; }
+
+.discussion-comment {
+	position: relative;
+	display: grid;
+	grid-template-columns: 32px minmax(0, 1fr);
+	column-gap: var(--space-3);
+	scroll-margin-top: var(--space-7);
+}
+.discussion-avatar {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	background: var(--ink);
+	color: var(--ink-contrast);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	user-select: none;
+}
+.discussion-comment.is-own .discussion-avatar {
+	background: var(--surface);
+	color: var(--text);
+	box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.discussion-comment.is-deleted .discussion-avatar {
+	background: var(--surface-sunken);
+	color: var(--text-faint);
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+.discussion-main { min-width: 0; }
+
+.discussion-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: var(--space-1) var(--space-2);
+	min-height: 32px;
+	align-content: center;
+	line-height: 1.35;
+}
+.discussion-author { font-size: 13.5px; font-weight: 650; color: var(--text); }
+.discussion-author.is-gone { font-weight: 500; color: var(--text-faint); }
+.discussion-badge, .discussion-edited, .discussion-when, .discussion-via {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+}
+.discussion-badge {
+	padding: 0 5px;
+	border: 1px solid var(--border-strong);
+	color: var(--text-muted);
+	line-height: 16px;
+}
+.discussion-via { color: var(--text-faint); }
+.discussion-when { color: var(--text-faint); text-decoration: none; }
+.discussion-when::before { content: "\00B7"; margin-right: var(--space-2); color: var(--border-strong); }
+.discussion-when:hover, .discussion-when:focus-visible { color: var(--accent); text-decoration: none; }
+.discussion-edited { color: var(--text-faint); }
+.discussion-edited::before { content: "/ "; }
+
+.discussion-body {
+	margin-top: var(--space-1);
+	font-size: 14px;
+	line-height: 1.62;
+	color: var(--text);
+	overflow-wrap: anywhere;
+}
+.discussion-gone { margin: var(--space-1) 0 0; font-size: 13px; color: var(--text-faint); font-style: italic; }
+
+.discussion-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2) var(--space-4);
+	margin-top: var(--space-2);
+}
+.discussion-action, .discussion-edit > summary.discussion-action {
+	display: inline-flex;
+	align-items: center;
+	padding: 0;
+	border: 0;
+	background: none;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+	color: var(--text-faint);
+	text-decoration: none;
+	cursor: pointer;
+	list-style: none;
+}
+.discussion-action::-webkit-details-marker { display: none; }
+.discussion-action:hover, .discussion-action:focus-visible { color: var(--accent); text-decoration: none; }
+.discussion-action.is-danger:hover, .discussion-action.is-danger:focus-visible { color: var(--negative); }
+.discussion-delete { display: inline; margin: 0; }
+.discussion-edit { flex-basis: 100%; order: 9; }
+.discussion-edit:not([open]) { flex-basis: auto; order: 0; }
+.discussion-edit[open] > summary { color: var(--text); margin-bottom: var(--space-2); }
+
+/* On a pointer that hovers, the actions stay quiet until the comment is
+ * looked at; on a phone, or from the keyboard, they are always there. */
+@media (hover: hover) {
+	.discussion-comment .discussion-actions { opacity: 0.55; transition: opacity var(--transition); }
+	.discussion-comment:hover .discussion-actions,
+	.discussion-comment:focus-within .discussion-actions { opacity: 1; }
+}
+
+/* A reply hangs from a rule dropped from the avatar of the comment it
+ * answers, and is drawn a step smaller. */
+.discussion-replies {
+	margin: var(--space-3) 0 0 15px;
+	border-left: 1px solid var(--border);
+}
+.discussion-replies > li { padding: var(--space-3) 0 0 var(--space-4); position: relative; }
+.discussion-replies > li::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: calc(var(--space-3) + 12px);
+	width: var(--space-3);
+	border-top: 1px solid var(--border);
+}
+.discussion-comment.is-reply { grid-template-columns: 24px minmax(0, 1fr); column-gap: var(--space-2); }
+.discussion-comment.is-reply .discussion-avatar { width: 24px; height: 24px; font-size: 9.5px; }
+.discussion-comment.is-reply .discussion-head { min-height: 24px; }
+
+.discussion-reply { margin: var(--space-3) 0 0 44px; }
+.discussion-reply > summary {
+	display: inline-flex;
+	gap: var(--space-2);
+	align-items: center;
+	cursor: pointer;
+	list-style: none;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+	color: var(--text-faint);
+}
+.discussion-reply > summary::-webkit-details-marker { display: none; }
+.discussion-reply > summary::before { content: ">"; color: var(--border-strong); }
+.discussion-reply > summary:hover { color: var(--accent); }
+.discussion-reply[open] > summary { color: var(--text); margin-bottom: var(--space-2); }
+
+/* Where a permalink lands: the one red outline on the page. */
+.discussion-comment:target,
+.discussion-comment[data-discussion-landed] {
+	outline: 1px solid var(--accent);
+	outline-offset: 6px;
+	animation: discussion-land 2.4s var(--ease);
+}
+@keyframes discussion-land {
+	from { background: var(--accent-soft); }
+	to { background: transparent; }
+}
+
+.discussion-empty { padding: var(--space-2) 0 var(--space-4); max-width: 60ch; }
+.discussion-empty-title {
+	margin: 0 0 var(--space-1);
+	font-size: 14px;
+	font-weight: 650;
+	color: var(--text);
+}
+.discussion-empty .muted { margin: 0; font-size: 13px; line-height: 1.55; }
+.discussion-new { margin-top: var(--space-4); }
+.discussion-thread:last-child { border-bottom: 0; padding-bottom: 0; }
+
+/* --- The composer --------------------------------------------------------- */
+
+.discussion-composer {
+	position: relative;
+	border: 1px solid var(--border);
+	background: var(--surface-sunken);
+	transition: border-color var(--transition), box-shadow var(--transition);
+}
+.discussion-composer:hover { border-color: var(--text-muted); }
+.discussion-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.discussion-composer textarea:focus-visible { outline: none; }
+.discussion-composer textarea,
+.discussion-composer textarea:hover,
+.discussion-composer textarea:focus {
+	display: block;
+	width: 100%;
+	min-height: 72px;
+	max-height: 60vh;
+	padding: var(--space-3);
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	font-family: var(--font);
+	font-size: 14px;
+	line-height: 1.6;
+	resize: vertical;
+}
+.discussion-bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: stretch;
+	justify-content: space-between;
+	border-bottom: 1px solid var(--border);
+	background: var(--surface);
+}
+.discussion-tabs { display: flex; }
+.discussion-tab {
+	padding: 7px var(--space-3);
+	border: 0;
+	border-right: 1px solid var(--border);
+	background: none;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+.discussion-tab[aria-selected="true"] { color: var(--text); background: var(--surface-sunken); box-shadow: inset 0 -2px 0 var(--text); }
+.discussion-tab:hover { color: var(--text); }
+.discussion-tools { display: flex; align-items: center; padding: 0 var(--space-1); }
+.discussion-tool {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--text-muted);
+	font-family: var(--font-mono);
+	font-size: 13px;
+	cursor: pointer;
+}
+.discussion-tool svg { width: 15px; height: 15px; }
+.discussion-tool:hover { color: var(--text); background: var(--surface-hover); }
+.discussion-tab:focus-visible, .discussion-tool:focus-visible { outline-offset: -2px; }
+.discussion-field { position: relative; }
+.discussion-preview { min-height: 72px; padding: var(--space-3); font-size: 14px; line-height: 1.6; }
+.discussion-preview [data-discussion-empty-preview] { color: var(--text-faint); font-style: italic; }
+.discussion-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2) var(--space-3);
+	padding: var(--space-2) var(--space-3);
+	border-top: 1px solid var(--border);
+	background: var(--surface);
+}
+.discussion-hint { font-size: 12px; color: var(--text-faint); }
+.discussion-hint kbd { min-width: 0; font-size: 9px; padding: 0 4px; }
+.discussion-buttons { display: inline-flex; gap: var(--space-2); margin-left: auto; }
+.discussion-composer .form-error { margin: var(--space-2) var(--space-3) 0; }
+
+/* The @ menu: a floating list, lifted by the hard ring. */
+.discussion-menu {
+	position: absolute;
+	left: var(--space-3);
+	top: 100%;
+	z-index: 60;
+	min-width: 240px;
+	max-width: calc(100% - var(--space-5));
+	margin-top: -4px;
+	background: var(--surface-raised);
+	box-shadow: var(--ring);
+}
+[data-discussion-option] {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	padding: 6px var(--space-3);
+	cursor: pointer;
+	font-size: 13px;
+	color: var(--text);
+}
+[data-discussion-option][aria-selected="true"] { background: var(--surface-hover); box-shadow: inset 2px 0 0 var(--accent); }
+[data-discussion-option] [data-discussion-option-initials] {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	background: var(--ink);
+	color: var(--ink-contrast);
+	font-family: var(--font-mono);
+	font-size: 9px;
+	font-weight: 700;
+}
+[data-discussion-option] [data-discussion-option-handle] {
+	margin-left: auto;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--text-faint);
+}
+
+/* --- What markdown draws ------------------------------------------------- */
+
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 var(--space-2); }
+.markdown h3, .markdown h4, .markdown h5, .markdown h6 {
+	margin: var(--space-4) 0 var(--space-2);
+	font-family: var(--font);
+	font-weight: 700;
+	letter-spacing: -0.01em;
+	text-transform: none;
+	color: var(--text);
+}
+.markdown h3 { font-size: 16px; }
+.markdown h4 { font-size: 15px; }
+.markdown h5, .markdown h6 { font-size: 14px; }
+.markdown ul, .markdown ol { margin: 0 0 var(--space-2); padding-left: 1.4em; }
+.markdown li { margin: 2px 0; }
+.markdown li > ul, .markdown li > ol { margin: 2px 0 0; }
+.markdown li.task { list-style: none; margin-left: -1.4em; }
+.markdown li.task > input { margin: 0 var(--space-1) 0 0; vertical-align: -2px; }
+.markdown blockquote {
+	margin: 0 0 var(--space-2);
+	padding: 0 0 0 var(--space-3);
+	border-left: 2px solid var(--border-strong);
+	color: var(--text-muted);
+}
+.markdown code {
+	padding: 1px 4px;
+	background: var(--surface-sunken);
+	box-shadow: inset 0 0 0 1px var(--border);
+	font-family: var(--font-mono);
+	font-size: 0.86em;
+}
+.markdown pre {
+	margin: 0 0 var(--space-2);
+	padding: var(--space-3);
+	overflow-x: auto;
+	background: var(--surface-sunken);
+	border: 1px solid var(--border);
+	border-left: 2px solid var(--border-strong);
+	font-size: 12.5px;
+	line-height: 1.5;
+}
+.markdown pre code { padding: 0; background: none; box-shadow: none; font-size: inherit; }
+.markdown hr { margin: var(--space-3) 0; border-top: 1px solid var(--border); }
+.markdown a { text-underline-offset: 2px; }
+.markdown del { color: var(--text-faint); }
+.markdown .md-table { overflow-x: auto; margin: 0 0 var(--space-2); }
+.markdown table { border-collapse: collapse; font-size: 13px; }
+.markdown th, .markdown td { padding: 4px 10px; border: 1px solid var(--border); text-align: left; }
+.markdown th {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+	color: var(--text-muted);
+	background: var(--surface);
+}
+.markdown .md-center { text-align: center; }
+.markdown .md-right { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* @name: a person, set as a reading -- they were addressed, not quoted. */
+.mention {
+	padding: 0 4px;
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border-strong);
+	font-family: var(--font-mono);
+	font-size: 0.86em;
+	color: var(--text);
+	white-space: nowrap;
+}
+/* #type/id: a record, drawn as a link with its own mark. */
+.record-ref { text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+.record-ref::before { content: "#"; margin-right: 1px; color: var(--text-faint); }
+.record-ref:hover { border-bottom-color: var(--accent); text-decoration: none; }
+
+.timeline-link { color: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
+.timeline-link:hover { color: var(--accent); text-decoration-color: var(--accent); }
+
+@media (max-width: 640px) {
+	.discussion-comment { grid-template-columns: 28px minmax(0, 1fr); column-gap: var(--space-2); }
+	.discussion-avatar { width: 28px; height: 28px; font-size: 10px; }
+	.discussion-head { min-height: 28px; }
+	.discussion-replies { margin-left: 13px; }
+	.discussion-replies > li { padding-left: var(--space-3); }
+	.discussion-reply { margin-left: 0; }
+	.discussion-hint { display: none; }
+	.discussion-tools { padding: 0; }
+	.discussion-tool { width: 28px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.discussion-comment:target, .discussion-comment[data-discussion-landed] { animation: none; }
+}
+
+@media print {
+	.discussion-new, .discussion-reply, .discussion-actions { display: none; }
+}

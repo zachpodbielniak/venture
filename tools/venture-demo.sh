@@ -51,6 +51,7 @@ server_pid=""
 home_org=""
 token=""
 password=""
+colleague_password=""
 base_url=""
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1416,10 +1417,20 @@ seed_desk () {
     step "The support desk: service levels, macros, a rota and a sprint"
 
     local u
+    local user
 
-    for u in bob:Bob carol:Carol dave:Dave
+    # Members of the press's organisation, so they can read its records:
+    # a mention of somebody who cannot read a record tells them nothing,
+    # and the discussion seeded later is between these three. Finance,
+    # because the arbitrage trades they discuss are books, which an editor
+    # may not read. Each has a random password so the demo can sign them
+    # in once -- a comment's author is the credential it arrives on.
+    for u in "bob:Bob Marsh" "carol:Carol Reyes" "dave:Dave Lindqvist"
     do
-        add user username="${u%%:*}" display_name="${u##*:}" role=editor active=true
+        user="$(make_record user username="${u%%:*}" display_name="${u#*:}" \
+            role=editor active=true password="${colleague_password}")"
+        add organization_membership user_id="${user}" \
+            organization_id="${home_org}" role=finance active=true
     done
 
     add sla_policy name="Support urgent" kind=external priority=urgent \
@@ -2727,6 +2738,177 @@ seed_trading_desk () {
         notes="A hundred dollars across the books, wherever the best odds add up to under one, on prices from the last six hours."
 }
 
+# A colleague's own signed-in session, as a file venturectl reads with
+# --session-file. The server takes a comment's author from the
+# credential it arrives on, never from the request, so the discussion the
+# demo seeds is only theirs if they post it -- and a session, unlike a
+# token, is them in person, so the page says "Bob Marsh" rather than
+# "via API token". The password was random and lives as long as this run;
+# nothing here prints it, and the file is private to this user.
+colleague_session () {
+    local username="$1"
+    local jar="${state}/cookies-${username}.txt"
+    local file="${state}/sessions/${username}.json"
+    local cookie
+
+    curl --silent --show-error --max-time 10 --cookie-jar "${jar}" \
+         --output /dev/null \
+         --data-urlencode "username=${username}" \
+         --data-urlencode "password=${colleague_password}" \
+         "${base_url}/login" \
+        || die "could not sign in as ${username}"
+
+    cookie="$(awk -F '\t' '$6 == "venture_session" { print $7 }' "${jar}")"
+    rm -f "${jar}"
+
+    [[ -n "${cookie}" ]] || die "signing in as ${username} set no session"
+
+    (
+        umask 077
+        mkdir -p "${state}/sessions"
+        printf '{"origin":"%s","cookie":"venture_session=%s"}\n' \
+            "${base_url}" "${cookie}" > "${file}"
+    )
+
+    printf '%s' "${file}"
+}
+
+# Says something on a record as somebody -- a session file, or the
+# owner's token for "owner" -- and prints the comment's id; a fifth
+# argument answers that comment instead.
+comment_as () {
+    local as="$1"
+    local type="$2"
+    local id="$3"
+    local body="$4"
+    local parent="${5:-}"
+    local output
+    local made
+
+    local -a who
+
+    if [[ "${as}" == "owner" ]]
+    then
+        who=(--token "${token}")
+    else
+        who=(--session-file "${as}")
+    fi
+
+    # The body goes on standard input ("-"), not in argv: it is
+    # markdown with typographic dashes, and a command line in a C locale
+    # refuses bytes it cannot convert.
+    if [[ -n "${parent}" ]]
+    then
+        output="$(printf '%s' "${body}" | env -u VENTURE_TOKEN "${outdir}/venturectl" \
+            --server "${base_url}" "${who[@]}" --format json comments reply "${parent}" - 2>&1)" \
+            || die "could not reply to comment ${parent}: ${output}"
+    else
+        output="$(printf '%s' "${body}" | env -u VENTURE_TOKEN "${outdir}/venturectl" \
+            --server "${base_url}" "${who[@]}" --format json comments add "${type}" "${id}" - 2>&1)" \
+            || die "could not comment on ${type} ${id}: ${output}"
+    fi
+
+    made="$(printf '%s' "${output}" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)"
+
+    [[ -n "${made}" ]] || die "the server did not return an id for a comment on ${type} ${id}"
+
+    printf '%s' "${made}"
+}
+
+# The first record of a type matching some filters, by id; empty if none.
+first_id () {
+    ctl --format json list "$@" 2>/dev/null | python3 -c \
+        'import json, sys
+try:
+    rows = json.load(sys.stdin).get("records", [])
+    print(rows[0]["id"] if rows else "")
+except Exception:
+    pass' 2>/dev/null || true
+}
+
+seed_discussion () {
+    step "A discussion on the trades, a customer and a release"
+
+    local bob
+    local carol
+    local dave
+    local bet
+    local order
+    local shop
+    local release
+    local thread
+    local note
+
+    bob="$(colleague_session bob)"
+    carol="$(colleague_session carol)"
+    dave="$(colleague_session dave)"
+
+    bet="$(first_id arbitrage_trade "name=Varga v Okafor, both ways" "organization_id=${home_org}")"
+    order="$(first_id arbitrage_trade "name=Three bamboo cutting boards" "organization_id=${home_org}")"
+    [[ -n "${bet}" && -n "${order}" ]] || die "the trading desk's trades are not there to discuss"
+
+    # The surebet: a question, an answer with figures, and the owner
+    # closing it off -- with a mention, a reference to the other trade,
+    # a list and a little code, so the page shows what a comment can be.
+    thread="$(comment_as "${carol}" arbitrage_trade "${bet}" \
+"Both stakes filled within a minute of each other, so the calculator's split held and **either result paid the same**.
+
+@bob can you check the Pinehill wallet shows the stake gone and nothing back? Then this one can stay closed.")"
+    comment_as "${bob}" arbitrage_trade "${bet}" \
+"Checked against the wallets:
+
+- Northbet: stake out, payout in — **+\$6.23** net
+- Pinehill: stake out, nothing back, as it should be
+
+Same shape as #arbitrage_trade/${order}, just with odds instead of a supplier." "${thread}" > /dev/null
+    comment_as owner arbitrage_trade "${bet}" \
+"Good. Keep \`max_age_hours: 6\` on the surebet preset — a price older than that is a match that has already started." "${thread}" > /dev/null
+
+    note="$(comment_as "${dave}" arbitrage_trade "${bet}" \
+"> 1/2.10 + 1/2.15 = 0.941
+
+Six percent for an afternoon. Worth a rule that tells us when the books line up like this again?")"
+    comment_as "${carol}" arbitrage_trade "${bet}" \
+"There is one — the **Surebets** preset on the scan. @dave I will add you to its alert." "${note}" > /dev/null
+
+    # The dropship: a lesson learned, the kind of note a record exists
+    # to carry for whoever looks at it next.
+    comment_as "${bob}" arbitrage_trade "${order}" \
+"ShopMart's \`fixed_per_order\` is per *order*, not per unit, so three boards in one order paid it once. Worth re-running the scan with \`units: 3\` before the next batch.
+
+| Leg | Each | Total |
+|:----|-----:|------:|
+| Acme, landed | 8.35 | 25.05 |
+| ShopMart, sold | 19.49 | 58.47 |" > /dev/null
+
+    # A customer and a release, so the discussion is plainly on every
+    # record and not a trading feature.
+    shop="$(first_id company "name=Bellhaven Books")"
+
+    if [[ -n "${shop}" ]]
+    then
+        thread="$(comment_as "${carol}" company "${shop}" \
+"Spoke to their accounts team: they pay on the **15th**, by transfer, and want the PO number on every invoice from now on.")"
+        comment_as "${dave}" company "${shop}" \
+"Noted — I have added it to the invoice template. @carol thanks for chasing." "${thread}" > /dev/null
+    fi
+
+    release="$(first_id release "organization_id=${home_org}")"
+
+    if [[ -n "${release}" ]]
+    then
+        comment_as "${bob}" release "${release}" \
+"Smoke-tested on staging:
+
+1. Checkout with Apple Pay in GBP
+2. The export with an apostrophe in the title
+3. A renewal that should *not* charge twice
+
+All three pass. @owner good to publish." > /dev/null
+    fi
+}
+
 seed_dashboards () {
     step "Four dashboards"
 
@@ -2845,6 +3027,10 @@ do_start () {
     read_owner_password
     mint_token
 
+    # One throwaway password for the demo's colleagues, used once each to
+    # sign them in and mint a token of their own (seed_discussion).
+    colleague_password="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')"
+
     home_org="$(default_organization)"
     [[ -n "${home_org}" ]] || die "the server has no default organisation"
 
@@ -2905,6 +3091,7 @@ do_start () {
     seed_tickets "${studio}" "${sprint}"
     seed_factory "${studio}"
     seed_dashboards
+    seed_discussion
 
     # Last, and in this order: the backfill sweeps up anything the
     # services did not post as it happened, and closing a period then

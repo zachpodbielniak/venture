@@ -605,6 +605,34 @@ const gchar *
 venture_entity_type_get_create_path(GType type);
 
 /**
+ * venture_entity_class_set_commentable:
+ * @klass: a #VentureEntityClass
+ * @commentable: whether people may hold a discussion on its records
+ *
+ * Every record type takes comments unless it says otherwise, so a type
+ * added tomorrow -- a plugin's included -- has a discussion the day it
+ * registers. A type that is machinery (the audit log, an inbox row, a
+ * derived passage) or that already has a conversation of its own (a
+ * ticket) opts out here, in its own class_init, rather than on a list
+ * somebody has to remember to extend.
+ */
+void
+venture_entity_class_set_commentable(
+	VentureEntityClass	*klass,
+	gboolean		 commentable
+);
+
+/**
+ * venture_entity_type_is_commentable:
+ * @type: a #VentureEntity subtype
+ *
+ * Returns: %TRUE unless the type opted out with
+ *   venture_entity_class_set_commentable()
+ */
+gboolean
+venture_entity_type_is_commentable(GType type);
+
+/**
  * venture_entity_type_dup_label:
  * @type: a #VentureEntity subtype
  * @plural: whether to name several records rather than one

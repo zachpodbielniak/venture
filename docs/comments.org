@@ -1,0 +1,218 @@
+#+title: Comments
+#+description: A discussion on every record: threads, replies, @mentions, markdown, permalinks, and who may read, write, edit and delete
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.7.0
+
+* What this is
+
+Every record in VENTURE can carry a discussion: an invoice somebody is chasing, a trade that settled oddly, a company whose accounts team pays on the fifteenth, a release that needs one more smoke test. A comment is written in markdown, can answer another comment, can name colleagues with =@username= so they are told in their inbox, and has a permalink that opens the record at the comment.
+
+It works the day a record type registers -- a built-in one, a plugin's, a declarative venture type's -- because the discussion is not a feature of any type. It is one record type, =comment=, that names its record by type and id, and one panel that every record page draws.
+
+* The model
+
+| Field            | What it holds                                                                                          |
+|------------------+--------------------------------------------------------------------------------------------------------|
+| =subject_type=   | the record's type, e.g. =invoice=                                                                       |
+| =subject_id=     | the record                                                                                              |
+| =subject_label=  | what the record was called when the comment was made, so a list or an inbox line reads without lookups |
+| =parent_id=      | the top-level comment a reply answers; empty for a new thread                                           |
+| =body=           | the markdown, at most 20,000 bytes                                                                      |
+| =author=         | the actor string it was written under: a username, or =API token #N= -- never a token's name           |
+| =author_user_id= | the account that wrote it, or whose token did                                                           |
+| =edited_at=      | stamped whenever the body changes after it was first written; empty means never edited                 |
+| =mentions=       | the usernames it names that may read the record, comma separated; derived, technical                   |
+
+The type lives in the =core= module, so it is always on, and its data class is =tenant=: a comment belongs to its record's organization.
+
+** One level of replies
+
+A reply names the comment it answers. A reply to a reply is filed under the same top-level comment, because a conversation indented ten times is one nobody can read; the page's Reply button puts the =@name= of whoever it answers into the box instead. The thread is therefore two levels: comments, and their replies in order.
+
+** What the save holds every writer to
+
+A save validator (=src/core/venture-comment.c=) runs for every writer -- the comment routes, an approved change, a plugin, a test. It:
+
+- refuses a type that takes no comments, a record that does not exist, and (for a new comment) a record that is deleted or private;
+- puts the comment in its record's organization, whatever the client said, and records the record's name;
+- refuses a reply to a comment on another record, or to a deleted one, and files a reply to a reply under its thread;
+- takes =author= and =author_user_id= from the principal the write is made as; a client that sends them is not refused but not believed. Trusted internal work with no principal keeps what the caller set;
+- refuses a later change to the record, the thread, or the author;
+- refuses an empty body and one past 20,000 bytes;
+- stamps =edited_at= when the body changes and only then, and works out =mentions= again whenever it does.
+
+** Which types take comments
+
+Every type does unless it says otherwise, in its own =class_init=:
+
+#+begin_src c
+venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);
+#+end_src
+
+The types that opt out are machinery or a conversation already: =comment= itself, =ticket= and =ticket_comment= (a ticket has its own conversation, with internal notes, the portal and the first-reply clock; a second, generic thread beside it would split one conversation in two), =ticket_relation=, =record_link=, =kb_link=, =kb_chunk=, =audit_entry=, =notification=, =watch=, =chat_thread=, =chat_message=, =webhook_delivery=, =ledger_entry=, =data_source_run=, =mail_inbound=, =calendar_event= and =federation_replica=. Workspace administration (the =tenant_admin= data class) takes none either. =venture_comment_type_accepts()= answers for a type; =venture_comment_subject_accepts()= for one record, which also refuses a deleted or private one.
+
+* Who may do what
+
+A comment is a piece of its record, so the record decides. The access policy (=comment_allows()= in =src/orgaccess/venture-access-policy.c=) applies these rules at every door, generic or not:
+
+| Action | Who                                                                                               |
+|--------+---------------------------------------------------------------------------------------------------|
+| read   | anybody who may read the record; anybody else is told the record is not found, never forbidden   |
+| write  | anybody who may read the record, a viewer included; only the author may change the words         |
+| delete | the author, or an organization owner or administrator, or the install's owner or administrator   |
+
+Three things are deliberate:
+
+- *A viewer comments directly.* Everywhere else an organization viewer's new record becomes a proposal for somebody to approve. A comment changes no business record, a conversation that waited for an approver would be no conversation, and an approved one would be posted under the approver's name. Viewers comment; the policy never stages one.
+- *A read-only token stays read-only.* A token minted with the viewer role may read a discussion but not add to it.
+- *An owner may delete words but not write them.* Nobody but the author edits a comment, the install's owner included -- otherwise the thread would lie about who said what.
+
+Page and API routes also apply the record type's own gate: a user, a token or a webhook is the owner's to open, and so is its discussion. The generic surfaces (=/api/v1/comment=, =/e/comment=) are owner-only, like chat, and refuse writes: a comment is written through the comment routes, which take the author from the session, or not at all. A private record takes no comments, because a comment's inbox lines and webhooks are shared with the organization.
+
+* Mentions and the inbox
+
+=@username= names somebody. It is read by the markdown renderer itself, so a name inside code is never a mention, and an =@= inside a word -- an email address -- names nobody.
+
+A mention counts only if the named account is active and may read the record. Anybody else -- an unknown name, somebody in another organization, a viewer who does not own this record -- stays plain text and is told nothing. The safe choice over refusing the comment: a refusal would tell the writer who exists and who may read what. The @ menu in the editor offers only people who may read the record, for the same reason.
+
+The inbox is fed by the audit signal, as everything else is (=src/core/venture-notify.c=):
+
+| Who                                       | Told                                              | Kind      |
+|-------------------------------------------+---------------------------------------------------+-----------|
+| everybody it mentions                     | "erin mentioned you on Bellhaven Books"           | =mention= |
+| whoever wrote the comment a reply answers | "erin replied to your comment on Bellhaven Books" | =reply=   |
+| everybody watching the record             | "erin commented on Bellhaven Books"               | =watched= |
+
+Nobody is told twice or about their own words, and every recipient is checked again, at the moment of telling, against the record. Whoever comments, and whoever is mentioned, follows the record from then on. An edit tells only the people it newly names. A deletion tells nobody. The line opens the comment's permalink.
+
+=reply= is a new notification kind, appended after =alert= because the kind is stored as its number.
+
+* Markdown
+
+The renderer is =venture_markdown_to_html()= (=src/util/venture-markdown.c=), and nothing the author typed reaches the page except through its escaper: every tag in the output is one the renderer writes itself, every attribute value is escaped, and a link is written only when its target is an =http(s)= address, a path on this site or an =#anchor=. =javascript:=, =data:= and =//host= are text. =tests/test-markdown.c= pins the attacks case by case.
+
+| Write                            | Get                                                       |
+|----------------------------------+-----------------------------------------------------------|
+| =**bold**=, =__bold__=           | *bold*                                                    |
+| =*it*=, =_it_=                   | /italic/ -- an underscore inside a word is just a letter |
+| =~~gone~~=                       | struck through                                            |
+| =`code`=                         | inline code; nothing inside is formatted                  |
+| a fence of three backticks       | a code block, with an optional language class             |
+| =# Heading= .. =######=          | headings, starting at h3: the page owns h1 and h2         |
+| =- item=, =1. item=              | lists; indent to nest; =- [ ]= and =- [x]= are a checklist |
+| => quote=                        | a quotation; quotes nest                                  |
+| =---=                            | a rule                                                    |
+| a pipe table with a =---= row    | a table, with =:--=, =:-:= and =--:= alignment            |
+| =[text](https://...)=            | a link; also =/e/invoice/12= and =#comment-4=             |
+| a bare =https://= address        | a link, less the sentence's own punctuation               |
+| =@username=                      | a chip, when it is a mention                               |
+| =#invoice/12=                    | a link named after the record, for a reader who may open it |
+| a line break                     | a line break: a comment box is typed in lines             |
+
+A reference to a record is resolved for each reader under their own access, so the same comment shows a link to one person and the text =#invoice/12= to another. Nesting is bounded (=VENTURE_MARKDOWN_MAX_DEPTH=) and the parser's work is linear in the input, because the input is a stranger's and the server is single-threaded.
+
+=venture_markdown_to_text()= gives the words without the syntax, on one line, for an inbox line, the activity and a webhook excerpt.
+
+The assistant panel's renderer is a separate, older function in the web server with a narrower subset and its own pinned output; it was left alone rather than folded into this one.
+
+* On the page
+
+Every record page that takes comments has a *Discussion* card after the type's own block and before the tabs: the threads, oldest first, replies hung from a rule under the comment they answer, a reply box folded at the foot of each thread, and the box for a new comment at the bottom. An empty discussion says so and invites the first comment.
+
+Each comment shows its author as two letters and a name, a badge when they are the reader ("You"), the install's owner or an administrator, "via API token #N" when a token wrote it, how long ago -- the exact time on hover, and the time is the permalink -- and "edited" when it was. Below it: *Reply*, *Copy link*, *Edit* for its author and *Delete* for whoever may.
+
+All of it works with scripting off. A comment is an ordinary form that answers with a redirect to the comment; a reply box and an edit box are =<details>=; a permalink is a link. =venture.js= adds:
+
+- *Write and Preview* tabs. Preview asks =/api/v1/comments/preview=, which runs the same renderer the page does, so what the tab shows is what posting shows.
+- A toolbar -- bold, italic, code, link, list, quote, mention -- and the shortcuts =Ctrl/Cmd+B=, =I=, =K= (a link, in a comment box; the palette everywhere else), =E= (code), and =Ctrl/Cmd+Enter= to post.
+- A box that grows as it is typed into.
+- The @ menu: type =@= and the people who may read the record are offered, filtered as you type; arrows, =Enter= or =Tab=, =Escape=.
+- Posting in place. The form is posted with =X-Venture-Discussion=, the server answers with the card drawn again and =X-Venture-Comment: N=, and the card is swapped whole -- one renderer -- and lands on the comment. A refusal is shown in the form, never as JSON.
+- *Reply* opens the thread's box, naming whoever wrote a reply being answered; *Edit* puts the box where the words were; *Copy link* copies the permalink.
+
+The comment a permalink lands on is outlined in the accent, in both looks.
+
+* Permalinks
+
+Every comment has two addresses:
+
+- =/e/TYPE/ID#comment-N= -- the record's page, at the comment's =id= anchor.
+- =/comments/N= -- the stable one. It answers =302= to the first for anybody who may read the record, and not found for anybody else. =/e/comment/N= answers =302= to it, so every generic link to a comment -- the audit log, a search, an old webhook -- lands there too.
+
+The inbox, a notification's =url=, a webhook's =record.url= and an activity entry all use them.
+
+* In the activity
+
+A record's activity (its timeline tab and =GET /api/v1/activity/TYPE/ID=) carries one entry per comment: =kind= =comment=, the author's name as =actor=, a line of the words as =body=, =reply= when it answers another, =url= (the anchor) and =permalink=. The comment's own audit entries name the comment, not the record, so nothing is listed twice. Deleted comments are not listed.
+
+* The API
+
+| Method and path                                                           | What it does                                                      |
+|---------------------------------------------------------------------------+-------------------------------------------------------------------|
+| =GET /api/v1/comments?subject_type=T&subject_id=N=                        | ={subject, count, comments}=: the threads, each with =replies=    |
+| =POST /api/v1/comments= ={subject_type, subject_id, body, parent_id}=    | =201= with the comment                                            |
+| =GET /api/v1/comments/:id=                                                | one comment                                                       |
+| =PATCH= or =PUT /api/v1/comments/:id= ={body}=                            | change your own                                                   |
+| =DELETE /api/v1/comments/:id=                                             | delete yours, or any as an owner or administrator                 |
+| =POST /api/v1/comments/preview= ={subject_type, subject_id, body}=        | ={html}=, exactly what posting would render for you                |
+| =GET /api/v1/comments/mentions?subject_type=T&subject_id=N&q=PREFIX=      | ={users}=: who the @ menu offers                                  |
+
+A comment in JSON:
+
+#+begin_src json
+{
+  "id": 12, "uuid": "…", "subject_type": "invoice", "subject_id": 3,
+  "subject_label": "INV-0003", "parent_id": null,
+  "author": "erin", "author_user_id": 4, "author_name": "Erin Vale",
+  "author_initials": "EV", "author_username": "erin", "author_role": "editor",
+  "via_token": false,
+  "body": "Sent a reminder, @bob", "html": "<p>Sent a reminder, <span class=\"mention\" …>@bob</span></p>",
+  "mentions": ["bob"], "created_at": "…", "edited_at": null, "deleted": false,
+  "url": "/e/invoice/3#comment-12", "permalink": "/comments/12",
+  "can_edit": true, "can_delete": true
+}
+#+end_src
+
+A deleted comment with replies appears with =deleted: true= and =body= and =html= null; one without replies is left out. =can_edit= and =can_delete= are the policy's answer for the reader, so the buttons and the refusals agree. The page routes are =POST /comments=, =GET /comments/:id=, =POST /comments/:id/edit= and =POST /comments/:id/delete=.
+
+Webhooks publish =comment.created=, =comment.updated= and =comment.deleted= like any record's events; their =record.url= is the permalink.
+
+The assistant may read comments like any record it may read, but not write them: a staged comment would be approved, and posted, under the approver's name.
+
+* venturectl
+
+#+begin_src sh
+venturectl comments list invoice 3                     # the threads, as a transcript
+venturectl comments add invoice 3 'Sent a reminder, @bob -- see #payment/4'
+venturectl comments reply 12 'Paid this morning.'      # in comment 12's thread
+venturectl comments edit 12 'Sent two reminders.'      # your own
+venturectl comments delete 12
+venturectl comments get 12
+git log -1 --format=%B | venturectl comments add release 7 -   # the body from stdin
+#+end_src
+
+=create comment= is refused: the generic route takes no comment. Nothing here stages; a comment is not a change to the books.
+
+* The demo
+
+=make demo= gives Bob, Carol and Dave finance memberships in the press's organization and signs each in once, with a random password nobody sees, to post as themselves through =venturectl --session-file=. It seeds a discussion on the surebet trade (a question, an answer with figures and a reference to the other trade, the owner closing it off, a quoted calculation and a reply naming Dave), a lesson learned with a table on the dropship trade, a note and a reply on a customer, and a smoke-test checklist on the release.
+
+* Where it lives
+
+| File                                   | What                                                                 |
+|----------------------------------------+----------------------------------------------------------------------|
+| =src/model/venture-records.c=          | the =comment= field table, and every type's opt-out                  |
+| =src/model/venture-entity.c=           | =venture_entity_class_set_commentable()= and its question            |
+| =src/core/venture-comment.c=           | the validator, create, edit, delete, the thread, mentions, rendering |
+| =src/orgaccess/venture-access-policy.c= | =comment_allows()=                                                  |
+| =src/core/venture-notify.c=            | who is told                                                          |
+| =src/core/venture-desk.c=              | the activity entries                                                 |
+| =src/util/venture-markdown.c=          | the renderer                                                         |
+| =src/web/venture-web-comments.inc=     | the card, the page routes and the API                                |
+| =data/static/venture.js=               | the editor                                                           |
+| =data/static/venture-*.css=            | the block /Discussion: comments on every record/ in each look       |
+| =tests/test-comments.c=                | the rules, the routes, a walk over every type's page                 |
+| =tests/test-markdown.c=                | the renderer, attacks first                                          |

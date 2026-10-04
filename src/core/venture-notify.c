@@ -720,8 +720,12 @@ venture_notify_to_json(VentureEntity *notification)
 	{
 		g_autofree gchar *url = NULL;
 
-		url = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, target_type,
-		                      target_id);
+		/* A comment has no page of its own; its permalink lands on its
+		 * record's page at the comment. */
+		url = (0 == g_strcmp0(target_type, "comment"))
+			? venture_comment_permalink(target_id)
+			: g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, target_type,
+			                  target_id);
 		json_builder_add_string_value(builder, url);
 	}
 	else
@@ -939,9 +943,138 @@ venture_notify_assignment(
 }
 
 /*
- * A comment: the people named in it are told and start following; the
- * people following are told. The comment's target for the inbox is the
- * ticket, which is the page anybody would open.
+ * One message in a conversation, whichever kind: a ticket's comment or a
+ * comment on any record. The people named in it are told and start
+ * following; whoever wrote the comment it answers is told; the people
+ * following are told; nobody is told twice, and nobody about their own
+ * words.
+ */
+typedef struct
+{
+	/* What is followed: the ticket, or the record a comment is on. */
+	const gchar	*subject_type;
+	gint64		 subject_id;
+	const gchar	*label;
+	/* What the inbox line opens: the ticket, or the comment itself, whose
+	 * address is its permalink. */
+	const gchar	*target_type;
+	gint64		 target_id;
+	const gchar	*actor;
+	gint64		 actor_user_id;
+	const gchar	*excerpt;
+	const gchar	*verb;
+	GArray		*mentioned;
+	gint64		 parent_author;
+	/* When set, every recipient must be able to read it: an inbox line
+	 * carries the record's name and an excerpt of what was said. */
+	VentureEntity	*readable;
+	/* An edit that named somebody new tells them and nobody else. */
+	gboolean	 mentions_only;
+} VentureNotifyConversation;
+
+static gboolean
+venture_notify_already_told(
+	GArray	*told,
+	gint64	 user_id
+){
+	guint i;
+
+	for (i = 0; i < told->len; i++)
+	{
+		if (g_array_index(told, gint64, i) == user_id)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+static void
+venture_notify_conversation(
+	VentureContext				*context,
+	const VentureNotifyConversation		*c
+){
+	g_autoptr(GArray) told = NULL;
+	g_autoptr(GArray) watchers = NULL;
+	const gchar *who;
+	guint i;
+
+	who = venture_string_is_empty(c->actor) ? "Somebody" : c->actor;
+	told = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	/* Whoever wrote it is following the record from now on. */
+	if ((0 != c->actor_user_id) && !c->mentions_only)
+		venture_notify_watch(context, c->actor_user_id, c->subject_type,
+		                     c->subject_id, NULL);
+
+	for (i = 0; (NULL != c->mentioned) && (i < c->mentioned->len); i++)
+	{
+		g_autofree gchar *title = NULL;
+		gint64 user_id = g_array_index(c->mentioned, gint64, i);
+
+		if ((0 == user_id) || (user_id == c->actor_user_id) ||
+		    venture_notify_already_told(told, user_id))
+			continue;
+
+		if ((NULL != c->readable) &&
+		    !venture_comment_user_can_read(context, user_id, c->readable))
+			continue;
+
+		venture_notify_watch(context, user_id, c->subject_type, c->subject_id,
+		                     NULL);
+
+		title = g_strdup_printf("%s mentioned you on %s", who, c->label);
+		venture_notify_send(context, user_id, VENTURE_NOTIFICATION_KIND_MENTION,
+		                    title, c->excerpt, c->target_type, c->target_id,
+		                    c->label, c->actor, NULL);
+		g_array_append_val(told, user_id);
+	}
+
+	if (c->mentions_only)
+		return;
+
+	if ((0 != c->parent_author) && (c->parent_author != c->actor_user_id) &&
+	    !venture_notify_already_told(told, c->parent_author) &&
+	    ((NULL == c->readable) ||
+	     venture_comment_user_can_read(context, c->parent_author, c->readable)))
+	{
+		g_autofree gchar *title = NULL;
+		gint64 parent_author = c->parent_author;
+
+		title = g_strdup_printf("%s replied to your comment on %s", who, c->label);
+		venture_notify_send(context, parent_author, VENTURE_NOTIFICATION_KIND_REPLY,
+		                    title, c->excerpt, c->target_type, c->target_id,
+		                    c->label, c->actor, NULL);
+		g_array_append_val(told, parent_author);
+	}
+
+	watchers = venture_notify_list_watchers(context, c->subject_type,
+	                                        c->subject_id);
+
+	for (i = 0; i < watchers->len; i++)
+	{
+		g_autofree gchar *title = NULL;
+		gint64 user_id = g_array_index(watchers, gint64, i);
+
+		if ((user_id == c->actor_user_id) ||
+		    venture_notify_already_told(told, user_id))
+			continue;
+
+		if ((NULL != c->readable) &&
+		    !venture_comment_user_can_read(context, user_id, c->readable))
+			continue;
+
+		title = g_strdup_printf("%s %s on %s", who, c->verb, c->label);
+		venture_notify_send(context, user_id, VENTURE_NOTIFICATION_KIND_WATCHED,
+		                    title, c->excerpt, c->target_type, c->target_id,
+		                    c->label, c->actor, NULL);
+	}
+}
+
+/*
+ * A ticket's comment. Its target for the inbox is the ticket, which is the
+ * page anybody would open; who may read a ticket's thread is the desk's
+ * business (internal notes, the portal), so no reading check is added
+ * here that the desk does not make.
  */
 static void
 venture_notify_comment(
@@ -956,12 +1089,11 @@ venture_notify_comment(
 	g_autofree gchar *label = NULL;
 	g_autofree gchar *excerpt = NULL;
 	g_auto(GStrv) mentions = NULL;
-	g_autoptr(GArray) told = NULL;
-	g_autoptr(GArray) watchers = NULL;
+	g_autoptr(GArray) mentioned = NULL;
+	VentureNotifyConversation conversation;
 	gboolean internal = FALSE;
 	gint64 ticket_id = 0;
 	gsize i;
-	guint j;
 
 	g_object_get(comment, "ticket-id", &ticket_id, "body", &body,
 	             "author", &author, "internal", &internal, NULL);
@@ -997,70 +1129,148 @@ venture_notify_comment(
 
 	label = venture_entity_get_display_name(ticket);
 	excerpt = venture_truncate(body, 140);
-	told = g_array_new(FALSE, FALSE, sizeof(gint64));
-
-	/* Whoever commented is following the thread from now on. */
-	if (0 != actor_user_id)
-		venture_notify_watch(context, actor_user_id, "ticket", ticket_id, NULL);
-
 	mentions = venture_notify_extract_mentions(body);
+	mentioned = g_array_new(FALSE, FALSE, sizeof(gint64));
 
 	for (i = 0; NULL != mentions[i]; i++)
 	{
-		g_autofree gchar *title = NULL;
-		gint64 user_id;
+		gint64 user_id = venture_notify_user_id_for_username(context, mentions[i]);
 
-		user_id = venture_notify_user_id_for_username(context, mentions[i]);
-
-		if ((0 == user_id) || (user_id == actor_user_id))
-			continue;
-
-		venture_notify_watch(context, user_id, "ticket", ticket_id, NULL);
-
-		title = g_strdup_printf("%s mentioned you on %s",
-		                        venture_string_is_empty(actor) ? "Somebody"
-		                                                       : actor,
-		                        label);
-		venture_notify_send(context, user_id, VENTURE_NOTIFICATION_KIND_MENTION,
-		                    title, excerpt, "ticket", ticket_id, label, actor,
-		                    NULL);
-		g_array_append_val(told, user_id);
+		g_array_append_val(mentioned, user_id);
 	}
 
-	watchers = venture_notify_list_watchers(context, "ticket", ticket_id);
+	conversation.subject_type = "ticket";
+	conversation.subject_id = ticket_id;
+	conversation.label = label;
+	conversation.target_type = "ticket";
+	conversation.target_id = ticket_id;
+	conversation.actor = actor;
+	conversation.actor_user_id = actor_user_id;
+	conversation.excerpt = excerpt;
+	conversation.verb = internal ? "left a note" : "commented";
+	conversation.mentioned = mentioned;
+	conversation.parent_author = 0;
+	conversation.readable = NULL;
+	conversation.mentions_only = FALSE;
 
-	for (j = 0; j < watchers->len; j++)
+	venture_notify_conversation(context, &conversation);
+}
+
+/*
+ * A comment on any record. The inbox line opens the comment itself -- its
+ * permalink lands on the record's page at the comment -- and only people
+ * who may read the record hear about it, mentioned or watching: the line
+ * carries the record's name and what was said about it.
+ *
+ * Who is mentioned is the comment's own "mentions", which its save already
+ * narrowed to people who may read the record; an edit that names somebody
+ * new tells that person and nobody else.
+ */
+static void
+venture_notify_record_comment(
+	VentureContext		*context,
+	VentureEntity		*comment,
+	VentureAuditAction	 action,
+	const gchar		*diff
+){
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(GArray) mentioned = NULL;
+	g_autofree gchar *subject_type = NULL;
+	g_autofree gchar *label = NULL;
+	g_autofree gchar *author = NULL;
+	g_autofree gchar *mentions = NULL;
+	g_autofree gchar *excerpt = NULL;
+	g_auto(GStrv) names = NULL;
+	g_auto(GStrv) before = NULL;
+	VentureNotifyConversation conversation;
+	gint64 subject_id = 0;
+	gint64 parent_id = 0;
+	gint64 author_user_id = 0;
+	gint64 parent_author = 0;
+	gsize i;
+
+	if (venture_entity_is_deleted(comment))
+		return;
+
+	g_object_get(comment, "subject-type", &subject_type, "subject-id", &subject_id,
+	             "parent-id", &parent_id, "author", &author,
+	             "author-user-id", &author_user_id, "mentions", &mentions, NULL);
+
+	subject = venture_comment_get_subject(context, comment, NULL);
+
+	if ((NULL == subject) || venture_access_policy_record_is_personal(
+		venture_database_get_access_policy(venture_context_get_database(context)),
+		subject))
+		return;
+
+	/*
+	 * On an edit, only the names the edit added. The audit diff is taken
+	 * before the save derives "mentions", so the words are compared
+	 * instead: who the old body named, read the same way, is who has
+	 * already been told.
+	 */
+	if (VENTURE_AUDIT_ACTION_UPDATE == action)
 	{
-		g_autofree gchar *title = NULL;
-		gint64 user_id;
-		guint k;
-		gboolean already;
+		g_autoptr(JsonNode) parsed = NULL;
+		JsonObject *change;
 
-		user_id = g_array_index(watchers, gint64, j);
+		if (!venture_notify_diff_has(diff, "body"))
+			return;
 
-		if (user_id == actor_user_id)
-			continue;
-
-		already = FALSE;
-
-		for (k = 0; k < told->len; k++)
-		{
-			if (g_array_index(told, gint64, k) == user_id)
-				already = TRUE;
-		}
-
-		if (already)
-			continue;
-
-		title = g_strdup_printf("%s %s on %s",
-		                        venture_string_is_empty(actor) ? "Somebody"
-		                                                       : actor,
-		                        internal ? "left a note" : "commented",
-		                        label);
-		venture_notify_send(context, user_id, VENTURE_NOTIFICATION_KIND_WATCHED,
-		                    title, excerpt, "ticket", ticket_id, label, actor,
-		                    NULL);
+		parsed = venture_json_parse(diff, NULL);
+		change = ((NULL != parsed) && JSON_NODE_HOLDS_OBJECT(parsed) &&
+		          JSON_NODE_HOLDS_OBJECT(json_object_get_member(
+		          	json_node_get_object(parsed), "body")))
+			? json_object_get_object_member(json_node_get_object(parsed), "body")
+			: NULL;
+		before = venture_comment_resolve_mentions(context, subject,
+			(NULL != change) ? venture_json_object_get_string(change, "from", "") : "");
 	}
+
+	if (0 != parent_id)
+	{
+		g_autoptr(VentureEntity) parent = NULL;
+
+		parent = venture_database_get(venture_context_get_database(context),
+		                              VENTURE_TYPE_COMMENT, parent_id, NULL);
+
+		if (NULL != parent)
+			g_object_get(parent, "author-user-id", &parent_author, NULL);
+	}
+
+	label = venture_entity_get_display_name(subject);
+	excerpt = venture_comment_excerpt(comment, 140);
+	names = g_strsplit((NULL != mentions) ? mentions : "", ",", -1);
+	mentioned = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		gint64 user_id;
+
+		if (('\0' == names[i][0]) ||
+		    ((NULL != before) && g_strv_contains((const gchar *const *)before,
+		                                         names[i])))
+			continue;
+
+		user_id = venture_notify_user_id_for_username(context, names[i]);
+		g_array_append_val(mentioned, user_id);
+	}
+
+	conversation.subject_type = subject_type;
+	conversation.subject_id = subject_id;
+	conversation.label = label;
+	conversation.target_type = "comment";
+	conversation.target_id = venture_entity_get_id(comment);
+	conversation.actor = author;
+	conversation.actor_user_id = author_user_id;
+	conversation.excerpt = excerpt;
+	conversation.verb = (0 != parent_id) ? "replied" : "commented";
+	conversation.mentioned = mentioned;
+	conversation.parent_author = parent_author;
+	conversation.readable = subject;
+	conversation.mentions_only = (VENTURE_AUDIT_ACTION_UPDATE == action);
+
+	venture_notify_conversation(context, &conversation);
 }
 
 /*
@@ -1127,6 +1337,24 @@ venture_notify_on_audit(
 	 * somebody wants to know. */
 	actor_user_id = (VENTURE_ACTOR_KIND_USER == actor_kind)
 		? venture_notify_user_id_for_username(context, actor) : 0;
+
+	/* A comment on any record: a new one, or an edit that names
+	 * somebody new. A deletion tells nobody. */
+	if (0 == g_strcmp0(target_type, "comment"))
+	{
+		g_autoptr(VentureEntity) comment = NULL;
+
+		if (VENTURE_AUDIT_ACTION_DELETE == action)
+			return;
+
+		comment = venture_database_get(venture_context_get_database(context),
+		                               VENTURE_TYPE_COMMENT, target_id, NULL);
+
+		if (NULL != comment)
+			venture_notify_record_comment(context, comment, action, diff);
+
+		return;
+	}
 
 	/* A comment is about its ticket. */
 	if (0 == g_strcmp0(target_type, "ticket_comment"))

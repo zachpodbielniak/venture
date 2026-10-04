@@ -157,4 +157,7 @@ venture_data_source_run_display_name(VentureEntity *self)
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDataSourceRun, venture_data_source_run,
 	venture_data_source_run_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_data_source_run_display_name;
-	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Data source run", NULL);)
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Data source run", NULL);
+	/* Written once by the feeds service as the system; its source is
+	 * what to discuss. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)

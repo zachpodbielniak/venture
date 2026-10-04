@@ -49,7 +49,9 @@ static const VentureFieldDecl inbound_fields[] = {
 	VENTURE_FIELD_REF("duplicate-of-id", "Duplicate of", "The row first filed with this Message-ID; this one records only another folder or account holding it", "mail_inbound", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("skip-reason", "Skip reason", "Why the message was filed as a stub rather than processed")
 };
-VENTURE_DEFINE_ENTITY(VentureMailInbound, venture_mail_inbound, inbound_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMailInbound, venture_mail_inbound, inbound_fields,
+	/* The sync's memory of what it filed; the message it filed is what to discuss. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 static const VentureFieldDecl unmatched_fields[] = {
 	VENTURE_FIELD("address", "Address", "Normalised, unique within the organization", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	STR("name", "Name", "Display name from the last message"),

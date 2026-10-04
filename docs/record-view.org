@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-25]
-#+updated: [2026-09-25]
+#+updated: [2026-10-04]
 #+version: 0.6.0
 
 * What this is
@@ -62,8 +62,12 @@ go.
   type's own block (an invoice's lines and total, a ticket's desk and reply
   box, a release's changelog), then its actions in one card (an action that
   asks for something opens its form in place, under its own name), then
-  everything that points at it in one Related card, links, knowledge and
-  the activity.
+  the *Discussion* -- the record's comments, threaded, with the box for a
+  new one -- then everything that points at it in one Related card, links,
+  knowledge and the activity. The discussion is drawn for every type that
+  takes comments, which is every type that did not opt out with
+  =venture_entity_class_set_commentable()=; a ticket keeps its own
+  conversation instead. See [[file:comments.org][Comments]].
 - *The right column* is Details: the facts that are set, in the order the
   type declared them, with the name that is already the title left out.
   Emails, phone numbers and web addresses are links; a reference is the

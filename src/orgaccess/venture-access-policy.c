@@ -412,6 +412,76 @@ refuse(GError **error, gboolean hidden)
 		hidden ? "No such record" : "Your organization role does not permit this action");
 	return FALSE;
 }
+/*
+ * A comment is read and written on its record's terms: whoever may read the
+ * record may read its discussion and add to it -- a viewer included, which
+ * is the one place a viewer writes without a proposal, because a comment
+ * changes no business record and a conversation that waited for an approver
+ * would arrive under the approver's name. Only the author may change the
+ * words; the author or an organization owner or administrator may delete
+ * them. A read-only token stays read-only.
+ *
+ * Applied to administrators too: an owner may delete anybody's comment but
+ * may not put words in it.
+ */
+static gboolean
+comment_allows(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
+	const gchar *action, VentureEntity *comment, gboolean read, GError **error)
+{
+	static const gint managers[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+	g_autofree gchar *subject_type = NULL;
+	g_autofree gchar *author = NULL;
+	g_autoptr(VentureEntity) subject = NULL;
+	gint64 subject_id = 0;
+	gint64 author_user_id = 0;
+	gboolean own;
+	GType type;
+	g_object_get(comment, "subject-type", &subject_type, "subject-id", &subject_id,
+		"author", &author, "author-user-id", &author_user_id, NULL);
+	type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(),
+		NULL != subject_type ? subject_type : "");
+	/* A comment on a comment would make this question recursive; none is
+	 * ever written, and a row claiming to be one belongs to nobody. */
+	if (type == G_TYPE_INVALID || type == VENTURE_TYPE_COMMENT || subject_id <= 0)
+		return refuse(error, TRUE);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
+		subject = venture_database_get(self->database, type, subject_id, NULL);
+	}
+	if (subject == NULL)
+		return refuse(error, TRUE);
+	/* Not found, never forbidden: the same answer the record's page gives. */
+	if (!venture_access_policy_can(self, actor, "read", subject, NULL))
+		return refuse(error, TRUE);
+	if (read)
+		return TRUE;
+	if (actor->token_id > 0 && actor->role == VENTURE_USER_ROLE_VIEWER)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"A read-only token cannot comment");
+		return FALSE;
+	}
+	/* A new comment's author is stamped by its save validator from this
+	 * same principal, so there is nobody else it could be written as. */
+	if (!venture_entity_is_persisted(comment))
+		return TRUE;
+	/* With sign-in off every request is "local" with no account, and the
+	 * string is all there is to compare. */
+	own = author_user_id == actor->user_id &&
+		(actor->user_id > 0 || 0 == g_strcmp0(author, actor->name));
+	if (own)
+		return TRUE;
+	if (0 == g_strcmp0(action, "delete") &&
+		(administrator(actor) || tenant_administrator(self, actor) ||
+		 venture_access_policy_has_organization_role(self, actor,
+			venture_entity_get_organization_id(comment), managers, G_N_ELEMENTS(managers))))
+		return TRUE;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+		0 == g_strcmp0(action, "delete")
+			? "Only whoever wrote a comment, or an owner or administrator, may delete it"
+			: "Only whoever wrote a comment may change it");
+	return FALSE;
+}
 static gboolean
 finance_type(VentureEntity *entity)
 {
@@ -529,6 +599,12 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 		 * identity. The billing organization's members do not own it. */
 		if (provider && g_str_has_prefix(provider, "platform-ai-")) return refuse(error, TRUE);
 	}
+	if (VENTURE_IS_COMMENT(entity))
+	{
+		if (!comment_allows(self, actor, action, entity, read, error))
+			return FALSE;
+		goto allowed;
+	}
 	if (!administrator(actor))
 	{
 		/* Authentication and the account page need the caller's own row.
@@ -635,7 +711,10 @@ static gboolean
 role_proposes(gint role, const gchar *action, VentureEntity *entity)
 {
 	return (role == VENTURE_ORGANIZATION_ROLE_EDITOR && VENTURE_IS_JOURNAL(entity) && 0 == g_strcmp0(action, "post")) ||
-		(role == VENTURE_ORGANIZATION_ROLE_VIEWER && !venture_entity_is_persisted(entity) && 0 == g_strcmp0(action, "write"));
+		/* A comment is conversation, not a change to the books: it is
+		 * never proposed (comment_allows() says why). */
+		(role == VENTURE_ORGANIZATION_ROLE_VIEWER && !venture_entity_is_persisted(entity) && 0 == g_strcmp0(action, "write") &&
+		 !VENTURE_IS_COMMENT(entity));
 }
 
 gboolean

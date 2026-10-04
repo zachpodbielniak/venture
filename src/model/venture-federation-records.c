@@ -74,4 +74,6 @@ static const VentureFieldDecl replica_fields[] = {
 	VENTURE_FIELD_TEXT("conflicts", "Conflicts", "Explicit base/local/remote values; never silently overwritten"),
 	VENTURE_FIELD("status", "Sync status", "clean, pending, conflict or unavailable", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
-VENTURE_DEFINE_ENTITY(VentureFederationReplica, venture_federation_replica, replica_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFederationReplica, venture_federation_replica, replica_fields,
+	/* A working copy of somebody else's record; it is discussed where it lives. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)

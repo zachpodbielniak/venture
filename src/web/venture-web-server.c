@@ -763,6 +763,15 @@ venture_web_require_for_type(
 	    (VENTURE_TYPE_WATCH == entity_type))
 		needed = VENTURE_USER_ROLE_OWNER;
 
+	/*
+	 * A comment is a piece of its record, and the record's type may be
+	 * one only the owner opens (a user, a token, a webhook). The comment
+	 * routes apply that type's own gate; the generic surface, which
+	 * lists comments on every type at once, is the owner's.
+	 */
+	if (VENTURE_TYPE_COMMENT == entity_type)
+		needed = VENTURE_USER_ROLE_OWNER;
+
 	/* Plugin configuration steers loaded code; that is system
 	 * administration, not data entry. */
 	if (VENTURE_TYPE_PLUGIN_CONFIG == entity_type)
@@ -920,6 +929,21 @@ venture_web_type_accepts_writes(
 		                    VENTURE_ERROR_PERMISSION_DENIED,
 		                    "An alert hit is written when its rule fires; "
 		                    "it cannot be written or edited");
+		return FALSE;
+	}
+
+	/*
+	 * A comment is written through /api/v1/comments, which takes the
+	 * author from the session, places it on its record and tells the
+	 * people it names. The generic create would also be staged for a
+	 * viewer, and approving it would post it under the approver's name.
+	 */
+	if (VENTURE_TYPE_COMMENT == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "Comments are written through /api/v1/comments "
+		                    "(venturectl comments add)");
 		return FALSE;
 	}
 
@@ -9879,7 +9903,11 @@ venture_web_append_related(
 		if (VENTURE_TYPE_INVOICE_LINE == types[i])
 			continue;
 
+		/* A comment names its record by type and id, but it does
+		 * reference its author and the comment it answers; the
+		 * Discussion card is where comments are read. */
 		if ((VENTURE_TYPE_TICKET_COMMENT == types[i]) ||
+		    (VENTURE_TYPE_COMMENT == types[i]) ||
 		    (VENTURE_TYPE_WORKLOG == types[i]) ||
 		    (VENTURE_TYPE_WATCH == types[i]) ||
 		    (VENTURE_TYPE_NOTIFICATION == types[i]))
@@ -11553,6 +11581,7 @@ venture_web_append_incident_block(
 #include "attribution/venture-attribution-web.inc"
 #include "attribution/venture-attribution-settings-web.inc"
 #include "arbitrage/venture-arbitrage-web.inc"
+#include "web/venture-web-comments.inc"
 
 #ifdef VENTURE_HAVE_SQLITE
 /* In feeds/venture-feeds-web.inc, which comes in with the feeds routes. */
@@ -11595,6 +11624,19 @@ venture_web_ui_detail(
 
 	if (!venture_web_resolve_type(self, params, &entity_type, &error))
 		return venture_web_error_response(error);
+
+	/* A comment has no page of its own: every link to one -- the audit
+	 * log, a search result, a webhook's record.url from before -- lands
+	 * on its record at the comment, through the permalink's own check. */
+	if (VENTURE_TYPE_COMMENT == entity_type)
+	{
+		g_autofree gchar *permalink = NULL;
+
+		permalink = venture_comment_permalink(
+			g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10));
+
+		return venture_web_redirect_to(permalink);
+	}
 
 	if (!venture_web_require_for_type(self, principal, entity_type,
 	                                  VENTURE_USER_ROLE_VIEWER, &error))
@@ -11808,6 +11850,14 @@ venture_web_ui_detail(
 	venture_attribution_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_plan_web_panel(self, content, record, principal);
+
+	/*
+	 * The discussion, after the type's own block and before the tabs: it
+	 * is what people say about the record, read in full rather than one
+	 * tab away. A record whose type takes no comments -- a ticket has its
+	 * own conversation above -- shows nothing here.
+	 */
+	venture_web_append_comments(self, content, principal, record);
 
 	/*
 	 * What can be done to it goes beside its details, at the top of the
@@ -28090,6 +28140,7 @@ venture_web_notification_tone(VentureNotificationKind kind)
 	switch (kind)
 	{
 	case VENTURE_NOTIFICATION_KIND_MENTION:  return "accent";
+	case VENTURE_NOTIFICATION_KIND_REPLY:    return "accent";
 	case VENTURE_NOTIFICATION_KIND_ASSIGNED: return "info";
 	case VENTURE_NOTIFICATION_KIND_SLA:      return "negative";
 	case VENTURE_NOTIFICATION_KIND_BUDGET:   return "warning";
@@ -28205,7 +28256,17 @@ venture_web_ui_inbox(
 				venture_web_notification_tone(kind),
 				venture_enum_to_nick(VENTURE_TYPE_NOTIFICATION_KIND, (gint)kind));
 
-			if (!venture_string_is_empty(target_type) && (0 != target_id))
+			if (!venture_string_is_empty(target_type) && (0 != target_id) &&
+			    (0 == g_strcmp0(target_type, "comment")))
+			{
+				/* A comment opens at its place in the discussion. */
+				g_string_append_printf(content,
+					"<a class=\"inbox-title\" href=\"/comments/%" G_GINT64_FORMAT
+					"\">", target_id);
+				venture_html_escape_append(content, title);
+				g_string_append(content, "</a>");
+			}
+			else if (!venture_string_is_empty(target_type) && (0 != target_id))
 			{
 				g_string_append_printf(content,
 					"<a class=\"inbox-title\" href=\"/e/%s/%" G_GINT64_FORMAT
@@ -28827,10 +28888,28 @@ venture_web_append_activity(
 
 		if (0 == g_strcmp0(kind, "comment"))
 		{
+			const gchar *url;
 			gboolean internal;
 
 			internal = venture_json_object_get_bool(event, "internal", FALSE);
-			g_string_append(content, internal ? "left a note" : "commented");
+			url = venture_json_object_get_string(event, "url", NULL);
+
+			/* A comment on the record links to itself in the thread
+			 * above; a ticket's comment is already in this list. */
+			if (NULL != url)
+			{
+				g_string_append(content, "<a class=\"timeline-link\" href=\"");
+				venture_html_escape_append(content, url);
+				g_string_append(content, "\">");
+				g_string_append(content,
+					venture_json_object_get_bool(event, "reply", FALSE)
+						? "replied" : "commented");
+				g_string_append(content, "</a>");
+			}
+			else
+			{
+				g_string_append(content, internal ? "left a note" : "commented");
+			}
 		}
 		else if (0 == g_strcmp0(kind, "worklog"))
 		{
@@ -32259,6 +32338,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_inbox_read, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/inbox/count", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_inbox_count, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_watch, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/comments", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_comment_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/comments/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_comment_permalink, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/comments/:id/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_comment_edit, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/comments/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_comment_delete, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/views", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_views, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/views", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_view_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/views/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_view_open, self);
@@ -32496,6 +32579,16 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-identity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_identity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox_read, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watch, self);
+	/* The discussion on every record. Ahead of /api/v1/:type, which would
+	 * otherwise read "comments" as a type; the fixed names before :id. */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/comments", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_list, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/comments", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/comments/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/comments/mentions", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_mentions, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/comments/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_get, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_PATCH, "/api/v1/comments/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_update, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_PUT, "/api/v1/comments/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_update, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_DELETE, "/api/v1/comments/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_comments_delete, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/watching/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watching, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/activity/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_activity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/sla", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_sla, self);

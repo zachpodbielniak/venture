@@ -4095,6 +4095,10 @@
 		wireReplyTools(document);
 		wireChatStream(document);
 		wireSameParent(document);
+		/* Capture phase, so a comment form is posted in place before the
+		 * page's inline-form handler sees it. */
+		document.addEventListener("submit", discussion_submit, true);
+		wire_discussion(document);
 		wireInlineForms();
 		wirePickers(document);
 		wireRecordPickers(document);
@@ -4239,6 +4243,683 @@
 				}
 
 				window.setTimeout(function () { window.location.reload(); }, 1200);
+			});
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The discussion on every record                                      */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * A comment is an ordinary form that works with scripting off; all of
+	 * this is enhancement: Write and Preview tabs (the preview is the
+	 * server's own renderer, so it is what posting shows), a toolbar and
+	 * its shortcuts, a box that grows as it is typed into, an @ menu of the
+	 * people who may read the record, and posting in place -- the server
+	 * answers X-Venture-Discussion with the panel drawn again, which is
+	 * swapped in whole so there is one renderer.
+	 *
+	 * Hooks are data attributes, never class names: this script is inlined
+	 * into every page, and a class name a test looks for would be found in
+	 * here instead. Identifiers are snake_case, as the house style asks of
+	 * new code.
+	 */
+
+	var discussion_people = {};
+
+	function discussion_section(node) {
+		return node && node.closest ? node.closest("[data-discussion]") : null;
+	}
+
+	function discussion_subject(node) {
+		var section = discussion_section(node);
+
+		if (!section) {
+			return null;
+		}
+
+		return {
+			type: section.getAttribute("data-subject-type"),
+			id: section.getAttribute("data-subject-id")
+		};
+	}
+
+	function discussion_autogrow(textarea) {
+		textarea.style.height = "auto";
+		textarea.style.height = Math.min(textarea.scrollHeight + 2,
+			Math.round(window.innerHeight * 0.6)) + "px";
+	}
+
+	function discussion_changed(textarea) {
+		discussion_autogrow(textarea);
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+
+	/* Wraps the selection, or a placeholder selected for typing over. */
+	function discussion_wrap(textarea, before, after, placeholder) {
+		var start = textarea.selectionStart;
+		var end = textarea.selectionEnd;
+		var value = textarea.value;
+		var selected = value.slice(start, end) || placeholder;
+
+		textarea.value = value.slice(0, start) + before + selected + after
+			+ value.slice(end);
+		textarea.focus();
+		textarea.setSelectionRange(start + before.length,
+			start + before.length + selected.length);
+		discussion_changed(textarea);
+	}
+
+	/* Puts a mark at the start of every line the selection touches. */
+	function discussion_prefix(textarea, mark) {
+		var start = textarea.selectionStart;
+		var end = textarea.selectionEnd;
+		var value = textarea.value;
+		var line_start = value.lastIndexOf("\n", start - 1) + 1;
+		var block = value.slice(line_start, end);
+		var marked = block.split("\n").map(function (line) {
+			return line.indexOf(mark) === 0 ? line : mark + line;
+		}).join("\n");
+
+		textarea.value = value.slice(0, line_start) + marked + value.slice(end);
+		textarea.focus();
+		textarea.setSelectionRange(line_start + marked.length,
+			line_start + marked.length);
+		discussion_changed(textarea);
+	}
+
+	function discussion_format(textarea, kind) {
+		var start = textarea.selectionStart;
+		var end = textarea.selectionEnd;
+		var value = textarea.value;
+		var text;
+		var insert;
+
+		switch (kind) {
+		case "bold":
+			discussion_wrap(textarea, "**", "**", "bold text");
+			break;
+		case "italic":
+			discussion_wrap(textarea, "_", "_", "emphasis");
+			break;
+		case "code":
+			if (value.slice(start, end).indexOf("\n") >= 0) {
+				discussion_wrap(textarea, "```\n", "\n```", "");
+			} else {
+				discussion_wrap(textarea, "`", "`", "code");
+			}
+			break;
+		case "link":
+			/* The address is what is left to type, so it is selected. */
+			text = value.slice(start, end) || "text";
+			insert = "[" + text + "](https://)";
+			textarea.value = value.slice(0, start) + insert + value.slice(end);
+			textarea.focus();
+			textarea.setSelectionRange(start + text.length + 3,
+				start + insert.length - 1);
+			discussion_changed(textarea);
+			break;
+		case "list":
+			discussion_prefix(textarea, "- ");
+			break;
+		case "quote":
+			discussion_prefix(textarea, "> ");
+			break;
+		case "mention":
+			insert = (start > 0 && !/\s/.test(value.charAt(start - 1))) ? " @" : "@";
+			textarea.value = value.slice(0, start) + insert + value.slice(end);
+			textarea.focus();
+			textarea.setSelectionRange(start + insert.length, start + insert.length);
+			discussion_changed(textarea);
+			discussion_complete(textarea);
+			break;
+		default:
+			break;
+		}
+	}
+
+	/* --- The @ menu --- */
+
+	/* "@pre" just before the caret, by the same rule the server reads a
+	 * mention with: an @ inside a word or an address names nobody. */
+	function discussion_mention_query(textarea) {
+		var before = textarea.value.slice(0, textarea.selectionStart);
+		var match = /(^|[^A-Za-z0-9.])@([A-Za-z0-9_.-]{0,32})$/.exec(before);
+
+		if (!match || textarea.selectionStart !== textarea.selectionEnd) {
+			return null;
+		}
+
+		return {
+			prefix: match[2],
+			start: textarea.selectionStart - match[2].length - 1
+		};
+	}
+
+	function discussion_menu(textarea) {
+		return textarea.form ? textarea.form.querySelector("[data-discussion-menu]") : null;
+	}
+
+	function discussion_close_menu(textarea) {
+		var menu = discussion_menu(textarea);
+
+		if (menu) {
+			menu.hidden = true;
+			menu.textContent = "";
+		}
+
+		textarea.setAttribute("aria-expanded", "false");
+		textarea.removeAttribute("aria-activedescendant");
+	}
+
+	function discussion_menu_open(textarea) {
+		var menu = discussion_menu(textarea);
+
+		return !!(menu && !menu.hidden && menu.firstChild);
+	}
+
+	function discussion_pick(textarea, username) {
+		var query = discussion_mention_query(textarea);
+		var value = textarea.value;
+		var insert = "@" + username + " ";
+		var caret;
+
+		if (!query) {
+			return;
+		}
+
+		textarea.value = value.slice(0, query.start) + insert
+			+ value.slice(textarea.selectionStart);
+		caret = query.start + insert.length;
+		textarea.focus();
+		textarea.setSelectionRange(caret, caret);
+		discussion_close_menu(textarea);
+		discussion_autogrow(textarea);
+	}
+
+	function discussion_move(textarea, delta) {
+		var menu = discussion_menu(textarea);
+		var options = menu.querySelectorAll("[data-discussion-option]");
+		var current = 0;
+		var next;
+
+		options.forEach(function (option, i) {
+			if (option.getAttribute("aria-selected") === "true") {
+				current = i;
+			}
+		});
+
+		next = (current + delta + options.length) % options.length;
+		options.forEach(function (option, i) {
+			option.setAttribute("aria-selected", i === next ? "true" : "false");
+		});
+		textarea.setAttribute("aria-activedescendant", options[next].id);
+	}
+
+	function discussion_render_people(textarea, people) {
+		var menu = discussion_menu(textarea);
+
+		if (!menu) {
+			return;
+		}
+
+		menu.textContent = "";
+
+		if (!people.length) {
+			discussion_close_menu(textarea);
+			return;
+		}
+
+		people.forEach(function (person, i) {
+			var option = document.createElement("div");
+			var initials = document.createElement("span");
+			var name = document.createElement("span");
+			var handle = document.createElement("span");
+
+			option.id = textarea.id + "-person-" + i;
+			option.setAttribute("role", "option");
+			option.setAttribute("data-discussion-option", person.username);
+			option.setAttribute("aria-selected", i === 0 ? "true" : "false");
+			initials.setAttribute("data-discussion-option-initials", "");
+			initials.setAttribute("aria-hidden", "true");
+			initials.textContent = person.initials || "?";
+			name.textContent = person.name || person.username;
+			handle.setAttribute("data-discussion-option-handle", "");
+			handle.textContent = "@" + person.username;
+			option.appendChild(initials);
+			option.appendChild(name);
+			option.appendChild(handle);
+
+			/* mousedown, not click: the textarea must not lose the
+			 * caret it is about to have a name typed at. */
+			option.addEventListener("mousedown", function (event) {
+				event.preventDefault();
+				discussion_pick(textarea, person.username);
+			});
+			menu.appendChild(option);
+		});
+
+		menu.hidden = false;
+		textarea.setAttribute("aria-expanded", "true");
+		textarea.setAttribute("aria-activedescendant", textarea.id + "-person-0");
+	}
+
+	function discussion_complete(textarea) {
+		var query = discussion_mention_query(textarea);
+		var subject = discussion_subject(textarea);
+		var key;
+
+		if (!query || !subject) {
+			discussion_close_menu(textarea);
+			return;
+		}
+
+		key = subject.type + "/" + subject.id + "/" + query.prefix.toLowerCase();
+
+		if (discussion_people[key]) {
+			discussion_render_people(textarea, discussion_people[key]);
+			return;
+		}
+
+		window.clearTimeout(textarea.discussion_timer);
+		textarea.discussion_timer = window.setTimeout(function () {
+			fetch("/api/v1/comments/mentions?subject_type="
+				+ encodeURIComponent(subject.type) + "&subject_id="
+				+ encodeURIComponent(subject.id) + "&q="
+				+ encodeURIComponent(query.prefix), {
+				credentials: "same-origin",
+				headers: { "Accept": "application/json" }
+			}).then(function (response) {
+				return response.ok ? response.json() : { users: [] };
+			}).then(function (body) {
+				var still = discussion_mention_query(textarea);
+
+				discussion_people[key] = body.users || [];
+
+				/* Only if the caret is still at the same @. */
+				if (still && still.prefix.toLowerCase() === query.prefix.toLowerCase()) {
+					discussion_render_people(textarea, discussion_people[key]);
+				}
+			}).catch(function () {
+				discussion_close_menu(textarea);
+			});
+		}, 120);
+	}
+
+	/* --- Write and Preview --- */
+
+	function discussion_show(form, tab) {
+		var textarea = form.querySelector("[data-discussion-input]");
+		var preview = form.querySelector("[data-discussion-preview]");
+		var tools = form.querySelector("[data-discussion-tools]");
+		var subject = discussion_subject(form);
+		var empty;
+
+		form.querySelectorAll("[data-discussion-tab]").forEach(function (button) {
+			button.setAttribute("aria-selected",
+				button.getAttribute("data-discussion-tab") === tab ? "true" : "false");
+		});
+
+		if (tab !== "preview") {
+			preview.hidden = true;
+			textarea.hidden = false;
+
+			if (tools) {
+				tools.hidden = false;
+			}
+
+			textarea.focus();
+			return;
+		}
+
+		discussion_close_menu(textarea);
+		preview.style.minHeight = textarea.offsetHeight + "px";
+		textarea.hidden = true;
+		preview.hidden = false;
+
+		if (tools) {
+			tools.hidden = true;
+		}
+
+		if (!textarea.value.trim()) {
+			preview.textContent = "";
+			empty = document.createElement("p");
+			empty.setAttribute("data-discussion-empty-preview", "");
+			empty.textContent = "Nothing to preview yet.";
+			preview.appendChild(empty);
+			return;
+		}
+
+		preview.textContent = "Rendering…";
+
+		fetch("/api/v1/comments/preview", {
+			method: "POST",
+			credentials: "same-origin",
+			headers: { "Content-Type": "application/json", "Accept": "application/json" },
+			body: JSON.stringify({
+				subject_type: subject ? subject.type : "",
+				subject_id: subject ? Number(subject.id) : 0,
+				body: textarea.value
+			})
+		}).then(function (response) {
+			if (!response.ok) {
+				return response.text().then(function (text) {
+					throw new Error(failureMessage(text));
+				});
+			}
+
+			return response.json();
+		}).then(function (body) {
+			/* The server's renderer escaped everything first; this is
+			 * the same HTML posting would put on the page. */
+			preview.innerHTML = body.html;
+		}).catch(function (failure) {
+			preview.textContent = failure.message;
+		});
+	}
+
+	/* --- Posting in place --- */
+
+	function discussion_replace(section, html, landed) {
+		var holder = document.createElement("div");
+		var fresh;
+		var target;
+
+		holder.innerHTML = html;
+		fresh = holder.querySelector("[data-discussion]");
+
+		if (!fresh) {
+			window.location.reload();
+			return;
+		}
+
+		section.parentNode.replaceChild(fresh, section);
+		wire_discussion(fresh);
+
+		target = landed ? document.getElementById("comment-" + landed) : null;
+
+		if (target) {
+			if (window.history && window.history.replaceState) {
+				window.history.replaceState(null, "", "#comment-" + landed);
+			}
+
+			target.setAttribute("data-discussion-landed", "");
+			target.scrollIntoView({ block: "center" });
+			window.setTimeout(function () {
+				target.removeAttribute("data-discussion-landed");
+			}, 2600);
+		}
+	}
+
+	function discussion_submit(event) {
+		var form = event.target;
+		var is_delete;
+		var section;
+		var buttons;
+
+		if (!(form instanceof HTMLFormElement) || !window.fetch) {
+			return;
+		}
+
+		is_delete = form.hasAttribute("data-discussion-delete");
+
+		if (!is_delete && !form.hasAttribute("data-discussion-form")) {
+			return;
+		}
+
+		section = discussion_section(form);
+
+		if (!section) {
+			return;
+		}
+
+		/* Ahead of the page's inline-form handler, which would follow
+		 * the redirect and lose the anchor. */
+		event.preventDefault();
+		event.stopImmediatePropagation();
+
+		if (form.discussion_busy) {
+			return;
+		}
+
+		if (is_delete && !window.confirm("Delete this comment? Any replies to it stay in the thread.")) {
+			return;
+		}
+
+		form.discussion_busy = true;
+		buttons = form.querySelectorAll("button[type=submit]");
+		buttons.forEach(function (button) { button.disabled = true; });
+
+		fetch(form.getAttribute("action"), {
+			method: "POST",
+			mode: "same-origin",
+			credentials: "same-origin",
+			body: new URLSearchParams(new FormData(form)),
+			headers: {
+				"Accept": "text/html",
+				"X-Venture-Inline": "1",
+				"X-Venture-Discussion": "1"
+			}
+		}).then(function (response) {
+			if (!response.ok) {
+				return response.text().then(function (text) {
+					form.discussion_busy = false;
+					buttons.forEach(function (button) { button.disabled = false; });
+					showFormError(form, failureMessage(text));
+				});
+			}
+
+			return response.text().then(function (html) {
+				discussion_replace(section, html,
+					response.headers.get("X-Venture-Comment"));
+			});
+		}).catch(function () {
+			form.discussion_busy = false;
+			buttons.forEach(function (button) { button.disabled = false; });
+			/* The comment may have been saved before the reply was lost. */
+			showFormError(form, "The result could not be confirmed. "
+				+ "Check the discussion before trying again.");
+		});
+	}
+
+	/* --- Keys --- */
+
+	function discussion_keydown(event) {
+		var textarea = event.target;
+		var form = textarea.form;
+		var command = event.ctrlKey || event.metaKey;
+		var selected;
+
+		if (discussion_menu_open(textarea)) {
+			if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+				event.preventDefault();
+				discussion_move(textarea, event.key === "ArrowDown" ? 1 : -1);
+				return;
+			}
+
+			if (event.key === "Enter" || event.key === "Tab") {
+				selected = discussion_menu(textarea)
+					.querySelector("[data-discussion-option][aria-selected=\"true\"]");
+
+				if (selected) {
+					event.preventDefault();
+					discussion_pick(textarea,
+						selected.getAttribute("data-discussion-option"));
+					return;
+				}
+			}
+
+			if (event.key === "Escape") {
+				/* Closes the menu, and only the menu. */
+				event.preventDefault();
+				event.stopPropagation();
+				discussion_close_menu(textarea);
+				return;
+			}
+		}
+
+		if (command && event.key === "Enter") {
+			event.preventDefault();
+			if (form.requestSubmit) {
+				form.requestSubmit();
+			} else {
+				form.submit();
+			}
+			return;
+		}
+
+		if (command && !event.shiftKey && !event.altKey) {
+			var shortcuts = { b: "bold", i: "italic", k: "link", e: "code" };
+			var kind = shortcuts[event.key.toLowerCase()];
+
+			if (kind) {
+				/* Ctrl+K is the palette everywhere else; in a comment
+				 * box it is a link, as in every editor. */
+				event.preventDefault();
+				event.stopPropagation();
+				discussion_format(textarea, kind);
+			}
+		}
+	}
+
+	/* --- Wiring --- */
+
+	function discussion_wire_form(form) {
+		var textarea = form.querySelector("[data-discussion-input]");
+		var bar = form.querySelector("[data-discussion-bar]");
+		var cancel = form.querySelector("[data-discussion-cancel]");
+
+		if (!textarea || form.discussion_wired) {
+			return;
+		}
+
+		form.discussion_wired = true;
+
+		if (bar) {
+			bar.hidden = false;
+		}
+
+		textarea.setAttribute("aria-haspopup", "listbox");
+		textarea.setAttribute("aria-expanded", "false");
+		textarea.setAttribute("aria-keyshortcuts", "Control+Enter Control+B Control+I Control+K");
+
+		form.querySelectorAll("[data-discussion-tab]").forEach(function (button) {
+			button.addEventListener("click", function () {
+				discussion_show(form, button.getAttribute("data-discussion-tab"));
+			});
+		});
+
+		form.querySelectorAll("[data-discussion-md]").forEach(function (button) {
+			button.addEventListener("click", function () {
+				discussion_show(form, "write");
+				discussion_format(textarea, button.getAttribute("data-discussion-md"));
+			});
+		});
+
+		textarea.addEventListener("input", function () {
+			discussion_autogrow(textarea);
+			discussion_complete(textarea);
+		});
+		textarea.addEventListener("keydown", discussion_keydown);
+		textarea.addEventListener("blur", function () {
+			window.setTimeout(function () { discussion_close_menu(textarea); }, 150);
+		});
+
+		/* A box inside a fold: Cancel closes the fold. */
+		if (cancel) {
+			cancel.hidden = false;
+			cancel.addEventListener("click", function () {
+				var fold = form.closest("details");
+
+				discussion_show(form, "write");
+
+				if (fold) {
+					fold.open = false;
+				}
+			});
+		}
+
+		discussion_autogrow(textarea);
+	}
+
+	function wire_discussion(root) {
+		var sections = Array.prototype.slice.call(root.querySelectorAll("[data-discussion]"));
+
+		/* A panel swapped in after a post is its own root. */
+		if (root.matches && root.matches("[data-discussion]")) {
+			sections.push(root);
+		}
+
+		sections.forEach(function (section) {
+			section.querySelectorAll("[data-discussion-form]").forEach(discussion_wire_form);
+
+			/* Any Reply in a thread opens the box at its foot, naming
+			 * whoever wrote a reply being answered. */
+			section.querySelectorAll("[data-discussion-reply-to]").forEach(function (link) {
+				link.addEventListener("click", function (event) {
+					var fold = document.getElementById("reply-"
+						+ link.getAttribute("data-discussion-reply-to"));
+					var name = link.getAttribute("data-discussion-mention");
+					var textarea;
+
+					if (!fold) {
+						return;
+					}
+
+					event.preventDefault();
+					fold.open = true;
+					textarea = fold.querySelector("[data-discussion-input]");
+
+					if (name && textarea.value.indexOf("@" + name) < 0) {
+						textarea.value = "@" + name + " " + textarea.value;
+					}
+
+					textarea.focus();
+					textarea.setSelectionRange(textarea.value.length,
+						textarea.value.length);
+					discussion_autogrow(textarea);
+					fold.scrollIntoView({ block: "nearest" });
+				});
+			});
+
+			/* Editing happens where the words are: the body steps aside
+			 * while its box is open. */
+			section.querySelectorAll("[data-discussion-edit]").forEach(function (fold) {
+				fold.addEventListener("toggle", function () {
+					var article = fold.closest("[data-comment-id]");
+					var body = article ? article.querySelector("[data-discussion-body]") : null;
+					var textarea = fold.querySelector("[data-discussion-input]");
+
+					if (body) {
+						body.hidden = fold.open;
+					}
+
+					if (fold.open && textarea) {
+						textarea.focus();
+						textarea.setSelectionRange(textarea.value.length,
+							textarea.value.length);
+						discussion_autogrow(textarea);
+					}
+				});
+			});
+
+			/* A permalink is a link; with a clipboard it is copied. */
+			section.querySelectorAll("[data-discussion-copy]").forEach(function (link) {
+				link.addEventListener("click", function (event) {
+					var url = new URL(link.getAttribute("href"), window.location.href).href;
+
+					if (!navigator.clipboard || !window.isSecureContext) {
+						return;
+					}
+
+					event.preventDefault();
+					navigator.clipboard.writeText(url).then(function () {
+						toast("Link to the comment copied", "", 2500);
+					}, function () {
+						window.location.assign(url);
+					});
+				});
 			});
 		});
 	}

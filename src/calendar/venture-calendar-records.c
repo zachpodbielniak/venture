@@ -38,7 +38,9 @@ static const VentureFieldDecl event_fields[] = {
 	DATE("remote-modified-at", "Remote modified"),
 	DATE("synced-at", "Synced")
 };
-VENTURE_DEFINE_ENTITY(VentureCalendarEvent, venture_calendar_event, event_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCalendarEvent, venture_calendar_event, event_fields,
+	/* The sync's memory of both sides of an event, not the event itself. */
+	venture_entity_class_set_commentable(VENTURE_ENTITY_CLASS(klass), FALSE);)
 /* A public scheduling link. Availability is a JSON object of weekday to
  * "HH:MM-HH:MM[,HH:MM-HH:MM]" windows in the owner's IANA timezone. */
 static const VentureFieldDecl booking_fields[] = {

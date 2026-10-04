@@ -66,6 +66,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:factory.org][The software factory]] — milestones, releases, builds, environments, deployments, incidents; what needs you, release readiness, deploy and roll back, milestone forecasts, and the assistant's release notes, postmortems, build triage and briefing
 - [[file:dashboards.org][Dashboards]] — pages of widgets, as many as you like, from any module's records and reports; =sum= and =progress= widgets total any numeric field
 - [[file:webhooks.org][Webhooks out]] — telling something outside that a record changed: events, signing, deliveries
+- [[file:comments.org][Comments]] — a discussion on every record: threads and replies, @mentions told in the inbox only to people who may read the record, safe markdown, permalinks, and who may edit and delete
 - [[file:workdesk.org][The workdesk]] — the inbox and watching, saved views, service levels, macros, worklogs, sprints, bulk edits, the timeline, mission control and agent budgets
 - [[file:harness.org][The agent harness]] — a coding agent kept open in a workspace: sessions, providers, and what an operator has to switch on
 - [[file:interface.org][The interface]] — the design system behind the web UI: substrates, the two registers of type, geometry, and the tokens a plugin builds on

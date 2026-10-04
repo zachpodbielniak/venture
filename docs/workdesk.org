@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-09-12]
+#+updated: [2026-10-04]
 #+version: 0.6.0
 
 * What this is
@@ -28,9 +28,10 @@ The inbox and the watch list are personal, and guarded the way chat is: their ge
 
 * The inbox
 
-=/inbox= is what you have been told, unread first, with a count beside the sidebar entry that updates without a reload. Five things put a line there:
+=/inbox= is what you have been told, unread first, with a count beside the sidebar entry that updates without a reload. Six things put a line there:
 
-- *A mention.* A comment containing =@yourname= — the username, as a ticket's assignee holds it. A trailing dot is punctuation; the local part of an email address is not a mention.
+- *A mention.* A comment containing =@yourname= — the username, as a ticket's assignee holds it. A trailing dot is punctuation; the local part of an email address is not a mention. On any record's discussion (see [[file:comments.org][Comments]]) a mention counts only when the person named may read the record; anybody else stays plain text and is told nothing.
+- *A reply.* Somebody answered your comment on a record's discussion.
 - *An assignment.* A ticket handed to you, by anybody but yourself.
 - *A change to something you watch.* Every audited change to a record you follow, with what moved — "Status: todo → in_progress; Assignee: — → zach".
 - *A service level missed.* The resolution target passed while the ticket was open; the assignee and the watchers hear.
@@ -38,7 +39,7 @@ The inbox and the watch list are personal, and guarded the way chat is: their ge
 
 The inbox is fed by the audit trail's own signal, so every door — the form, the API, =venturectl=, an automation, the assistant — tells the same people the same things, and the person who made a change is never told about their own edit. The system's own bookkeeping writes (a first-reply stamp, a logged-hours total) tell nobody; they follow something a person did and was already told about.
 
-Watching is automatic where it is obvious: whoever raises a ticket follows it, whoever is assigned follows it, whoever comments or is mentioned follows it. Anything else is the Watch button on the record's page, which also says how many others follow it. Reading is per person: a notification in somebody else's inbox is not found, never forbidden.
+Watching is automatic where it is obvious: whoever raises a ticket follows it, whoever is assigned follows it, whoever comments or is mentioned follows it -- on a ticket, and on any record's discussion, where the watchers of the record are told of every new comment and a line about a comment opens its permalink, =/comments/N=. Anything else is the Watch button on the record's page, which also says how many others follow it. Reading is per person: a notification in somebody else's inbox is not found, never forbidden.
 
 Nothing here sends mail. The inbox is the delivery; an [[file:automation.org][automation]] rule on =notification= creations can forward to ntfy, a chat, or anything podomation reaches.
 
@@ -98,7 +99,7 @@ On any list, tick rows (or press =x= on the row under the keyboard cursor) and a
 
 * The timeline
 
-Every record's page ends with its activity: each audited change with who made it and what moved, from → to, and for a ticket its comments and worklogs woven in by time. It is the record's own story; the audit log page is the whole install's. =GET /api/v1/activity/:type/:id= returns the same list as JSON, and the assistant reads it with =venture_desk= action =activity=.
+Every record's page ends with its activity: each audited change with who made it and what moved, from → to, for a ticket its comments and worklogs woven in by time, and for any other record each comment of its discussion -- who commented or replied, a line of it, and a link to it in the Discussion card above. It is the record's own story; the audit log page is the whole install's. =GET /api/v1/activity/:type/:id= returns the same list as JSON, and the assistant reads it with =venture_desk= action =activity=.
 
 * Mission control
 

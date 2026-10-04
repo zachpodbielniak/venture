@@ -1400,6 +1400,80 @@ than one that fails.
   listener that runs before the hx runtime; slash commands are handled
   there too and never reach the server.
 
+## Comments: a discussion on every record
+
+`comment` (core module) names its record by type and id, like
+`ticket_relation`, so its panel, routes and API are hand-written
+(`src/web/venture-web-comments.inc`) and its rules live in
+`src/core/venture-comment.c` and `comment_allows()` in the access policy.
+`docs/comments.org` has the whole of it.
+
+- **Every type takes comments unless its class says otherwise.**
+  `venture_entity_class_set_commentable(klass, FALSE)` in the type's own
+  `class_init` is the opt-out; never a list in the panel or the service.
+  A ticket opts out because `ticket_comment` is its conversation (internal
+  notes, the portal, the first-reply clock); do not draw the generic card
+  beside it.
+- **The audit diff is taken before the save validators run.** A field a
+  validator derives (`mentions`, `edited-at`) is written but never appears
+  in the diff, so nothing may key on it there: the inbox works out who an
+  edit newly names by resolving the diff's old `body`, not by diffing
+  `mentions`. The same holds for any derived field anywhere.
+- **Reference checks run before the save validators, under the writer's
+  scope.** A field the validator stamps from the principal must not be a
+  `REFERENCE`: a client that sent somebody else's id would be refused
+  ("points at user #1, which does not exist") before the stamp could
+  overwrite it. That is why `author-user-id` is an integer.
+- **The author is never an input.** The validator overwrites `author` and
+  `author-user-id` from `venture_access_policy_get_actor()` on insert and
+  refuses a later change; only trusted internal work with no principal
+  keeps what it set.
+- **`comment_allows()` applies to administrators too.** It sits before the
+  `!administrator()` block: an owner may delete anybody's comment but may
+  never edit one. Reading and writing are the record's read; a refusal is
+  NOT_FOUND. Viewers comment without a proposal -- `role_proposes()`
+  excludes comments, and the generic routes refuse the type (writes via
+  `venture_web_type_accepts_writes()`, reads owner-only via
+  `venture_web_require_for_type()`), because an approved comment would be
+  posted under the approver's name. A read-only token stays read-only.
+- **A mention is only somebody who may read the record.**
+  `venture_comment_resolve_mentions()` reads names with the markdown
+  renderer itself (so code is never a mention) and keeps only active
+  users the policy lets read the subject; everybody else is plain text
+  and told nothing. Refusing the comment instead would tell the writer who
+  exists and who may read what. The inbox checks each recipient again at
+  the moment of telling, and the @ menu offers only readers.
+- **A private record takes no comments.** Its inbox lines and webhooks
+  would publish an excerpt of it; `venture_comment_subject_accepts()` is
+  the one place that says so.
+- **Markdown is escaped character by character, never by a regex over the
+  source.** `src/util/venture-markdown.c` writes only its own tags; a link
+  is written only to `http(s)`, a `/path` or an `#anchor`. The chat
+  panel's renderer is separate and older, with pinned output; it was not
+  folded in. Its closers are cached per call so a wall of delimiters stays
+  linear.
+- **The page posts in place, and the script must get there first.** The
+  page's inline-form handler follows a redirect with `fetch()`, whose
+  `response.url` drops the fragment, so a comment would land at the top of
+  the page. `discussion_submit()` listens in the capture phase and asks for
+  the card again with `X-Venture-Discussion`; the server answers with the
+  card and `X-Venture-Comment: N`, and the card is swapped whole -- one
+  renderer. Its hooks are `data-discussion-*` attributes, never class
+  names.
+- **A comment has no page.** `/comments/N` is the permalink (302 to
+  `/e/TYPE/ID#comment-N`, or not found), and `/e/comment/N` redirects to it
+  before the type gate, so the audit log, a search and an old webhook land
+  on the comment. The inbox, `venture_notify_to_json()` and a webhook's
+  `record.url` give `/comments/N` for a comment target.
+- **The demo's colleagues post as themselves through `--session-file`.**
+  An editor may not mint a token, and a comment's author is the
+  credential; Bob, Carol and Dave are finance members (the trades they
+  discuss are books) with a random password used once to sign in. A
+  body goes on standard input (`comments add TYPE ID -`), never in argv:
+  `venturectl` parses argv with GOptionContext, which refuses UTF-8 it
+  cannot convert in a C locale -- the docs quickstart runs the demo in
+  one, and an em dash in a comment failed it.
+
 ## The interface
 
 - **Two looks, one markup.** `data/static/venture-industrial.css` is the

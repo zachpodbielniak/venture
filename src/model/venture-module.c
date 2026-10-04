@@ -363,6 +363,9 @@ static GType (*const venture_module_core_types[]) (void) = {
 	/* Any record type may be grouped by a category tree -- a plugin's
 	 * as much as a product -- so the tree belongs to every install. */
 	venture_category_get_type,
+	/* Every record takes comments, so the comment belongs to the module
+	 * that is always on. */
+	venture_comment_get_type,
 	NULL
 };
 

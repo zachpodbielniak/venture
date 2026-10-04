@@ -284,6 +284,61 @@ test_token_actor_names(void)
 	venture_test_remove_tree(directory);
 }
 
+/*
+ * 000720 gives a record's discussion its thread index. An install upgraded
+ * from before comments existed -- simulated by forgetting the script and
+ * its index -- gets the index on its next start, once, keeps the rows it
+ * has, and a second start changes nothing. If this regresses, every record
+ * page reads its discussion by scanning two single-column indexes.
+ */
+static void
+test_record_comments(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO comments (uuid, organization_id, created_at, updated_at, version, "
+		"subject_type, subject_id, body, author) VALUES ('comment-1', 1, "
+		"'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'company', 1, 'Kept.', 'erin');"
+		"DROP INDEX idx_comments_subject_thread;"
+		"DELETE FROM schema_migrations WHERE version >= 720", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *index = NULL;
+		g_autofree gchar *kept = NULL;
+		g_autofree gchar *history = NULL;
+
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		index = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "
+			"AND name = 'idx_comments_subject_thread'");
+		g_assert_cmpstr(index, ==, "1");
+		kept = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM comments WHERE uuid = 'comment-1' AND body = 'Kept.'");
+		g_assert_cmpstr(kept, ==, "1");
+		history = query_text(database,
+			"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 720");
+		g_assert_cmpstr(history, ==, "1");
+		g_clear_object(&database);
+	}
+
+	venture_test_remove_tree(directory);
+}
+
 /* A downgrade or edited migration must fail before schema reconciliation
  * can recreate a missing application table. */
 static void
@@ -1203,6 +1258,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/account-holdings-without-accounts",
 	                test_account_holdings_without_accounts);
 	g_test_add_func("/migrations/backup-store-copies", test_backup_store_copies);
+	g_test_add_func("/migrations/record-comments", test_record_comments);
 	g_test_add_func("/migrations/fresh-without-finance", test_fresh_without_finance);
 	g_test_add_func("/migrations/currency-book-treatment", test_currency_book_treatment);
 	g_test_add_data_func("/migrations/checksum", "UPDATE schema_migrations SET checksum = 'changed'", test_history_refusal);

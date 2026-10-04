@@ -236,7 +236,14 @@ venture_ai_type_is_writable(GType entity_type)
 	        * fills one out, so refusing it costs the assistant nothing
 	        * and keeps the record of what happened out of its reach.
 	        */
-	       (VENTURE_TYPE_FORGE_RUN != entity_type);
+	       (VENTURE_TYPE_FORGE_RUN != entity_type) &&
+	       /*
+	        * A comment says who wrote it, and the save takes that from
+	        * the principal. Staged, it would be approved -- and posted --
+	        * under the approver's name; the assistant reads a record's
+	        * discussion but does not join it.
+	        */
+	       (VENTURE_TYPE_COMMENT != entity_type);
 }
 
 static gchar *

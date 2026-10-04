@@ -3086,6 +3086,279 @@ invalid:
 	return -1;
 }
 
+/*
+ * The body of a comment from the command line: the argument, or standard
+ * input when it is "-", so a long comment can come from a file or a pipe
+ * without fighting the shell's quoting.
+ */
+static gchar *
+venture_cli_comment_body(
+	const gchar	 *argument,
+	GError		**error
+){
+	g_autoptr(GString) text = NULL;
+	gchar buffer[4096];
+	gsize got;
+
+	if (NULL == argument)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "a comment needs something to say: BODY, or - for "
+		                    "standard input");
+		return NULL;
+	}
+
+	if (0 != g_strcmp0(argument, "-"))
+		return g_strdup(argument);
+
+	text = g_string_new(NULL);
+
+	while (0 < (got = fread(buffer, 1, sizeof(buffer), stdin)))
+	{
+		g_string_append_len(text, buffer, (gssize)got);
+
+		/* The server refuses a body past 20,000 bytes; reading far
+		 * beyond that would only waste time. */
+		if (text->len > (64 * 1024))
+			break;
+	}
+
+	return g_string_free(g_steal_pointer(&text), FALSE);
+}
+
+/* One comment, as a transcript reads: who, when, then the words. */
+static void
+venture_cli_print_comment(
+	JsonObject	*comment,
+	const gchar	*indent
+){
+	g_auto(GStrv) lines = NULL;
+	const gchar *body;
+	gsize i;
+
+	if (venture_json_object_get_bool(comment, "deleted", FALSE))
+	{
+		g_print("%s#%" G_GINT64_FORMAT "  (deleted)\n", indent,
+		        venture_json_object_get_int(comment, "id", 0));
+		return;
+	}
+
+	g_print("%s#%" G_GINT64_FORMAT "  %s  %s%s\n", indent,
+	        venture_json_object_get_int(comment, "id", 0),
+	        venture_json_object_get_string(comment, "author_name", "?"),
+	        venture_json_object_get_string(comment, "created_at", ""),
+	        (NULL != venture_json_object_get_string(comment, "edited_at", NULL))
+	        	? "  (edited)" : "");
+
+	body = venture_json_object_get_string(comment, "body", "");
+	lines = g_strsplit(body, "\n", -1);
+
+	for (i = 0; NULL != lines[i]; i++)
+		g_print("%s    %s\n", indent, lines[i]);
+}
+
+/*
+ * venturectl comments list TYPE ID | add TYPE ID BODY | reply ID BODY |
+ * get ID | edit ID BODY | delete ID
+ *
+ * A comment is not a record you create with `create`: the server takes
+ * its author from the token, places it on its record and tells the people
+ * it names, and the generic routes refuse it. Nothing here stages: a
+ * comment changes no business record.
+ */
+static gint
+venture_cli_command_comments(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	const gchar *verb = args[1];
+
+	if (NULL == verb)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"usage: venturectl comments list TYPE ID | add TYPE ID BODY | "
+			"reply ID BODY | get ID | edit ID BODY | delete ID  (comments help)");
+		return -1;
+	}
+
+	if (0 == g_strcmp0(verb, "help"))
+	{
+		g_print(
+			"usage:\n"
+			"  venturectl comments list TYPE ID        a record's discussion\n"
+			"  venturectl comments add TYPE ID BODY    start a thread; BODY - reads stdin\n"
+			"  venturectl comments reply ID BODY       answer a comment, in its thread\n"
+			"  venturectl comments get ID              one comment\n"
+			"  venturectl comments edit ID BODY        change your own comment\n"
+			"  venturectl comments delete ID           yours, or any as an owner/admin\n"
+			"\n"
+			"Bodies are markdown. @username tells somebody who may read the\n"
+			"record; #type/id links a record.\n"
+			"\n"
+			"Examples:\n"
+			"  venturectl comments add invoice 12 'Sent a reminder, @bob -- see #payment/4'\n"
+			"  venturectl comments reply 31 'Paid this morning.'\n"
+			"  git log -1 --format=%%B | venturectl comments add release 3 -\n");
+		return 0;
+	}
+
+	if ((0 == g_strcmp0(verb, "list")) && (NULL != args[2]) && (NULL != args[3]))
+	{
+		g_autofree gchar *type = g_uri_escape_string(args[2], NULL, FALSE);
+		g_autofree gchar *id = g_uri_escape_string(args[3], NULL, FALSE);
+		JsonArray *threads;
+		guint i;
+
+		path = g_strdup_printf("/api/v1/comments?subject_type=%s&subject_id=%s",
+		                       type, id);
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+
+		if (NULL == node)
+			return -1;
+
+		if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) ||
+		    !JSON_NODE_HOLDS_OBJECT(node))
+		{
+			venture_cli_output(cli, node);
+			return 0;
+		}
+
+		threads = json_object_get_array_member(json_node_get_object(node),
+		                                       "comments");
+
+		if (0 == json_array_get_length(threads))
+		{
+			g_print("Nothing said yet. `venturectl comments add %s %s BODY` "
+			        "starts the discussion.\n", args[2], args[3]);
+			return 0;
+		}
+
+		for (i = 0; i < json_array_get_length(threads); i++)
+		{
+			JsonObject *top = json_array_get_object_element(threads, i);
+			JsonArray *replies = json_object_get_array_member(top, "replies");
+			guint j;
+
+			if (i > 0)
+				g_print("\n");
+
+			venture_cli_print_comment(top, "");
+
+			for (j = 0; j < json_array_get_length(replies); j++)
+				venture_cli_print_comment(
+					json_array_get_object_element(replies, j), "  > ");
+		}
+
+		return 0;
+	}
+
+	if (((0 == g_strcmp0(verb, "add")) && (NULL != args[2]) && (NULL != args[3])) ||
+	    ((0 == g_strcmp0(verb, "reply")) && (NULL != args[2])))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+		g_autoptr(JsonNode) parent = NULL;
+		g_autofree gchar *text = NULL;
+		const gchar *subject_type = args[2];
+		gint64 subject_id;
+		gint64 parent_id = 0;
+		gboolean reply = (0 == g_strcmp0(verb, "reply"));
+
+		text = venture_cli_comment_body(reply ? args[3] : args[4], error);
+
+		if (NULL == text)
+			return -1;
+
+		/* A reply is filed on the comment's own record. */
+		if (reply)
+		{
+			JsonObject *object;
+
+			parent_id = g_ascii_strtoll(args[2], NULL, 10);
+			path = g_strdup_printf("/api/v1/comments/%" G_GINT64_FORMAT, parent_id);
+			parent = venture_cli_request(cli, "GET", path, NULL, error);
+
+			if ((NULL == parent) || !JSON_NODE_HOLDS_OBJECT(parent))
+				return -1;
+
+			object = json_node_get_object(parent);
+			subject_type = venture_json_object_get_string(object, "subject_type", "");
+			subject_id = venture_json_object_get_int(object, "subject_id", 0);
+		}
+		else
+		{
+			subject_id = g_ascii_strtoll(args[3], NULL, 10);
+		}
+
+		/* Typed, not stringly: the server reads ids as numbers. */
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "subject_type");
+		json_builder_add_string_value(builder, subject_type);
+		json_builder_set_member_name(builder, "subject_id");
+		json_builder_add_int_value(builder, subject_id);
+		json_builder_set_member_name(builder, "parent_id");
+		json_builder_add_int_value(builder, parent_id);
+		json_builder_set_member_name(builder, "body");
+		json_builder_add_string_value(builder, text);
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		node = venture_cli_request(cli, "POST", "/api/v1/comments", body, error);
+	}
+	else if ((0 == g_strcmp0(verb, "get")) && (NULL != args[2]))
+	{
+		path = g_strdup_printf("/api/v1/comments/%" G_GINT64_FORMAT,
+		                       g_ascii_strtoll(args[2], NULL, 10));
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+	}
+	else if ((0 == g_strcmp0(verb, "edit")) && (NULL != args[2]))
+	{
+		g_autoptr(JsonBuilder) builder = NULL;
+		g_autoptr(JsonNode) body = NULL;
+		g_autofree gchar *text = NULL;
+
+		text = venture_cli_comment_body(args[3], error);
+
+		if (NULL == text)
+			return -1;
+
+		builder = json_builder_new();
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "body");
+		json_builder_add_string_value(builder, text);
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+
+		path = g_strdup_printf("/api/v1/comments/%" G_GINT64_FORMAT,
+		                       g_ascii_strtoll(args[2], NULL, 10));
+		node = venture_cli_request(cli, "PATCH", path, body, error);
+	}
+	else if ((0 == g_strcmp0(verb, "delete")) && (NULL != args[2]))
+	{
+		path = g_strdup_printf("/api/v1/comments/%" G_GINT64_FORMAT,
+		                       g_ascii_strtoll(args[2], NULL, 10));
+		node = venture_cli_request(cli, "DELETE", path, NULL, error);
+	}
+	else
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"usage: venturectl comments list TYPE ID | add TYPE ID BODY | "
+			"reply ID BODY | get ID | edit ID BODY | delete ID");
+		return -1;
+	}
+
+	if (NULL == node)
+		return -1;
+
+	venture_cli_output(cli, node);
+
+	return 0;
+}
+
 /* Follow record activity using the same type/ID arguments as other commands. */
 static gint
 venture_cli_command_watch(
@@ -4000,6 +4273,11 @@ main(
 		"  dashboard import FILE        a definition from a file, or -\n"
 		"  dashboard create TEMPLATE    factory, reporting, work, overview\n"
 		"  dashboard templates|kinds    what create and widgets accept\n"
+		"  comments list TYPE ID        a record's discussion, threaded\n"
+		"  comments add TYPE ID BODY    say something on any record; -\n"
+		"                               reads the body from stdin\n"
+		"  comments reply|edit ID BODY  answer a comment, change yours\n"
+		"  comments get|delete ID       one comment; delete yours\n"
 		"  inbox [--all]                what you have been told; unread\n"
 		"                               by default\n"
 		"  inbox read ID|all            mark it read\n"
@@ -4382,6 +4660,9 @@ main(
 		result = venture_cli_command_link(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "inbox"))
 		result = venture_cli_command_inbox(&cli, args, &error);
+	else if ((0 == g_strcmp0(args[0], "comments")) ||
+	         (0 == g_strcmp0(args[0], "comment")))
+		result = venture_cli_command_comments(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "runs"))
 		result = venture_cli_command_runs(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "budgets"))
