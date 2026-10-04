@@ -23,8 +23,8 @@ head -3 build/demo/market/evermoor/thornmere.jsonl
 
 #+begin_example
 {"type":"venue","key":"thornmere","name":"Thornmere","kind":"auction_house","group":"evermoor-eu","currency":"GOLD","attrs":{"population":"low"}}
-{"type":"instrument","key":"silverleaf","name":"Silverleaf","kind":"item","category":"Trade goods/Herbs","attrs":{"vendor_sell":"0.0092"}}
-{"type":"instrument","key":"duskroot","name":"Duskroot","kind":"item","category":"Trade goods/Herbs","attrs":{"vendor_sell":"0.0210"}}
+{"type":"instrument","key":"silverleaf","name":"Silverleaf","kind":"item","category":"Trade goods/Herbs","attrs":{"vendor_sell":92}}
+{"type":"instrument","key":"duskroot","name":"Duskroot","kind":"item","category":"Trade goods/Herbs","attrs":{"vendor_sell":210}}
 #+end_example
 
 Each realm has a price level (Thornmere 82% of an item's base, Duskwatch 124%), a weekly rhythm, and two or three listing slots per item that are posted, sold or left to expire on their own cycles -- each listing with an =id= and =expires_in_min= (the least time it had left, in seconds), so the store can tell a sale from an expiry. Three spreads are planted and hold in every snapshot: moonsteel bars (Thornmere 62%, Silverfen 145%, Duskwatch 150%), the bog frog (Emberfall 56%, Duskwatch 138%) and mithril ore (Moonwell 60%, Greyharbor 125%). =tests/demo-market.sh= checks them, the protocol and the churn at several anchors.

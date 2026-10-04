@@ -401,12 +401,17 @@ write_realm () {
         printf '{"type":"venue","key":"%s","name":"%s","kind":"auction_house","group":"%s","currency":"GOLD","attrs":{"population":"%s"}}\n' \
             "${realm}" "${json_text}" "${GROUP}" "${REALM_POPULATION[r]}"
 
+        # vendor_sell is an integer count of copper, as the Blizzard
+        # provider stores it and the wow_auction fee model reads it: a
+        # decimal string there is no vendor price at all, and the
+        # deposit silently vanishes. The demo's venues charge the percent
+        # model's deposit_percent, so this attribute is what a venue
+        # switched to wow_auction would read.
         for (( i = 0; i < n_items; i++ ))
         do
             json_escape "${name[i]}"
-            as_decimal $(( base[i] / 20 )) 4
-            printf '{"type":"instrument","key":"%s","name":"%s","kind":"item","category":"%s","attrs":{"vendor_sell":"%s"}}\n' \
-                "${key[i]}" "${json_text}" "${category[i]}" "${decimal}"
+            printf '{"type":"instrument","key":"%s","name":"%s","kind":"item","category":"%s","attrs":{"vendor_sell":%d}}\n' \
+                "${key[i]}" "${json_text}" "${category[i]}" "$(( base[i] / 20 ))"
         done
 
         # Oldest first: a snapshot older than the venue's newest is only
