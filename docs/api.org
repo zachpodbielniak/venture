@@ -36,6 +36,14 @@ shown exactly once; only its hash is stored. Who may call it:
   minted it. This is how a hosted site owner -- a global editor with a tenant
   =member= row and an organization owner/admin membership -- gets the bearer
   token Lightsite uses for =GET /api/v1/account-authority=.
+  Such a token always expires: the body's optional =expires_in_days= (a whole
+  number) defaults to 30 and must be 1 to 90; anything else, including a
+  string, a fraction or =null=, is refused with 422. A hosted tenant
+  administrator is a global editor, so the same limit applies. Once expired
+  the token is refused (401) everywhere, =account-authority= included; mint a
+  new one from a session.
+- *A global owner or admin* mints a token that never expires unless the body
+  gives =expires_in_days=, which must then be 1 to 3650.
 - *A bearer token* may mint another only if it carries the global admin role
   or higher. Any other token is refused with 403: a token minting its own
   successor would outlive its revocation or expiry.
