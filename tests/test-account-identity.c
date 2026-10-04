@@ -570,11 +570,57 @@ static void owner_edits_own_organization_http(void)
 	venture_test_accounting_database_cleanup(db);
 	venture_test_remove_tree(directory);
 }
+/* The workspace's default organization is the workspace's, whoever asks
+ * first. Looked up from inside a business owner's request, it must still be
+ * the flagged default she cannot see, not her own business: the answer is
+ * kept for every later caller, so the first caller must not shape it. */
+static void default_organization_is_workspace_wide(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDatabase) db = venture_test_accounting_database(&error);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) home = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Provider", "active", TRUE,
+		"is-default", TRUE, NULL);
+	g_autoptr(VentureEntity) bakery = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Bea's Bakery", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) owner = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-default-org-XXXXXX", &error);
+	VentureTenantService *service;
+	VentureAuthPrincipal principal;
+	gboolean ok;
+	g_assert_no_error(error);
+	g_object_set(config, "hosted-enabled", TRUE, "hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
+		"hosted-origin", "http://127.0.0.1:8443", "security-password-iterations", (gint64)2000,
+		"state-dir", directory, NULL);
+	ok = venture_database_migrate(db, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error); g_assert_true(ok);
+	service = venture_tenant_service_get(db);
+	g_assert_true(venture_tenant_service_configure(service, config, &error)); g_assert_no_error(error);
+	g_assert_true(venture_tenant_service_initialize(service, &error)); g_assert_no_error(error);
+	g_assert_true(venture_database_save(db, home, NULL, &error)); g_assert_no_error(error);
+	g_assert_true(venture_database_save(db, bakery, NULL, &error)); g_assert_no_error(error);
+	owner = hosted_member(db, service, "bea", venture_entity_get_id(bakery), VENTURE_ORGANIZATION_ROLE_OWNER);
+	context = venture_context_new(config, db);
+	principal.user_id = venture_entity_get_id(owner);
+	principal.token_id = 0;
+	principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.name = (gchar *)"bea";
+	principal.authenticated = TRUE;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(db), &principal);
+	g_assert_cmpint(venture_context_get_default_organization_id(context), ==, venture_entity_get_id(home));
+	g_clear_object(&scope);
+	g_assert_cmpint(venture_context_get_default_organization_id(context), ==, venture_entity_get_id(home));
+	g_clear_object(&context);
+	venture_test_accounting_database_cleanup(db);
+	venture_test_remove_tree(directory);
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/account-identity/http-authority", identity_http);
 	g_test_add_func("/account-identity/member-mints-own-token", member_mint_http);
 	g_test_add_func("/account-identity/owner-edits-own-organization", owner_edits_own_organization_http);
+	g_test_add_func("/account-identity/default-organization-is-workspace-wide", default_organization_is_workspace_wide);
 	return g_test_run();
 }
