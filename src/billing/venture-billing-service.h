@@ -41,6 +41,21 @@ gboolean venture_billing_service_execute(VentureBillingService *self, VentureBil
  */
 VentureMoney *venture_billing_service_cancel_credit(VentureBillingService *self, VentureCustomerSubscription *subscription, GDateTime *at, gint64 *days_left, GError **error);
 /**
+ * venture_billing_service_grant_free_period:
+ * @self: the service
+ * @subscription: a trialing, active or past-due subscription that will renew
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): error location
+ *
+ * Credits the subscription's next renewal with what that period will
+ * charge -- its price, seats and discount -- carried as a pending
+ * adjustment, so the renewal invoice is issued and paid by a credit note
+ * in the same step. Joins the caller's transaction.
+ *
+ * Returns: (transfer full) (nullable): the amount credited, or %NULL on error
+ */
+VentureMoney *venture_billing_service_grant_free_period(VentureBillingService *self, VentureCustomerSubscription *subscription, const VentureActor *actor, GError **error);
+/**
  * venture_billing_service_move_customers:
  * @self: the service
  * @from: the price its customers are on, usually retired

@@ -124,6 +124,17 @@ income, so an exemption or an address rate carries over unchanged.
 Adjustments accumulate exactly
 until renewal. Trials and scheduled changes add no immediate adjustment.
 
+A free period is the same mechanism, given rather than earned by a change:
+=venture_billing_service_grant_free_period()= adds minus what the next
+period will charge -- the price it renews on, its seats and any discount
+still running -- to the pending adjustment of a trialing, active or
+past-due subscription that will renew. The renewal invoice is then issued
+as usual and a credit note covering it, with the tax that period's invoice
+charged, is applied to it: the period costs nothing and the books say why.
+It refuses a subscription that is cancelled or ends at renewal, and one
+whose next period already costs nothing. A referral reward is its caller
+(see [[file:referrals.org][Referrals]]); nothing else writes it.
+
 Changes compare the discounted prices while the discount covers the current
 period, including its last covered invoice. Keeping the same plan retains its
 discount on both sides; moving to another plan compares the old discounted

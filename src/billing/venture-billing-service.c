@@ -970,6 +970,73 @@ venture_billing_service_cancel_credit(VentureBillingService *self, VentureCustom
 	return unused_gross(&credit, error);
 }
 
+/*
+ * A free period is a credit of what the next renewal would charge, carried
+ * on the subscription the way a downgrade's difference is: issue() credits
+ * that invoice with it, taxed as the period it pays for was. Writing the
+ * subscription any other way is refused by the save hook, so this is the
+ * service's own instruction rather than a caller setting the field.
+ */
+VentureMoney *
+venture_billing_service_grant_free_period(VentureBillingService *self, VentureCustomerSubscription *subscription,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureEntity) copy = NULL;
+	g_autoptr(VentureEntity) price = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) charge = NULL;
+	g_autoptr(VentureMoney) pending = NULL;
+	g_autoptr(VentureMoney) combined = NULL;
+	g_autofree gchar *label = NULL;
+	gint64 org, price_id;
+
+	g_return_val_if_fail(VENTURE_IS_BILLING_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_CUSTOMER_SUBSCRIPTION(subscription), NULL);
+	if (self->database == NULL)
+	{
+		refuse(error, VENTURE_ERROR_CONFLICT, "service is unavailable");
+		return NULL;
+	}
+	org = venture_entity_get_organization_id(VENTURE_ENTITY(subscription));
+	/* The caller's copy may be a version behind a renewal; credit the row. */
+	sub = load(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, venture_entity_get_id(VENTURE_ENTITY(subscription)), org, error);
+	if (sub == NULL)
+		return NULL;
+	if (choice(sub, "status") > 2 || flag(sub, "cancel-at-period-end"))
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "only a subscription that will renew can be given a free period");
+		return NULL;
+	}
+	/* The period credited is the next one, at the price it will renew on. */
+	price_id = number(sub, "pending-plan-price-id") != 0 ? number(sub, "pending-plan-price-id") : number(sub, "plan-price-id");
+	price = load(self, VENTURE_TYPE_PLAN_PRICE, price_id, org, error);
+	if (price == NULL)
+		return NULL;
+	amount = price_amount(price, number(sub, "seats"), error);
+	if (amount == NULL)
+		return NULL;
+	copy = venture_entity_duplicate(sub);
+	charge = apply_discount(self, copy, amount, org, &label, error);
+	if (charge == NULL)
+		return NULL;
+	if (venture_money_is_zero(charge))
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "the next period is already free");
+		return NULL;
+	}
+	g_object_get(sub, "pending-adjustment", &pending, NULL);
+	if (pending == NULL)
+		pending = venture_money_new_zero(venture_money_get_currency(charge));
+	combined = venture_money_subtract(pending, charge, error);
+	if (combined == NULL)
+		return NULL;
+	g_object_set(sub, "pending-adjustment", combined, NULL);
+	if (!write_record(self, sub, actor, error))
+		return NULL;
+	return g_steal_pointer(&charge);
+}
+
 /* --- Customer notices ----------------------------------------------------
  *
  * The customer hears about two things before an invoice surprises them: a
