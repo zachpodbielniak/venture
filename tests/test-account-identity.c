@@ -457,7 +457,7 @@ static void owner_edits_own_organization_http(void)
 	g_autoptr(VentureConfig) config = venture_config_new();
 	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
-	g_autoptr(VentureEntity) home = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Provider", "active", TRUE, NULL);
+	g_autoptr(VentureEntity) home = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Provider", "active", TRUE, "is-default", TRUE, NULL);
 	g_autoptr(VentureEntity) owner = NULL;
 	g_autoptr(VentureEntity) viewer = NULL;
 	g_autoptr(VentureEntity) stored = NULL;
@@ -484,6 +484,8 @@ static void owner_edits_own_organization_http(void)
 	g_assert_true(venture_tenant_service_bootstrap_admin(service, config, "provisioner", "private-test-password",
 		FALSE, "Profile fixture", &error)); g_assert_no_error(error);
 	context = venture_context_new(config, db);
+	/* As at a server's start: the workspace's default organization is known. */
+	g_assert_cmpint(venture_context_get_default_organization_id(context), ==, venture_entity_get_id(home));
 	server = venture_web_server_new(context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
 	base = venture_web_server_get_base_url(server);
@@ -550,6 +552,19 @@ static void owner_edits_own_organization_http(void)
 		g_autofree gchar *adopt = g_strdup_printf("{\"parent_id\":%" G_GINT64_FORMAT "}", venture_entity_get_id(home));
 		g_assert_cmpuint(exchange(session, base, "PATCH", path, admin_cookie, NULL, "application/json",
 			adopt, NULL, NULL), ==, 200);
+	}
+	/* Her own token, for Lightsite: it belongs to her organization, not to the
+	 * workspace's default one she cannot see, and manages her bakery. */
+	{
+		g_autofree gchar *minted = NULL, *authority = NULL;
+		g_autoptr(JsonNode) token = NULL, answer = NULL;
+		g_assert_cmpuint(exchange(session, base, "POST", "/api/v1/tokens", owner_cookie, NULL, "application/json",
+			"{\"name\":\"lightsite\"}", NULL, &minted), ==, 201);
+		token = venture_json_parse(minted, &error); g_assert_no_error(error);
+		g_assert_cmpuint(exchange(session, base, "GET", "/api/v1/account-authority", NULL,
+			json_object_get_string_member(json_node_get_object(token), "token"), NULL, NULL, NULL, &authority), ==, 200);
+		answer = venture_json_parse(authority, &error); g_assert_no_error(error);
+		authority_entry(answer, bakery, "owner", TRUE);
 	}
 	venture_web_server_stop(server); g_clear_object(&server); g_clear_object(&context);
 	venture_test_accounting_database_cleanup(db);
