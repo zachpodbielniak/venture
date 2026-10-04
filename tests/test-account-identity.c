@@ -45,7 +45,9 @@ static void sql(VentureDatabase *db, const gchar *statement)
 	gboolean ok = venture_database_execute(db, statement, NULL, &error);
 	g_assert_no_error(error); g_assert_true(ok);
 }
-static void authority_entry(JsonNode *result, gint64 organization, const gchar *role, gboolean manage)
+/* role NULL: the organization is not listed. Otherwise its role and what its
+ * sites allow: manage (owner, admin), edit (also editor) and view (any member). */
+static void authority_flags(JsonNode *result, gint64 organization, const gchar *role, gboolean manage, gboolean edit, gboolean view)
 {
 	JsonArray *entries = json_object_get_array_member(json_node_get_object(result), "organizations");
 	guint i;
@@ -55,9 +57,16 @@ static void authority_entry(JsonNode *result, gint64 organization, const gchar *
 		g_assert_nonnull(role);
 		g_assert_cmpstr(json_object_get_string_member(entry, "role"), ==, role);
 		g_assert_cmpint(json_object_get_boolean_member(entry, "can_manage_sites"), ==, manage);
+		g_assert_cmpint(json_object_get_boolean_member(entry, "can_edit_sites"), ==, edit);
+		g_assert_cmpint(json_object_get_boolean_member(entry, "can_view_sites"), ==, view);
 		return;
 	}
 	g_assert_null(role);
+}
+/* An owner, admin or viewer membership: editing goes with managing, and every listed member views. */
+static void authority_entry(JsonNode *result, gint64 organization, const gchar *role, gboolean manage)
+{
+	authority_flags(result, organization, role, manage, manage, TRUE);
 }
 /* The integration uses a real authenticated token; no mocked identity service
  * may accidentally make tenant administration readable to token callers. */
@@ -180,6 +189,21 @@ static void identity_http(void)
 		CHECK("/api/v1/account-authority", secret, NULL, 200);
 		authority_entry(result, venture_entity_get_id(org), "admin", TRUE);
 		authority_entry(result, venture_entity_get_id(other), NULL, FALSE);
+		/* An editor edits a business's sites but does not manage them; a token
+		 * minted while they were a viewer still only reads, and roles outside
+		 * site work read. */
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, &error)); g_assert_no_error(error);
+		CHECK("/api/v1/account-authority", secret, NULL, 200);
+		authority_flags(result, venture_entity_get_id(org), "editor", FALSE, TRUE, TRUE);
+		CHECK("/api/v1/account-authority", limited_secret, NULL, 200);
+		authority_flags(result, venture_entity_get_id(org), "editor", FALSE, FALSE, TRUE);
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, &error)); g_assert_no_error(error);
+		CHECK("/api/v1/account-authority", secret, NULL, 200);
+		authority_flags(result, venture_entity_get_id(org), "finance", FALSE, FALSE, TRUE);
+		g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_ADMIN, NULL);
+		g_assert_true(venture_database_save(db, member, NULL, &error)); g_assert_no_error(error);
 	}
 	sql(db, "ALTER TABLE organization_memberships RENAME TO authority_unavailable");
 	CHECK("/api/v1/account-authority", secret, NULL, 500);
