@@ -17,6 +17,7 @@
  */
 
 #include <venture.h>
+#include "arbitrage/venture-arbitrage-private.h"
 
 #include <libsoup/soup.h>
 #include <string.h>
@@ -1273,6 +1274,42 @@ test_cost_in_two_currencies(Fixture *f, gconstpointer data)
 }
 
 /*
+ * A trade's expected profit counts only amounts that name their currency,
+ * at their full precision. A bare "12.00" used to be read in the install's
+ * default currency -- dollars in a gold organization -- and an object
+ * member's 12.75 was read as an integer, 12.
+ */
+static void
+test_expected_profit(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GPtrArray) bare = NULL;
+	g_autoptr(GPtrArray) named = NULL;
+	g_autoptr(GPtrArray) listed = NULL;
+	g_autoptr(GPtrArray) object = NULL;
+	g_autofree gchar *text = NULL;
+
+	(void)f;
+	(void)data;
+
+	bare = venture_arbitrage_expected_profit("{\"profit\":\"12.00\"}");
+	g_assert_cmpuint(bare->len, ==, 0);
+
+	named = venture_arbitrage_expected_profit("{\"profit\":\"12.0000 GOLD\"}");
+	g_assert_cmpuint(named->len, ==, 1);
+	text = venture_money_to_string(g_ptr_array_index(named, 0));
+	g_assert_cmpstr(text, ==, "12.0000 GOLD");
+	g_clear_pointer(&text, g_free);
+
+	listed = venture_arbitrage_expected_profit("{\"profit\":[\"3.00 USD\",\"5\"]}");
+	g_assert_cmpuint(listed->len, ==, 1);
+
+	object = venture_arbitrage_expected_profit("{\"profit\":{\"GOLD\":12.75}}");
+	g_assert_cmpuint(object->len, ==, 1);
+	text = venture_money_to_string(g_ptr_array_index(object, 0));
+	g_assert_cmpstr(text, ==, "12.7500 GOLD");
+}
+
+/*
  * Deleting a leg, and then the trade, removes nothing from the books: a
  * deletion is not a correction. The position still counts the deleted
  * leg's journals. If this regresses, deleting a record silently rewrites
@@ -2258,6 +2295,7 @@ main(int argc, char **argv)
 	g_test_add("/arbitrage-ledger/abandon-deleted-leg", Fixture, NULL, setup, test_abandon_deleted_leg,
 	           teardown);
 	g_test_add("/arbitrage-ledger/closed-at-kept", Fixture, NULL, setup, test_closed_at_kept, teardown);
+	g_test_add("/arbitrage-ledger/expected-profit", Fixture, NULL, setup, test_expected_profit, teardown);
 	g_test_add("/arbitrage-ledger/cost-in-two-currencies", Fixture, NULL, setup,
 	           test_cost_in_two_currencies, teardown);
 	g_test_add("/arbitrage-ledger/record", Fixture, NULL, setup, test_record, teardown);

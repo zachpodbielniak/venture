@@ -1630,6 +1630,28 @@ venture_arbitrage_compute_figures(
 	return g_steal_pointer(&figures);
 }
 
+/* @text as money only when it names its currency: venture_money_from_string()
+ * reads a bare "12.00" in the install's default currency, which is a
+ * guess this figure must not make. */
+static VentureMoney *
+arb_expected_named(const gchar *text)
+{
+	g_autoptr(VentureMoney) money = NULL;
+	g_autofree gchar *upper = NULL;
+
+	money = venture_money_from_string(text, NULL, NULL);
+
+	if (NULL == money)
+		return NULL;
+
+	upper = g_ascii_strup(text, -1);
+
+	if (NULL == strstr(upper, venture_money_get_currency(money)))
+		return NULL;
+
+	return g_steal_pointer(&money);
+}
+
 /*
  * The expected profit a trade's snapshot names, per currency: `profit` as
  * one money string ("12.00 GOLD"), an array of them, or an object of code
@@ -1665,7 +1687,7 @@ venture_arbitrage_expected_profit(const gchar *expected)
 	{
 		g_autoptr(VentureMoney) money = NULL;
 
-		money = venture_money_from_string(json_node_get_string(profit), NULL, NULL);
+		money = arb_expected_named(json_node_get_string(profit));
 		venture_money_totals_add(totals, money, NULL);
 	}
 	else if (JSON_NODE_HOLDS_ARRAY(profit))
@@ -1685,7 +1707,7 @@ venture_arbitrage_expected_profit(const gchar *expected)
 			if (!JSON_NODE_HOLDS_VALUE(item) || (G_TYPE_STRING != json_node_get_value_type(item)))
 				continue;
 
-			money = venture_money_from_string(json_node_get_string(item), NULL, NULL);
+			money = arb_expected_named(json_node_get_string(item));
 			venture_money_totals_add(totals, money, NULL);
 		}
 	}
@@ -1709,9 +1731,17 @@ venture_arbitrage_expected_profit(const gchar *expected)
 
 			if (G_TYPE_STRING == json_node_get_value_type(item))
 				text = g_strdup(json_node_get_string(item));
-			else if ((G_TYPE_INT64 == json_node_get_value_type(item)) ||
-			         (G_TYPE_DOUBLE == json_node_get_value_type(item)))
+			else if (G_TYPE_INT64 == json_node_get_value_type(item))
 				text = g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(item));
+			else if (G_TYPE_DOUBLE == json_node_get_value_type(item))
+			{
+				/* Its shortest decimal spelling: read as an integer,
+				 * 12.75 was 12. One the currency cannot hold is
+				 * refused by the parser below and left out. */
+				gchar buffer[G_ASCII_DTOSTR_BUF_SIZE];
+
+				text = g_strdup(g_ascii_dtostr(buffer, sizeof(buffer), json_node_get_double(item)));
+			}
 			else
 				continue;
 
