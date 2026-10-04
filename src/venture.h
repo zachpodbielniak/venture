@@ -350,6 +350,7 @@
 #include "series/venture-series-math.h"
 #ifdef VENTURE_HAVE_SQLITE
 #include "series/venture-series-store.h"
+#include "series/venture-series-accounts.h"
 #include "feeds/venture-feed-batch.h"
 #include "feeds/venture-data-source-provider.h"
 #include "feeds/venture-series-worker.h"

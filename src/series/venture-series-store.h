@@ -246,9 +246,22 @@ typedef struct
  * @quantity: units offered, or %VENTURE_SERIES_NONE
  * @listings: listings, or %VENTURE_SERIES_NONE
  * @sold: units sold since the last snapshot, or %VENTURE_SERIES_NONE
+ * @source_figures: whether the next three members are set at all; a
+ *   caller that cleared the struct with memset() leaves it FALSE, and
+ *   then a zero in them is not read as a sale rate of nothing
+ * @historical: the source's own long-run price (TSM's historical), or
+ *   %VENTURE_SERIES_NONE
+ * @sale_rate: the source's own sale rate, 0 to 1, or NAN
+ * @sold_per_day: the source's own units sold a day, or NAN
  *
  * Figures a source computed itself, for an instrument it does not list
- * one by one. At least one figure is required.
+ * one by one. At least one figure is required. Start from
+ * venture_series_stats_init(): "none" is %VENTURE_SERIES_NONE or NAN,
+ * never zero.
+ *
+ * The last three are kept beside the store's own estimates, never over
+ * them: venture_series_store_reference() answers with the store's figure
+ * when it has one and the source's only when it has none, and says which.
  */
 typedef struct
 {
@@ -261,7 +274,22 @@ typedef struct
 	gint64		 quantity;
 	gint64		 listings;
 	gint64		 sold;
+	gboolean	 source_figures;
+	gint64		 historical;
+	gdouble		 sale_rate;
+	gdouble		 sold_per_day;
 } VentureSeriesStats;
+
+/**
+ * venture_series_stats_init:
+ * @stats: (out caller-allocates): figures to clear
+ *
+ * Sets every figure to "none": %VENTURE_SERIES_NONE, and NAN for the two
+ * ratios, with no instrument; @source_figures is TRUE, so the source's
+ * own figures are read once a caller sets them.
+ */
+void
+venture_series_stats_init(VentureSeriesStats *stats);
 
 /**
  * VentureSeriesQuote:
@@ -350,6 +378,9 @@ typedef struct
  * @quotes: quote history rows deleted
  * @snapshots: snapshot rows deleted
  * @entries: entries deleted
+ * @balances: account balance history rows deleted (never an account's
+ *   newest in a currency)
+ * @txns: external ledger rows deleted
  *
  * What a purge deleted.
  */
@@ -360,6 +391,8 @@ typedef struct
 	gint64	quotes;
 	gint64	snapshots;
 	gint64	entries;
+	gint64	balances;
+	gint64	txns;
 } VentureSeriesPurgeResult;
 
 /**
@@ -415,9 +448,15 @@ typedef struct
  *   recompute has not run since the row's history began
  * @sold_per_day: units sold per day with history over the same days, or
  *   NAN
+ * @source_historical: the source's own historical price from its last
+ *   statistics, or %VENTURE_SERIES_NONE
+ * @source_sale_rate: the source's own sale rate, or NAN
+ * @source_sold_per_day: the source's own units sold a day, or NAN
  *
  * One instrument at one venue, now. Every price is
- * %VENTURE_SERIES_NONE when unknown.
+ * %VENTURE_SERIES_NONE when unknown. The store's estimates and the
+ * source's figures are separate members on purpose: a page that shows
+ * one must be able to say which it is.
  */
 typedef struct
 {
@@ -447,6 +486,9 @@ typedef struct
 	gint64	 stock_changed_at;
 	gdouble	 sale_rate;
 	gdouble	 sold_per_day;
+	gint64	 source_historical;
+	gdouble	 source_sale_rate;
+	gdouble	 source_sold_per_day;
 } VentureSeriesRow;
 
 /**
@@ -792,21 +834,35 @@ venture_series_entry_row_free(VentureSeriesEntryRow *row);
  * @sold_per_day: units sold per day with data over 14 days, or NAN
  * @days_14: days with data in the 14-day window
  * @days_60: days with data in the 60-day window
+ * @historical_from_source: @historical_60d is the source's own historical
+ *   price, because the store had no daily history to compute one
+ * @sale_rate_from_source: likewise for @sale_rate
+ * @sold_per_day_from_source: likewise for @sold_per_day
  *
  * The slow-moving prices the oracle, the scanner and the pages compare a
  * snapshot against. With a group, each day's market value is the mean
  * across the group's venues and sales are summed across them.
+ *
+ * The store's own estimate always wins. A source's figure (a `stat`
+ * message's historical, sale_rate or sold_per_day) fills a figure only
+ * when the store could not compute it, only from a current row taken on
+ * or before the moment asked about, and only in the currency the answer
+ * is in; with a group it is the mean over the group's venues that sent
+ * one.
  */
 typedef struct
 {
-	gchar	currency[VENTURE_MONEY_CURRENCY_LEN];
-	gint64	market_14d;
-	gint64	historical_60d;
-	gint64	sale_avg;
-	gdouble	sale_rate;
-	gdouble	sold_per_day;
-	gint64	days_14;
-	gint64	days_60;
+	gchar		currency[VENTURE_MONEY_CURRENCY_LEN];
+	gint64		market_14d;
+	gint64		historical_60d;
+	gint64		sale_avg;
+	gdouble		sale_rate;
+	gdouble		sold_per_day;
+	gint64		days_14;
+	gint64		days_60;
+	gboolean	historical_from_source;
+	gboolean	sale_rate_from_source;
+	gboolean	sold_per_day_from_source;
 } VentureSeriesReference;
 
 /**

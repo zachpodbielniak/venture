@@ -719,6 +719,17 @@ feed_parse_csv(
 	return g_steal_pointer(&batch);
 }
 
+/* How much of a JSON-lines stream is read before its messages go into the
+ * batch and are freed. */
+#define FEED_JSONL_SLICE (256 * 1024)
+
+/*
+ * A JSON-lines body into a batch, a slice at a time: each slice's lines
+ * are parsed into messages, read into the batch's plain data and freed
+ * before the next slice is read. A first sync of fifty thousand ledger
+ * rows is then fifty thousand rows of plain data and never fifty thousand
+ * parsed JSON objects alive at once.
+ */
 static VentureFeedBatch *
 feed_parse_jsonl(
 	FeedParseJob	 *job,
@@ -726,30 +737,34 @@ feed_parse_jsonl(
 ){
 	g_autoptr(VentureFeedBatch) batch = NULL;
 	g_autoptr(GPtrArray) messages = NULL;
-	VentureJsonlReader *reader;
+	g_autoptr(VentureJsonlReader) reader = NULL;
+	const gchar *currency;
 	const guint8 *data;
 	gsize length;
-	gboolean ok;
+	gsize offset;
 
 	data = g_bytes_get_data(job->body, &length);
 	messages = g_ptr_array_new_with_free_func((GDestroyNotify)venture_jsonl_message_unref);
 	reader = venture_jsonl_reader_new(FEED_JSONL_MAX_LINE);
+	batch = venture_feed_batch_new();
+	currency = venture_feed_source_get_currency(venture_feed_request_get_source(job->request));
 
 	/* The first line that breaks the protocol fails the unit, as it fails
 	 * an exec plugin's run: a batch cut at a bad line reads exactly like a
 	 * complete one. */
-	ok = venture_jsonl_reader_feed(reader, data, length, messages, error) &&
-	     venture_jsonl_reader_finish(reader, messages, error);
-	venture_jsonl_reader_free(reader);
+	for (offset = 0; offset < length; offset += FEED_JSONL_SLICE)
+	{
+		gsize slice = MIN((gsize)FEED_JSONL_SLICE, length - offset);
 
-	if (!ok)
-		return NULL;
+		if (!venture_jsonl_reader_feed(reader, data + offset, slice, messages, error) ||
+		    !venture_feed_batch_add_jsonl(batch, messages, currency, job->taken_at, error))
+			return NULL;
 
-	batch = venture_feed_batch_new();
+		g_ptr_array_set_size(messages, 0);
+	}
 
-	if (!venture_feed_batch_add_jsonl(batch, messages,
-	                                  venture_feed_source_get_currency(venture_feed_request_get_source(job->request)),
-	                                  job->taken_at, error))
+	if (!venture_jsonl_reader_finish(reader, messages, error) ||
+	    !venture_feed_batch_add_jsonl(batch, messages, currency, job->taken_at, error))
 		return NULL;
 
 	return g_steal_pointer(&batch);
@@ -1196,6 +1211,123 @@ feed_builtin_new(FeedParseKind kind)
 	return VENTURE_DATA_SOURCE_PROVIDER(self);
 }
 
+/* --- push: a body somebody sent ------------------------------------------------------ */
+
+/*
+ * The provider of a source that is filled from outside: a program on
+ * another machine POSTs JSON lines to /api/v1/feeds/:id/push and the
+ * service queues the body to the worker as plain bytes. This provider
+ * fetches nothing; it reads the pushed body through feed_parse_jsonl(),
+ * the very function that reads a file_jsonl source's file, so a push and
+ * a file of the same lines make the same batch. A sync of a push source
+ * has no body and fails saying so.
+ */
+typedef struct { GObject parent_instance; } FeedPushProvider;
+typedef struct { GObjectClass parent_class; } FeedPushProviderClass;
+
+static GType feed_push_provider_get_type(void);
+static void feed_push_provider_iface_init(VentureDataSourceProviderInterface *iface);
+
+G_DEFINE_TYPE_WITH_CODE(FeedPushProvider, feed_push_provider, G_TYPE_OBJECT,
+                        G_IMPLEMENT_INTERFACE(VENTURE_TYPE_DATA_SOURCE_PROVIDER,
+                                              feed_push_provider_iface_init))
+
+static void
+feed_push_provider_class_init(FeedPushProviderClass *klass)
+{
+	(void)klass;
+}
+
+static void
+feed_push_provider_init(FeedPushProvider *self)
+{
+	(void)self;
+}
+
+static const gchar *
+feed_push_name(VentureDataSourceProvider *provider)
+{
+	(void)provider;
+
+	return VENTURE_FEEDS_PUSH_PROVIDER;
+}
+
+static const gchar *
+feed_push_label(VentureDataSourceProvider *provider)
+{
+	(void)provider;
+
+	return "JSON lines pushed to the server (POST /api/v1/feeds/:id/push)";
+}
+
+static JsonNode *
+feed_push_schema(VentureDataSourceProvider *provider)
+{
+	(void)provider;
+
+	return json_from_string(
+		"{\"type\":\"object\",\"properties\":{"
+		"\"instruments\":{\"type\":\"array\",\"title\":\"Known instruments\"},"
+		"\"record_types\":{\"type\":\"array\",\"title\":\"Record types it may write\"}}}",
+		NULL);
+}
+
+/* One unit, always: a push is one body, and its run one unit. */
+static gchar **
+feed_push_list_units(
+	VentureDataSourceProvider	 *provider,
+	JsonObject			 *settings,
+	GError				**error
+){
+	gchar **units;
+
+	(void)provider;
+	(void)settings;
+	(void)error;
+
+	units = g_new0(gchar *, 2);
+	units[0] = g_strdup("push");
+
+	return units;
+}
+
+static void
+feed_push_fetch_async(
+	VentureDataSourceProvider	*provider,
+	VentureFeedRequest		*request,
+	GCancellable			*cancellable,
+	GAsyncReadyCallback		 callback,
+	gpointer			 user_data
+){
+	g_autoptr(GTask) task = NULL;
+	GBytes *body;
+
+	task = g_task_new(provider, cancellable, callback, user_data);
+	body = venture_feed_request_get_body(request);
+
+	if (NULL == body)
+	{
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                        "A push source fetches nothing: send its JSON lines to "
+		                        "POST /api/v1/feeds/%" G_GINT64_FORMAT "/push",
+		                        venture_feed_source_get_id(venture_feed_request_get_source(request)));
+		return;
+	}
+
+	feed_parse_in_thread(task, FEED_PARSE_JSONL, request, body, NULL,
+	                     venture_feed_request_get_fetched_at(request));
+}
+
+static void
+feed_push_provider_iface_init(VentureDataSourceProviderInterface *iface)
+{
+	iface->get_name = feed_push_name;
+	iface->get_label = feed_push_label;
+	iface->dup_settings_schema = feed_push_schema;
+	iface->list_units = feed_push_list_units;
+	iface->fetch_async = feed_push_fetch_async;
+}
+
 void
 venture_feeds_register_builtin_providers(VentureDataSourceProviderRegistry *registry)
 {
@@ -1206,6 +1338,16 @@ venture_feeds_register_builtin_providers(VentureDataSourceProviderRegistry *regi
 	{
 		g_autoptr(VentureDataSourceProvider) provider = feed_builtin_new(kinds[i]);
 		g_autoptr(GError) error = NULL;
+
+		if (!venture_data_source_provider_registry_add(registry, provider, &error))
+			g_debug("feeds: %s", error->message);
+	}
+
+	{
+		g_autoptr(VentureDataSourceProvider) provider = NULL;
+		g_autoptr(GError) error = NULL;
+
+		provider = VENTURE_DATA_SOURCE_PROVIDER(g_object_new(feed_push_provider_get_type(), NULL));
 
 		if (!venture_data_source_provider_registry_add(registry, provider, &error))
 			g_debug("feeds: %s", error->message);

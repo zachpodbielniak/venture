@@ -285,6 +285,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "empty denies every file source"),
 	VC_INT ("feeds-max-response-mb", "feeds", "max_response_mb", 64,
 	        "Largest answer or file a fetch reads, in MiB"),
+	/*
+	 * A push is a body somebody sent rather than one this server fetched,
+	 * so it has a cap of its own; the transport's
+	 * server.max_request_size_mb still applies first.
+	 */
+	VC_INT ("feeds-max-push-mb", "feeds", "max_push_mb", 32,
+	        "Largest JSON-lines body POST /api/v1/feeds/:id/push accepts, in MiB"),
 	VC_INT ("feeds-request-timeout", "feeds", "request_timeout", 60,
 	        "Seconds one fetch may take, start to finish"),
 	VC_INT ("feeds-max-records-per-run", "feeds", "max_records_per_run", 500,
@@ -1770,12 +1777,14 @@ venture_config_validate(
 
 	{
 		gint64 max_response_mb;
+		gint64 max_push_mb;
 		gint64 request_timeout;
 		gint64 max_records;
 		gint64 run_window;
 
 		g_object_get(self,
 		             "feeds-max-response-mb", &max_response_mb,
+		             "feeds-max-push-mb", &max_push_mb,
 		             "feeds-request-timeout", &request_timeout,
 		             "feeds-max-records-per-run", &max_records,
 		             "feeds-run-window-minutes", &run_window,
@@ -1787,11 +1796,12 @@ venture_config_validate(
 		 * the far end's fault, so it is refused here, at startup.
 		 */
 		if ((max_response_mb < 1) || (max_response_mb > 4096) ||
+		    (max_push_mb < 1) || (max_push_mb > 4096) ||
 		    (request_timeout < 1) || (request_timeout > 3600))
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-			                    "feeds.max_response_mb must be 1 to 4096 and "
-			                    "feeds.request_timeout 1 to 3600 seconds");
+			                    "feeds.max_response_mb and feeds.max_push_mb must be "
+			                    "1 to 4096 and feeds.request_timeout 1 to 3600 seconds");
 			return FALSE;
 		}
 

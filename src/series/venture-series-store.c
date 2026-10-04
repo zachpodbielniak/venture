@@ -30,6 +30,8 @@
 #include <json-glib/json-glib.h>
 #include <sqlite3.h>
 
+#include "series/venture-series-store-private.h"
+
 /* --- Schema ---------------------------------------------------------------- */
 
 /*
@@ -257,13 +259,129 @@ static const gchar series_schema_step_5[] =
 	"      AND s.taken_at = venue_state.listing_set_at)"
 	" WHERE listing_set_at IS NOT NULL;";
 
+/*
+ * The operator's own side of a market: accounts (a character, a shared
+ * bank, a guild bank, a seller account), what they hold, the listings
+ * they have up, what waits for them in the mail, their money over time,
+ * and the source's ledger of what they bought and sold. Kept here, not in
+ * VentureDatabase, for the reason the market figures are: a first sync of
+ * a busy account is tens of thousands of ledger rows and a snapshot of
+ * every bag every few minutes, none of it edited by a person.
+ *
+ * Instruments and venues are named by key, not by id: an account row
+ * must survive an instrument the size cap refused, and every reader joins
+ * on the key's unique index anyway. A position's and an inbound row's
+ * `key` is the source's id for it, unique in the store; `first_seen` is
+ * when the store first saw it, which is how old a listing is when the
+ * source does not say. The external ledger is upserted on its key, so a
+ * row the source merged into a larger quantity is updated, never doubled.
+ *
+ * And three figures a source may send with its own statistics -- a
+ * historical price, a sale rate and units sold a day -- kept beside the
+ * store's own estimates, never over them.
+ */
+static const gchar series_schema_step_6[] =
+	"ALTER TABLE current ADD COLUMN source_historical INTEGER;"
+	"ALTER TABLE current ADD COLUMN source_sale_rate REAL;"
+	"ALTER TABLE current ADD COLUMN source_sold_per_day REAL;"
+	"CREATE TABLE accounts ("
+	"  id INTEGER PRIMARY KEY,"
+	"  key TEXT NOT NULL UNIQUE,"
+	"  name TEXT,"
+	"  kind TEXT NOT NULL DEFAULT 'other',"
+	"  group_key TEXT NOT NULL DEFAULT '',"
+	"  venue_key TEXT,"
+	"  attrs TEXT,"
+	"  last_seen INTEGER,"
+	"  first_seen INTEGER NOT NULL,"
+	"  synced_at INTEGER NOT NULL,"
+	"  holdings_at INTEGER,"
+	"  positions_at INTEGER,"
+	"  inbound_at INTEGER,"
+	"  balances_at INTEGER"
+	");"
+	"CREATE INDEX accounts_group ON accounts (group_key);"
+	"CREATE TABLE account_balances ("
+	"  account_id INTEGER NOT NULL,"
+	"  currency TEXT NOT NULL,"
+	"  at INTEGER NOT NULL,"
+	"  amount INTEGER NOT NULL,"
+	"  PRIMARY KEY (account_id, currency, at)"
+	") WITHOUT ROWID;"
+	"CREATE INDEX account_balances_at ON account_balances (at);"
+	"CREATE TABLE account_holdings ("
+	"  account_id INTEGER NOT NULL,"
+	"  place TEXT NOT NULL,"
+	"  instrument_key TEXT NOT NULL,"
+	"  quantity INTEGER NOT NULL,"
+	"  at INTEGER NOT NULL,"
+	"  PRIMARY KEY (account_id, place, instrument_key)"
+	") WITHOUT ROWID;"
+	"CREATE INDEX account_holdings_instrument ON account_holdings (instrument_key);"
+	"CREATE TABLE account_positions ("
+	"  id INTEGER PRIMARY KEY,"
+	"  key TEXT NOT NULL UNIQUE,"
+	"  account_id INTEGER NOT NULL,"
+	"  venue_key TEXT NOT NULL,"
+	"  instrument_key TEXT NOT NULL,"
+	"  quantity INTEGER NOT NULL,"
+	"  unit_price INTEGER NOT NULL,"
+	"  bid INTEGER,"
+	"  currency TEXT NOT NULL,"
+	"  expires_at INTEGER,"
+	"  posted_at INTEGER,"
+	"  first_seen INTEGER NOT NULL,"
+	"  last_seen INTEGER NOT NULL"
+	");"
+	"CREATE INDEX account_positions_account ON account_positions (account_id);"
+	"CREATE INDEX account_positions_expires ON account_positions (expires_at);"
+	"CREATE TABLE account_inbound ("
+	"  id INTEGER PRIMARY KEY,"
+	"  key TEXT NOT NULL UNIQUE,"
+	"  account_id INTEGER NOT NULL,"
+	"  sender TEXT,"
+	"  subject TEXT,"
+	"  money INTEGER,"
+	"  cod INTEGER,"
+	"  currency TEXT,"
+	"  instrument_key TEXT,"
+	"  quantity INTEGER,"
+	"  expires_at INTEGER,"
+	"  returned INTEGER NOT NULL DEFAULT 0,"
+	"  first_seen INTEGER NOT NULL,"
+	"  last_seen INTEGER NOT NULL"
+	");"
+	"CREATE INDEX account_inbound_account ON account_inbound (account_id);"
+	"CREATE INDEX account_inbound_expires ON account_inbound (expires_at);"
+	"CREATE TABLE external_txns ("
+	"  id INTEGER PRIMARY KEY,"
+	"  key TEXT NOT NULL UNIQUE,"
+	"  account_id INTEGER NOT NULL,"
+	"  venue_key TEXT,"
+	"  kind TEXT NOT NULL,"
+	"  instrument_key TEXT,"
+	"  quantity INTEGER,"
+	"  unit_price INTEGER,"
+	"  amount INTEGER,"
+	"  currency TEXT,"
+	"  counterparty TEXT,"
+	"  source TEXT,"
+	"  at INTEGER NOT NULL,"
+	"  first_seen INTEGER NOT NULL,"
+	"  updated_at INTEGER NOT NULL"
+	");"
+	"CREATE INDEX external_txns_at ON external_txns (at);"
+	"CREATE INDEX external_txns_instrument ON external_txns (instrument_key, at);"
+	"CREATE INDEX external_txns_account ON external_txns (account_id, at);";
+
 /* Append only: a store records which of these it has run in user_version. */
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
 	series_schema_step_2,
 	series_schema_step_3,
 	series_schema_step_4,
-	series_schema_step_5
+	series_schema_step_5,
+	series_schema_step_6
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -299,38 +417,6 @@ struct _VentureSeriesStore
 };
 
 G_DEFINE_FINAL_TYPE(VentureSeriesStore, venture_series_store, G_TYPE_OBJECT)
-
-/*
- * A cached statement goes back to the cache reset: a SELECT left
- * mid-step holds its read transaction open, and on a reader handle that
- * would pin the snapshot it sees -- the page would show the same prices
- * forever while the writer moved on.
- */
-typedef sqlite3_stmt SeriesCachedStmt;
-
-static void
-series_cached_stmt_release(SeriesCachedStmt *stmt)
-{
-	if (NULL != stmt)
-	{
-		sqlite3_reset(stmt);
-		sqlite3_clear_bindings(stmt);
-	}
-}
-
-G_DEFINE_AUTOPTR_CLEANUP_FUNC(SeriesCachedStmt, series_cached_stmt_release)
-
-/* A statement built for one call (a filtered listing) and then finalised. */
-typedef sqlite3_stmt SeriesOwnedStmt;
-
-static void
-series_owned_stmt_free(SeriesOwnedStmt *stmt)
-{
-	if (NULL != stmt)
-		sqlite3_finalize(stmt);
-}
-
-G_DEFINE_AUTOPTR_CLEANUP_FUNC(SeriesOwnedStmt, series_owned_stmt_free)
 
 static void
 venture_series_store_finalize(GObject *object)
@@ -473,31 +559,6 @@ series_step_done(
 }
 
 static void
-series_bind_text(
-	sqlite3_stmt	*stmt,
-	gint		 index,
-	const gchar	*text
-){
-	if (NULL == text)
-		sqlite3_bind_null(stmt, index);
-	else
-		sqlite3_bind_text(stmt, index, text, -1, SQLITE_TRANSIENT);
-}
-
-/* Binds a figure, or NULL for VENTURE_SERIES_NONE. */
-static void
-series_bind_figure(
-	sqlite3_stmt	*stmt,
-	gint		 index,
-	gint64		 value
-){
-	if (VENTURE_SERIES_NONE == value)
-		sqlite3_bind_null(stmt, index);
-	else
-		sqlite3_bind_int64(stmt, index, value);
-}
-
-static void
 series_bind_blob(
 	sqlite3_stmt	*stmt,
 	gint		 index,
@@ -508,42 +569,6 @@ series_bind_blob(
 	else
 		sqlite3_bind_blob(stmt, index, blob->data, (gint)blob->len,
 		                  SQLITE_TRANSIENT);
-}
-
-static gint64
-series_column_figure(
-	sqlite3_stmt	*stmt,
-	gint		 column
-){
-	if (SQLITE_NULL == sqlite3_column_type(stmt, column))
-		return VENTURE_SERIES_NONE;
-
-	return sqlite3_column_int64(stmt, column);
-}
-
-static gchar *
-series_column_strdup(
-	sqlite3_stmt	*stmt,
-	gint		 column
-){
-	const guchar *text;
-
-	text = sqlite3_column_text(stmt, column);
-
-	return (NULL != text) ? g_strdup((const gchar *)text) : NULL;
-}
-
-static void
-series_column_currency(
-	sqlite3_stmt	*stmt,
-	gint		 column,
-	gchar		 out[VENTURE_MONEY_CURRENCY_LEN]
-){
-	const guchar *text;
-
-	text = sqlite3_column_text(stmt, column);
-	g_strlcpy(out, (NULL != text) ? (const gchar *)text : "",
-	          VENTURE_MONEY_CURRENCY_LEN);
 }
 
 static gboolean
@@ -2403,6 +2428,142 @@ series_instrument_ensure(
 	                               out_id, out_created, error);
 }
 
+/* --- Shared with venture-series-accounts.c --------------------------------------- */
+
+/*
+ * Thin names for the handle's internals, declared in the private header.
+ * The accounts' half of the store prepares into the same statement cache
+ * and nests on the same transaction counter; a second copy of either
+ * would be a second store on one connection.
+ */
+
+sqlite3 *
+venture_series_store_internal_db(VentureSeriesStore *self)
+{
+	return self->db;
+}
+
+SeriesCachedStmt *
+venture_series_store_internal_stmt(
+	VentureSeriesStore	 *self,
+	const gchar		 *sql,
+	GError			**error
+){
+	return series_stmt(self, sql, error);
+}
+
+void
+venture_series_store_internal_sqlite_error(
+	VentureSeriesStore	 *self,
+	gint			  rc,
+	const gchar		 *what,
+	GError			**error
+){
+	series_set_sqlite_error(self, rc, what, error);
+}
+
+gboolean
+venture_series_store_internal_step_done(
+	VentureSeriesStore	 *self,
+	sqlite3_stmt		 *stmt,
+	const gchar		 *what,
+	GError			**error
+){
+	return series_step_done(self, stmt, what, error);
+}
+
+gboolean
+venture_series_store_internal_begin(
+	VentureSeriesStore	 *self,
+	GError			**error
+){
+	return series_txn_begin(self, error);
+}
+
+gboolean
+venture_series_store_internal_commit(
+	VentureSeriesStore	 *self,
+	GError			**error
+){
+	return series_txn_commit(self, error);
+}
+
+void
+venture_series_store_internal_rollback_one(VentureSeriesStore *self)
+{
+	series_txn_rollback_one(self);
+}
+
+gboolean
+venture_series_store_internal_over_cap(
+	VentureSeriesStore	 *self,
+	gboolean		 *out_over,
+	GError			**error
+){
+	return series_over_cap(self, out_over, error);
+}
+
+gboolean
+venture_series_store_internal_venue_ensure(
+	VentureSeriesStore	 *self,
+	const gchar		 *key,
+	gint64			  seen_at,
+	gint64			 *out_id,
+	GError			**error
+){
+	return series_venue_ensure(self, key, seen_at, out_id, error);
+}
+
+gboolean
+venture_series_store_internal_instrument_ensure(
+	VentureSeriesStore	 *self,
+	const gchar		 *key,
+	gint64			  seen_at,
+	gboolean		  allow_new,
+	gint64			 *out_id,
+	gboolean		 *out_created,
+	GError			**error
+){
+	return series_instrument_ensure(self, key, seen_at, allow_new, out_id, out_created,
+	                                error);
+}
+
+gboolean
+venture_series_store_internal_check_key(
+	const gchar	 *key,
+	const gchar	 *what,
+	GError		**error
+){
+	return series_check_key(key, what, error);
+}
+
+gboolean
+venture_series_store_internal_check_text(
+	const gchar	 *text,
+	gsize		  limit,
+	const gchar	 *what,
+	GError		**error
+){
+	return series_check_text(text, limit, what, error);
+}
+
+gboolean
+venture_series_store_internal_check_attrs(
+	const gchar	 *attrs_json,
+	GError		**error
+){
+	return series_check_attrs(attrs_json, error);
+}
+
+gboolean
+venture_series_store_internal_normalise_currency(
+	const gchar	 *currency,
+	gchar		  out[VENTURE_MONEY_CURRENCY_LEN],
+	GError		**error
+){
+	return series_normalise_currency(currency, out, error);
+}
+
 /* --- Meta and cursors -------------------------------------------------------------- */
 
 static const gchar series_sql_set_meta[] =
@@ -2867,6 +3028,34 @@ venture_series_snapshot_add_stats(
 		any = TRUE;
 	}
 
+	/* The source's own sales figures: a historical price like the
+	 * others, a rate between nothing and everything, a speed. Read only
+	 * when the caller says it set them. */
+	if (stats->source_figures && (VENTURE_SERIES_NONE != stats->historical) &&
+	    (stats->historical < 0))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A figure for \"%s\" is negative", stats->instrument_key);
+		return FALSE;
+	}
+
+	if (stats->source_figures &&
+	    ((!isnan(stats->sale_rate) &&
+	      (!isfinite(stats->sale_rate) || (stats->sale_rate < 0.0) || (stats->sale_rate > 1.0))) ||
+	     (!isnan(stats->sold_per_day) &&
+	      (!isfinite(stats->sold_per_day) || (stats->sold_per_day < 0.0)))))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The sales figures for \"%s\" are out of range: a sale rate "
+		            "is 0 to 1 and units a day are not negative", stats->instrument_key);
+		return FALSE;
+	}
+
+	any = any ||
+	      (stats->source_figures &&
+	       ((VENTURE_SERIES_NONE != stats->historical) ||
+	        !isnan(stats->sale_rate) || !isnan(stats->sold_per_day)));
+
 	if (!any)
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
@@ -3007,9 +3196,10 @@ static const gchar series_sql_insert_snapshot[] =
 static const gchar series_sql_upsert_current[] =
 	"INSERT INTO current (venue_id, instrument_id, currency, taken_at, seen_at,"
 	"                     quantity, listings, min_price, market_value, median,"
-	"                     p15, mean, stddev, bid_price, bid_quantity, tiers)"
+	"                     p15, mean, stddev, bid_price, bid_quantity, tiers,"
+	"                     source_historical, source_sale_rate, source_sold_per_day)"
 	" VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,"
-	"         ?15)"
+	"         ?15, ?16, ?17, ?18)"
 	" ON CONFLICT (venue_id, instrument_id) DO UPDATE SET"
 	"  currency = excluded.currency,"
 	"  taken_at = excluded.taken_at,"
@@ -3025,6 +3215,9 @@ static const gchar series_sql_upsert_current[] =
 	"  bid_price = excluded.bid_price,"
 	"  bid_quantity = excluded.bid_quantity,"
 	"  tiers = excluded.tiers,"
+	"  source_historical = excluded.source_historical,"
+	"  source_sale_rate = excluded.source_sale_rate,"
+	"  source_sold_per_day = excluded.source_sold_per_day,"
 	"  stock_changed_at = CASE"
 	"    WHEN excluded.quantity IS NULL OR quantity IS NULL THEN stock_changed_at"
 	"    WHEN (quantity > 0) <> (excluded.quantity > 0) THEN excluded.taken_at"
@@ -3139,6 +3332,11 @@ typedef struct
 	gint64			 sold_value;
 	gint64			 sale_avg;
 	GByteArray		*tiers;
+
+	/* What the source said of its own statistics; never the store's. */
+	gint64			 source_historical;
+	gdouble			 source_sale_rate;
+	gdouble			 source_sold_per_day;
 } SeriesFigures;
 
 static gboolean
@@ -3153,12 +3351,22 @@ series_figures_compute(
 	out->sold_value = 0;
 	out->sale_avg = VENTURE_SERIES_NONE;
 	out->tiers = g_byte_array_new();
+	out->source_historical = VENTURE_SERIES_NONE;
+	out->source_sale_rate = NAN;
+	out->source_sold_per_day = NAN;
 
 	if (acc->has_stats)
 	{
 		const VentureSeriesStats *stats;
 
 		stats = &acc->stats;
+
+		if (stats->source_figures)
+		{
+			out->source_historical = stats->historical;
+			out->source_sale_rate = stats->sale_rate;
+			out->source_sold_per_day = stats->sold_per_day;
+		}
 
 		if (!venture_series_math_summarise(NULL, 0, &out->summary, error))
 			return FALSE;
@@ -3378,6 +3586,17 @@ series_write_current(
 	series_bind_figure(stmt, 13, figures->bid_price);
 	sqlite3_bind_int64(stmt, 14, figures->bid_quantity);
 	series_bind_blob(stmt, 15, figures->tiers);
+	series_bind_figure(stmt, 16, figures->source_historical);
+
+	if (isnan(figures->source_sale_rate))
+		sqlite3_bind_null(stmt, 17);
+	else
+		sqlite3_bind_double(stmt, 17, figures->source_sale_rate);
+
+	if (isnan(figures->source_sold_per_day))
+		sqlite3_bind_null(stmt, 18);
+	else
+		sqlite3_bind_double(stmt, 18, figures->source_sold_per_day);
 
 	return series_step_done(self, stmt, "writing a current row", error);
 }
@@ -4684,7 +4903,8 @@ venture_series_store_purge(
 		ok = series_purge_one(self, series_sql_purge_daily, first,
 		                      &result.daily, error) &&
 		     series_purge_one(self, series_sql_purge_entries, first * 86400,
-		                      &result.entries, error);
+		                      &result.entries, error) &&
+		     venture_series_accounts_purge(self, first, &result, error);
 	}
 
 	if (!ok)
@@ -4718,7 +4938,8 @@ venture_series_store_purge(
 	" c.currency, c.taken_at, c.seen_at, c.quantity, c.listings, c.min_price," \
 	" c.market_value, c.median, c.p15, c.mean, c.stddev, c.bid_price," \
 	" c.bid_quantity, c.region_median, c.deal_price, c.pct_vs_region," \
-	" c.stock_changed_at, c.sale_rate, c.sold_per_day"
+	" c.stock_changed_at, c.sale_rate, c.sold_per_day," \
+	" c.source_historical, c.source_sale_rate, c.source_sold_per_day"
 
 #define SERIES_ROW_FROM \
 	" FROM current c JOIN venues v ON v.id = c.venue_id" \
@@ -4759,6 +4980,11 @@ series_row_from(sqlite3_stmt *stmt)
 	                 NAN : sqlite3_column_double(stmt, 24);
 	row->sold_per_day = (SQLITE_NULL == sqlite3_column_type(stmt, 25)) ?
 	                    NAN : sqlite3_column_double(stmt, 25);
+	row->source_historical = series_column_figure(stmt, 26);
+	row->source_sale_rate = (SQLITE_NULL == sqlite3_column_type(stmt, 27)) ?
+	                        NAN : sqlite3_column_double(stmt, 27);
+	row->source_sold_per_day = (SQLITE_NULL == sqlite3_column_type(stmt, 28)) ?
+	                           NAN : sqlite3_column_double(stmt, 28);
 
 	if (NULL == row->group_key)
 		row->group_key = g_strdup("");
@@ -4780,6 +5006,26 @@ venture_series_row_free(VentureSeriesRow *row)
 	g_free(row->category);
 	g_free(row->kind);
 	g_free(row);
+}
+
+void
+venture_series_stats_init(VentureSeriesStats *stats)
+{
+	g_return_if_fail(NULL != stats);
+
+	memset(stats, 0, sizeof(*stats));
+	stats->min_price = VENTURE_SERIES_NONE;
+	stats->market_value = VENTURE_SERIES_NONE;
+	stats->mean = VENTURE_SERIES_NONE;
+	stats->median = VENTURE_SERIES_NONE;
+	stats->sale_avg = VENTURE_SERIES_NONE;
+	stats->quantity = VENTURE_SERIES_NONE;
+	stats->listings = VENTURE_SERIES_NONE;
+	stats->sold = VENTURE_SERIES_NONE;
+	stats->source_figures = TRUE;
+	stats->historical = VENTURE_SERIES_NONE;
+	stats->sale_rate = NAN;
+	stats->sold_per_day = NAN;
 }
 
 void
@@ -5851,6 +6097,157 @@ typedef struct
 	gboolean present;
 } SeriesRefDay;
 
+static const gchar series_sql_reference_source_venue[] =
+	"SELECT c.currency, c.source_historical, c.source_sale_rate, c.source_sold_per_day"
+	" FROM current c JOIN venues v ON v.id = c.venue_id"
+	" JOIN instruments i ON i.id = c.instrument_id"
+	" WHERE v.key = ?1 AND i.key = ?2 AND c.taken_at <= ?3"
+	"   AND (c.source_historical IS NOT NULL OR c.source_sale_rate IS NOT NULL"
+	"        OR c.source_sold_per_day IS NOT NULL)"
+	" ORDER BY c.currency";
+
+static const gchar series_sql_reference_source_group[] =
+	"SELECT c.currency, c.source_historical, c.source_sale_rate, c.source_sold_per_day"
+	" FROM current c JOIN venues v ON v.id = c.venue_id"
+	" JOIN instruments i ON i.id = c.instrument_id"
+	" WHERE v.group_key = ?1 AND i.key = ?2 AND c.taken_at <= ?3"
+	"   AND (c.source_historical IS NOT NULL OR c.source_sale_rate IS NOT NULL"
+	"        OR c.source_sold_per_day IS NOT NULL)"
+	" ORDER BY c.currency";
+
+/*
+ * Fills what the store could not compute from the source's own figures:
+ * its historical price, sale rate and units a day, as the source's last
+ * statistics gave them. Only a figure still missing is filled, only in
+ * the answer's currency (or, when the store had no history at all, the
+ * first currency the source used), and only from a row taken by @now --
+ * a question about last month is not answered with this morning's rate.
+ * A group's figure is the mean over the venues that sent one, money by
+ * the integer mean.
+ *
+ * Units a day is the one figure the store always has once it has a day:
+ * a day with no sale and no expiry reads zero. Without @store_has_sales
+ * -- no sale or expiry seen in the window -- that zero is "nothing
+ * observed", not "nothing sold", and a source that says otherwise is
+ * believed.
+ */
+static gboolean
+series_reference_from_source(
+	VentureSeriesStore	 *self,
+	const gchar		 *venue_key,
+	const gchar		 *group_key,
+	const gchar		 *instrument_key,
+	gint64			  now,
+	gboolean		  store_has_sales,
+	VentureSeriesReference	 *out,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	g_autoptr(GArray) historicals = NULL;
+	g_autoptr(GError) math_error = NULL;
+	gchar currency[VENTURE_MONEY_CURRENCY_LEN];
+	gdouble rate_sum;
+	gdouble per_day_sum;
+	guint rates;
+	guint per_days;
+	gint rc;
+
+	/* A sale rate exists only where sales or expiries were seen, so with
+	 * all three present there is nothing for the source to fill. */
+	if (!isnan(out->sale_rate) && !isnan(out->sold_per_day) &&
+	    (VENTURE_SERIES_NONE != out->historical_60d))
+		return TRUE;
+
+	stmt = series_stmt(self, (NULL != venue_key) ? series_sql_reference_source_venue
+	                                            : series_sql_reference_source_group, error);
+	if (NULL == stmt)
+		return FALSE;
+
+	series_bind_text(stmt, 1, (NULL != venue_key) ? venue_key : group_key);
+	series_bind_text(stmt, 2, instrument_key);
+	sqlite3_bind_int64(stmt, 3, now);
+
+	g_strlcpy(currency, out->currency, sizeof(currency));
+	historicals = g_array_new(FALSE, FALSE, sizeof(gint64));
+	rate_sum = 0.0;
+	per_day_sum = 0.0;
+	rates = 0;
+	per_days = 0;
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		gchar row_currency[VENTURE_MONEY_CURRENCY_LEN];
+
+		series_column_currency(stmt, 0, row_currency);
+
+		/* The store's answer decides the currency; without one the
+		 * first the source used does. */
+		if ('\0' == currency[0])
+			g_strlcpy(currency, row_currency, sizeof(currency));
+
+		if (0 != strcmp(currency, row_currency))
+			continue;
+
+		if (SQLITE_NULL != sqlite3_column_type(stmt, 1))
+		{
+			gint64 value = sqlite3_column_int64(stmt, 1);
+
+			g_array_append_val(historicals, value);
+		}
+
+		if (SQLITE_NULL != sqlite3_column_type(stmt, 2))
+		{
+			rate_sum += sqlite3_column_double(stmt, 2);
+			rates++;
+		}
+
+		if (SQLITE_NULL != sqlite3_column_type(stmt, 3))
+		{
+			per_day_sum += sqlite3_column_double(stmt, 3);
+			per_days++;
+		}
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		series_set_sqlite_error(self, rc, "reading the source's own figures", error);
+		return FALSE;
+	}
+
+	if ((VENTURE_SERIES_NONE == out->historical_60d) && (historicals->len > 0))
+	{
+		out->historical_60d = venture_series_math_mean(
+			(const gint64 *)(gpointer)historicals->data, historicals->len, &math_error);
+
+		if (NULL != math_error)
+		{
+			g_propagate_error(error, g_steal_pointer(&math_error));
+			return FALSE;
+		}
+
+		out->historical_from_source = (VENTURE_SERIES_NONE != out->historical_60d);
+	}
+
+	if (isnan(out->sale_rate) && (rates > 0))
+	{
+		out->sale_rate = rate_sum / (gdouble)rates;
+		out->sale_rate_from_source = TRUE;
+	}
+
+	if ((isnan(out->sold_per_day) || !store_has_sales) && (per_days > 0))
+	{
+		out->sold_per_day = per_day_sum / (gdouble)per_days;
+		out->sold_per_day_from_source = TRUE;
+	}
+
+	if (('\0' == out->currency[0]) &&
+	    (out->historical_from_source || out->sale_rate_from_source ||
+	     out->sold_per_day_from_source))
+		g_strlcpy(out->currency, currency, sizeof(out->currency));
+
+	return TRUE;
+}
+
 gboolean
 venture_series_store_reference(
 	VentureSeriesStore	 *self,
@@ -5948,7 +6345,8 @@ venture_series_store_reference(
 	}
 
 	if (0 == rows->len)
-		return TRUE;
+		return series_reference_from_source(self, venue_key, group_key, instrument_key,
+		                                    now, FALSE, out, error);
 
 	g_strlcpy(out->currency, currency, sizeof(out->currency));
 
@@ -6058,7 +6456,8 @@ venture_series_store_reference(
 	if (out->days_14 > 0)
 		out->sold_per_day = (gdouble)sold / (gdouble)out->days_14;
 
-	ok = TRUE;
+	ok = series_reference_from_source(self, venue_key, group_key, instrument_key, now,
+	                                  (sold > 0) || (expired > 0), out, error);
 
 out:
 	for (i = 0; i < VENTURE_SERIES_HISTORICAL_DAYS; i++)

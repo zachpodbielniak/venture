@@ -818,7 +818,16 @@ oracle_reference_figure(
 
 		answer->found = TRUE;
 		g_free(answer->note);
-		answer->note = g_strdup_printf("from %" G_GINT64_FORMAT " days of history", days);
+
+		/* The store's own estimate wins; the source's figure only fills
+		 * a gap, and the evidence says which one answered. */
+		if (((VENTURE_MARKETDATA_BASIS_SALE_RATE == question->basis) &&
+		     reference.sale_rate_from_source) ||
+		    ((VENTURE_MARKETDATA_BASIS_SOLD_PER_DAY == question->basis) &&
+		     reference.sold_per_day_from_source))
+			answer->note = g_strdup("the source's own figure: no sales history of its own");
+		else
+			answer->note = g_strdup_printf("from %" G_GINT64_FORMAT " days of history", days);
 		return TRUE;
 	case VENTURE_MARKETDATA_BASIS_MARKET_14D:
 		value = reference.market_14d;
@@ -843,7 +852,12 @@ oracle_reference_figure(
 	answer->number = (gdouble)value;
 	oracle_set_currency(answer, reference.currency);
 	g_free(answer->note);
-	answer->note = g_strdup_printf("from %" G_GINT64_FORMAT " days of history", days);
+
+	if ((VENTURE_MARKETDATA_BASIS_HISTORICAL_60D == question->basis) &&
+	    reference.historical_from_source)
+		answer->note = g_strdup("the source's own historical price: no daily history of its own");
+	else
+		answer->note = g_strdup_printf("from %" G_GINT64_FORMAT " days of history", days);
 
 	return TRUE;
 }

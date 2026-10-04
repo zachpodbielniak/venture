@@ -129,11 +129,98 @@ venture_feeds_add_hook(
 void
 venture_feeds_queue_refresh(VentureContext *context);
 
+/**
+ * VENTURE_FEEDS_PUSH_PROVIDER:
+ *
+ * The built-in provider of a source that is filled from outside, by
+ * venture_feeds_service_push(), rather than fetched on a schedule.
+ */
+#define VENTURE_FEEDS_PUSH_PROVIDER "push"
+
+/**
+ * VENTURE_FEEDS_PUSH_WAIT_SECONDS:
+ *
+ * The longest venture_feeds_service_wait_push() may be asked to wait. A
+ * push of a first sync -- fifty thousand ledger rows -- is a few seconds;
+ * past two minutes the one who pushed should ask for the source's runs.
+ */
+#define VENTURE_FEEDS_PUSH_WAIT_SECONDS (120)
+
 /* --- The service ------------------------------------------------------------------- */
 
 #define VENTURE_TYPE_FEEDS_SERVICE (venture_feeds_service_get_type())
 
 G_DECLARE_FINAL_TYPE(VentureFeedsService, venture_feeds_service, VENTURE, FEEDS_SERVICE, GObject)
+
+/**
+ * venture_feeds_service_push:
+ * @self: the service
+ * @data_source_id: a data_source whose provider is `push`
+ * @body: (transfer none): JSON lines of protocol 1
+ * @out_push_id: (out) (transfer full) (optional): the id the run will
+ *   carry; venture_feeds_service_wait_push() takes it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Queues @body as a run of its own on the worker, with trigger `push`.
+ * The body is handed over as plain bytes and read by the push provider
+ * through the same JSON-lines path a file_jsonl source's file takes; the
+ * service does not parse it here, so a malformed line is the run's
+ * failure, with its line number, not this call's. Refused with
+ * %VENTURE_ERROR_NOT_FOUND for a source that is gone and
+ * %VENTURE_ERROR_CONFLICT for one whose provider is not `push` or that is
+ * switched off. A source that cannot be frozen gets a failed run at once.
+ *
+ * Returns: %TRUE when queued
+ */
+gboolean
+venture_feeds_service_push(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	GBytes			 *body,
+	gchar			**out_push_id,
+	GError			**error
+);
+
+/**
+ * venture_feeds_service_lookup_push:
+ * @self: the service
+ * @push_id: what venture_feeds_service_push() handed back
+ * @out_run_id: (out) (optional): the data_source_run it made, or 0 when
+ *   the run could not be recorded (its source deleted meanwhile)
+ *
+ * Whether a push's run has been written. The service remembers the most
+ * recent pushes only; an old id answers %FALSE like a pending one.
+ *
+ * Returns: %TRUE once the run is written
+ */
+gboolean
+venture_feeds_service_lookup_push(
+	VentureFeedsService	*self,
+	const gchar		*push_id,
+	gint64			*out_run_id
+);
+
+/**
+ * venture_feeds_service_wait_push:
+ * @self: the service
+ * @push_id: what venture_feeds_service_push() handed back
+ * @timeout_seconds: at most this long, 1 to %VENTURE_FEEDS_PUSH_WAIT_SECONDS
+ * @out_run_id: (out) (optional): as for venture_feeds_service_lookup_push()
+ *
+ * Waits for a push's run by running the default main context -- the
+ * worker hands runs back there -- for at most @timeout_seconds. Main
+ * thread only, and never inside a transaction: the run is written only
+ * when none is open.
+ *
+ * Returns: %TRUE when the run was written in time
+ */
+gboolean
+venture_feeds_service_wait_push(
+	VentureFeedsService	*self,
+	const gchar		*push_id,
+	guint			 timeout_seconds,
+	gint64			*out_run_id
+);
 
 /**
  * venture_feeds_service_sync:

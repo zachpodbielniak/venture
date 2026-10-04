@@ -639,6 +639,13 @@ static const GEnumValue venture_jsonl_message_kind_values[] = {
 	VE(VENTURE_JSONL_MESSAGE_LOG,          "log"),
 	VE(VENTURE_JSONL_MESSAGE_ERROR,        "error"),
 	VE(VENTURE_JSONL_MESSAGE_RESULT,       "result"),
+	VE(VENTURE_JSONL_MESSAGE_ACCOUNT,      "account"),
+	VE(VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT, "account_snapshot"),
+	VE(VENTURE_JSONL_MESSAGE_BALANCE,      "balance"),
+	VE(VENTURE_JSONL_MESSAGE_HOLDING,      "holding"),
+	VE(VENTURE_JSONL_MESSAGE_POSITION,     "position"),
+	VE(VENTURE_JSONL_MESSAGE_INBOUND,      "inbound"),
+	VE(VENTURE_JSONL_MESSAGE_TXN,          "txn"),
 	VE_END
 };
 
@@ -802,6 +809,7 @@ static const GEnumValue venture_data_source_run_trigger_values[] = {
 	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE,   "schedule"),
 	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL,     "manual"),
 	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION, "automation"),
+	VE(VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH,       "push"),
 	VE_END
 };
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * venture-feeds-cli.inc - venturectl feeds sync|runs|due
+ * venture-feeds-cli.inc - venturectl feeds sync|push|runs|due
  *
  * Thin calls on /api/v1/feeds. The records themselves need no verb of
  * their own -- `list data_source`, `act data_source ID sync` -- these are
@@ -12,6 +12,15 @@
 
 /* The CLI waits this long for a queued run before it says so and stops. */
 #define VENTURE_CLI_FEEDS_WAIT_SECONDS (300)
+
+/* How long a push with --wait may take to answer: the server waits up to
+ * two minutes for the run, and the session's own default (a minute) would
+ * cut it off first. */
+#define VENTURE_CLI_FEEDS_PUSH_TIMEOUT (150)
+
+/* The most a push reads from a file or standard input; the server's own
+ * cap (feeds.max_push_mb) is usually smaller and says so itself. */
+#define VENTURE_CLI_FEEDS_PUSH_MAX ((gsize)4096 * 1048576)
 
 /*
  * Reads the `organization_id=N` a verb with positional words may end
@@ -106,6 +115,124 @@ venture_cli_feeds_last_run(
 	return json_object_get_int_member(json_array_get_object_element(runs, 0), "id");
 }
 
+/* Reads a push's body: a file, or standard input for "-". */
+static GBytes *
+venture_cli_feeds_read_body(
+	const gchar	 *name,
+	GError		**error
+){
+	g_autoptr(GByteArray) bytes = NULL;
+	guint8 chunk[65536];
+	gsize got;
+
+	if (0 != g_strcmp0(name, "-"))
+	{
+		g_autoptr(GMappedFile) mapped = NULL;
+
+		mapped = g_mapped_file_new(name, FALSE, error);
+
+		if (NULL == mapped)
+			return NULL;
+
+		return g_mapped_file_get_bytes(mapped);
+	}
+
+	bytes = g_byte_array_new();
+
+	while (0 < (got = fread(chunk, 1, sizeof(chunk), stdin)))
+	{
+		if (bytes->len + got > VENTURE_CLI_FEEDS_PUSH_MAX)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "Standard input is larger than any push the server takes");
+			return NULL;
+		}
+
+		g_byte_array_append(bytes, chunk, (guint)got);
+	}
+
+	if (ferror(stdin))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		                    "Could not read standard input");
+		return NULL;
+	}
+
+	return g_byte_array_free_to_bytes(g_steal_pointer(&bytes));
+}
+
+/*
+ * feeds push ID FILE|- [--wait]: the body goes as it is, JSON lines under
+ * application/x-ndjson. Nothing is parsed here: the server reads it the
+ * way it reads a file_jsonl source, and a malformed line is the run's
+ * failure, with its line number. With --wait the server holds the request
+ * until the run is written and the run is printed; its status says how it
+ * went.
+ */
+static gint
+venture_cli_feeds_push(
+	VentureCli	 *cli,
+	gchar		**args,
+	gboolean	  wait,
+	gint64		  organization_id,
+	GError		**error
+){
+	g_autoptr(GBytes) body = NULL;
+	g_autoptr(GBytes) response = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *text = NULL;
+	JsonNode *run;
+	guint previous_timeout;
+	guint status;
+
+	body = venture_cli_feeds_read_body(args[3], error);
+
+	if (NULL == body)
+		return -1;
+
+	base = g_strdup_printf("/api/v1/feeds/%s/push%s", args[2], wait ? "?wait=1" : "");
+	path = venture_cli_organization_path(base, organization_id);
+
+	previous_timeout = soup_session_get_timeout(cli->session);
+
+	if (wait)
+		soup_session_set_timeout(cli->session, VENTURE_CLI_FEEDS_PUSH_TIMEOUT);
+
+	response = venture_cli_send_bytes(cli, "POST", path, body, "application/x-ndjson", &status,
+	                                  error);
+	soup_session_set_timeout(cli->session, previous_timeout);
+
+	if (NULL == response)
+		return -1;
+
+	text = g_strndup(g_bytes_get_data(response, NULL), g_bytes_get_size(response));
+
+	if (status >= 400)
+	{
+		venture_cli_error_from_body(text, error);
+		return -1;
+	}
+
+	node = venture_json_parse(text, NULL);
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		            "The server returned something that is not JSON (HTTP %u)", status);
+		return -1;
+	}
+
+	run = json_object_get_member(json_node_get_object(node), "run");
+
+	/* The run itself when the server waited for one, like feeds sync
+	 * --wait; the queued answer otherwise, or when the run took longer. */
+	venture_cli_output(cli, ((NULL != run) && JSON_NODE_HOLDS_OBJECT(run)) ? run : node);
+
+	return 0;
+}
+
 static gint
 venture_cli_command_feeds(
 	VentureCli	 *cli,
@@ -115,6 +242,7 @@ venture_cli_command_feeds(
 ){
 	static const gchar usage[] =
 		"usage: venturectl feeds sync ID [--wait] [organization_id=N] | "
+		"feeds push ID FILE|- [--wait] [organization_id=N] | "
 		"feeds runs ID [organization_id=N] | feeds due [organization_id=N]";
 	g_autoptr(JsonNode) response = NULL;
 	g_autofree gchar *base = NULL;
@@ -125,22 +253,29 @@ venture_cli_command_feeds(
 	if ((NULL == args[1]) ||
 	    ((0 != g_strcmp0(args[1], "due")) &&
 	     ((NULL == args[2]) || !g_ascii_string_to_signed(args[2], 10, 1, G_MAXINT64, &parsed, NULL) ||
-	      ((0 != g_strcmp0(args[1], "sync")) && (0 != g_strcmp0(args[1], "runs"))))))
+	      ((0 != g_strcmp0(args[1], "sync")) && (0 != g_strcmp0(args[1], "runs")) &&
+	       (0 != g_strcmp0(args[1], "push"))))) ||
+	    ((0 == g_strcmp0(args[1], "push")) && ((NULL == args[3]) || ('\0' == args[3][0]))))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, usage);
 		return -1;
 	}
 
-	if (!venture_cli_organization_arg(args, (0 == g_strcmp0(args[1], "due")) ? 2 : 3, usage,
-	                                  &organization_id, error))
+	if (!venture_cli_organization_arg(args,
+	                                  (0 == g_strcmp0(args[1], "due")) ? 2
+	                                  : (0 == g_strcmp0(args[1], "push")) ? 4 : 3,
+	                                  usage, &organization_id, error))
 		return -1;
 
-	if (wait && (0 != g_strcmp0(args[1], "sync")))
+	if (wait && (0 != g_strcmp0(args[1], "sync")) && (0 != g_strcmp0(args[1], "push")))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "--wait belongs to feeds sync");
+		                    "--wait belongs to feeds sync and feeds push");
 		return -1;
 	}
+
+	if (0 == g_strcmp0(args[1], "push"))
+		return venture_cli_feeds_push(cli, args, wait, organization_id, error);
 
 	if (0 == g_strcmp0(args[1], "due"))
 	{

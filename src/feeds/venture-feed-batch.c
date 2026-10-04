@@ -16,6 +16,7 @@
 #include "feeds/venture-feeds-private.h"
 
 #include <string.h>
+#include <math.h>
 
 G_DEFINE_BOXED_TYPE(VentureFeedBatch, venture_feed_batch,
                     venture_feed_batch_ref, venture_feed_batch_unref)
@@ -145,6 +146,18 @@ venture_feed_batch_new(void)
 	self->remote_used = -1;
 	self->remote_remaining = -1;
 
+	self->strings = g_string_chunk_new(64 * 1024);
+	self->accounts = g_array_new(FALSE, TRUE, sizeof(VentureSeriesAccount));
+	self->account_snapshots = g_array_new(FALSE, TRUE, sizeof(VentureSeriesAccountSnapshot));
+	self->balances = g_array_new(FALSE, TRUE, sizeof(VentureSeriesBalance));
+	self->holdings = g_array_new(FALSE, TRUE, sizeof(VentureSeriesHolding));
+	self->positions = g_array_new(FALSE, TRUE, sizeof(VentureSeriesPosition));
+	self->inbound = g_array_new(FALSE, TRUE, sizeof(VentureSeriesInbound));
+	self->txns = g_array_new(FALSE, TRUE, sizeof(VentureSeriesTxn));
+	self->holding_index = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	self->account_state = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
+	self->jsonl_venue_currency = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
 	return self;
 }
 
@@ -177,6 +190,19 @@ venture_feed_batch_unref(VentureFeedBatch *self)
 	g_ptr_array_unref(self->notes);
 	g_free(self->cursor);
 	g_free(self->error);
+
+	/* The account state's keys live in the chunk: the table goes first. */
+	g_hash_table_unref(self->account_state);
+	g_hash_table_unref(self->holding_index);
+	g_hash_table_unref(self->jsonl_venue_currency);
+	g_array_unref(self->accounts);
+	g_array_unref(self->account_snapshots);
+	g_array_unref(self->balances);
+	g_array_unref(self->holdings);
+	g_array_unref(self->positions);
+	g_array_unref(self->inbound);
+	g_array_unref(self->txns);
+	g_string_chunk_free(self->strings);
 	g_free(self);
 }
 
@@ -462,30 +488,10 @@ venture_feed_batch_add_stats(
 	gint64			  sold,
 	GError			**error
 ){
-	FeedBatchSnapshot *snapshot;
-	FeedBatchStats stats;
+	VentureSeriesStats stats;
 
-	g_return_val_if_fail(NULL != self, FALSE);
-
-	snapshot = feed_batch_open_snapshot(self, venue_key, error);
-
-	if (NULL == snapshot)
-		return FALSE;
-
-	if (!feed_batch_check_key("figure's instrument", instrument_key, TRUE, error))
-		return FALSE;
-
-	if ((VENTURE_SERIES_NONE == min_price) && (VENTURE_SERIES_NONE == market_value) &&
-	    (VENTURE_SERIES_NONE == mean) && (VENTURE_SERIES_NONE == median) &&
-	    (VENTURE_SERIES_NONE == sale_avg) && (VENTURE_SERIES_NONE == quantity) &&
-	    (VENTURE_SERIES_NONE == listings) && (VENTURE_SERIES_NONE == sold))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "Figures need at least one figure");
-		return FALSE;
-	}
-
-	stats.instrument_key = g_strdup(instrument_key);
+	venture_series_stats_init(&stats);
+	stats.instrument_key = instrument_key;
 	stats.min_price = min_price;
 	stats.market_value = market_value;
 	stats.mean = mean;
@@ -494,7 +500,67 @@ venture_feed_batch_add_stats(
 	stats.quantity = quantity;
 	stats.listings = listings;
 	stats.sold = sold;
-	g_array_append_val(snapshot->stats, stats);
+
+	return venture_feed_batch_add_stats_full(self, venue_key, &stats, error);
+}
+
+gboolean
+venture_feed_batch_add_stats_full(
+	VentureFeedBatch		 *self,
+	const gchar			 *venue_key,
+	const VentureSeriesStats	 *stats,
+	GError				**error
+){
+	FeedBatchSnapshot *snapshot;
+	FeedBatchStats row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != stats, FALSE);
+
+	snapshot = feed_batch_open_snapshot(self, venue_key, error);
+
+	if (NULL == snapshot)
+		return FALSE;
+
+	if (!feed_batch_check_key("figure's instrument", stats->instrument_key, TRUE, error))
+		return FALSE;
+
+	if ((VENTURE_SERIES_NONE == stats->min_price) && (VENTURE_SERIES_NONE == stats->market_value) &&
+	    (VENTURE_SERIES_NONE == stats->mean) && (VENTURE_SERIES_NONE == stats->median) &&
+	    (VENTURE_SERIES_NONE == stats->sale_avg) && (VENTURE_SERIES_NONE == stats->quantity) &&
+	    (VENTURE_SERIES_NONE == stats->listings) && (VENTURE_SERIES_NONE == stats->sold) &&
+	    (VENTURE_SERIES_NONE == stats->historical) && isnan(stats->sale_rate) &&
+	    isnan(stats->sold_per_day))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Figures need at least one figure");
+		return FALSE;
+	}
+
+	/* A rate is a fraction of what was listed; a speed is not negative. */
+	if ((!isnan(stats->sale_rate) &&
+	     (!isfinite(stats->sale_rate) || (stats->sale_rate < 0.0) || (stats->sale_rate > 1.0))) ||
+	    (!isnan(stats->sold_per_day) &&
+	     (!isfinite(stats->sold_per_day) || (stats->sold_per_day < 0.0))))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A sale rate is 0 to 1 and units sold a day are not negative");
+		return FALSE;
+	}
+
+	row.instrument_key = g_strdup(stats->instrument_key);
+	row.min_price = stats->min_price;
+	row.market_value = stats->market_value;
+	row.mean = stats->mean;
+	row.median = stats->median;
+	row.sale_avg = stats->sale_avg;
+	row.quantity = stats->quantity;
+	row.listings = stats->listings;
+	row.sold = stats->sold;
+	row.historical = stats->historical;
+	row.sale_rate = stats->sale_rate;
+	row.sold_per_day = stats->sold_per_day;
+	g_array_append_val(snapshot->stats, row);
 
 	return TRUE;
 }
@@ -643,6 +709,508 @@ venture_feed_batch_add_record(
 	return TRUE;
 }
 
+/* --- The operator's accounts --------------------------------------------------- */
+
+static const gchar *const feed_batch_account_kinds[] = {
+	"character", "shared", "guild", "other", NULL
+};
+static const gchar *const feed_batch_places[] = {
+	"bag", "bank", "reagent_bank", "warbank", "guild", "mail", "auction",
+	"void", "equipped", "currency", "other", NULL
+};
+static const gchar *const feed_batch_txn_kinds[] = {
+	"sale", "buy", "income", "expense", "expired", "cancelled", NULL
+};
+
+/*
+ * A key or a kind, stored once however many rows repeat it: fifty
+ * thousand ledger rows of one character name it once. NULL stays NULL.
+ */
+static const gchar *
+feed_batch_intern(
+	VentureFeedBatch	*self,
+	const gchar		*text
+){
+	return (NULL != text) ? g_string_chunk_insert_const(self->strings, text) : NULL;
+}
+
+/* Free text, cut at a character like a venue's name, kept in the chunk. */
+static const gchar *
+feed_batch_keep_text(
+	VentureFeedBatch	*self,
+	const gchar		*text,
+	gsize			 limit
+){
+	g_autofree gchar *cut = NULL;
+
+	if (NULL == text)
+		return NULL;
+
+	cut = feed_batch_text(text, limit);
+
+	return g_string_chunk_insert(self->strings, cut);
+}
+
+static gboolean
+feed_batch_check_choice(
+	const gchar		 *value,
+	const gchar *const	 *choices,
+	const gchar		 *what,
+	GError			**error
+){
+	if ((NULL != value) && g_strv_contains(choices, value))
+		return TRUE;
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "Not a %s this batch knows", what);
+	return FALSE;
+}
+
+static gboolean
+feed_batch_check_amount(
+	gint64		  amount,
+	gboolean	  required,
+	const gchar	 *what,
+	GError		**error
+){
+	if (VENTURE_SERIES_NONE == amount)
+	{
+		if (!required)
+			return TRUE;
+	}
+	else if (amount >= 0)
+		return TRUE;
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "A %s is an amount of zero or more", what);
+	return FALSE;
+}
+
+static gint64
+feed_batch_account_rows(VentureFeedBatch *self)
+{
+	return (gint64)self->balances->len + (gint64)self->holdings->len +
+	       (gint64)self->positions->len + (gint64)self->inbound->len;
+}
+
+static gboolean
+feed_batch_room_for_row(
+	VentureFeedBatch	 *self,
+	GError			**error
+){
+	if (feed_batch_account_rows(self) < VENTURE_FEED_BATCH_MAX_ACCOUNT_ROWS)
+		return TRUE;
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "A batch carries at most %d balance, holding, position and inbound rows",
+	            VENTURE_FEED_BATCH_MAX_ACCOUNT_ROWS);
+	return FALSE;
+}
+
+/* What the batch knows of an account, made on first mention. The key is
+ * the chunk's copy, so the table owns only the state. */
+static FeedAccountState *
+feed_batch_account_state(
+	VentureFeedBatch	*self,
+	const gchar		*account_key
+){
+	FeedAccountState *state;
+	const gchar *key;
+
+	state = g_hash_table_lookup(self->account_state, account_key);
+
+	if (NULL != state)
+		return state;
+
+	key = feed_batch_intern(self, account_key);
+	state = g_new0(FeedAccountState, 1);
+	g_hash_table_insert(self->account_state, (gpointer)key, state);
+
+	return state;
+}
+
+/* An account a row names: a valid key, and room for one more account. */
+static gboolean
+feed_batch_check_account(
+	VentureFeedBatch	 *self,
+	const gchar		 *account_key,
+	GError			**error
+){
+	if (!feed_batch_check_key("row's account", account_key, TRUE, error))
+		return FALSE;
+
+	if (!g_hash_table_contains(self->account_state, account_key) &&
+	    (g_hash_table_size(self->account_state) >= VENTURE_FEED_BATCH_MAX_ACCOUNTS))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A batch names at most %d accounts", VENTURE_FEED_BATCH_MAX_ACCOUNTS);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_account(
+	VentureFeedBatch		 *self,
+	const VentureSeriesAccount	 *account,
+	GError				**error
+){
+	VentureSeriesAccount row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != account, FALSE);
+
+	if (!feed_batch_check_account(self, account->key, error) ||
+	    !feed_batch_check_key("account's venue", account->venue_key, FALSE, error) ||
+	    !feed_batch_check_key("account's group", account->group_key, FALSE, error) ||
+	    !feed_batch_check_attrs(account->attrs_json, error))
+		return FALSE;
+
+	if ((NULL != account->kind) &&
+	    !feed_batch_check_choice(account->kind, feed_batch_account_kinds, "kind of account",
+	                             error))
+		return FALSE;
+
+	if ((NULL != account->attrs_json) && (strlen(account->attrs_json) > VENTURE_JSONL_MAX_ATTRS_BYTES))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "An account's attributes are at most %d bytes", VENTURE_JSONL_MAX_ATTRS_BYTES);
+		return FALSE;
+	}
+
+	feed_batch_account_state(self, account->key);
+
+	row.key = feed_batch_intern(self, account->key);
+	row.name = feed_batch_keep_text(self, account->name, VENTURE_SERIES_MAX_KEY_LENGTH);
+	row.kind = feed_batch_intern(self, account->kind);
+	row.group_key = feed_batch_intern(self, account->group_key);
+	row.venue_key = feed_batch_intern(self, account->venue_key);
+	row.attrs_json = (NULL != account->attrs_json)
+		? g_string_chunk_insert(self->strings, account->attrs_json) : NULL;
+	row.last_seen = account->last_seen;
+	g_array_append_val(self->accounts, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_account_snapshot(
+	VentureFeedBatch	 *self,
+	const gchar		 *account_key,
+	gint64			  at,
+	guint			  covers,
+	GError			**error
+){
+	VentureSeriesAccountSnapshot row;
+	FeedAccountState *state;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+
+	if (!feed_batch_check_account(self, account_key, error))
+		return FALSE;
+
+	if ((0 == (covers & 0xfu)) || (0 != (covers & ~0xfu)) || (at < 0) ||
+	    (VENTURE_SERIES_NONE == at))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "An account snapshot needs a time and covers at least one of "
+		                    "holdings, positions, inbound and balances");
+		return FALSE;
+	}
+
+	state = feed_batch_account_state(self, account_key);
+
+	if (state->snapshotted)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "An account is snapshotted at most once a batch");
+		return FALSE;
+	}
+
+	/* After its own rows it would claim they were all of them, when the
+	 * rows that came first were sent as upserts. */
+	if (0 != (state->rows & covers))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "An account snapshot must come before the account's rows of the "
+		                    "kinds it covers");
+		return FALSE;
+	}
+
+	state->snapshotted = TRUE;
+	state->covers = covers;
+
+	row.account_key = feed_batch_intern(self, account_key);
+	row.at = at;
+	row.covers = covers;
+	g_array_append_val(self->account_snapshots, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_balance(
+	VentureFeedBatch		 *self,
+	const VentureSeriesBalance	 *balance,
+	GError				**error
+){
+	g_autofree gchar *currency = NULL;
+	VentureSeriesBalance row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != balance, FALSE);
+
+	if (!feed_batch_check_account(self, balance->account_key, error) ||
+	    !feed_batch_check_currency(balance->currency, error) ||
+	    !feed_batch_check_amount(balance->amount, TRUE, "balance", error) ||
+	    !feed_batch_room_for_row(self, error))
+		return FALSE;
+
+	if (NULL == balance->currency)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A balance names its currency");
+		return FALSE;
+	}
+
+	currency = g_ascii_strup(balance->currency, -1);
+	feed_batch_account_state(self, balance->account_key)->rows |= VENTURE_SERIES_COVERS_BALANCES;
+
+	row.account_key = feed_batch_intern(self, balance->account_key);
+	row.currency = feed_batch_intern(self, currency);
+	row.amount = balance->amount;
+	row.at = balance->at;
+	g_array_append_val(self->balances, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_holding(
+	VentureFeedBatch		 *self,
+	const VentureSeriesHolding	 *holding,
+	GError				**error
+){
+	g_autofree gchar *index_key = NULL;
+	VentureSeriesHolding row;
+	gpointer found;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != holding, FALSE);
+
+	if (!feed_batch_check_account(self, holding->account_key, error) ||
+	    !feed_batch_check_choice(holding->place, feed_batch_places, "place", error) ||
+	    !feed_batch_check_key("holding's instrument", holding->instrument_key, TRUE, error))
+		return FALSE;
+
+	if (holding->quantity < 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A holding's quantity is zero or more");
+		return FALSE;
+	}
+
+	feed_batch_account_state(self, holding->account_key)->rows |= VENTURE_SERIES_COVERS_HOLDINGS;
+
+	/* The unit separator cannot appear in a key a person typed. */
+	index_key = g_strdup_printf("%s\x1f%s\x1f%s", holding->account_key, holding->place,
+	                            holding->instrument_key);
+
+	if (g_hash_table_lookup_extended(self->holding_index, index_key, NULL, &found))
+	{
+		VentureSeriesHolding *same;
+
+		same = &g_array_index(self->holdings, VentureSeriesHolding,
+		                      GPOINTER_TO_UINT(found) - 1);
+
+		if (!venture_series_math_add(same->quantity, holding->quantity, &same->quantity))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "A holding's quantity does not fit in a 64-bit integer");
+			return FALSE;
+		}
+
+		same->at = MAX(same->at, holding->at);
+		return TRUE;
+	}
+
+	if (!feed_batch_room_for_row(self, error))
+		return FALSE;
+
+	row.account_key = feed_batch_intern(self, holding->account_key);
+	row.place = feed_batch_intern(self, holding->place);
+	row.instrument_key = feed_batch_intern(self, holding->instrument_key);
+	row.quantity = holding->quantity;
+	row.at = holding->at;
+	g_array_append_val(self->holdings, row);
+	g_hash_table_insert(self->holding_index, g_steal_pointer(&index_key),
+	                    GUINT_TO_POINTER(self->holdings->len));
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_position(
+	VentureFeedBatch		 *self,
+	const VentureSeriesPosition	 *position,
+	GError				**error
+){
+	VentureSeriesPosition row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != position, FALSE);
+
+	if (!feed_batch_check_account(self, position->account_key, error) ||
+	    !feed_batch_check_key("position", position->key, TRUE, error) ||
+	    !feed_batch_check_key("position's venue", position->venue_key, TRUE, error) ||
+	    !feed_batch_check_key("position's instrument", position->instrument_key, TRUE, error) ||
+	    !feed_batch_check_amount(position->unit_price, TRUE, "position's price", error) ||
+	    !feed_batch_check_amount(position->bid, FALSE, "position's bid", error) ||
+	    !feed_batch_room_for_row(self, error))
+		return FALSE;
+
+	if (position->quantity < 1)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A position's quantity is one or more");
+		return FALSE;
+	}
+
+	feed_batch_account_state(self, position->account_key)->rows |= VENTURE_SERIES_COVERS_POSITIONS;
+
+	row = *position;
+	row.key = g_string_chunk_insert(self->strings, position->key);
+	row.account_key = feed_batch_intern(self, position->account_key);
+	row.venue_key = feed_batch_intern(self, position->venue_key);
+	row.instrument_key = feed_batch_intern(self, position->instrument_key);
+	g_array_append_val(self->positions, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_inbound(
+	VentureFeedBatch		 *self,
+	const VentureSeriesInbound	 *inbound,
+	GError				**error
+){
+	VentureSeriesInbound row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != inbound, FALSE);
+
+	if (!feed_batch_check_account(self, inbound->account_key, error) ||
+	    !feed_batch_check_key("inbound row", inbound->key, TRUE, error) ||
+	    !feed_batch_check_key("inbound item", inbound->instrument_key, FALSE, error) ||
+	    !feed_batch_check_amount(inbound->money, FALSE, "mail's money", error) ||
+	    !feed_batch_check_amount(inbound->cod, FALSE, "cash on delivery", error) ||
+	    !feed_batch_room_for_row(self, error))
+		return FALSE;
+
+	if (((NULL != inbound->instrument_key) && (inbound->quantity < 1)) ||
+	    ((NULL == inbound->instrument_key) && (VENTURE_SERIES_NONE == inbound->money) &&
+	     (VENTURE_SERIES_NONE == inbound->cod)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "An inbound row carries money, an item and its quantity, or cash "
+		                    "on delivery");
+		return FALSE;
+	}
+
+	feed_batch_account_state(self, inbound->account_key)->rows |= VENTURE_SERIES_COVERS_INBOUND;
+
+	row = *inbound;
+	row.key = g_string_chunk_insert(self->strings, inbound->key);
+	row.account_key = feed_batch_intern(self, inbound->account_key);
+	row.sender = feed_batch_keep_text(self, inbound->sender, VENTURE_SERIES_MAX_KEY_LENGTH);
+	row.subject = feed_batch_keep_text(self, inbound->subject, VENTURE_SERIES_MAX_KEY_LENGTH);
+	row.instrument_key = feed_batch_intern(self, inbound->instrument_key);
+	row.quantity = (NULL != inbound->instrument_key) ? inbound->quantity : VENTURE_SERIES_NONE;
+	g_array_append_val(self->inbound, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_txn(
+	VentureFeedBatch	 *self,
+	const VentureSeriesTxn	 *txn,
+	GError			**error
+){
+	VentureSeriesTxn row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != txn, FALSE);
+
+	if (!feed_batch_check_account(self, txn->account_key, error) ||
+	    !feed_batch_check_key("ledger row", txn->key, TRUE, error) ||
+	    !feed_batch_check_key("ledger row's venue", txn->venue_key, FALSE, error) ||
+	    !feed_batch_check_key("ledger row's instrument", txn->instrument_key, FALSE, error) ||
+	    !feed_batch_check_choice(txn->kind, feed_batch_txn_kinds, "kind of ledger row", error) ||
+	    !feed_batch_check_amount(txn->amount, FALSE, "ledger amount", error) ||
+	    !feed_batch_check_amount(txn->unit_price, FALSE, "ledger unit price", error))
+		return FALSE;
+
+	if (((VENTURE_SERIES_NONE != txn->quantity) && (txn->quantity < 1)) ||
+	    (txn->at < 0) || (VENTURE_SERIES_NONE == txn->at))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A ledger row needs a time, and a quantity of one or more when it "
+		                    "has one");
+		return FALSE;
+	}
+
+	if (self->txns->len >= VENTURE_FEED_BATCH_MAX_TXNS)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A batch carries at most %d ledger rows", VENTURE_FEED_BATCH_MAX_TXNS);
+		return FALSE;
+	}
+
+	feed_batch_account_state(self, txn->account_key);
+
+	row = *txn;
+	row.key = g_string_chunk_insert(self->strings, txn->key);
+	row.account_key = feed_batch_intern(self, txn->account_key);
+	row.venue_key = feed_batch_intern(self, txn->venue_key);
+	row.kind = feed_batch_intern(self, txn->kind);
+	row.instrument_key = feed_batch_intern(self, txn->instrument_key);
+	row.counterparty = feed_batch_intern(self, txn->counterparty);
+	row.source = feed_batch_intern(self, txn->source);
+	g_array_append_val(self->txns, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_get_accounts(
+	VentureFeedBatch		*self,
+	VentureSeriesAccountBatch	*out
+){
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	memset(out, 0, sizeof(*out));
+	out->accounts = (const VentureSeriesAccount *)(gpointer)self->accounts->data;
+	out->n_accounts = self->accounts->len;
+	out->snapshots = (const VentureSeriesAccountSnapshot *)(gpointer)self->account_snapshots->data;
+	out->n_snapshots = self->account_snapshots->len;
+	out->balances = (const VentureSeriesBalance *)(gpointer)self->balances->data;
+	out->n_balances = self->balances->len;
+	out->holdings = (const VentureSeriesHolding *)(gpointer)self->holdings->data;
+	out->n_holdings = self->holdings->len;
+	out->positions = (const VentureSeriesPosition *)(gpointer)self->positions->data;
+	out->n_positions = self->positions->len;
+	out->inbound = (const VentureSeriesInbound *)(gpointer)self->inbound->data;
+	out->n_inbound = self->inbound->len;
+	out->txns = (const VentureSeriesTxn *)(gpointer)self->txns->data;
+	out->n_txns = self->txns->len;
+
+	return (out->n_accounts + out->n_snapshots + out->n_balances + out->n_holdings +
+	        out->n_positions + out->n_inbound + out->n_txns) > 0;
+}
+
 void
 venture_feed_batch_set_cursor(
 	VentureFeedBatch	*self,
@@ -776,7 +1344,9 @@ venture_feed_batch_count_items(VentureFeedBatch *self)
 
 	total = (gint64)self->venues->len + (gint64)self->instruments->len +
 	        (gint64)self->quotes->len + (gint64)self->entries->len +
-	        (gint64)self->records->len;
+	        (gint64)self->records->len + (gint64)self->accounts->len +
+	        (gint64)self->account_snapshots->len + feed_batch_account_rows(self) +
+	        (gint64)self->txns->len;
 
 	for (i = 0; i < self->snapshots->len; i++)
 	{
@@ -808,14 +1378,29 @@ venture_feed_batch_describe(VentureFeedBatch *self)
 		figures += snapshot->stats->len;
 	}
 
+	if ((0 == self->accounts->len) && (0 == feed_batch_account_rows(self)) &&
+	    (0 == self->txns->len))
+		return g_strdup_printf("%u venues, %u instruments, %u snapshots, %"
+		                       G_GINT64_FORMAT " listings, %" G_GINT64_FORMAT
+		                       " figures, %u quotes, %u entries, %u records, %"
+		                       G_GINT64_FORMAT " refused",
+		                       self->venues->len, self->instruments->len,
+		                       self->snapshots->len, listings, figures,
+		                       self->quotes->len, self->entries->len,
+		                       self->records->len, self->refused);
+
 	return g_strdup_printf("%u venues, %u instruments, %u snapshots, %"
 	                       G_GINT64_FORMAT " listings, %" G_GINT64_FORMAT
-	                       " figures, %u quotes, %u entries, %u records, %"
-	                       G_GINT64_FORMAT " refused",
+	                       " figures, %u quotes, %u entries, %u records; %u accounts, "
+	                       "%u account snapshots, %u balances, %u holdings, %u positions, "
+	                       "%u inbound, %u ledger rows; %" G_GINT64_FORMAT " refused",
 	                       self->venues->len, self->instruments->len,
 	                       self->snapshots->len, listings, figures,
 	                       self->quotes->len, self->entries->len,
-	                       self->records->len, self->refused);
+	                       self->records->len, self->accounts->len,
+	                       self->account_snapshots->len, self->balances->len,
+	                       self->holdings->len, self->positions->len, self->inbound->len,
+	                       self->txns->len, self->refused);
 }
 
 /* --- Exact decimals ---------------------------------------------------------- */
@@ -1193,6 +1778,220 @@ jsonl_snapshot_for(
 	return g_hash_table_lookup(self->open_snapshots, venue);
 }
 
+/*
+ * Money of the operator's own: always in the data source's currency. The
+ * account-operations messages name no currency of their own (a balance
+ * names one, and it must be the source's), so there is nowhere else for a
+ * price to be in, and a source with none cannot read one.
+ */
+static gboolean
+jsonl_account_money(
+	JsonObject	 *object,
+	const gchar	 *member,
+	const gchar	 *currency,
+	gint64		 *out,
+	GError		**error
+){
+	const gchar *text;
+
+	*out = VENTURE_SERIES_NONE;
+	text = jsonl_string(object, member);
+
+	if (NULL == text)
+		return TRUE;
+
+	if (NULL == currency)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "%s is money, and the data source has no currency to read it in", member);
+		return FALSE;
+	}
+
+	return venture_feed_decimal_to_minor(text, currency, out, error);
+}
+
+static guint
+jsonl_covers(JsonObject *object)
+{
+	static const gchar *const names[] = { "holdings", "positions", "inbound", "balances" };
+	static const guint flags[] = {
+		VENTURE_SERIES_COVERS_HOLDINGS, VENTURE_SERIES_COVERS_POSITIONS,
+		VENTURE_SERIES_COVERS_INBOUND, VENTURE_SERIES_COVERS_BALANCES
+	};
+	JsonNode *node;
+	JsonArray *array;
+	guint covers;
+	guint i;
+
+	node = json_object_get_member(object, "covers");
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_ARRAY(node))
+		return 0;
+
+	array = json_node_get_array(node);
+	covers = 0;
+
+	for (i = 0; i < json_array_get_length(array); i++)
+	{
+		const gchar *name = json_array_get_string_element(array, i);
+		guint j;
+
+		for (j = 0; (NULL != name) && (j < G_N_ELEMENTS(names)); j++)
+		{
+			if (0 == strcmp(names[j], name))
+				covers |= flags[j];
+		}
+	}
+
+	return covers;
+}
+
+/* One of the account-operations messages into the batch. */
+static gboolean
+jsonl_account_message(
+	VentureFeedBatch	 *self,
+	VentureJsonlMessage	 *message,
+	const gchar		 *currency,
+	GError			**error
+){
+	JsonObject *object;
+
+	object = venture_jsonl_message_get_object(message);
+
+	switch (venture_jsonl_message_get_kind(message))
+	{
+	case VENTURE_JSONL_MESSAGE_ACCOUNT:
+	{
+		g_autofree gchar *attrs = jsonl_attrs(object, "attrs");
+		VentureSeriesAccount account;
+
+		account.key = jsonl_string(object, "key");
+		account.name = jsonl_string(object, "name");
+		account.kind = jsonl_string(object, "kind");
+		account.group_key = jsonl_string(object, "group");
+		account.venue_key = jsonl_string(object, "venue");
+		account.attrs_json = attrs;
+		account.last_seen = jsonl_time(object, "last_seen", VENTURE_SERIES_NONE);
+
+		return venture_feed_batch_add_account(self, &account, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT:
+		return venture_feed_batch_add_account_snapshot(self, jsonl_string(object, "account"),
+		                                               jsonl_time(object, "at", VENTURE_SERIES_NONE),
+		                                               jsonl_covers(object), error);
+
+	case VENTURE_JSONL_MESSAGE_BALANCE:
+	{
+		VentureSeriesBalance balance;
+		const gchar *named;
+
+		named = jsonl_string(object, "currency");
+
+		/* One source, one currency for the operator's money. A purse
+		 * in another is a different source. */
+		if ((NULL == currency) || (0 != g_ascii_strcasecmp(named, currency)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "A balance must be in the data source's currency (%s)",
+			            (NULL != currency) ? currency : "none is set");
+			return FALSE;
+		}
+
+		balance.account_key = jsonl_string(object, "account");
+		balance.currency = currency;
+		balance.at = jsonl_time(object, "at", VENTURE_SERIES_NONE);
+
+		return jsonl_account_money(object, "amount", currency, &balance.amount, error) &&
+		       venture_feed_batch_add_balance(self, &balance, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_HOLDING:
+	{
+		VentureSeriesHolding holding;
+
+		holding.account_key = jsonl_string(object, "account");
+		holding.place = jsonl_string(object, "place");
+		holding.instrument_key = jsonl_string(object, "instrument");
+		holding.quantity = jsonl_int(object, "quantity", -1);
+		holding.at = jsonl_time(object, "at", VENTURE_SERIES_NONE);
+
+		return venture_feed_batch_add_holding(self, &holding, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_POSITION:
+	{
+		VentureSeriesPosition position;
+
+		position.key = jsonl_string(object, "id");
+		position.account_key = jsonl_string(object, "account");
+		position.venue_key = jsonl_string(object, "venue");
+		position.instrument_key = jsonl_string(object, "instrument");
+		position.quantity = jsonl_int(object, "quantity", 0);
+		position.expires_at = jsonl_time(object, "expires_at", VENTURE_SERIES_NONE);
+		position.posted_at = jsonl_time(object, "posted_at", VENTURE_SERIES_NONE);
+		position.at = VENTURE_SERIES_NONE;
+
+		return jsonl_account_money(object, "price", currency, &position.unit_price, error) &&
+		       jsonl_account_money(object, "bid", currency, &position.bid, error) &&
+		       venture_feed_batch_add_position(self, &position, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_INBOUND:
+	{
+		VentureSeriesInbound inbound;
+
+		inbound.key = jsonl_string(object, "id");
+		inbound.account_key = jsonl_string(object, "account");
+		inbound.sender = jsonl_string(object, "sender");
+		inbound.subject = jsonl_string(object, "subject");
+		inbound.instrument_key = jsonl_string(object, "instrument");
+		inbound.quantity = jsonl_int(object, "quantity", VENTURE_SERIES_NONE);
+		inbound.expires_at = jsonl_time(object, "expires_at", VENTURE_SERIES_NONE);
+		inbound.returned = jsonl_bool(object, "returned", FALSE);
+		inbound.at = VENTURE_SERIES_NONE;
+
+		return jsonl_account_money(object, "money", currency, &inbound.money, error) &&
+		       jsonl_account_money(object, "cod", currency, &inbound.cod, error) &&
+		       venture_feed_batch_add_inbound(self, &inbound, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_TXN:
+	{
+		VentureSeriesTxn txn;
+
+		txn.key = jsonl_string(object, "id");
+		txn.account_key = jsonl_string(object, "account");
+		txn.venue_key = jsonl_string(object, "venue");
+		txn.kind = jsonl_string(object, "kind");
+		txn.instrument_key = jsonl_string(object, "instrument");
+		txn.quantity = jsonl_int(object, "quantity", VENTURE_SERIES_NONE);
+		txn.counterparty = jsonl_string(object, "counterparty");
+		txn.source = jsonl_string(object, "source");
+		txn.at = jsonl_time(object, "at", VENTURE_SERIES_NONE);
+
+		if (!jsonl_account_money(object, "unit_price", currency, &txn.unit_price, error) ||
+		    !jsonl_account_money(object, "amount", currency, &txn.amount, error))
+			return FALSE;
+
+		/* An expiry or a cancellation moved no money; a zero the
+		 * producer wrote anyway is not stored as an amount. */
+		if ((0 == g_strcmp0(txn.kind, "expired")) || (0 == g_strcmp0(txn.kind, "cancelled")))
+		{
+			txn.unit_price = VENTURE_SERIES_NONE;
+			txn.amount = VENTURE_SERIES_NONE;
+		}
+
+		return venture_feed_batch_add_txn(self, &txn, error);
+	}
+
+	default:
+		break;
+	}
+
+	return TRUE;
+}
+
 gboolean
 venture_feed_batch_add_jsonl(
 	VentureFeedBatch	 *self,
@@ -1201,8 +2000,7 @@ venture_feed_batch_add_jsonl(
 	gint64			  fetched_at,
 	GError			**error
 ){
-	g_autoptr(GHashTable) venue_currency = NULL;
-	guint logs;
+	GHashTable *venue_currency;
 	guint i;
 
 	g_return_val_if_fail(NULL != self, FALSE);
@@ -1210,9 +2008,9 @@ venture_feed_batch_add_jsonl(
 
 	(void)error;
 
-	/* venue key -> currency, borrowed from the messages. */
-	venue_currency = g_hash_table_new(g_str_hash, g_str_equal);
-	logs = 0;
+	/* venue key -> currency, kept on the batch: the venue may have been
+	 * described in an earlier slice of the same stream. */
+	venue_currency = self->jsonl_venue_currency;
 
 	for (i = 0; i < messages->len; i++)
 	{
@@ -1240,8 +2038,8 @@ venture_feed_batch_add_jsonl(
 
 			if (ok && (NULL != currency))
 				g_hash_table_replace(venue_currency,
-				                     (gpointer)jsonl_string(object, "key"),
-				                     (gpointer)currency);
+				                     g_strdup(jsonl_string(object, "key")),
+				                     g_strdup(currency));
 			break;
 		}
 
@@ -1304,10 +2102,12 @@ venture_feed_batch_add_jsonl(
 		case VENTURE_JSONL_MESSAGE_STAT:
 		{
 			FeedBatchSnapshot *snapshot;
+			VentureSeriesStats stats;
 			const gchar *currency;
-			gint64 figures[5];
+			const gchar *ratio;
+			gint64 figures[6];
 			static const gchar *const prices[] = {
-				"min", "market", "mean", "median", "sale_avg"
+				"min", "market", "mean", "median", "sale_avg", "historical"
 			};
 			guint j;
 
@@ -1328,12 +2128,39 @@ venture_feed_batch_add_jsonl(
 			if (!ok)
 				break;
 
-			ok = venture_feed_batch_add_stats(self, snapshot->venue_key,
-				jsonl_string(object, "instrument"), figures[0], figures[1],
-				figures[2], figures[3], figures[4],
-				jsonl_int(object, "quantity", VENTURE_SERIES_NONE),
-				jsonl_int(object, "listings", VENTURE_SERIES_NONE),
-				jsonl_int(object, "sold", VENTURE_SERIES_NONE), &local_error);
+			venture_series_stats_init(&stats);
+			stats.instrument_key = jsonl_string(object, "instrument");
+			stats.min_price = figures[0];
+			stats.market_value = figures[1];
+			stats.mean = figures[2];
+			stats.median = figures[3];
+			stats.sale_avg = figures[4];
+			stats.historical = figures[5];
+			stats.quantity = jsonl_int(object, "quantity", VENTURE_SERIES_NONE);
+			stats.listings = jsonl_int(object, "listings", VENTURE_SERIES_NONE);
+			stats.sold = jsonl_int(object, "sold", VENTURE_SERIES_NONE);
+
+			/* Ratios, not money: a double is what they are. The
+			 * parser has already held them to the decimal grammar. */
+			ratio = jsonl_string(object, "sale_rate");
+			stats.sale_rate = (NULL != ratio) ? g_ascii_strtod(ratio, NULL) : NAN;
+			ratio = jsonl_string(object, "sold_per_day");
+			stats.sold_per_day = (NULL != ratio) ? g_ascii_strtod(ratio, NULL) : NAN;
+
+			ok = venture_feed_batch_add_stats_full(self, snapshot->venue_key, &stats,
+			                                       &local_error);
+			break;
+		}
+
+		case VENTURE_JSONL_MESSAGE_ACCOUNT:
+		case VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT:
+		case VENTURE_JSONL_MESSAGE_BALANCE:
+		case VENTURE_JSONL_MESSAGE_HOLDING:
+		case VENTURE_JSONL_MESSAGE_POSITION:
+		case VENTURE_JSONL_MESSAGE_INBOUND:
+		case VENTURE_JSONL_MESSAGE_TXN:
+		{
+			ok = jsonl_account_message(self, message, default_currency, &local_error);
 			break;
 		}
 
@@ -1433,7 +2260,7 @@ venture_feed_batch_add_jsonl(
 			break;
 
 		case VENTURE_JSONL_MESSAGE_LOG:
-			if (logs++ < FEED_BATCH_MAX_LOG_NOTES)
+			if (self->jsonl_logs++ < FEED_BATCH_MAX_LOG_NOTES)
 				venture_feed_batch_add_note(self, jsonl_string(object, "message"));
 			break;
 

@@ -39,6 +39,31 @@ G_BEGIN_DECLS
  */
 #define VENTURE_FEED_BATCH_MAX_RECORDS (10000)
 
+/**
+ * VENTURE_FEED_BATCH_MAX_ACCOUNTS:
+ *
+ * The most operator accounts one batch may describe or name.
+ */
+#define VENTURE_FEED_BATCH_MAX_ACCOUNTS (10000)
+
+/**
+ * VENTURE_FEED_BATCH_MAX_ACCOUNT_ROWS:
+ *
+ * The most balance, holding, position and inbound rows one batch may
+ * carry, together. A first sync of a large operator is a few hundred
+ * thousand; past this a batch is somebody's mistake, held in memory.
+ */
+#define VENTURE_FEED_BATCH_MAX_ACCOUNT_ROWS (1000000)
+
+/**
+ * VENTURE_FEED_BATCH_MAX_TXNS:
+ *
+ * The most external ledger rows one batch may carry. A first sync of a
+ * TSM ledger is tens of thousands of rows; the bound is for memory, not
+ * for a real ledger.
+ */
+#define VENTURE_FEED_BATCH_MAX_TXNS (1000000)
+
 typedef struct _VentureFeedBatch VentureFeedBatch;
 
 #define VENTURE_TYPE_FEED_BATCH (venture_feed_batch_get_type())
@@ -215,6 +240,171 @@ venture_feed_batch_add_stats(
 	gint64			  listings,
 	gint64			  sold,
 	GError			**error
+);
+
+/**
+ * venture_feed_batch_add_stats_full:
+ * @self: a batch
+ * @venue_key: the venue; a snapshot of it must have been begun
+ * @stats: the figures, started from venture_series_stats_init(); its
+ *   instrument_key names the instrument
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_feed_batch_add_stats() with the source's own sales figures as
+ * well: a historical price, a sale rate (0 to 1) and units sold a day,
+ * which the store keeps beside its own estimates.
+ *
+ * Returns: %TRUE when they were added
+ */
+gboolean
+venture_feed_batch_add_stats_full(
+	VentureFeedBatch		 *self,
+	const gchar			 *venue_key,
+	const VentureSeriesStats	 *stats,
+	GError				**error
+);
+
+/**
+ * venture_feed_batch_add_account:
+ * @self: a batch
+ * @account: one of the operator's accounts; its strings are copied
+ * @error: (out) (optional): return location for a #GError
+ *
+ * An account the operator plays or trades with: a character, a shared
+ * bank, a guild bank, a seller account. Rows may name an account the
+ * batch does not describe; the store creates it bare.
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_account(
+	VentureFeedBatch		 *self,
+	const VentureSeriesAccount	 *account,
+	GError				**error
+);
+
+/**
+ * venture_feed_batch_add_account_snapshot:
+ * @self: a batch
+ * @account_key: whose state the batch restates
+ * @at: as of when it is complete (Unix seconds)
+ * @covers: which kinds, #VentureSeriesCovers; at least one
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Says that the batch's rows of @covers for @account_key are all of
+ * them: the store removes every one it held that the batch does not
+ * restate. It must come before the account's rows of those kinds, and
+ * an account is snapshotted at most once a batch; either refusal is
+ * %VENTURE_ERROR_INVALID_ARGUMENT, and the rows then upsert alone.
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_account_snapshot(
+	VentureFeedBatch	 *self,
+	const gchar		 *account_key,
+	gint64			  at,
+	guint			  covers,
+	GError			**error
+);
+
+/**
+ * venture_feed_batch_add_balance:
+ * @self: a batch
+ * @balance: an account's money in one currency, minor units
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_balance(
+	VentureFeedBatch		 *self,
+	const VentureSeriesBalance	 *balance,
+	GError				**error
+);
+
+/**
+ * venture_feed_batch_add_holding:
+ * @self: a batch
+ * @holding: a quantity of an instrument an account holds at a place
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The same account, place and instrument twice in one batch is summed:
+ * items in two bag slots are one holding.
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_holding(
+	VentureFeedBatch		 *self,
+	const VentureSeriesHolding	 *holding,
+	GError				**error
+);
+
+/**
+ * venture_feed_batch_add_position:
+ * @self: a batch
+ * @position: one of the operator's open listings; prices in the data
+ *   source's currency
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_position(
+	VentureFeedBatch		 *self,
+	const VentureSeriesPosition	 *position,
+	GError				**error
+);
+
+/**
+ * venture_feed_batch_add_inbound:
+ * @self: a batch
+ * @inbound: something waiting for an account to collect; money in the
+ *   data source's currency
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_inbound(
+	VentureFeedBatch		 *self,
+	const VentureSeriesInbound	 *inbound,
+	GError				**error
+);
+
+/**
+ * venture_feed_batch_add_txn:
+ * @self: a batch
+ * @txn: a row of the source's ledger; money in the data source's currency
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Upserted on its key: the same key sent again with a larger quantity
+ * updates the row, it never adds a second.
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_txn(
+	VentureFeedBatch	 *self,
+	const VentureSeriesTxn	 *txn,
+	GError			**error
+);
+
+/**
+ * venture_feed_batch_get_accounts:
+ * @self: a batch
+ * @out: (out caller-allocates): a view of its account rows
+ *
+ * Fills @out with the batch's own arrays (its currency left %NULL). The
+ * view borrows from @self and is valid while @self is.
+ *
+ * Returns: whether the batch carries anything about accounts
+ */
+gboolean
+venture_feed_batch_get_accounts(
+	VentureFeedBatch		*self,
+	VentureSeriesAccountBatch	*out
 );
 
 /**
@@ -457,12 +647,19 @@ venture_feed_batch_describe(VentureFeedBatch *self);
  * @error: (out) (optional): return location for a #GError
  *
  * Reads the JSON-lines vocabulary (docs/plugins.org) into the batch: the
- * one translation shared by the file_jsonl provider and exec plugins.
+ * one translation shared by the file_jsonl, push and exec providers.
  * Prices are decimal strings converted exactly at the currency's exponent;
  * one with more places than the currency has is refused, counted and
  * skipped. A listing with no snapshot before it gets one, incomplete, at
  * its own time. An `error` message makes the batch partial; `log` lines
- * become notes at most twenty at a time; a `result` is ignored.
+ * become notes at most twenty a batch; a `result` is ignored. The
+ * account-operations messages' money is in @default_currency, the data
+ * source's, and a `balance` in any other currency is refused.
+ *
+ * It may be called more than once on one batch with consecutive slices of
+ * one stream: what a later message needs from an earlier one (a venue's
+ * currency, an account's snapshot) is kept on the batch, so a large
+ * stream need not be held as messages all at once.
  *
  * Returns: %TRUE unless a message could not be read at all
  */

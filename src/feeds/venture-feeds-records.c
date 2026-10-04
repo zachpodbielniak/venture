@@ -11,7 +11,7 @@
  * Data sources
  *
  * Where market data comes from: a provider (a registered name such as
- * http_json, csv, file_jsonl, or one a plugin added), the provider's
+ * http_json, csv, file_jsonl, push, or one a plugin added), the provider's
  * settings as YAML, and how often to ask. Credentials are not here: a
  * setting the provider's schema marks sensitive is sealed in the
  * integration store under "feed-<uuid>", and the save validator refuses
@@ -28,7 +28,7 @@
 static const VentureFieldDecl venture_data_source_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "What the source is: an auction house's region, a supplier's price list"),
 	VENTURE_FIELD("provider", "Provider",
-	              "Which provider fetches it: http_json, csv, file_jsonl, or one a plugin registered",
+	              "Which provider fetches it: http_json, csv, file_jsonl, push (filled by POST /api/v1/feeds/ID/push), or one a plugin registered",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("enabled", "Enabled",

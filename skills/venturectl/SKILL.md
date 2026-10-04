@@ -133,6 +133,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `comments reply ID BODY` | answer comment ID; it lands in that comment's thread (one level deep) |
 | `comments edit ID BODY` / `comments delete ID` / `comments get ID` | change your own (only the author may), delete yours (or any, as an organization owner/admin), read one |
 | `feeds sync ID [--wait] [organization_id=N]` | queue a market data source's sync (`data_source` ID); answers `{"status": "queued", "data_source_id": ID}` at once. `--wait` polls the source's runs once a second and prints the run the sync recorded; after five minutes it gives up with exit 7 (the sync stays queued) |
+| `feeds push ID FILE\|- [--wait] [organization_id=N]` | send JSON lines (a file, or `-` for standard input) to a `push` data source; answers `{"status": "queued", "push_id": ...}` at once. `--wait` makes the server hold the request until the run is written (at most two minutes) and prints the run -- check its `status`: a malformed line is a `failed` run naming the line, and still exit 0 |
 | `feeds runs ID [organization_id=N]` | a data source's runs, newest first: status, units, rows, error |
 | `feeds due [organization_id=N]` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
 | `market quote ID [basis=B] [venue=KEY\|GROUP] [venue_id=N] [at=DATE] [currency=C] [prefer_currency=C] [fallback=true] [source=S] [organization_id=N]` | the price oracle for an `instrument` ID (or `product=ID` instead of ID): `{basis, found, price, value, evidence}`. Bases: `market` (default), `min`, `market_14d`, `historical_60d`, `region_median`, `region_p33`, `region_market_avg`, `sale_avg`, and the numbers `sale_rate`, `sold_per_day`, `quantity` (in `value`) |
@@ -184,7 +185,7 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
 Flags: `--server/-s`, `--token/-t`, `--session-file FILE`, `--format/-f table|json|yaml|csv`,
-`--quiet/-q`. One-verb flags are refused anywhere else: `--wait` (feeds sync),
+`--quiet/-q`. One-verb flags are refused anywhere else: `--wait` (feeds sync and push),
 `--dry-run` (post backfill, billing, recurring, batch, market alerts
 evaluate), `--stake AMOUNT` (arbitrage calc), `-o/--output FILE` (arbitrage
 export), `--stage` (the writes that honour it; `act` checks the action is
@@ -1051,8 +1052,8 @@ cannot be reassigned. Create a new connection for a different identity.
 
 ### Market data feeds
 
-A `data_source` is a provider (`http_json`, `csv`, `file_jsonl`, or one a
-plugin registered) plus YAML `settings`, a `schedule` (`auto` -- also what
+A `data_source` is a provider (`http_json`, `csv`, `file_jsonl`, `push`, or
+one a plugin registered) plus YAML `settings`, a `schedule` (`auto` -- also what
 empty means: learn when each venue updates -- `hourly`, `manual` or five
 cron fields), `enabled` and `track` (`all` or `known`, below). The module
 is off unless the operator sets `feeds.enabled: true`. With it off every
@@ -1076,6 +1077,22 @@ calls.
   stored history and cannot be undone.
 - `data_source_run` is written by the server only; creating or updating
   one is refused (403).
+- A `push` source is filled from outside: `venturectl feeds push ID FILE`
+  (or `-` for standard input) POSTs JSON lines to
+  `/api/v1/feeds/ID/push` (`Content-Type: application/x-ndjson`). It is
+  never scheduled and a `feeds sync` of it fails its run. Pushing needs an
+  editor (like a sync); a source whose provider is not `push`, or that is
+  switched off, is refused (exit 4); feeds off is exit 3; a body past
+  `feeds.max_push_mb` (32 MiB) is refused. Every push is a run of its own
+  with trigger `push`.
+- The account-operations lines (`account`, `account_snapshot`, `balance`,
+  `holding`, `position`, `inbound`, `txn`; docs/plugins.org) refuse an
+  unknown member, and their money is in the **data source's** currency:
+  set the source's `currency` (a `balance` in another is refused and
+  noted). An `account_snapshot` replaces the covered kinds of that one
+  account and must come before its rows. Ledger `txn` rows upsert on `id`:
+  re-sending is safe. This data lands in the source's store, not in
+  records -- no `list` verb reads it yet.
 - The data lands in a series store per source, not in records, so `list`
   cannot read it: the `market` verbs and the market reports do.
 - `backup run SCHEDULE_ID` on an installation schedule also copies every

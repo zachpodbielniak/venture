@@ -451,11 +451,12 @@ venture_cli_output(
  * body encoding -- lives here once.
  */
 static GBytes *
-venture_cli_send(
+venture_cli_send_bytes(
 	VentureCli	 *cli,
 	const gchar	 *method,
 	const gchar	 *path,
-	JsonNode	 *body,
+	GBytes		 *body,
+	const gchar	 *content_type,
 	guint		 *out_status,
 	GError		**error
 ){
@@ -489,15 +490,7 @@ venture_cli_send(
 	}
 
 	if (NULL != body)
-	{
-		g_autofree gchar *encoded = NULL;
-		g_autoptr(GBytes) bytes = NULL;
-
-		encoded = venture_json_to_string(body, FALSE);
-		bytes = g_bytes_new(encoded, strlen(encoded));
-		soup_message_set_request_body_from_bytes(message, "application/json",
-		                                         bytes);
-	}
+		soup_message_set_request_body_from_bytes(message, content_type, body);
 
 	response = soup_session_send_and_read(cli->session, message, NULL,
 	                                      &local_error);
@@ -513,6 +506,29 @@ venture_cli_send(
 	*out_status = soup_message_get_status(message);
 
 	return response;
+}
+
+/* Sends a JSON body, or none. */
+static GBytes *
+venture_cli_send(
+	VentureCli	 *cli,
+	const gchar	 *method,
+	const gchar	 *path,
+	JsonNode	 *body,
+	guint		 *out_status,
+	GError		**error
+){
+	g_autoptr(GBytes) bytes = NULL;
+
+	if (NULL != body)
+	{
+		g_autofree gchar *encoded = NULL;
+
+		encoded = venture_json_to_string(body, FALSE);
+		bytes = g_bytes_new(encoded, strlen(encoded));
+	}
+
+	return venture_cli_send_bytes(cli, method, path, bytes, "application/json", out_status, error);
 }
 
 /*
@@ -4108,7 +4124,7 @@ main(
 		{ "prerelease", 0, 0, G_OPTION_ARG_NONE, &release_prerelease,
 		  "release publish: publish as a pre-release", NULL },
 		{ "wait", 0, 0, G_OPTION_ARG_NONE, &feeds_wait,
-		  "feeds sync: wait for the run and print it", NULL },
+		  "feeds sync, feeds push: wait for the run and print it", NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill, billing or market alerts evaluate: validate without retaining writes", NULL },
 		{ "stake", 0, 0, G_OPTION_ARG_STRING, &arbitrage_stake,
@@ -4232,6 +4248,8 @@ main(
 		"  bankfeed sync ID [JSON]      sync a linked bank feed connection\n"
 		"  feeds sync ID [--wait]       queue a market data source's sync;\n"
 		"                               --wait prints the run it records\n"
+		"  feeds push ID FILE|- [--wait] send JSON lines to a push source;\n"
+		"                               - reads standard input\n"
 		"  feeds runs ID                a data source's runs, newest first\n"
 		"  feeds due                    every unit and when it is checked next\n"
 		"  market quote ID [basis=B] [venue=KEY|GROUP] [at=DATE] [currency=C]\n"
@@ -4357,6 +4375,7 @@ main(
 		"  venturectl report craft_arbitrage recipe_id=4 units=10\n"
 		"  venturectl report watchlist watchlist_id=3\n"
 		"  venturectl feeds sync 1 --wait\n"
+		"  tsmctl export --format venture | venturectl feeds push 4 - --wait\n"
 		"  venturectl market deals group=eu min_value=\"10.00 GOLD\" max_pct=80 top=20\n"
 		"  venturectl market instrument 1 2589 units=200\n"
 		"  venturectl market alerts evaluate 7 --dry-run\n"
@@ -4421,7 +4440,7 @@ main(
 
 	if (feeds_wait && (0 != g_strcmp0(args[0], "feeds")))
 	{
-		g_printerr("venturectl: --wait belongs to feeds sync\n");
+		g_printerr("venturectl: --wait belongs to feeds sync and feeds push\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 

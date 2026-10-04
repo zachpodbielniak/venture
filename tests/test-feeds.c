@@ -2859,6 +2859,436 @@ test_feeds_attribution_is_one_line(
 	}
 }
 
+/* --- Account operations and the push provider --------------------------------------- */
+
+/* A push source of @currency (NULL for none), switched on. */
+static gint64
+create_push_source(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*currency
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(GError) error = NULL;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", name, "provider", "push", "settings", "",
+	             "schedule", "auto", "currency", currency, NULL);
+	if (!venture_database_save(fixture->database, VENTURE_ENTITY(source), NULL, &error))
+		g_error("%s: %s", name, error->message);
+
+	return venture_entity_get_id(VENTURE_ENTITY(source));
+}
+
+/* Pushes @text and waits, bounded, for the run it makes. */
+static VentureEntity *
+push_and_wait(
+	Fixture		*fixture,
+	gint64		 source_id,
+	const gchar	*text
+){
+	g_autoptr(GBytes) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *push_id = NULL;
+	VentureEntity *run;
+	gint64 run_id = 0;
+
+	body = g_bytes_new(text, strlen(text));
+	g_assert_true(venture_feeds_service_push(service_of(fixture), source_id, body, &push_id,
+	                                         &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(push_id);
+
+	g_assert_true(venture_feeds_service_wait_push(service_of(fixture), push_id, 60, &run_id));
+	g_assert_cmpint(run_id, >, 0);
+	settle(fixture);
+
+	run = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE_RUN, run_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(run);
+
+	return run;
+}
+
+static const gchar push_body[] =
+	"{\"type\":\"instrument\",\"key\":\"2770\",\"name\":\"Copper Ore\",\"kind\":\"item\"}\n"
+	"{\"type\":\"venue\",\"key\":\"thorium\",\"name\":\"Thorium Brotherhood\",\"group\":\"us\"}\n"
+	"{\"type\":\"snapshot\",\"venue\":\"region-us\",\"taken_at\":\"2026-10-04T18:00:00Z\"}\n"
+	"{\"type\":\"stat\",\"venue\":\"region-us\",\"instrument\":\"2770\",\"market\":\"30.50\","
+	"\"historical\":\"28.25\",\"sale_rate\":\"0.153\",\"sold_per_day\":\"1520.5\"}\n"
+	"{\"type\":\"account\",\"key\":\"Drgold-Thorium\",\"name\":\"Drgold\",\"kind\":\"character\","
+	"\"group\":\"us\",\"venue\":\"thorium\",\"last_seen\":\"2026-10-04T18:53:54Z\","
+	"\"attrs\":{\"class\":\"WARRIOR\",\"level\":80}}\n"
+	"{\"type\":\"account_snapshot\",\"account\":\"Drgold-Thorium\",\"at\":\"2026-10-04T18:53:54Z\","
+	"\"covers\":[\"holdings\",\"positions\",\"inbound\",\"balances\"]}\n"
+	"{\"type\":\"balance\",\"account\":\"Drgold-Thorium\",\"currency\":\"USD\",\"amount\":\"27249.50\"}\n"
+	"{\"type\":\"holding\",\"account\":\"Drgold-Thorium\",\"place\":\"bag\",\"instrument\":\"2770\","
+	"\"quantity\":12}\n"
+	"{\"type\":\"holding\",\"account\":\"Drgold-Thorium\",\"place\":\"bag\",\"instrument\":\"2770\","
+	"\"quantity\":8}\n"
+	"{\"type\":\"position\",\"account\":\"Drgold-Thorium\",\"venue\":\"thorium\",\"id\":\"1637378752\","
+	"\"instrument\":\"2770\",\"quantity\":20,\"price\":\"817.98\",\"bid\":\"0\","
+	"\"expires_at\":\"2026-10-05T18:53:54Z\"}\n"
+	"{\"type\":\"inbound\",\"account\":\"Drgold-Thorium\",\"id\":\"mail-1\",\"sender\":\"Auction House\","
+	"\"subject\":\"Auction successful\",\"money\":\"1234.50\",\"expires_at\":\"2026-11-03T18:53:54Z\"}\n"
+	"{\"type\":\"txn\",\"id\":\"k1\",\"account\":\"Drgold-Thorium\",\"venue\":\"thorium\",\"kind\":\"sale\","
+	"\"instrument\":\"2770\",\"quantity\":3,\"unit_price\":\"26.59\",\"amount\":\"79.77\","
+	"\"counterparty\":\"Buyer\",\"source\":\"Auction\",\"at\":\"2026-10-03T18:53:54Z\"}\n"
+	"{\"type\":\"txn\",\"id\":\"k2\",\"account\":\"Drgold-Thorium\",\"kind\":\"expired\","
+	"\"instrument\":\"2770\",\"quantity\":1,\"at\":\"2026-10-03T19:00:00Z\"}\n";
+
+/*
+ * A body pushed to a push source goes through the worker into the store
+ * like a file: every account-operations kind, a stat with the source's
+ * own sales figures, a run with trigger push that the push's id finds.
+ * A push source is never scheduled, whatever its record says.
+ *
+ * What breaks if this regresses: tsmctl's push is accepted and nothing is
+ * stored, or the server fetches a push source on a schedule and records a
+ * failed run every few minutes.
+ */
+static void
+test_feeds_push_reaches_the_store(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(VentureSeriesAccountRow) account = NULL;
+	g_autoptr(VentureSeriesRow) row = NULL;
+	g_autoptr(GPtrArray) positions = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *notes = NULL;
+	VentureDataSourceRunTrigger trigger;
+	gint64 source_id;
+	gint64 count;
+
+	(void)user_data;
+
+	source_id = create_push_source(fixture, "Characters", "USD");
+	settle(fixture);
+
+	/* Saved with schedule auto and nothing scheduled it: no worker. */
+	g_assert_false(venture_feeds_service_is_running(service_of(fixture)));
+
+	run = push_and_wait(fixture, source_id, push_body);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_object_get(run, "trigger", &trigger, NULL);
+	g_assert_cmpint(trigger, ==, VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH);
+	g_assert_cmpint(run_int(run, "units"), ==, 1);
+	g_assert_cmpint(run_int(run, "refused"), ==, 0);
+	g_assert_cmpint(run_int(run, "rows"), >, 0);
+	notes = run_text(run, "notes");
+	g_assert_nonnull(strstr(notes, "ledger 2 new"));
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_no_error(error);
+
+	g_assert_true(venture_series_store_get_account(reader, "Drgold-Thorium",
+	                                               G_GINT64_CONSTANT(1790967600), &account, &error));
+	g_assert_nonnull(account);
+	g_assert_cmpstr(account->kind, ==, "character");
+	g_assert_cmpstr(account->venue_key, ==, "thorium");
+	g_assert_cmpint(account->positions, ==, 1);
+	g_assert_cmpint(account->inbound, ==, 1);
+	g_assert_cmpuint(account->balances->len, ==, 1);
+	g_assert_cmpint(g_array_index(account->balances, VentureSeriesAmount, 0).amount, ==, 2724950);
+	g_assert_cmpstr(g_array_index(account->balances, VentureSeriesAmount, 0).currency, ==, "USD");
+	g_assert_cmpint(g_array_index(account->inbound_money, VentureSeriesAmount, 0).amount, ==, 123450);
+
+	/* Two bag stacks of one item are one holding. */
+	{
+		g_autoptr(GPtrArray) holdings = NULL;
+		VentureSeriesHoldingFilter filter;
+
+		venture_series_holding_filter_init(&filter);
+		holdings = venture_series_store_list_holdings(reader, &filter, &error);
+		g_assert_cmpuint(holdings->len, ==, 1);
+		g_assert_cmpint(((VentureSeriesHoldingRow *)g_ptr_array_index(holdings, 0))->quantity, ==, 20);
+		g_assert_cmpstr(((VentureSeriesHoldingRow *)g_ptr_array_index(holdings, 0))->instrument_name,
+		                ==, "Copper Ore");
+	}
+
+	positions = venture_series_store_list_positions(reader, NULL, &error);
+	g_assert_cmpuint(positions->len, ==, 1);
+	g_assert_cmpint(((VentureSeriesPositionRow *)g_ptr_array_index(positions, 0))->unit_price, ==, 81798);
+	g_assert_cmpint(((VentureSeriesPositionRow *)g_ptr_array_index(positions, 0))->bid, ==, 0);
+
+	g_assert_true(venture_series_store_count_txns(reader, NULL, &count, &error));
+	g_assert_cmpint(count, ==, 2);
+
+	/* The stat's own sales figures, beside the store's estimates. */
+	g_assert_true(venture_series_store_get_current(reader, "region-us", "2770", &row, &error));
+	g_assert_nonnull(row);
+	g_assert_cmpint(row->source_historical, ==, 2825);
+	g_assert_cmpfloat_with_epsilon(row->source_sale_rate, 0.153, 1e-9);
+	g_assert_cmpfloat_with_epsilon(row->source_sold_per_day, 1520.5, 1e-9);
+
+	/* The same body again: the ledger is upserted, not doubled. */
+	g_clear_object(&run);
+	g_clear_pointer(&notes, g_free);
+	run = push_and_wait(fixture, source_id, push_body);
+	notes = run_text(run, "notes");
+	g_assert_nonnull(strstr(notes, "ledger 0 new, 0 updated, 2 unchanged"));
+	g_clear_object(&reader);
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_true(venture_series_store_count_txns(reader, NULL, &count, &error));
+	g_assert_cmpint(count, ==, 2);
+}
+
+/*
+ * Who may be pushed to: a push source, switched on. A sync of one fails
+ * in a run saying where its data comes from, and a malformed line fails
+ * the push's run with its line number while storing nothing.
+ *
+ * What breaks if this regresses: a push lands in an http_json source's
+ * store under its name, a source switched off still takes data, or half
+ * a broken push is applied.
+ */
+static void
+test_feeds_push_refusals(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(GBytes) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *message = NULL;
+	gint64 push_id_source;
+	gint64 other;
+
+	(void)user_data;
+
+	body = g_bytes_new_static("", 0);
+	other = create_source(fixture, "Lines", "file_jsonl", "file: none.jsonl\n", "manual");
+	g_assert_false(venture_feeds_service_push(service_of(fixture), other, body, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+
+	g_assert_false(venture_feeds_service_push(service_of(fixture), 999999, body, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+
+	push_id_source = create_push_source(fixture, "Pushed", "USD");
+	source = get_source(fixture, push_id_source);
+	g_object_set(source, "enabled", FALSE, NULL);
+	g_assert_true(venture_database_save(fixture->database, source, NULL, &error));
+	g_assert_false(venture_feeds_service_push(service_of(fixture), push_id_source, body, NULL,
+	                                          &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	g_object_set(source, "enabled", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, source, NULL, &error));
+
+	/* A sync has no body to read. */
+	run = sync_and_wait(fixture, push_id_source);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	message = run_text(run, "error");
+	g_assert_nonnull(strstr(message, "fetches nothing"));
+	g_clear_object(&run);
+	g_clear_pointer(&message, g_free);
+
+	/* Line 3 breaks the protocol: the run fails naming it, and the two
+	 * good lines before it are not stored either. */
+	run = push_and_wait(fixture, push_id_source,
+		"{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"i\",\"quantity\":1}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":817.98,\"expires_at\":\"2026-10-05T00:00:00Z\"}\n");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	message = run_text(run, "error");
+	g_assert_nonnull(strstr(message, "Line 3"));
+	g_assert_nonnull(strstr(message, "position.price"));
+
+	{
+		g_autoptr(VentureSeriesStore) reader = NULL;
+		g_autoptr(GPtrArray) accounts = NULL;
+
+		reader = venture_feeds_service_open_reader(service_of(fixture), push_id_source, &error);
+
+		/* Nothing was ever written: no store, or an empty one. */
+		if (NULL != reader)
+		{
+			accounts = venture_series_store_list_accounts(reader, NULL, NULL, 0, &error);
+			g_assert_cmpuint(accounts->len, ==, 0);
+		}
+	}
+}
+
+/*
+ * Lines that are valid protocol but that the batch cannot use are counted
+ * and noted, not fatal: a balance in another currency than the source's,
+ * a snapshot after its own rows, money on a source with no currency.
+ *
+ * What breaks if this regresses: a GOLD source stores a purse in silver,
+ * or a snapshot sent late erases the rows that came before it.
+ */
+static void
+test_feeds_account_lines_the_batch_refuses(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *notes = NULL;
+	gint64 source_id;
+	gint64 bare;
+
+	(void)user_data;
+
+	source_id = create_push_source(fixture, "Characters", "USD");
+	run = push_and_wait(fixture, source_id,
+		"{\"type\":\"balance\",\"account\":\"a\",\"currency\":\"EUR\",\"amount\":\"1\"}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"i\",\"quantity\":4}\n"
+		"{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T00:00:00Z\","
+		"\"covers\":[\"holdings\"]}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"1.001\",\"expires_at\":\"2026-10-05T00:00:00Z\"}\n");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 3);
+	notes = run_text(run, "notes");
+	g_assert_nonnull(strstr(notes, "Line 1 (balance)"));
+	g_assert_nonnull(strstr(notes, "data source's currency"));
+	g_assert_nonnull(strstr(notes, "Line 3 (account_snapshot)"));
+	g_assert_nonnull(strstr(notes, "must come before"));
+	g_assert_nonnull(strstr(notes, "Line 4 (position)"));
+	g_clear_object(&run);
+	g_clear_pointer(&notes, g_free);
+
+	/* The holding before the refused snapshot was an upsert, and kept. */
+	{
+		g_autoptr(VentureSeriesStore) reader = NULL;
+		g_autoptr(GPtrArray) holdings = NULL;
+
+		reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+		g_assert_no_error(error);
+		holdings = venture_series_store_list_holdings(reader, NULL, &error);
+		g_assert_cmpuint(holdings->len, ==, 1);
+	}
+
+	/* A source with no currency cannot read the operator's money. */
+	bare = create_push_source(fixture, "No currency", NULL);
+	run = push_and_wait(fixture, bare,
+		"{\"type\":\"txn\",\"id\":\"k\",\"account\":\"a\",\"kind\":\"income\",\"amount\":\"1\","
+		"\"at\":\"2026-10-04T00:00:00Z\"}\n"
+		"{\"type\":\"txn\",\"id\":\"k2\",\"account\":\"a\",\"kind\":\"expired\",\"instrument\":\"i\","
+		"\"quantity\":1,\"at\":\"2026-10-04T00:00:00Z\"}\n");
+	g_assert_cmpint(run_int(run, "refused"), ==, 1);
+	notes = run_text(run, "notes");
+	g_assert_nonnull(strstr(notes, "no currency"));
+}
+
+/*
+ * file_jsonl reads the same account lines through the same path: a push
+ * and a file of the same lines make the same store.
+ *
+ * What breaks if this regresses: the exec plugin (or a file dropped by a
+ * cron job) and a push of one export disagree about what was stored.
+ */
+static void
+test_feeds_file_jsonl_carries_accounts(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 source_id;
+	gint64 count;
+
+	(void)user_data;
+
+	path = write_root_file(fixture, "export.jsonl", push_body);
+	source_id = create_source(fixture, "Export file", "file_jsonl", "file: export.jsonl\n", "manual");
+	run = sync_and_wait(fixture, source_id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 0);
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_no_error(error);
+	accounts = venture_series_store_list_accounts(reader, NULL, NULL, 0, &error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	g_assert_true(venture_series_store_count_txns(reader, NULL, &count, &error));
+	g_assert_cmpint(count, ==, 2);
+}
+
+/*
+ * A first sync: fifty thousand ledger rows pushed at once go through the
+ * parser, the batch and the store in a bounded time.
+ *
+ * What breaks if this regresses: the first push of a real TSM ledger
+ * holds the worker (every other source's fetches) for minutes, or never
+ * finishes inside tsmctl's timeout.
+ */
+static void
+test_feeds_push_first_sync_smoke(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GString) body = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 source_id;
+	gint64 started;
+	gint64 count;
+	guint i;
+
+	(void)user_data;
+
+	source_id = create_push_source(fixture, "First sync", "USD");
+	body = g_string_new("{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n");
+
+	for (i = 0; i < 50000; i++)
+		g_string_append_printf(body,
+			"{\"type\":\"txn\",\"id\":\"tsm-%u\",\"account\":\"a\",\"venue\":\"realm\","
+			"\"kind\":\"%s\",\"instrument\":\"%u\",\"quantity\":%u,\"unit_price\":\"1.25\","
+			"\"amount\":\"%u.25\",\"counterparty\":\"Buyer %u\",\"source\":\"Auction\","
+			"\"at\":\"2026-%02u-%02uT12:00:00Z\"}\n",
+			i, (0 == (i % 3)) ? "buy" : "sale", 1000 + (i % 2000), 1 + (i % 20), i, i % 97,
+			1 + (i % 9), 1 + (i % 28));
+
+	started = g_get_monotonic_time();
+	run = push_and_wait(fixture, source_id, body->str);
+	g_test_message("50000 ledger rows pushed and stored in %" G_GINT64_FORMAT " ms",
+	               (g_get_monotonic_time() - started) / 1000);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(g_get_monotonic_time() - started, <, G_GINT64_CONSTANT(60) * G_USEC_PER_SEC);
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_series_store_count_txns(reader, NULL, &count, &error));
+	g_assert_cmpint(count, ==, 50000);
+}
+
+/*
+ * feeds.max_push_mb is a positive cap like max_response_mb.
+ *
+ * What breaks if this regresses: a zero cap refuses every push as too
+ * large and looks like the producer's fault.
+ */
+static void
+test_feeds_push_cap_is_validated(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(GError) error = NULL;
+	gint64 cap;
+
+	g_object_get(config, "feeds-max-push-mb", &cap, NULL);
+	g_assert_cmpint(cap, ==, 32);
+	g_assert_true(venture_config_validate(config, &error));
+	g_assert_no_error(error);
+
+	g_object_set(config, "feeds-max-push-mb", (gint64)0, NULL);
+	g_assert_false(venture_config_validate(config, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_nonnull(strstr(error->message, "max_push_mb"));
+}
+
 int
 main(
 	int	 argc,
@@ -2874,6 +3304,17 @@ main(
 	g_test_add_func("/feeds/adaptive-interval", test_feeds_adaptive_interval);
 	g_test_add_func("/feeds/home-thread-critical", test_feeds_home_thread_critical);
 	g_test_add_func("/feeds/config-is-validated", test_feeds_config_is_validated);
+	g_test_add_func("/feeds/push-cap-is-validated", test_feeds_push_cap_is_validated);
+	g_test_add("/feeds/push-reaches-the-store", Fixture, NULL, fixture_set_up,
+	           test_feeds_push_reaches_the_store, fixture_tear_down);
+	g_test_add("/feeds/push-refusals", Fixture, NULL, fixture_set_up,
+	           test_feeds_push_refusals, fixture_tear_down);
+	g_test_add("/feeds/account-lines-the-batch-refuses", Fixture, NULL, fixture_set_up,
+	           test_feeds_account_lines_the_batch_refuses, fixture_tear_down);
+	g_test_add("/feeds/file-jsonl-carries-accounts", Fixture, NULL, fixture_set_up,
+	           test_feeds_file_jsonl_carries_accounts, fixture_tear_down);
+	g_test_add("/feeds/push-first-sync-smoke", Fixture, NULL, fixture_set_up,
+	           test_feeds_push_first_sync_smoke, fixture_tear_down);
 	g_test_add("/feeds/settings-are-validated", Fixture, NULL, fixture_set_up,
 	           test_feeds_settings_are_validated, fixture_tear_down);
 	g_test_add("/feeds/http-ok", Fixture, NULL, fixture_set_up, test_feeds_http_ok, fixture_tear_down);

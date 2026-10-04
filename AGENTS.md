@@ -1789,6 +1789,65 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   `latest_run()` tell a companion from the schedule's own copies by scope
   -- a pruning or drill query that forgets the scope prunes a store by the
   database's count or drills a store as if it were books.
+- **The operator's accounts are the series store's second half, and
+  stay there.** `src/series/venture-series-accounts.c` shares the store's
+  connection, statement cache and transaction counter through
+  `venture-series-store-private.h` (never installed, never included
+  outside `src/series/`). Do not open a second connection for it and do
+  not move the rows into VentureDatabase: a first sync is tens of
+  thousands of ledger rows on the worker thread, which may not touch the
+  database. Anything that mirrors these rows into records (positions into
+  `listing`) is a main-thread after-run hook reading a reader handle.
+- **Account-operations lines are strict; market lines are not.** The
+  seven kinds (`account`, `account_snapshot`, `balance`, `holding`,
+  `position`, `inbound`, `txn`) refuse an unknown member; the market kinds
+  ignore one. It is deliberate both ways -- a misspelt `expires_at` would
+  store listings that never expire, and an older reader must survive a
+  new optional market member. The contract is shared with tsmctl's Python
+  exporter: a member added here is added there, in the same change, or
+  every push fails at its first line.
+- **A snapshot replaces only what it covers, for one account, and never
+  goes backwards.** Mark and sweep (rows stamped -1, restated rows written
+  over the stamp, the rest deleted), not delete-then-insert, so a
+  position keeps `first_seen`. A snapshot older than the one that last
+  replaced a kind is stale and skipped (`accounts.<kind>_at`); one after
+  its own rows, or a second for the same account, is refused by the batch
+  and the rows upsert alone. Times before 1970 are refused because -1 is
+  the mark.
+- **The operator's money is in the data source's currency.** Only
+  `balance` names a currency and it must be the source's; every ledger
+  row of a source with a currency carries it, money or not, so an
+  expired auction is in the same P&L bucket as the sales beside it. A
+  source with no currency refuses money rows with a note, it does not
+  guess.
+- **`VentureSeriesStats` has a `source_figures` flag.** Its three new
+  members (historical, sale_rate, sold_per_day) are read only when it is
+  TRUE; `venture_series_stats_init()` sets it. A caller that clears the
+  struct with memset() -- every older one did -- leaves it FALSE, and
+  its zeros are not read as "a sale rate of nothing". The source's figures
+  live in `current.source_*`, beside the store's estimates, and fill
+  `venture_series_store_reference()` only where the store has none (flag
+  `*_from_source`).
+- **A push source is never scheduled.** Its freeze forces `manual` and
+  `feeds_source_scheduled()` skips its provider, whatever the record
+  says; a sync of one fails its run. Each push is a run of its own
+  (trigger `push`), queued on the worker ahead of a waiting sync, its
+  body handed over as plain bytes and parsed by the `push` provider
+  through `feed_parse_jsonl()` -- the file_jsonl function. Do not parse in
+  the route: one path, so a push and a file of the same lines agree.
+- **`?wait=1` is a bounded nested loop, like the Test action.**
+  `venture_feeds_service_wait_push()` iterates the default context until
+  the push's run is written, holding a reference on the service (a
+  request served inside the loop can switch feeds off). The push id is
+  remembered in memory (last 1024), not on the run record; there is no
+  migration for it.
+- **The JSON-lines reader feeds the batch a slice at a time.**
+  `venture_feed_batch_add_jsonl()` keeps its cross-message state (venue
+  currencies, log count, account snapshots) on the batch so
+  `feed_parse_jsonl()` can free each 256 KiB slice's messages before the
+  next. Holding a fifty-thousand-line stream as parsed JSON objects is
+  the allocation storm this avoids; the account rows themselves live in
+  one `GStringChunk`.
 
 ## Market data records and the price oracle
 

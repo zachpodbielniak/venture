@@ -965,6 +965,16 @@ typedef enum
  * @VENTURE_JSONL_MESSAGE_ERROR: the producer could not do what was asked
  * @VENTURE_JSONL_MESSAGE_RESULT: what a command produced, for a consumer that
  *   wants one answer rather than a stream -- an automation handler
+ * @VENTURE_JSONL_MESSAGE_ACCOUNT: one of the operator's own accounts: a
+ *   character, a shared (warband) bank, a guild bank, a seller account
+ * @VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT: an account's state that follows
+ *   is complete, for the kinds it covers, as of its time
+ * @VENTURE_JSONL_MESSAGE_BALANCE: an account's money in one currency
+ * @VENTURE_JSONL_MESSAGE_HOLDING: a quantity of an instrument an account
+ *   holds at a place
+ * @VENTURE_JSONL_MESSAGE_POSITION: one of the operator's own open listings
+ * @VENTURE_JSONL_MESSAGE_INBOUND: something waiting to be collected: mail
+ * @VENTURE_JSONL_MESSAGE_TXN: a row of the operator's external ledger
  *
  * The message vocabulary of protocol 1 of the JSON-lines protocol spoken by
  * exec plugins and read from `file_jsonl` sources. The nick is the
@@ -984,7 +994,14 @@ typedef enum
 	VENTURE_JSONL_MESSAGE_NOT_MODIFIED,
 	VENTURE_JSONL_MESSAGE_LOG,
 	VENTURE_JSONL_MESSAGE_ERROR,
-	VENTURE_JSONL_MESSAGE_RESULT
+	VENTURE_JSONL_MESSAGE_RESULT,
+	VENTURE_JSONL_MESSAGE_ACCOUNT,
+	VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT,
+	VENTURE_JSONL_MESSAGE_BALANCE,
+	VENTURE_JSONL_MESSAGE_HOLDING,
+	VENTURE_JSONL_MESSAGE_POSITION,
+	VENTURE_JSONL_MESSAGE_INBOUND,
+	VENTURE_JSONL_MESSAGE_TXN
 } VentureJsonlMessageKind;
 
 /**
@@ -1575,14 +1592,18 @@ venture_data_source_run_status_get_type(void) G_GNUC_CONST;
  *   the page's button, the API or `venturectl feeds sync`
  * @VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION: an automation rule's
  *   `feeds_sync` step
+ * @VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH: a producer pushed JSON lines to
+ *   `POST /api/v1/feeds/:id/push` (a source whose provider is `push`)
  *
- * What started a run of a market data source.
+ * What started a run of a market data source. Appended to, never
+ * reordered: the column holds the number.
  */
 typedef enum
 {
 	VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE = 0,
 	VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL,
-	VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION
+	VENTURE_DATA_SOURCE_RUN_TRIGGER_AUTOMATION,
+	VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH
 } VentureDataSourceRunTrigger;
 
 #define VENTURE_TYPE_DATA_SOURCE_RUN_TRIGGER (venture_data_source_run_trigger_get_type())

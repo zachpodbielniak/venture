@@ -255,6 +255,18 @@ typedef enum
 G_DECLARE_FINAL_TYPE(VentureFeedRequest, venture_feed_request, VENTURE, FEED_REQUEST, GObject)
 
 /**
+ * venture_feed_request_get_body:
+ * @self: a request
+ *
+ * The JSON lines a producer pushed to `POST /api/v1/feeds/:id/push`, for
+ * the `push` provider to read instead of fetching. A fetch has none.
+ *
+ * Returns: (transfer none) (nullable): the pushed body
+ */
+GBytes *
+venture_feed_request_get_body(VentureFeedRequest *self);
+
+/**
  * venture_feed_request_get_source:
  * @self: a request
  *

@@ -63,6 +63,9 @@ typedef struct
 	gint64	 quantity;
 	gint64	 listings;
 	gint64	 sold;
+	gint64	 historical;
+	gdouble	 sale_rate;
+	gdouble	 sold_per_day;
 } FeedBatchStats;
 
 typedef struct
@@ -124,7 +127,42 @@ struct _VentureFeedBatch
 	gint64		 refused;
 	gint64		 remote_used;		/* -1: the far end said nothing */
 	gint64		 remote_remaining;
+
+	/*
+	 * The operator's accounts, as the series store's own input structs
+	 * so the worker hands them over without a copy. Every string they
+	 * point at lives in @strings: one block of memory for fifty
+	 * thousand ledger rows rather than four hundred thousand small
+	 * allocations, and repeated keys (an account, a venue, a kind)
+	 * stored once.
+	 */
+	GStringChunk	*strings;
+	GArray		*accounts;		/* VentureSeriesAccount */
+	GArray		*account_snapshots;	/* VentureSeriesAccountSnapshot */
+	GArray		*balances;		/* VentureSeriesBalance */
+	GArray		*holdings;		/* VentureSeriesHolding */
+	GArray		*positions;		/* VentureSeriesPosition */
+	GArray		*inbound;		/* VentureSeriesInbound */
+	GArray		*txns;			/* VentureSeriesTxn */
+	GHashTable	*holding_index;		/* "account\x1fplace\x1finstrument" -> index + 1 */
+	GHashTable	*account_state;		/* account key -> FeedAccountState */
+
+	/* What venture_feed_batch_add_jsonl() carries from one call to the
+	 * next, so a large stream can be read a slice at a time. */
+	GHashTable	*jsonl_venue_currency;	/* venue key -> currency, owned */
+	guint		 jsonl_logs;
 };
+
+/* What a batch knows of one account while it is being built: whether a
+ * snapshot of it was begun, what it covers, and which kinds already have
+ * rows -- a snapshot after its own rows would say they were all of them
+ * when they were not. */
+typedef struct
+{
+	gboolean	 snapshotted;
+	guint		 covers;
+	guint		 rows;
+} FeedAccountState;
 
 /* --- The frozen source ------------------------------------------------------ */
 
@@ -249,6 +287,7 @@ struct _VentureFeedRun
 	guint				 max_records;
 	GPtrArray			*venues;	/* gchar*, NULL-terminated */
 	GHashTable			*payloads;	/* name -> JsonNode */
+	gchar				*push_id;	/* NULL unless a push made it */
 };
 
 VentureFeedRun *
@@ -288,6 +327,14 @@ venture_feed_request_new_internal(
 	gint64			 if_modified_since,
 	gint64			 fetched_at,
 	GCancellable		*cancellable
+);
+
+/* A pushed body for the request to read instead of fetching; the push
+ * provider takes it with venture_feed_request_get_body(). */
+void
+venture_feed_request_set_body(
+	VentureFeedRequest	*self,
+	GBytes			*body
 );
 
 /* The request's accounting, read by the worker when the fetch ends. */

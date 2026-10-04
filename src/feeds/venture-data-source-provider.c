@@ -243,6 +243,9 @@ struct _VentureFeedRequest
 	gint64			 retry_after;
 	gint64			 deferred_until;
 	gint64			 last_modified;
+
+	/* What was pushed, for the push provider; NULL for a fetch. */
+	GBytes			*body;
 };
 
 G_DEFINE_FINAL_TYPE(VentureFeedRequest, venture_feed_request, G_TYPE_OBJECT)
@@ -259,6 +262,7 @@ venture_feed_request_finalize(GObject *object)
 	g_clear_object(&self->session);
 	g_free(self->cursor);
 	g_clear_object(&self->cancellable);
+	g_clear_pointer(&self->body, g_bytes_unref);
 
 	G_OBJECT_CLASS(venture_feed_request_parent_class)->finalize(object);
 }
@@ -310,6 +314,25 @@ venture_feed_request_new_internal(
 	self->cancellable = (NULL != cancellable) ? g_object_ref(cancellable) : g_cancellable_new();
 
 	return self;
+}
+
+void
+venture_feed_request_set_body(
+	VentureFeedRequest	*self,
+	GBytes			*body
+){
+	g_return_if_fail(VENTURE_IS_FEED_REQUEST(self));
+
+	g_clear_pointer(&self->body, g_bytes_unref);
+	self->body = (NULL != body) ? g_bytes_ref(body) : NULL;
+}
+
+GBytes *
+venture_feed_request_get_body(VentureFeedRequest *self)
+{
+	g_return_val_if_fail(VENTURE_IS_FEED_REQUEST(self), NULL);
+
+	return self->body;
 }
 
 VentureFeedSource *

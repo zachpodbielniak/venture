@@ -157,6 +157,19 @@ gint64
 venture_feed_run_get_started_at(VentureFeedRun *self);
 
 /**
+ * venture_feed_run_get_push_id:
+ * @self: a run
+ *
+ * The id venture_feeds_service_push() handed back when the body this run
+ * read was pushed, so the one who pushed can find the run it made.
+ *
+ * Returns: (transfer none) (nullable): the push's id, or %NULL for a run
+ *   that fetched
+ */
+const gchar *
+venture_feed_run_get_push_id(VentureFeedRun *self);
+
+/**
  * venture_feed_run_add_note:
  * @self: a run
  * @note: (nullable): one line; empty is ignored
@@ -294,6 +307,26 @@ venture_series_worker_sync(
 	VentureSeriesWorker		*self,
 	VentureFeedSource		*source,
 	VentureDataSourceRunTrigger	 trigger
+);
+
+/**
+ * venture_series_worker_push:
+ * @self: a worker
+ * @source: the source, frozen now
+ * @push_id: the id the run will carry
+ * @body: (transfer none): the JSON lines that were pushed
+ *
+ * Queues a run of one unit, "push", that reads @body through the source's
+ * provider instead of fetching anything: the `push` provider parses it
+ * exactly as `file_jsonl` parses a file. Each push is a run of its own,
+ * in the order they arrived, after any pass already in flight.
+ */
+void
+venture_series_worker_push(
+	VentureSeriesWorker	*self,
+	VentureFeedSource	*source,
+	const gchar		*push_id,
+	GBytes			*body
 );
 
 /**

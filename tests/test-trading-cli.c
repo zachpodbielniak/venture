@@ -1337,6 +1337,76 @@ test_second_organization(
 	}
 }
 
+/*
+ * feeds push ID FILE --wait: the file goes as JSON lines, the server
+ * waits for the run, and the run is printed. A push without a file is a
+ * usage error; a push to a source that is not a push source is the
+ * server's refusal, with its exit code.
+ *
+ * What breaks if this regresses: the shell path tsmctl's systemd unit
+ * could fall back to (an export piped into venturectl) pushes nothing, or
+ * reports success for a refused push.
+ */
+static void
+test_feeds_push(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *other = NULL;
+	g_autofree gchar *out = NULL;
+	JsonObject *run;
+
+	(void)user_data;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", "Characters", "provider", "push", "currency", "USD", NULL);
+	save(fixture, source);
+	id = id_text(ID(source));
+	other = id_text(fixture->source_id);
+
+	path = g_build_filename(fixture->state_dir, "export.jsonl", NULL);
+	g_assert_true(g_file_set_contents(path,
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium\",\"kind\":\"character\"}\n"
+		"{\"type\":\"txn\",\"id\":\"k1\",\"account\":\"Drgold-Thorium\",\"kind\":\"sale\","
+		"\"instrument\":\"2770\",\"quantity\":3,\"amount\":\"79.77\","
+		"\"at\":\"2026-10-03T18:53:54Z\"}\n", -1, NULL));
+
+	{
+		const gchar *const push[] = { "feeds", "push", id, path, "--wait", NULL };
+
+		out = cli_ok(fixture, "json", push);
+		node = json_of(out);
+		run = json_node_get_object(node);
+		g_assert_cmpstr(json_object_get_string_member(run, "status"), ==, "ok");
+		g_assert_cmpstr(json_object_get_string_member(run, "trigger"), ==, "push");
+		g_assert_cmpint(json_object_get_int_member(run, "data_source_id"), ==, ID(source));
+	}
+
+	{
+		const gchar *const queued[] = { "feeds", "push", id, path, NULL };
+
+		g_clear_pointer(&out, g_free);
+		g_clear_pointer(&node, json_node_unref);
+		out = cli_ok(fixture, "json", queued);
+		node = json_of(out);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node), "status"), ==,
+		                "queued");
+	}
+
+	{
+		const gchar *const no_file[] = { "feeds", "push", id, NULL };
+		const gchar *const not_push[] = { "feeds", "push", other, path, NULL };
+
+		cli_refused(fixture, no_file, 2, "feeds push ID FILE|-");
+		cli_refused(fixture, not_push, 4, "not by pushes");
+	}
+}
+
 #define ADD(name, fn) \
 	g_test_add("/trading-cli/" name, Fixture, NULL, fixture_set_up, fn, fixture_tear_down)
 
@@ -1356,6 +1426,7 @@ main(
 	ADD("calc", test_calc);
 	ADD("export-and-registries", test_export_and_registries);
 	ADD("plugins-and-feeds", test_plugins_and_feeds);
+	ADD("feeds-push", test_feeds_push);
 	ADD("second-organization", test_second_organization);
 
 	return g_test_run();

@@ -22,7 +22,7 @@ Market data crosses four modules -- =feeds=, =marketdata=, =arbitrage= and the l
    v
  REGISTRIES ON VentureContext
    data source providers   fee models   arbitrage strategies   export formats
-   (built in: http_json, csv, file_jsonl; percent, commission, none; spread,
+   (built in: http_json, csv, file_jsonl, push; percent, commission, none; spread,
     deal, transform, cover, back_lay; csv, shopping_list)
    |  a data_source names a provider by name
    v
@@ -42,6 +42,8 @@ Market data crosses four modules -- =feeds=, =marketdata=, =arbitrage= and the l
  SERIES STORE  <state_dir>/series/<data-source-uuid>/store.db   own SQLite, WAL
    venues instruments snapshots current hourly daily region venue_state
    quotes quote_history entries meta            (one writer: the worker)
+   accounts account_balances account_holdings account_positions
+   account_inbound external_txns       (the operator's own: see Operator accounts)
    |  read-only handles on the main thread: venture_feeds_service_open_reader()
    v
  MARKETDATA module (main database)                    module "marketdata"
@@ -63,7 +65,7 @@ Market data crosses four modules -- =feeds=, =marketdata=, =arbitrage= and the l
 - *Plugins* own knowledge of one outside service. A native =.so= or a crispy =.c= file calls =venture_plugin_register()= with the context and adds to its registries directly -- a data source provider (=venture_context_get_data_source_providers()=), a fee model (=venture_context_get_fee_models()=), a strategy (=venture_context_get_arbitrage_strategies()=), an export format (=venture_context_get_export_formats()=), a record action. An exec plugin is a program and can only offer what its manifest's =provides:= names; for market data that is =kind: data_source_provider=. A name is never registered twice, so a plugin cannot replace a built-in. See [[file:plugins.org][Plugins]], and the three feed examples below.
 - *Feeds* (=src/feeds/=, module =feeds=, requires only =core=, off until =feeds.enabled: true=) owns the =data_source= and =data_source_run= records, the provider registry's built-ins, the worker thread and its schedule, and the records sink. Everything a fetch needs is frozen on the main thread into a =VentureFeedSource= before the worker sees it, which is what lets the worker never touch the database. See [[*Feeds][Feeds]] below, and [[file:security.org::*Market data feeds: where the server may reach][Security]] for where it may reach.
 - *The series worker* owns the network and the store's writer handle. Fetching, parsing and aggregating happen there, one source's units one after another; what comes back to the main thread is plain data: the run's figures, its notes and each hook's payload. See [[*The worker thread][The worker thread]].
-- *The series store* (=src/series/=) owns everything a source ever returned, reduced to compact figures as it arrives: the newest figures per venue and instrument, hourly and daily history, region figures, quotes and entries. It is one SQLite file per data source, never the main database, because its rows are derived and arrive by the million. A build without SQLite has no store, and then no feeds. See the store chapters that follow, and [[file:backup.org::*Series stores][Backups: series stores]] for how installation backups copy them.
+- *The series store* (=src/series/=) owns everything a source ever returned, reduced to compact figures as it arrives: the newest figures per venue and instrument, hourly and daily history, region figures, quotes and entries -- and the operator's own accounts, holdings, listings, mail and ledger when the source sends them (=src/series/venture-series-accounts.c=, see [[*Operator accounts][Operator accounts]]). It is one SQLite file per data source, never the main database, because its rows are derived and arrive by the million. A build without SQLite has no store, and then no feeds. See the store chapters that follow, and [[file:backup.org::*Series stores][Backups: series stores]] for how installation backups copy them.
 - *Marketdata* (=src/marketdata/=, module =marketdata=, requires =market= -- and through it =sales= -- suggests =feeds=, on by default) owns the records the books can point at: venues and instruments promoted out of a store, watchlists, alert rules and their hits. It owns the price oracle every valuing report can ask through a =series:= price source, and the Trading pages, reports and widgets that browse the stores. With feeds off its records still work and its pages say there is no data. See [[*Venues, instruments and the price oracle][Venues, instruments and the price oracle]], [[*Alerts][Alerts]] and [[*Browsing: the Trading pages][Browsing: the Trading pages]].
 - *Arbitrage* (=src/arbitrage/=, module =arbitrage=, requires =marketdata= and =ledger=, suggests =production= and =goods=, on by default) owns the scan -- strategies run over the stores and netted by each venue's fee model -- the saved questions (=arbitrage_strategy=), exports, and the trades and legs that record an attempt. See [[file:arbitrage.org][Arbitrage]].
 - *The ledger* owns the money. An executed leg is a ledger source: it posts journals through the posting service, through the venue's cash (a location's holding, else the venue's account, else the organization's cash), stock legs move inventory at FIFO cost, and a memo currency moves a holding instead of posting. Nothing here posts around it. See [[file:arbitrage.org::*Posting][Arbitrage: posting]] and [[file:ledger.org][the general journal]].
@@ -133,7 +135,7 @@ A reader is opened read-write without =CREATE= and then made =query_only=: a WAL
 
 ** Schema
 
-Version 4 (=venture_series_store_schema_version()=); the steps are =series_schema_steps[]= in =src/series/venture-series-store.c=.
+Version 6 (=venture_series_store_schema_version()=); the steps are =series_schema_steps[]= in =src/series/venture-series-store.c=.
 
 | Step | Adds                                                                                                                                                      |
 |------+-----------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -141,6 +143,8 @@ Version 4 (=venture_series_store_schema_version()=); the steps are =series_schem
 |    2 | =quotes= (indexed on =instrument_id=), =quote_history= (indexed on =taken_at=) and =entries= (indexed on =COALESCE(published_at, fetched_at)= for the purge) |
 |    3 | =current.stock_changed_at= and =entries_fetched=, an index on when an entry first arrived -- both for the alerts                                           |
 |    4 | =current.sale_rate= and =current.sold_per_day=, with =current_venue_sale_rate= (=venue_id=, =sale_rate=) and the partial =current_sale_rate=, for browsing by how fast a thing sells |
+|    5 | =venue_state.listing_set_currency=, filled for an existing listing set from the snapshot it was taken from, so a sale is diffed only within one currency |
+|    6 | the operator's accounts -- =accounts=, =account_balances=, =account_holdings=, =account_positions=, =account_inbound=, =external_txns= and their indexes (see [[*Operator accounts][Operator accounts]]) -- and =current.source_historical=, =current.source_sale_rate=, =current.source_sold_per_day= |
 
 *** =meta=
 
@@ -194,12 +198,16 @@ The latest figures for each venue and instrument -- what browsing sorts and filt
 | =stock_changed_at= | the snapshot at which =quantity= last crossed zero, either way; NULL when it never has   |
 | =sale_rate=       | units sold ÷ (sold + expired) over the last 14 days, from the last region recompute; NULL when nothing sold or expired |
 | =sold_per_day=    | units sold ÷ days with history over the same 14 days, from the last region recompute     |
+| =source_historical= | the source's own long-run price from its last =stat= (TSM's historical); NULL when it sent none |
+| =source_sale_rate=, =source_sold_per_day= | the source's own sale rate (0 to 1) and units sold a day from its last =stat= |
 
 Indexes: (=instrument_id=, =min_price=) for "other venues"; (=venue_id=, =min_price=), (=venue_id=, =market_value=), (=venue_id=, =pct_vs_region=), (=venue_id=, =sale_rate=) for one venue's page; =pct_vs_region=, =deal_price= and =sale_rate= alone (partial, non-NULL) for deals and sorts across every venue.
 
 =pct_vs_region= is refreshed against the stored =region_median= at every snapshot, so a sort by it is right between recomputes; the median itself only moves when the region is recomputed.
 
 =sale_rate= and =sold_per_day= (schema step 4) are what the browse page sorts "how fast it sells" by. The server answers pages on its main thread, and a sort computed from two weeks of =daily= history per request is a sort over millions of rows, so the figures are kept on the row: the region recompute, which already runs every half hour on the worker, writes them with two set-based statements after the region figures -- the same arithmetic as =venture_series_store_reference()= for one venue, over the days in the row's own currency -- and clears the rows whose history has aged out of the window. They are not counted in the recompute's =current_updated=, which says how many rows' region figures moved. A store upgraded to step 4 has them NULL until its next recompute.
+
+The three =source_*= columns (schema step 6) are what a source says of its own statistics -- TSM's region sale rate and units sold a day, its historical price -- and are kept *beside* the store's estimates, never written over them: a snapshot's =stat= sets them, a snapshot of listings clears them, and marking an absent instrument out of stock leaves them alone (a region's rate does not change because one realm sold out). =VentureSeriesRow= carries both sets as separate members, so a page can say which it shows. =venture_series_store_reference()= answers with the store's own figure when it has one and fills a missing one from the source's -- only from a row taken on or before the moment asked about, only in the answer's currency, the mean over a group's venues that sent one -- and sets =historical_from_source=, =sale_rate_from_source= or =sold_per_day_from_source=; the oracle's evidence note then says "the source's own figure". Units a day is the one figure the store always has once it has a day (a day with no sale and no expiry reads zero), so where the store saw no sale and no expiry in the window, a source's units a day is believed over that zero. The browse sort by sale rate reads the store's own column only: it is indexed, and a coalesced sort over a million rows would not be.
 
 =stock_changed_at= (schema step 3) is written by the statement that makes the change: the snapshot upsert stamps it when the stored and the new quantity sit on different sides of zero, and leaves it alone when either side is unknown (a stats row that did not say how many); marking an absent instrument out of stock stamps it when the row had units. A new row leaves it NULL -- the first sighting of an instrument is not "back in stock", or the first sync of a source would say so about everything. Equal to =taken_at= exactly when the newest snapshot took the instrument out of or back into stock, which is what the stock alerts read.
 
@@ -241,6 +249,19 @@ Per venue: =last_taken_at=, =last_fetched_at=, =gaps= (the last 36 gaps between 
 *** =entries=
 
 Non-price items, matched on =key= (an RSS guid): =venue_id=, =instrument_id=, =published_at=, =fetched_at=, =title=, =url= (http or https only -- only a web address is a link), =summary=, =attrs=. =fetched_at= is the first arrival and is never updated, so =venture_series_store_list_new_entries(store, since, count)= -- on the =entries_fetched= index from schema step 3 -- is "what arrived since", whatever the entries' publication times.
+
+*** The operator's accounts
+
+Schema step 6. One table per kind, each keyed by what the source calls it; venues and instruments are named by *key*, not by id, so a row survives an instrument the size cap refused, and readers join on the keys' unique indexes for names. Money is integer minor units beside its currency; times are Unix seconds. The model, the replacement rules and the readers are in [[*Operator accounts][Operator accounts]].
+
+| Table              | Rows                                                                                         | Key                                     | Indexes                                     |
+|--------------------+----------------------------------------------------------------------------------------------+-----------------------------------------+---------------------------------------------|
+| =accounts=         | =key=, =name=, =kind= (character, shared, guild, other), =group_key= (=''= none), =venue_key=, =attrs= (JSON object of scalars), =last_seen= (the source's: a login), =first_seen= and =synced_at= (the store's), =holdings_at=, =positions_at=, =inbound_at=, =balances_at= (the snapshot that last replaced each kind) | =id=; =key= unique | =group_key= |
+| =account_balances= | =account_id=, =currency=, =at=, =amount= -- one point per *change*                            | (=account_id=, =currency=, =at=), WITHOUT ROWID | =at= (the purge) |
+| =account_holdings= | =account_id=, =place= (bag, bank, reagent_bank, warbank, guild, mail, auction, void, equipped, currency, other), =instrument_key=, =quantity=, =at= | (=account_id=, =place=, =instrument_key=), WITHOUT ROWID | =instrument_key= |
+| =account_positions= | =key= (the source's listing id), =account_id=, =venue_key=, =instrument_key=, =quantity=, =unit_price=, =bid=, =currency=, =expires_at=, =posted_at=, =first_seen=, =last_seen= | =id=; =key= unique | =account_id=, =expires_at= |
+| =account_inbound=  | =key= (the source's id), =account_id=, =sender=, =subject=, =money=, =cod=, =currency=, =instrument_key=, =quantity=, =expires_at=, =returned=, =first_seen=, =last_seen= | =id=; =key= unique | =account_id=, =expires_at= |
+| =external_txns=    | =key= (the source's stable id), =account_id=, =venue_key=, =kind= (sale, buy, income, expense, expired, cancelled), =instrument_key=, =quantity=, =unit_price=, =amount=, =currency=, =counterparty=, =source=, =at=, =first_seen=, =updated_at= | =id=; =key= unique | =at=; (=instrument_key=, =at=); (=account_id=, =at=) |
 
 ** Packed blobs
 
@@ -358,6 +379,8 @@ Also: =_get_current()=, =_other_venues()= (every venue's row for one instrument,
 | =series.max_store_mb= | 0       | size past which a store refuses new instruments; 0 for no cap                               |
 | =series.include_in_backup= | true | copy every store beside each installation backup (see "Backups" below)                  |
 
+The operator's accounts follow =series.daily_days= too: the external ledger and balance history before the bound go, except an account's newest balance in each currency, which is kept however old it is -- a purse nobody touched for a year is still a purse. Holdings, positions and inbound are state, not history: a snapshot replaces them and nothing purges them. The purge reports =balances= and =txns= beside the rest.
+
 The store reads none of these: the feeds service reads them on the main thread, freezes the first three into each source (=venture_series_store_set_max_bytes()= takes the cap in bytes) and asks the last itself when a backup runs; the configuration refuses a negative day count or cap at startup. =venture_series_store_purge(store, now, hourly_days, daily_days)= deletes everything before day /today − N + 1/ -- keeping N days counting today -- for good, then runs an incremental vacuum.
 
 The cap counts pages that hold data. Past it, snapshots of known instruments carry on -- the history being paid for keeps arriving -- but an instrument the store has never seen is refused and counted in the commit's =instruments_refused= and =listings_refused=, which the feeds run records. Hourly history is what grows: as measured, one snapshot of a million venue-instrument rows (100 venues × 10 000 instruments, 50 000 listings each) makes a 350 MB store, of which =current= and its indexes are about 190 MB, a day's =daily= and =hourly= rows with their indexes about 120 MB and the hundred listing sets about 40 MB; each further hour adds roughly ten to fifteen bytes per row to =hourly=. At a full World of Warcraft region that is gigabytes a fortnight, which is what =hourly_days= is for.
@@ -388,6 +411,7 @@ Every key but =enabled= (the module switch) is read on the main thread and froze
 | =feeds.allowed_origins=     | empty   |              | exact origins a source may fetch from, comma-separated (=https://api.example.com,https://eu.api.example.com=); empty denies every HTTP source |
 | =feeds.file_roots=          | empty   |              | absolute directories a file source may read under, comma-separated; empty denies every file source; a relative entry is ignored |
 | =feeds.max_response_mb=     | 64      | 1 to 4096    | the largest answer or file one fetch reads, in MiB                                                                            |
+| =feeds.max_push_mb=         | 32      | 1 to 4096    | the largest body a push source takes from =POST /api/v1/feeds/:id/push=, in MiB                                               |
 | =feeds.request_timeout=     | 60      | 1 to 3600    | seconds one fetch may take, start to finish                                                                                   |
 | =feeds.max_records_per_run= | 500     | 0 to 100000  | main-database records (price observations, exchange rates) one run may write                                                  |
 | =feeds.run_window_minutes=  | 15      | 0 to 1440    | scheduled passes within this many minutes are recorded as one run; 0 records every pass                                      |
@@ -448,7 +472,8 @@ The batch is plain data: venues, instruments, snapshots of listings or figures, 
 
 - =http_json=: =url= (={unit}= and ={secret:NAME}= filled in, percent-escaped), =headers= (a mapping of templates; a value with a line break is refused), =items= (a dotted path to the list), =record_as= (=listing=, =stat= or =quote=), =fields= (target to dotted path: =instrument= required; =venue= defaults to the unit; =name=, =category=, =kind=, =parent=, =price=, =quantity=, =id=, =side=, =expires_in_min= (seconds, the least time left), =currency=; for =stat= the figures =min=, =market=, =mean=, =median=, =sale_avg=, =listings= and =sold=; =odds= and =liquidity= for =quote=), =price_units= (=major= decimals or =minor= integers), =odds_format=, =complete= (true: each fetch lists everything at its venue), =cost=. A JSON number with a fraction is spelt back in its shortest exact decimal form and parsed as a decimal -- no arithmetic happens on the double. The snapshot is dated by =Last-Modified= when the far end sends one.
 - =csv=: the same mapping over an RFC 4180 CSV (quoted fields, doubled quotes, =delimiter=, =header=), from =url= or from =file=. A row with no header uses column numbers as names.
-- =file_jsonl=: =file=, a JSON-lines file in the plugin protocol. A line that breaks the protocol fails the unit, as it fails an exec run; an =error= message makes the batch partial.
+- =file_jsonl=: =file=, a JSON-lines file in the plugin protocol. A line that breaks the protocol fails the unit, as it fails an exec run; an =error= message makes the batch partial. The file is read into the batch a 256 KiB slice at a time, so a large one is never held as parsed JSON objects all at once.
+- =push=: a source filled from outside, by =POST /api/v1/feeds/:id/push=; it fetches nothing and is never scheduled, whatever its record's schedule says. Its one unit, =push=, reads the pushed body through the very function =file_jsonl= reads a file with. A sync of a push source fails its run saying where its data comes from. See [[*The push provider][The push provider]].
 - exec plugins: a manifest entry =kind: data_source_provider= with =name=, =label=, =command= (default =fetch=), =description=. The program gets =params.unit=, =params.cursor=, =params.if_modified_since= and =params.source= (the settings), and its credentials as =secrets=; =plugins.allow_exec= is frozen with the source and checked at every run.
 
 *** Plugin providers
@@ -567,10 +592,108 @@ A hook added while the worker runs refreezes every source. A module whose frozen
 - Actions on =data_source=: =sync= (queues, never waits; editors), =test= (fetches one unit on a private main context and reports what came back, writing nothing, not counted against the budget; editors; it waits on the request's thread, so its wait is bounded: the fetch is cancelled at =feeds.request_timeout= plus five seconds, and a provider that ignores the cancellation for two seconds more is abandoned -- its completion left undispatched on the private context, as the worker abandons one at stop -- and the action answers =VENTURE_ERROR_TIMEOUT=), =purge_history= (deletes the store on the thread that holds its writer; administrators). None is stageable: a sync reaches outside, a test writes nothing, a purge cannot be taken back.
 - Automation: =feeds_sync("ID")= queues and returns; =feed_synced= and =feed_failed= events.
 - =/feeds=, under *Trading* in the sidebar: the organization's sources, each one's last run, next check and quota, an upload timer per store (each venue's last update, learned interval and expected next update, read through a read-only store handle on the main thread), and the recent runs.
-- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N= (newest first; 1 to 500, 20 by default), =POST /api/v1/feeds/ID/sync= (202, ={"status": "queued"}=). Reading is a viewer's, a sync an editor's. Each takes =organization_id= and answers for that organization, else the active one; a source of another organization than the one asked about is NOT_FOUND. See [[*Which organization][Which organization]] below.
+- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N= (newest first; 1 to 500, 20 by default), =POST /api/v1/feeds/ID/sync= (202, ={"status": "queued"}=), =POST /api/v1/feeds/ID/push= (JSON lines to a push source; 202, or the run with =?wait=1=; see [[*The push provider][The push provider]]). Reading is a viewer's, a sync or a push an editor's. Each takes =organization_id= and answers for that organization, else the active one; a source of another organization than the one asked about is NOT_FOUND. See [[*Which organization][Which organization]] below.
 - =/feeds/ID/credentials= (GET and POST; organization owners and administrators) and =POST /feeds/ID/sync= (editors) behind the page.
 - =venturectl feeds sync ID [--wait] [organization_id=N]= (=--wait= polls for the run for up to five minutes and prints it), =feeds runs ID [organization_id=N]=, =feeds due [organization_id=N]=; =venturectl act data_source ID sync|test [unit=U]|purge_history= for the actions.
 - =venture_feeds_service_open_reader()= opens a read-only handle on a source's store from the main thread, for pages and the price oracle.
+
+* Operator accounts
+
+A market is two things: what everybody offers, which the rest of this page is about, and what the operator owns in it. The second half of a series store keeps that: the operator's *accounts* (a character, a seller account, a shared warband bank, a guild bank), their *balances* over time, their *holdings* by place, their own open listings (*positions*), what waits for them to collect (*inbound*: mail), and the source's *external ledger* of what they bought, sold, earned and spent. It is game-agnostic: a place is =bag= or =warbank= or =other=, an account kind is =character= or =shared=, and nothing here knows what a realm is. World of Warcraft is the first user (tsmctl's export, see [[file:plugins.org::*Messages][Plugins: the protocol]]); a marketplace seller with three shops is the same model.
+
+The rows live in the source's store, not in VentureDatabase, for the reasons the market figures do: a first sync of a busy operator is tens of thousands of ledger rows and a snapshot of every bag every few minutes, derived, never edited by a person. A later phase mirrors what a person acts on -- the positions, as =listing= records -- into the main database.
+
+** The model
+
+| Kind          | One row is                                                    | Kept as                                   |
+|---------------+---------------------------------------------------------------+-------------------------------------------|
+| account       | an account, by the source's key                               | upserted; =NULL= members keep the stored values |
+| balance       | an account's money in one currency at a moment                | history, one point per change             |
+| holding       | a quantity of an instrument at a place                        | state, replaced by a snapshot              |
+| position      | an open listing, by the source's listing id                   | state, replaced by a snapshot; keeps =first_seen= |
+| inbound       | a mail (or anything to collect), by the source's id           | state, replaced by a snapshot              |
+| txn           | a row of the source's ledger, by the source's stable id       | upserted on the id; never doubled          |
+
+A row may name an account no =account= message described, in this batch or ever: the store creates it bare (kind =other=), and a later description fills it in. The same goes for venues and instruments a row names: they are created bare (instruments subject to =series.max_store_mb=) so the market pages and promotion know them. =track: known= is not applied to the operator's rows: it narrows what the market tracks, and the operator's own bags are not a market to narrow.
+
+** How state is replaced
+
+An account's holdings, positions and inbound are what the source last said they were. An =account_snapshot= message says "this account's rows of these kinds, as of =at=, are all of them": the store removes every row of a covered kind for that account that the batch does not restate. Exactly that, and nothing more:
+
+- a kind the snapshot does not cover is left as it was, for that account too;
+- every account the batch does not snapshot is left as it was;
+- rows outside a snapshot are upserts: a holding replaces the stored quantity of its (account, place, instrument), a holding of 0 removes the line;
+- the snapshot must come before the account's rows of the kinds it covers, and an account is snapshotted at most once a batch. A snapshot that breaks either rule is refused (counted, noted), and the rows then upsert alone -- a late snapshot would otherwise erase the rows that came before it;
+- a snapshot older than the one that last replaced a kind (=accounts.holdings_at= and its siblings) is stale: it changes nothing of that kind and its rows of that kind are skipped, counted in the run's notes. An export read late -- the laptop that synced after the desktop -- does not roll an account back. A snapshot at the same time is applied again, idempotently.
+
+Replacement is mark and sweep in the unit's transaction: the covered rows are stamped with a time no row takes, every restated row is written over its stamp, and what still carries it is deleted. A delete-then-insert would be simpler and would lose a listing's =first_seen=. Two copies of one holding in a batch -- one item in two bag slots -- are summed by the batch before the store sees them.
+
+** Balances are history
+
+A balance is a point in a series per (account, currency), and the series keeps changes only. A point equal to the one before it is not stored; a point that arrives late, between two others, leaves the series as if it had come in order (a later point it makes a repeat of is removed). A purse read every five minutes for a month is as many rows as times it moved. A snapshot covering =balances= restates every currency: one the account had money in and the batch does not restate gets a zero appended at the snapshot's time -- history is never erased. Retention (=series.daily_days=) never removes an account's newest point in a currency.
+
+** Positions keep their age
+
+A position is keyed by the source's listing id, unique in the store; restating it updates its price, quantity and expiry and never its =first_seen= (when the store first saw it -- its age when the source does not say when it was posted). =posted_at= is kept when a later restating leaves it out. A position whose id appears under another account moves to that account.
+
+** The external ledger
+
+Each =txn= is upserted on its =id=, which the source must keep stable across exports. TSM merges a stack into an earlier sale row; tsmctl re-sends the row with the same id and the larger quantity, and the store updates it in place -- a P&L never counts it twice. A row sent again unchanged writes nothing, so a full re-export is index probes, not writes. The run's notes say how many were new, updated and unchanged.
+
+The amount is never signed: the kind says which way money went -- =sale= and =income= in, =buy= and =expense= out, =expired= and =cancelled= carry none. Sales are after the source's fees, as TSM records them.
+
+** Money and the source's currency
+
+Every amount of the operator's own -- a position's price and bid, a mail's money and cash on delivery, a ledger row's price and amount -- is in the *data source's* currency (its record's =currency=). The messages name no currency of their own except =balance=, and a balance in any currency but the source's is refused (counted, noted): one source, one currency for the operator's money. A source with no currency cannot read the operator's money at all; its money-bearing rows are refused with a note saying so. Every ledger row of a source with a currency carries it, money or not, so an expired auction falls in the same profit-and-loss bucket as the sales beside it.
+
+** The push provider
+
+The built-in provider =push= (=VENTURE_FEEDS_PUSH_PROVIDER=) is for a producer that runs where the data is -- tsmctl on the machine the game runs on, fired by a systemd path unit when the game writes its files -- rather than where VENTURE is. It fetches nothing and is never scheduled: the freeze forces its schedule to =manual=, and the service never starts the worker for one. A sync of a push source records a failed run saying where its data comes from.
+
+*** The route
+
+=POST /api/v1/feeds/:id/push=, the body JSON lines of protocol 1 with =Content-Type= =application/x-ndjson= or =text/plain= (a charset parameter is fine; anything else is =415=).
+
+| Answer | When                                                                                                          |
+|--------+---------------------------------------------------------------------------------------------------------------|
+| 202    | queued: ={"status":"queued","data_source_id":N,"push_id":"…"}=                                                  |
+| 200    | with =?wait=1=, the run was written: ={"status":"finished","data_source_id":N,"push_id":"…","run":{…}}=, the run as recorded (=status= ok, partial or failed -- a malformed line is the run's failure, with its line number, not the request's) |
+| 202    | with =?wait=1=, the run took longer than =VENTURE_FEEDS_PUSH_WAIT_SECONDS= (120): the queued answer plus a =note= |
+| 400    | =wait= other than =1=, =true=, =0=, =false=; =organization_id= not a positive integer                            |
+| 401    | no session or token                                                                                           |
+| 403    | the caller is not an editor (who may push is who may sync: an editor, or an API token acting as one)          |
+| 404    | feeds off (the module's 404); the source not in the organization named (=organization_id=, else the active one), deleted or another organization's |
+| 409    | the source's provider is not =push=, or the source is switched off -- switching a push source off is how its owner stops a producer that is still sending |
+| 413    | the body is larger than =feeds.max_push_mb= (32 MiB); =server.max_request_size_mb= refuses first when it is smaller |
+| 415    | not JSON lines                                                                                                |
+
+The handler parses nothing. The body goes to the worker as plain bytes (=venture_feeds_service_push()=), and the =push= provider reads it through the function =file_jsonl= reads a file with: one code path, so a push and a file of the same lines make the same store. Each push is a run of its own, with trigger =push=, in the order pushes arrived, ahead of any queued sync. A source that cannot be frozen gets a failed run at once, which =?wait=1= returns.
+
+*** Waiting for the run
+
+=venture_feeds_service_wait_push()= runs the default main context, bounded, until the push's run is written -- the pattern the Test action and the webhook test use: the worker hands runs back on that context and the drain writes them there, and nothing of ours runs on a worker beneath it. The service remembers the last 1024 finished pushes (=venture_feeds_service_lookup_push()=). The push's id is not stored on the run record: without =wait= the run is found among the source's runs (trigger =push=), newest first.
+
+** Reading it back
+
+Every reader works on a writer or a reader handle (=venture_feeds_service_open_reader()= on the main thread), returns plain structs, and never a double for money. Times passed in are Unix seconds; "none" is =VENTURE_SERIES_NONE=; start every filter from its =_init()=.
+
+| Function                                       | Answers                                                                                   |
+|------------------------------------------------+-------------------------------------------------------------------------------------------|
+| =venture_series_store_list_accounts(store, kind, group, now)= | every account (at most 10 000) with the figures a "needs attention" list is made of: holdings, positions, positions expired by =now=, soonest position expiry, inbound, inbound expired, soonest inbound expiry, newest balance per currency, money and cash on delivery waiting in the mail per currency, =last_seen=, =synced_at= |
+| =venture_series_store_get_account(store, key, now, &row)= | one account, the same figures; =NULL= for an unknown key                                  |
+| =venture_series_store_list_holdings(store, filter)= | holdings by account, place and instrument name (filter: account, instrument, place, =exclude_place=, search, paging) |
+| =venture_series_store_holdings_by_instrument(store, filter)= | each instrument summed over accounts and places, with its breakdown -- the inventory page; valuing it is the oracle's business |
+| =venture_series_store_list_positions(store, filter)= | positions soonest expiry first (none last); =expires_before= is "expiring before T"     |
+| =venture_series_store_list_inbound(store, filter)= | inbound, the same way                                                                      |
+| =venture_series_store_balance_history(store, account, currency, since, until)= | the change points, oldest first; the point before =since= is the balance at =since= |
+| =venture_series_store_list_txns(store, filter)= / =_count_txns()= | ledger rows by time (filters: account, kind, instrument, venue, source label, =[since, until)=, paging, order) |
+| =venture_series_store_txn_totals(store, filter, group)= | the ledger summed per bucket and currency for a P&L: day, Monday week or month (UTC), account, venue, instrument or source label; counts, units and integer sums of sales, buys, income and expense, expired and cancelled units, and =net= = sales + income − buys − expense. SQLite sums the integers and refuses an overflow; past 100 000 buckets the read is refused rather than truncated |
+
+Writing is =venture_series_store_apply_accounts(store, batch, fetched_at, &result)=: one batch in one transaction (a savepoint inside the worker's), accounts first, then each snapshot's mark, the rows, the sweeps, then the ledger. A malformed row fails the whole batch and writes nothing.
+
+** Limits and performance
+
+A batch carries at most 10 000 accounts (=VENTURE_FEED_BATCH_MAX_ACCOUNTS=), a million balance, holding, position and inbound rows together (=VENTURE_FEED_BATCH_MAX_ACCOUNT_ROWS=) and a million ledger rows (=VENTURE_FEED_BATCH_MAX_TXNS=); past those a row is refused and counted. The batch keeps every string of these rows in one =GStringChunk= (repeated keys stored once) and the rows in arrays of the store's own input structs, which the worker hands to the store without a copy unless the source has credentials to redact from free text. As measured in a debug build, fifty thousand new ledger rows apply in about a tenth of a second and a push of them -- parsed, batched and stored -- in under half a second; the same rows again write nothing. =tests/test-accounts-store.c= and =tests/test-feeds.c= hold both to a bound.
 
 * Venues, instruments and the price oracle
 
@@ -921,6 +1044,7 @@ The rest of market data's command line, in one place:
 | Command                                                         | Does                                                                                     |
 |-----------------------------------------------------------------+------------------------------------------------------------------------------------------|
 | =venturectl feeds sync ID [--wait]=                             | queues a sync (=POST /api/v1/feeds/ID/sync=); =--wait= waits for its run and prints it   |
+| =venturectl feeds push ID FILE [--wait]= (=-= for stdin)          | sends JSON lines to a push source (=POST /api/v1/feeds/ID/push=); =--wait= prints its run |
 | =venturectl feeds runs ID=, =venturectl feeds due=              | a source's runs, newest first; every unit's next check, soonest first                    |
 | =venturectl act data_source ID test [unit=U]=                   | fetches one unit and says what came back, writing nothing                                |
 | =venturectl act data_source ID purge_history=                   | deletes the source's store (administrators; cannot be taken back)                       |

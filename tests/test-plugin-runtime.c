@@ -2260,8 +2260,9 @@ test_jsonl_kind_names_match_enum(void)
 	}
 
 	/* Twelve, plus `result`, which an exec automation handler answers
-	 * with. A thirteenth that the parser does not name fails above. */
-	g_assert_cmpuint(klass->n_values, ==, 13);
+	 * with, plus the seven account-operations types. One more that the
+	 * parser does not name fails above. */
+	g_assert_cmpuint(klass->n_values, ==, 20);
 	g_type_class_unref(klass);
 
 	g_assert_false(venture_jsonl_kind_from_name("Listing", NULL));
@@ -2453,6 +2454,208 @@ test_jsonl_refusals(void)
 	}
 }
 
+/*
+ * The account-operations vocabulary, exactly as the contract shared with
+ * tsmctl's exporter spells it: every kind's example line is accepted.
+ *
+ * What breaks if this regresses: the exporter, built to the same contract
+ * in another language, has every push refused at its first line.
+ */
+static void
+test_jsonl_accepts_account_kinds(void)
+{
+	const gchar *const lines[] = {
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium Brotherhood\",\"name\":\"Drgold\","
+		"\"kind\":\"character\",\"group\":\"Thorium Brotherhood\",\"venue\":\"thorium-brotherhood\","
+		"\"last_seen\":\"2026-10-04T18:53:54Z\",\"attrs\":{\"class\":\"WARRIOR\",\"level\":80,"
+		"\"race\":\"Human\",\"faction\":\"Alliance\",\"guild\":\"The Treasury of Gilneas\","
+		"\"played_seconds\":3233982,\"login_account\":\"ZAKMANN\"}}",
+		"{\"type\":\"account\",\"key\":\"warbank:ZAKMANN\",\"kind\":\"shared\"}",
+		"{\"type\":\"account\",\"key\":\"guild:Treasury-Thorium\",\"kind\":\"guild\",\"attrs\":{}}",
+		"{\"type\":\"account_snapshot\",\"account\":\"Drgold-Thorium Brotherhood\","
+		"\"at\":\"2026-10-04T18:53:54Z\",\"covers\":[\"holdings\",\"positions\",\"inbound\","
+		"\"balances\"]}",
+		"{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T18:53:54+02:00\","
+		"\"covers\":[\"positions\"]}",
+		"{\"type\":\"balance\",\"account\":\"a\",\"currency\":\"GOLD\","
+		"\"amount\":\"2724950.1812\",\"at\":\"2026-10-04T18:53:54Z\"}",
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"2770\","
+		"\"quantity\":12,\"at\":\"2026-10-04T18:53:54Z\"}",
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"currency\","
+		"\"instrument\":\"currency:2032\",\"quantity\":0}",
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"thorium-brotherhood\","
+		"\"id\":\"1637378752\",\"instrument\":\"82800:p1155.3\",\"quantity\":1,"
+		"\"price\":\"817.98\",\"bid\":\"0\",\"expires_at\":\"2026-10-05T18:53:54Z\","
+		"\"posted_at\":\"2026-10-03T18:53:54Z\"}",
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"2\","
+		"\"instrument\":\"i\",\"quantity\":3,\"price\":\"1\",\"expires_at\":\"2026-10-05T00:00:00Z\"}",
+		"{\"type\":\"inbound\",\"account\":\"a\",\"id\":\"mail-1\",\"sender\":\"Auction House\","
+		"\"subject\":\"Auction successful: Copper Ore\",\"money\":\"1234.5\",\"instrument\":\"2770\","
+		"\"quantity\":5,\"expires_at\":\"2026-11-03T18:53:54Z\",\"returned\":false,\"cod\":\"0\"}",
+		"{\"type\":\"inbound\",\"account\":\"a\",\"id\":\"mail-2\",\"cod\":\"10\"}",
+		"{\"type\":\"txn\",\"id\":\"k1\",\"account\":\"a\",\"venue\":\"v\",\"kind\":\"sale\","
+		"\"instrument\":\"2770\",\"quantity\":3,\"unit_price\":\"26.59\",\"amount\":\"79.77\","
+		"\"counterparty\":\"Buyer\",\"source\":\"Auction\",\"at\":\"2026-10-04T18:53:54Z\"}",
+		"{\"type\":\"txn\",\"id\":\"k2\",\"account\":\"a\",\"kind\":\"expense\",\"amount\":\"0.3\","
+		"\"source\":\"Postage\",\"at\":\"2026-10-04T18:53:54Z\"}",
+		"{\"type\":\"txn\",\"id\":\"k3\",\"account\":\"a\",\"kind\":\"expired\",\"instrument\":\"i\","
+		"\"quantity\":1,\"at\":\"2026-10-04T18:53:54Z\"}",
+		"{\"type\":\"txn\",\"id\":\"k4\",\"account\":\"a\",\"kind\":\"cancelled\",\"instrument\":\"i\","
+		"\"quantity\":1,\"amount\":\"0\",\"at\":\"2026-10-04T18:53:54Z\"}",
+		"{\"type\":\"stat\",\"venue\":\"region-us\",\"instrument\":\"2770\",\"market\":\"30.5\","
+		"\"historical\":\"28.25\",\"sale_rate\":\"0.153\",\"sold_per_day\":\"1520.5\"}",
+		"{\"type\":\"stat\",\"venue\":\"region-us\",\"instrument\":\"2770\",\"sale_rate\":\"1\"}",
+	};
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(lines); i++)
+	{
+		g_autoptr(VentureJsonlMessage) message = NULL;
+		g_autoptr(GError) error = NULL;
+
+		message = venture_jsonl_message_parse(lines[i], -1, (guint)(i + 1), &error);
+
+		if (NULL == message)
+			g_error("line %" G_GSIZE_FORMAT " refused: %s", i + 1, error->message);
+	}
+}
+
+/*
+ * Every way an account-operations line can break the contract, refused
+ * with the member named: a bad enum, money as a JSON number, a time with
+ * no zone, covers that is not a subset, a missing required member, an
+ * attrs object that is too big or not flat, and -- unlike the market
+ * types -- an unknown member.
+ *
+ * What breaks if this regresses: a misspelt `expiry` is ignored and
+ * every listing stored as never expiring, or a price sent as 817.98 is
+ * read through a double.
+ */
+static void
+test_jsonl_account_refusals(void)
+{
+	g_autofree gchar *big_attrs = NULL;
+	g_autofree gchar *many_attrs = NULL;
+	struct
+	{
+		const gchar	*line;
+		const gchar	*expect;
+	} cases[] = {
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"alt\"}", "account.kind must be one of" },
+		{ "{\"type\":\"account\",\"key\":\"a\"}", "account.kind is required" },
+		{ "{\"type\":\"account\",\"kind\":\"other\"}", "account.key is required" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"realm\":\"x\"}",
+		  "account.realm is not a member of account" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"Realm Name\":\"x\"}",
+		  "carries a member this type does not define" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\","
+		  "\"last_seen\":\"2026-10-04T18:53:54\"}", "with a zone" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"attrs\":{\"x\":[1]}}",
+		  "only strings, numbers and booleans" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"attrs\":\"x\"}",
+		  "must be an object" },
+		{ "{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T00:00:00Z\","
+		  "\"covers\":[\"holdings\",\"bags\"]}", "subset of holdings" },
+		{ "{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T00:00:00Z\","
+		  "\"covers\":[]}", "at least one" },
+		{ "{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T00:00:00Z\","
+		  "\"covers\":[\"holdings\",\"holdings\"]}", "names a kind twice" },
+		{ "{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T00:00:00Z\","
+		  "\"covers\":\"holdings\"}", "must be a list" },
+		{ "{\"type\":\"account_snapshot\",\"account\":\"a\",\"covers\":[\"holdings\"]}",
+		  "account_snapshot.at is required" },
+		{ "{\"type\":\"balance\",\"account\":\"a\",\"currency\":\"GOLD\",\"amount\":2724950.18}",
+		  "never a JSON number" },
+		{ "{\"type\":\"balance\",\"account\":\"a\",\"amount\":\"1\"}", "balance.currency is required" },
+		{ "{\"type\":\"balance\",\"account\":\"a\",\"currency\":\"GOLD\",\"amount\":\"-1\"}",
+		  "non-negative decimal" },
+		{ "{\"type\":\"holding\",\"account\":\"a\",\"place\":\"pocket\",\"instrument\":\"i\","
+		  "\"quantity\":1}", "holding.place must be one of" },
+		{ "{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"i\"}",
+		  "holding.quantity is required" },
+		{ "{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"i\","
+		  "\"quantity\":-1}", "at least 0" },
+		{ "{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\","
+		  "\"instrument\":\"i\",\"quantity\":1,\"price\":817.98,"
+		  "\"expires_at\":\"2026-10-05T00:00:00Z\"}", "never a JSON number" },
+		{ "{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\","
+		  "\"instrument\":\"i\",\"quantity\":1,\"price\":\"1\","
+		  "\"expiry\":\"2026-10-05T00:00:00Z\"}", "position.expiry is not a member" },
+		{ "{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\","
+		  "\"instrument\":\"i\",\"quantity\":1,\"price\":\"1\"}", "position.expires_at is required" },
+		{ "{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\","
+		  "\"instrument\":\"i\",\"quantity\":0,\"price\":\"1\","
+		  "\"expires_at\":\"2026-10-05T00:00:00Z\"}", "at least 1" },
+		{ "{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\","
+		  "\"instrument\":\"i\",\"quantity\":1,\"price\":\"1\","
+		  "\"expires_at\":\"2026-10-05\"}", "with a zone" },
+		{ "{\"type\":\"inbound\",\"account\":\"a\",\"id\":\"m\",\"subject\":\"hi\"}",
+		  "carries nothing to collect" },
+		{ "{\"type\":\"inbound\",\"account\":\"a\",\"id\":\"m\",\"instrument\":\"i\"}",
+		  "inbound.quantity is required with the other" },
+		{ "{\"type\":\"inbound\",\"account\":\"a\",\"id\":\"m\",\"money\":\"1\",\"returned\":\"no\"}",
+		  "true or false" },
+		{ "{\"type\":\"txn\",\"id\":\"k\",\"account\":\"a\",\"kind\":\"gift\",\"amount\":\"1\","
+		  "\"at\":\"2026-10-04T00:00:00Z\"}", "txn.kind must be one of" },
+		{ "{\"type\":\"txn\",\"id\":\"k\",\"account\":\"a\",\"kind\":\"sale\",\"instrument\":\"i\","
+		  "\"quantity\":1,\"at\":\"2026-10-04T00:00:00Z\"}", "txn.amount is required" },
+		{ "{\"type\":\"txn\",\"id\":\"k\",\"account\":\"a\",\"kind\":\"sale\",\"amount\":\"1\","
+		  "\"at\":\"2026-10-04T00:00:00Z\"}", "txn.instrument is required" },
+		{ "{\"type\":\"txn\",\"id\":\"k\",\"account\":\"a\",\"kind\":\"expired\",\"instrument\":\"i\","
+		  "\"quantity\":1,\"amount\":\"5\",\"at\":\"2026-10-04T00:00:00Z\"}", "carries no money" },
+		{ "{\"type\":\"txn\",\"id\":\"k\",\"account\":\"a\",\"kind\":\"income\",\"amount\":\"1\"}",
+		  "txn.at is required" },
+		{ "{\"type\":\"txn\",\"account\":\"a\",\"kind\":\"income\",\"amount\":\"1\","
+		  "\"at\":\"2026-10-04T00:00:00Z\"}", "txn.id is required" },
+		{ "{\"type\":\"stat\",\"venue\":\"v\",\"instrument\":\"i\",\"sale_rate\":\"1.5\"}",
+		  "stat.sale_rate must be a fraction" },
+		{ "{\"type\":\"stat\",\"venue\":\"v\",\"instrument\":\"i\",\"sale_rate\":0.5}",
+		  "never a JSON number" },
+		{ "{\"type\":\"stat\",\"venue\":\"v\",\"instrument\":\"i\",\"historical\":\"-2\"}",
+		  "non-negative decimal" },
+		{ NULL, "may carry at most" },
+		{ NULL, "is longer than" },
+	};
+	GString *line;
+	gsize i;
+
+	/* Sixty-five members, and one value long enough to pass 8 KiB. */
+	line = g_string_new("{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"attrs\":{");
+	for (i = 0; i <= VENTURE_JSONL_MAX_ATTRS; i++)
+		g_string_append_printf(line, "%s\"m%" G_GSIZE_FORMAT "\":1", (0 == i) ? "" : ",", i);
+	g_string_append(line, "}}");
+	many_attrs = g_string_free(line, FALSE);
+	cases[G_N_ELEMENTS(cases) - 2].line = many_attrs;
+
+	line = g_string_new("{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"attrs\":{");
+	for (i = 0; i < 20; i++)
+	{
+		g_string_append_printf(line, "%s\"m%" G_GSIZE_FORMAT "\":\"", (0 == i) ? "" : ",", i);
+		g_string_append_printf(line, "%0500d\"", 0);
+	}
+	g_string_append(line, "}}");
+	big_attrs = g_string_free(line, FALSE);
+	cases[G_N_ELEMENTS(cases) - 1].line = big_attrs;
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(VentureJsonlMessage) message = NULL;
+		g_autoptr(GError) error = NULL;
+
+		message = venture_jsonl_message_parse(cases[i].line, -1, 9, &error);
+
+		if (NULL != message)
+			g_error("case %" G_GSIZE_FORMAT " was accepted: %s", i, cases[i].line);
+
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION);
+		g_assert_true(g_str_has_prefix(error->message, "Line 9: "));
+
+		if (NULL == strstr(error->message, cases[i].expect))
+			g_error("case %" G_GSIZE_FORMAT ": \"%s\" lacks \"%s\"", i, error->message,
+			        cases[i].expect);
+	}
+}
+
 static void
 test_jsonl_reader_chunks(void)
 {
@@ -2623,6 +2826,9 @@ main(
 	g_test_add_func("/plugin-runtime/jsonl/accepts-every-kind",
 	                test_jsonl_accepts_every_kind);
 	g_test_add_func("/plugin-runtime/jsonl/refusals", test_jsonl_refusals);
+	g_test_add_func("/plugin-runtime/jsonl/accepts-account-kinds",
+	                test_jsonl_accepts_account_kinds);
+	g_test_add_func("/plugin-runtime/jsonl/account-refusals", test_jsonl_account_refusals);
 	g_test_add_func("/plugin-runtime/jsonl/reader-chunks",
 	                test_jsonl_reader_chunks);
 	g_test_add_func("/plugin-runtime/jsonl/reader-line-limit",

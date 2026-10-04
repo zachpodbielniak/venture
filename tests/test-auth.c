@@ -1293,6 +1293,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/due"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/1/runs"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/sync", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/push", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 #endif
 	/* Market data: the records through the generic routes, and the
 	 * oracle and promotion, which are not records. */
@@ -5645,6 +5646,166 @@ static void test_auth_feeds(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/feeds", admin, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 }
 
+/* A push of @text as JSON lines to @path, as @cookie. */
+static guint
+push_call(
+	ServerFixture	 *fixture,
+	const gchar	 *cookie,
+	const gchar	 *content_type,
+	const gchar	 *text,
+	gchar		**out_body,
+	const gchar	 *path
+){
+	g_autoptr(GBytes) body = g_bytes_new(text, strlen(text));
+
+	return server_fixture_post_raw(fixture, path, cookie, content_type, body, out_body);
+}
+
+/*
+ * POST /api/v1/feeds/:id/push through the server: an editor of the
+ * source's organization pushes JSON lines to a push source; everybody
+ * else, every other source and every other shape of body is refused
+ * before anything is queued. With wait=1 the answer is the run.
+ *
+ * What breaks if this regresses: a viewer (or a token of another
+ * organization) writes into a store; a push lands in an http source's
+ * history; a body past the cap is held in memory; or tsmctl, waiting for
+ * its run, gets a 202 it cannot follow.
+ */
+static void
+test_auth_feeds_push(
+	ServerFixture	*fixture,
+	gconstpointer	 unused
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) evermoor = NULL;
+	g_autoptr(VentureEntity) home_push = NULL;
+	g_autoptr(VentureEntity) other_push = NULL;
+	g_autoptr(VentureEntity) lines = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *editor = NULL, *viewer = NULL, *body = NULL, *path = NULL, *big = NULL;
+	JsonObject *run;
+	gint64 home_org, other;
+	static const gchar good[] =
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium\",\"kind\":\"character\"}\n"
+		"{\"type\":\"txn\",\"id\":\"k1\",\"account\":\"Drgold-Thorium\",\"kind\":\"sale\","
+		"\"instrument\":\"2770\",\"quantity\":3,\"amount\":\"79.77\",\"at\":\"2026-10-03T18:53:54Z\"}\n";
+
+	(void)unused;
+
+	g_object_set(fixture->config, "feeds-enabled", TRUE, NULL);
+	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	home_org = venture_context_get_default_organization_id(fixture->context);
+
+	evermoor = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(evermoor, "name", "Evermoor Trading", "slug", "evermoor", NULL);
+	g_assert_true(venture_database_save(fixture->database, evermoor, NULL, &error));
+	other = venture_entity_get_id(evermoor);
+
+	home_push = VENTURE_ENTITY(venture_data_source_new());
+	venture_entity_set_organization_id(home_push, home_org);
+	g_object_set(home_push, "name", "Characters", "provider", "push", "currency", "USD", NULL);
+	g_assert_true(venture_database_save(fixture->database, home_push, NULL, &error));
+	other_push = VENTURE_ENTITY(venture_data_source_new());
+	venture_entity_set_organization_id(other_push, other);
+	g_object_set(other_push, "name", "Evermoor characters", "provider", "push", "currency", "USD", NULL);
+	g_assert_true(venture_database_save(fixture->database, other_push, NULL, &error));
+	lines = VENTURE_ENTITY(venture_data_source_new());
+	venture_entity_set_organization_id(lines, home_org);
+	g_object_set(lines, "name", "Lines", "provider", "file_jsonl", "settings", "file: x.jsonl",
+	             "schedule", "manual", "currency", "USD", NULL);
+	g_assert_true(venture_database_save(fixture->database, lines, NULL, &error));
+	g_assert_no_error(error);
+
+	server_fixture_create_member(fixture, "push-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "push-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	editor = server_fixture_login(fixture, "push-editor", "editor-long-password");
+	viewer = server_fixture_login(fixture, "push-viewer", "viewer-long-password");
+
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push",
+	                       venture_entity_get_id(home_push));
+
+	/* Anonymous, then a viewer: nothing is queued. */
+	g_assert_cmpuint(push_call(fixture, NULL, "application/x-ndjson", good, NULL, path), ==,
+	                 SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(push_call(fixture, viewer, "application/x-ndjson", good, NULL, path), ==,
+	                 SOUP_STATUS_FORBIDDEN);
+
+	/* Not JSON lines. */
+	g_assert_cmpuint(push_call(fixture, editor, "application/json", "{}", NULL, path), ==,
+	                 SOUP_STATUS_UNSUPPORTED_MEDIA_TYPE);
+
+	/* Queued at once, without waiting. */
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson; charset=utf-8", good, &body, path),
+	                 ==, 202);
+	g_assert_nonnull(strstr(body, "\"queued\""));
+	g_assert_nonnull(strstr(body, "\"push_id\""));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+
+	/* Waiting: the run, recorded with trigger push. */
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push?wait=1",
+	                       venture_entity_get_id(home_push));
+	g_assert_cmpuint(push_call(fixture, editor, "text/plain", good, &body, path), ==, SOUP_STATUS_OK);
+	node = json_from_string(body, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node), "status"), ==, "finished");
+	run = json_object_get_object_member(json_node_get_object(node), "run");
+	g_assert_nonnull(run);
+	g_assert_cmpstr(json_object_get_string_member(run, "status"), ==, "ok");
+	g_assert_cmpstr(json_object_get_string_member(run, "trigger"), ==, "push");
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&body, g_free);
+
+	/* A broken second line: the run failed, naming it. */
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson",
+	                           "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n"
+	                           "{\"type\":\"txn\",\"id\":\"x\",\"account\":\"a\",\"kind\":\"gift\"}\n",
+	                           &body, path), ==, SOUP_STATUS_OK);
+	node = json_from_string(body, &error);
+	run = json_object_get_object_member(json_node_get_object(node), "run");
+	g_assert_cmpstr(json_object_get_string_member(run, "status"), ==, "failed");
+	g_assert_nonnull(strstr(json_object_get_string_member(run, "error"), "Line 2"));
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+
+	/* Past feeds.max_push_mb, under the transport's own cap. */
+	g_object_set(fixture->config, "feeds-max-push-mb", (gint64)1, NULL);
+	big = g_strnfill(1536 * 1024, ' ');
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push", venture_entity_get_id(home_push));
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson", big, &body, path), ==,
+	                 SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+	g_assert_nonnull(strstr(body, "max_push_mb"));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+	g_object_set(fixture->config, "feeds-max-push-mb", (gint64)32, NULL);
+
+	/* A source that is not a push source. */
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push", venture_entity_get_id(lines));
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson", good, NULL, path), ==,
+	                 SOUP_STATUS_CONFLICT);
+	g_clear_pointer(&path, g_free);
+
+	/* Another organization's source: not there, by default or by name. */
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push", venture_entity_get_id(other_push));
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson", good, NULL, path), ==,
+	                 SOUP_STATUS_NOT_FOUND);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push?organization_id=%" G_GINT64_FORMAT,
+	                       venture_entity_get_id(other_push), other);
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson", good, NULL, path), ==,
+	                 SOUP_STATUS_NOT_FOUND);
+	g_clear_pointer(&path, g_free);
+
+	/* Feeds off: the module's 404. */
+	g_object_set(fixture->config, "feeds-enabled", FALSE, NULL);
+	path = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/push", venture_entity_get_id(home_push));
+	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson", good, NULL, path), ==,
+	                 SOUP_STATUS_NOT_FOUND);
+}
+
 /* A membership of @user_id in @organization_id with @role. */
 static void
 trading_membership(
@@ -6495,6 +6656,8 @@ main(
 	g_test_add("/auth/feeds", ServerFixture, NULL, server_fixture_set_up, test_auth_feeds, server_fixture_tear_down);
 	g_test_add("/auth/trading-organization", ServerFixture, NULL, server_fixture_set_up,
 	           test_auth_trading_organization, server_fixture_tear_down);
+	g_test_add("/auth/feeds-push", ServerFixture, NULL, server_fixture_set_up,
+	           test_auth_feeds_push, server_fixture_tear_down);
 #endif
 	g_test_add("/auth/marketdata", ServerFixture, NULL, server_fixture_set_up, test_auth_marketdata, server_fixture_tear_down);
 	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);

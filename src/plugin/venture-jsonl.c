@@ -458,6 +458,517 @@ jsonl_check_odds(
 	return FALSE;
 }
 
+
+/* ==========================================================================
+ * The account-operations types
+ *
+ * Their rows replace what a store holds -- a snapshot of an account erases
+ * every holding it does not restate -- so these types are strict where the
+ * market-data types are forgiving: a member the type does not define is
+ * refused, not ignored. A producer that spells `expires_at` as `expiry`
+ * would otherwise store listings that never expire, and nothing would say
+ * so.
+ * ========================================================================== */
+
+static const gchar *const jsonl_account_kinds[] = {
+	"character", "shared", "guild", "other", NULL
+};
+static const gchar *const jsonl_covers[] = {
+	"holdings", "positions", "inbound", "balances", NULL
+};
+static const gchar *const jsonl_places[] = {
+	"bag", "bank", "reagent_bank", "warbank", "guild", "mail", "auction",
+	"void", "equipped", "currency", "other", NULL
+};
+static const gchar *const jsonl_txn_kinds[] = {
+	"sale", "buy", "income", "expense", "expired", "cancelled", NULL
+};
+
+/*
+ * Refuses a member @allowed does not name. The member's name is said when
+ * it looks like one -- short lower-case ASCII -- because "unknown member
+ * expiry" is the whole diagnosis; anything else could be producer text of
+ * any length and is not echoed.
+ */
+static gboolean
+jsonl_check_members(
+	JsonObject		 *object,
+	const gchar		 *type,
+	const gchar *const	 *allowed,
+	guint			  line,
+	GError			**error
+){
+	JsonObjectIter iter;
+	const gchar *member;
+	JsonNode *node;
+
+	json_object_iter_init(&iter, object);
+
+	while (json_object_iter_next(&iter, &member, &node))
+	{
+		gsize length;
+
+		if ((0 == strcmp(member, "type")) || g_strv_contains(allowed, member))
+			continue;
+
+		length = strlen(member);
+
+		if ((length > 0) && (length <= 64) &&
+		    (strspn(member, "abcdefghijklmnopqrstuvwxyz0123456789_") == length))
+		{
+			g_autofree gchar *problem = NULL;
+
+			problem = g_strdup_printf("is not a member of %s (unknown members are "
+			                          "refused for this type)", type);
+			return jsonl_refuse(error, line, type, member, problem);
+		}
+
+		return jsonl_refuse(error, line, type, NULL,
+		                    "carries a member this type does not define");
+	}
+
+	return TRUE;
+}
+
+/*
+ * An account's attributes: an object of scalars, bounded in members and
+ * in size. A nested object or array is refused -- attributes are shown
+ * beside the account, not walked.
+ */
+static gboolean
+jsonl_check_attrs(
+	JsonObject	 *object,
+	const gchar	 *type,
+	guint		  line,
+	GError		**error
+){
+	g_autoptr(JsonGenerator) generator = NULL;
+	g_autofree gchar *text = NULL;
+	JsonObjectIter iter;
+	const gchar *member;
+	JsonNode *node;
+	JsonNode *attrs;
+	gsize length;
+
+	if (!jsonl_check_object(object, type, "attrs", FALSE, line, error))
+		return FALSE;
+
+	attrs = jsonl_member(object, "attrs");
+
+	if (NULL == attrs)
+		return TRUE;
+
+	if (json_object_get_size(json_node_get_object(attrs)) > VENTURE_JSONL_MAX_ATTRS)
+	{
+		g_autofree gchar *problem = NULL;
+
+		problem = g_strdup_printf("may carry at most %d members", VENTURE_JSONL_MAX_ATTRS);
+		return jsonl_refuse(error, line, type, "attrs", problem);
+	}
+
+	json_object_iter_init(&iter, json_node_get_object(attrs));
+
+	while (json_object_iter_next(&iter, &member, &node))
+	{
+		if (strlen(member) > VENTURE_JSONL_MAX_KEY_LENGTH)
+			return jsonl_refuse(error, line, type, "attrs",
+			                    "has a member name that is too long");
+
+		if (JSON_NODE_HOLDS_NULL(node))
+			continue;
+
+		if (!JSON_NODE_HOLDS_VALUE(node))
+			return jsonl_refuse(error, line, type, "attrs",
+			                    "must hold only strings, numbers and booleans");
+
+		if ((G_TYPE_STRING == json_node_get_value_type(node)) &&
+		    (strlen(json_node_get_string(node)) > VENTURE_JSONL_MAX_KEY_LENGTH))
+			return jsonl_refuse(error, line, type, "attrs",
+			                    "has a value that is too long");
+	}
+
+	generator = json_generator_new();
+	json_generator_set_root(generator, attrs);
+	text = json_generator_to_data(generator, &length);
+
+	if (length > VENTURE_JSONL_MAX_ATTRS_BYTES)
+	{
+		g_autofree gchar *problem = NULL;
+
+		problem = g_strdup_printf("is longer than %d bytes", VENTURE_JSONL_MAX_ATTRS_BYTES);
+		return jsonl_refuse(error, line, type, "attrs", problem);
+	}
+
+	return TRUE;
+}
+
+/* A choice that must be present. */
+static gboolean
+jsonl_check_required_choice(
+	JsonObject		 *object,
+	const gchar		 *type,
+	const gchar		 *member,
+	const gchar *const	 *choices,
+	guint			  line,
+	GError			**error
+){
+	if (NULL == jsonl_member(object, member))
+		return jsonl_refuse(error, line, type, member, "is required");
+
+	return jsonl_check_choice(object, type, member, choices, line, error);
+}
+
+/* A whole number that must be present. */
+static gboolean
+jsonl_check_required_int(
+	JsonObject	 *object,
+	const gchar	 *type,
+	const gchar	 *member,
+	gint64		  minimum,
+	guint		  line,
+	GError		**error
+){
+	if (NULL == jsonl_member(object, member))
+		return jsonl_refuse(error, line, type, member, "is required");
+
+	return jsonl_check_int(object, type, member, minimum, line, error);
+}
+
+/*
+ * A decimal ratio between 0 and 1 inclusive: a sale rate. Compared as a
+ * double, which is fine -- a ratio is not money, and the grammar check
+ * before it already refused anything that is not a plain decimal.
+ */
+static gboolean
+jsonl_check_ratio(
+	JsonObject	 *object,
+	const gchar	 *type,
+	const gchar	 *member,
+	guint		  line,
+	GError		**error
+){
+	JsonNode *node;
+
+	if (!jsonl_check_decimal(object, type, member, FALSE, FALSE, line, error))
+		return FALSE;
+
+	node = jsonl_member(object, member);
+
+	if ((NULL != node) && (g_ascii_strtod(json_node_get_string(node), NULL) > 1.0))
+		return jsonl_refuse(error, line, type, member,
+		                    "must be a fraction from \"0\" to \"1\"");
+
+	return TRUE;
+}
+
+/* Whether a present decimal is zero: "0", "0.00". */
+static gboolean
+jsonl_decimal_is_zero(const gchar *text)
+{
+	return (NULL != text) && (strspn(text, "0.") == strlen(text));
+}
+
+/*
+ * `instrument` and `quantity` travel together: an instrument with no count
+ * is not a holding of anything, and a count of nothing is a number with
+ * no meaning.
+ */
+static gboolean
+jsonl_check_instrument_pair(
+	JsonObject	 *object,
+	const gchar	 *type,
+	gboolean	  required,
+	guint		  line,
+	GError		**error
+){
+	gboolean has_instrument;
+	gboolean has_quantity;
+
+	if (!jsonl_check_string(object, type, "instrument", required,
+	                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+	    !jsonl_check_int(object, type, "quantity", 1, line, error))
+		return FALSE;
+
+	has_instrument = (NULL != jsonl_member(object, "instrument"));
+	has_quantity = (NULL != jsonl_member(object, "quantity"));
+
+	if (required && !has_quantity)
+		return jsonl_refuse(error, line, type, "quantity", "is required");
+
+	if (has_instrument != has_quantity)
+		return jsonl_refuse(error, line, type, has_instrument ? "quantity" : "instrument",
+		                    "is required with the other: instrument and quantity "
+		                    "travel together");
+
+	return TRUE;
+}
+
+static gboolean
+jsonl_check_covers(
+	JsonObject	 *object,
+	const gchar	 *type,
+	guint		  line,
+	GError		**error
+){
+	JsonNode *node;
+	JsonArray *covers;
+	guint seen;
+	guint i;
+
+	node = jsonl_member(object, "covers");
+
+	if (NULL == node)
+		return jsonl_refuse(error, line, type, "covers", "is required");
+
+	if (!JSON_NODE_HOLDS_ARRAY(node))
+		return jsonl_refuse(error, line, type, "covers",
+		                    "must be a list such as [\"holdings\", \"positions\"]");
+
+	covers = json_node_get_array(node);
+
+	if (0 == json_array_get_length(covers))
+		return jsonl_refuse(error, line, type, "covers",
+		                    "must name at least one of holdings, positions, inbound, "
+		                    "balances: a snapshot that covers nothing replaces nothing");
+
+	seen = 0;
+
+	for (i = 0; i < json_array_get_length(covers); i++)
+	{
+		JsonNode *element;
+		guint j;
+
+		element = json_array_get_element(covers, i);
+
+		if (!JSON_NODE_HOLDS_VALUE(element) ||
+		    (G_TYPE_STRING != json_node_get_value_type(element)))
+			return jsonl_refuse(error, line, type, "covers",
+			                    "must be a list of kind names");
+
+		for (j = 0; NULL != jsonl_covers[j]; j++)
+		{
+			if (0 == strcmp(jsonl_covers[j], json_node_get_string(element)))
+				break;
+		}
+
+		if (NULL == jsonl_covers[j])
+			return jsonl_refuse(error, line, type, "covers",
+			                    "must be a subset of holdings, positions, inbound, "
+			                    "balances");
+
+		if (0 != (seen & (1u << j)))
+			return jsonl_refuse(error, line, type, "covers",
+			                    "names a kind twice");
+
+		seen |= (1u << j);
+	}
+
+	return TRUE;
+}
+
+static gboolean
+jsonl_validate_account_kind(
+	VentureJsonlMessageKind	  kind,
+	const gchar		 *type,
+	JsonObject		 *object,
+	guint			  line,
+	GError			**error
+){
+	switch (kind)
+	{
+	case VENTURE_JSONL_MESSAGE_ACCOUNT:
+	{
+		static const gchar *const members[] = {
+			"key", "name", "kind", "group", "venue", "last_seen", "attrs", NULL
+		};
+
+		return jsonl_check_members(object, type, members, line, error) &&
+		       jsonl_check_string(object, type, "key", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "name", FALSE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_required_choice(object, type, "kind", jsonl_account_kinds,
+		                                   line, error) &&
+		       jsonl_check_string(object, type, "group", FALSE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "venue", FALSE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_time(object, type, "last_seen", FALSE, line, error) &&
+		       jsonl_check_attrs(object, type, line, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT:
+	{
+		static const gchar *const members[] = { "account", "at", "covers", NULL };
+
+		return jsonl_check_members(object, type, members, line, error) &&
+		       jsonl_check_string(object, type, "account", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_time(object, type, "at", TRUE, line, error) &&
+		       jsonl_check_covers(object, type, line, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_BALANCE:
+	{
+		static const gchar *const members[] = {
+			"account", "currency", "amount", "at", NULL
+		};
+
+		if (!jsonl_check_members(object, type, members, line, error) ||
+		    !jsonl_check_string(object, type, "account", TRUE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error))
+			return FALSE;
+
+		if (NULL == jsonl_member(object, "currency"))
+			return jsonl_refuse(error, line, type, "currency", "is required");
+
+		return jsonl_check_currency(object, type, line, error) &&
+		       jsonl_check_decimal(object, type, "amount", TRUE, FALSE, line, error) &&
+		       jsonl_check_time(object, type, "at", FALSE, line, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_HOLDING:
+	{
+		static const gchar *const members[] = {
+			"account", "place", "instrument", "quantity", "at", NULL
+		};
+
+		/* Zero is allowed: it says the account no longer holds it. */
+		return jsonl_check_members(object, type, members, line, error) &&
+		       jsonl_check_string(object, type, "account", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_required_choice(object, type, "place", jsonl_places,
+		                                   line, error) &&
+		       jsonl_check_string(object, type, "instrument", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_required_int(object, type, "quantity", 0, line, error) &&
+		       jsonl_check_time(object, type, "at", FALSE, line, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_POSITION:
+	{
+		static const gchar *const members[] = {
+			"account", "venue", "id", "instrument", "quantity", "price", "bid",
+			"expires_at", "posted_at", NULL
+		};
+
+		return jsonl_check_members(object, type, members, line, error) &&
+		       jsonl_check_string(object, type, "account", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "venue", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "id", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "instrument", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_required_int(object, type, "quantity", 1, line, error) &&
+		       jsonl_check_decimal(object, type, "price", TRUE, FALSE, line, error) &&
+		       jsonl_check_decimal(object, type, "bid", FALSE, FALSE, line, error) &&
+		       jsonl_check_time(object, type, "expires_at", TRUE, line, error) &&
+		       jsonl_check_time(object, type, "posted_at", FALSE, line, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_INBOUND:
+	{
+		static const gchar *const members[] = {
+			"account", "id", "sender", "subject", "money", "instrument",
+			"quantity", "expires_at", "returned", "cod", NULL
+		};
+
+		if (!jsonl_check_members(object, type, members, line, error) ||
+		    !jsonl_check_string(object, type, "account", TRUE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_string(object, type, "id", TRUE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_string(object, type, "sender", FALSE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_string(object, type, "subject", FALSE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_decimal(object, type, "money", FALSE, FALSE, line, error) ||
+		    !jsonl_check_instrument_pair(object, type, FALSE, line, error) ||
+		    !jsonl_check_time(object, type, "expires_at", FALSE, line, error) ||
+		    !jsonl_check_bool(object, type, "returned", line, error) ||
+		    !jsonl_check_decimal(object, type, "cod", FALSE, FALSE, line, error))
+			return FALSE;
+
+		/* Something to collect, or something owed: one of them. */
+		if ((NULL == jsonl_member(object, "money")) &&
+		    (NULL == jsonl_member(object, "instrument")) &&
+		    (NULL == jsonl_member(object, "cod")))
+			return jsonl_refuse(error, line, type, NULL,
+			                    "carries nothing to collect: give at least one of "
+			                    "money, instrument (with quantity) or cod");
+
+		return TRUE;
+	}
+
+	case VENTURE_JSONL_MESSAGE_TXN:
+	{
+		static const gchar *const members[] = {
+			"id", "account", "venue", "kind", "instrument", "quantity",
+			"unit_price", "amount", "counterparty", "source", "at", NULL
+		};
+		const gchar *txn_kind;
+		gboolean goods;
+		gboolean moneyless;
+
+		if (!jsonl_check_members(object, type, members, line, error) ||
+		    !jsonl_check_string(object, type, "id", TRUE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_string(object, type, "account", TRUE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_string(object, type, "venue", FALSE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_required_choice(object, type, "kind", jsonl_txn_kinds,
+		                                 line, error) ||
+		    !jsonl_check_decimal(object, type, "unit_price", FALSE, FALSE, line, error) ||
+		    !jsonl_check_decimal(object, type, "amount", FALSE, FALSE, line, error) ||
+		    !jsonl_check_string(object, type, "counterparty", FALSE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_string(object, type, "source", FALSE,
+		                        VENTURE_JSONL_MAX_KEY_LENGTH, line, error) ||
+		    !jsonl_check_time(object, type, "at", TRUE, line, error))
+			return FALSE;
+
+		txn_kind = jsonl_string(object, "kind");
+
+		/* Goods change hands in a sale, a buy, and an auction that
+		 * expired or was cancelled; income and expense may be money
+		 * alone -- postage, a repair bill, a transfer. */
+		goods = (0 == strcmp(txn_kind, "sale")) || (0 == strcmp(txn_kind, "buy")) ||
+		        (0 == strcmp(txn_kind, "expired")) || (0 == strcmp(txn_kind, "cancelled"));
+		moneyless = (0 == strcmp(txn_kind, "expired")) ||
+		            (0 == strcmp(txn_kind, "cancelled"));
+
+		if (!jsonl_check_instrument_pair(object, type, goods, line, error))
+			return FALSE;
+
+		if (moneyless)
+		{
+			/* Nothing was paid for an auction that did not sell. A
+			 * zero is tolerated; a figure would be booked as money
+			 * that never moved. */
+			if (((NULL != jsonl_member(object, "amount")) &&
+			     !jsonl_decimal_is_zero(jsonl_string(object, "amount"))) ||
+			    ((NULL != jsonl_member(object, "unit_price")) &&
+			     !jsonl_decimal_is_zero(jsonl_string(object, "unit_price"))))
+				return jsonl_refuse(error, line, type, NULL,
+				                    "of kind expired or cancelled carries no money: "
+				                    "leave out amount and unit_price");
+		}
+		else if (NULL == jsonl_member(object, "amount"))
+			return jsonl_refuse(error, line, type, "amount", "is required");
+
+		return TRUE;
+	}
+
+	default:
+		break;
+	}
+
+	return jsonl_refuse(error, line, type, NULL, "is not understood");
+}
+
 /* ==========================================================================
  * Per-type rules
  * ========================================================================== */
@@ -479,7 +990,7 @@ static const gchar *const jsonl_log_levels[] = {
  * would file a row of blanks that reads like a quiet market.
  */
 static const gchar *const jsonl_stat_prices[] = {
-	"min", "market", "mean", "median", "sale_avg", NULL
+	"min", "market", "mean", "median", "sale_avg", "historical", NULL
 };
 static const gchar *const jsonl_stat_counts[] = {
 	"quantity", "listings", "sold", NULL
@@ -577,11 +1088,22 @@ jsonl_validate(
 			any = any || (NULL != jsonl_member(object, jsonl_stat_counts[i]));
 		}
 
+		/* The source's own sales figures: a rate is a fraction of what
+		 * was listed, a speed is units a day. */
+		if (!jsonl_check_ratio(object, type, "sale_rate", line, error) ||
+		    !jsonl_check_decimal(object, type, "sold_per_day", FALSE, FALSE,
+		                         line, error))
+			return FALSE;
+
+		any = any || (NULL != jsonl_member(object, "sale_rate")) ||
+		      (NULL != jsonl_member(object, "sold_per_day"));
+
 		if (!any)
 			return jsonl_refuse(error, line, type, NULL,
 			                    "carries no figure: give at least one of min, "
-			                    "market, mean, median, sale_avg, quantity, "
-			                    "listings or sold");
+			                    "market, mean, median, sale_avg, historical, "
+			                    "quantity, listings, sold, sale_rate or "
+			                    "sold_per_day");
 
 		return TRUE;
 	}
@@ -721,6 +1243,15 @@ jsonl_validate(
 		       jsonl_check_string(object, type, "detail", FALSE,
 		                          VENTURE_JSONL_MAX_TEXT_LENGTH, line, error);
 
+	case VENTURE_JSONL_MESSAGE_ACCOUNT:
+	case VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT:
+	case VENTURE_JSONL_MESSAGE_BALANCE:
+	case VENTURE_JSONL_MESSAGE_HOLDING:
+	case VENTURE_JSONL_MESSAGE_POSITION:
+	case VENTURE_JSONL_MESSAGE_INBOUND:
+	case VENTURE_JSONL_MESSAGE_TXN:
+		return jsonl_validate_account_kind(kind, type, object, line, error);
+
 	default:
 		break;
 	}
@@ -740,6 +1271,8 @@ jsonl_validate(
 static const gchar *const jsonl_kind_names[] = {
 	"venue", "instrument", "snapshot", "listing", "stat", "quote",
 	"entry", "record", "cursor", "not_modified", "log", "error", "result",
+	"account", "account_snapshot", "balance", "holding", "position",
+	"inbound", "txn",
 	NULL
 };
 

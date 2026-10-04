@@ -35,6 +35,11 @@
 /* How long a run waits between looks for a moment with no transaction. */
 #define FEEDS_RETRY_MS (50)
 
+/* How many finished pushes the service remembers for someone waiting on
+ * one. A push waited on is found within seconds; this only bounds the
+ * table on a server that is pushed to every few minutes for months. */
+#define FEEDS_PUSHES_REMEMBERED (1024)
+
 /* Where the last context made over a database is kept, for the validator
  * and the actions, which are per database. */
 #define FEEDS_CONTEXT_KEY "venture-feeds-context"
@@ -1037,7 +1042,11 @@ feeds_freeze(
 	spec->provider_name = g_strdup(provider_name);
 	spec->provider = g_object_ref(provider);
 	spec->enabled = enabled;
-	spec->schedule = g_strdup(venture_string_is_empty(schedule) ? "auto" : schedule);
+	/* A push source is filled from outside; nothing of it runs on a
+	 * schedule, whatever the record says. */
+	spec->schedule = g_strdup((0 == g_strcmp0(provider_name, VENTURE_FEEDS_PUSH_PROVIDER))
+	                          ? "manual"
+	                          : venture_string_is_empty(schedule) ? "auto" : schedule);
 	spec->currency = venture_string_is_empty(currency) ? NULL : g_ascii_strup(currency, -1);
 	spec->venue_namespace = venture_string_is_empty(venue_namespace) ? NULL : g_steal_pointer(&venue_namespace);
 	spec->instrument_namespace = venture_string_is_empty(instrument_namespace) ? NULL : g_steal_pointer(&instrument_namespace);
@@ -1230,6 +1239,12 @@ struct _VentureFeedsService
 	GHashTable		*backups_in_flight;
 	GQueue			 backups_waiting;
 	guint			 backups_source;
+
+	/* Pushes whose runs are written: push id -> run id (0: not
+	 * recorded), the most recent FEEDS_PUSHES_REMEMBERED, oldest first
+	 * in @push_order (which borrows the table's keys). */
+	GHashTable		*pushes;
+	GQueue			 push_order;
 };
 
 G_DEFINE_FINAL_TYPE(VentureFeedsService, venture_feeds_service, G_TYPE_OBJECT)
@@ -1348,6 +1363,8 @@ venture_feeds_service_finalize(GObject *object)
 	VentureFeedsService *self = VENTURE_FEEDS_SERVICE(object);
 
 	g_clear_pointer(&self->backups_in_flight, g_hash_table_unref);
+	g_queue_clear(&self->push_order);
+	g_clear_pointer(&self->pushes, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_feeds_service_parent_class)->finalize(object);
 }
@@ -1365,6 +1382,8 @@ venture_feeds_service_init(VentureFeedsService *self)
 	g_queue_init(&self->waiting);
 	g_queue_init(&self->backups_waiting);
 	self->backups_in_flight = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	self->pushes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_queue_init(&self->push_order);
 }
 
 static VentureSeriesWorker *
@@ -1394,11 +1413,13 @@ static gboolean
 feeds_source_scheduled(VentureEntity *record)
 {
 	g_autofree gchar *schedule = NULL;
+	g_autofree gchar *provider = NULL;
 	gboolean enabled;
 
-	g_object_get(record, "enabled", &enabled, "schedule", &schedule, NULL);
+	g_object_get(record, "enabled", &enabled, "schedule", &schedule, "provider", &provider, NULL);
 
-	return enabled && (0 != g_strcmp0(schedule, "manual"));
+	return enabled && (0 != g_strcmp0(schedule, "manual")) &&
+	       (0 != g_strcmp0(provider, VENTURE_FEEDS_PUSH_PROVIDER));
 }
 
 void
@@ -1709,6 +1730,27 @@ feeds_emit(
 		g_message("feeds: %s was not emitted: %s", event, error->message);
 }
 
+/* A push's run is written: kept for whoever waits on it, the oldest
+ * forgotten past the bound. */
+static void
+feeds_service_remember_push(
+	VentureFeedsService	*self,
+	const gchar		*push_id,
+	gint64			 run_id
+){
+	gchar *key;
+
+	if (g_hash_table_contains(self->pushes, push_id))
+		return;
+
+	while (g_queue_get_length(&self->push_order) >= FEEDS_PUSHES_REMEMBERED)
+		g_hash_table_remove(self->pushes, g_queue_pop_head(&self->push_order));
+
+	key = g_strdup(push_id);
+	g_hash_table_insert(self->pushes, key, g_memdup2(&run_id, sizeof(run_id)));
+	g_queue_push_tail(&self->push_order, key);
+}
+
 /*
  * Writes a run: the records it carried first (so the run can say how many
  * landed), then the run itself, once, as the system; then the event and
@@ -1794,6 +1836,10 @@ feeds_service_write_run(
 
 	g_clear_object(&internal);
 
+	if (NULL != run->push_id)
+		feeds_service_remember_push(self, run->push_id,
+		                            (NULL != record) ? venture_entity_get_id(VENTURE_ENTITY(record)) : 0);
+
 	feeds_emit(self, run, (NULL != record) ? venture_entity_get_id(VENTURE_ENTITY(record)) : 0);
 
 	hooks = feeds_hooks(self->context);
@@ -1873,6 +1919,7 @@ feeds_service_record_failure(
 	VentureFeedsService		*self,
 	VentureEntity			*record,
 	VentureDataSourceRunTrigger	 trigger,
+	const gchar			*push_id,
 	const gchar			*message
 ){
 	g_autoptr(VentureFeedRun) run = NULL;
@@ -1886,6 +1933,7 @@ feeds_service_record_failure(
 	now = g_get_real_time() / G_USEC_PER_SEC;
 	run = venture_feed_run_new_internal(&placeholder, trigger, now);
 	run->error = g_strdup(message);
+	run->push_id = g_strdup(push_id);
 	run->failed = 1;
 	venture_feed_run_finish(run, now);
 
@@ -1925,6 +1973,146 @@ feeds_get_source(
 }
 
 gboolean
+venture_feeds_service_push(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	GBytes			 *body,
+	gchar			**out_push_id,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureFeedSource) spec = NULL;
+	g_autoptr(GError) freeze_error = NULL;
+	g_autofree gchar *provider = NULL;
+	g_autofree gchar *push_id = NULL;
+	gboolean enabled;
+
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), FALSE);
+	g_return_val_if_fail(NULL != body, FALSE);
+
+	if (self->shut_down)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Market data feeds have stopped");
+		return FALSE;
+	}
+
+	record = feeds_get_source(self, data_source_id, error);
+
+	if (NULL == record)
+		return FALSE;
+
+	g_object_get(record, "provider", &provider, "enabled", &enabled, NULL);
+
+	/* Only a source made for it: a pushed body into an http_json source
+	 * would be data that source never fetched, under its name. */
+	if (0 != g_strcmp0(provider, VENTURE_FEEDS_PUSH_PROVIDER))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		            "Data source %" G_GINT64_FORMAT " is filled by the %s provider, not by "
+		            "pushes; a source that takes pushes has provider %s",
+		            data_source_id, provider, VENTURE_FEEDS_PUSH_PROVIDER);
+		return FALSE;
+	}
+
+	/* Switching a push source off is how its owner stops a producer
+	 * that is still sending. */
+	if (!enabled)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		            "Data source %" G_GINT64_FORMAT " is switched off", data_source_id);
+		return FALSE;
+	}
+
+	push_id = g_uuid_string_random();
+	spec = feeds_freeze(self->context, record, &freeze_error);
+
+	if (NULL == spec)
+		feeds_service_record_failure(self, record, VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH, push_id,
+		                             freeze_error->message);
+	else
+		venture_series_worker_push(feeds_service_worker(self), spec, push_id, body);
+
+	if (NULL != out_push_id)
+		*out_push_id = g_steal_pointer(&push_id);
+
+	return TRUE;
+}
+
+gboolean
+venture_feeds_service_lookup_push(
+	VentureFeedsService	*self,
+	const gchar		*push_id,
+	gint64			*out_run_id
+){
+	const gint64 *run_id;
+
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), FALSE);
+
+	if (NULL != out_run_id)
+		*out_run_id = 0;
+
+	run_id = (NULL != push_id) ? g_hash_table_lookup(self->pushes, push_id) : NULL;
+
+	if (NULL == run_id)
+		return FALSE;
+
+	if (NULL != out_run_id)
+		*out_run_id = *run_id;
+
+	return TRUE;
+}
+
+static gboolean
+feeds_push_wait_expired(gpointer data)
+{
+	*(gboolean *)data = TRUE;
+
+	return G_SOURCE_REMOVE;
+}
+
+gboolean
+venture_feeds_service_wait_push(
+	VentureFeedsService	*self,
+	const gchar		*push_id,
+	guint			 timeout_seconds,
+	gint64			*out_run_id
+){
+	g_autoptr(VentureFeedsService) held = NULL;
+	gboolean expired;
+	guint deadline;
+
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), FALSE);
+
+	if (venture_feeds_service_lookup_push(self, push_id, out_run_id))
+		return TRUE;
+
+	/* Held across the loop: switching feeds off from a request served
+	 * inside it shuts the service down and drops the context's
+	 * reference, and this frame still reads it. */
+	held = g_object_ref(self);
+
+	/*
+	 * A nested loop on the default context, like the Test action's and
+	 * the webhook test's: the worker hands runs back there and the drain
+	 * writes them there. Nothing of ours runs on a worker beneath this,
+	 * so nothing waits on this thread while it waits on them. Bounded.
+	 */
+	expired = FALSE;
+	deadline = g_timeout_add_seconds(CLAMP(timeout_seconds, 1, VENTURE_FEEDS_PUSH_WAIT_SECONDS),
+	                                 feeds_push_wait_expired, &expired);
+
+	while (!expired && !self->shut_down &&
+	       !venture_feeds_service_lookup_push(self, push_id, out_run_id))
+		g_main_context_iteration(NULL, TRUE);
+
+	if (!expired)
+		g_source_remove(deadline);
+
+	return venture_feeds_service_lookup_push(self, push_id, out_run_id);
+}
+
+gboolean
 venture_feeds_service_sync(
 	VentureFeedsService		 *self,
 	gint64				  data_source_id,
@@ -1954,7 +2142,7 @@ venture_feeds_service_sync(
 	if (NULL == spec)
 	{
 		/* Asked for, so it is answered -- in a run, like any other. */
-		feeds_service_record_failure(self, record, trigger, freeze_error->message);
+		feeds_service_record_failure(self, record, trigger, NULL, freeze_error->message);
 		return TRUE;
 	}
 

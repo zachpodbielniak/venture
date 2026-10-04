@@ -99,7 +99,16 @@ venture_feed_run_unref(VentureFeedRun *self)
 	g_ptr_array_unref(self->records);
 	g_ptr_array_unref(self->venues);
 	g_hash_table_unref(self->payloads);
+	g_free(self->push_id);
 	g_free(self);
+}
+
+const gchar *
+venture_feed_run_get_push_id(VentureFeedRun *self)
+{
+	g_return_val_if_fail(NULL != self, NULL);
+
+	return self->push_id;
 }
 
 gint64
@@ -294,6 +303,24 @@ typedef struct
 typedef struct _WorkerSource WorkerSource;
 typedef struct _WorkerPass WorkerPass;
 
+/* A body somebody pushed, waiting for its own run. */
+typedef struct
+{
+	gchar	*id;
+	GBytes	*body;
+} WorkerPush;
+
+static void
+worker_push_free(WorkerPush *push)
+{
+	if (NULL == push)
+		return;
+
+	g_free(push->id);
+	g_clear_pointer(&push->body, g_bytes_unref);
+	g_free(push);
+}
+
 struct _VentureSeriesWorker
 {
 	GObject			 parent_instance;
@@ -333,6 +360,7 @@ struct _WorkerSource
 
 	WorkerPass		*pass;		/* in flight */
 	VentureFeedRun		*open_run;	/* scheduled passes gathered */
+	GQueue			 pushes;	/* WorkerPush, oldest first */
 	gboolean		 manual_pending;
 	VentureDataSourceRunTrigger manual_trigger;
 
@@ -353,6 +381,7 @@ struct _WorkerPass
 	gboolean		 wrote;
 	VentureFeedRequest	*request;	/* the unit in flight */
 	gint64			 started_at;
+	WorkerPush		*push;		/* the body this pass reads, if pushed */
 };
 
 enum
@@ -396,6 +425,14 @@ static void
 worker_source_free(gpointer data)
 {
 	WorkerSource *source = data;
+	WorkerPush *push;
+
+	/* A push never started is live work no run will answer now. */
+	while (NULL != (push = g_queue_pop_head(&source->pushes)))
+	{
+		worker_live_add(source->worker, -1);
+		worker_push_free(push);
+	}
 
 	g_clear_object(&source->store);
 	g_clear_pointer(&source->units, g_hash_table_unref);
@@ -890,6 +927,163 @@ typedef struct
 } WorkerIngest;
 
 /*
+ * The operator's accounts, inside the unit's transaction. The batch's own
+ * arrays go to the store as they are -- no copy of fifty thousand ledger
+ * rows -- unless the source has credentials to redact, when the free text
+ * (a name, a subject, a counterparty) is copied through the redactor
+ * first. A balance not in the source's currency is dropped and counted:
+ * the JSON-lines reader refuses one already, a native provider is told
+ * here.
+ *
+ * track: known is not applied: it narrows what the market tracks, and an
+ * operator's own bags are not a market to narrow.
+ */
+static gboolean
+worker_ingest_accounts(
+	WorkerSource		 *source,
+	VentureFeedBatch	 *batch,
+	gint64			  fetched_at,
+	VentureFeedRun		 *run,
+	WorkerIngest		 *out,
+	const gchar		 *unit,
+	GError			**error
+){
+	VentureFeedSource *spec = source->spec;
+	g_autoptr(GPtrArray) owned = NULL;
+	g_autoptr(GArray) accounts = NULL;
+	g_autoptr(GArray) balances = NULL;
+	g_autoptr(GArray) inbound = NULL;
+	g_autoptr(GArray) txns = NULL;
+	VentureSeriesAccountBatch view;
+	VentureSeriesAccountResult result;
+	gint64 dropped;
+	guint i;
+
+	if (!venture_feed_batch_get_accounts(batch, &view))
+		return TRUE;
+
+	view.currency = spec->currency;
+	dropped = 0;
+
+	for (i = 0; i < view.n_balances; i++)
+	{
+		if ((NULL == spec->currency) ||
+		    (0 != g_ascii_strcasecmp(view.balances[i].currency, spec->currency)))
+			dropped++;
+	}
+
+	if (dropped > 0)
+	{
+		g_autofree gchar *note = NULL;
+
+		balances = g_array_new(FALSE, FALSE, sizeof(VentureSeriesBalance));
+
+		for (i = 0; i < view.n_balances; i++)
+		{
+			if ((NULL != spec->currency) &&
+			    (0 == g_ascii_strcasecmp(view.balances[i].currency, spec->currency)))
+				g_array_append_val(balances, view.balances[i]);
+		}
+
+		view.balances = (const VentureSeriesBalance *)(gpointer)balances->data;
+		view.n_balances = balances->len;
+		run->refused += dropped;
+		note = g_strdup_printf("%s: %" G_GINT64_FORMAT " balances not in the source's currency "
+		                       "(%s) were dropped", unit, dropped,
+		                       (NULL != spec->currency) ? spec->currency : "none is set");
+		venture_feed_run_add_note(run, note);
+	}
+
+	if ((NULL != spec->secret_values) && (spec->secret_values->len > 0))
+	{
+		owned = g_ptr_array_new_with_free_func(g_free);
+		accounts = g_array_sized_new(FALSE, FALSE, sizeof(VentureSeriesAccount), view.n_accounts);
+		inbound = g_array_sized_new(FALSE, FALSE, sizeof(VentureSeriesInbound), view.n_inbound);
+		txns = g_array_sized_new(FALSE, FALSE, sizeof(VentureSeriesTxn), view.n_txns);
+
+		for (i = 0; i < view.n_accounts; i++)
+		{
+			VentureSeriesAccount row = view.accounts[i];
+			gchar *name = worker_redact(source, row.name);
+			gchar *attrs = worker_redact(source, row.attrs_json);
+
+			g_ptr_array_add(owned, name);
+			g_ptr_array_add(owned, attrs);
+			row.name = name;
+			row.attrs_json = attrs;
+			g_array_append_val(accounts, row);
+		}
+
+		for (i = 0; i < view.n_inbound; i++)
+		{
+			VentureSeriesInbound row = view.inbound[i];
+			gchar *sender = worker_redact(source, row.sender);
+			gchar *subject = worker_redact(source, row.subject);
+
+			g_ptr_array_add(owned, sender);
+			g_ptr_array_add(owned, subject);
+			row.sender = sender;
+			row.subject = subject;
+			g_array_append_val(inbound, row);
+		}
+
+		for (i = 0; i < view.n_txns; i++)
+		{
+			VentureSeriesTxn row = view.txns[i];
+			gchar *counterparty = worker_redact(source, row.counterparty);
+			gchar *label = worker_redact(source, row.source);
+
+			g_ptr_array_add(owned, counterparty);
+			g_ptr_array_add(owned, label);
+			row.counterparty = counterparty;
+			row.source = label;
+			g_array_append_val(txns, row);
+		}
+
+		view.accounts = (const VentureSeriesAccount *)(gpointer)accounts->data;
+		view.inbound = (const VentureSeriesInbound *)(gpointer)inbound->data;
+		view.txns = (const VentureSeriesTxn *)(gpointer)txns->data;
+	}
+
+	memset(&result, 0, sizeof(result));
+
+	if (!venture_series_store_apply_accounts(source->store, &view, fetched_at, &result, error))
+		return FALSE;
+
+	out->rows += result.rows_written;
+	out->new_data = out->new_data || (result.rows_written > 0);
+	run->new_instruments += result.instruments_new;
+	run->refused += result.instruments_refused;
+
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%s: accounts %" G_GINT64_FORMAT " (%" G_GINT64_FORMAT " new), "
+		                       "holdings %" G_GINT64_FORMAT ", positions %" G_GINT64_FORMAT
+		                       ", inbound %" G_GINT64_FORMAT ", balance changes %" G_GINT64_FORMAT
+		                       ", removed %" G_GINT64_FORMAT "; ledger %" G_GINT64_FORMAT
+		                       " new, %" G_GINT64_FORMAT " updated, %" G_GINT64_FORMAT
+		                       " unchanged",
+		                       unit, result.accounts, result.accounts_new, result.holdings,
+		                       result.positions, result.inbound, result.balances, result.removed,
+		                       result.txns_new, result.txns_updated, result.txns_unchanged);
+		venture_feed_run_add_note(run, note);
+	}
+
+	if (result.stale > 0)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%s: %" G_GINT64_FORMAT " account snapshots were older than the "
+		                       "state they would replace and changed nothing", unit,
+		                       result.stale);
+		venture_feed_run_add_note(run, note);
+	}
+
+	return TRUE;
+}
+
+/*
  * Writes a batch into the store in one transaction. Every string a
  * provider handed over goes through the source's redaction first: a far
  * end that echoes a credential into an item's name must not put it into a
@@ -1043,6 +1237,10 @@ worker_ingest(
 				continue;
 			}
 
+			venture_series_stats_init(&row);
+			row.historical = stats->historical;
+			row.sale_rate = stats->sale_rate;
+			row.sold_per_day = stats->sold_per_day;
 			row.instrument_key = stats->instrument_key;
 			row.min_price = stats->min_price;
 			row.market_value = stats->market_value;
@@ -1158,6 +1356,10 @@ worker_ingest(
 		if (added > 0)
 			out->new_data = TRUE;
 	}
+
+	if (!worker_ingest_accounts(source, batch, fetched_at, run, out,
+	                            venture_feed_request_get_unit(request), error))
+		goto fail;
 
 	/* Where the unit resumes, and what it last saw, beside the data they
 	 * describe and in the same transaction. */
@@ -1522,6 +1724,7 @@ worker_unit_fetched(
 static void
 worker_pass_free(WorkerPass *pass)
 {
+	g_clear_pointer(&pass->push, worker_push_free);
 	g_clear_object(&pass->request);
 	g_clear_pointer(&pass->units, g_ptr_array_unref);
 	g_clear_pointer(&pass->run, venture_feed_run_unref);
@@ -1546,7 +1749,12 @@ worker_pass_finish(WorkerPass *pass)
 	{
 		g_autoptr(GError) error = NULL;
 
-		if (pass->wrote && (pass->manual || (now - source->last_region >= VENTURE_FEEDS_REGION_EVERY)))
+		/* A sync asked for by hand recomputes at once; a push -- which
+		 * may come every few minutes, mostly the operator's own rows --
+		 * waits for the half-hour like a scheduled pass. */
+		if (pass->wrote &&
+		    ((pass->manual && (NULL == pass->push)) ||
+		     (now - source->last_region >= VENTURE_FEEDS_REGION_EVERY)))
 		{
 			VentureSeriesRegionResult region;
 
@@ -1697,6 +1905,9 @@ worker_pass_next(WorkerPass *pass)
 	g_clear_pointer(&settings, json_object_unref);
 	g_clear_pointer(&secrets, json_object_unref);
 
+	if (NULL != pass->push)
+		venture_feed_request_set_body(pass->request, pass->push->body);
+
 	venture_data_source_provider_fetch_async(source->spec->provider, pass->request,
 	                                         self->cancellable, worker_unit_fetched, pass);
 }
@@ -1773,6 +1984,42 @@ worker_pass_start(
 	worker_pass_next(pass);
 }
 
+/*
+ * Starts the run of the oldest body pushed to a source: one unit, "push",
+ * read by the source's provider from the body rather than fetched, and
+ * handed back as soon as it ends -- the one who pushed may be waiting.
+ */
+static void
+worker_pass_start_push(WorkerSource *source)
+{
+	VentureSeriesWorker *self = source->worker;
+	WorkerPass *pass;
+	gint64 now;
+
+	if ((NULL != source->pass) || source->removed || g_queue_is_empty(&source->pushes))
+		return;
+
+	now = worker_now();
+	pass = g_new0(WorkerPass, 1);
+	pass->source = source;
+	pass->units = g_ptr_array_new_with_free_func(g_free);
+	g_ptr_array_add(pass->units, g_strdup("push"));
+	pass->manual = TRUE;
+	pass->started_at = now;
+	pass->push = g_queue_pop_head(&source->pushes);
+	pass->run = venture_feed_run_new_internal(source->spec, VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH,
+	                                          now);
+	pass->run->push_id = g_strdup(pass->push->id);
+
+	/* The pass is counted before the push it answers stops being. */
+	worker_live_add(self, 1);
+	worker_live_add(self, -1);
+
+	source->pass = pass;
+	worker_publish_status(self);
+	worker_pass_next(pass);
+}
+
 /* --- The timer ------------------------------------------------------------------------ */
 
 static gboolean
@@ -1797,6 +2044,14 @@ worker_tick(gpointer data)
 
 		if (NULL != source->pass)
 			continue;
+
+		/* A body somebody pushed is answered before anything else:
+		 * whoever sent it may be waiting on the run. */
+		if (!g_queue_is_empty(&source->pushes))
+		{
+			worker_pass_start_push(source);
+			continue;
+		}
 
 		if (source->manual_pending)
 		{
@@ -1880,7 +2135,7 @@ worker_reschedule(VentureSeriesWorker *self)
 		if (NULL != source->pass)
 			continue;
 
-		if (source->manual_pending)
+		if (source->manual_pending || !g_queue_is_empty(&source->pushes))
 		{
 			earliest = 0;
 			break;
@@ -1996,7 +2251,8 @@ typedef enum
 	COMMAND_REMOVE,
 	COMMAND_SYNC,
 	COMMAND_PURGE,
-	COMMAND_BACKUP
+	COMMAND_BACKUP,
+	COMMAND_PUSH
 } WorkerCommandKind;
 
 typedef struct
@@ -2008,6 +2264,8 @@ typedef struct
 	VentureDataSourceRunTrigger	 trigger;
 	gchar				*store_dir;
 	gchar				*destination;
+	gchar				*push_id;
+	GBytes				*body;
 } WorkerCommand;
 
 static void
@@ -2019,6 +2277,8 @@ worker_command_free(gpointer data)
 	g_clear_pointer(&command->spec, venture_feed_source_unref);
 	g_free(command->store_dir);
 	g_free(command->destination);
+	g_free(command->push_id);
+	g_clear_pointer(&command->body, g_bytes_unref);
 	g_free(command);
 }
 
@@ -2145,6 +2405,22 @@ worker_command(gpointer data)
 	case COMMAND_BACKUP:
 		worker_backup_store(self, command->id, command->store_dir, command->destination);
 		break;
+
+	case COMMAND_PUSH:
+	{
+		WorkerPush *push;
+
+		source = worker_install(self, command->spec);
+		push = g_new0(WorkerPush, 1);
+		push->id = g_steal_pointer(&command->push_id);
+		push->body = g_steal_pointer(&command->body);
+
+		/* Live until its run is handed back: a test waiting for the
+		 * worker to settle must not find it idle in between. */
+		worker_live_add(self, 1);
+		g_queue_push_tail(&source->pushes, push);
+		break;
+	}
 	}
 
 	worker_publish_status(self);
@@ -2210,6 +2486,28 @@ venture_series_worker_sync(
 	command->kind = COMMAND_SYNC;
 	command->spec = venture_feed_source_ref(source);
 	command->trigger = trigger;
+	worker_send(self, command);
+}
+
+void
+venture_series_worker_push(
+	VentureSeriesWorker	*self,
+	VentureFeedSource	*source,
+	const gchar		*push_id,
+	GBytes			*body
+){
+	WorkerCommand *command;
+
+	g_return_if_fail(VENTURE_IS_SERIES_WORKER(self));
+	g_return_if_fail(NULL != source);
+	g_return_if_fail(NULL != push_id);
+	g_return_if_fail(NULL != body);
+
+	command = g_new0(WorkerCommand, 1);
+	command->kind = COMMAND_PUSH;
+	command->spec = venture_feed_source_ref(source);
+	command->push_id = g_strdup(push_id);
+	command->body = g_bytes_ref(body);
 	worker_send(self, command);
 }
 

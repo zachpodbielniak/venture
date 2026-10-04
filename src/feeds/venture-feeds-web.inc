@@ -1057,6 +1057,177 @@ venture_feeds_web_credentials(
 	}
 }
 
+/*
+ * POST /api/v1/feeds/:id/push: JSON lines a producer sends rather than
+ * VENTURE fetches -- tsmctl on the machine the game runs on, after the
+ * game wrote its files. The body is handed to the worker as plain bytes
+ * and read by the push provider through the same path a file_jsonl
+ * source's file takes; this handler parses nothing, so a malformed line
+ * is the run's failure (with its line number), recorded like any other.
+ *
+ * Who may push is who may sync: an editor of the source's organization,
+ * or an API token acting as one. The source must be a push source and
+ * switched on; feeds off is the module's 404. The body has a cap of its
+ * own, feeds.max_push_mb, under the transport's server cap.
+ *
+ * 202 {status: queued, push_id} at once; with ?wait=1, the request waits
+ * (at most VENTURE_FEEDS_PUSH_WAIT_SECONDS) and answers 200 {status:
+ * finished, run} -- the run as recorded, failed or not -- or 202 again
+ * when the run took longer.
+ */
+static HtmxResponse *
+venture_feeds_web_push(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) empty = NULL;
+	g_autofree gchar *push_id = NULL;
+	g_autofree gchar *media = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureFeedsService *service;
+	const gchar *content_type;
+	const gchar *wait_text;
+	JsonObject *root;
+	HtmxResponse *gate;
+	GBytes *body;
+	gboolean wait;
+	gint64 organization_id;
+	gint64 max_push_mb;
+	gint64 run_id;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_require_module_api(self, "feeds");
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	source = venture_feeds_web_source(self, organization_id, g_hash_table_lookup(params, "id"), &error);
+
+	if (NULL == source)
+		return venture_web_error_response(error);
+
+	/* JSON lines, and nothing that only looks like them: a form post or a
+	 * JSON document sent here by mistake is refused before it is read. */
+	content_type = htmx_request_get_content_type(request);
+
+	if (NULL != content_type)
+	{
+		const gchar *semicolon = strchr(content_type, ';');
+
+		media = g_ascii_strdown(content_type, (NULL != semicolon)
+		                                      ? (gssize)(semicolon - content_type) : -1);
+		g_strstrip(media);
+	}
+
+	if ((0 != g_strcmp0(media, "application/x-ndjson")) && (0 != g_strcmp0(media, "text/plain")))
+	{
+		HtmxResponse *response;
+
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A push is JSON lines: Content-Type application/x-ndjson or text/plain");
+		response = venture_web_error_response(error);
+		htmx_response_set_status(response, SOUP_STATUS_UNSUPPORTED_MEDIA_TYPE);
+		return response;
+	}
+
+	wait_text = htmx_request_get_query_param(request, "wait");
+
+	if ((NULL == wait_text) || (0 == g_strcmp0(wait_text, "0")) || (0 == g_strcmp0(wait_text, "false")))
+		wait = FALSE;
+	else if ((0 == g_strcmp0(wait_text, "1")) || (0 == g_strcmp0(wait_text, "true")))
+		wait = TRUE;
+	else
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "wait is 1 or 0");
+		return venture_web_error_response(error);
+	}
+
+	body = htmx_request_get_body_bytes(request);
+
+	if (NULL == body)
+	{
+		empty = g_bytes_new_static("", 0);
+		body = empty;
+	}
+
+	g_object_get(venture_context_get_config(self->context), "feeds-max-push-mb", &max_push_mb, NULL);
+
+	if (g_bytes_get_size(body) > (gsize)CLAMP(max_push_mb, 1, 4096) * 1048576)
+	{
+		HtmxResponse *response;
+
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A push is at most feeds.max_push_mb (%" G_GINT64_FORMAT " MiB); send it in "
+		            "parts, each with the account snapshots it restates", max_push_mb);
+		response = venture_web_error_response(error);
+		htmx_response_set_status(response, SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE);
+		return response;
+	}
+
+	service = venture_context_get_feeds_service(self->context);
+
+	if ((NULL == service) ||
+	    !venture_feeds_service_push(service, venture_entity_get_id(source), body, &push_id, &error))
+	{
+		if (NULL == error)
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "Market data feeds are off (feeds.enabled)");
+		return venture_web_error_response(error);
+	}
+
+	root = json_object_new();
+	json_object_set_int_member(root, "data_source_id", venture_entity_get_id(source));
+	json_object_set_string_member(root, "push_id", push_id);
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(node, root);
+
+	if (!wait)
+	{
+		json_object_set_string_member(root, "status", "queued");
+		return venture_web_json_response(node, 202);
+	}
+
+	if (!venture_feeds_service_wait_push(service, push_id, VENTURE_FEEDS_PUSH_WAIT_SECONDS, &run_id))
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("Not finished within %d seconds; see GET /api/v1/feeds/%"
+		                       G_GINT64_FORMAT "/runs", VENTURE_FEEDS_PUSH_WAIT_SECONDS,
+		                       venture_entity_get_id(source));
+		json_object_set_string_member(root, "status", "queued");
+		json_object_set_string_member(root, "note", note);
+		return venture_web_json_response(node, 202);
+	}
+
+	json_object_set_string_member(root, "status", "finished");
+
+	run = (run_id > 0)
+		? venture_database_get(venture_context_get_database(self->context),
+		                       VENTURE_TYPE_DATA_SOURCE_RUN, run_id, &error)
+		: NULL;
+
+	if (NULL != run)
+		json_object_set_member(root, "run", venture_serializable_to_json(VENTURE_SERIALIZABLE(run),
+		                                                                 FALSE));
+	else
+		json_object_set_null_member(root, "run");
+
+	return venture_web_json_response(node, 200);
+}
+
 static void
 venture_feeds_web_register(VentureWebServer *self)
 {
@@ -1076,4 +1247,6 @@ venture_feeds_web_register(VentureWebServer *self)
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_api_runs, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/feeds/:id/sync", VENTURE_DATA_CLASS_TENANT,
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/feeds/:id/push", VENTURE_DATA_CLASS_TENANT,
+	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_push, self);
 }

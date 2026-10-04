@@ -526,6 +526,9 @@ series:
 #   file_roots: ""
 #   # Largest answer or file one fetch reads, in MiB.
 #   max_response_mb: 64
+#   # Largest JSON-lines body POST /api/v1/feeds/:id/push accepts, in
+#   # MiB. server.max_request_size_mb is enforced first.
+#   max_push_mb: 32
 #   # Seconds one fetch may take, start to finish.
 #   request_timeout: 60
 #   # Most main-database records (price observations, exchange rates) one

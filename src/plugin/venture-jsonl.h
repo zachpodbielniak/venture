@@ -64,6 +64,23 @@ G_BEGIN_DECLS
  */
 #define VENTURE_JSONL_MAX_DECIMAL_LENGTH (40)
 
+/**
+ * VENTURE_JSONL_MAX_ATTRS:
+ *
+ * The most members an account's `attrs` object may carry. Attributes are
+ * a handful of scalars a page shows beside the account; a producer that
+ * sends a thousand is dumping its state into a column nobody reads.
+ */
+#define VENTURE_JSONL_MAX_ATTRS (64)
+
+/**
+ * VENTURE_JSONL_MAX_ATTRS_BYTES:
+ *
+ * The longest an account's `attrs` object may be once serialised, in
+ * bytes.
+ */
+#define VENTURE_JSONL_MAX_ATTRS_BYTES (8192)
+
 typedef struct _VentureJsonlMessage VentureJsonlMessage;
 
 #define VENTURE_TYPE_JSONL_MESSAGE (venture_jsonl_message_get_type())
@@ -82,8 +99,12 @@ GType venture_jsonl_message_get_type(void) G_GNUC_CONST;
  * with %VENTURE_ERROR_SERIALIZATION and a message naming the line and the
  * member -- never the line's text, which may carry anything.
  *
- * Unknown members are ignored, so a later protocol revision can add
- * optional members without breaking an older reader.
+ * Unknown members of the market-data types are ignored, so a later
+ * protocol revision can add optional members without breaking an older
+ * reader. The account-operations types (`account`, `account_snapshot`,
+ * `balance`, `holding`, `position`, `inbound`, `txn`) refuse one: their
+ * rows replace stored state, and a misspelt member -- `expiry` for
+ * `expires_at` -- would otherwise erase a value without a word.
  *
  * Returns: (transfer full) (nullable): the message, or %NULL on error
  */
