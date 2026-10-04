@@ -113,7 +113,8 @@ directly, including for non-USD amounts and exchange policies.
 ** Transactions and signals
 
 Posting holds one database transaction across header, lines and compatibility
-projections. Source sale/expense saves join the same transaction. Nested
+projections. Saves of a registered posting source (sale and expense among
+them, see below) join the same transaction. Nested
 begins join the caller's outer transaction. A failure rolls back the database
 transaction; an outer caller must propagate the failure and balance its own
 begin with rollback. As with other repository operations, discard objects
@@ -191,11 +192,12 @@ such as =2:1000= inside the posting transaction. The prefix respects the
 existing globally unique account-code constraint without borrowing a different
 organization's account. A replacement rule can select a different chart.
 
-Every save of a sale with gross, or an expense with an amount, uses the rule
-from the service registry at the database save boundary. Records whose amount
-has not yet been supplied remain operational records without a journal.
-If a source date is missing, its creation time supplies the stable accounting
-date. Metadata-only changes that produce the same accounts, sides, amounts
+Every save of a registered posting source -- a sale with gross, an expense
+with an amount, or any record type a module or plugin registered (see
+[[*Posting on save: the source registry][Posting on save]]) -- uses its rule from the service registry at the
+database save boundary. Records whose amount has not yet been supplied
+remain operational records without a journal. If a source date is missing,
+its creation time supplies the stable accounting date. Metadata-only changes that produce the same accounts, sides, amounts
 and date do not post again. "The same" is decided between the previous
 version of the document and this one, both built under today's rule, so
 a rate recorded, a treatment changed or a product cost edited since the
@@ -204,11 +206,95 @@ not move -- whether it posted one journal or split into several. A
 document that left no trace yet (saved while the ledger was off) posts on
 its next save. Financial changes reverse the earlier journals and post
 their replacement atomically, including a change into a memo currency,
-which leaves nothing posted but the reversal. Clearing an existing amount is refused.
-Deleting a source leaves its posted journal intact; deleting is not a
+which leaves nothing posted but the reversal. Clearing an existing amount
+of a sale or expense is refused; a zero amount still posts its (zero)
+evidence. A registered type without that refusal that stops posting is
+taken back out of the books instead (below). Deleting a source leaves its posted journal intact; deleting is not a
 financial correction. The same holds for the holding movements a memo
 line wrote (below): the movement stays, still counts in the holding, and
 the holdings report names the deleted documents it is counting.
+
+** Posting on save: the source registry
+
+Which saves post is a registry on the database's posting service, not a list of types. A registration names a record type, the posting rule that builds its lines, whether a version of the record is postable, and the date property its journals are dated by:
+
+#+begin_src C
+typedef gboolean (*VentureLedgerPostableFunc)(VentureEntity *entity,
+                                              gpointer user_data);
+
+gboolean venture_ledger_register_source_type(
+    VentureDatabase *database,
+    GType type,
+    const gchar *rule_name,
+    VentureLedgerPostableFunc postable,   /* NULL: always postable */
+    const gchar *date_property,           /* NULL: the creation time */
+    VentureLedgerSourceFlags flags,
+    gpointer user_data,
+    GDestroyNotify destroy,
+    GError **error);
+
+const gchar *venture_ledger_lookup_source_type(VentureDatabase *database,
+                                               GType type);
+
+gboolean venture_ledger_postable_when_set(VentureEntity *entity,
+                                          gpointer property_name);
+#+end_src
+
+The posting service registers sale and expense first, when it is made, through the same door:
+
+| Type      | Rule      | Postable                          | Date          | Flags                 |
+|-----------+-----------+-----------------------------------+---------------+-----------------------|
+| =sale=    | =sale=    | =postable_when_set= on =gross=    | =occurred-at= | =REFUSE_UNPOST=       |
+| =expense= | =expense= | =postable_when_set= on =amount=   | =occurred-at= | =REFUSE_UNPOST=       |
+
+The save boundary (=venture_ledger_wrap_source()= at the database's dispatch) asks the registry; there is no =VENTURE_IS_SALE= check left in it. A new type that should post on save registers itself -- never add a type check there.
+
+*Matching.* A save matches its type's own registration, or its nearest registered ancestor's (=g_type_is_a= semantics, most derived wins), so a subtype of =sale= posts as a sale unless it registers itself. Registering a type that is already registered is refused with =VENTURE_ERROR_ALREADY_EXISTS=; so is anything that is not a =VentureEntity=, an empty rule name, or a date property that is not a date-time of the type -- a misspelt date would otherwise date every journal by its creation time without a word. On failure =destroy= is not called.
+
+*Rule and source names.* The journal's =source-type= is the record's entity name and its =rule-name= is the registered rule; the built-ins use one word for both. The rule is looked up by name on every save, so a plugin that replaces =sale= in the rule registry (as the autojournal service does) replaces what a sale posts, and a rule registered after the type is found. A save with no rule of that name fails with =VENTURE_ERROR_NOT_FOUND=.
+
+*Rules are built twice, so they must be pure.* To decide whether a save changed anything financially, the rule is built for the stored version and for the new one under today's configuration, and the two are compared -- accounts, sides, original amounts, date. A rule that reads the clock, counts rows or writes anything not idempotent makes every save look like a change, and reposts it. Finding or creating an account on first use is tolerable because the second call finds what the first made. The postable function is asked of several versions too, and must answer from the record alone.
+
+*What a save does*, given a registered type:
+
+| Previous version          | This version                   | Result                                                               |
+|---------------------------+--------------------------------+----------------------------------------------------------------------|
+| none, or never posted     | not postable, or no lines      | the record saves; nothing is written to the books                    |
+| any                       | postable, same lines as before | nothing posts (a document that left no trace posts now)              |
+| any                       | postable, lines changed        | every journal posted under the rule reversed, the new plan posted    |
+| posted                    | not postable, or no lines      | every journal posted under the rule reversed, memo movements cleared |
+| postable, =REFUSE_UNPOST= | not postable                   | refused: "A posted source cannot lose its amount"                    |
+
+The fourth row is new with the registry. A record that stops posting -- a trade leg moved from executed to cancelled, or one whose rule builds no lines -- is taken back out of the books: its journals still posted under its rule are reversed (dated at the record's date, or the original's when that is later), and the memo holding movements its rule wrote are removed (=venture_holdings_clear_memo()=, in the organization the previous version was filed under), so a cancelled payment no longer counts in a purse. The holding floor judges that removal like any other. When it is postable again it posts again, as a change. Sale and expense never reach that row: a =gross= or =amount= of zero is still postable and posts a zero journal, and clearing one is refused by =VENTURE_LEDGER_SOURCE_REFUSE_UNPOST=, exactly as before. Before the registry, a replacement rule that built no lines for a sale was refused ("The posting rule returned no journal lines"); it now takes the sale out of the books like any registered type.
+
+*Consent.* A save that posts, or that takes back something the stored version left in the books (a posted journal under the rule, or a memo movement), begins the whole-operation posting boundary before its transaction, so a second-actor rule covers the reversal as it covers the posting. A record that never posted and still does not stays writable without consent; checking that costs one source lookup on the save.
+
+*Registering from a module or plugin.* Register once per database at install time, next to the type's save validators; a module installed by several contexts over one database guards with =venture_ledger_lookup_source_type()= or its own installed marker:
+
+#+begin_src C
+static gboolean
+leg_postable(VentureEntity *leg, gpointer user_data)
+{
+	gint status;
+
+	(void)user_data;
+	g_object_get(leg, "status", &status, NULL);
+	return MY_LEG_EXECUTED == status;
+}
+
+if (NULL == venture_ledger_lookup_source_type(database, MY_TYPE_LEG))
+{
+	venture_posting_rule_registry_add(
+		venture_posting_service_get_rules(venture_database_get_posting_service(database)),
+		my_leg_rule_new());
+	if (!venture_ledger_register_source_type(database, MY_TYPE_LEG, "my_leg",
+			leg_postable, "occurred-at", VENTURE_LEDGER_SOURCE_NONE,
+			NULL, NULL, error))
+		return FALSE;
+}
+#+end_src
+
+The registry is not part of the posting-rule revision that whole-operation consent binds: registrations happen at install time, before any proposal exists. The autojournal backlog and backfill still list sales and expenses only -- their posting profile is built from those two types' fields.
 
 The native example plugin registers =subscription-renewal= through the same
 interface. Its rule reuses the installation's expense account policy while
@@ -466,9 +552,10 @@ It belongs to the =ledger= module. Its save validator
 on holding accounts and hands them back. Callers choose append or replace:
 
 - *Append* -- each session yield, each transfer is a new event.
-- *Replace* -- a sale or expense saved again (=venture_ledger_save_source()=)
-  and a sale's refund replace the movements that document and rule wrote
-  before; unchanged ones are left exactly as they were, so editing a note
+- *Replace* -- a registered source saved again (a sale, an expense or a
+  module's type, =venture_ledger_save_source()=) and a sale's refund
+  replace the movements that document and rule wrote before; a source that
+  stops posting clears them; unchanged ones are left exactly as they were, so editing a note
   does not churn history, and an edited amount moves the holding once. A
   refund taken back to zero removes its movement. A document an earlier
   treatment already posted keeps its journal as its only truth while it is
@@ -684,6 +771,14 @@ ticket-bought product, book-currency zeros, a ticket expense taking its
 cash negative, a re-save that does not rewrite history, purchase-order and
 bill line currencies, manual journals through clearing and as drafts, the
 inventory pairs call, and the fiat behaviour change.
+=test-ledger-registry= pins the posting-on-save registry: registration and
+its refusals, sale and expense step by step exactly as before (including a
+zero amount and a refused clear), the currency routes for both, and a
+record type defined in the test that posts, reposts, leaves an unchanged
+save alone while building its rule for both versions, reverses to nothing
+when cancelled or when its rule builds no lines, clears its memo movement,
+posts again, needs second-actor consent to leave the books, and posts
+nothing with the ledger off.
 
 Build and run with =make DEBUG=1 -j8 test=. On a sandbox with a read-only
 =/run/user/.../dconf=, set =GSETTINGS_BACKEND=memory= in the environment first;
@@ -738,4 +833,4 @@ Manual posting and reversal bind their original journal and ordered lines to a p
 
 Operation consent includes the posting-rule registry revision. Restarting the process, replacing a registered implementation or removing one invalidates pending proposals. A plugin must replace its registered rule when changing behavior; mutating opaque private callback state in place is outside the approval contract.
 
-Incomplete sale and expense drafts with no monetary amount remain writable without posting consent. Once an amount exists, source saves use the whole-operation posting boundary; removing a previously posted amount is refused before writing the source.
+Incomplete sale and expense drafts with no monetary amount remain writable without posting consent, as does any registered source that is not postable and never posted. Once an amount exists, source saves use the whole-operation posting boundary; removing a previously posted sale or expense amount is refused before writing the source. A registered source that stops posting and has something in the books takes the boundary too, because its reversal is a posting.

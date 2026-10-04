@@ -183,6 +183,8 @@ That registers the types, resolves the module against the running configuration 
 
 A record type whose invariants span rows -- "both ends of this must exist" -- registers a /save validator/ with =venture_database_add_save_validator()=. It runs inside the database lock before every write of that type, from every writer, and may fill derived fields. =record_link= is the worked example.
 
+A record type whose saves are accounting events -- a payment, a trade leg, a fee -- registers a /posting source/ with =venture_ledger_register_source_type()=: the type, the name of a posting rule it added to =venture_posting_service_get_rules()=, a function saying whether a version is postable, and the date property its journals carry. From then on every save of the type, through every door, posts in the record's own transaction exactly as a sale does: an unchanged save posts nothing, a changed one reverses and reposts, and a version that stops being postable (cancelled, say) has its journals reversed and its memo holding movements cleared. The rule is built for both the stored and the new version on every save, so it must be pure. Register once per database at install time; a type registered twice is refused. Never add a =VENTURE_IS_*= check to the ledger instead. See [[file:ledger.org::*Posting on save: the source registry][Posting on save]] for the whole contract and an example.
+
 * 4. An exec plugin
 
 A program in its own directory, beside a manifest:
@@ -496,6 +498,8 @@ built-in to every consumer:
 - both are covered by the same validation, concurrency and audit guarantees
 - a module is switched, listed and masked exactly as a built-in one, and its
   types link to and from every other record through =record_link=
+- a record type registered as a posting source posts on every save, from
+  every door, exactly as a sale does
 - automation handlers and events sit in the registry the built-ins do, so
   a rule cannot tell a plugin's step from a built-in one
 - pages are drawn in the same shell, guarded the same way, and listed in

@@ -18,7 +18,176 @@ struct _VenturePostingService
 	GHashTable *active_sources;
 	VentureEntity *write_permit;
 	VentureEntity *source_permit;
+	/* GType -> LedgerSource: the record types whose every save posts. */
+	GHashTable *source_types;
 };
+
+/* One registration of venture_ledger_register_source_type(). */
+typedef struct
+{
+	GType type;
+	gchar *rule_name;
+	VentureLedgerPostableFunc postable;
+	gchar *date_property;
+	VentureLedgerSourceFlags flags;
+	gpointer user_data;
+	GDestroyNotify destroy;
+} LedgerSource;
+
+static void
+ledger_source_free(gpointer data)
+{
+	LedgerSource *source = data;
+
+	if (NULL != source->destroy)
+		source->destroy(source->user_data);
+	g_free(source->rule_name);
+	g_free(source->date_property);
+	g_free(source);
+}
+
+/* The registration a save of @type posts through: its own, else its
+ * nearest registered ancestor's, so a subtype of sale still posts as a
+ * sale unless it says otherwise. */
+static LedgerSource *
+lookup_source(VenturePostingService *self, GType type)
+{
+	for (; 0 != type; type = g_type_parent(type))
+	{
+		LedgerSource *source = g_hash_table_lookup(self->source_types, GSIZE_TO_POINTER(type));
+
+		if (NULL != source)
+			return source;
+	}
+	return NULL;
+}
+
+static gboolean
+add_source(VenturePostingService *self, GType type, const gchar *rule_name,
+	VentureLedgerPostableFunc postable, const gchar *date_property,
+	VentureLedgerSourceFlags flags, gpointer user_data, GDestroyNotify destroy, GError **error)
+{
+	LedgerSource *source;
+
+	if (!g_type_is_a(type, VENTURE_TYPE_ENTITY))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"%s is not a record type, so its saves cannot post", g_type_name(type));
+		return FALSE;
+	}
+	if (NULL == rule_name || '\0' == *rule_name)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"A posting source needs the name of its posting rule (%s)", g_type_name(type));
+		return FALSE;
+	}
+	/* Checked here rather than at the first save: a misspelt date would
+	 * otherwise post every record at its creation time, silently. */
+	if (NULL != date_property)
+	{
+		GObjectClass *klass = g_type_class_ref(type);
+		GParamSpec *spec = g_object_class_find_property(klass, date_property);
+		gboolean dated = NULL != spec && G_PARAM_SPEC_VALUE_TYPE(spec) == G_TYPE_DATE_TIME;
+
+		g_type_class_unref(klass);
+		if (!dated)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"%s has no date-time property named %s to date its journals by",
+				g_type_name(type), date_property);
+			return FALSE;
+		}
+	}
+	if (g_hash_table_contains(self->source_types, GSIZE_TO_POINTER(type)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+			"Saves of %s already post, through rule %s", g_type_name(type),
+			((LedgerSource *)g_hash_table_lookup(self->source_types, GSIZE_TO_POINTER(type)))->rule_name);
+		return FALSE;
+	}
+	source = g_new0(LedgerSource, 1);
+	source->type = type;
+	source->rule_name = g_strdup(rule_name);
+	source->postable = postable;
+	source->date_property = g_strdup(date_property);
+	source->flags = flags;
+	source->user_data = user_data;
+	source->destroy = destroy;
+	g_hash_table_insert(self->source_types, GSIZE_TO_POINTER(type), source);
+	return TRUE;
+}
+
+/* Sale and expense go through the same door as anyone else's type, with
+ * exactly the behaviour they had when they were the only two: posted once
+ * the amount is set, dated by when it happened, and a posted amount may
+ * not be cleared. */
+static void
+register_builtin_sources(VenturePostingService *self)
+{
+	g_autoptr(GError) error = NULL;
+
+	if (!add_source(self, VENTURE_TYPE_SALE, "sale", venture_ledger_postable_when_set,
+			"occurred-at", VENTURE_LEDGER_SOURCE_REFUSE_UNPOST, (gpointer)"gross", NULL, &error) ||
+		!add_source(self, VENTURE_TYPE_EXPENSE, "expense", venture_ledger_postable_when_set,
+			"occurred-at", VENTURE_LEDGER_SOURCE_REFUSE_UNPOST, (gpointer)"amount", NULL, &error))
+		g_error("Built-in posting sources: %s", error->message);
+}
+
+gboolean
+venture_ledger_register_source_type(VentureDatabase *database, GType type,
+	const gchar *rule_name, VentureLedgerPostableFunc postable, const gchar *date_property,
+	VentureLedgerSourceFlags flags, gpointer user_data, GDestroyNotify destroy, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(NULL == error || NULL == *error, FALSE);
+	return add_source(venture_database_get_posting_service(database), type, rule_name,
+		postable, date_property, flags, user_data, destroy, error);
+}
+
+const gchar *
+venture_ledger_lookup_source_type(VentureDatabase *database, GType type)
+{
+	LedgerSource *source;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	source = lookup_source(venture_database_get_posting_service(database), type);
+	return NULL != source ? source->rule_name : NULL;
+}
+
+gboolean
+venture_ledger_postable_when_set(VentureEntity *entity, gpointer property_name)
+{
+	GParamSpec *spec;
+	GValue value = G_VALUE_INIT;
+	gboolean set;
+	GType fundamental;
+
+	g_return_val_if_fail(VENTURE_IS_ENTITY(entity), FALSE);
+	g_return_val_if_fail(NULL != property_name, FALSE);
+	spec = g_object_class_find_property(G_OBJECT_GET_CLASS(entity), (const gchar *)property_name);
+	if (NULL == spec)
+		return FALSE;
+	fundamental = G_TYPE_FUNDAMENTAL(G_PARAM_SPEC_VALUE_TYPE(spec));
+	if (G_TYPE_STRING != fundamental && G_TYPE_BOXED != fundamental && G_TYPE_OBJECT != fundamental)
+		return FALSE;
+	g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(spec));
+	g_object_get_property(G_OBJECT(entity), (const gchar *)property_name, &value);
+	if (G_TYPE_STRING == fundamental)
+		set = NULL != g_value_get_string(&value);
+	else if (G_TYPE_BOXED == fundamental)
+		set = NULL != g_value_get_boxed(&value);
+	else
+		set = NULL != g_value_get_object(&value);
+	g_value_unset(&value);
+	return set;
+}
+
+/* Whether this version of a registered source posts at all. */
+static gboolean
+source_postable(const LedgerSource *source, VentureEntity *entity)
+{
+	return NULL == source->postable || source->postable(entity, source->user_data);
+}
 
 enum { PROP_0, PROP_DATABASE, N_PROPERTIES };
 enum { POSTING, POSTED, DATE_POSTABLE, N_SIGNALS };
@@ -174,6 +343,7 @@ venture_posting_service_finalize(GObject *object)
 	g_ptr_array_unref(self->pending);
 	g_hash_table_unref(self->active_journals);
 	g_hash_table_unref(self->active_sources);
+	g_hash_table_unref(self->source_types);
 	G_OBJECT_CLASS(venture_posting_service_parent_class)->finalize(object);
 }
 static void
@@ -233,7 +403,9 @@ venture_posting_service_init(VenturePostingService *self)
 	self->rules = venture_posting_rule_registry_new();
 	self->active_journals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	self->active_sources = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	self->source_types = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, ledger_source_free);
 	venture_ledger_register_rules(self->rules);
+	register_builtin_sources(self);
 }
 
 VenturePostingService *
@@ -1570,25 +1742,43 @@ fail:
 	return NULL;
 }
 
+/* The accounting date of @source: @date_property when it is set, its
+ * creation time otherwise, which never moves and so is a stable date. */
+static GDateTime *
+source_date(VentureEntity *source, const gchar *date_property)
+{
+	GDateTime *when = NULL;
+
+	if (NULL != date_property && NULL != g_object_class_find_property(G_OBJECT_GET_CLASS(source), date_property))
+		g_object_get(source, date_property, &when, NULL);
+	if (NULL == when)
+		g_object_get(source, "created-at", &when, NULL);
+	return when;
+}
+
+/* The date property post_document has always used for a source it was
+ * handed by name rather than by registration. */
+static const gchar *
+document_date_property(VentureEntity *source)
+{
+	return VENTURE_IS_INVOICE(source) ? "paid-at" : "occurred-at";
+}
+
 static VentureJournal *
-document_header(VentureEntity *source, const gchar *rule_name, GPtrArray *rows, GError **error)
+document_header(VentureEntity *source, const gchar *rule_name, const gchar *date_property,
+	GPtrArray *rows, GError **error)
 {
 	g_autoptr(VentureJournal) journal = venture_journal_new();
 	g_autoptr(GDateTime) when = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autofree gchar *memo = venture_entity_get_display_name(source);
-	const gchar *date_field;
 
 	if (rows->len == 0 || !VENTURE_IS_JOURNAL_LINE(g_ptr_array_index(rows, 0)))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "The posting rule returned no journal lines");
 		return NULL;
 	}
-	date_field = VENTURE_IS_INVOICE(source) ? "paid-at" : "occurred-at";
-	if (NULL != g_object_class_find_property(G_OBJECT_GET_CLASS(source), date_field))
-		g_object_get(source, date_field, &when, NULL);
-	if (NULL == when)
-		g_object_get(source, "created-at", &when, NULL);
+	when = source_date(source, date_property);
 	g_object_get(g_ptr_array_index(rows, 0), "amount", &amount, NULL);
 	g_object_set(journal, "source-type", venture_entity_get_entity_name(source),
 		"source-id", venture_entity_get_id(source), "source-version", venture_entity_get_version(source),
@@ -1655,7 +1845,7 @@ venture_posting_service_post_document(VenturePostingService *self, const gchar *
 	rows = build_document_lines(self, db, name, current, error);
 	if (NULL == rows)
 		goto fail;
-	journal = document_header(current, name, rows, error);
+	journal = document_header(current, name, document_date_property(current), rows, error);
 	if (NULL == journal)
 		goto fail;
 	existing = venture_posting_service_find_source(self, venture_entity_get_entity_name(current),
@@ -1719,7 +1909,11 @@ venture_ledger_wrap_source(VentureDatabase *db, VentureEntity *entity)
 		service->source_permit = NULL;
 		return FALSE;
 	}
-	return (VENTURE_IS_SALE(entity) || VENTURE_IS_EXPENSE(entity)) && ledger_enabled(NULL);
+	/* The registry decides which saves post; there is no list of types
+	 * here, so a module's or a plugin's record posts the day it registers. */
+	if (NULL == service)
+		service = venture_database_get_posting_service(db);
+	return NULL != lookup_source(service, G_OBJECT_TYPE(entity)) && ledger_enabled(NULL);
 }
 
 static gboolean
@@ -1753,15 +1947,107 @@ same_posting(VentureJournal *a, GPtrArray *a_rows, VentureEntity *b, GPtrArray *
 	return TRUE;
 }
 
+/*
+ * Whether a stored record left anything in the books under its rule: a
+ * posted journal or a memo movement. Asked before the transaction, only
+ * for a save that does not post, to decide whether it needs the posting
+ * boundary's consent -- a draft that never posted must stay writable
+ * without it.
+ */
+static gboolean
+source_left_trace(VenturePostingService *self, VentureDatabase *db, const LedgerSource *source,
+	VentureEntity *entity, gboolean *out_trace, GError **error)
+{
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GPtrArray) journals = NULL;
+	const gchar *name = venture_entity_get_entity_name(entity);
+	gint64 org;
+	guint i;
+
+	*out_trace = FALSE;
+	stored = venture_database_get(db, G_OBJECT_TYPE(entity), venture_entity_get_id(entity), error);
+	if (NULL == stored)
+		return NULL == error || NULL == *error;
+	org = venture_entity_get_organization_id(stored);
+	if (org <= 0)
+		return TRUE;
+	journals = venture_posting_service_find_source(self, name, venture_entity_get_id(stored), org, error);
+	if (NULL == journals)
+		return FALSE;
+	for (i = 0; i < journals->len && !*out_trace; i++)
+	{
+		g_autofree gchar *rule = NULL;
+		VentureJournalState state;
+
+		g_object_get(g_ptr_array_index(journals, i), "state", &state, "rule-name", &rule, NULL);
+		*out_trace = VENTURE_JOURNAL_POSTED == state && 0 == g_strcmp0(rule, source->rule_name);
+	}
+	if (*out_trace)
+		return TRUE;
+	return venture_holdings_source_has_memo(db, org, name, venture_entity_get_id(stored),
+		source->rule_name, out_trace, error);
+}
+
+/*
+ * A saved version that posts nothing -- not postable, or its rule built no
+ * lines -- takes back whatever an earlier version put in the books: every
+ * journal still posted under the rule is reversed, and every memo movement
+ * the rule wrote is removed. The books then match the document, which is
+ * now in them for nothing. A record that never posted finds nothing to
+ * take back, and this writes nothing.
+ */
+static gboolean
+unpost_source(VenturePostingService *self, VentureDatabase *db, const LedgerSource *source,
+	VentureEntity *previous, VentureEntity *copy, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GPtrArray) existing = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	const gchar *name = venture_entity_get_entity_name(copy);
+	gint64 org;
+	guint i;
+
+	if (NULL == previous)
+		return TRUE;
+	org = venture_entity_get_organization_id(previous);
+	if (org <= 0)
+		return TRUE;
+	existing = venture_posting_service_find_source(self, name, venture_entity_get_id(copy), org, error);
+	if (NULL == existing)
+		return FALSE;
+	when = source_date(copy, source->date_property);
+	for (i = 0; i < existing->len; i++)
+	{
+		VentureEntity *old = g_ptr_array_index(existing, i);
+		g_autofree gchar *old_rule = NULL;
+		g_autoptr(GDateTime) old_when = NULL;
+		g_autoptr(VentureJournal) reversed = NULL;
+		VentureJournalState state;
+
+		g_object_get(old, "state", &state, "rule-name", &old_rule, "occurred-at", &old_when, NULL);
+		if (state != VENTURE_JOURNAL_POSTED || g_strcmp0(old_rule, source->rule_name) != 0)
+			continue;
+		/* As a correction: a reversal cannot precede what it reverses. */
+		reversed = venture_posting_service_reverse(self, venture_entity_get_id(old),
+			g_date_time_compare(when, old_when) < 0 ? old_when : when,
+			"Source document no longer posts", actor, error);
+		if (NULL == reversed)
+			return FALSE;
+	}
+	/* The movements are cleared where they were written, which is the
+	 * organization of the version that wrote them. */
+	return venture_holdings_clear_memo(db, org, name, venture_entity_get_id(copy),
+		source->rule_name, actor, error);
+}
+
 gboolean
 venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureAccountingOperation) operation = NULL;
 	VenturePostingService *self = venture_database_get_posting_service(db);
+	const LedgerSource *source = lookup_source(self, G_OBJECT_TYPE(entity));
 	g_autoptr(VentureEntity) copy = copy_record(entity);
 	g_autoptr(VentureEntity) previous = NULL;
-	g_autoptr(VentureMoney) amount = NULL, proposed_amount = NULL;
 	g_autoptr(GPtrArray) existing = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureJournal) draft = NULL;
@@ -1769,22 +2055,44 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	g_autoptr(GPtrArray) groups = NULL;
 	g_autoptr(GPtrArray) current = NULL;
 	g_autoptr(VentureExchangePolicy) policy = NULL;
+	/* The record's type names its journals' source; the registration
+	 * names the rule that builds them. Built-ins use one word for both. */
 	const gchar *name = venture_entity_get_entity_name(entity);
+	const gchar *rule;
 	g_autofree gchar *source_uuid = g_strdup(venture_entity_get_uuid(entity));
+	gboolean postable;
 	gboolean changed;
 	guint i;
 
+	if (NULL == source)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Saves of %s do not post", G_OBJECT_TYPE_NAME(entity));
+		return FALSE;
+	}
+	rule = source->rule_name;
 	if (g_hash_table_contains(self->active_sources, source_uuid))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "This source is already being posted");
 		return FALSE;
 	}
-	g_object_get(entity, VENTURE_IS_SALE(entity) ? "gross" : "amount", &proposed_amount, NULL);
-	if (proposed_amount != NULL)
+	postable = source_postable(source, entity);
+	/* A save that posts, or that takes back what an earlier version
+	 * posted, crosses the consent boundary. A draft that never posted and
+	 * still does not stays writable without it. */
 	{
-		operation = venture_accounting_operation_begin(db, "ledger.save_source", entity, NULL, NULL,
-			venture_entity_get_organization_id(entity), actor, error);
-		if (operation == NULL) return FALSE;
+		gboolean needs_consent = postable;
+
+		if (!needs_consent && venture_entity_is_persisted(entity) &&
+			0 == (source->flags & VENTURE_LEDGER_SOURCE_REFUSE_UNPOST) &&
+			!source_left_trace(self, db, source, entity, &needs_consent, error))
+			return FALSE;
+		if (needs_consent)
+		{
+			operation = venture_accounting_operation_begin(db, "ledger.save_source", entity, NULL, NULL,
+				venture_entity_get_organization_id(entity), actor, error);
+			if (operation == NULL) return FALSE;
+		}
 	}
 	if (!venture_database_begin(db, error))
 		return FALSE;
@@ -1794,15 +2102,11 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	if (NULL != error && NULL != *error)
 		goto fail;
 	/* Reject loss of a posted amount before any source write or callback. */
-	if (proposed_amount == NULL && previous != NULL)
+	if (!postable && previous != NULL && 0 != (source->flags & VENTURE_LEDGER_SOURCE_REFUSE_UNPOST) &&
+		source_postable(source, previous))
 	{
-		g_autoptr(VentureMoney) old_amount = NULL;
-		g_object_get(previous, VENTURE_IS_SALE(previous) ? "gross" : "amount", &old_amount, NULL);
-		if (old_amount != NULL)
-		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A posted source cannot lose its amount");
-			goto fail;
-		}
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A posted source cannot lose its amount");
+		goto fail;
 	}
 	self->source_permit = copy;
 	if (!venture_database_save(db, copy, actor, error))
@@ -1810,14 +2114,25 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		self->source_permit = NULL;
 		goto fail;
 	}
-	g_object_get(copy, VENTURE_IS_SALE(copy) ? "gross" : "amount", &amount, NULL);
-	/* Incomplete operational records carry no amount yet. Once an amount
-	 * exists, every save is held to the posting rules, regardless of surface. */
-	if (NULL == amount) goto commit;
-	rows = build_document_lines(self, db, name, copy, error);
+	/* Incomplete operational records are not postable yet. Once one is,
+	 * every save is held to the posting rules, regardless of surface; one
+	 * that stops being postable takes back what it posted. */
+	if (!source_postable(source, copy))
+	{
+		if (!unpost_source(self, db, source, previous, copy, actor, error))
+			goto fail;
+		goto commit;
+	}
+	rows = build_document_lines(self, db, rule, copy, error);
 	if (NULL == rows)
 		goto fail;
-	draft = document_header(copy, name, rows, error);
+	if (0 == rows->len)
+	{
+		if (!unpost_source(self, db, source, previous, copy, actor, error))
+			goto fail;
+		goto commit;
+	}
+	draft = document_header(copy, rule, source->date_property, rows, error);
 	if (NULL == draft)
 		goto fail;
 	/*
@@ -1826,28 +2141,23 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 	 * sides, original amounts, date. Both are built under today's rule, so
 	 * a rate recorded since, a treatment changed since, or a plan that now
 	 * splits into a different number of journals is not by itself a
-	 * change. A version that cannot be built (no amount yet, a reference
-	 * since removed) is one.
+	 * change. A version that cannot be built (not postable yet, no lines,
+	 * a reference since removed) is one. This is why a rule must be pure:
+	 * it is built twice on every save.
 	 */
 	{
 		gboolean unchanged = FALSE;
 
-		if (NULL != previous)
+		if (NULL != previous && source_postable(source, previous))
 		{
-			g_autoptr(VentureMoney) old_amount = NULL;
+			g_autoptr(GError) local = NULL;
+			g_autoptr(GPtrArray) old_rows = build_document_lines(self, db, rule, previous, &local);
+			g_autoptr(VentureJournal) old_draft = NULL;
 
-			g_object_get(previous, VENTURE_IS_SALE(previous) ? "gross" : "amount", &old_amount, NULL);
-			if (NULL != old_amount)
-			{
-				g_autoptr(GError) local = NULL;
-				g_autoptr(GPtrArray) old_rows = build_document_lines(self, db, name, previous, &local);
-				g_autoptr(VentureJournal) old_draft = NULL;
-
-				if (NULL != old_rows)
-					old_draft = document_header(previous, name, old_rows, &local);
-				unchanged = NULL != old_draft &&
-					same_posting(draft, rows, VENTURE_ENTITY(old_draft), old_rows);
-			}
+			if (NULL != old_rows && old_rows->len > 0)
+				old_draft = document_header(previous, rule, source->date_property, old_rows, &local);
+			unchanged = NULL != old_draft &&
+				same_posting(draft, rows, VENTURE_ENTITY(old_draft), old_rows);
 		}
 		changed = !unchanged;
 	}
@@ -1868,7 +2178,7 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 		VentureJournalState state;
 
 		g_object_get(old, "state", &state, "rule-name", &old_rule, NULL);
-		if (state == VENTURE_JOURNAL_POSTED && g_strcmp0(old_rule, name) == 0)
+		if (state == VENTURE_JOURNAL_POSTED && g_strcmp0(old_rule, rule) == 0)
 			g_ptr_array_add(current, g_object_ref(old));
 	}
 	/* Unchanged and already in the books -- as journals or as holding
@@ -1882,7 +2192,7 @@ venture_ledger_save_source(VentureDatabase *db, VentureEntity *entity,
 
 		if (!venture_holdings_source_has_memo(db,
 			venture_entity_get_organization_id(VENTURE_ENTITY(draft)), name,
-			venture_entity_get_id(copy), name, &memo_written, error))
+			venture_entity_get_id(copy), rule, &memo_written, error))
 			goto fail;
 		if (current->len > 0 || memo_written)
 			goto commit;

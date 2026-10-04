@@ -2124,6 +2124,30 @@ GType
 venture_book_route_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureLedgerSourceFlags:
+ * @VENTURE_LEDGER_SOURCE_NONE: a version that stops posting has its
+ *   journals reversed and its memo movements cleared
+ * @VENTURE_LEDGER_SOURCE_REFUSE_UNPOST: once a version of the record was
+ *   postable, a save that would make it stop posting is refused instead of
+ *   reversed. Sale and expense carry it: clearing a posted amount is far
+ *   more often a form mistake than a correction, and a correction is an
+ *   amount of zero, which still posts its evidence.
+ *
+ * How a record type registered with venture_ledger_register_source_type()
+ * treats a save that takes it out of the books.
+ */
+typedef enum
+{
+	VENTURE_LEDGER_SOURCE_NONE           = 0,
+	VENTURE_LEDGER_SOURCE_REFUSE_UNPOST  = 1 << 0
+} VentureLedgerSourceFlags;
+
+#define VENTURE_TYPE_LEDGER_SOURCE_FLAGS (venture_ledger_source_flags_get_type())
+
+GType
+venture_ledger_source_flags_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureHoldingKind:
  * @VENTURE_HOLDING_KIND_ADJUST: a correction typed in by hand, counted as
  *   earned or spent by its sign; the zero value, because a row nobody

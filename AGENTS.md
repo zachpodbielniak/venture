@@ -884,6 +884,23 @@ than one that fails.
   posted journals: a plan can split into a different number of journals
   after a rate or treatment change, and a plan with no journals at all
   (every amount memo) is still a change to reverse.
+- **Which saves post is a registry, never a type check.**
+  `venture_ledger_register_source_type()` (type, rule name, postable
+  function, date property, flags) is the only way a record type posts on
+  save; sale and expense are registered first through it
+  (`postable_when_set` on `gross`/`amount`, `occurred-at`,
+  `REFUSE_UNPOST`). Never add a `VENTURE_IS_*` check to
+  `venture_ledger_wrap_source()` or `_save_source()` -- register the type
+  at install time, once per database (twice is refused). **The rule is
+  built twice on every save** (stored and new version) to decide
+  "changed", so it must be pure: no clock, no counters, nothing written
+  that is not idempotent, and the postable function answers from the
+  record alone. A version that stops posting (postable FALSE, or its rule
+  builds no lines) has its journals reversed and its memo movements
+  cleared unless the type carries `REFUSE_UNPOST` -- sale and expense do,
+  so clearing their amount is still refused and a zero amount still posts
+  a zero journal. Such a save takes the consent boundary when the stored
+  version left anything in the books; one that never posted does not.
 - **A document line is in its document's currency.** Purchase order lines
   and vendor bill lines are held to their order's or bill's `currency` by
   save validators (`venture_purchasing_install_validators()`), and the

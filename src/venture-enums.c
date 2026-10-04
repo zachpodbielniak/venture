@@ -1346,6 +1346,16 @@ VENTURE_DEFINE_ENUM_TYPE(venture_book_route_get_type,
                          "VentureBookRoute",
                          venture_book_route_values)
 
+static const GFlagsValue venture_ledger_source_flags_values[] = {
+	VE(VENTURE_LEDGER_SOURCE_NONE,          "none"),
+	VE(VENTURE_LEDGER_SOURCE_REFUSE_UNPOST, "refuse_unpost"),
+	VE_END
+};
+
+VENTURE_DEFINE_FLAGS_TYPE(venture_ledger_source_flags_get_type,
+                          "VentureLedgerSourceFlags",
+                          venture_ledger_source_flags_values)
+
 static const GEnumValue venture_holding_kind_values[] = {
 	VE(VENTURE_HOLDING_KIND_ADJUST,   "adjust"),
 	VE(VENTURE_HOLDING_KIND_EARN,     "earn"),

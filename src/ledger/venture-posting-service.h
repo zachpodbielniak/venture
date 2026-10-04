@@ -82,6 +82,94 @@ gboolean venture_posting_service_post_entries(VenturePostingService *self,
  */
 VentureJournal *venture_posting_service_post_document(VenturePostingService *self,
 	const gchar *rule_name, VentureEntity *source, const VentureActor *actor, GError **error);
+
+/**
+ * VentureLedgerPostableFunc:
+ * @entity: one version of a registered source record: the one being saved,
+ *   the stored one before it, or the one the save wrote
+ * @user_data: the data given at registration
+ *
+ * Whether this version of the record belongs in the books at all. It is
+ * asked of several versions on one save, so it must answer from the record
+ * alone: never read the database, never write anything, never depend on
+ * the clock. A version that is postable may still post nothing, when its
+ * rule builds no lines.
+ *
+ * Returns: %TRUE when this version posts
+ */
+typedef gboolean (*VentureLedgerPostableFunc)(VentureEntity *entity, gpointer user_data);
+
+/**
+ * venture_ledger_register_source_type:
+ * @database: the database whose saves post
+ * @type: a #VentureEntity type; its subtypes match too, unless one of
+ *   them is registered itself (the most derived registration wins)
+ * @rule_name: the posting rule, looked up by name in the service's rule
+ *   registry on every save, so a plugin that replaces the rule replaces
+ *   what the save posts; journals carry it as `rule-name`
+ * @postable: (scope notified) (nullable): whether a version posts; %NULL
+ *   means every version does
+ * @date_property: (nullable): a #GDateTime property of @type giving the
+ *   accounting date; when %NULL, or unset on a record, the record's
+ *   creation time is the stable date
+ * @flags: what a save that stops the record posting does
+ * @user_data: (closure postable): passed to @postable
+ * @destroy: (nullable): frees @user_data when the database goes
+ *
+ * Makes every save of @type, through any door, a posting: the record and
+ * its journals are written in one transaction, a save whose figures did
+ * not move posts nothing, a financial change reverses what the record
+ * posted under @rule_name and posts the new version, and a version that
+ * stops posting (@postable %FALSE, or its rule builds no lines) has its
+ * journals reversed and its memo holding movements cleared -- unless
+ * @flags carries %VENTURE_LEDGER_SOURCE_REFUSE_UNPOST, which refuses that
+ * save instead. Sale and expense are registered this way when the posting
+ * service is made.
+ *
+ * The rule is built for both the stored version and the new one to decide
+ * whether anything changed, so it must be pure: the same record gives the
+ * same lines, and anything it writes (an account found or made on first
+ * use) must be idempotent.
+ *
+ * Register once per database, at install time; a module that installs on
+ * every context guards with venture_ledger_lookup_source_type(). On
+ * failure @destroy is not called and @user_data stays the caller's.
+ *
+ * Returns: %TRUE when registered; %FALSE with %VENTURE_ERROR_ALREADY_EXISTS
+ *   for a type registered already, or %VENTURE_ERROR_INVALID_ARGUMENT for
+ *   a type that is not a record, an empty rule name or a date property
+ *   that is not a date-time of @type
+ */
+gboolean venture_ledger_register_source_type(VentureDatabase *database, GType type,
+	const gchar *rule_name, VentureLedgerPostableFunc postable, const gchar *date_property,
+	VentureLedgerSourceFlags flags, gpointer user_data, GDestroyNotify destroy, GError **error);
+
+/**
+ * venture_ledger_lookup_source_type:
+ * @database: the database
+ * @type: a record type
+ *
+ * Which registration a save of @type would post through: @type's own, or
+ * its nearest registered ancestor's.
+ *
+ * Returns: (transfer none) (nullable): the rule name, or %NULL when saves
+ *   of @type never post
+ */
+const gchar *venture_ledger_lookup_source_type(VentureDatabase *database, GType type);
+
+/**
+ * venture_ledger_postable_when_set:
+ * @entity: a record
+ * @property_name: (type utf8): the name of a string, boxed or object
+ *   property of @entity, usually a static string
+ *
+ * A #VentureLedgerPostableFunc for the common case: the record posts once
+ * the property is set. Sale (`gross`) and expense (`amount`) use it. A
+ * property the record does not have is never set.
+ *
+ * Returns: %TRUE when the property holds a value
+ */
+gboolean venture_ledger_postable_when_set(VentureEntity *entity, gpointer property_name);
 /**
  * venture_posting_service_book_currency:
  * @self: posting service
