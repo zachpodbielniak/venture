@@ -36,6 +36,10 @@ shown exactly once; only its hash is stored. Who may call it:
   minted it. This is how a hosted site owner -- a global editor with a tenant
   =member= row and an organization owner/admin membership -- gets the bearer
   token Lightsite uses for =GET /api/v1/account-authority=.
+  The token is filed under the workspace's default organization when the
+  caller belongs to it, otherwise under the first organization they are a
+  member of, so the owner of a business outside the default organization can
+  mint one; where it is filed grants nothing.
   Such a token always expires: the body's optional =expires_in_days= (a whole
   number) defaults to 30 and must be 1 to 90; anything else, including a
   string, a fraction or =null=, is refused with 422. A hosted tenant
