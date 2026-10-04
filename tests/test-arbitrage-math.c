@@ -262,8 +262,9 @@ typedef struct
 	gint64		 stakes[3];
 	gint64		 payouts[3];
 	gint64		 residual;
-	gint64		 guaranteed;
 	gint64		 profit;
+	gint64		 profit_ideal;
+	gint64		 payout_ideal;
 } SurebetCase;
 
 /*
@@ -273,27 +274,31 @@ typedef struct
  * and in a four-place currency one minor unit -- each reported, never
  * hidden. Three outcomes at 3.30 cannot split 100 evenly: a residual of
  * one. S of exactly one (2.0, 2.0; three at 3.0) is no surebet, and S
- * above one is a sure loss. What breaks if this regresses: a calculator
- * that promises a profit the rounded stakes cannot deliver.
+ * above one is a sure loss. `payout` and `profit` are the rounded,
+ * guaranteed figures -- the least payout, and it less the stakes -- and
+ * the unrounded T/S and T(1/S - 1) are `payout_ideal` and `profit_ideal`.
+ * What breaks if this regresses: a calculator that promises a profit the
+ * rounded stakes cannot deliver, or a payout (106.24) above every payout
+ * a bookmaker will actually make (106.23).
  */
 static void
 test_surebet_table(void)
 {
 	static const SurebetCase cases[] = {
 		{ "usd", { 2.5, 1.8, 0 }, 2, 10000, "USD", 2, TRUE,
-		  { 4186, 5814, 0 }, { 10465, 10465, 0 }, 0, 465, 465 },
+		  { 4186, 5814, 0 }, { 10465, 10465, 0 }, 0, 465, 465, 10465 },
 		{ "yen", { 2.5, 1.8, 0 }, 2, 1000, "JPY", 0, TRUE,
-		  { 419, 581, 0 }, { 1047, 1045, 0 }, 0, 45, 47 },
+		  { 419, 581, 0 }, { 1047, 1045, 0 }, 0, 45, 47, 1047 },
 		{ "gold", { 2.5, 1.8, 0 }, 2, 1000000, "GOLD", 4, TRUE,
-		  { 418605, 581395, 0 }, { 1046512, 1046511, 0 }, 0, 46511, 46512 },
+		  { 418605, 581395, 0 }, { 1046512, 1046511, 0 }, 0, 46511, 46512, 1046512 },
 		{ "residual", { 3.3, 3.3, 3.3 }, 3, 100, "JPY", 0, TRUE,
-		  { 33, 33, 33 }, { 108, 108, 108 }, 1, 9, 10 },
+		  { 33, 33, 33 }, { 108, 108, 108 }, 1, 9, 10, 110 },
 		{ "even", { 2.0, 2.0, 0 }, 2, 10000, "USD", 2, FALSE,
-		  { 5000, 5000, 0 }, { 10000, 10000, 0 }, 0, 0, 0 },
+		  { 5000, 5000, 0 }, { 10000, 10000, 0 }, 0, 0, 0, 10000 },
 		{ "three-at-three", { 3.0, 3.0, 3.0 }, 3, 900, "JPY", 0, FALSE,
-		  { 300, 300, 300 }, { 900, 900, 900 }, 0, 0, 0 },
+		  { 300, 300, 300 }, { 900, 900, 900 }, 0, 0, 0, 900 },
 		{ "overround", { 1.9, 1.9, 0 }, 2, 10000, "USD", 2, FALSE,
-		  { 5000, 5000, 0 }, { 9500, 9500, 0 }, 0, -500, -500 },
+		  { 5000, 5000, 0 }, { 9500, 9500, 0 }, 0, -500, -500, 9500 },
 	};
 	guint i;
 	guint j;
@@ -303,6 +308,7 @@ test_surebet_table(void)
 		g_autoptr(VentureMoney) total = NULL;
 		g_autoptr(GError) error = NULL;
 		VentureArbitrageSurebet split;
+		gint64 least = G_MAXINT64;
 
 		total = money(cases[i].total, cases[i].currency, cases[i].exponent);
 
@@ -319,14 +325,18 @@ test_surebet_table(void)
 			g_assert_cmpint(minor_of(g_ptr_array_index(split.payouts, j)), ==, cases[i].payouts[j]);
 			g_assert_cmpstr(venture_money_get_currency(g_ptr_array_index(split.stakes, j)), ==,
 			                cases[i].currency);
+			least = MIN(least, minor_of(g_ptr_array_index(split.payouts, j)));
 		}
 
 		/* What was asked for is what was staked plus what is left. */
 		g_assert_cmpint(minor_of(split.staked) + minor_of(split.residual), ==, cases[i].total);
 		g_assert_cmpint(minor_of(split.residual), ==, cases[i].residual);
-		g_assert_cmpint(minor_of(split.guaranteed), ==, cases[i].guaranteed);
-		g_assert_cmpint(minor_of(split.guaranteed), ==, minor_of(split.worst_payout) - minor_of(split.staked));
+		/* The payout is the least a bookmaker pays, never the ideal. */
+		g_assert_cmpint(minor_of(split.payout), ==, least);
 		g_assert_cmpint(minor_of(split.profit), ==, cases[i].profit);
+		g_assert_cmpint(minor_of(split.profit), ==, minor_of(split.payout) - minor_of(split.staked));
+		g_assert_cmpint(minor_of(split.profit_ideal), ==, cases[i].profit_ideal);
+		g_assert_cmpint(minor_of(split.payout_ideal), ==, cases[i].payout_ideal);
 		venture_arbitrage_surebet_clear(&split);
 	}
 }
@@ -370,10 +380,14 @@ test_surebet_refusals(void)
 /*
  * Lay stake B*d/(L - c), liability lay*(L - 1), and both results. 3.0
  * backed against 2.9 laid at 5% commission is exactly break-even (rating
- * one); 3.2 against 3.0 at 2% makes 5.23 either way, a cent apart only
- * by rounding. The effective odds are the formulas in docs/arbitrage.org.
- * What breaks if this regresses: a lay stake that leaves one result a
- * loss.
+ * one, ideal zero) -- and the rounded lay stake of 105.26 costs a cent
+ * either way once the liability (199.994) is held in full and what the
+ * exchange leaves (99.997) is paid in whole cents: the sure result is
+ * -0.01, which rounding half to even had shown as 0.00 and +0.01. 3.2
+ * against 3.0 at 2% makes 5.23 at worst, 5.24 if the back wins. The
+ * effective odds are the formulas in docs/arbitrage.org. What breaks if
+ * this regresses: a lay stake that leaves one result a loss, or a `worst`
+ * a cent better than the pair is sure to make.
  */
 static void
 test_back_lay(void)
@@ -392,10 +406,11 @@ test_back_lay(void)
 	g_assert_true(venture_arbitrage_back_lay(3.0, 2.9, 0.05, stake, &figures, &error));
 	g_assert_no_error(error);
 	g_assert_cmpint(minor_of(figures.lay_stake), ==, 10526);
-	g_assert_cmpint(minor_of(figures.liability), ==, 19999);
-	g_assert_cmpint(minor_of(figures.if_back_wins), ==, 1);
-	g_assert_cmpint(minor_of(figures.if_lay_wins), ==, 0);
-	g_assert_cmpint(minor_of(figures.worst), ==, 0);
+	g_assert_cmpint(minor_of(figures.liability), ==, 20000);
+	g_assert_cmpint(minor_of(figures.if_back_wins), ==, 0);
+	g_assert_cmpint(minor_of(figures.if_lay_wins), ==, -1);
+	g_assert_cmpint(minor_of(figures.worst), ==, -1);
+	g_assert_cmpint(minor_of(figures.ideal), ==, 0);
 	g_assert_cmpfloat_with_epsilon(figures.rating, 1.0, 1e-9);
 	venture_arbitrage_back_lay_clear(&figures);
 
@@ -879,10 +894,15 @@ test_calculators(void)
 	g_assert_no_error(error);
 	root = json_node_get_object(answer);
 	g_assert_true(json_object_get_boolean_member(root, "is_surebet"));
-	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root, "guaranteed"), "amount"),
-	                ==, 45);
 	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root, "profit"), "amount"),
+	                ==, 45);
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root, "profit_ideal"), "amount"),
 	                ==, 47);
+	/* The payout is what the worse outcome pays (1045 yen), not T/S. */
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root, "payout"), "amount"),
+	                ==, 1045);
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root, "payout_ideal"), "amount"),
+	                ==, 1047);
 	g_clear_pointer(&answer, json_node_unref);
 
 	answer = venture_arbitrage_calculate("back_lay", back_lay_input, &error);

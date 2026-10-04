@@ -9118,6 +9118,89 @@ venture_web_active_organization(
 }
 
 /*
+ * The organization a Trading route (/feeds, /market, /arbitrage and their
+ * /api/v1 twins) answers for. A page answers for the sidebar's pick, as
+ * every page does; an API call for its `organization_id` -- the query
+ * string's, else @body's member, a number or its digits -- and, when it
+ * names none, for the active organization, which for a token is the
+ * default one. That last rule is why the parameter exists: a token has no
+ * sidebar, so without it a second organization's market data was
+ * unreachable from venturectl.
+ *
+ * The answer is judged by the record policy before anything is read: the
+ * organization's own row is read under the request's access scope, which
+ * every member may read (the picker needs it) and nobody else may. A
+ * stranger is told NOT_FOUND, exactly what reading any of that
+ * organization's records would tell them, so the parameter cannot be used
+ * to learn which organizations exist. This matters more here than for a
+ * report: these routes read the series stores, which are files and not
+ * records, so the row-by-row policy never sees them. Zero ("all", a page
+ * only) is passed on unjudged.
+ *
+ * Returns: %FALSE with @error set when the organization cannot be used
+ */
+static gboolean
+venture_web_request_organization(
+	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	JsonObject		 *body,
+	gint64			 *out,
+	GError			**error
+){
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_autofree gchar *text = NULL;
+	const gchar *path;
+
+	*out = 0;
+	path = htmx_request_get_path(request);
+
+	if ((NULL != path) && g_str_has_prefix(path, "/api/"))
+	{
+		text = g_strdup(htmx_request_get_query_param(request, "organization_id"));
+
+		if (venture_string_is_empty(text) && (NULL != body) &&
+		    json_object_has_member(body, "organization_id"))
+		{
+			JsonNode *node = json_object_get_member(body, "organization_id");
+
+			g_clear_pointer(&text, g_free);
+
+			if (JSON_NODE_HOLDS_VALUE(node) && (G_TYPE_INT64 == json_node_get_value_type(node)))
+				text = g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(node));
+			else if (JSON_NODE_HOLDS_VALUE(node) && (G_TYPE_STRING == json_node_get_value_type(node)))
+				text = g_strdup(json_node_get_string(node));
+			else
+				text = g_strdup("?");
+		}
+	}
+
+	if (venture_string_is_empty(text))
+		*out = venture_web_active_organization(self, request);
+	else if (!g_ascii_string_to_signed(text, 10, 1, G_MAXINT64, out, NULL))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "organization_id must be the id of an organization, not \"%s\"", text);
+		return FALSE;
+	}
+
+	if (*out <= 0)
+		return TRUE;
+
+	organization = venture_database_get(venture_context_get_database(self->context),
+	                                    VENTURE_TYPE_ORGANIZATION, *out, &local_error);
+
+	if ((NULL == organization) || venture_entity_is_deleted(organization))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "There is no organization %" G_GINT64_FORMAT, *out);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
  * Whether the viewer has picked an entity in the sidebar at all -- "all"
  * included. Before a pick, a page that belongs to one business may choose
  * the scope it opens in; after one, the pick is what every page shows.

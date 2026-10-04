@@ -1097,8 +1097,10 @@ test_cover(
 /*
  * back_lay: home backed at bk-1 at 2.1 and laid at ex-1 at 2.0, whose
  * commission model keeps 2%. A 100.00 back needs a lay of 106.06 (a
- * liability of 106.06) and makes 3.94 either way. Without ex-1's
- * commission record the lay would look 2% cheaper than it is.
+ * liability of 106.06): 3.94 if the back wins, and 3.93 if the lay does
+ * -- the exchange leaves 103.9388, paid in whole cents -- so the row's
+ * net, what the pair is sure to make, is 3.93. Without ex-1's commission
+ * record the lay would look 2% cheaper than it is.
  */
 static void
 test_back_lay(
@@ -1118,9 +1120,99 @@ test_back_lay(
 	g_assert_nonnull(row);
 	g_assert_cmpint(amount_of(row, "lay_stake"), ==, 10606);
 	g_assert_cmpint(amount_of(row, "liability"), ==, 10606);
-	g_assert_cmpint(amount_of(row, "net"), ==, 394);
+	g_assert_cmpint(amount_of(row, "if_back_wins"), ==, 394);
+	g_assert_cmpint(amount_of(row, "if_lay_wins"), ==, 393);
+	g_assert_cmpint(amount_of(row, "net"), ==, 393);
 	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(row, "commission"), 0.02, 1e-12);
 	g_assert_cmpint(amount_of(row, "capital"), ==, 20606);
+}
+
+/*
+ * Odds on a match that has started are not an opportunity: books stop
+ * moving a finished match's prices, so its last quotes look exactly like
+ * a surebet nobody can take. match-3 kicked off a minute ago and match-4
+ * kicks off tomorrow, both priced like match-1 (S = 0.9307); cover keeps
+ * match-4 and leaves match-3 out, and back_lay does the same for their
+ * outcomes, which ask their event. match-1 and match-2 name no start and
+ * are kept, and the scan says so. What breaks if this regresses: the
+ * surebet page offers the stakes for a match that is over.
+ */
+static void
+test_started_events(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(JsonNode) covered = NULL;
+	g_autoptr(JsonNode) laid = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *started = NULL;
+	g_autofree gchar *later = NULL;
+	gint64 t;
+	guint i;
+	const struct
+	{
+		const gchar	*event;
+		const gchar	*home;
+		const gchar	*away;
+		gint64		 kickoff;
+	} events[] = {
+		{ "match-3", "h3", "a3", -60 },
+		{ "match-4", "h4", "a4", 86400 }
+	};
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_venues(fixture);
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	t = fixture->now - 600;
+
+	for (i = 0; i < G_N_ELEMENTS(events); i++)
+	{
+		g_autoptr(GDateTime) when = g_date_time_new_from_unix_utc(fixture->now + events[i].kickoff);
+		g_autofree gchar *stamp = g_date_time_format(when, "%Y-%m-%dT%H:%M:%SZ");
+		g_autofree gchar *attrs = g_strdup_printf("{\"commence_time\":\"%s\"}", stamp);
+		VentureSeriesInstrument instrument;
+
+		memset(&instrument, 0, sizeof(instrument));
+		instrument.key = events[i].event;
+		instrument.namespace_ = "item";
+		instrument.name = events[i].event;
+		instrument.kind = "event";
+		instrument.category = "Football";
+		instrument.attrs_json = attrs;
+		g_assert_true(venture_series_store_upsert_instrument(store, &instrument, t, NULL, NULL, &error));
+		g_assert_no_error(error);
+		add_instrument(store, events[i].home, "Home", "outcome", "Football", events[i].event, t);
+		add_instrument(store, events[i].away, "Away", "outcome", "Football", events[i].event, t);
+		quote(store, "bk-1", events[i].home, VENTURE_SERIES_QUOTE_BACK, 2.1, t);
+		quote(store, "bk-2", events[i].away, VENTURE_SERIES_QUOTE_BACK, 2.2, t);
+		quote(store, "ex-1", events[i].home, VENTURE_SERIES_QUOTE_LAY, 2.0, t);
+	}
+
+	covered = scan(fixture, "{\"strategy\":\"cover\",\"total_stake\":\"100.00 USD\","
+	                        "\"buy_venues\":\"bk-1,bk-2\"}");
+	started = key_of(fixture, "cover:S:match-3");
+	later = key_of(fixture, "cover:S:match-4");
+	g_assert_null(row_with_key(covered, started));
+	g_assert_nonnull(row_with_key(covered, later));
+	g_assert_cmpint(amount_of(row_with_key(covered, later), "net"), ==, 743);
+	g_assert_nonnull(row_with_key(covered, key_of(fixture, "cover:S:match-1")));
+	g_assert_true(noted(covered, "1 event that had already started"));
+	g_assert_true(noted(covered, "2 events name no commence_time"));
+
+	laid = scan(fixture, "{\"strategy\":\"back_lay\",\"total_stake\":\"100.00 USD\"}");
+	g_assert_null(row_with_key(laid, key_of(fixture, "back_lay:S:h3:bk-1>ex-1")));
+	g_assert_nonnull(row_with_key(laid, key_of(fixture, "back_lay:S:h4:bk-1>ex-1")));
+	g_assert_nonnull(row_with_key(laid, key_of(fixture, "back_lay:S:home:bk-1>ex-1")));
+	g_assert_true(noted(laid, "1 event that had already started"));
 }
 
 /* ==========================================================================
@@ -1764,6 +1856,7 @@ main(
 	ADD("deal", test_deal);
 	ADD("cover", test_cover);
 	ADD("back-lay", test_back_lay);
+	ADD("started-events", test_started_events);
 	ADD("record-from-plan", test_record_from_plan);
 	ADD("export", test_export);
 	ADD("presets", test_presets);

@@ -236,6 +236,19 @@ venturectl report arbitrage_performance this_month group_by=venue_pair strategy=
 
 The option reaches every door: the web API, the report page (with a form for group, strategy, venture and period), the CLI, MCP's =venture_report= and the assistant's report tool.
 
+* In the profit and loss: =pnl=, =ventures= and =monthly=
+
+The ledger's =income_statement= always had the trades -- the close journals' Arbitrage gains and the legs' Arbitrage fees. The operational reports, which total records rather than journals, now count them too, through one function, =venture_arbitrage_realised_totals()=: every trade that finished (closed or abandoned) in the period, by =closed_at=, with exactly the arithmetic of the trade page and =arbitrage_performance=.
+
+- =pnl= adds three lines to each currency's block, after the expenses: /Arbitrage gains/ (what the trades made before fees, which is what their close journals moved to the gains account), /Less arbitrage fees/ and /Arbitrage result/ (their realised result). /Profit/ is net revenue less expenses plus the arbitrage result. Metrics: =arbitrage= (and =arbitrage_<CODE>= for another currency) and =arbitrage_trades=.
+- =ventures= adds an /Arbitrage result/ column for each venture's own trades (a trade's =venture_id=), and =monthly= one per month, by the month a trade finished; both add it to the row's profit.
+- The figures are kept per currency and never converted, the book currency first: a gold trade in a dollar organization is a gold block (or row) of its own. The income statement converts a valued currency at its rate; these reports, like every operational report, do not.
+- A trade's legs are neither sales nor expenses, so nothing is counted twice -- the reports total sales and expenses as before and add the trades beside them.
+- The venture filter (=venture_id=) and the organization narrow the trades as they narrow the sales.
+- The lines and the column appear only when the period finished at least one trade, so an organization that never trades reads exactly as it did. With the =arbitrage= module off there are none, and no error.
+
+Fees are dated with the trade's close here, so the three lines of one trade always fall in the same period and agree with its page; the ledger dates each fee when its leg was executed, so a trade spanning a month end can put its fees in one month's income statement and its gains in the next.
+
 * Finding opportunities
 
 The other half of the module: reading the market data stores (see [[file:market-data.org][Market data]]) for an attempt worth making, and handing the one you choose to =record=. A /scan/ asks one /strategy/ one question; the strategy finds candidates and the scan judges them with the same filters, sorts them and cuts them to =top=. Everything is read-only until "Record attempt", which plans the opportunity and performs the =record= action -- the only path from an opportunity to the books.
@@ -299,11 +312,13 @@ Crafting arbitrage (TSM's crafting cost). For each recipe, the output's best ven
 
 *** =cover=
 
-A surebet across bookmakers for one event. Events are the parents of quoted instruments (=venture_series_store_list_quoted_parents()=, newest first, at most 500 per source); an event's outcomes are its children with any quote. For each outcome, the best back odds at an allowed venue that takes the stake's currency, net of that venue's commission. An outcome no allowed venue quotes blanks the row and names it: two of three outcomes are not an event. With every outcome quoted, the stakes are split (below); =net= is what the rounded stakes are sure to make.
+A surebet across bookmakers for one event. Events are the parents of quoted instruments (=venture_series_store_list_quoted_parents()=, newest first, at most 500 per source); an event's outcomes are its children with any quote. For each outcome, the best back odds at an allowed venue that takes the stake's currency, net of that venue's commission. An outcome no allowed venue quotes blanks the row and names it: two of three outcomes are not an event. With every outcome quoted, the stakes are split (below); =net= is what the rounded stakes are sure to make, =payout= what the worst result pays, and =ideal_profit= and =payout_ideal= the unrounded figures beside them.
+
+*An event that has started is left out.* An odds provider stores an event's start as the =commence_time= attribute of its instrument (the-odds-api's plugin does, and so does the demo's JSONL). An event whose =commence_time= is at or before the scan's time is under way or over, and its quotes -- books stop moving a finished match's odds -- would read as a surebet nobody can take; the scan leaves it out and a note counts how many. An event that names no =commence_time= is kept, and a note says how many were and that =max_age_hours= is then the only guard.
 
 *** =back_lay=
 
-A back at one venue matched by a lay of the same outcome at an exchange. Instruments with a lay quote (=venture_series_store_list_quoted_instruments()=); the best back (net of its venue's commission) at the buy set and the cheapest lay, counting the exchange's commission, at the sell set, at two different venues. =net= is the worse of the two results; capital is the back stake plus the lay's liability.
+A back at one venue matched by a lay of the same outcome at an exchange. Instruments with a lay quote (=venture_series_store_list_quoted_instruments()=); the best back (net of its venue's commission) at the buy set and the cheapest lay, counting the exchange's commission, at the sell set, at two different venues. =net= is the worse of the two results; capital is the back stake plus the lay's liability. An outcome whose event has started (the outcome's own =commence_time=, else its parent event's) is left out as =cover= leaves the event out.
 
 ** The arithmetic
 
@@ -321,17 +336,18 @@ With the best odds d_i for every outcome, S = sum(1/d_i). It is a surebet when S
 - Stake_i = T x (1/d_i) / S, rounded half to even to the currency's minor unit.
 - Payout_i = stake_i x d_i, rounded down: a bookmaker never pays part of a minor unit.
 - Staked = sum(stake_i); the /residual/ is T - staked (rounding can leave a unit over or take one).
-- Ideal payout T/S and ideal profit T(1/S - 1), rounded half to even.
-- /Guaranteed/ = min(payout_i) - staked: what the rounded stakes are sure to make. It is the opportunity's =net=, and can be below the ideal: 1000 yen split over 2.5 and 1.8 stakes 419 and 581, pays 1047 and 1045, and guarantees 45 against an ideal 47.
+- /Payout/ = min(payout_i): what the rounded stakes are sure to return, whichever outcome happens. /Profit/ = payout - staked: what they are sure to make. That is the opportunity's =net=.
+- /Ideal/ payout T/S and ideal profit T(1/S - 1), rounded half to even, are shown beside them as =payout_ideal= and =profit_ideal= (a scan row's =ideal_profit=), never instead of them: 1000 yen split over 2.5 and 1.8 stakes 419 and 581, pays 1047 and 1045, so the payout is 1045 and the profit 45, against an ideal 1047 and 47. A calculator that answered the ideal as the payout promised a unit of money no bookmaker pays.
 
 *** Back and lay, with commission
 
 For a back stake B at odds d (already net of the back venue's commission c_b: d = 1 + (d_raw - 1)(1 - c_b)) and a lay at odds L at an exchange keeping c of net winnings:
 
 - Effective back odds 1 + (d - 1)(1 - c); effective lay odds 1 + (L - 1)/(1 - c).
-- Lay stake = B x d / (L - c); liability = lay stake x (L - 1).
-- If the back wins: B(d - 1) - liability. If the lay wins: lay stake x (1 - c) - B.
-- Both equal B x d(1 - c)/(L - c) - B before rounding; the /rating/ d(1 - c)/(L - c) above one is a profit.
+- Lay stake = B x d / (L - c), rounded half to even; liability = lay stake x (L - 1), rounded up -- the exchange holds all of it.
+- If the back wins: B(d - 1), rounded down as every payout is, less the liability. If the lay wins: lay stake x (1 - c), rounded down, less B.
+- /Worst/, the lesser of the two, is what the pair is sure to make: every rounding in it goes against the person, so it is a guarantee and not an estimate. Rounding half to even had shown 3.0 backed against 2.9 laid at 5% as 0.00 and 0.01 when the rounded lay stake costs a cent whichever way it goes.
+- Both equal B x d(1 - c)/(L - c) - B before rounding, the /ideal/, shown beside the worst; the /rating/ d(1 - c)/(L - c) above one is a profit.
 
 *** Flips
 
@@ -413,8 +429,8 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 
 | Calculator | Fields                                                                                                   | Answers                                                                     |
 |------------+----------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------|
-| =surebet=  | =odds= (one per outcome, comma or space separated, any format), =format=, =stake=                        | each stake and payout, the no-vig chances, overround, sure profit, ideal profit, the rounding left over |
-| =back_lay= | =back_odds=, =lay_odds=, =format=, =commission= and =back_commission= (percents), =stake=               | lay stake, liability, both results, the worse, the rating                   |
+| =surebet=  | =odds= (one per outcome, comma or space separated, any format), =format=, =stake=                        | each stake and payout, the no-vig chances, overround, =payout= and =profit= (sure), =payout_ideal= and =profit_ideal=, the rounding left over |
+| =back_lay= | =back_odds=, =lay_odds=, =format=, =commission= and =back_commission= (percents), =stake=               | lay stake, liability, both results, =worst= (sure), =ideal=, the rating     |
 | =flip=     | =buy=, =sell= (unit prices), =units=, =cut=, =fixed=, =deposit= (percent of the sale), =refundable=, =sale_rate=, =sold_per_day=, =share=, =transfer=, =transit_hours= | net, capital, ROI, ROI a day, annualised, listing loss, EV, days tied up |
 
 ** Pages and routes
@@ -435,7 +451,11 @@ Every route checks its own session or token and the =arbitrage= module. The scan
 
 ** From the command line
 
-=venturectl arbitrage= is a thin client of these routes and of the actions: =scan [STRATEGY] [option=value ...]= (the table numbers its rows), =record ROW|KEY [STRATEGY] [option=value ...]= (the same question plus the row's key and =narrow=, posted to the record route), =record name=... legs=JSON|@FILE= and =close|reopen|abandon TRADE_ID=, =execute LEG_ID= (the =act= verb, typed from each action's schema), =calc surebet|back-lay|flip= (=--stake AMOUNT=), =export FORMAT [-o FILE]= and =registries=. Every writing verb takes =--stage=. The scan's routes answer for the active organization, so the CLI refuses =organization_id= (and =venture_id=, =as_of=, =key=, =format=) rather than let the route ignore it; =report arbitrage_scan organization_id=N= asks for another organization. See [[file:cli.org][venturectl]].
+=venturectl arbitrage= is a thin client of these routes and of the actions: =scan [STRATEGY] [option=value ...]= (the table numbers its rows), =record ROW|KEY [STRATEGY] [option=value ...]= (the same question plus the row's key and =narrow=, posted to the record route), =record name=... legs=JSON|@FILE= and =close|reopen|abandon TRADE_ID=, =execute LEG_ID= (the =act= verb, typed from each action's schema), =calc surebet|back-lay|flip= (=--stake AMOUNT=), =export FORMAT [-o FILE]= and =registries=. Every writing verb takes =--stage=. =organization_id=N= on =scan=, =record= and =export= asks for that organization (the routes read it; see "Which organization" below); the CLI refuses =venture_id=, =as_of=, =key= and =format=, which the scan's routes would ignore or drop. See [[file:cli.org][venturectl]].
+
+** Which organization
+
+Every =/api/v1/arbitrage= route answers for the organization its =organization_id= names -- in the query string, or for the record route in the JSON body with the question -- and for the active organization when it names none, which for an API token is always the default one. The organization is judged before anything is read: its own row is read under the caller's access scope, which every member may read and nobody else, so a stranger is told NOT_FOUND, exactly what reading its records would say. A recorded trade is then judged again by the =record= action, in that organization. The pages ignore the parameter and answer for the sidebar's pick. The feeds and market routes follow the same rule ([[file:market-data.org][Market data]]).
 
 ** Reports
 
@@ -613,6 +633,9 @@ VentureEntity *venture_arbitrage_record(VentureDatabase *database, gint64 organi
     JsonObject *request, const VentureActor *actor, GError **error);
 JsonNode *venture_arbitrage_trade_summary(VentureDatabase *database, gint64 trade_id,
     GError **error);
+gboolean venture_arbitrage_realised_totals(VentureContext *context, gint64 organization_id,
+    gint64 venture_id, VentureDateRange *period, GPtrArray **out_gains, GPtrArray **out_fees,
+    GPtrArray **out_realised, guint *out_trades, GError **error);
 #+end_src
 
 The engine (=venture-arbitrage-engine.h=, =venture-arbitrage-math.h=):
@@ -701,7 +724,9 @@ gdouble venture_arbitrage_confidence(const VentureArbitrageEvidence *evidence);
 - *Never compare or add a scan's amounts across currencies.* Convert through =venture_arbitrage_scan_convert()= (the =exchange_rate= table) or skip with a note; a sort by profit groups by currency first.
 - *Never read an unquoted price or fee as zero.* Blank the row and name it in =missing=; a blank row has no plan.
 - *Never record an opportunity by any path but its plan and the =record= action.* A plan is made from a fresh run of the question, so what is recorded is what the data says now.
-- *A route that drops or ignores a field must not be reached with it.* The scan's routes drop =key= and =format= and ignore =organization_id=, =venture_id= and =as_of=; the calculator reads =format= by name, and the CLI refuses the others by name rather than send a question the route will answer differently.
+- *A route that drops or ignores a field must not be reached with it.* The scan's routes drop =key= and =format= and ignore =venture_id= and =as_of=; the calculator reads =format= by name, and the CLI refuses the others by name rather than send a question the route will answer differently. =organization_id= is read by the routes (=venture_web_request_organization()=), not by the scan.
+- *Never show an =_ideal= figure as what a person gets.* A calculator's =payout=, =profit= and =worst= are rounded against the person; the unrounded ones say =ideal= in their name.
+- *Never add a trade's legs to a sales or expense total.* The operational reports add finished trades through =venture_arbitrage_realised_totals()=, beside sales and expenses.
 - *Every scan option is a report option.* A new one goes into the option table in =venture-arbitrage-scan.c=, the =arbitrage_scan= schema, and all five doors in the same commit.
 - *A fee model or strategy name is judged when written, never when kept,* and only while the module is on.
 - *Bound every read a strategy makes.* Choose candidates by an indexed query with a limit; never walk a region's rows.

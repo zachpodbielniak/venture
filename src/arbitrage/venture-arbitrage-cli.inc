@@ -26,18 +26,20 @@
  * the server, which refuses an unknown option by name. A strategy a plugin
  * registers may add options of its own, so there is no allowlist here. */
 static const gchar *const venture_cli_arbitrage_int_options[] = {
-	"preset_id", "data_source_id", "recipe_id", "units", "buy_sources", "max_age_hours", "top", NULL
+	"preset_id", "data_source_id", "recipe_id", "units", "buy_sources", "max_age_hours", "top",
+	"organization_id", NULL
 };
 
 /*
  * Names the scan's routes take but quietly drop or ignore: the page's own
- * (`key`, `format`) and those a report adds (`organization_id`,
- * `venture_id`, `as_of`). Accepting one would answer a different question
- * than the one typed -- above all organization_id, which would read as
- * "scan that organization" and scan the active one instead.
+ * (`key`, `format`) and those a report adds (`venture_id`, `as_of`).
+ * Accepting one would answer a different question than the one typed.
+ * `organization_id` is not among them: the routes read it (the
+ * organization the scan answers for, else the active one), so it travels
+ * with the rest of the question.
  */
 static const gchar *const venture_cli_arbitrage_refused_options[] = {
-	"key", "format", "organization_id", "venture_id", "as_of", "calc", NULL
+	"key", "format", "venture_id", "as_of", "calc", NULL
 };
 
 static const gchar venture_cli_arbitrage_usage[] =
@@ -62,6 +64,8 @@ static const gchar venture_cli_arbitrage_usage[] =
 	"category_path, kind, instrument, recipe_id, units, buy_sources, sell_basis,\n"
 	"total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct,\n"
 	"min_confidence, max_age_hours, share, sort, top (and a plugin strategy's own).\n"
+	"organization_id=N on scan, record and export answers for that organization\n"
+	"(default: the active one, which for a token is the default organization).\n"
 	"Money names its currency (\"10.00 GOLD\"); percents are plain numbers (15 = 15%).\n"
 	"record, close, reopen, abandon and execute take --stage.\n"
 	"Examples:\n"
@@ -73,6 +77,7 @@ static const gchar venture_cli_arbitrage_usage[] =
 	"  venturectl arbitrage calc back-lay 3.0 2.9 --stake \"50.00 USD\" commission=5\n"
 	"  venturectl arbitrage calc flip \"1.25 GOLD\" \"2.10 GOLD\" units=20 cut=5 sale_rate=40\n"
 	"  venturectl arbitrage export csv spread group_key=eu -o opportunities.csv\n"
+	"  venturectl arbitrage scan spread organization_id=2 min_roi=15\n"
 	"  venturectl arbitrage execute 12 occurred_at=2026-03-05T10:00:00Z\n"
 	"  venturectl arbitrage close 4\n"
 	"  venturectl arbitrage abandon 4 goods=write_off";
@@ -119,9 +124,10 @@ static const VentureCliColumn venture_cli_arbitrage_surebet_figures[] = {
 	{ "total", "Total stake", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "staked", "Staked", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "residual", "Rounding left over", VENTURE_CLI_CELL_MONEY, FALSE },
-	{ "profit", "Ideal profit", VENTURE_CLI_CELL_MONEY, FALSE },
-	{ "worst_payout", "Worst payout", VENTURE_CLI_CELL_MONEY, FALSE },
-	{ "guaranteed", "Guaranteed", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "payout", "Payout", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "profit", "Profit", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "payout_ideal", "Ideal payout", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "profit_ideal", "Ideal profit", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
 
@@ -140,7 +146,8 @@ static const VentureCliColumn venture_cli_arbitrage_back_lay_figures[] = {
 	{ "liability", "Liability", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "if_back_wins", "If the back wins", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "if_lay_wins", "If the lay wins", VENTURE_CLI_CELL_MONEY, FALSE },
-	{ "worst", "Worst", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "worst", "Sure result (worst)", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "ideal", "Ideal", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "rating", "Rating", VENTURE_CLI_CELL_FRACTION, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
@@ -259,9 +266,8 @@ venture_cli_arbitrage_options(
 		if (g_strv_contains(venture_cli_arbitrage_refused_options, name))
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "%s does not take \"%s\": the scan answers for the active organization "
-			            "(use `report arbitrage_scan organization_id=N` for another one), and "
-			            "key and format are named by the verb", verb, name);
+			            "%s does not take \"%s\": the scan reads neither a venture nor a time, "
+			            "and key and format are named by the verb", verb, name);
 			return FALSE;
 		}
 

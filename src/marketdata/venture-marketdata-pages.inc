@@ -11,7 +11,9 @@
  * and the API cannot answer differently. Nothing here reads a store.
  *
  * Every handler checks its own session or token, its role and the
- * marketdata module, and reads only the active organization. Writes are
+ * marketdata module, and reads one organization: a page the sidebar's
+ * pick, an API call its organization_id or else the active one
+ * (venture_web_request_organization()). Writes are
  * an editor's: promoting an instrument creates a record, and the watch
  * and alert buttons promote before handing over to the generic forms,
  * prefilled through the query string, so no form here is hand-written for
@@ -489,7 +491,9 @@ mdw_browse_query(
 	gint64 value;
 
 	venture_marketdata_browse_query_init(query);
-	query->organization_id = venture_web_active_organization(self, request);
+
+	if (!venture_web_request_organization(self, request, NULL, &query->organization_id, error))
+		return FALSE;
 
 	if (!mdw_number(request, "source", 0, G_MAXINT64, &query->data_source_id, error) ||
 	    !mdw_number(request, "page", 1, 1000000, &value, error))
@@ -1043,7 +1047,9 @@ mdw_instrument_query(
 	GError					**error
 ){
 	memset(query, 0, sizeof(*query));
-	query->organization_id = venture_web_active_organization(self, request);
+
+	if (!venture_web_request_organization(self, request, NULL, &query->organization_id, error))
+		return FALSE;
 
 	if (!mdw_path_id(params, "source", &query->data_source_id, error))
 		return FALSE;
@@ -1454,6 +1460,9 @@ venture_marketdata_web_instrument_post(
 	if (NULL != gate)
 		return gate;
 
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	if (!mdw_path_id(params, "source", &source_id, &error))
 		return venture_web_error_response(error);
 
@@ -1474,7 +1483,6 @@ venture_marketdata_web_instrument_post(
 
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
-	organization_id = venture_web_active_organization(self, request);
 
 	if (!venture_marketdata_promote_instrument(self->context, organization_id, source_id, key, &actor,
 	                                           &instrument, &error))
@@ -1560,6 +1568,7 @@ venture_marketdata_web_deals(
 	gboolean api;
 	gint64 value;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	(void)params;
@@ -1570,8 +1579,11 @@ venture_marketdata_web_deals(
 	if (NULL != gate)
 		return gate;
 
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	venture_marketdata_deals_query_init(&query);
-	query.organization_id = venture_web_active_organization(self, request);
+	query.organization_id = organization_id;
 
 	if (!mdw_number(request, "source", 0, G_MAXINT64, &query.data_source_id, &error) ||
 	    !mdw_number(request, "top", 50, VENTURE_MARKETDATA_DEALS_MAX, &value, &error))
@@ -1735,6 +1747,7 @@ venture_marketdata_web_venues(
 	gint64 source_id;
 	gboolean api;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	(void)params;
@@ -1745,12 +1758,14 @@ venture_marketdata_web_venues(
 	if (NULL != gate)
 		return gate;
 
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	if (!mdw_number(request, "source", 0, G_MAXINT64, &source_id, &error))
 		return venture_web_error_response(error);
 
 	group = mdw_param(request, "group");
-	answer = venture_marketdata_venue_index(self->context, venture_web_active_organization(self, request),
-	                                        source_id, group, 0, &error);
+	answer = venture_marketdata_venue_index(self->context, organization_id, source_id, group, 0, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
@@ -1858,6 +1873,7 @@ venture_marketdata_web_watchlists(
 	JsonArray *lists;
 	gboolean api;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	(void)params;
@@ -1868,8 +1884,10 @@ venture_marketdata_web_watchlists(
 	if (NULL != gate)
 		return gate;
 
-	answer = venture_marketdata_watchlists(self->context, venture_web_active_organization(self, request),
-	                                       &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	answer = venture_marketdata_watchlists(self->context, organization_id, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
@@ -1933,6 +1951,7 @@ venture_marketdata_web_watchlist(
 	gint64 id;
 	gboolean api;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	api = mdw_is_api(request);
@@ -1941,11 +1960,13 @@ venture_marketdata_web_watchlist(
 	if (NULL != gate)
 		return gate;
 
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	if (!mdw_path_id(params, "id", &id, &error))
 		return venture_web_error_response(error);
 
-	answer = venture_marketdata_watchlist_view(self->context, venture_web_active_organization(self, request),
-	                                           id, 0, &error);
+	answer = venture_marketdata_watchlist_view(self->context, organization_id, id, 0, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
@@ -2237,6 +2258,7 @@ venture_marketdata_web_alerts(
 	gboolean api;
 	gint64 count;
 	HtmxResponse *gate;
+	gint64 organization_id;
 
 	(void)params;
 
@@ -2246,11 +2268,13 @@ venture_marketdata_web_alerts(
 	if (NULL != gate)
 		return gate;
 
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	if (!mdw_number(request, "count", 50, 500, &count, &error))
 		return venture_web_error_response(error);
 
-	answer = venture_marketdata_alerts_overview(self->context, venture_web_active_organization(self, request),
-	                                            (guint)count, &error);
+	answer = venture_marketdata_alerts_overview(self->context, organization_id, (guint)count, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
@@ -2282,12 +2306,16 @@ venture_marketdata_web_evaluate(
 	gboolean record;
 	gint64 id;
 	HtmxResponse *gate;
+	gint64 organization_id;
 
 	api = mdw_is_api(request);
 	gate = mdw_gate(self, request, api, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_ALERT_RULE);
 
 	if (NULL != gate)
 		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
 
 	if (!mdw_path_id(params, "id", &id, &error))
 		return venture_web_error_response(error);
@@ -2297,7 +2325,7 @@ venture_marketdata_web_evaluate(
 	                            NULL);
 
 	if ((NULL == rule) || venture_entity_is_deleted(rule) ||
-	    (venture_entity_get_organization_id(rule) != venture_web_active_organization(self, request)))
+	    (venture_entity_get_organization_id(rule) != organization_id))
 	{
 		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 		            "No alert rule #%" G_GINT64_FORMAT " in this organization", id);
@@ -2312,8 +2340,7 @@ venture_marketdata_web_evaluate(
 	if (api)
 		return venture_web_json_response(report, 200);
 
-	answer = venture_marketdata_alerts_overview(self->context, venture_web_active_organization(self, request),
-	                                            50, &error);
+	answer = venture_marketdata_alerts_overview(self->context, organization_id, 50, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);

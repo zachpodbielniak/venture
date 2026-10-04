@@ -128,22 +128,22 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
 | `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
 | `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs |
-| `feeds sync ID [--wait]` | queue a market data source's sync (`data_source` ID); answers `queued` at once. `--wait` polls the source's runs once a second, up to five minutes, and prints the run the sync recorded |
-| `feeds runs ID` | a data source's runs, newest first: status, units, rows, error |
-| `feeds due` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
+| `feeds sync ID [--wait] [organization_id=N]` | queue a market data source's sync (`data_source` ID); answers `queued` at once. `--wait` polls the source's runs once a second, up to five minutes, and prints the run the sync recorded |
+| `feeds runs ID [organization_id=N]` | a data source's runs, newest first: status, units, rows, error |
+| `feeds due [organization_id=N]` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
 | `market quote ID [basis=B] [venue=KEY\|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]` | the price oracle for an `instrument` ID (or `product=ID` instead of ID): `{basis, found, price, value, evidence}`. Bases: `market` (default), `min`, `market_14d`, `historical_60d`, `region_median`, `region_p33`, `region_market_avg`, `sale_avg`, and the numbers `sale_rate`, `sold_per_day`, `quantity` (in `value`) |
-| `market promote SOURCE_ID instrument\|venue KEY` | make (or find, or restore) the record for a venue or instrument a data source's store has seen |
+| `market promote SOURCE_ID instrument\|venue KEY [organization_id=N]` | make (or find, or restore) the record for a venue or instrument a data source's store has seen |
 | `market browse [source=N] [search=T] [category=PATH] [venue=KEY] [group=G] [stock=true] [sort=COL] [dir=asc\|desc] [page=N] [per_page=N]` | every store row now, as `/market/browse` shows it (`rows`) |
 | `market deals [source=N] [venue=KEY] [group=G] [category=PATH] [min_value="10.00 GOLD"] [max_pct=80] [top=N]` | in stock at or under the group's deal price (`rows`) |
 | `market venues [source=N] [group=G]` | the venue index: cheaper/equal/dearer than the region, update interval, data age (`venues`) |
 | `market instrument SOURCE_ID KEY [venue=KEY] [units=N]` | one instrument: its figures, every venue's row, history; `units=` prices a bulk buy (`bulk`) |
-| `market watchlist [ID]` | the watchlists, or one priced now against its targets (`entries`) |
+| `market watchlist [ID] [organization_id=N]` | the watchlists, or one priced now against its targets (`entries`) |
 | `market alerts [count=N]` | the alert rules and the recent hits |
-| `market alerts evaluate RULE_ID [--dry-run]` | what the rule fires now; **writes the hits** (under the cooldown) unless `--dry-run` |
+| `market alerts evaluate RULE_ID [--dry-run] [organization_id=N]` | what the rule fires now; **writes the hits** (under the cooldown) unless `--dry-run` |
 | `arbitrage scan [STRATEGY] [option=value ...]` | opportunities now (`rows`; the table numbers them); options are the `arbitrage_scan` report's |
 | `arbitrage record ROW\|KEY [STRATEGY] [option=value ...]` | record scan row ROW (same options) or KEY as a planned trade; `--stage` proposes it |
 | `arbitrage record name=N legs=JSON\|@FILE [strategy=S] [venture_id=N] [expected=JSON\|@FILE] [notes=T] [organization_id=N]` | a trade from explicit legs (the `record` action); `--stage` |
-| `arbitrage calc surebet ODDS... --stake AMOUNT`, `calc back-lay BACK LAY --stake AMOUNT [commission=PCT]`, `calc flip BUY SELL [units=N] [cut=PCT] ...` | the calculators, on the server |
+| `arbitrage calc surebet ODDS... --stake AMOUNT`, `calc back-lay BACK LAY --stake AMOUNT [commission=PCT]`, `calc flip BUY SELL [units=N] [cut=PCT] ...` | the calculators, on the server; `payout`/`profit` (surebet) and `worst` (back-lay) are the sure, rounded figures, `*_ideal`/`ideal` the unrounded ones |
 | `arbitrage export FORMAT [STRATEGY] [option=value ...] [-o FILE]` | the scan as a registered export (`csv`, `shopping_list`, a plugin's) |
 | `arbitrage close\|reopen\|abandon TRADE_ID [...]`, `arbitrage execute LEG_ID [occurred_at=T]` | the trade and leg actions, typed from their schemas; `--stage` |
 | `arbitrage registries` | registered strategies, fee models, export formats and scan options |
@@ -357,7 +357,12 @@ is in it) and keeps the plain metric keys (`revenue`, `expenses`,
 lines per currency, `ventures` is a row per venture per currency, `monthly`
 a row per month per currency. Read `revenue_<CODE>` for another currency's
 figure; do not add a TICKET row to a GOLD one. A bare date is one day:
-`report pnl 2026-03-14` is the fourteenth only.
+`report pnl 2026-03-14` is the fourteenth only. When the period finished an
+arbitrage trade (closed or abandoned), `pnl` adds "Arbitrage gains", "Less
+arbitrage fees" and "Arbitrage result" per currency and the result is in
+`profit` (metric `arbitrage`, `arbitrage_<CODE>`); `ventures` and `monthly`
+add an `arbitrage` column their profit includes. No finished trade, no
+lines.
 
 **`venturectl mcp` stages writes rather than applying them**, unless started
 with `--apply-writes`. A staged write sends the request with `?stage=1`, and
@@ -1048,15 +1053,13 @@ needs an administrator: it decides which outside host the server calls.
   server. `act data_source ID test` fetches one unit and reports what came
   back, writing nothing; `act data_source ID purge_history` deletes the
   source's stored history and cannot be undone.
-- `feeds sync|runs` and `market promote` answer for the **active
-  organization** -- with a token, always the default one -- so another
-  organization's source is "No such data source" (exit 3). Use the record
-  forms, which any organization's record answers: `act data_source ID
-  sync`, then poll `list data_source_run data_source_id=ID
-  organization_id=N` until a run appears (its `status` is `ok`, `partial`,
-  `failed` or `deferred`); and `create venue|instrument organization_id=N
-  key=KEY namespace=NS data_source_id=ID ...` in place of promoting. The
-  demo seeds its second organization exactly this way.
+- `feeds sync|runs|due` and `market promote` answer for the **active
+  organization** -- with a token, always the default one -- unless they
+  name another: `feeds sync ID --wait organization_id=N`, `market promote
+  SOURCE venue KEY organization_id=N`. Without it another organization's
+  source is "No such data source" (exit 3). The demo seeds its second
+  organization exactly this way, then `update`s what the store does not
+  say (fees, a location, the product).
 - `data_source_run` is written by the server only; creating or updating
   one is refused (403).
 - The data lands in a series store per source, not in records; there is no
@@ -1184,9 +1187,12 @@ The Trading pages have JSON twins, and three reports read the same answers:
   `min_price, quantity, market_value, region_median, pct_vs_region,
   sale_rate, sold_per_day, deal_price, listings, name, updated, venue`
   (anything else is a 400, exit 2).
-- They answer for the **active organization** -- with a token, the default
-  one. For another organization's figures use the reports with
-  `organization_id=N`.
+- Every one takes `organization_id=N` (after the positional words for
+  `promote`, `watchlist`, `alerts evaluate`) and answers for that
+  organization; without it, for the **active organization** -- with a
+  token, always the default one. A member is answered; anybody else gets
+  NOT_FOUND (exit 3), as for the organization's records. A source, list or
+  rule of another organization than the one named is NOT_FOUND too.
 - `market instrument SOURCE_ID KEY`: KEY is the store key (`herb`,
   `2589:b1234`), not an instrument record id; a key with `/` is fine.
 - `market alerts evaluate RULE_ID` **writes** hits (cooldown applies, a
@@ -1980,11 +1986,15 @@ Finding opportunities (read-only until recorded):
   different row. `arbitrage record KEY [options]` takes a key from
   `-f json` output instead. `--stage` proposes it (202 + confirmation);
   planning still promotes the legs' venues and instruments.
-- The scan verbs **refuse `organization_id`** (and `venture_id`, `as_of`,
-  `key`, `format`): the routes answer for the active organization and
-  would ignore it. Use `report arbitrage_scan organization_id=N` to scan
-  another organization, and `arbitrage record name=... legs=...
-  organization_id=N` to record there.
+- `arbitrage scan|record|export ... organization_id=N` answers for that
+  organization (default: the active one, a token's being the default
+  organization); a scan row recorded with it is filed there. The scan
+  verbs **refuse** `venture_id`, `as_of`, `key` and `format`, which the
+  routes would ignore or drop.
+- `cover` and `back_lay` leave out an event that has started (its
+  `commence_time` attribute at or before now) and say so in a note; an
+  event with no `commence_time` is kept and noted -- bound it with
+  `max_age_hours`.
 - `arbitrage record name=... legs=JSON|@FILE` is the `record` action with
   typed arguments (`legs=@legs.json` reads a file; `expected=@FILE` too).
   `arbitrage close|reopen|abandon TRADE_ID` and `arbitrage execute LEG_ID`
@@ -1997,7 +2007,11 @@ Finding opportunities (read-only until recorded):
   [cut=5] [fixed=AMOUNT] [deposit=15] [refundable=true] [sale_rate=40]
   [sold_per_day=12] [share=100] [transfer=AMOUNT] [transit_hours=0]`.
   Stakes are rounded to the currency's minor unit; `residual` is what the
-  rounding left over.
+  rounding left over. A surebet's `payout` is the **least** rounded payout
+  (what any result is sure to pay) and `profit` that less the stakes;
+  `payout_ideal`/`profit_ideal` are the unrounded T/S and T(1/S - 1). A
+  back-lay's `worst` rounds against you (winnings down, liability up);
+  `ideal` is unrounded. Quote the sure figures as what a person gets.
 - `arbitrage export csv|shopping_list|<plugin's> [STRATEGY] [options] [-o FILE]`;
   `arbitrage registries` lists strategies, fee models, export formats and
   the scan's option names.

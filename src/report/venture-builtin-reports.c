@@ -643,6 +643,35 @@ venture_report_fetch_all(
 	                             query, error);
 }
 
+/*
+ * The arbitrage trades that finished in @period, per currency, for the
+ * operational reports: gains before fees, the fees, and the result. A
+ * trade's legs are neither sales nor expenses, so adding the result to
+ * a profit counts nothing twice; @out_trades says whether there is
+ * anything to show, so a report with no finished trade looks as it
+ * always did. The venture filter is the options' venture_id unless
+ * @venture_id names one.
+ */
+static gboolean
+venture_report_arbitrage(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	gint64			  venture_id,
+	GPtrArray		**out_gains,
+	GPtrArray		**out_fees,
+	GPtrArray		**out_result,
+	guint			 *out_trades,
+	GError			**error
+){
+	if ((0 == venture_id) && (NULL != options))
+		venture_id = venture_json_object_get_int(options, "venture_id", 0);
+
+	return venture_arbitrage_realised_totals(context, venture_report_organization(context, options),
+	                                         venture_id, period, out_gains, out_fees, out_result,
+	                                         out_trades, error);
+}
+
 /* ==========================================================================
  * Profit and loss
  * ========================================================================== */
@@ -666,10 +695,14 @@ venture_report_pnl(
 	g_autoptr(GPtrArray) refunds = NULL;
 	g_autoptr(GPtrArray) spent = NULL;
 	g_autoptr(GPtrArray) deductible = NULL;
+	g_autoptr(GPtrArray) arbitrage_gains = NULL;
+	g_autoptr(GPtrArray) arbitrage_fees = NULL;
+	g_autoptr(GPtrArray) arbitrage = NULL;
 	g_autoptr(GPtrArray) codes = NULL;
 	g_autofree gchar *book = NULL;
 	gboolean deductible_differs;
 	guint skipped;
+	guint trades;
 	guint i;
 
 	sales_query = venture_report_scoped_query(context, VENTURE_TYPE_SALE,
@@ -694,6 +727,10 @@ venture_report_pnl(
 	expenses = venture_report_fetch_all(context, expenses_query, options, error);
 
 	if (NULL == expenses)
+		return NULL;
+
+	if (!venture_report_arbitrage(context, period, options, 0, &arbitrage_gains, &arbitrage_fees,
+	                              &arbitrage, &trades, error))
 		return NULL;
 
 	book = venture_report_book_currency(context, options);
@@ -726,7 +763,8 @@ venture_report_pnl(
 	 * profit in gold, and its tickets are a block of their own rather
 	 * than a figure dropped for being the minority. */
 	codes = venture_report_currencies(book, revenue, gross, fees, shipping,
-	                                  refunds, spent, deductible, NULL);
+	                                  refunds, spent, deductible, arbitrage_gains,
+	                                  arbitrage_fees, arbitrage, NULL);
 
 	result = venture_report_result_new("Profit and loss", period);
 
@@ -745,22 +783,29 @@ venture_report_pnl(
 		g_autoptr(VentureMoney) net = NULL;
 		g_autoptr(VentureMoney) expense_total = NULL;
 		g_autoptr(VentureMoney) claimable = NULL;
+		g_autoptr(VentureMoney) trading = NULL;
+		g_autoptr(VentureMoney) operating = NULL;
 		g_autoptr(VentureMoney) profit = NULL;
 		struct
 		{
 			const gchar	*label;
 			VentureMoney	*amount;
-		} lines[8];
+		} lines[11];
+		guint n_lines;
 		guint j;
 
 		code = g_ptr_array_index(codes, i);
 		net = venture_report_amount_in(revenue, code);
 		expense_total = venture_report_amount_in(spent, code);
 		claimable = venture_report_amount_in(deductible, code);
+		trading = venture_report_amount_in(arbitrage, code);
 
 		/* Both sides are in one currency by construction, so the only
-		 * way this fails is overflow, which is counted. */
-		profit = venture_money_subtract(net, expense_total, NULL);
+		 * way this fails is overflow, which is counted. The finished
+		 * trades' result is added in its own currency: their legs are
+		 * neither sales nor expenses, so nothing is counted twice. */
+		operating = venture_money_subtract(net, expense_total, NULL);
+		profit = (NULL != operating) ? venture_money_add(operating, trading, NULL) : NULL;
 
 		if (NULL == profit)
 		{
@@ -785,10 +830,26 @@ venture_report_pnl(
 		lines[5].amount = venture_money_copy(expense_total);
 		lines[6].label = "Of which deductible";
 		lines[6].amount = venture_money_copy(claimable);
-		lines[7].label = "Profit";
-		lines[7].amount = venture_money_copy(profit);
+		n_lines = 7;
 
-		for (j = 0; j < G_N_ELEMENTS(lines); j++)
+		/* Arbitrage as its own lines, only when the period finished a
+		 * trade: an organization that never trades keeps the P&L it
+		 * always had. Gains before fees and the fees are the ledger's
+		 * two accounts; the result is what the trades' pages show. */
+		if (trades > 0)
+		{
+			lines[n_lines].label = "Arbitrage gains";
+			lines[n_lines++].amount = venture_report_amount_in(arbitrage_gains, code);
+			lines[n_lines].label = "Less arbitrage fees";
+			lines[n_lines++].amount = venture_report_amount_in(arbitrage_fees, code);
+			lines[n_lines].label = "Arbitrage result";
+			lines[n_lines++].amount = venture_money_copy(trading);
+		}
+
+		lines[n_lines].label = "Profit";
+		lines[n_lines++].amount = venture_money_copy(profit);
+
+		for (j = 0; j < n_lines; j++)
 		{
 			venture_report_result_begin_row(result);
 			venture_report_result_set_text(result, "line", lines[j].label);
@@ -803,10 +864,18 @@ venture_report_pnl(
 			venture_report_currency_metric("expenses", "Expenses", book, expense_total));
 		venture_report_result_add_metric(result,
 			venture_report_currency_metric("profit", "Profit", book, profit));
+
+		if (trades > 0)
+			venture_report_result_add_metric(result,
+				venture_report_currency_metric("arbitrage", "Arbitrage result", book, trading));
 	}
 
 	venture_report_result_add_metric(result,
 		venture_metric_new_count("sales", "Sales", (gint64)sales->len));
+
+	if (trades > 0)
+		venture_report_result_add_metric(result,
+			venture_metric_new_count("arbitrage_trades", "Arbitrage trades finished", (gint64)trades));
 
 	if (deductible_differs)
 	{
@@ -838,8 +907,12 @@ venture_report_ventures(
 	g_autoptr(GPtrArray) ventures = NULL;
 	g_autoptr(GPtrArray) portfolio_revenue = NULL;
 	g_autoptr(GPtrArray) portfolio_codes = NULL;
+	g_autoptr(GPtrArray) any_gains = NULL;
+	g_autoptr(GPtrArray) any_fees = NULL;
+	g_autoptr(GPtrArray) any_result = NULL;
 	g_autofree gchar *book = NULL;
 	guint skipped;
+	guint trades;
 	guint i;
 
 	ventures_query = venture_query_new(VENTURE_TYPE_VENTURE);
@@ -849,6 +922,12 @@ venture_report_ventures(
 	ventures = venture_report_fetch_all(context, ventures_query, options, error);
 
 	if (NULL == ventures)
+		return NULL;
+
+	/* Whether any trade finished in the period decides the column, so a
+	 * portfolio that never trades reads as it always did. */
+	if (!venture_report_arbitrage(context, period, options, 0, &any_gains, &any_fees, &any_result,
+	                              &trades, error))
 		return NULL;
 
 	result = venture_report_result_new("Venture performance", period);
@@ -870,6 +949,11 @@ venture_report_ventures(
 	                                 VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "expenses", "Expenses",
 	                                 VENTURE_REPORT_COLUMN_MONEY);
+
+	if (trades > 0)
+		venture_report_result_add_column(result, "arbitrage", "Arbitrage result",
+		                                 VENTURE_REPORT_COLUMN_MONEY);
+
 	venture_report_result_add_column(result, "profit", "Profit",
 	                                 VENTURE_REPORT_COLUMN_MONEY);
 
@@ -881,6 +965,9 @@ venture_report_ventures(
 		g_autoptr(GPtrArray) expenses = NULL;
 		g_autoptr(GPtrArray) revenue = NULL;
 		g_autoptr(GPtrArray) spent = NULL;
+		g_autoptr(GPtrArray) arbitrage_gains = NULL;
+		g_autoptr(GPtrArray) arbitrage_fees = NULL;
+		g_autoptr(GPtrArray) arbitrage = NULL;
 		g_autoptr(GPtrArray) codes = NULL;
 		g_autofree gchar *name = NULL;
 		g_autofree gchar *type = NULL;
@@ -926,22 +1013,32 @@ venture_report_ventures(
 		revenue = venture_report_net_totals(sales, &skipped);
 		spent = venture_report_totals(expenses, "amount", &skipped);
 
+		if ((trades > 0) &&
+		    !venture_report_arbitrage(context, period, options, venture_id, &arbitrage_gains,
+		                              &arbitrage_fees, &arbitrage, NULL, error))
+			return NULL;
+
 		/* One row per currency the venture dealt in, the book
 		 * currency's always and first: a venture that sold for gold
 		 * and for tickets has two rows, each exact. */
-		codes = venture_report_currencies(book, revenue, spent, NULL);
+		codes = venture_report_currencies(book, revenue, spent, arbitrage, NULL);
 
 		for (c = 0; c < codes->len; c++)
 		{
 			const gchar *code;
 			g_autoptr(VentureMoney) net = NULL;
 			g_autoptr(VentureMoney) cost = NULL;
+			g_autoptr(VentureMoney) trading = NULL;
+			g_autoptr(VentureMoney) operating = NULL;
 			g_autoptr(VentureMoney) profit = NULL;
 
 			code = g_ptr_array_index(codes, c);
 			net = venture_report_amount_in(revenue, code);
 			cost = venture_report_amount_in(spent, code);
-			profit = venture_money_subtract(net, cost, NULL);
+			trading = (NULL != arbitrage) ? venture_report_amount_in(arbitrage, code)
+			                              : venture_money_new_zero(code);
+			operating = venture_money_subtract(net, cost, NULL);
+			profit = (NULL != operating) ? venture_money_add(operating, trading, NULL) : NULL;
 
 			if (NULL == profit)
 				skipped++;
@@ -959,6 +1056,10 @@ venture_report_ventures(
 				(gdouble)venture_report_count_sales_in(sales, code, book));
 			venture_report_result_set_money(result, "revenue", net);
 			venture_report_result_set_money(result, "expenses", cost);
+
+			if (trades > 0)
+				venture_report_result_set_money(result, "arbitrage", trading);
+
 			venture_report_result_set_money(result, "profit", profit);
 		}
 	}
@@ -1869,11 +1970,23 @@ venture_report_monthly(
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GPtrArray) months = NULL;
 	g_autoptr(GPtrArray) seen = NULL;
+	g_autoptr(GPtrArray) any_gains = NULL;
+	g_autoptr(GPtrArray) any_fees = NULL;
+	g_autoptr(GPtrArray) any_result = NULL;
 	g_autofree gchar *book = NULL;
 	guint skipped;
+	guint trades;
 	guint i;
 
 	skipped = 0;
+	trades = 0;
+
+	/* A column for arbitrage only when the period finished a trade. */
+	if ((NULL != period) &&
+	    !venture_report_arbitrage(context, period, options, 0, &any_gains, &any_fees, &any_result,
+	                              &trades, error))
+		return NULL;
+
 	result = venture_report_result_new("Monthly revenue and expenses", period);
 	book = venture_report_book_currency(context, options);
 	seen = g_ptr_array_new_with_free_func(g_free);
@@ -1889,6 +2002,11 @@ venture_report_monthly(
 	                                 VENTURE_REPORT_COLUMN_MONEY);
 	venture_report_result_add_column(result, "expenses", "Expenses",
 	                                 VENTURE_REPORT_COLUMN_MONEY);
+
+	if (trades > 0)
+		venture_report_result_add_column(result, "arbitrage", "Arbitrage result",
+		                                 VENTURE_REPORT_COLUMN_MONEY);
+
 	venture_report_result_add_column(result, "profit", "Profit",
 	                                 VENTURE_REPORT_COLUMN_MONEY);
 
@@ -1905,6 +2023,9 @@ venture_report_monthly(
 		g_autoptr(GPtrArray) expenses = NULL;
 		g_autoptr(GPtrArray) revenue = NULL;
 		g_autoptr(GPtrArray) spent = NULL;
+		g_autoptr(GPtrArray) arbitrage_gains = NULL;
+		g_autoptr(GPtrArray) arbitrage_fees = NULL;
+		g_autoptr(GPtrArray) arbitrage = NULL;
 		g_autoptr(GPtrArray) codes = NULL;
 		VentureDateRange *month;
 		guint c;
@@ -1933,23 +2054,33 @@ venture_report_monthly(
 		revenue = venture_report_net_totals(sales, &skipped);
 		spent = venture_report_totals(expenses, "amount", &skipped);
 
+		if ((trades > 0) &&
+		    !venture_report_arbitrage(context, month, options, 0, &arbitrage_gains, &arbitrage_fees,
+		                              &arbitrage, NULL, error))
+			return NULL;
+
 		/* A row per month per currency: the book currency's every
 		 * month, so the series has no holes, and another currency's
 		 * only in a month that has something in it. */
-		codes = venture_report_currencies(book, revenue, spent, NULL);
+		codes = venture_report_currencies(book, revenue, spent, arbitrage, NULL);
 
 		for (c = 0; c < codes->len; c++)
 		{
 			const gchar *code;
 			g_autoptr(VentureMoney) net = NULL;
 			g_autoptr(VentureMoney) cost = NULL;
+			g_autoptr(VentureMoney) trading = NULL;
+			g_autoptr(VentureMoney) operating = NULL;
 			g_autoptr(VentureMoney) profit = NULL;
 
 			code = g_ptr_array_index(codes, c);
 			venture_report_add_code(seen, code);
 			net = venture_report_amount_in(revenue, code);
 			cost = venture_report_amount_in(spent, code);
-			profit = venture_money_subtract(net, cost, NULL);
+			trading = (NULL != arbitrage) ? venture_report_amount_in(arbitrage, code)
+			                              : venture_money_new_zero(code);
+			operating = venture_money_subtract(net, cost, NULL);
+			profit = (NULL != operating) ? venture_money_add(operating, trading, NULL) : NULL;
 
 			if (NULL == profit)
 				skipped++;
@@ -1962,6 +2093,10 @@ venture_report_monthly(
 				(gdouble)venture_report_count_sales_in(sales, code, book));
 			venture_report_result_set_money(result, "revenue", net);
 			venture_report_result_set_money(result, "expenses", cost);
+
+			if (trades > 0)
+				venture_report_result_set_money(result, "arbitrage", trading);
+
 			venture_report_result_set_money(result, "profit", profit);
 		}
 	}

@@ -352,6 +352,47 @@ venture_arbitrage_performance(
 );
 
 /**
+ * venture_arbitrage_realised_totals:
+ * @context: the wiring
+ * @organization_id: the organization; zero or less for the default one
+ * @venture_id: only trades filed under this venture; zero for every one
+ * @period: (nullable): bounds `closed-at`; %NULL for every finished trade
+ * @out_gains: (out) (transfer full) (element-type VentureMoney): per
+ *   currency, what the finished trades made before their fees -- the
+ *   ledger's "Arbitrage gains" -- as venture_money_totals_new() totals
+ * @out_fees: (out) (transfer full) (element-type VentureMoney): per
+ *   currency, the fees their executed legs paid
+ * @out_realised: (out) (transfer full) (element-type VentureMoney): per
+ *   currency, @out_gains less @out_fees: each trade's realised result
+ * @out_trades: (out) (optional): how many finished trades were counted
+ * @error: (out) (optional): return location for a #GError
+ *
+ * What the operational reports (`pnl`, `ventures`, `monthly`) add for
+ * arbitrage: the trades that finished -- closed or abandoned -- in
+ * @period, by `closed-at`, with exactly the arithmetic of the trade page
+ * and `arbitrage_performance` (venture_arbitrage_trade_summary()). A
+ * trade's legs are neither sales nor expenses, so nothing here is counted
+ * twice by a report that also totals those. Kept per currency and never
+ * converted. With the arbitrage module off the totals are empty and the
+ * count zero; past venture_aggregate_get_max_rows() finished trades it
+ * refuses rather than total a part.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_arbitrage_realised_totals(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  venture_id,
+	VentureDateRange	 *period,
+	GPtrArray		**out_gains,
+	GPtrArray		**out_fees,
+	GPtrArray		**out_realised,
+	guint			 *out_trades,
+	GError			**error
+);
+
+/**
  * venture_arbitrage_register_reports:
  * @registry: the report registry
  *

@@ -48,7 +48,7 @@ venturectl feeds sync $MARKETPLACE --wait
 
 * Venues and fees
 
-These sources belong to the default organization, so promotion works:
+These sources belong to the default organization, so promotion needs no =organization_id= (another organization's source would be promoted with =organization_id=N= after the key):
 
 #+begin_src sh
 ACME=$(venturectl -f json market promote $SUPPLIER venue acme | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')

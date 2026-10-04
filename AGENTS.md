@@ -295,6 +295,17 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
 - **An executed stock leg is for good.** Changing or cancelling it is
   refused with the counter-leg message, and so is any financial change to
   an executed leg of a closed or abandoned trade until it is reopened.
+- **The operational reports count finished trades through one function.**
+  `pnl`, `ventures` and `monthly` add `venture_arbitrage_realised_totals()`
+  -- trades closed or abandoned in the period by `closed-at`, per
+  currency, the trade page's arithmetic -- as "Arbitrage gains", "Less
+  arbitrage fees" and "Arbitrage result" (a column in the other two), and
+  the result goes into Profit. Legs are neither sales nor expenses, so
+  nothing is counted twice; never add a trade's legs to a sales or
+  expense total. The lines appear only when the period finished a trade,
+  so an organization that never trades reads as it always did, and the
+  module off is no lines and no error. `/arbitrage-ledger/operational-reports`
+  pins all three.
 
 ## Finding opportunities: the arbitrage scan
 
@@ -322,13 +333,28 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   Staging (`?stage=1`, `venture_arbitrage_stage_opportunity()`) shares
   the parameter building, so approval performs exactly the plan a direct
   record would have; it still promotes the legs' venues and instruments.
-- **The scan routes drop `key` and `format` and ignore
-  `organization_id`, `venture_id`, `as_of`.** Anything sending a question
-  must not rely on them: `venturectl arbitrage` refuses them by name, and
-  the calculator route passes `format` (the odds format) on explicitly --
-  dropping it read American odds as decimal. The routes answer for the
-  active organization; another organization is `report arbitrage_scan
-  organization_id=N` or an explicit `record ... organization_id=N`.
+- **The scan routes drop `key` and `format` and ignore `venture_id`,
+  `as_of`.** Anything sending a question must not rely on them:
+  `venturectl arbitrage` refuses them by name, and the calculator route
+  passes `format` (the odds format) on explicitly -- dropping it read
+  American odds as decimal. `organization_id` is read, by the route and
+  not the scan (see "A Trading API answers for its organization_id").
+- **A Trading API answers for its `organization_id`, judged by the record
+  policy.** Every `/api/v1/feeds`, `/api/v1/market` and
+  `/api/v1/arbitrage` route resolves its organization through
+  `venture_web_request_organization()`: the query string's
+  `organization_id`, else the JSON body's (a number or its digits), else
+  the active organization -- which for a token is always the default one,
+  so without the parameter a second organization's market data was
+  unreachable from venturectl. The organization's own row is read under
+  the request's access scope before anything else: a member may read it,
+  a stranger is told NOT_FOUND, exactly what reading any of its records
+  would say. That check matters because these routes read series stores,
+  which are files the row-by-row policy never sees. Pages ignore the
+  parameter and answer for the sidebar's pick, as every page does. A new
+  Trading route calls the helper, never `venture_web_active_organization()`
+  directly; `/auth/trading-organization` in `tests/test-auth.c` holds the
+  families.
 - **The option table in `venture-arbitrage-scan.c` is the one list of scan
   options, and every one is a report option.** A new option goes there,
   into the `arbitrage_scan` schema, and through all five doors in the
@@ -350,6 +376,21 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   not exist (the registry is process-wide and masks types per context);
   answer "no data sources" without looking. The same holds for any page
   that reads a module's records while that module is off.
+- **An event that has started is not an opportunity.** `cover` and
+  `back_lay` leave out an event whose `commence_time` attribute (on the
+  event, or on an outcome's parent) is at or before the scan's time: books
+  stop moving a finished match's odds, so its last quotes look exactly
+  like a surebet. An event naming no start is kept, counted and noted.
+  A test fixture with a fixed kick-off is a time bomb -- serve it moved
+  into the future, as `serve_odds()` in `tests/test-plugin-examples.c`
+  does.
+- **What a calculator presents as the result is rounded against the
+  person.** A surebet's `payout` and `profit` are the least rounded payout
+  and it less the stakes; the unrounded T/S and T(1/S - 1) are
+  `payout_ideal` and `profit_ideal` (a scan row's `ideal_profit`).
+  Back/lay rounds winnings down and the liability up, so `worst` is what
+  the pair is sure to make; `ideal` is beside it. Never show an `_ideal`
+  figure as what a person gets.
 
 ## The reference plugins: Blizzard, the-odds-api, supplier-csv
 
@@ -1588,13 +1629,12 @@ than one that fails.
   `tests/demo-market.sh` compares. Its planted spreads must hold in every
   snapshot (the alert, the scans and the trades are written against
   them), so planted cells never stand empty between listings.
-- **A token's active organization is always the default one.**
-  `feeds sync|runs`, `market promote`, the `market` page verbs and
-  `arbitrage scan` refuse or ignore Evermoor's records. Its source syncs
-  through the `sync` record action and a poll of `data_source_run`
-  (`sync_source`), its venues and instruments are `create`d with
-  `data_source_id` and `key`, its scans are `report arbitrage_scan
-  organization_id=N`, its trades `arbitrage record ... organization_id=N`.
+- **Evermoor is worked with `organization_id=N`, like a person would.**
+  A token's active organization is always the default one, so every
+  Trading verb for Evermoor names it: `feeds sync ID --wait
+  organization_id=N` (`sync_source`), `market promote SOURCE venue|instrument
+  KEY organization_id=N` then `update` for what the store does not say
+  (fees, location, product), `arbitrage record ... organization_id=N`.
 - **Every purse a trade spends is funded first, in date order.** A
   bookmaker wallet is a holding: the demo funds it with a posted journal a
   hundred hours before the stakes. Brisk's purse holds only what three
@@ -1615,10 +1655,10 @@ than one that fails.
   old as the clone and the Venues page calls it overdue. `start_server`
   copies `plugins/exec` to `build/demo/plugins` and points
   `plugins.paths` there.
-- **`report pnl` does not see a trade.** It totals sales and expenses;
-  the ledger's `income_statement` has Arbitrage gains and fees. A played
-  match is still quoted, so the `cover` preset and widget carry
-  `max_age_hours: 6`.
+- **The surebet preset's `max_age_hours: 6` is about stale odds, not
+  finished matches.** The scan leaves a started match out by its
+  `commence_time`; six hours keeps a price nobody would still bet at off
+  the Trading desk.
 - **`(( x = 0 ))` is a failing command under `set -e`.** The generator
   assigns with `x=$(( ... ))`; a hash or an age of zero ended the run
   silently after the first realm's header.

@@ -62,6 +62,8 @@ typedef struct
 	GHashTable		*intervals;	/* "id\037venue" -> interval */
 	GHashTable		*references;	/* "id\037group\037key" -> VentureSeriesReference */
 	guint			 stale;
+	guint			 started;	/* events left out: under way or over */
+	guint			 undated;	/* events kept that name no start */
 } ArbWalk;
 
 static void
@@ -98,6 +100,29 @@ arb_walk_clear(ArbWalk *walk)
 
 		note = g_strdup_printf("%u price%s older than max_age_hours %s left out.", walk->stale,
 		                       (1 == walk->stale) ? "" : "s", (1 == walk->stale) ? "was" : "were");
+		venture_arbitrage_scan_add_note(walk->scan, note);
+	}
+
+	if (walk->started > 0)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%u event%s that had already started (commence_time at or before the "
+		                       "scan's time) %s left out: odds on a match under way or over are "
+		                       "not an opportunity.", walk->started, (1 == walk->started) ? "" : "s",
+		                       (1 == walk->started) ? "was" : "were");
+		venture_arbitrage_scan_add_note(walk->scan, note);
+	}
+
+	if (walk->undated > 0)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%u event%s name%s no commence_time and %s kept: whether %s already "
+		                       "started cannot be told from the odds, so bound the prices with "
+		                       "max_age_hours.", walk->undated, (1 == walk->undated) ? "" : "s",
+		                       (1 == walk->undated) ? "s" : "", (1 == walk->undated) ? "was" : "were",
+		                       (1 == walk->undated) ? "it has" : "they have");
 		venture_arbitrage_scan_add_note(walk->scan, note);
 	}
 
@@ -1785,6 +1810,80 @@ arb_instrument_name(
 	return g_strdup(key);
 }
 
+/*
+ * When @key's event starts, from the commence_time attribute an odds
+ * provider stores on the event (the-odds-api's plugin does, and so does
+ * any JSONL that follows it); an outcome asks its parent, a few levels
+ * up at most -- parents are a provider's data, and a loop in them must
+ * end a scan, not hang it. %FALSE when none names one, or it is not a
+ * time.
+ */
+static gboolean
+arb_commence_time(
+	VentureSeriesStore	*store,
+	const gchar		*key,
+	guint			 depth,
+	gint64			*out
+){
+	g_autoptr(VentureSeriesInstrumentRow) row = NULL;
+	g_autoptr(JsonNode) attrs = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	const gchar *text;
+
+	if (!venture_series_store_get_instrument(store, key, &row, NULL) || (NULL == row))
+		return FALSE;
+
+	if (!venture_string_is_empty(row->attrs_json))
+		attrs = venture_json_parse(row->attrs_json, NULL);
+
+	text = ((NULL != attrs) && JSON_NODE_HOLDS_OBJECT(attrs))
+		? venture_json_object_get_string(json_node_get_object(attrs), "commence_time", NULL) : NULL;
+
+	if (venture_string_is_empty(text))
+		return (depth < 4) && !venture_string_is_empty(row->parent_key) &&
+		       arb_commence_time(store, row->parent_key, depth + 1, out);
+
+	when = venture_time_from_string(text, NULL);
+
+	if (NULL == when)
+		return FALSE;
+
+	*out = g_date_time_to_unix(when);
+
+	return TRUE;
+}
+
+/*
+ * Whether @key's event is open for betting as of the scan's time: one
+ * whose commence_time is at or before it is under way or over, and its
+ * quotes -- however fresh they were when taken -- are a match nobody can
+ * back any more. A finished match's last odds are exactly what a surebet
+ * scan would otherwise offer, because books stop moving them. An event
+ * that names no start is kept and counted, and the scan says so.
+ */
+static gboolean
+arb_event_open(
+	ArbWalk			*walk,
+	VentureSeriesStore	*store,
+	const gchar		*key
+){
+	gint64 starts;
+
+	if (!arb_commence_time(store, key, 0, &starts))
+	{
+		walk->undated++;
+		return TRUE;
+	}
+
+	if (starts <= walk->now)
+	{
+		walk->started++;
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 static gboolean
 arb_cover_event(
 	ArbWalk			 *walk,
@@ -1815,6 +1914,9 @@ arb_cover_event(
 	gint64 interval;
 	guint i;
 	guint j;
+
+	if (!arb_event_open(walk, store, event))
+		return TRUE;
 
 	quotes = venture_series_store_list_quotes(store, NULL, event, error);
 
@@ -2001,20 +2103,21 @@ arb_cover_event(
 
 		/* What the rounded stakes are sure to make is the profit; the
 		 * ideal T(1/S - 1) is shown beside it. */
-		venture_arbitrage_set_money(opportunity, "net", split.guaranteed);
+		venture_arbitrage_set_money(opportunity, "net", split.profit);
 		venture_arbitrage_set_money(opportunity, "capital", split.staked);
-		venture_arbitrage_set_money(opportunity, "ideal_profit", split.profit);
+		venture_arbitrage_set_money(opportunity, "ideal_profit", split.profit_ideal);
 		venture_arbitrage_set_money(opportunity, "residual", split.residual);
-		venture_arbitrage_set_money(opportunity, "worst_payout", split.worst_payout);
+		venture_arbitrage_set_money(opportunity, "payout", split.payout);
+		venture_arbitrage_set_money(opportunity, "payout_ideal", split.payout_ideal);
 		json_object_set_double_member(opportunity, "sum", split.sum);
 		json_object_set_double_member(opportunity, "overround", split.overround);
 		json_object_set_boolean_member(opportunity, "is_surebet", split.is_surebet);
 
-		if (venture_arbitrage_roi(split.guaranteed, split.staked, &roi, NULL))
+		if (venture_arbitrage_roi(split.profit, split.staked, &roi, NULL))
 			venture_arbitrage_set_ratio(opportunity, "roi", roi);
 
 		/* Both sides are quoted now: it fills, or it does not exist. */
-		venture_arbitrage_set_money(opportunity, "ev", split.guaranteed);
+		venture_arbitrage_set_money(opportunity, "ev", split.profit);
 	}
 
 	venture_arbitrage_surebet_clear(&split);
@@ -2132,6 +2235,9 @@ arb_back_lay_instrument(
 	gdouble commission;
 	gdouble roi;
 	guint i;
+
+	if (!arb_event_open(walk, store, instrument))
+		return TRUE;
 
 	quotes = venture_series_store_list_quotes(store, instrument, NULL, error);
 

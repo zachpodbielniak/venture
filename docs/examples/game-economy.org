@@ -629,10 +629,10 @@ The price observations above are a few hand-typed figures from named sources. A 
 SOURCE=$(new data_source organization_id=$ORG name="Evermoor auction houses" provider=file_jsonl \
     schedule=manual currency=GOLD venue_namespace=realm instrument_namespace=item \
     settings=$'file: evermoor/{unit}.jsonl\nunits: [silverfen, thornmere, moonwell, greyharbor, emberfall, duskwatch]')
-venturectl act data_source $SOURCE sync        # not `feeds sync`: that answers for the default organization
+venturectl feeds sync $SOURCE --wait organization_id=$ORG    # without organization_id: the default organization's
 #+end_src
 
-The six realms are Silverfen (home, dear), Thornmere (quiet, cheap), Moonwell, Greyharbor, Emberfall and Duskwatch (small, dearest), all in the group =evermoor-eu=; forty-one items carry the store keys the demo links to its products (=silverleaf=, =healing-potion=, =flask-of-endurance= and the rest). Each realm becomes a =venue= record with the house's cut (=fee_model: percent=, five percent and a refundable deposit), and two of them name a character: a buy on Thornmere spends Brisk's purse, a sale on Silverfen fills Tallow's. Each product that matters gets an =instrument= record with its =product_id=, which is what lets a recipe or a stock leg be priced from the store.
+The six realms are Silverfen (home, dear), Thornmere (quiet, cheap), Moonwell, Greyharbor, Emberfall and Duskwatch (small, dearest), all in the group =evermoor-eu=; forty-one items carry the store keys the demo links to its products (=silverleaf=, =healing-potion=, =flask-of-endurance= and the rest). Each realm becomes a =venue= record, promoted from the store (=market promote $SOURCE venue thornmere organization_id=$ORG=) and given the house's cut (=fee_model: percent=, five percent and a refundable deposit); two of them name a character: a buy on Thornmere spends Brisk's purse, a sale on Silverfen fills Tallow's. Each product that matters gets an =instrument= record, promoted the same way and given its =product_id=, which is what lets a recipe or a stock leg be priced from the store.
 
 What the demo then adds on top, in Evermoor:
 
@@ -658,6 +658,7 @@ venturectl report arbitrage_scan organization_id=$ORG strategy=spread units=5 mi
 venturectl report arbitrage_scan organization_id=$ORG strategy=transform recipe_id=$HEALING_RECIPE units=10
 venturectl report arbitrage_performance last_90_days organization_id=$ORG
 venturectl report income_statement this_month organization_id=$ORG
+venturectl report pnl this_month organization_id=$ORG    # Arbitrage gains, fees and result beside the sales
 #+end_src
 
 Every purse a trade spends is funded before it is spent: Brisk ends on 1g 91s of the 7g 23s his farming earned, and =tests/demo-market.sh= replays both purses at awkward clock times to keep it so. [[file:arbitrage-crafting.org][Craft arbitrage]] walks through the potion trade and the write-off; the default organization's dollar trades -- a dropshipped order and a surebet -- are in [[file:arbitrage-dropshipping.org][dropshipping]] and [[file:arbitrage-surebet.org][a surebet]].

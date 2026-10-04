@@ -2234,47 +2234,23 @@ generate_market () {
 }
 
 # Syncs a data source and waits for its run, dying unless it went through.
-#
-# A source of the default organization goes through `feeds sync --wait`,
-# the command a person would type. Evermoor's cannot: the feeds API
-# answers for the caller's active organization, and a token's is always
-# the default one, so `feeds sync` says the source does not exist there.
-# For it the sync is the data source's record action -- which any
-# organization's record answers -- and the wait is the same poll the CLI
-# does, on the run records.
+# The organization is named every time: the feeds API answers for the
+# caller's active organization otherwise, and a token's is always the
+# default one, so Evermoor's source would not exist there.
 sync_source () {
     local source="$1"
     local org="$2"
     local output
     local status=""
-    local waited=0
 
-    if [[ "${org}" == "${home_org}" ]]
-    then
-        output="$(ctl --format json feeds sync "${source}" --wait 2>&1)" \
-            || die "could not sync data source ${source}: ${output}"
-        status="$(printf '%s' "${output}" | python3 -c \
-            'import json, sys
+    output="$(ctl --format json feeds sync "${source}" --wait "organization_id=${org}" 2>&1)" \
+        || die "could not sync data source ${source}: ${output}"
+    status="$(printf '%s' "${output}" | python3 -c \
+        'import json, sys
 r = json.load(sys.stdin)
 print(r.get("status", ""), r.get("error") or "")' 2>/dev/null || true)"
-    else
-        output="$(ctl --format json act data_source "${source}" sync 2>&1)" \
-            || die "could not queue a sync of data source ${source}: ${output}"
 
-        while [[ -z "${status}" ]] && (( waited < 240 ))
-        do
-            sleep 0.5
-            waited=$(( waited + 1 ))
-            status="$(ctl --format json list data_source_run "data_source_id=${source}" \
-                "organization_id=${org}" 2>/dev/null | python3 -c \
-                'import json, sys
-rows = json.load(sys.stdin).get("records", [])
-print((rows[0].get("status", "") + " " + (rows[0].get("error") or "")) if rows else "")' \
-                2>/dev/null || true)"
-        done
-    fi
-
-    [[ -n "${status}" ]] || die "data source ${source} recorded no run within two minutes"
+    [[ -n "${status}" ]] || die "data source ${source} recorded no run"
     [[ "${status}" == "ok "* ]] || die "data source ${source} did not sync: ${status}"
 }
 
@@ -2372,15 +2348,15 @@ for o in r["outcomes"]:
         || die "$1 and $2 are not a surebet"
 }
 
-# Promotes a store venue or instrument of a default-organization source
-# into a record and prints its id. Promotion, like the feeds API, works
-# in the caller's active organization; Evermoor's records are made with
-# `create` instead, from the same keys.
+# Promotes a store venue or instrument into a record of organization $4
+# (the default one when absent) and prints its id. The store already
+# knows its name, kind, group and currency; what it cannot say -- fees,
+# a location, the product -- is an `update` afterwards.
 promote () {
     local output
     local id
 
-    output="$(ctl --format json market promote "$1" "$2" "$3" 2>&1)" \
+    output="$(ctl --format json market promote "$1" "$2" "$3" "organization_id=${4:-${home_org}}" 2>&1)" \
         || die "could not promote ${2} ${3} from data source ${1}: ${output}"
 
     id="$(printf '%s' "${output}" | python3 -c \
@@ -2422,11 +2398,12 @@ seed_evermoor_market () {
 
     sync_source "${source}" "${org}"
 
-    # A venue record per realm: what the house charges (a 5% cut and a
-    # refundable deposit), where the gold of a trade there moves through,
-    # and what it costs to move a lot away. Brisk lives on Thornmere and
-    # Tallow on Silverfen, so a buy on Thornmere spends Brisk's purse and
-    # a sale on Silverfen fills Tallow's.
+    # A venue record per realm, promoted from the store, then given what
+    # the house charges (a 5% cut and a refundable deposit), where the
+    # gold of a trade there moves through, and what it costs to move a
+    # lot away. Brisk lives on Thornmere and Tallow on Silverfen, so a buy
+    # on Thornmere spends Brisk's purse and a sale on Silverfen fills
+    # Tallow's.
     while read -r realm name level
     do
         local where=()
@@ -2436,11 +2413,11 @@ seed_evermoor_market () {
             silverfen) where=(location_id="${tallow}") ;;
         esac
 
-        venue["${realm}"]="$(make_record venue organization_id="${org}" \
-            name="${name}" kind=auction_house namespace=realm key="${realm}" \
-            group_key=evermoor-eu data_source_id="${source}" currency=GOLD \
+        venue["${realm}"]="$(promote "${source}" venue "${realm}" "${org}")"
+        ctl update venue "${venue[${realm}]}" name="${name}" \
             fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5' \
-            transfer_cost="$(gold 2000)" notes="${level}" "${where[@]}")"
+            transfer_cost="$(gold 2000)" notes="${level}" "${where[@]}" > /dev/null \
+            || die "could not set ${name}'s fees"
     done <<< "silverfen Silverfen The home realm, busy and dear
 thornmere Thornmere A quiet realm with too many gatherers
 moonwell Moonwell Middling
@@ -2464,12 +2441,14 @@ duskwatch Duskwatch Small, and everything is scarce"
     # leg check the item it moves. The keys are the generator's.
     while read -r key name product
     do
-        local link=()
-        [[ "${product}" == "-" ]] || link=(product_id="${product}")
+        instrument["${key}"]="$(promote "${source}" instrument "${key}" "${org}")"
 
-        instrument["${key}"]="$(make_record instrument organization_id="${org}" \
-            name="${name//_/ }" kind=item namespace=item key="${key}" \
-            data_source_id="${source}" "${link[@]}")"
+        if [[ "${product}" != "-" ]]
+        then
+            ctl update instrument "${instrument[${key}]}" name="${name//_/ }" \
+                product_id="${product}" > /dev/null \
+                || die "could not link ${key} to its product"
+        fi
     done <<< "silverleaf Silverleaf ${economy[silverleaf]}
 duskroot Duskroot ${economy[duskroot]}
 copper-ore Copper_ore ${economy[copper]}
@@ -2741,8 +2720,8 @@ seed_trading_desk () {
     add arbitrage_strategy name="Dropship: Acme to ShopMart" strategy=spread \
         buy_venues=acme sell_venues=shopmart options=$'units: 1\nmin_profit: 2.00 USD\nsort: roi' \
         notes="Anything Acme stocks that sells on ShopMart for two dollars more than it lands at, after the cut."
-    # Six hours at most: the Varga match's quotes are two days old and
-    # the match is over, and a scan cannot know that from the odds alone.
+    # The scan leaves the finished Varga match out by its commence_time;
+    # six hours keeps a price nobody would still stake at off the desk.
     add arbitrage_strategy name="Surebets" strategy=cover data_source_id="${odds}" \
         options=$'total_stake: 100.00 USD\nmax_age_hours: 6' \
         notes="A hundred dollars across the books, wherever the best odds add up to under one, on prices from the last six hours."

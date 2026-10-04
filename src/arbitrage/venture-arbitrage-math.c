@@ -539,9 +539,9 @@ venture_arbitrage_surebet_clear(VentureArbitrageSurebet *surebet)
 	g_clear_pointer(&surebet->staked, venture_money_free);
 	g_clear_pointer(&surebet->residual, venture_money_free);
 	g_clear_pointer(&surebet->payout, venture_money_free);
+	g_clear_pointer(&surebet->payout_ideal, venture_money_free);
 	g_clear_pointer(&surebet->profit, venture_money_free);
-	g_clear_pointer(&surebet->worst_payout, venture_money_free);
-	g_clear_pointer(&surebet->guaranteed, venture_money_free);
+	g_clear_pointer(&surebet->profit_ideal, venture_money_free);
 	memset(surebet, 0, sizeof(*surebet));
 }
 
@@ -628,10 +628,13 @@ venture_arbitrage_surebet(
 			worst = payout;
 	}
 
+	/* What a person gets is the least rounded payout and what it leaves
+	 * over the rounded stakes; the unrounded T/S and T(1/S - 1) are kept
+	 * as the _ideal figures beside them. */
 	split.staked = venture_money_new(staked, currency, exponent);
 	split.residual = venture_money_new(total_minor - staked, currency, exponent);
-	split.worst_payout = venture_money_new(worst, currency, exponent);
-	split.guaranteed = venture_money_new(worst - staked, currency, exponent);
+	split.payout = venture_money_new(worst, currency, exponent);
+	split.profit = venture_money_new(worst - staked, currency, exponent);
 
 	if (!venture_arbitrage_round_minor((gdouble)total_minor / sum, &minor, error))
 	{
@@ -639,7 +642,7 @@ venture_arbitrage_surebet(
 		return FALSE;
 	}
 
-	split.payout = venture_money_new(minor, currency, exponent);
+	split.payout_ideal = venture_money_new(minor, currency, exponent);
 
 	if (!venture_arbitrage_round_minor((gdouble)total_minor * (1.0 / sum - 1.0), &minor, error))
 	{
@@ -647,7 +650,7 @@ venture_arbitrage_surebet(
 		return FALSE;
 	}
 
-	split.profit = venture_money_new(minor, currency, exponent);
+	split.profit_ideal = venture_money_new(minor, currency, exponent);
 	*out = split;
 
 	return TRUE;
@@ -748,19 +751,31 @@ venture_arbitrage_back_lay(
 	 * The lay stake that makes both results equal: B*d/(L - c). L > 1 and
 	 * c < 1, so the denominator is always above zero. The liability and
 	 * the back winnings are integers times scaled odds, so they are exact
-	 * before their one rounding.
+	 * before their one rounding -- and that rounding goes against the
+	 * person, as the surebet's payouts do: winnings down (no bookmaker
+	 * pays part of a minor unit), the liability up (an exchange holds the
+	 * whole of it). Rounding both half to even made `worst` a cent better
+	 * than what the pair is sure to make about as often as not, and it is
+	 * the figure presented as the result.
 	 */
 	if (!venture_arbitrage_round_minor((gdouble)stake * back_odds / (lay_odds - commission),
 	                                   &lay_stake, error) ||
 	    !arb_math_scaled(back_odds, &back_scaled, error) ||
 	    !arb_math_scaled(lay_odds, &lay_scaled, error) ||
-	    !arb_math_times_odds(lay_stake, lay_scaled - ARB_MATH_ODDS_SCALE, FALSE, &liability, error) ||
-	    !arb_math_times_odds(stake, back_scaled - ARB_MATH_ODDS_SCALE, FALSE, &back_gross, error) ||
-	    !venture_arbitrage_round_minor((gdouble)lay_stake * (1.0 - commission), &lay_kept, error) ||
+	    !arb_math_times_odds(-lay_stake, lay_scaled - ARB_MATH_ODDS_SCALE, TRUE, &liability, error) ||
+	    !arb_math_times_odds(stake, back_scaled - ARB_MATH_ODDS_SCALE, TRUE, &back_gross, error) ||
 	    !venture_arbitrage_round_minor((gdouble)stake * back_odds * (1.0 - commission) /
 	                                   (lay_odds - commission) - (gdouble)stake, &ideal, error))
 		return FALSE;
 
+	/* Up is minus the floor of the negation. */
+	liability = -liability;
+
+	/* What the exchange leaves of a winning lay, rounded down. The
+	 * commission is a double, so a product meant to be whole (100 x 0.95)
+	 * can land a hair under it; a millionth of a minor unit is noise, not
+	 * a cent to take away. */
+	lay_kept = (gint64)floor((gdouble)lay_stake * (1.0 - commission) + 1e-6);
 	back_wins = back_gross - liability;
 	out->lay_stake = venture_money_new(lay_stake, currency, exponent);
 	out->liability = venture_money_new(liability, currency, exponent);

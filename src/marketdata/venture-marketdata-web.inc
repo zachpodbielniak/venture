@@ -7,8 +7,9 @@
  * as a record type called "market". The records themselves -- venue,
  * instrument, watchlist, watchlist_entry -- are served by the generic
  * routes; these two are what is not a record: asking the price oracle,
- * and promoting a store's venue or instrument into one. Both read only
- * the active organization's records, and both are module-gated. Built
+ * and promoting a store's venue or instrument into one. Both answer for
+ * one organization -- organization_id, else the active one -- and both
+ * are module-gated. Built
  * with or without SQLite: without a store the oracle answers from
  * observations only, and promotion says why it cannot.
  */
@@ -41,7 +42,7 @@ venture_marketdata_web_id(
 
 /*
  * GET /api/v1/market/quote: the price oracle, as JSON. Query string:
- * instrument_id or product_id; venue_id or where; basis (market by
+ * organization_id (else the active one); instrument_id or product_id; venue_id or where; basis (market by
  * default); at; currency; prefer_currency; fallback (true/false) and
  * source (the observation source a fallback may read).
  */
@@ -78,7 +79,9 @@ venture_marketdata_web_quote(
 		return gate;
 
 	venture_marketdata_question_init(&question);
-	question.organization_id = venture_web_active_organization(self, request);
+
+	if (!venture_web_request_organization(self, request, NULL, &question.organization_id, &error))
+		return venture_web_error_response(error);
 
 	if (!venture_marketdata_web_id(request, "instrument_id", &question.instrument_id, &error) ||
 	    !venture_marketdata_web_id(request, "product_id", &question.product_id, &error) ||
@@ -161,7 +164,7 @@ venture_marketdata_web_quote(
 
 /*
  * POST /api/v1/market/promote: {"data_source_id": N, "kind": "instrument"
- * or "venue", "key": "..."} makes (or finds, or restores) the record and
+ * or "venue", "key": "...", "organization_id": N (optional)} makes (or finds, or restores) the record and
  * answers with it. An editor's: it creates a record like any other write.
  */
 static HtmxResponse *
@@ -228,9 +231,11 @@ venture_marketdata_web_promote(
 		return venture_web_error_response(error);
 	}
 
+	if (!venture_web_request_organization(self, request, body, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
-	organization_id = venture_web_active_organization(self, request);
 
 	ok = (0 == g_strcmp0(kind, "venue"))
 		? venture_marketdata_promote_venue(self->context, organization_id, source_id, key,

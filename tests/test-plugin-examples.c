@@ -359,16 +359,41 @@ load_odds_api(Fixture *fixture)
 	return TRUE;
 }
 
-/* The odds endpoint, with the quota headers the real one sends, wanting
- * the key in the query string as the real one does. */
-static void
+/*
+ * The odds endpoint, with the quota headers the real one sends, wanting
+ * the key in the query string as the real one does. The fixture's two
+ * kick-offs are moved to a week and eight days from now: a cover scan
+ * leaves out a match that has started, so dates fixed in the file would
+ * make the surebet test fail on the day the first one passed. Returns
+ * the first match's kick-off as served.
+ */
+static gchar *
 serve_odds(Fixture *fixture)
 {
 	VentureTestRoute *route;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GString) body = NULL;
+	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autoptr(GDateTime) first = g_date_time_add_days(now, 7);
+	g_autoptr(GDateTime) second = g_date_time_add_days(now, 8);
+	g_autofree gchar *contents = NULL;
+	g_autofree gchar *path = NULL;
+	gchar *first_stamp;
+	g_autofree gchar *second_stamp = NULL;
 
-	route = venture_test_http_route_file(&fixture->http, "/v4/sports/soccer_epl/odds", 200,
-	                                     VENTURE_TEST_FIXTURES "/odds-api", "soccer_epl.json");
+	path = g_build_filename(VENTURE_TEST_FIXTURES, "odds-api", "soccer_epl.json", NULL);
+	g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+	g_assert_no_error(error);
+	first_stamp = g_date_time_format(first, "%Y-%m-%dT%H:%M:%SZ");
+	second_stamp = g_date_time_format(second, "%Y-%m-%dT%H:%M:%SZ");
+	body = g_string_new(contents);
+	g_assert_cmpuint(g_string_replace(body, "2026-10-10T14:00:00Z", first_stamp, 0), ==, 1);
+	g_assert_cmpuint(g_string_replace(body, "2026-10-11T16:30:00Z", second_stamp, 0), ==, 1);
+
+	route = venture_test_http_route(&fixture->http, "/v4/sports/soccer_epl/odds", 200, body->str);
 	route->headers = g_strsplit("x-requests-remaining|480|x-requests-used|20|x-requests-last|3", "|", -1);
+
+	return first_stamp;
 }
 
 static gchar *
@@ -398,6 +423,7 @@ test_odds_api_sync(
 	g_autoptr(VentureEntity) run = NULL;
 	g_autoptr(VentureSeriesStore) reader = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autofree gchar *kickoff = NULL;
 	g_autofree gchar *settings = NULL;
 	g_autofree gchar *query = NULL;
 	g_autofree gchar *notes = NULL;
@@ -408,7 +434,7 @@ test_odds_api_sync(
 	if (!load_odds_api(fixture))
 		return;
 
-	serve_odds(fixture);
+	kickoff = serve_odds(fixture);
 	settings = odds_settings(fixture);
 	id = create_source(fixture, "EPL odds", "odds_api", settings, "api_key", api_key);
 	run = sync_and_wait(fixture, id);
@@ -438,7 +464,7 @@ test_odds_api_sync(
 		g_assert_nonnull(event);
 		g_assert_cmpstr(event->name, ==, "Arsenal vs Chelsea");
 		g_assert_cmpstr(event->kind, ==, "event");
-		g_assert_nonnull(strstr(event->attrs_json, "2026-10-10T14:00:00Z"));
+		g_assert_nonnull(strstr(event->attrs_json, kickoff));
 
 		g_assert_true(venture_series_store_get_instrument(reader, "ev-ars-che:Draw", &outcome, &error));
 		g_assert_nonnull(outcome);
@@ -541,7 +567,7 @@ test_odds_api_key_never_leaks(
 	if (!load_odds_api(fixture))
 		return;
 
-	serve_odds(fixture);
+	g_free(serve_odds(fixture));
 	settings = odds_settings(fixture);
 
 	g_mutex_lock(&captured_lock);
@@ -628,7 +654,7 @@ test_odds_api_cover(
 	if (!load_odds_api(fixture))
 		return;
 
-	serve_odds(fixture);
+	g_free(serve_odds(fixture));
 	settings = odds_settings(fixture);
 	id = create_source(fixture, "EPL odds", "odds_api", settings, "api_key", api_key);
 	run = sync_and_wait(fixture, id);

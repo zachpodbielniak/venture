@@ -43,40 +43,39 @@ SOURCE=$(new data_source organization_id=$ORG name="Evermoor auction houses" pro
 
 =new= is the helper from [[file:game-economy.org::*Before you start][the game economy]]: create a record and print its id. =units= are fetched one after another, each file read and parsed on a worker thread and committed oldest snapshot first, so the newest snapshot of each realm becomes its current prices and the thirteen days before it its history.
 
-*A second organization cannot use =feeds sync=.* =venturectl feeds sync ID --wait= answers for the caller's active organization, and a token's is always the default one; Evermoor's source is "No such data source" there. The data source's =sync= record action works for any organization's record, and the wait is a poll of the source's runs:
+*A second organization names itself.* Every Trading verb answers for the caller's active organization unless it is given =organization_id=N=, and a token's active organization is always the default one -- without the parameter Evermoor's source is "No such data source". With it, the sync is the same command as for any source:
 
 #+begin_src sh
-venturectl act data_source $SOURCE sync
-until venturectl -f json list data_source_run data_source_id=$SOURCE organization_id=$ORG \
-        | python3 -c 'import json,sys; r=json.load(sys.stdin)["records"]; print(r[0]["status"]) if r else sys.exit(1)'
-do
-    sleep 0.5
-done
+venturectl feeds sync $SOURCE --wait organization_id=$ORG
 #+end_src
 
 The run is =ok= with about 240,000 rows from six units, in two or three seconds. A manual sync also recomputes the region figures -- each item's median across the six realms, the deal price, each realm's sale rate -- which the scans and the Venues page read.
 
 #+begin_src sh
-venturectl report venue_index organization_id=$ORG
-venturectl report market_deals organization_id=$ORG category_path="Trade goods/Bars"
+venturectl market venues organization_id=$ORG
+venturectl market deals organization_id=$ORG category="Trade goods/Bars"
 #+end_src
 
-Thornmere comes out cheaper than its region on every item it lists and Duskwatch dearer on every one. (The =market browse|deals|venues= verbs read the active organization too; for Evermoor use the reports.)
+Thornmere comes out cheaper than its region on every item it lists and Duskwatch dearer on every one. (The reports =venue_index= and =market_deals= with =organization_id= answer the same.)
 
 * Venues: who charges what, and whose purse moves
 
-A venue record is how a scan knows what a realm charges and how a trade knows where its gold goes. One per realm, matched to the store by =data_source_id= and =key=:
+A venue record is how a scan knows what a realm charges and how a trade knows where its gold goes. One per realm, promoted from the store -- which already knows the realm's name, kind, group and currency -- and then given what the store cannot say:
 
 #+begin_src sh
 BRISK=$(venturectl -f json list location name=Brisk organization_id=$ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
 TALLOW=$(venturectl -f json list location name=Tallow organization_id=$ORG | python3 -c 'import json,sys; print(json.load(sys.stdin)["records"][0]["id"])')
 
-THORNMERE=$(new venue organization_id=$ORG name=Thornmere kind=auction_house namespace=realm key=thornmere \
-    group_key=evermoor-eu data_source_id=$SOURCE currency=GOLD location_id=$BRISK \
-    fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5' transfer_cost="20s GOLD")
-SILVERFEN=$(new venue organization_id=$ORG name=Silverfen kind=auction_house namespace=realm key=silverfen \
-    group_key=evermoor-eu data_source_id=$SOURCE currency=GOLD location_id=$TALLOW \
-    fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5' transfer_cost="20s GOLD")
+promote () {   # a store venue or instrument as a record of Evermoor's; prints its id
+    venturectl -f json market promote "$1" "$2" "$3" organization_id=$ORG \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
+}
+THORNMERE=$(promote $SOURCE venue thornmere)
+SILVERFEN=$(promote $SOURCE venue silverfen)
+venturectl update venue $THORNMERE location_id=$BRISK transfer_cost="20s GOLD" \
+    fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5'
+venturectl update venue $SILVERFEN location_id=$TALLOW transfer_cost="20s GOLD" \
+    fee_model=percent fee_params=$'cut_percent: 5\ndeposit_percent: 1.5'
 # ...and moonwell, greyharbor, emberfall, duskwatch the same, with no location.
 #+end_src
 
@@ -84,7 +83,7 @@ SILVERFEN=$(new venue organization_id=$ORG name=Silverfen kind=auction_house nam
 - =location_id=: the venue's cash is that location's holding. Brisk plays on Thornmere and Tallow on Silverfen, so a buy on Thornmere spends Brisk's purse and a sale on Silverfen fills Tallow's. A purse may not go below zero.
 - =transfer_cost=: what moving one lot away from the realm costs; a scan subtracts it from a flip.
 
-*A second organization makes its records with =create=.* =venturectl market promote SOURCE venue KEY= does the same thing in one line -- and is what the [[file:arbitrage-dropshipping.org][dropshipping example]] uses -- but it, too, works in the active organization only.
+Promotion is idempotent: promoting a key again returns the record it made (restoring it if it was deleted), and the [[file:arbitrage-dropshipping.org][dropshipping example]] does the same in the default organization, without =organization_id=.
 
 * Instruments, a product to go with them
 
@@ -96,8 +95,8 @@ ORE=$(venturectl -f json list category name=Ore organization_id=$ORG | python3 -
 
 MOONSTEEL=$(new product organization_id=$ORG venture_id=$VENTURE name="Moonsteel bar" sku=BAR-MS \
     category_id=$ORE tags=bar,flip list_price="1g 20s GOLD" active=true)
-BARS=$(new instrument organization_id=$ORG name="Moonsteel bar" kind=item namespace=item key=moonsteel-bar \
-    data_source_id=$SOURCE product_id=$MOONSTEEL)
+BARS=$(promote $SOURCE instrument moonsteel-bar)
+venturectl update instrument $BARS product_id=$MOONSTEEL
 BARS_ITEM=$(new inventory_item organization_id=$ORG product_id=$MOONSTEEL venture_id=$VENTURE location_id=$TALLOW)
 #+end_src
 
@@ -110,7 +109,7 @@ LIST=$(new watchlist organization_id=$ORG name="Alchemy shopping list" group_key
 new watchlist_entry organization_id=$ORG watchlist_id=$LIST instrument_id=$BARS \
     target_buy="80s GOLD" target_sell="1g 50s GOLD"
 # ...silverleaf (buy under 10s), crystal vial (3s 50c), healing potion (sell over 1g 20s), flask (sell over 7g 50s)
-venturectl market watchlist           # the default organization's; Evermoor's is on its dashboard
+venturectl market watchlist $LIST organization_id=$ORG   # priced now against its targets
 #+end_src
 
 #+begin_src sh
@@ -130,14 +129,16 @@ venturectl act alert_rule $DEAR evaluate record=true
 venturectl list alert_hit organization_id=$ORG
 #+end_src
 
-Rules are evaluated after every feed run against the newest snapshot of each venue; a rule made after the sync is evaluated by hand with its =evaluate= action. The first fires -- Thornmere's silverleaf never costs ten silver ("Silverleaf at thornmere: 0.0905 GOLD, at or below 0.1000 GOLD") -- and lands in the owner's inbox; the second never does, because no flask in the data is near twenty gold. =market alerts evaluate RULE_ID= is the same thing for the default organization.
+Rules are evaluated after every feed run against the newest snapshot of each venue; a rule made after the sync is evaluated by hand with its =evaluate= action. The first fires -- Thornmere's silverleaf never costs ten silver ("Silverleaf at thornmere: 0.0905 GOLD, at or below 0.1000 GOLD") -- and lands in the owner's inbox; the second never does, because no flask in the data is near twenty gold. =market alerts evaluate RULE_ID organization_id=$ORG= is the same thing from the market verbs.
 
 * The scan
 
 #+begin_src sh
-venturectl report arbitrage_scan organization_id=$ORG strategy=spread units=5 min_profit="1.0000 GOLD"
-venturectl report arbitrage_scan organization_id=$ORG strategy=spread units=5 instrument=moonsteel-bar
+venturectl arbitrage scan spread organization_id=$ORG units=5 min_profit="1.0000 GOLD"
+venturectl arbitrage scan spread organization_id=$ORG units=5 instrument=moonsteel-bar
 #+end_src
+
+(=report arbitrage_scan organization_id=$ORG strategy=spread ...= asks the same question as a report.)
 
 =spread= takes each instrument where it is cheapest against its region, walks that realm's listings for the five units, and prices selling them at every other realm: the sell venue's lowest price (=sell_basis=), less its 5% cut, less the buy realm's transfer cost. Rows come sorted by profit; the moonsteel row reads Thornmere to Duskwatch or Silverfen with a net of three to four gold on five bars. The gear and pets above it are the same planted levels on items worth hundreds of gold -- and the reason =min_profit=, =max_capital= and =min_sale_rate= exist.
 
@@ -150,7 +151,7 @@ FLIPS=$(new arbitrage_strategy organization_id=$ORG name="Cross-realm flips" str
 
 * The trade
 
-Recorded from explicit legs -- the form that works for any organization (=arbitrage record ROW= records a scan's row, in the active organization). Legs marked =executed= are executed in order as the trade is recorded; dates are when it happened. The demo dates them 52, 51 and 31 hours before its anchor, and closes an hour after the sale; the dates below are one such run.
+Recorded from explicit legs, because the trade happened at prices of its own (=arbitrage record ROW spread organization_id=$ORG ...= would record a scan's row as a planned trade, from the prices as they are now). Legs marked =executed= are executed in order as the trade is recorded; dates are when it happened. The demo dates them 52, 51 and 31 hours before its anchor, and closes an hour after the sale; the dates below are one such run.
 
 #+begin_src sh
 TRADE=$(venturectl -f json arbitrage record organization_id=$ORG venture_id=$VENTURE strategy=spread \

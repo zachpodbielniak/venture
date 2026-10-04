@@ -5614,6 +5614,301 @@ static void test_auth_feeds(ServerFixture *fixture, gconstpointer unused)
 	g_assert_null(venture_context_get_feeds_service(fixture->context));
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/feeds", admin, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 }
+
+/* A membership of @user_id in @organization_id with @role. */
+static void
+trading_membership(
+	ServerFixture	*fixture,
+	gint64		 user_id,
+	gint64		 organization_id,
+	gint		 role
+){
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(GError) error = NULL;
+
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user_id,
+	                      "organization-id", organization_id, "role", role, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, &error));
+	g_assert_no_error(error);
+}
+
+/* A manual file_jsonl source of @organization_id whose store knows one venue. */
+static gint64
+trading_source(
+	ServerFixture	*fixture,
+	gint64		 organization_id,
+	const gchar	*name,
+	const gchar	*venue_key
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	VentureSeriesVenue venue;
+
+	source = VENTURE_ENTITY(venture_data_source_new());
+	venture_entity_set_organization_id(source, organization_id);
+	g_object_set(source, "name", name, "provider", "file_jsonl", "settings", "file: x.jsonl",
+	             "schedule", "manual", "currency", "USD", NULL);
+	g_assert_true(venture_database_save(fixture->database, source, NULL, &error));
+	g_assert_no_error(error);
+
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	memset(&venue, 0, sizeof(venue));
+	venue.key = venue_key;
+	venue.name = venue_key;
+	venue.kind = "auction_house";
+	venue.group_key = "eu";
+	venue.currency = "USD";
+	g_assert_true(venture_series_store_upsert_venue(store, &venue, g_get_real_time() / G_USEC_PER_SEC,
+	                                                &error));
+	g_assert_no_error(error);
+
+	return venture_entity_get_id(source);
+}
+
+/* GETs/POSTs @path and returns the status, keeping the body in @out_body. */
+static guint
+trading_call(
+	ServerFixture	 *fixture,
+	const gchar	 *method,
+	const gchar	 *cookie,
+	const gchar	 *json,
+	gchar		**out_body,
+	const gchar	 *format,
+	...
+) G_GNUC_PRINTF(6, 7);
+
+static guint
+trading_call(
+	ServerFixture	 *fixture,
+	const gchar	 *method,
+	const gchar	 *cookie,
+	const gchar	 *json,
+	gchar		**out_body,
+	const gchar	 *format,
+	...
+){
+	g_autofree gchar *path = NULL;
+	va_list args;
+
+	va_start(args, format);
+	path = g_strdup_vprintf(format, args);
+	va_end(args);
+
+	return server_fixture_json(fixture, method, path, cookie, json, out_body);
+}
+
+/*
+ * Every Trading API -- /api/v1/feeds, /api/v1/market and /api/v1/arbitrage
+ * -- answers for the organization its organization_id names, judged by
+ * membership, and for the active one when it names none. A member of a
+ * second organization reaches that organization's sources, venues, rules
+ * and scans; a member of only the first is told NOT_FOUND, exactly what
+ * reading the second's records tells them; and a viewer member there,
+ * who reads only what is assigned to them, still sees no source and
+ * cannot set a sync or an evaluation going.
+ *
+ * What breaks if this regresses: a second organization's market data is
+ * unreachable from venturectl again (a token's active organization is
+ * always the default one), or -- worse -- the parameter reads another
+ * organization's series stores, which are files the record policy never
+ * sees, for anybody who names it.
+ */
+static void
+test_auth_trading_organization(
+	ServerFixture	*fixture,
+	gconstpointer	 unused
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) evermoor = NULL;
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autofree gchar *both = NULL, *home = NULL, *reader = NULL, *body = NULL, *json = NULL;
+	gint64 home_org, other, home_source, other_source, both_id, reader_id;
+
+	(void)unused;
+
+	g_object_set(fixture->config, "feeds-enabled", TRUE, NULL);
+	g_assert_true(venture_database_migrate(fixture->database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	home_org = venture_context_get_default_organization_id(fixture->context);
+
+	evermoor = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(evermoor, "name", "Evermoor Trading", "slug", "evermoor", NULL);
+	g_assert_true(venture_database_save(fixture->database, evermoor, NULL, &error));
+	g_assert_no_error(error);
+	other = venture_entity_get_id(evermoor);
+
+	home_source = trading_source(fixture, home_org, "Home prices", "home-realm");
+	other_source = trading_source(fixture, other, "Evermoor prices", "silverfen");
+	rule = g_object_new(VENTURE_TYPE_ALERT_RULE, "organization-id", other, "name", "Evermoor undercuts",
+	                    "kind", VENTURE_ALERT_KIND_UNDERCUT, NULL);
+	g_assert_true(venture_database_save(fixture->database, rule, NULL, &error));
+	g_assert_no_error(error);
+
+	/* Global editors, none an administrator: membership is what decides. */
+	server_fixture_create_member(fixture, "tr-both", "both-long-password", VENTURE_USER_ROLE_EDITOR, &both_id);
+	trading_membership(fixture, both_id, other, VENTURE_ORGANIZATION_ROLE_FINANCE);
+	server_fixture_create_member(fixture, "tr-home", "home-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "tr-reader", "reader-long-password", VENTURE_USER_ROLE_EDITOR,
+	                             &reader_id);
+	trading_membership(fixture, reader_id, other, VENTURE_ORGANIZATION_ROLE_VIEWER);
+	both = server_fixture_login(fixture, "tr-both", "both-long-password");
+	home = server_fixture_login(fixture, "tr-home", "home-long-password");
+	reader = server_fixture_login(fixture, "tr-reader", "reader-long-password");
+
+	/* --- Feeds: the list, the runs, a sync --- */
+
+	/* Default unchanged: the active organization's sources only. */
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/feeds"), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "Home prices"));
+	g_assert_null(strstr(body, "Evermoor prices"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/feeds/%" G_GINT64_FORMAT "/runs",
+	                              other_source), ==, SOUP_STATUS_NOT_FOUND);
+
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/feeds?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "Evermoor prices"));
+	g_assert_null(strstr(body, "Home prices"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/feeds/due?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/feeds/%" G_GINT64_FORMAT
+	                              "/runs?organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_OK);
+	/* The home source under the other organization's id is not there. */
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/feeds/%" G_GINT64_FORMAT
+	                              "/runs?organization_id=%" G_GINT64_FORMAT, home_source, other),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "POST", both, "{}", &body, "/api/v1/feeds/%" G_GINT64_FORMAT
+	                              "/sync?organization_id=%" G_GINT64_FORMAT, other_source, other), ==, 202);
+	g_assert_nonnull(strstr(body, "\"queued\""));
+	g_clear_pointer(&body, g_free);
+
+	/* A member of only the first organization: the second does not exist. */
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, &body, "/api/v1/feeds?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_null(strstr(body, "Evermoor"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "POST", home, "{}", NULL, "/api/v1/feeds/%" G_GINT64_FORMAT
+	                              "/sync?organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/feeds?organization_id=999999"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/feeds?organization_id=two"),
+	                 ==, SOUP_STATUS_BAD_REQUEST);
+
+	/* A viewer there reads assigned records only, and a source is
+	 * nobody's: the organization answers, its sources are not there, and
+	 * a sync of one cannot be set going. */
+	g_assert_cmpuint(trading_call(fixture, "GET", reader, NULL, &body, "/api/v1/feeds?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(body, "Evermoor prices"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "POST", reader, "{}", NULL, "/api/v1/feeds/%" G_GINT64_FORMAT
+	                              "/sync?organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+
+	/* --- Market: venues, quote, alerts, evaluate, promote --- */
+
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/market/venues?source=%"
+	                              G_GINT64_FORMAT, other_source), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/market/venues?source=%"
+	                              G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "silverfen"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/market/venues?source=%"
+	                              G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/market/quote?product_id=999"
+	                              "&organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/market/quote?product_id=999"
+	                              "&organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/market/alerts"),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(body, "Evermoor undercuts"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/market/alerts?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "Evermoor undercuts"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/market/watchlists?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/market/alerts?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+
+	g_assert_cmpuint(trading_call(fixture, "POST", both, "{}", NULL, "/api/v1/market/alerts/%" G_GINT64_FORMAT
+	                              "/evaluate?record=false", venture_entity_get_id(rule)), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "POST", both, "{}", NULL, "/api/v1/market/alerts/%" G_GINT64_FORMAT
+	                              "/evaluate?record=false&organization_id=%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(rule), other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "POST", home, "{}", NULL, "/api/v1/market/alerts/%" G_GINT64_FORMAT
+	                              "/evaluate?record=false&organization_id=%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(rule), other), ==, SOUP_STATUS_NOT_FOUND);
+	/* Nor is a rule a viewer's to evaluate: it is not assigned to them. */
+	g_assert_cmpuint(trading_call(fixture, "POST", reader, "{}", NULL, "/api/v1/market/alerts/%" G_GINT64_FORMAT
+	                              "/evaluate?organization_id=%" G_GINT64_FORMAT,
+	                              venture_entity_get_id(rule), other), ==, SOUP_STATUS_NOT_FOUND);
+
+	/* Promotion files the record under the organization named. */
+	json = g_strdup_printf("{\"data_source_id\":%" G_GINT64_FORMAT ",\"kind\":\"venue\",\"key\":\"silverfen\"}",
+	                       other_source);
+	g_assert_cmpuint(trading_call(fixture, "POST", both, json, NULL, "/api/v1/market/promote"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_clear_pointer(&json, g_free);
+	json = g_strdup_printf("{\"data_source_id\":%" G_GINT64_FORMAT ",\"kind\":\"venue\",\"key\":\"silverfen\","
+	                       "\"organization_id\":%" G_GINT64_FORMAT "}", other_source, other);
+	g_assert_cmpuint(trading_call(fixture, "POST", home, json, &body, "/api/v1/market/promote"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_null(strstr(body, "silverfen"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "POST", both, json, &body, "/api/v1/market/promote"),
+	                 ==, SOUP_STATUS_OK);
+	{
+		g_autoptr(JsonNode) venue = json_from_string(body, &error);
+
+		g_assert_no_error(error);
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(venue), "organization_id"), ==, other);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(venue), "key"), ==, "silverfen");
+	}
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&json, g_free);
+
+	/* --- Arbitrage: the scan, an export, a record --- */
+
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/arbitrage/scan?data_source_id=%"
+	                              G_GINT64_FORMAT, other_source), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/arbitrage/scan?data_source_id=%"
+	                              G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT, other_source, other),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "\"rows\""));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/arbitrage/scan?organization_id=%"
+	                              G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/arbitrage/export?format=csv"
+	                              "&organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/arbitrage/export?format=csv"
+	                              "&organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+
+	/* A member's record reaches the scan (which has nothing to record);
+	 * a stranger's stops at the organization. */
+	json = g_strdup_printf("{\"key\":\"spread:none\",\"organization_id\":\"%" G_GINT64_FORMAT "\"}", other);
+	g_assert_cmpuint(trading_call(fixture, "POST", both, json, &body, "/api/v1/arbitrage/record"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(body, "no longer there"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(trading_call(fixture, "POST", home, json, &body, "/api/v1/arbitrage/record"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_nonnull(strstr(body, "There is no organization"));
+	g_clear_pointer(&body, g_free);
+
+	g_object_set(fixture->config, "feeds-enabled", FALSE, NULL);
+}
 #endif
 /*
  * The price oracle and promotion through the server: viewers may ask,
@@ -6168,6 +6463,8 @@ main(
 	g_test_add("/auth/bankfeed-settings", ServerFixture, NULL, server_fixture_set_up, test_auth_bankfeed_settings, server_fixture_tear_down);
 #ifdef VENTURE_HAVE_SQLITE
 	g_test_add("/auth/feeds", ServerFixture, NULL, server_fixture_set_up, test_auth_feeds, server_fixture_tear_down);
+	g_test_add("/auth/trading-organization", ServerFixture, NULL, server_fixture_set_up,
+	           test_auth_trading_organization, server_fixture_tear_down);
 #endif
 	g_test_add("/auth/marketdata", ServerFixture, NULL, server_fixture_set_up, test_auth_marketdata, server_fixture_tear_down);
 	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);

@@ -362,8 +362,10 @@ snapshot(
  * at realm-b and 18.00 x3 at realm-c; a vial at realm-b. Ten minutes old.
  */
 static void
-seed_store(Fixture *fixture)
-{
+seed_store(
+	Fixture	*fixture,
+	gint64	 source_id
+){
 	g_autoptr(VentureEntity) source = NULL;
 	g_autoptr(VentureSeriesStore) store = NULL;
 	g_autoptr(GError) error = NULL;
@@ -374,7 +376,7 @@ seed_store(Fixture *fixture)
 	static const Offer b[] = { { "herb", 10, 2000, 5 }, { "vial", 11, 100, 10 } };
 	static const Offer c[] = { { "herb", 20, 1800, 3 } };
 
-	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, source_id, NULL);
 	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
 	store = venture_series_store_open(dir, &error);
 	g_assert_no_error(error);
@@ -464,7 +466,7 @@ fixture_set_up(
 	fixture->source_id = ID(source);
 	fixture->now = g_get_real_time() / G_USEC_PER_SEC;
 
-	seed_store(fixture);
+	seed_store(fixture, fixture->source_id);
 
 	/* realm-a is free with a 1.00 move; realm-b takes a 5% cut and a 0.50
 	 * move: two herbs flipped net 40.00 - 2.00 - 20.00 - 1.50 = 16.50. */
@@ -742,7 +744,7 @@ test_market_lists_and_alerts(
  * The scan through the CLI is the scan: the spread row worked by hand in
  * test-arbitrage-scan (net 16.50 on 21.50) comes back with its key, and
  * the table numbers its rows for `record`. An option the scan would
- * silently ignore -- organization_id above all -- is refused.
+ * silently ignore -- venture_id, which it never reads -- is refused.
  */
 static void
 test_scan(
@@ -750,7 +752,7 @@ test_scan(
 	gconstpointer	 user_data
 ){
 	const gchar *const scan[] = { "arbitrage", "scan", "spread", "units=2", "category_path=Herbs", NULL };
-	const gchar *const other_org[] = { "arbitrage", "scan", "spread", "organization_id=2", NULL };
+	const gchar *const venture[] = { "arbitrage", "scan", "spread", "venture_id=2", NULL };
 	const gchar *const bad_units[] = { "arbitrage", "scan", "units=two", NULL };
 	const gchar *const bad_word[] = { "arbitrage", "scan", "spread", "deal", NULL };
 	const gchar *const unknown[] = { "arbitrage", "scan", "spread", "astrology=yes", NULL };
@@ -784,7 +786,7 @@ test_scan(
 	g_assert_nonnull(strstr(table, key));
 	g_assert_nonnull(strstr(table, "16.50 USD"));
 
-	cli_refused(fixture, other_org, 2, "organization_id");
+	cli_refused(fixture, venture, 2, "venture_id");
 	cli_refused(fixture, bad_units, 2, "units is a whole number");
 	cli_refused(fixture, bad_word, 2, "\"deal\" is not one");
 	cli_refused(fixture, unknown, 2, "astrology");
@@ -1049,8 +1051,12 @@ test_calc(
 		g_assert_cmpint(amount_of(json_array_get_object_element(outcomes, i), "stake"), ==,
 		                venture_money_get_amount(g_ptr_array_index(split.stakes, i)));
 
-	g_assert_cmpint(amount_of(json_node_get_object(answer), "guaranteed"), ==,
-	                venture_money_get_amount(split.guaranteed));
+	g_assert_cmpint(amount_of(json_node_get_object(answer), "profit"), ==,
+	                venture_money_get_amount(split.profit));
+	g_assert_cmpint(amount_of(json_node_get_object(answer), "payout"), ==,
+	                venture_money_get_amount(split.payout));
+	g_assert_cmpint(amount_of(json_node_get_object(answer), "payout_ideal"), ==,
+	                venture_money_get_amount(split.payout_ideal));
 	g_assert_cmpint(amount_of(json_node_get_object(answer), "residual"), ==,
 	                venture_money_get_amount(split.residual));
 	g_assert_true(json_object_get_boolean_member(json_node_get_object(answer), "is_surebet"));
@@ -1187,6 +1193,141 @@ test_plugins_and_feeds(
 	out = cli_ok(fixture, "json", runs);
 }
 
+/*
+ * A second organization through every family of verbs. Its source holds
+ * the same herbs as the first one's, so the same question finds the same
+ * flip -- under the second source's key, recorded into the second
+ * organization -- when organization_id names it, and the first
+ * organization's answer when it does not: a token's active organization
+ * is always the default one, so this parameter is the only way a second
+ * organization's market data is reached from the command line. An
+ * organization that does not exist is NOT_FOUND (exit 3), and words after
+ * a verb's positional ones that are not organization_id are refused.
+ */
+static void
+test_second_organization(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonNode) venue = NULL;
+	g_autoptr(JsonNode) trade = NULL;
+	g_autofree gchar *org = NULL;
+	g_autofree gchar *other = NULL;
+	g_autofree gchar *home = id_text(fixture->source_id);
+	g_autofree gchar *out = NULL;
+	g_autofree gchar *key = NULL;
+	gint64 other_org;
+	JsonArray *rows;
+
+	(void)user_data;
+
+	organization = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(organization, "name", "Evermoor Trading", "slug", "evermoor", NULL);
+	save(fixture, organization);
+	other_org = ID(organization);
+	org = g_strdup_printf("organization_id=%" G_GINT64_FORMAT, other_org);
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), other_org);
+	g_object_set(source, "name", "Evermoor auctions", "provider", "file_jsonl", "settings", "file: x.jsonl",
+	             "schedule", "manual", "currency", "USD", "instrument-namespace", "item",
+	             "venue-namespace", "realm", NULL);
+	save(fixture, source);
+	other = id_text(ID(source));
+	seed_store(fixture, ID(source));
+	key = g_strdup_printf("spread:%s:realm-a>%s:realm-b:herb", other, other);
+
+	/* feeds: the other source's runs need its organization named. */
+	{
+		const gchar *const runs[] = { "feeds", "runs", other, org, NULL };
+		const gchar *const unnamed[] = { "feeds", "runs", other, NULL };
+		const gchar *const due[] = { "feeds", "due", org, NULL };
+		const gchar *const extra[] = { "feeds", "runs", other, "count=2", NULL };
+
+		out = cli_ok(fixture, "json", runs);
+		g_clear_pointer(&out, g_free);
+		out = cli_ok(fixture, "json", due);
+		g_clear_pointer(&out, g_free);
+		cli_refused(fixture, unnamed, 3, "No such data source");
+		cli_refused(fixture, extra, 2, "organization_id=N");
+	}
+
+	/* market: venues and a promotion, filed under the organization. */
+	{
+		const gchar *const venues[] = { "market", "venues", org, NULL };
+		const gchar *const promote[] = { "market", "promote", other, "venue", "realm-a", org, NULL };
+		const gchar *const unnamed[] = { "market", "promote", other, "venue", "realm-a", NULL };
+		const gchar *const lists[] = { "market", "watchlist", org, NULL };
+		const gchar *const browse[] = { "market", "browse", org, "search=Peacebloom", NULL };
+
+		out = cli_ok(fixture, "json", venues);
+		answer = json_of(out);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(answer),
+		                                                                     "venues")), ==, 3);
+		g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(json_object_get_array_member(
+			json_node_get_object(answer), "venues"), 0), "data_source_id"), ==, ID(source));
+		g_clear_pointer(&out, g_free);
+		cli_refused(fixture, unnamed, 3, NULL);
+		out = cli_ok(fixture, "json", promote);
+		venue = json_of(out);
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(venue), "organization_id"), ==,
+		                other_org);
+		g_clear_pointer(&out, g_free);
+		out = cli_ok(fixture, "json", lists);
+		g_clear_pointer(&out, g_free);
+		out = cli_ok(fixture, "json", browse);
+		g_clear_pointer(&answer, json_node_unref);
+		answer = json_of(out);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(answer),
+		                                                                     "rows")), ==, 3);
+		g_clear_pointer(&out, g_free);
+	}
+
+	/* arbitrage: the scan, its row recorded, its export. */
+	{
+		const gchar *const scan[] = { "arbitrage", "scan", "spread", "units=2", "category_path=Herbs", org,
+		                              NULL };
+		const gchar *const by_row[] = { "arbitrage", "record", "1", "spread", "units=2", "category_path=Herbs",
+		                                org, NULL };
+		const gchar *const export[] = { "arbitrage", "export", "csv", "spread", "units=2",
+		                                "category_path=Herbs", org, NULL };
+		const gchar *const nowhere[] = { "arbitrage", "scan", "organization_id=999999", NULL };
+		const gchar *const not_a_number[] = { "arbitrage", "scan", "organization_id=two", NULL };
+		const gchar *const home_scan[] = { "arbitrage", "scan", "spread", "units=2", "category_path=Herbs",
+		                                   NULL };
+
+		out = cli_ok(fixture, "json", scan);
+		g_clear_pointer(&answer, json_node_unref);
+		answer = json_of(out);
+		rows = json_object_get_array_member(json_node_get_object(answer), "rows");
+		g_assert_cmpuint(json_array_get_length(rows), ==, 1);
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "key"), ==, key);
+		g_clear_pointer(&out, g_free);
+
+		/* The default is unchanged: the first organization's flip. */
+		out = cli_ok(fixture, "json", home_scan);
+		g_assert_null(strstr(out, key));
+		g_assert_nonnull(strstr(out, home));
+		g_clear_pointer(&out, g_free);
+
+		out = cli_ok(fixture, "json", by_row);
+		trade = json_of(out);
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(trade), "organization_id"), ==,
+		                other_org);
+		g_clear_pointer(&out, g_free);
+
+		out = cli_ok(fixture, NULL, export);
+		g_assert_nonnull(strstr(out, key));
+		g_clear_pointer(&out, g_free);
+
+		cli_refused(fixture, nowhere, 3, "There is no organization 999999");
+		cli_refused(fixture, not_a_number, 2, "organization_id is a whole number");
+	}
+}
+
 #define ADD(name, fn) \
 	g_test_add("/trading-cli/" name, Fixture, NULL, fixture_set_up, fn, fixture_tear_down)
 
@@ -1206,6 +1347,7 @@ main(
 	ADD("calc", test_calc);
 	ADD("export-and-registries", test_export_and_registries);
 	ADD("plugins-and-feeds", test_plugins_and_feeds);
+	ADD("second-organization", test_second_organization);
 
 	return g_test_run();
 }

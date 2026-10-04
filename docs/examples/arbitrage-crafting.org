@@ -20,10 +20,13 @@ The healing potion's recipe is the game economy's: two silverleaf and a crystal 
 for pair in silverleaf:$SILVERLEAF_PRODUCT crystal-vial:$VIAL_PRODUCT \
             mortar-and-pestle:$MORTAR_PRODUCT healing-potion:$HEALING_PRODUCT
 do
-    new instrument organization_id=$ORG kind=item namespace=item key="${pair%%:*}" \
-        name="${pair%%:*}" data_source_id=$SOURCE product_id="${pair#*:}"
+    ID=$(venturectl -f json market promote $SOURCE instrument "${pair%%:*}" organization_id=$ORG \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+    venturectl update instrument $ID product_id="${pair#*:}"
 done
 #+end_src
+
+Promotion makes the record from what the store knows -- the key, the name, the kind -- and is idempotent; the product link is the one thing only a person can say.
 
 An input with no instrument, or one no realm lists, blanks the row's net and says which in =missing=; the generator lists the mortar on four realms so that the demo's row is priced.
 
@@ -124,7 +127,7 @@ venturectl report arbitrage_performance last_90_days organization_id=$ORG
 | spread    |      1 |    1 | 4.095    | 3.60    | 113.75% | 0.405 | 4.00     | 0.095    |
 | transform |      1 |    1 | 11.39    | 1.72    | 662%    | 0.69  | 11.00    | 0.39     |
 
-All in GOLD, all on the Evermoor dashboard's "Arbitrage results" widget, and in =report income_statement this_month organization_id=$ORG= as 9g 98s of Arbitrage gains and 1g 9s 50c of Arbitrage fees.
+All in GOLD, all on the Evermoor dashboard's "Arbitrage results" widget, and in =report income_statement this_month organization_id=$ORG= as 9g 98s of Arbitrage gains and 1g 9s 50c of Arbitrage fees. =report pnl this_month organization_id=$ORG= shows the same three trades as "Arbitrage gains" (9g 98s), "Less arbitrage fees" (1g 9s 50c) and "Arbitrage result" (8g 88s 50c) in its GOLD block, and adds the result to the profit.
 
 * Traps
 

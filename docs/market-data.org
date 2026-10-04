@@ -427,8 +427,8 @@ A hook added while the worker runs refreezes every source. A module whose frozen
 - Actions on =data_source=: =sync= (queues, never waits; editors), =test= (fetches one unit on a private main context and reports what came back, writing nothing, not counted against the budget; editors), =purge_history= (deletes the store on the thread that holds its writer; administrators). None is stageable: a sync reaches outside, a test writes nothing, a purge cannot be taken back.
 - Automation: =feeds_sync("ID")= queues and returns; =feed_synced= and =feed_failed= events.
 - =/feeds=, under *Trading* in the sidebar: the organization's sources, each one's last run, next check and quota, an upload timer per store (each venue's last update, learned interval and expected next update, read through a read-only store handle on the main thread), and the recent runs.
-- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N=, =POST /api/v1/feeds/ID/sync= (202, =queued=).
-- =venturectl feeds sync ID [--wait]=, =feeds runs ID=, =feeds due=.
+- =/api/v1/feeds= (sources with their last run and the worker's view), =/api/v1/feeds/due= (every unit's next check, soonest first), =/api/v1/feeds/ID/runs?count=N=, =POST /api/v1/feeds/ID/sync= (202, =queued=). Each takes =organization_id= and answers for that organization, else the active one; a source of another organization than the one asked about is NOT_FOUND. See "Which organization" below.
+- =venturectl feeds sync ID [--wait] [organization_id=N]=, =feeds runs ID [organization_id=N]=, =feeds due [organization_id=N]=.
 - =venture_feeds_service_open_reader()= opens a read-only handle on a source's store from the main thread, for pages and the price oracle.
 
 * Venues, instruments and the price oracle
@@ -660,7 +660,9 @@ Each page is one function in =src/marketdata/venture-marketdata-browse.c= that a
 
 The page and its twin are the same handler: the request is parsed into the function's question the same way, and the twin returns the answer untouched, so the page cannot show what the API would not say. The reports (=market_deals=, =venue_index=, =watchlist=) and the dashboard widgets (=watchlist=, =market_alerts=, =source_health=) read the same functions. The web layer only draws.
 
-Every handler checks its own session or token and the =marketdata= module, and reads only the active organization: another organization's data source, watchlist or rule is NOT_FOUND, never FORBIDDEN, so whether it exists is not told. Reading is a viewer's; promoting and evaluating are an editor's.
+Every handler checks its own session or token and the =marketdata= module, and reads one organization: another organization's data source, watchlist or rule is NOT_FOUND, never FORBIDDEN, so whether it exists is not told. Reading is a viewer's; promoting and evaluating are an editor's.
+
+*Which organization.* A page answers for the sidebar's pick, as every page does. An =/api/v1/market=, =/api/v1/feeds= or =/api/v1/arbitrage= call answers for the organization its =organization_id= names -- the query string's, or a JSON body's member (=POST /api/v1/market/promote=, =POST /api/v1/arbitrage/record=), a number or its digits -- and for the active organization when it names none, which for an API token is always the default one. Without the parameter a second organization's market data could not be reached from a token at all. The organization is judged first (=venture_web_request_organization()=): its own row is read under the caller's access scope, which every member may read and nobody else may, so a stranger is told NOT_FOUND, the same thing reading any of its records tells them. That check is not a formality: these routes read the series stores, which are files, and the row-by-row record policy never sees them. Everything after it is the record policy as usual -- a viewer member reads only what is assigned to them, and a data source is nobody's -- and a promotion or a recorded trade is judged again at its save or its action. A value that is not a positive whole number is refused (400).
 
 ** What a store read may cost
 
@@ -764,7 +766,7 @@ Each page's twin has a =venturectl market= verb that asks it under the page's ow
 | =market watchlist [ID]= | =/api/v1/market/watchlists[/ID]= | |
 | =market alerts [evaluate RULE_ID [--dry-run]]= | =/api/v1/market/alerts=, =POST .../alerts/ID/evaluate= | =count= |
 
-=data_source_id=, =group_key= and =category_path= are accepted for =source=, =group= and =category=, so an option that works on the report works here. They answer for the active organization (a token's is the default one). See [[file:cli.org][venturectl]].
+=data_source_id=, =group_key= and =category_path= are accepted for =source=, =group= and =category=, so an option that works on the report works here. Every verb takes =organization_id=N= (=market promote=, =watchlist= and =alerts evaluate= after their positional words) and answers for that organization; without it, for the active one, which for a token is the default organization. See [[file:cli.org][venturectl]].
 
 ** Widgets
 

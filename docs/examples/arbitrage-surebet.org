@@ -35,11 +35,10 @@ venturectl feeds sync $ODDS --wait
 * The scan
 
 #+begin_src sh
-venturectl arbitrage scan cover total_stake="100.00 USD"
 venturectl arbitrage scan cover total_stake="100.00 USD" max_age_hours=6
 #+end_src
 
-=cover= takes each event with quotes, the best back odds for every outcome across the books, and the stakes that make every result pay the same. Without a bound it lists both matches -- Varga v Okafor first, at 6.23 on a hundred (1/2.10 + 1/2.15 = 0.941) -- because odds alone do not say a match is over. =max_age_hours=6= leaves the two-day-old quotes out, and the demo's "Surebets" preset and the Trading desk dashboard's widget both carry it; what is left is Lindqvist v Moreau, 2.85 on a hundred (1/1.80 + 1/2.40 = 0.972).
+=cover= takes each event with quotes, the best back odds for every outcome across the books, and the stakes that make every result pay the same. An event whose =commence_time= has passed is left out, and a note says so: Varga v Okafor, the match the trade below settled, started two days ago, and its last quotes -- 6.23 on a hundred (1/2.10 + 1/2.15 = 0.941) -- are a surebet nobody can take any more, because books stop moving a finished match's odds. What is left is Lindqvist v Moreau, tomorrow, 2.85 on a hundred (1/1.80 + 1/2.40 = 0.972). =max_age_hours=6= is about staleness rather than finished matches: odds move, and a six-hour-old price is not one to stake a hundred dollars at; the demo's "Surebets" preset and the Trading desk dashboard's widget carry it. It is also the only guard for an event whose feed names no start time.
 
 #+begin_src sh
 new arbitrage_strategy name="Surebets" strategy=cover data_source_id=$ODDS \
@@ -88,7 +87,7 @@ venturectl arbitrage calc surebet 2.10 2.15 --stake "100.00 USD"
 | Varga at Northbet  | 2.10 | 50.59 USD | 106.23 USD |
 | Okafor at Pinehill | 2.15 | 49.41 USD | 106.23 USD |
 
-Stakes are rounded to the cent and each payout down to the cent, so the guaranteed profit is 6.23 (the ideal, unrounded, is 6.24). The demo reads the split from this command rather than typing it.
+Stakes are rounded to the cent and each payout down to the cent, so the calculator's =payout= is 106.23 -- the least any result pays -- and its =profit= 6.23; the unrounded figures are beside them as =payout_ideal= (106.24) and =profit_ideal= (6.24), never in their place. The demo reads the split from this command rather than typing it.
 
 * The trade
 
@@ -124,6 +123,6 @@ The wallets end on 115.64 at Northbet and 10.59 at Pinehill; the losing stake is
 * Traps
 
 - *Odds have no currency; stakes do.* A =cover= scan needs =total_stake= with its currency, and a quote's odds are never converted.
-- *A finished match is still quoted.* Use =max_age_hours= (or a preset with it) so a played match does not read as an opportunity.
+- *A finished match is still quoted.* The scan leaves out an event whose =commence_time= is past; a feed that names no start time leaves only =max_age_hours= to keep a played match from reading as an opportunity, and the scan's notes count such events.
 - *Fund the wallet before the stake.* A wallet is a holding; a stake dated before the deposit is refused, however much is there today.
 - *Record the losing stake too.* The trade's result is every stake against the payout; leaving the loser out books a profit that never happened.

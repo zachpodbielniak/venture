@@ -230,15 +230,20 @@ venture_arbitrage_parse_percent(
  * @staked: the sum of the rounded stakes
  * @residual: the total asked for less @staked: what rounding left over
  *   (or took), positive or negative
- * @payout: T/S, the payout before rounding, rounded half to even
- * @profit: T*(1/S - 1), the profit before rounding, rounded half to even
- * @worst_payout: the least of @payouts
- * @guaranteed: @worst_payout less @staked: what the rounded stakes are
- *   sure to make whichever outcome happens; may be below @profit, and
- *   negative on a sliver of an edge
+ * @payout: the least of @payouts: what the rounded stakes are sure to
+ *   return whichever outcome happens
+ * @payout_ideal: T/S, the payout before rounding, rounded half to even;
+ *   shown beside @payout, never instead of it
+ * @profit: @payout less @staked: what the rounded stakes are sure to
+ *   make; may be below @profit_ideal, and negative on a sliver of an edge
+ * @profit_ideal: T*(1/S - 1), the profit before rounding, rounded half
+ *   to even
  *
  * The split of a total stake across every outcome of an event so that
- * each pays the same.
+ * each pays the same. @payout and @profit are what a person gets, so
+ * they are the rounded figures; the unrounded ones carry `_ideal` in
+ * their name, because a calculator that answered 106.24 beside four
+ * payouts of 106.23 promised a cent that no bookmaker pays.
  */
 typedef struct
 {
@@ -251,9 +256,9 @@ typedef struct
 	VentureMoney	*staked;
 	VentureMoney	*residual;
 	VentureMoney	*payout;
+	VentureMoney	*payout_ideal;
 	VentureMoney	*profit;
-	VentureMoney	*worst_payout;
-	VentureMoney	*guaranteed;
+	VentureMoney	*profit_ideal;
 } VentureArbitrageSurebet;
 
 /**
@@ -267,7 +272,7 @@ typedef struct
  * @error: (out) (optional): return location for a #GError
  *
  * Splits @total across the outcomes. It answers for any S: with S of one
- * or more @is_surebet is %FALSE and @guaranteed is the loss, which is what
+ * or more @is_surebet is %FALSE and @profit is the loss, which is what
  * a calculator shows. A missing outcome is the caller's to refuse before
  * calling -- odds for two of three outcomes are not an event.
  *
@@ -324,13 +329,16 @@ venture_arbitrage_effective_lay_odds(
 /**
  * VentureArbitrageBackLay:
  * @lay_stake: B*d_back/(L - c), rounded half to even
- * @liability: @lay_stake * (L - 1), rounded half to even: what the lay
- *   costs when the outcome happens
- * @if_back_wins: B(d_back - 1) - @liability
- * @if_lay_wins: @lay_stake(1 - c) - B, rounded half to even
- * @worst: the lesser of the two: what the pair is sure to make
+ * @liability: @lay_stake * (L - 1), rounded up: what the lay costs when
+ *   the outcome happens, never a part of a minor unit less
+ * @if_back_wins: B(d_back - 1) rounded down (a bookmaker never pays part
+ *   of a minor unit), less @liability
+ * @if_lay_wins: @lay_stake(1 - c) rounded down, less B
+ * @worst: the lesser of the two: what the pair is sure to make. Every
+ *   part of it is rounded against the person, so it is a guarantee and
+ *   not an estimate
  * @ideal: B*d_back(1 - c)/(L - c) - B before rounding, rounded half to
- *   even
+ *   even; shown beside @worst, never instead of it
  * @rating: d_back(1 - c)/(L - c), the share of the back stake returned
  *   whichever way it goes; above one is a profit
  *

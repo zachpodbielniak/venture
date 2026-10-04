@@ -541,7 +541,7 @@ venture_cli_positive_id(
  * friendlier spelling of `where`, and `product` of `product_id`. */
 static const gchar *const venture_cli_market_quote_keys[] = {
 	"basis", "where", "venue", "venue_id", "product", "product_id", "at",
-	"currency", "prefer_currency", "fallback", "source", NULL
+	"currency", "prefer_currency", "fallback", "source", "organization_id", NULL
 };
 
 /*
@@ -563,6 +563,7 @@ static const VentureCliOption venture_cli_market_browse_options[] = {
 	{ "dir", "dir", VENTURE_CLI_OPTION_TEXT, "asc|desc" },
 	{ "page", "page", VENTURE_CLI_OPTION_INT, NULL },
 	{ "per_page", "per_page", VENTURE_CLI_OPTION_INT, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
 
@@ -577,6 +578,7 @@ static const VentureCliOption venture_cli_market_deals_options[] = {
 	{ "min_value", "min_value", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "max_pct", "max_pct", VENTURE_CLI_OPTION_NUMBER, NULL },
 	{ "top", "top", VENTURE_CLI_OPTION_INT, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
 
@@ -585,17 +587,20 @@ static const VentureCliOption venture_cli_market_venues_options[] = {
 	{ "data_source_id", "source", VENTURE_CLI_OPTION_INT, NULL },
 	{ "group", "group", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "group_key", "group", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
 
 static const VentureCliOption venture_cli_market_instrument_options[] = {
 	{ "venue", "venue", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "units", "units", VENTURE_CLI_OPTION_INT, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
 
 static const VentureCliOption venture_cli_market_alerts_options[] = {
 	{ "count", "count", VENTURE_CLI_OPTION_INT, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
 
@@ -734,6 +739,8 @@ static const gchar venture_cli_market_usage[] =
 	"  watchlist [ID]\n"
 	"  alerts [count=N]\n"
 	"  alerts evaluate RULE_ID [--dry-run]\n"
+	"Every verb takes organization_id=N: it answers for that organization (default:\n"
+	"the active one, which for a token is the default organization).\n"
 	"Examples:\n"
 	"  venturectl market browse search=peacebloom sort=pct_vs_region\n"
 	"  venturectl market deals group=eu min_value=\"10.00 GOLD\" max_pct=80 top=20\n"
@@ -742,7 +749,8 @@ static const gchar venture_cli_market_usage[] =
 	"  venturectl market watchlist 3\n"
 	"  venturectl market alerts evaluate 7 --dry-run\n"
 	"  venturectl market quote 12 basis=region_median venue=eu\n"
-	"  venturectl market promote 1 instrument 2589";
+	"  venturectl market promote 1 instrument 2589\n"
+	"  venturectl market deals organization_id=2 group=evermoor-eu";
 
 /* GET @path and print it as @member's table. */
 static gint
@@ -845,24 +853,22 @@ venture_cli_market_alerts(
 
 	if ((NULL != args[2]) && (0 == g_strcmp0(args[2], "evaluate")))
 	{
+		static const gchar usage[] =
+			"usage: venturectl market alerts evaluate RULE_ID [--dry-run] [organization_id=N]";
+		g_autofree gchar *base = NULL;
 		g_autofree gchar *evaluate = NULL;
+		gint64 organization_id;
 		gint64 rule;
 
-		if (!venture_cli_positive_id(args[3], "usage: venturectl market alerts evaluate RULE_ID [--dry-run]",
-		                             &rule, error))
+		if (!venture_cli_positive_id(args[3], usage, &rule, error) ||
+		    !venture_cli_organization_arg(args, 4, usage, &organization_id, error))
 			return -1;
-
-		if (NULL != args[4])
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "market alerts evaluate takes a rule id and --dry-run, not \"%s\"", args[4]);
-			return -1;
-		}
 
 		/* Without --dry-run the hits are written, under the cooldown, as a
 		 * feed run would write them; --dry-run says what would fire. */
-		evaluate = g_strdup_printf("/api/v1/market/alerts/%" G_GINT64_FORMAT "/evaluate%s", rule,
-		                           dry_run ? "?record=false" : "");
+		base = g_strdup_printf("/api/v1/market/alerts/%" G_GINT64_FORMAT "/evaluate%s", rule,
+		                       dry_run ? "?record=false" : "");
+		evaluate = venture_cli_organization_path(base, organization_id);
 		response = venture_cli_request(cli, "POST", evaluate, NULL, error);
 
 		if (NULL == response)
@@ -969,42 +975,52 @@ venture_cli_command_market(
 
 	if ((0 == g_strcmp0(verb, "watchlist")) || (0 == g_strcmp0(verb, "watchlists")))
 	{
+		static const gchar usage[] = "usage: venturectl market watchlist [ID] [organization_id=N]";
+		g_autofree gchar *base = NULL;
 		g_autofree gchar *path = NULL;
+		gint64 organization_id;
 		gint64 id;
 
-		if (NULL == args[2])
-			return venture_cli_market_show(cli, "/api/v1/market/watchlists", "watchlists",
-			                               venture_cli_market_watchlists_columns, "No watchlists.", error);
-
-		if (!venture_cli_positive_id(args[2], "usage: venturectl market watchlist [ID]", &id, error))
-			return -1;
-
-		if (NULL != args[3])
+		/* The list of lists when no id comes first. */
+		if ((NULL == args[2]) || g_str_has_prefix(args[2], "organization_id="))
 		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "usage: venturectl market watchlist [ID]");
-			return -1;
+			if (!venture_cli_organization_arg(args, 2, usage, &organization_id, error))
+				return -1;
+
+			path = venture_cli_organization_path("/api/v1/market/watchlists", organization_id);
+			return venture_cli_market_show(cli, path, "watchlists",
+			                               venture_cli_market_watchlists_columns, "No watchlists.", error);
 		}
 
-		path = g_strdup_printf("/api/v1/market/watchlists/%" G_GINT64_FORMAT, id);
+		if (!venture_cli_positive_id(args[2], usage, &id, error) ||
+		    !venture_cli_organization_arg(args, 3, usage, &organization_id, error))
+			return -1;
+
+		base = g_strdup_printf("/api/v1/market/watchlists/%" G_GINT64_FORMAT, id);
+		path = venture_cli_organization_path(base, organization_id);
 		return venture_cli_market_show(cli, path, "entries", venture_cli_market_watchlist_columns,
 		                               "The list is empty.", error);
 	}
 
 	if (0 == g_strcmp0(verb, "promote"))
 	{
+		static const gchar usage[] =
+			"usage: venturectl market promote SOURCE_ID instrument|venue KEY [organization_id=N]";
 		g_autoptr(JsonBuilder) builder = NULL;
 		g_autoptr(JsonNode) body = NULL;
+		gint64 organization_id;
 		gint64 source_id;
 
 		if ((NULL == args[2]) || (NULL == args[3]) || (NULL == args[4]) ||
 		    !g_ascii_string_to_signed(args[2], 10, 1, G_MAXINT64, &source_id, NULL) ||
 		    ((0 != g_strcmp0(args[3], "instrument")) && (0 != g_strcmp0(args[3], "venue"))))
 		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "usage: venturectl market promote SOURCE_ID instrument|venue KEY");
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, usage);
 			return -1;
 		}
+
+		if (!venture_cli_organization_arg(args, 5, usage, &organization_id, error))
+			return -1;
 
 		builder = json_builder_new();
 		json_builder_begin_object(builder);
@@ -1014,6 +1030,13 @@ venture_cli_command_market(
 		json_builder_add_string_value(builder, args[3]);
 		json_builder_set_member_name(builder, "key");
 		json_builder_add_string_value(builder, args[4]);
+
+		if (organization_id > 0)
+		{
+			json_builder_set_member_name(builder, "organization_id");
+			json_builder_add_int_value(builder, organization_id);
+		}
+
 		json_builder_end_object(builder);
 		body = json_builder_get_root(builder);
 
@@ -1059,7 +1082,7 @@ venture_cli_command_market(
 				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 				            "market quote does not take \"%s\"; it takes an instrument id and "
 				            "basis, venue, venue_id, product, at, currency, prefer_currency, "
-				            "fallback and source", args[i]);
+				            "fallback, source and organization_id", args[i]);
 				return -1;
 			}
 

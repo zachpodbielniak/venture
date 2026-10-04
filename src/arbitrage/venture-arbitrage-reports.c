@@ -393,6 +393,120 @@ arb_row_add(
 	return TRUE;
 }
 
+gboolean
+venture_arbitrage_realised_totals(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  venture_id,
+	VentureDateRange	 *period,
+	GPtrArray		**out_gains,
+	GPtrArray		**out_fees,
+	GPtrArray		**out_realised,
+	guint			 *out_trades,
+	GError			**error
+){
+	g_autoptr(GPtrArray) gains = NULL;
+	g_autoptr(GPtrArray) fees = NULL;
+	g_autoptr(GPtrArray) realised = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) statuses = NULL;
+	g_autoptr(GPtrArray) trades = NULL;
+	VentureDatabase *database;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail((NULL != out_gains) && (NULL != out_fees) && (NULL != out_realised), FALSE);
+
+	gains = venture_money_totals_new();
+	fees = venture_money_totals_new();
+	realised = venture_money_totals_new();
+
+	if (NULL != out_trades)
+		*out_trades = 0;
+
+	/* Off is nothing to add, and the table may never have been made. */
+	if (!venture_context_module_enabled(context, "arbitrage"))
+	{
+		*out_gains = g_steal_pointer(&gains);
+		*out_fees = g_steal_pointer(&fees);
+		*out_realised = g_steal_pointer(&realised);
+		return TRUE;
+	}
+
+	database = venture_context_get_database(context);
+
+	if (organization_id <= 0)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	/* The performance report's question: finished trades, by when they
+	 * finished, narrowed in the query so the bound counts what was asked. */
+	query = venture_query_new(VENTURE_TYPE_ARBITRAGE_TRADE);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
+	statuses = g_ptr_array_new_with_free_func(g_free);
+	g_ptr_array_add(statuses, g_strdup("closed"));
+	g_ptr_array_add(statuses, g_strdup("abandoned"));
+
+	if (!venture_query_add_filter(query, "status", VENTURE_FILTER_OP_IN, statuses, error) ||
+	    ((NULL != period) && !venture_query_set_date_range(query, "closed-at", period, error)) ||
+	    ((0 != venture_id) &&
+	     !venture_query_add_filter_int(query, "venture-id", VENTURE_FILTER_OP_EQ, venture_id, error)))
+		return FALSE;
+
+	trades = venture_database_find(database, query, error);
+
+	if (NULL == trades)
+		return FALSE;
+
+	if (trades->len > (guint)venture_aggregate_get_max_rows())
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "More than %d finished arbitrage trades fall in the period; narrow the period "
+		            "or the venture", venture_aggregate_get_max_rows());
+		return FALSE;
+	}
+
+	for (i = 0; i < trades->len; i++)
+	{
+		g_autoptr(GPtrArray) legs = NULL;
+		g_autoptr(GPtrArray) figures = NULL;
+		guint j;
+
+		legs = venture_arbitrage_trade_legs(database, venture_entity_get_id(g_ptr_array_index(trades, i)),
+		                                    TRUE, error);
+		figures = (NULL != legs) ? venture_arbitrage_compute_figures(legs, error) : NULL;
+
+		if (NULL == figures)
+			return FALSE;
+
+		for (j = 0; j < figures->len; j++)
+		{
+			const VentureArbitrageFigures *row = g_ptr_array_index(figures, j);
+			g_autoptr(VentureMoney) before_fees = NULL;
+
+			/* Before fees is what the close journal moved to the gains
+			 * account; the fees went to their own account as each leg
+			 * was executed. */
+			before_fees = venture_money_add(row->realised, row->fees, error);
+
+			if ((NULL == before_fees) ||
+			    !venture_money_totals_add(gains, before_fees, error) ||
+			    !venture_money_totals_add(fees, row->fees, error) ||
+			    !venture_money_totals_add(realised, row->realised, error))
+				return FALSE;
+		}
+	}
+
+	if (NULL != out_trades)
+		*out_trades = trades->len;
+
+	*out_gains = g_steal_pointer(&gains);
+	*out_fees = g_steal_pointer(&fees);
+	*out_realised = g_steal_pointer(&realised);
+
+	return TRUE;
+}
+
 VentureReportResult *
 venture_arbitrage_performance(
 	VentureContext		 *context,

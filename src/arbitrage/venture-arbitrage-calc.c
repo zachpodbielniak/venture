@@ -277,10 +277,13 @@ arb_calc_surebet(
 	arb_calc_money_array(answer, "payouts", split.payouts);
 	venture_arbitrage_set_money(answer, "staked", split.staked);
 	venture_arbitrage_set_money(answer, "residual", split.residual);
+	/* payout and profit are what the rounded stakes are sure to return
+	 * and make; the unrounded figures say _ideal, so nothing reads a cent
+	 * no bookmaker pays as the result. */
 	venture_arbitrage_set_money(answer, "payout", split.payout);
+	venture_arbitrage_set_money(answer, "payout_ideal", split.payout_ideal);
 	venture_arbitrage_set_money(answer, "profit", split.profit);
-	venture_arbitrage_set_money(answer, "worst_payout", split.worst_payout);
-	venture_arbitrage_set_money(answer, "guaranteed", split.guaranteed);
+	venture_arbitrage_set_money(answer, "profit_ideal", split.profit_ideal);
 	venture_arbitrage_surebet_clear(&split);
 
 	return answer;

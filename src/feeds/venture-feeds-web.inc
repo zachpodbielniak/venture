@@ -5,18 +5,19 @@
  * Included by venture-web-server.c in a build with SQLite, and registered
  * before the generic /api/v1/:type routes, which would otherwise take
  * /api/v1/feeds for a record type that does not exist. Every handler
- * checks its own session, role and module, and reads only the active
- * organization's sources. The records themselves -- data_source and
- * data_source_run -- are served by the generic routes; these pages add
+ * checks its own session, role and module, and reads one organization's
+ * sources: the page the sidebar's pick, the API its organization_id or
+ * else the active one (venture_web_request_organization()). The records
+ * themselves -- data_source and data_source_run -- are served by the generic routes; these pages add
  * what is not a record: the worker's schedule, the store's upload timers
  * and the sealed credentials.
  */
 
-/* A source in the active organization, or a NOT_FOUND that says so. */
+/* A source in @organization_id, or a NOT_FOUND that says so. */
 static VentureEntity *
 venture_feeds_web_source(
 	VentureWebServer	 *self,
-	HtmxRequest		 *request,
+	gint64			  organization_id,
 	const gchar		 *id_text,
 	GError			**error
 ){
@@ -34,11 +35,11 @@ venture_feeds_web_source(
 	                              VENTURE_TYPE_DATA_SOURCE, id, error);
 
 	if ((NULL == record) || venture_entity_is_deleted(record) ||
-	    (venture_entity_get_organization_id(record) != venture_web_active_organization(self, request)))
+	    (venture_entity_get_organization_id(record) != organization_id))
 	{
 		g_clear_error(error);
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		                    "No such data source in the active organization");
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No such data source in organization %" G_GINT64_FORMAT, organization_id);
 		return NULL;
 	}
 
@@ -48,13 +49,13 @@ venture_feeds_web_source(
 static GPtrArray *
 venture_feeds_web_sources(
 	VentureWebServer	 *self,
-	HtmxRequest		 *request,
+	gint64			  organization_id,
 	GError			**error
 ){
 	g_autoptr(VentureQuery) query = NULL;
 
 	query = venture_query_new(VENTURE_TYPE_DATA_SOURCE);
-	venture_query_set_organization(query, venture_web_active_organization(self, request));
+	venture_query_set_organization(query, organization_id);
 	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
 	venture_query_set_limit(query, 500);
 
@@ -65,7 +66,7 @@ venture_feeds_web_sources(
 static GPtrArray *
 venture_feeds_web_runs(
 	VentureWebServer	 *self,
-	HtmxRequest		 *request,
+	gint64			  organization_id,
 	gint64			  source_id,
 	guint			  count,
 	GError			**error
@@ -73,7 +74,7 @@ venture_feeds_web_runs(
 	g_autoptr(VentureQuery) query = NULL;
 
 	query = venture_query_new(VENTURE_TYPE_DATA_SOURCE_RUN);
-	venture_query_set_organization(query, venture_web_active_organization(self, request));
+	venture_query_set_organization(query, organization_id);
 
 	if ((source_id > 0) &&
 	    !venture_query_add_filter_int(query, "data-source-id", VENTURE_FILTER_OP_EQ, source_id, error))
@@ -245,6 +246,7 @@ venture_feeds_web_page(
 	g_autoptr(JsonNode) status = NULL;
 	VentureFeedsService *service;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	(void)params;
@@ -259,12 +261,15 @@ venture_feeds_web_page(
 	if (NULL != gate)
 		return gate;
 
-	sources = venture_feeds_web_sources(self, request, &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	sources = venture_feeds_web_sources(self, organization_id, &error);
 
 	if (NULL == sources)
 		return venture_web_error_response(error);
 
-	runs = venture_feeds_web_runs(self, request, 0, 20, &error);
+	runs = venture_feeds_web_runs(self, organization_id, 0, 20, &error);
 
 	if (NULL == runs)
 		return venture_web_error_response(error);
@@ -306,7 +311,7 @@ venture_feeds_web_page(
 			g_object_get(source, "name", &name, "provider", &provider, "schedule", &schedule,
 			             "enabled", &enabled, NULL);
 			worker = venture_feeds_web_worker_source(status, id);
-			last = venture_feeds_web_runs(self, request, id, 1, NULL);
+			last = venture_feeds_web_runs(self, organization_id, id, 1, NULL);
 
 			g_string_append_printf(html, "<tr><td><a href=\"/e/data_source/%" G_GINT64_FORMAT "\">", id);
 			venture_html_escape_append(html, name);
@@ -414,6 +419,7 @@ venture_feeds_web_sync(
 	VentureFeedsService *service;
 	gboolean page;
 	HtmxResponse *gate;
+	gint64 organization_id;
 
 	page = !g_str_has_prefix(htmx_request_get_path(request), "/api/");
 	gate = page ? venture_web_ui_require_session(self, request)
@@ -437,7 +443,10 @@ venture_feeds_web_sync(
 	if (NULL != gate)
 		return gate;
 
-	source = venture_feeds_web_source(self, request, g_hash_table_lookup(params, "id"), &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	source = venture_feeds_web_source(self, organization_id, g_hash_table_lookup(params, "id"), &error);
 
 	if (NULL == source)
 		return venture_web_error_response(error);
@@ -502,6 +511,7 @@ venture_feeds_web_api_list(
 	JsonObject *root;
 	JsonArray *list;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	(void)params;
@@ -516,7 +526,10 @@ venture_feeds_web_api_list(
 	if (NULL != gate)
 		return gate;
 
-	sources = venture_feeds_web_sources(self, request, &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	sources = venture_feeds_web_sources(self, organization_id, &error);
 
 	if (NULL == sources)
 		return venture_web_error_response(error);
@@ -536,7 +549,7 @@ venture_feeds_web_api_list(
 
 		serialized = venture_serializable_to_json(VENTURE_SERIALIZABLE(source), FALSE);
 		object = json_node_get_object(serialized);
-		last = venture_feeds_web_runs(self, request, venture_entity_get_id(source), 1, NULL);
+		last = venture_feeds_web_runs(self, organization_id, venture_entity_get_id(source), 1, NULL);
 
 		if ((NULL != last) && (last->len > 0))
 			json_object_set_member(object, "last_run",
@@ -591,6 +604,7 @@ venture_feeds_web_api_due(
 	JsonObject *root;
 	JsonArray *list;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	guint i;
 
 	(void)params;
@@ -605,7 +619,10 @@ venture_feeds_web_api_due(
 	if (NULL != gate)
 		return gate;
 
-	sources = venture_feeds_web_sources(self, request, &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	sources = venture_feeds_web_sources(self, organization_id, &error);
 
 	if (NULL == sources)
 		return venture_web_error_response(error);
@@ -702,6 +719,7 @@ venture_feeds_web_api_runs(
 	const gchar *count_text;
 	JsonObject *root;
 	HtmxResponse *gate;
+	gint64 organization_id;
 	gint64 count;
 
 	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
@@ -714,7 +732,10 @@ venture_feeds_web_api_runs(
 	if (NULL != gate)
 		return gate;
 
-	source = venture_feeds_web_source(self, request, g_hash_table_lookup(params, "id"), &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	source = venture_feeds_web_source(self, organization_id, g_hash_table_lookup(params, "id"), &error);
 
 	if (NULL == source)
 		return venture_web_error_response(error);
@@ -730,7 +751,7 @@ venture_feeds_web_api_runs(
 		return venture_web_error_response(error);
 	}
 
-	runs = venture_feeds_web_runs(self, request, venture_entity_get_id(source), (guint)count, &error);
+	runs = venture_feeds_web_runs(self, organization_id, venture_entity_get_id(source), (guint)count, &error);
 
 	if (NULL == runs)
 		return venture_web_error_response(error);
@@ -780,6 +801,7 @@ venture_feeds_web_credentials(
 	gint64 version;
 	VentureActor actor;
 	HtmxResponse *gate;
+	gint64 organization_id;
 
 	gate = venture_web_ui_require_session(self, request);
 
@@ -807,7 +829,10 @@ venture_feeds_web_credentials(
 		}
 	}
 
-	source = venture_feeds_web_source(self, request, g_hash_table_lookup(params, "id"), &error);
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	source = venture_feeds_web_source(self, organization_id, g_hash_table_lookup(params, "id"), &error);
 
 	if (NULL == source)
 		return venture_web_error_response(error);

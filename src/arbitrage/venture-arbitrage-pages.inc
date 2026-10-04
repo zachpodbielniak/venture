@@ -16,7 +16,9 @@
  * for `arbitrage_strategy`; no form here is written for a record type.
  *
  * Every handler checks its own session or token, the arbitrage module
- * and the role its records ask of the caller.
+ * and the role its records ask of the caller, and answers for one
+ * organization: a page the sidebar's pick, an API call its
+ * organization_id or else the active one (venture_web_request_organization()).
  */
 
 /* --- Gates and the question --------------------------------------------------- */
@@ -628,6 +630,7 @@ venture_arbitrage_web_scan(
 	JsonObject *options;
 	gboolean api;
 	HtmxResponse *gate;
+	gint64 organization_id;
 
 	(void)params;
 
@@ -637,9 +640,11 @@ venture_arbitrage_web_scan(
 	if (NULL != gate)
 		return gate;
 
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
 	asked = arw_options(htmx_request_get_query_params(request));
-	answer = venture_arbitrage_scan_run(self->context, venture_web_active_organization(self, request),
-	                                    asked, &error);
+	answer = venture_arbitrage_scan_run(self->context, organization_id, asked, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
@@ -692,6 +697,7 @@ venture_arbitrage_web_record(
 	gboolean stage = FALSE;
 	HtmxResponse *gate;
 	HtmxResponse *redirect;
+	gint64 organization_id;
 
 	(void)params;
 
@@ -727,6 +733,12 @@ venture_arbitrage_web_record(
 		json_object_remove_member(options, "key");
 	}
 
+	/* The organization rides in the JSON with the question (a page posts
+	 * none: it answers for the sidebar's pick). */
+	if (!venture_web_request_organization(self, request, options, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	json_object_remove_member(options, "organization_id");
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 
@@ -743,10 +755,8 @@ venture_arbitrage_web_record(
 		VentureConfirmation *confirmation;
 		JsonObject *object;
 
-		confirmation = venture_arbitrage_stage_opportunity(self->context,
-		                                                   venture_web_active_organization(self, request),
-		                                                   options, key, &actor, principal->role,
-		                                                   "rest-api", &error);
+		confirmation = venture_arbitrage_stage_opportunity(self->context, organization_id, options, key,
+		                                                   &actor, principal->role, "rest-api", &error);
 
 		if (NULL == confirmation)
 			return venture_web_error_response(error);
@@ -763,8 +773,8 @@ venture_arbitrage_web_record(
 		return venture_web_json_response(staged, 202);
 	}
 
-	trade = venture_arbitrage_record_opportunity(self->context, venture_web_active_organization(self, request),
-	                                             options, key, &actor, principal->role, &error);
+	trade = venture_arbitrage_record_opportunity(self->context, organization_id, options, key, &actor,
+	                                             principal->role, &error);
 
 	if (NULL == trade)
 		return venture_web_error_response(error);
@@ -799,6 +809,7 @@ venture_arbitrage_web_export(
 	const gchar *format;
 	HtmxResponse *gate;
 	HtmxResponse *response;
+	gint64 organization_id;
 
 	(void)params;
 
@@ -806,6 +817,9 @@ venture_arbitrage_web_export(
 
 	if (NULL != gate)
 		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
 
 	formats = venture_context_get_export_formats(self->context);
 	format = mdw_param(request, "format");
@@ -820,8 +834,7 @@ venture_arbitrage_web_export(
 	}
 
 	asked = arw_options(htmx_request_get_query_params(request));
-	answer = venture_arbitrage_scan_run(self->context, venture_web_active_organization(self, request),
-	                                    asked, &error);
+	answer = venture_arbitrage_scan_run(self->context, organization_id, asked, &error);
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
@@ -952,8 +965,9 @@ arw_calc_card(
 		JsonArray *outcomes = json_object_get_array_member(answer, "outcomes");
 
 		arw_figure(html, json_object_get_boolean_member(answer, "is_surebet") ? "Sure profit" : "Sure loss",
-		           answer, "guaranteed", 0);
-		arw_figure(html, "Ideal profit", answer, "profit", 0);
+		           answer, "profit", 0);
+		arw_figure(html, "Sure payout", answer, "payout", 0);
+		arw_figure(html, "Ideal profit", answer, "profit_ideal", 0);
 		arw_figure(html, "Staked", answer, "staked", 0);
 		arw_figure(html, "Rounding left over", answer, "residual", 0);
 		arw_figure(html, "Overround", answer, "overround", 1);
@@ -986,6 +1000,8 @@ arw_calc_card(
 		arw_figure(html, "Liability", answer, "liability", 0);
 		arw_figure(html, "If the back wins", answer, "if_back_wins", 0);
 		arw_figure(html, "If the lay wins", answer, "if_lay_wins", 0);
+		arw_figure(html, "Sure result", answer, "worst", 0);
+		arw_figure(html, "Ideal", answer, "ideal", 0);
 		arw_figure(html, "Rating", answer, "rating", 1);
 		g_string_append(html, "</div>");
 	}

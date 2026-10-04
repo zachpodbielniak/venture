@@ -1711,6 +1711,221 @@ test_performance(Fixture *f, gconstpointer data)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/* Runs report @name over @period_text with an optional venture. */
+static VentureReportResult *
+operational(Fixture *f, const gchar *name, const gchar *period_text, gint64 venture_id)
+{
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReportResult *result;
+	VentureReport *report;
+
+	if (venture_id > 0)
+		json_object_set_int_member(options, "venture_id", venture_id);
+
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), name);
+	g_assert_nonnull(report);
+	period = venture_context_parse_period(f->context, period_text, &error);
+	g_assert_no_error(error);
+	result = venture_report_generate(report, f->context, period, options, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	return result;
+}
+
+/* A P&L line's amount in @currency, as text; NULL when there is no such line. */
+static gchar *
+pnl_line(VentureReportResult *result, const gchar *line, const gchar *currency)
+{
+	guint i;
+
+	for (i = 0; i < venture_report_result_get_row_count(result); i++)
+		if ((0 == g_strcmp0(cell_text(result, i, "line"), line)) &&
+		    (0 == g_strcmp0(cell_text(result, i, "currency"), currency)))
+			return cell_money(result, i, "amount");
+
+	return NULL;
+}
+
+/* A metric's money as text, or NULL. */
+static gchar *
+metric_text(VentureReportResult *result, const gchar *key)
+{
+	GPtrArray *metrics = venture_report_result_get_metrics(result);
+	guint i;
+
+	for (i = 0; i < metrics->len; i++)
+	{
+		VentureMetric *metric = g_ptr_array_index(metrics, i);
+
+		if ((0 == g_strcmp0(venture_metric_get_key(metric), key)) &&
+		    (NULL != venture_metric_get_money(metric)))
+			return venture_money_to_string(venture_metric_get_money(metric));
+	}
+
+	return NULL;
+}
+
+/* The row of @report whose @key column reads @value in @currency. */
+static guint
+row_where(VentureReportResult *result, const gchar *key, const gchar *value, const gchar *currency)
+{
+	guint i;
+
+	for (i = 0; i < venture_report_result_get_row_count(result); i++)
+		if ((0 == g_strcmp0(cell_text(result, i, key), value)) &&
+		    (0 == g_strcmp0(cell_text(result, i, "currency"), currency)))
+			return i;
+
+	g_error("no %s row %s in %s", key, value, currency);
+	return 0;
+}
+
+#define ASSERT_LINE(result, line, currency, expected) G_STMT_START { \
+	g_autofree gchar *assert_line_text = pnl_line(result, line, currency); \
+	g_assert_cmpstr(assert_line_text, ==, expected); \
+} G_STMT_END
+
+#define ASSERT_METRIC(result, key, expected) G_STMT_START { \
+	g_autofree gchar *assert_metric_text = metric_text(result, key); \
+	g_assert_cmpstr(assert_metric_text, ==, expected); \
+} G_STMT_END
+
+/*
+ * The operational reports count realised arbitrage, which the ledger's
+ * income statement always did. March finishes two dollar flips under
+ * Flips (18.00 made on 2.00 of fees, 10.00 lost: 10.00 of gains before
+ * fees, a result of 8.00), one under Other (1.00) and a gold cover (10
+ * GOLD); April finishes one more (100.00), outside March. Beside them a
+ * 50.00 sale and a 5.00 expense: the P&L's profit is 50.00 - 5.00 +
+ * 9.00, the gold block's is the trade's 10 GOLD, the venture filter
+ * keeps Other's dollar out, and `ventures` and `monthly` carry the same
+ * result in a column of their own. A month that finished no trade and
+ * the module switched off read as they always did, without an error.
+ * What breaks if this regresses: report pnl and the income statement
+ * disagree by every trade's result, a gold profit is added to dollars,
+ * or a sale's leg is counted twice.
+ */
+static void
+test_operational_reports(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureEntity) sale = NULL;
+	g_autoptr(VentureEntity) spent = NULL;
+	g_autoptr(VentureVenture) other = venture_venture_new();
+	g_autoptr(VentureEntity) side = NULL;
+	gint64 cover;
+	gint64 small;
+	guint row;
+
+	(void)data;
+	fund(f, f->aria, "500 GOLD");
+	closed_flip(f, "Win", "spread", "100.00 USD", "120.00 USD", "2.00 USD", NULL, "2026-03-10T10:00:00Z");
+	closed_flip(f, "Loss", "spread", "100.00 USD", "90.00 USD", NULL, NULL, "2026-03-11T10:00:00Z");
+	closed_flip(f, "April", "spread", "100.00 USD", "200.00 USD", NULL, NULL, "2026-04-02T10:00:00Z");
+
+	cover = trade(f, "Cover", "cover");
+	leg(f, cover, f->ah_aria, "stake", "50 GOLD", NULL, "executed", "2026-03-05T10:00:00Z");
+	leg(f, cover, f->ah_aria, "payout", "60 GOLD", NULL, "executed", "2026-03-07T10:00:00Z");
+	close_at(f, cover, "2026-03-12T10:00:00Z");
+
+	g_object_set(other, "name", "Other", "organization-id", f->org, NULL);
+	save(f, other);
+	small = trade(f, "Side flip", "spread");
+	side = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, small);
+	g_object_set(side, "venture-id", ID(other), NULL);
+	save(f, side);
+	leg(f, small, f->market, "buy", "10.00 USD", NULL, "executed", "2026-03-05T10:00:00Z");
+	leg(f, small, f->supplier, "sell", "11.00 USD", NULL, "executed", "2026-03-06T10:00:00Z");
+	close_at(f, small, "2026-03-13T10:00:00Z");
+
+	/* Still open: not finished, not counted. */
+	leg(f, trade(f, "Open", "spread"), f->market, "buy", "1.00 USD", NULL, "executed",
+	    "2026-03-05T10:00:00Z");
+
+	sale = record(f, "sale");
+	g_object_set(sale, "venture-id", f->venture, NULL);
+	field(sale, "occurred-at", "2026-03-08");
+	field(sale, "gross", "50.00 USD");
+	save(f, sale);
+	spent = record(f, "expense");
+	g_object_set(spent, "venture-id", f->venture, "description", "Bags", NULL);
+	field(spent, "occurred-at", "2026-03-09");
+	field(spent, "amount", "5.00 USD");
+	save(f, spent);
+
+	/* The whole organization: every venture's trades. */
+	result = operational(f, "pnl", "2026-03", 0);
+	ASSERT_LINE(result, "Net revenue", "USD", "50.00 USD");
+	ASSERT_LINE(result, "Expenses", "USD", "5.00 USD");
+	ASSERT_LINE(result, "Arbitrage gains", "USD", "11.00 USD");
+	ASSERT_LINE(result, "Less arbitrage fees", "USD", "2.00 USD");
+	ASSERT_LINE(result, "Arbitrage result", "USD", "9.00 USD");
+	ASSERT_LINE(result, "Profit", "USD", "54.00 USD");
+	ASSERT_LINE(result, "Arbitrage result", "GOLD", "10.0000 GOLD");
+	ASSERT_LINE(result, "Profit", "GOLD", "10.0000 GOLD");
+	g_assert_cmpstr(cell_text(result, 0, "currency"), ==, "USD");
+	ASSERT_METRIC(result, "arbitrage", "9.00 USD");
+	ASSERT_METRIC(result, "arbitrage_GOLD", "10.0000 GOLD");
+	ASSERT_METRIC(result, "profit", "54.00 USD");
+	g_clear_object(&result);
+
+	/* One venture: Other's dollar stays out. */
+	result = operational(f, "pnl", "2026-03", f->venture);
+	ASSERT_LINE(result, "Arbitrage result", "USD", "8.00 USD");
+	ASSERT_LINE(result, "Profit", "USD", "53.00 USD");
+	g_clear_object(&result);
+
+	/* Ventures: a column of its own, in the venture's rows. */
+	result = operational(f, "ventures", "2026-03", 0);
+	row = row_where(result, "venture", "Flips", "USD");
+	ASSERT_MONEY(result, row, "arbitrage", "8.00 USD");
+	ASSERT_MONEY(result, row, "profit", "53.00 USD");
+	row = row_where(result, "venture", "Flips", "GOLD");
+	ASSERT_MONEY(result, row, "arbitrage", "10.0000 GOLD");
+	row = row_where(result, "venture", "Other", "USD");
+	ASSERT_MONEY(result, row, "arbitrage", "1.00 USD");
+	ASSERT_MONEY(result, row, "profit", "1.00 USD");
+	g_clear_object(&result);
+
+	/* Monthly: each trade in the month it finished. Rows run month by
+	 * month, the book currency first in each: March's dollars, March's
+	 * gold, April's dollars. */
+	result = operational(f, "monthly", "2026-03-01..2026-04-30", 0);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 3);
+	g_assert_cmpstr(cell_text(result, 0, "currency"), ==, "USD");
+	ASSERT_MONEY(result, 0, "arbitrage", "9.00 USD");
+	ASSERT_MONEY(result, 0, "profit", "54.00 USD");
+	g_assert_cmpstr(cell_text(result, 1, "currency"), ==, "GOLD");
+	ASSERT_MONEY(result, 1, "arbitrage", "10.0000 GOLD");
+	g_assert_cmpstr(cell_text(result, 2, "currency"), ==, "USD");
+	ASSERT_MONEY(result, 2, "arbitrage", "100.00 USD");
+	ASSERT_MONEY(result, 2, "profit", "100.00 USD");
+	g_clear_object(&result);
+
+	/* A month that finished no trade reads as it always did. */
+	result = operational(f, "pnl", "2026-02", 0);
+	g_assert_null(pnl_line(result, "Arbitrage result", "USD"));
+	g_assert_null(metric_text(result, "arbitrage"));
+	g_clear_object(&result);
+	result = operational(f, "ventures", "2026-02", 0);
+	g_assert_null(cell_money(result, 0, "arbitrage"));
+	g_clear_object(&result);
+
+	/* Off: no lines, no error, the profit of sales and expenses alone. */
+	venture_config_set_module_enabled(f->config, "arbitrage", FALSE);
+	result = operational(f, "pnl", "2026-03", 0);
+	g_assert_null(pnl_line(result, "Arbitrage result", "USD"));
+	ASSERT_LINE(result, "Profit", "USD", "45.00 USD");
+	g_clear_object(&result);
+	result = operational(f, "monthly", "2026-03", 0);
+	g_assert_null(cell_money(result, 0, "arbitrage"));
+	ASSERT_MONEY(result, 0, "profit", "45.00 USD");
+	g_clear_object(&result);
+	venture_config_set_module_enabled(f->config, "arbitrage", TRUE);
+}
+
 /*
  * The module switches off cleanly: its types, report and actions are
  * hidden, and come back when it is on; marketdata off takes it off too,
@@ -1932,6 +2147,8 @@ main(int argc, char **argv)
 	g_test_add("/arbitrage-ledger/record-roles", Fixture, NULL, setup, test_record_roles, teardown);
 	g_test_add("/arbitrage-ledger/second-actor", Fixture, NULL, setup, test_second_actor, teardown);
 	g_test_add("/arbitrage-ledger/performance", Fixture, NULL, setup, test_performance, teardown);
+	g_test_add("/arbitrage-ledger/operational-reports", Fixture, NULL, setup, test_operational_reports,
+	           teardown);
 	g_test_add("/arbitrage-ledger/trade-page", Fixture, NULL, setup, test_trade_page, teardown);
 	g_test_add("/arbitrage-ledger/module-off", Fixture, NULL, setup, test_module_off, teardown);
 
