@@ -867,6 +867,19 @@ venture_arbitrage_validate_trade(
 				venture_enum_to_nick(VENTURE_TYPE_ARBITRAGE_TRADE_STATUS, was_status));
 			return FALSE;
 		}
+
+		/* A finished trade's closing time is the date its close journals
+		 * carry, and the P&L counts it in the period of that time: moved by
+		 * hand, the result lands in one period and the gains in another.
+		 * Restored rather than refused, like a session's posted-at: a form
+		 * posts every field back, at whatever precision it rendered, and
+		 * the way to move it is Reopen and close again. */
+		if ((NULL != previous) && arb_trade_is_over(was_status) && arb_trade_is_over(status))
+		{
+			g_autoptr(GDateTime) then_closed = arb_time(previous, "closed-at");
+
+			g_object_set(entity, "closed-at", then_closed, NULL);
+		}
 	}
 
 	/* --- The derived times --- */
@@ -1316,6 +1329,22 @@ venture_arbitrage_validate_leg(
 
 		if (!permitted && !arb_check_frozen(database, trade_id, TRUE, error))
 			return FALSE;
+	}
+
+	/* Stock given to a leg that already executed as cash. The rule posts
+	 * a stock buy's principal through the receipt, not the leg, so the
+	 * re-save would reverse the cash it paid while no units arrive: the
+	 * venue's cash comes back and the purchase reads as profit. Only
+	 * Execute pairs a leg with its movement. Judged when written, so a
+	 * leg that keeps what it had stays editable. */
+	if (executed && was_executed && !permitted && (item_id > 0) &&
+	    (arb_int(entity, "inventory-txn-id") <= 0) &&
+	    ((NULL == previous) || (arb_int(previous, "inventory-item-id") != item_id)))
+	{
+		venture_set_error_validation(error, "Stock",
+			"this leg executed without moving stock, and only Execute moves the "
+			"units; cancel it and record a stock leg instead");
+		return FALSE;
 	}
 
 	when = arb_time(entity, "occurred-at");
@@ -1914,19 +1943,49 @@ venture_arbitrage_position(
 /* The cost in @currency of an issue, else a zero in it. */
 static VentureMoney *
 arb_cost_in(
-	GPtrArray	*costs,
-	const gchar	*currency
+	GPtrArray	 *costs,
+	const gchar	 *currency,
+	GError		**error
 ){
 	const VentureMoney *found;
+	const VentureMoney *only;
+	guint i;
+
+	/* A leg records one cost, and the figures (the trade page, the
+	 * arbitrage lines of the P&L) read only that. Units whose FIFO cost
+	 * spans currencies -- a craft from gold and ticket inputs -- would
+	 * keep one currency's cost and drop the rest, while the positions
+	 * account carries them all: the figures would disagree with the
+	 * close journals. Refused rather than guessed. */
+	only = NULL;
+
+	for (i = 0; (NULL != costs) && (i < costs->len); i++)
+	{
+		const VentureMoney *part = g_ptr_array_index(costs, i);
+
+		if (venture_money_is_zero(part))
+			continue;
+
+		if (NULL != only)
+		{
+			venture_set_error_validation(error, "Stock",
+				"these units cost %s and %s, and a trade leg records its cost in "
+				"one currency; move them out of the trade some other way",
+				venture_money_get_currency(only), venture_money_get_currency(part));
+			return NULL;
+		}
+
+		only = part;
+	}
+
+	if (NULL != only)
+		return venture_money_copy(only);
 
 	found = venture_money_totals_lookup(costs, currency);
 
 	if (NULL != found)
 		return venture_money_copy(found);
 
-	/* A sell whose units cost only some other currency (made by a craft
-	 * from gold inputs, sold for tickets): the position carries that cost
-	 * in its own currency; this leg's figure is the first one there. */
 	if ((NULL != costs) && (costs->len > 0))
 		return venture_money_copy(g_ptr_array_index(costs, 0));
 
@@ -2089,7 +2148,10 @@ arb_execute_in_transaction(
 			                                        &txn, &costs, error))
 				return FALSE;
 
-			cost = arb_cost_in(costs, venture_money_get_currency(amount));
+			cost = arb_cost_in(costs, venture_money_get_currency(amount), error);
+
+			if (NULL == cost)
+				return FALSE;
 		}
 		else
 		{
@@ -2690,7 +2752,11 @@ arb_write_off(
 	guint i;
 	guint j;
 
-	legs = venture_arbitrage_trade_legs(database, venture_entity_get_id(trade), FALSE, error);
+	/* Deleted legs too, as close and the figures count them: a deletion
+	 * is not a correction, and a deleted sell's units left the shelf all
+	 * the same. Leaving it out writes off units that belong to other
+	 * stock as this trade's loss. */
+	legs = venture_arbitrage_trade_legs(database, venture_entity_get_id(trade), TRUE, error);
 
 	if (NULL == legs)
 		return FALSE;
@@ -2789,8 +2855,11 @@ arb_write_off(
 		                                        actor, &txn, &costs, error))
 			return FALSE;
 
-		cost = (NULL != costs && costs->len > 0)
-			? venture_money_copy(g_ptr_array_index(costs, 0)) : NULL;
+		cost = NULL;
+
+		if ((NULL != costs) && (costs->len > 0) &&
+		    (NULL == (cost = arb_cost_in(costs, NULL, error))))
+			return FALSE;
 
 		leg = venture_arbitrage_leg_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(leg), organization_id);

@@ -91,7 +91,7 @@ One attempt.
 | =close_journal_id= | reference | technical: the first journal Close posted                                                  |
 | =tags=, =notes=    | text      |                                                                                            |
 
-=planned= and =open= move freely by hand. =closed= and =abandoned= are reached only through the Close and Abandon actions, and left only through Reopen, because each of those posts or reverses; a status typed into a form would do neither, and is refused with the action to use instead. =opened_at= and =closed_at= follow the factory's rule for a derived date: stamped when empty, kept when given, cleared on leaving the state, refused when typed onto a trade never in it. A trade never closes before it opened.
+=planned= and =open= move freely by hand. =closed= and =abandoned= are reached only through the Close and Abandon actions, and left only through Reopen, because each of those posts or reverses; a status typed into a form would do neither, and is refused with the action to use instead. =opened_at= and =closed_at= follow the factory's rule for a derived date: stamped when empty, kept when given, cleared on leaving the state, refused when typed onto a trade never in it. A finished trade's =closed_at= is the action's: a hand edit is put back (a form posts every field back), because the close journals carry that date and the operational P&L counts the trade in its period. Reopen and close again to move it. A trade never closes before it opened.
 
 =expected= is what the scan that found the trade expected, verbatim. The report reads one member of it, =profit=: a money string (="12.00 GOLD"=), an array of them, or an object of currency code to amount. Anything that does not name its currency is left out rather than guessed into one.
 
@@ -183,7 +183,7 @@ So for a flip, the cash paid becomes inventory; the units leave into the positio
 
 Execute also works on a leg without stock: it stamps the time and saves it executed, which is all the rule needs. A planned trade becomes open, opened at the leg that started it.
 
-Executed stock legs are irreversible. Changing or cancelling one is refused with the counter-leg message. A sell whose units cost some other currency (made by a craft from gold inputs and sold for tickets) carries its cost in that currency on the position, and the leg's =cost= is the first one there.
+Executed stock legs are irreversible. Changing or cancelling one is refused with the counter-leg message. A sell whose units cost some other currency (made by a craft from gold inputs and sold for tickets) carries its cost in that currency on the position and in the leg's =cost=. Units whose first-in-first-out cost spans two currencies (a craft from gold and ticket inputs, or two lots bought in different currencies) are refused, on a sell and on an abandon's write-off alike: a leg records one cost and the figures read only that, so the other currency's cost would vanish from the trade's result while the close journals carry it. Move such units out of the trade some other way. A leg that executed as cash cannot be given stock afterwards; only Execute moves units.
 
 * Close, reopen, abandon
 
@@ -210,7 +210,7 @@ Sections are journal currencies, not original currencies. A euro leg converted i
 
 =venture_arbitrage_abandon()= -- the =abandon= action, parameters =goods= (=keep=, the default, or =write_off=) and =abandoned_at=:
 
-- =write_off=: for each stock the trade's executed legs bought into and did not sell out of, the remaining units -- never more than are on hand, because units that left the shelf some other way are not the trade's to lose -- are issued at FIFO cost into the positions account through a =write_off= leg (stock movement kind =write_off=, referenced =arbitrage_trade:<id>=). The close that follows takes their cost to gains as a loss;
+- =write_off=: for each stock the trade's executed legs (deleted ones included, as close counts them) bought into and did not sell out of, the remaining units -- never more than are on hand, because units that left the shelf some other way are not the trade's to lose -- are issued at FIFO cost into the positions account through a =write_off= leg (stock movement kind =write_off=, referenced =arbitrage_trade:<id>=). The close that follows takes their cost to gains as a loss;
 - =keep=: the units stay in stock at their cost and nothing moves.
 
 Then the trade is closed as above, with the status abandoned.

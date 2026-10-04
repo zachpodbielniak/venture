@@ -1169,6 +1169,110 @@ test_abandon(Fixture *f, gconstpointer data)
 }
 
 /*
+ * Abandoning with a write-off counts a deleted leg, as close does: a
+ * deleted sell's units left the shelf all the same. Ten bought, four
+ * sold and that sell deleted, five more on the shelf from another trade:
+ * six are this trade's to write off, and five stay. If this regresses,
+ * the write-off takes units that belong to other stock as this trade's
+ * loss.
+ */
+static void
+test_abandon_deleted_leg(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) sell = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 item;
+	gint64 id;
+	gint64 other;
+	gint64 sold;
+
+	(void)data;
+	item = item_for(f, "Runecloth");
+	id = trade(f, "Runecloth", "spread");
+	execute(f, stock_leg(f, id, f->supplier, "buy", item, 10, "50.00 USD", NULL, "2026-03-05T10:00:00Z"));
+	sold = stock_leg(f, id, f->market, "sell", item, 4, "30.00 USD", NULL, "2026-03-06T10:00:00Z");
+	execute(f, sold);
+	sell = reread(f, VENTURE_TYPE_ARBITRAGE_LEG, sold);
+	g_assert_true(venture_database_delete(f->db, sell, NULL, &error));
+	g_assert_no_error(error);
+
+	other = trade(f, "Someone else's runecloth", "spread");
+	execute(f, stock_leg(f, other, f->supplier, "buy", item, 5, "25.00 USD", NULL, "2026-03-07T10:00:00Z"));
+	g_assert_cmpint(on_hand(f, item), ==, 11);
+
+	g_assert_true(venture_arbitrage_abandon(f->db, id, TRUE, NULL, NULL, &result, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(on_hand(f, item), ==, 5);
+	g_assert_cmpint(position(f, id, "USD"), ==, 0);
+	assert_balanced(f);
+}
+
+/*
+ * A closed trade's closing time is the action's: edited by hand it is put
+ * back, because the close journals carry that date and the P&L counts the
+ * trade in its period. If this regresses, the result lands in one period
+ * and the gains in another.
+ */
+static void
+test_closed_at_kept(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(GDateTime) closed = NULL;
+	g_autoptr(GDateTime) expected = NULL;
+	gint64 id;
+
+	(void)data;
+	id = trade(f, "Dated", "spread");
+	leg(f, id, f->market, "buy", "10.00 USD", NULL, "executed", "2026-03-05T10:00:00Z");
+	leg(f, id, f->supplier, "sell", "12.00 USD", NULL, "executed", "2026-03-06T10:00:00Z");
+	close_at(f, id, "2026-03-07T10:00:00Z");
+
+	row = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, id);
+	field(row, "closed-at", "2026-04-15T10:00:00Z");
+	g_object_set(row, "notes", "Moved the close by hand", NULL);
+	save(f, row);
+
+	again = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, id);
+	g_object_get(again, "closed-at", &closed, NULL);
+	expected = time_of("2026-03-07T10:00:00Z");
+	g_assert_nonnull(closed);
+	g_assert_true(g_date_time_equal(closed, expected));
+}
+
+/*
+ * Units whose FIFO cost spans two currencies cannot leave through one
+ * leg: the leg records one cost and the figures read only that, so one
+ * currency's cost would vanish from the trade's result while the close
+ * journals carry it. Refused, and nothing moves.
+ */
+static void
+test_cost_in_two_currencies(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 item;
+	gint64 id;
+	gint64 sell;
+
+	(void)data;
+	item = item_for(f, "Arcanite");
+	id = trade(f, "Arcanite", "spread");
+	fund(f, f->aria, "500 GOLD");
+	execute(f, stock_leg(f, id, f->ah_aria, "buy", item, 1, "10.0000 GOLD", NULL, "2026-03-05T10:00:00Z"));
+	execute(f, stock_leg(f, id, f->eurshop, "buy", item, 1, "5.00 EUR", NULL, "2026-03-05T11:00:00Z"));
+	sell = stock_leg(f, id, f->ah_aria, "sell", item, 2, "30.0000 GOLD", NULL, "2026-03-06T10:00:00Z");
+
+	g_assert_false(venture_arbitrage_execute_leg(f->db, sell, NULL, NULL, &result, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "one currency"));
+	g_assert_cmpint(on_hand(f, item), ==, 2);
+	g_assert_cmpint(enum_of(f, VENTURE_TYPE_ARBITRAGE_LEG, sell, "status"), ==,
+	                VENTURE_ARBITRAGE_LEG_STATUS_PLANNED);
+}
+
+/*
  * Deleting a leg, and then the trade, removes nothing from the books: a
  * deletion is not a correction. The position still counts the deleted
  * leg's journals. If this regresses, deleting a record silently rewrites
@@ -1238,6 +1342,14 @@ test_leg_rules(Fixture *f, gconstpointer data)
 	row = leg_new(f, id, f->market, "fee", "1.00 USD", NULL, NULL, NULL);
 	g_object_set(row, "inventory-item-id", item_for(f, "Wrong"), "quantity", (gint64)1, NULL);
 	save_refused(f, row, "only a buy or a sell moves stock");
+	g_clear_object(&row);
+
+	/* Stock given to a buy that already executed as cash: the re-save
+	 * would hand the cash back with no units arriving. */
+	row = leg_new(f, id, f->market, "buy", "7.00 USD", NULL, "executed", NULL);
+	save(f, row);
+	g_object_set(row, "inventory-item-id", item_for(f, "Late"), "quantity", (gint64)1, NULL);
+	save_refused(f, row, "only Execute moves");
 	g_clear_object(&row);
 
 	/* A transfer arriving is negative, and that is fine. */
@@ -2143,6 +2255,11 @@ main(int argc, char **argv)
 	g_test_add("/arbitrage-ledger/delete-keeps-journals", Fixture, NULL, setup,
 	           test_delete_keeps_journals, teardown);
 	g_test_add("/arbitrage-ledger/leg-rules", Fixture, NULL, setup, test_leg_rules, teardown);
+	g_test_add("/arbitrage-ledger/abandon-deleted-leg", Fixture, NULL, setup, test_abandon_deleted_leg,
+	           teardown);
+	g_test_add("/arbitrage-ledger/closed-at-kept", Fixture, NULL, setup, test_closed_at_kept, teardown);
+	g_test_add("/arbitrage-ledger/cost-in-two-currencies", Fixture, NULL, setup,
+	           test_cost_in_two_currencies, teardown);
 	g_test_add("/arbitrage-ledger/record", Fixture, NULL, setup, test_record, teardown);
 	g_test_add("/arbitrage-ledger/record-roles", Fixture, NULL, setup, test_record_roles, teardown);
 	g_test_add("/arbitrage-ledger/second-actor", Fixture, NULL, setup, test_second_actor, teardown);
