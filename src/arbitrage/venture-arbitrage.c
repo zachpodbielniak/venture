@@ -478,7 +478,9 @@ venture_arbitrage_account(
 	 * posts), executing a leg, closing and writing off. A page, a report
 	 * or a summary asks venture_arbitrage_find_account() instead, so
 	 * looking at a trade never adds to the chart. */
-	arb_classification(classification, &number, &name, &kind, NULL);
+	if (!arb_classification(classification, &number, &name, &kind, error))
+		return 0;
+
 	code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", organization_id, number);
 
 	return arb_scoped_account(database, organization_id, code, name, kind, actor, error);

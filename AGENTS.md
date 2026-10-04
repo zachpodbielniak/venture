@@ -23,6 +23,12 @@ make compose-up              # rebuild the image and recreate the local stack
 first, because the suite loads the example plugin for real; without them that
 test skips itself rather than failing.
 
+**Before landing, also run a plain `make` (release).** The release build
+optimises, and GCC's `-Wmaybe-uninitialized` only sees through an `-O2`
+call graph: an ignored return value that leaves out-parameters unset built
+clean in every debug run of the arbitrage epic and broke `make demo`, which
+builds release.
+
 `make -j clean all` is safe: a clean goal beside any other goal finishes in
 a sub-make before the build starts. The generators write into the directory
 `clean` removes, so the two goals must not run at once.
