@@ -241,11 +241,29 @@ static const gchar series_schema_step_4[] =
 	"CREATE INDEX current_sale_rate ON current (sale_rate)"
 	"  WHERE sale_rate IS NOT NULL;";
 
+/*
+ * The currency a venue's listing set was priced in. A sale's value is the
+ * previous set's price, so diffing a set priced in one currency against a
+ * snapshot in another wrote the old prices under the new code. Filled for
+ * an existing set from the snapshot it was taken from (always logged with
+ * its currency); a set whose snapshot was purged keeps NULL, which is
+ * "unknown" and restarts the diff once rather than guess.
+ */
+static const gchar series_schema_step_5[] =
+	"ALTER TABLE venue_state ADD COLUMN listing_set_currency TEXT;"
+	"UPDATE venue_state SET listing_set_currency ="
+	"  (SELECT s.currency FROM snapshots s"
+	"    WHERE s.venue_id = venue_state.venue_id"
+	"      AND s.taken_at = venue_state.listing_set_at)"
+	" WHERE listing_set_at IS NOT NULL;";
+
+/* Append only: a store records which of these it has run in user_version. */
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
 	series_schema_step_2,
 	series_schema_step_3,
-	series_schema_step_4
+	series_schema_step_4,
+	series_schema_step_5
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -2883,6 +2901,7 @@ typedef struct
 	GArray	*gaps;
 	GArray	*listing_set;
 	gint64	listing_set_at;
+	gchar	*listing_set_currency;	/* NULL: none, or not recorded */
 } SeriesVenueState;
 
 static void
@@ -2890,10 +2909,12 @@ series_venue_state_clear(SeriesVenueState *state)
 {
 	g_clear_pointer(&state->gaps, g_array_unref);
 	g_clear_pointer(&state->listing_set, g_array_unref);
+	g_clear_pointer(&state->listing_set_currency, g_free);
 }
 
 static const gchar series_sql_load_state[] =
-	"SELECT last_taken_at, last_fetched_at, gaps, listing_set, listing_set_at"
+	"SELECT last_taken_at, last_fetched_at, gaps, listing_set, listing_set_at,"
+	"       listing_set_currency"
 	" FROM venue_state WHERE venue_id = ?1";
 
 static gboolean
@@ -2937,6 +2958,9 @@ series_load_state(
 	state->last_taken_at = series_column_figure(stmt, 0);
 	state->last_fetched_at = series_column_figure(stmt, 1);
 	state->listing_set_at = series_column_figure(stmt, 4);
+
+	if (SQLITE_NULL != sqlite3_column_type(stmt, 5))
+		state->listing_set_currency = g_strdup((const gchar *)sqlite3_column_text(stmt, 5));
 
 	series_reader_init(&reader, stmt, 2);
 	state->gaps = series_decode_gaps(&reader);
@@ -3091,15 +3115,17 @@ static const gchar series_sql_daily_sales[] =
 
 static const gchar series_sql_store_state[] =
 	"INSERT INTO venue_state (venue_id, last_taken_at, last_fetched_at, gaps,"
-	"                         interval_seconds, listing_set, listing_set_at)"
-	" VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+	"                         interval_seconds, listing_set, listing_set_at,"
+	"                         listing_set_currency)"
+	" VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
 	" ON CONFLICT (venue_id) DO UPDATE SET"
 	"  last_taken_at = excluded.last_taken_at,"
 	"  last_fetched_at = excluded.last_fetched_at,"
 	"  gaps = excluded.gaps,"
 	"  interval_seconds = excluded.interval_seconds,"
 	"  listing_set = excluded.listing_set,"
-	"  listing_set_at = excluded.listing_set_at";
+	"  listing_set_at = excluded.listing_set_at,"
+	"  listing_set_currency = excluded.listing_set_currency";
 
 /* What one instrument's part of a snapshot comes to. */
 typedef struct
@@ -3662,7 +3688,12 @@ series_snapshot_apply(
 	 * Sales are estimated between two complete snapshots only -- an
 	 * incomplete one's missing listings say nothing -- and only when this
 	 * one carries ids at all: a source that stopped sending them would
-	 * otherwise read as every listing at the venue selling at once.
+	 * otherwise read as every listing at the venue selling at once. And
+	 * only within one currency: a sale is valued at the previous set's
+	 * price, so a venue whose snapshots changed currency starts a new set
+	 * rather than book old-currency prices under the new code (an
+	 * unrecorded currency, a set from before it was kept, counts as
+	 * changed).
 	 */
 	if (snapshot->complete)
 	{
@@ -3670,6 +3701,8 @@ series_snapshot_apply(
 
 		if ((VENTURE_SERIES_NONE != state.listing_set_at) &&
 		    (state.listing_set->len > 0) &&
+		    (NULL != state.listing_set_currency) &&
+		    (0 == g_strcmp0(state.listing_set_currency, snapshot->currency)) &&
 		    ((listing_set->len > 0) || (0 == snapshot->listings)) &&
 		    !series_apply_sales(self, venue_id, snapshot->currency,
 		                        snapshot->taken_at, state.listing_set,
@@ -3717,6 +3750,7 @@ series_snapshot_apply(
 			series_encode_listings(listing_set, set_blob);
 			series_bind_blob(stmt, 6, set_blob);
 			sqlite3_bind_int64(stmt, 7, snapshot->taken_at);
+			series_bind_text(stmt, 8, snapshot->currency);
 		}
 		else
 		{
@@ -3730,6 +3764,7 @@ series_snapshot_apply(
 				series_encode_listings(state.listing_set, set_blob);
 			series_bind_blob(stmt, 6, set_blob);
 			series_bind_figure(stmt, 7, state.listing_set_at);
+			series_bind_text(stmt, 8, state.listing_set_currency);
 		}
 
 		if (!series_step_done(self, stmt, "writing a venue's state", error))

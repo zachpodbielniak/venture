@@ -88,6 +88,12 @@ order the data flows.
 - **Money in it is still never a double**, and SQLite turns an integer sum
   that overflows into a REAL: sums in its SQL saturate (`SERIES_SAT_ADD`),
   and sums in C are checked or 128-bit (`venture-series-math.c`).
+- **Everything priced is keyed by its currency, the listing set too.** A
+  sale estimate values what vanished at the *previous* set's price, so the
+  set keeps `listing_set_currency` (step 5) and a snapshot in another
+  currency restarts the set instead of diffing. Anything new that carries
+  a price from one snapshot to the next must do the same; NULL there means
+  "not recorded" and restarts rather than guesses.
 
 ## Conventions
 

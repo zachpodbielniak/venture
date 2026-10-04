@@ -1048,6 +1048,133 @@ test_sale_across_incomplete(
 }
 
 /*
+ * A sale is valued at the previous listing set's price, so a set is diffed
+ * only against a snapshot in the currency it was priced in. A venue whose
+ * snapshots switch currency starts a new set: nothing sold is booked across
+ * the switch, and the next diff is within the new currency at its prices.
+ *
+ * What breaks if this regresses: a venue that changed currency books
+ * gold prices as silver -- a sale average and a value off by the exchange
+ * rate, in the daily row every reference figure and scan reads.
+ */
+static void
+test_sale_within_one_currency(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GArray) daily = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesCommitResult result;
+	guint i;
+
+	(void)data;
+
+	snapshot = begin(fixture->store, "realm", T0 + 10 * HOUR, TRUE);
+	add_listing(snapshot, "herb", 101, 100, 5, 7200);
+	add_listing(snapshot, "herb", 102, 110, 5, 7200);
+	commit(fixture->store, snapshot);
+
+	/* The same venue, now priced in silver: 101 is gone, but the gold
+	 * set is not diffed against it. */
+	snapshot = venture_series_store_begin_snapshot(fixture->store, "realm", "silver",
+	                                               T0 + 11 * HOUR, T0 + 11 * HOUR + 60,
+	                                               TRUE, &error);
+	g_assert_no_error(error);
+	add_listing(snapshot, "herb", 102, 11000, 5, 7200);
+	add_listing(snapshot, "herb", 103, 12000, 3, 7200);
+	result = commit(fixture->store, snapshot);
+	g_assert_cmpint(result.sold_estimate, ==, 0);
+
+	/* Within silver, 103 sells, valued at its silver price. */
+	snapshot = venture_series_store_begin_snapshot(fixture->store, "realm", "silver",
+	                                               T0 + 12 * HOUR, T0 + 12 * HOUR + 60,
+	                                               TRUE, &error);
+	g_assert_no_error(error);
+	add_listing(snapshot, "herb", 102, 11000, 5, 7200);
+	result = commit(fixture->store, snapshot);
+	g_assert_cmpint(result.sold_estimate, ==, 3);
+
+	daily = venture_series_store_daily(fixture->store, "realm", "herb", T0, &error);
+	g_assert_no_error(error);
+
+	for (i = 0; i < daily->len; i++)
+	{
+		const VentureSeriesDay *day = &g_array_index(daily, VentureSeriesDay, i);
+
+		if (0 == g_ascii_strcasecmp(day->currency, "GOLD"))
+			g_assert_cmpint(day->sold_estimate, ==, 0);
+		else
+		{
+			g_assert_cmpstr(day->currency, ==, "SILVER");
+			g_assert_cmpint(day->sold_estimate, ==, 3);
+			g_assert_cmpint(day->sale_avg, ==, 12000);
+		}
+	}
+}
+
+/*
+ * A store from before the listing set's currency was kept learns it on
+ * upgrade from the snapshot the set was taken from, so the first diff
+ * after the upgrade still counts its sales; a set whose snapshot was
+ * purged has no recorded currency and restarts once instead of guessing.
+ */
+static void
+test_sale_currency_upgrade(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autofree gchar *path = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesCommitResult result;
+	sqlite3 *db;
+
+	(void)data;
+
+	snapshot = begin(fixture->store, "realm", T0, TRUE);
+	add_listing(snapshot, "herb", 101, 100, 5, 4 * HOUR);
+	add_listing(snapshot, "herb", 102, 110, 5, 4 * HOUR);
+	commit(fixture->store, snapshot);
+	snapshot = begin(fixture->store, "purged", T0, TRUE);
+	add_listing(snapshot, "herb", 201, 100, 5, 4 * HOUR);
+	add_listing(snapshot, "herb", 202, 110, 5, 4 * HOUR);
+	commit(fixture->store, snapshot);
+	g_clear_object(&fixture->store);
+
+	/* As an older build left it: no column, version 4, and one venue's
+	 * snapshot log purged. */
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(db,
+	                             "ALTER TABLE venue_state DROP COLUMN listing_set_currency;"
+	                             "DELETE FROM snapshots WHERE venue_id ="
+	                             "  (SELECT id FROM venues WHERE key = 'purged');"
+	                             "PRAGMA user_version = 4;",
+	                             NULL, NULL, NULL), ==, SQLITE_OK);
+	sqlite3_close(db);
+
+	fixture->store = venture_series_store_open(fixture->dir, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(read_user_version(path), ==, venture_series_store_schema_version());
+
+	snapshot = begin(fixture->store, "realm", T0 + HOUR, TRUE);
+	add_listing(snapshot, "herb", 102, 110, 5, 3 * HOUR);
+	result = commit(fixture->store, snapshot);
+	g_assert_cmpint(result.sold_estimate, ==, 5);
+
+	snapshot = begin(fixture->store, "purged", T0 + HOUR, TRUE);
+	add_listing(snapshot, "herb", 202, 110, 5, 3 * HOUR);
+	result = commit(fixture->store, snapshot);
+	g_assert_cmpint(result.sold_estimate, ==, 0);
+
+	/* And from there on it diffs as usual. */
+	snapshot = begin(fixture->store, "purged", T0 + 2 * HOUR, TRUE);
+	result = commit(fixture->store, snapshot);
+	g_assert_cmpint(result.sold_estimate, ==, 5);
+}
+
+/*
  * A provider's sold count has no ceiling and the daily row saturates at
  * INT64_MAX rather than overflowing. The region recompute then summed two
  * such days with SQL SUM(), which raises "integer overflow", and the whole
@@ -2112,6 +2239,8 @@ main(
 	ADD("sale-estimate", test_sale_estimate);
 	ADD("sale-needs-ids", test_sale_needs_ids);
 	ADD("sale-across-incomplete", test_sale_across_incomplete);
+	ADD("sale-within-one-currency", test_sale_within_one_currency);
+	ADD("sale-currency-upgrade", test_sale_currency_upgrade);
 	ADD("saturated-sales-recompute", test_saturated_sales_recompute);
 	ADD("precomputed-sales-and-deals", test_precomputed_sales_and_deals);
 	ADD("region-small", test_region_small);

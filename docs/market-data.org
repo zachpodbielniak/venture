@@ -232,7 +232,7 @@ Per (=group_key=, =instrument_id=, =currency=): =computed_at=, =venues_offering=
 
 *** =venue_state=
 
-Per venue: =last_taken_at=, =last_fetched_at=, =gaps= (the last 36 gaps between snapshots, packed), =interval_seconds= (learned from them), =listing_set= (the listings of the last complete snapshot, packed) with =listing_set_at=, and =cursor= (where the venue's next fetch resumes).
+Per venue: =last_taken_at=, =last_fetched_at=, =gaps= (the last 36 gaps between snapshots, packed), =interval_seconds= (learned from them), =listing_set= (the listings of the last complete snapshot, packed) with =listing_set_at= and =listing_set_currency= (the currency its prices are in), and =cursor= (where the venue's next fetch resumes).
 
 *** =quotes= and =quote_history=
 
@@ -306,7 +306,7 @@ The listing set of each complete snapshot is kept: every listing with an id, sor
 - *Vanished, and might have expired*: *expired*.
 - *Still there with less quantity*: sold the difference.
 
-The sales land on the later snapshot's day in =daily=. A cancelled listing looks exactly like a sale; that is the estimate's known bias, and why it is called one. Sales are estimated only when both snapshots are complete (an incomplete one's missing listings say nothing), and only when the later one carries ids at all -- otherwise a source that stopped sending ids would read as every listing at the venue selling at once. A source whose ids are text uses =venture_series_listing_id_from_string()=, a 64-bit FNV-1a hash that is never zero.
+The sales land on the later snapshot's day in =daily=. A cancelled listing looks exactly like a sale; that is the estimate's known bias, and why it is called one. Sales are estimated only when both snapshots are complete (an incomplete one's missing listings say nothing), and only when the later one carries ids at all -- otherwise a source that stopped sending ids would read as every listing at the venue selling at once. And only within one currency: a sale is valued at the earlier set's price, so the set records the currency it was priced in (=listing_set_currency=, schema step 5) and a complete snapshot in another currency starts a new set instead of diffing -- nothing is booked across the switch, and the next diff is within the new currency. Step 5 fills the column for an existing set from the snapshot it was taken from; a set whose snapshot was already purged keeps NULL, read as unknown, and restarts once. A source whose ids are text uses =venture_series_listing_id_from_string()=, a 64-bit FNV-1a hash that is never zero.
 
 *** Interval learning
 
