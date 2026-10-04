@@ -112,7 +112,8 @@ One movement at one venue.
 | =amount=            | money     | the money that moved, before fees                                                          |
 | =fees=              | money     | optional: what the venue charged, in the amount's currency                                 |
 | =occurred_at=       | datetime  | when; stamped when it is executed with none                                                |
-| =cost=              | money     | technical: what the units issued cost, first in first out                                 |
+| =cost=              | money     | technical: what the units issued cost, first in first out (in the leg's currency when they cost several) |
+| =cost_detail=       | text      | technical: what the units issued cost in every currency, as JSON ={"GOLD": "0.6667", "TICKET": "34"}= |
 | =inventory_txn_id=  | reference | technical: the stock movement Execute made                                                 |
 | =notes=             | text      |                                                                                           |
 
@@ -122,7 +123,7 @@ The direction of the money is derived from the kind and never stored: a buy and 
 
 *What a leg refuses*, in the order a person would fix it:
 
-- writing its stamps (=inventory_txn_id=, =cost=), or a =write_off= leg, by hand;
+- writing its stamps (=inventory_txn_id=, =cost=, =cost_detail=), or a =write_off= leg, by hand;
 - any change to a leg that moved stock -- including cancelling it. The units are on a shelf or gone; a correction is a counter-leg (a sell for a buy, a buy for a sell);
 - a financial change to an executed leg of a closed or abandoned trade, and a new executed leg on one: the closing journals were posted from them. Reopen first. A planned leg may still be added;
 - a trade missing, or in another organization;
@@ -176,14 +177,14 @@ A leg spending from a holding is judged like any other spend, from the leg's dat
 A leg naming =inventory_item_id= moves stock as well as money, and only the =execute= action may execute it. In one transaction, inside the whole-operation posting boundary (begun before the transaction, as the boundary requires):
 
 1. a *buy* is received through =venture_inventory_service_receive_from()=: a purchase movement referenced =arbitrage_leg:<id>=, cost layers that split the amount over the units exactly (100.00 for seven units is four layers at 14.29 and three at 14.28, one lot), and Dr inventory / Cr venue cash. Goods received not invoiced (2010) is never touched: no bill will come to clear it. The leg's =cost= is its amount;
-2. a *sell* is issued through =venture_inventory_service_issue_to()=: first in, first out, Dr positions / Cr inventory at the layers' cost -- not cost of goods sold (5000). The leg's =cost= is that cost, in the leg's currency;
+2. a *sell* is issued through =venture_inventory_service_issue_to()=: first in, first out, Dr positions / Cr inventory at the layers' cost -- not cost of goods sold (5000), one journal pair per currency the cost is in (none for a memo currency). The leg's =cost= is that cost in the leg's currency (else the first currency it is in), and =cost_detail= every currency's part;
 3. the leg is stamped with the movement and saved executed, which posts its money and fees through the rule.
 
 So for a flip, the cash paid becomes inventory; the units leave into the position at cost; the proceeds come out of the position into the venue's cash; and what stays on the position is the profit. Each unit is posted once, by the movement that moved it.
 
 Execute also works on a leg without stock: it stamps the time and saves it executed, which is all the rule needs. A planned trade becomes open, opened at the leg that started it.
 
-Executed stock legs are irreversible. Changing or cancelling one is refused with the counter-leg message. A sell whose units cost some other currency (made by a craft from gold inputs and sold for tickets) carries its cost in that currency on the position and in the leg's =cost=. Units whose first-in-first-out cost spans two currencies (a craft from gold and ticket inputs, or two lots bought in different currencies) are refused, on a sell and on an abandon's write-off alike: a leg records one cost and the figures read only that, so the other currency's cost would vanish from the trade's result while the close journals carry it. Move such units out of the trade some other way. A leg that executed as cash cannot be given stock afterwards; only Execute moves units.
+Executed stock legs are irreversible. Changing or cancelling one is refused with the counter-leg message. A sell whose units cost some other currency (made by a craft from gold inputs and sold for tickets) carries its cost in that currency on the position and in the leg's =cost=. Units whose first-in-first-out cost spans two currencies -- a craft from gold and ticket inputs, whose sibling layers are one lot, or two lots bought in different currencies -- leave with every currency's share at once, on a sell and on an abandon's write-off alike, and the leg keeps each part in =cost_detail=. The figures read the detail, so each currency's cost of stock is counted in that currency: the gold part is what the issue put on the positions account and what the close takes to gains, and a memo currency's part (tickets) is a loss in that currency in the figures while, being memo, it posts no journal. (These were refused until the detail existed: one recorded cost dropped a currency the positions account carried.) A leg that executed as cash cannot be given stock afterwards; only Execute moves units.
 
 * Close, reopen, abandon
 
@@ -283,7 +284,7 @@ How finished trades did -- closed or abandoned, in the period they finished. One
 
 Columns: trades, profitable, hit rate, realised, capital deployed, ROI, fees, average hold (days), expected, and realised less expected.
 
-- *Realised* is what came back, less what went out, less the cost of stock that left (sold or written off), less fees. Money that became stock still held is not counted as spent: =returned - (capital - stock_bought) - stock_cost - fees=, per currency, from executed legs only (deleted ones included).
+- *Realised* is what came back, less what went out, less the cost of stock that left (sold or written off), less fees. Money that became stock still held is not counted as spent: =returned - (capital - stock_bought) - stock_cost - fees=, per currency, from executed legs only (deleted ones included). A leg's stock cost is its =cost_detail=, every currency it is in, when the action wrote one, else its =cost=.
 - *Capital deployed* is money out, stock bought included. *ROI* is realised over it; nothing deployed is no ROI, not an infinite one.
 - *Hit rate* is the share of a currency's trades that realised more than nothing.
 - *Average hold* is opened to closed, over the group's trades; it belongs to the group and repeats on each currency row.

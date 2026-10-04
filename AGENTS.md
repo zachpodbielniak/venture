@@ -1969,6 +1969,13 @@ has the posting table, close and abandon.
   `venture_arbitrage_find_account()`, where "none" means nothing was ever
   posted there. A GET that made an account wrote an audited row under a
   viewer's name; `/arbitrage-ledger/reads-make-no-accounts` pins it.
+- **A stock leg's cost is per currency.** Units from a GOLD+TICKET craft
+  are one lot and leave with both shares; `arb_cost_parts()` stamps
+  `cost` (the leg's currency, else the first) and `cost-detail` (JSON
+  {CODE: amount}, technical, the actions' alone like `cost`), and
+  `venture_arbitrage_compute_figures()` adds the detail per currency, so
+  the gold result is what the close posts. Never refuse a multi-currency
+  issue again, and never read `cost` alone where the detail exists.
 - **Leg validators never write the trade.** A derived write bumps the
   trade's version under whoever holds it. The actions (execute opening a
   planned trade, close stamping it) are the writers; their stamps pass the

@@ -1162,6 +1162,8 @@ venture_arbitrage_validate_leg(
 	g_autoptr(VentureMoney) cost = NULL;
 	g_autoptr(VentureMoney) was_cost = NULL;
 	g_autoptr(GDateTime) when = NULL;
+	g_autofree gchar *detail = NULL;
+	g_autofree gchar *was_detail = NULL;
 	VentureArbitrageLegKind kind;
 	gboolean permitted;
 	gboolean executed;
@@ -1186,12 +1188,18 @@ venture_arbitrage_validate_leg(
 	               (VENTURE_ARBITRAGE_LEG_STATUS_EXECUTED == arb_enum(previous, "status"));
 	cost = arb_money(entity, "cost");
 	was_cost = arb_money(previous, "cost");
+	g_object_get(entity, "cost-detail", &detail, NULL);
+
+	if (NULL != previous)
+		g_object_get(previous, "cost-detail", &was_detail, NULL);
 
 	/* --- What only the actions write --- */
 
 	if (!permitted)
 	{
-		if ((arb_int(entity, "inventory-txn-id") != was_txn) || arb_money_differs(cost, was_cost))
+		if ((arb_int(entity, "inventory-txn-id") != was_txn) || arb_money_differs(cost, was_cost) ||
+		    (0 != g_strcmp0(venture_string_is_empty(detail) ? NULL : detail,
+		                    venture_string_is_empty(was_detail) ? NULL : was_detail)))
 		{
 			venture_set_error_validation(error, "Stock movement",
 				"the movement and the cost of stock are set by the Execute action, "
@@ -1596,6 +1604,62 @@ arb_figures_compare(
 	return g_strcmp0(left->currency, right->currency);
 }
 
+/* Adds a leg's cost detail, {CODE: amount}, to the figures' stock cost. */
+static gboolean
+arb_add_cost_detail(
+	GPtrArray	 *figures,
+	const gchar	 *detail,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	JsonObjectIter iter;
+	const gchar *code;
+	JsonNode *value;
+
+	node = json_from_string(detail, NULL);
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "A leg's cost detail is not a JSON object");
+		return FALSE;
+	}
+
+	json_object_iter_init(&iter, json_node_get_object(node));
+
+	while (json_object_iter_next(&iter, &code, &value))
+	{
+		g_autoptr(VentureMoney) part = NULL;
+
+		if (!JSON_NODE_HOLDS_VALUE(value) || (G_TYPE_STRING != json_node_get_value_type(value)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "A leg's cost detail holds no amount for %s", code);
+			return FALSE;
+		}
+
+		part = venture_money_from_string(json_node_get_string(value), code, error);
+
+		if (NULL == part)
+			return FALSE;
+
+		/* The member names the currency; an amount naming another is
+		 * not this part. */
+		if (0 != g_strcmp0(venture_money_get_currency(part), code))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "A leg's cost detail gives %s an amount in %s", code,
+			            venture_money_get_currency(part));
+			return FALSE;
+		}
+
+		if (!arb_money_add(&arb_figures_for(figures, part)->stock_cost, part, error))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
 /*
  * The one place a trade's per-currency figures are added up, for the page
  * and the report alike (see venture-arbitrage-private.h for what each
@@ -1667,11 +1731,26 @@ venture_arbitrage_compute_figures(
 		if ((NULL != fees) && !arb_money_add(&arb_figures_for(figures, fees)->fees, fees, error))
 			return NULL;
 
-		/* What the units that left cost: a sell's FIFO cost, or a write-off's.
-		 * In the cost's own currency, which may not be the sale's. */
-		if ((NULL != cost) && (VENTURE_ARBITRAGE_LEG_KIND_BUY != kind) &&
-		    !arb_money_add(&arb_figures_for(figures, cost)->stock_cost, cost, error))
-			return NULL;
+		/* What the units that left cost: a sell's FIFO cost, or a write-off's,
+		 * in each currency it was paid in, which may not be the sale's. The
+		 * detail when the action wrote one -- units made from gold and
+		 * tickets cost both, and the positions account carries both --
+		 * else the one cost a leg executed before it existed records. */
+		if (VENTURE_ARBITRAGE_LEG_KIND_BUY != kind)
+		{
+			g_autofree gchar *detail = NULL;
+
+			g_object_get(leg, "cost-detail", &detail, NULL);
+
+			if (!venture_string_is_empty(detail))
+			{
+				if (!arb_add_cost_detail(figures, detail, error))
+					return NULL;
+			}
+			else if ((NULL != cost) &&
+			         !arb_money_add(&arb_figures_for(figures, cost)->stock_cost, cost, error))
+				return NULL;
+		}
 	}
 
 	for (i = 0; i < figures->len; i++)
@@ -2056,56 +2135,84 @@ venture_arbitrage_position(
  * Executing a leg
  * ========================================================================== */
 
-/* The cost in @currency of an issue, else a zero in it. */
-static VentureMoney *
-arb_cost_in(
+/*
+ * What an issue cost, as a leg records it: *@out_cost in @currency when
+ * the units cost something there (else the first currency they cost, else
+ * a zero in @currency), and *@out_detail every currency's part as JSON
+ * {CODE: amount} -- NULL when nothing was costed. Units made from inputs
+ * in two currencies cost both, and the figures read the detail: one cost
+ * would drop a currency the positions account and the close carry.
+ */
+static gboolean
+arb_cost_parts(
 	GPtrArray	 *costs,
 	const gchar	 *currency,
+	VentureMoney	**out_cost,
+	gchar		**out_detail,
 	GError		**error
 ){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) root = NULL;
 	const VentureMoney *found;
-	const VentureMoney *only;
+	const VentureMoney *first;
+	guint parts;
 	guint i;
 
-	/* A leg records one cost, and the figures (the trade page, the
-	 * arbitrage lines of the P&L) read only that. Units whose FIFO cost
-	 * spans currencies -- a craft from gold and ticket inputs -- would
-	 * keep one currency's cost and drop the rest, while the positions
-	 * account carries them all: the figures would disagree with the
-	 * close journals. Refused rather than guessed. */
-	only = NULL;
+	(void)error;
+
+	*out_cost = NULL;
+	*out_detail = NULL;
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	first = NULL;
+	parts = 0;
 
 	for (i = 0; (NULL != costs) && (i < costs->len); i++)
 	{
 		const VentureMoney *part = g_ptr_array_index(costs, i);
+		g_autofree gchar *text = NULL;
+		gchar *space;
 
 		if (venture_money_is_zero(part))
 			continue;
 
-		if (NULL != only)
-		{
-			venture_set_error_validation(error, "Stock",
-				"these units cost %s and %s, and a trade leg records its cost in "
-				"one currency; move them out of the trade some other way",
-				venture_money_get_currency(only), venture_money_get_currency(part));
-			return NULL;
-		}
+		if (NULL == first)
+			first = part;
 
-		only = part;
+		/* "12.3400 GOLD" -> "12.3400": the code is the member's name. */
+		text = venture_money_to_string(part);
+		space = strrchr(text, ' ');
+
+		if (NULL != space)
+			*space = '\0';
+
+		json_builder_set_member_name(builder, venture_money_get_currency(part));
+		json_builder_add_string_value(builder, text);
+		parts++;
 	}
 
-	if (NULL != only)
-		return venture_money_copy(only);
+	json_builder_end_object(builder);
 
-	found = venture_money_totals_lookup(costs, currency);
+	if (parts > 0)
+	{
+		root = json_builder_get_root(builder);
+		*out_detail = json_to_string(root, FALSE);
+	}
 
-	if (NULL != found)
-		return venture_money_copy(found);
+	found = (NULL != currency) ? venture_money_totals_lookup(costs, currency) : NULL;
 
-	if ((NULL != costs) && (costs->len > 0))
-		return venture_money_copy(g_ptr_array_index(costs, 0));
+	if ((NULL != found) && !venture_money_is_zero(found))
+		*out_cost = venture_money_copy(found);
+	else if (NULL != first)
+		*out_cost = venture_money_copy(first);
+	else if (NULL != found)
+		*out_cost = venture_money_copy(found);
+	else if ((NULL != costs) && (costs->len > 0))
+		*out_cost = venture_money_copy(g_ptr_array_index(costs, 0));
+	else if (NULL != currency)
+		*out_cost = venture_money_new_zero(currency);
 
-	return venture_money_new_zero(currency);
+	return TRUE;
 }
 
 /* Executes @leg_id inside the caller's transaction. */
@@ -2196,6 +2303,7 @@ arb_execute_in_transaction(
 		VentureInventoryService *inventory;
 		g_autoptr(VentureEntity) txn = NULL;
 		g_autoptr(VentureMoney) cost = NULL;
+		g_autofree gchar *detail = NULL;
 
 		if (!arb_sales_enabled())
 		{
@@ -2264,9 +2372,8 @@ arb_execute_in_transaction(
 			                                        &txn, &costs, error))
 				return FALSE;
 
-			cost = arb_cost_in(costs, venture_money_get_currency(amount), error);
-
-			if (NULL == cost)
+			if (!arb_cost_parts(costs, venture_money_get_currency(amount), &cost, &detail,
+			                    error))
 				return FALSE;
 		}
 		else
@@ -2276,7 +2383,8 @@ arb_execute_in_transaction(
 			return FALSE;
 		}
 
-		g_object_set(leg, "inventory-txn-id", venture_entity_get_id(txn), "cost", cost, NULL);
+		g_object_set(leg, "inventory-txn-id", venture_entity_get_id(txn), "cost", cost,
+		             "cost-detail", detail, NULL);
 	}
 
 	/* --- The leg, which posts its money and fees on this save --- */
@@ -2946,6 +3054,7 @@ arb_write_off(
 		g_autoptr(GPtrArray) costs = NULL;
 		g_autoptr(VentureArbitrageLeg) leg = NULL;
 		g_autoptr(VentureMoney) cost = NULL;
+		g_autofree gchar *detail = NULL;
 		gint64 on_hand;
 		gint64 units;
 
@@ -2971,10 +3080,8 @@ arb_write_off(
 		                                        actor, &txn, &costs, error))
 			return FALSE;
 
-		cost = NULL;
-
 		if ((NULL != costs) && (costs->len > 0) &&
-		    (NULL == (cost = arb_cost_in(costs, NULL, error))))
+		    !arb_cost_parts(costs, NULL, &cost, &detail, error))
 			return FALSE;
 
 		leg = venture_arbitrage_leg_new();
@@ -2984,6 +3091,7 @@ arb_write_off(
 		             "status", (gint)VENTURE_ARBITRAGE_LEG_STATUS_EXECUTED,
 		             "inventory-item-id", entry->item_id, "quantity", units,
 		             "inventory-txn-id", venture_entity_get_id(txn), "cost", cost,
+		             "cost-detail", detail,
 		             "occurred-at", when, "notes", "Written off when the trade was abandoned",
 		             NULL);
 

@@ -70,8 +70,10 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureArbitrageTrade, venture_arbitrage_trade,
  *
  * A leg naming `inventory-item-id` moves stock as well as money, and only
  * the `execute` action may execute it: it receives or issues the units
- * through the inventory service and stamps `inventory-txn-id` and `cost`,
- * which nobody else may write.
+ * through the inventory service and stamps `inventory-txn-id`, `cost` and
+ * `cost-detail`, which nobody else may write. Units made from inputs in two
+ * currencies (a craft from gold and tickets) cost both: `cost-detail` holds
+ * every currency's part, and the trade's figures read it.
  * ========================================================================== */
 
 static const VentureFieldDecl venture_arbitrage_leg_fields[] = {
@@ -102,8 +104,13 @@ static const VentureFieldDecl venture_arbitrage_leg_fields[] = {
 	              "When it happened; filled in when it is executed",
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("cost", "Cost of stock",
-	              "Set by Execute and Abandon: what the units issued cost, first in first out",
+	              "Set by Execute and Abandon: what the units issued cost, first in first out "
+	              "(in the leg's currency when they cost several; cost_detail has them all)",
 	              VENTURE_FIELD_KIND_MONEY, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("cost-detail", "Cost by currency",
+	              "Set by Execute and Abandon: what the units issued cost in each currency, "
+	              "as JSON {CODE: amount}",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD_REF("inventory-txn-id", "Stock movement",
 	                  "Set by Execute: the movement that received or issued the units",
 	                  "inventory_txn", VENTURE_COLUMN_FLAG_TECHNICAL),

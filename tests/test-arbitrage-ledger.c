@@ -1242,35 +1242,102 @@ test_closed_at_kept(Fixture *f, gconstpointer data)
 	g_assert_true(g_date_time_equal(closed, expected));
 }
 
+/* Receives @quantity units of @item_id at @unit_cost each, outside any
+ * trade: stock already on the shelf. */
+static void
+receive_stock(Fixture *f, gint64 item_id, gint64 quantity, const gchar *unit_cost)
+{
+	g_autoptr(VentureMoney) cost = venture_money_from_string(unit_cost, NULL, NULL);
+	g_autoptr(GDateTime) when = time_of("2026-03-01T09:00:00Z");
+	g_autoptr(GError) error = NULL;
+
+	g_assert_nonnull(cost);
+	g_assert_true(venture_inventory_service_receive(venture_inventory_service_get(f->db), item_id,
+	                                                quantity, cost, when, 0, "seed", NULL, &error));
+	g_assert_no_error(error);
+}
+
 /*
- * Units whose FIFO cost spans two currencies cannot leave through one
- * leg: the leg records one cost and the figures read only that, so one
- * currency's cost would vanish from the trade's result while the close
- * journals carry it. Refused, and nothing moves.
+ * Units made from gold and tickets cost both: a craft gives them sibling
+ * layers in one lot, and selling two of them through a trade issues both
+ * currencies' shares at once. The leg keeps every part in cost_detail,
+ * and the trade's figures count each in its own currency -- so the gold
+ * result is what the positions account holds and the close takes to
+ * gains, and the tickets' cost is a loss in tickets, as the memo currency
+ * it is. Writing the detail by hand is refused like the cost.
+ *
+ * What breaks if this regresses: a crafted unit cannot be sold through a
+ * trade at all (it was refused as "one currency"), or one currency's cost
+ * vanishes from the result while the books carry it.
  */
 static void
 test_cost_in_two_currencies(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(GPtrArray) made = NULL;
 	g_autoptr(GError) error = NULL;
-	gint64 item;
+	g_autoptr(JsonNode) detail = NULL;
+	g_autofree gchar *detail_text = NULL;
+	g_autofree gchar *cost = NULL;
+	VentureInventoryDraw draws[2];
+	JsonObject *parts;
+	gint64 dust;
+	gint64 token;
+	gint64 charm;
 	gint64 id;
 	gint64 sell;
 
 	(void)data;
-	item = item_for(f, "Arcanite");
-	id = trade(f, "Arcanite", "spread");
-	fund(f, f->aria, "500 GOLD");
-	execute(f, stock_leg(f, id, f->ah_aria, "buy", item, 1, "10.0000 GOLD", NULL, "2026-03-05T10:00:00Z"));
-	execute(f, stock_leg(f, id, f->eurshop, "buy", item, 1, "5.00 EUR", NULL, "2026-03-05T11:00:00Z"));
-	sell = stock_leg(f, id, f->ah_aria, "sell", item, 2, "30.0000 GOLD", NULL, "2026-03-06T10:00:00Z");
+	dust = item_for(f, "Dust");
+	token = item_for(f, "Token");
+	charm = item_for(f, "Charm");
+	receive_stock(f, dust, 4, "0.2500 GOLD");
+	receive_stock(f, token, 10, "5 TICKET");
 
-	g_assert_false(venture_arbitrage_execute_leg(f->db, sell, NULL, NULL, &result, &error));
-	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
-	g_assert_nonnull(strstr(error->message, "one currency"));
-	g_assert_cmpint(on_hand(f, item), ==, 2);
-	g_assert_cmpint(enum_of(f, VENTURE_TYPE_ARBITRAGE_LEG, sell, "status"), ==,
-	                VENTURE_ARBITRAGE_LEG_STATUS_PLANNED);
+	/* 1 GOLD and 50 TICKET into three charms: units of 0.3334 + 17,
+	 * 0.3333 + 17 and 0.3333 + 16, one lot. */
+	draws[0].inventory_item_id = dust;
+	draws[0].quantity = 4;
+	draws[1].inventory_item_id = token;
+	draws[1].quantity = 10;
+	g_assert_true(venture_inventory_service_produce(venture_inventory_service_get(f->db), draws, 2,
+		charm, 3, NULL, "recipe:1", NULL, &txn, &made, &error));
+	g_assert_no_error(error);
+
+	id = trade(f, "Charms", "transform");
+	sell = stock_leg(f, id, f->ah_aria, "sell", charm, 2, "3.0000 GOLD", NULL, "2026-03-06T10:00:00Z");
+	execute(f, sell);
+	g_assert_cmpint(on_hand(f, charm), ==, 1);
+
+	row = reread(f, VENTURE_TYPE_ARBITRAGE_LEG, sell);
+	cost = money_text(row, "cost");
+	g_assert_cmpstr(cost, ==, "0.6667 GOLD");
+	g_object_get(row, "cost-detail", &detail_text, NULL);
+	detail = json_from_string(detail_text, &error);
+	g_assert_no_error(error);
+	parts = json_node_get_object(detail);
+	g_assert_cmpuint(json_object_get_size(parts), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(parts, "GOLD"), ==, "0.6667");
+	g_assert_cmpstr(json_object_get_string_member(parts, "TICKET"), ==, "34");
+
+	/* Each currency's result: gold 3.0000 - 0.6667, tickets -34. */
+	g_assert_cmpint(realised(f, id, "GOLD"), ==, 23333);
+	g_assert_cmpint(realised(f, id, "TICKET"), ==, -34);
+
+	/* The books agree in gold: the issue's cost in, the proceeds out. */
+	g_assert_cmpint(position(f, id, "GOLD"), ==, -23333);
+	g_assert_cmpint(position(f, id, "TICKET"), ==, 0);
+	close_at(f, id, "2026-03-07T10:00:00Z");
+	g_assert_cmpint(account_net(f, arb_account(f, "arbitrage_gains"), "GOLD"), ==, -23333);
+	g_assert_cmpint(position(f, id, "GOLD"), ==, 0);
+	assert_balanced(f);
+
+	/* The detail is the action's to write, like the cost. */
+	g_clear_object(&row);
+	row = reread(f, VENTURE_TYPE_ARBITRAGE_LEG, sell);
+	g_object_set(row, "cost-detail", "{\"GOLD\":\"0.0001\"}", NULL);
+	save_refused(f, row, "Execute action");
 }
 
 /*
