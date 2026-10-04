@@ -346,6 +346,7 @@
 #include "marketdata/venture-marketdata-oracle.h"
 #include "marketdata/venture-marketdata-alerts.h"
 #include "marketdata/venture-marketdata-browse.h"
+#include "marketdata/venture-marketdata-mirror.h"
 #include "arbitrage/venture-arbitrage.h"
 #include "series/venture-series-math.h"
 #ifdef VENTURE_HAVE_SQLITE

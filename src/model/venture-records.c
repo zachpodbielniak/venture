@@ -234,7 +234,20 @@ static const VentureFieldDecl venture_location_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("active", "Active", "Still in use; an inactive place keeps its history",
-	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	/* The outside account a place stands for -- a character, a seller
+	 * account -- as "<namespace>:<key>", so promoting the account twice
+	 * finds this record (deleted ones too) instead of making a second.
+	 * Unique in the organization; set by promotion, or by hand to adopt
+	 * a place made before its account was seen. */
+	VENTURE_FIELD("external-ref", "Reference",
+	              "Optional: the outside account this place stands for, as namespace:key; "
+	              "unique in the organization",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_REF("data-source-id", "Data source",
+	                  "Optional: the market data source whose account this place is",
+	                  "data_source", VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 VENTURE_DEFINE_ENTITY(VentureLocation, venture_location, venture_location_fields)

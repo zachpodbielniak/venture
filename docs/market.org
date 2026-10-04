@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-09-27]
 #+updated: [2026-10-04]
-#+version: 0.3.0
+#+version: 0.4.0
 
 * What a sale record cannot tell you
 
@@ -207,6 +207,12 @@ Which reports take it, and the rule they keep:
 | =sale_id=           | reference | optional: the sale it became                                         |
 | =tags=              | string    | comma separated, searchable                                          |
 | =notes=             | text      |                                                                      |
+| =expires_at=        | datetime  | optional: when the offer runs out if nothing sells; indexed          |
+| =location_id=       | reference | optional: the account or place that posted it -- a character, a shop |
+| =bid=               | money     | optional: an auction's bid for one unit, in the price's currency     |
+| =external_id=       | string    | optional, technical: the outside system's id; unique in the organization, deleted listings included |
+| =data_source_id=    | reference | technical: the data source whose position this listing mirrors; the mirror's alone |
+| =mirror_state=      | text      | technical: what the position mirror last wrote, as JSON; the mirror's alone |
 
 =open= is the enum's zero value, so a listing nobody has closed has not
 ended -- the safe reading. Every other outcome is terminal.
@@ -222,6 +228,10 @@ suggests: with marketdata off the reference is refused when written, like
 any reference into a hidden module, and a listing without it works exactly
 as before. The column was added by schema reconciliation; nothing was
 backfilled, because no older listing named a venue.
+
+=expires_at=, =location_id=, =bid=, =external_id=, =data_source_id= and =mirror_state= came with the operator's accounts. They are additive columns that schema reconciliation adds, with the unique index on =external_id= (partial: a listing with none is not counted); no migration script was needed, because no older listing could have carried any of them. =expires_at= is what the dashboard's =upcoming= widget and an "expiring soon" list read; =location_id= says which character or shop posted an offer, so the same item listed by two characters is two rows somebody can tell apart.
+
+*Mirrored listings.* A listing filed under a data source (=data_source_id= set) is one the marketdata module's position mirror made from an open position in that source's store: it keeps the listing in step while the position is there and closes it -- sold, partial, expired or cancelled, judged from the store's ledger -- when it is gone. =external_id= is then ="<data source uuid>:<position id>"=. A person may edit one like any listing: a field they change is left alone from then on, and an outcome they set makes the listing theirs for good. See [[file:market-data.org::*Accounts and positions in the books][Market data: accounts and positions in the books]].
 
 ** What the save refuses, and what it fills in
 
@@ -258,7 +268,10 @@ In the order a person would fix them:
    - an =open= listing that was never closed may not carry one -- set the
      outcome it ended with, or clear the time.
 6. *It cannot close before it opened.* =closed_at= before =listed_at= is
-   refused.
+   refused, and so is an =expires_at= before =listed_at=.
+7. *A bid is part of the offer.* In the unit price's currency, not negative, and not above the unit price -- unless the unit price is 0, which is an auction with no buyout, where any bid goes.
+8. *An outside id names one listing.* =external_id=, when written, is valid text of at most 512 bytes with no control characters, and no other listing of the organization -- deleted ones included, which the unique index counts -- may carry it; the refusal names the listing and says to restore a deleted one.
+9. *The mirror's fields are the mirror's.* =data_source_id= and =mirror_state= may be written only by the position mirror (=venture_market_save_mirrored_listing()=), and the =external_id= of a listing filed under a data source cannot change. Judged on a change: a form posting the stored values back writes nothing, and passes.
 
 * Sale rate
 
@@ -436,3 +449,8 @@ The sidebar files *Listings* and *Prices seen* under Money in.
   them.
 - *Observations are per organization.* A product id is not a scope: always
   pass the organization the valuation is for.
+- *A mirrored listing is the mirror's until a person closes it.* Never
+  write =data_source_id= or =mirror_state= anywhere but through
+  =venture_market_save_mirrored_listing()=, and never compare a mirrored
+  listing's fields with the store to decide what to write: compare with
+  =mirror_state=, or a person's correction is undone on the next push.

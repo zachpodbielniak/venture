@@ -1,10 +1,10 @@
 #+title: Market data: feeds and the series store
-#+description: How the market data pieces fit together, from plugins to the books; how outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract; venues, instruments, watchlists, promotion, the price oracle, alerts and the Trading pages
+#+description: How the market data pieces fit together, from plugins to the books; how outside market data is fetched (data sources, providers, the worker thread, transport, scheduling, sinks), where it lives, how it is reduced as it arrives, every formula behind its figures, retention and the threading contract; venues, instruments, watchlists, promotion, the operator's accounts and positions as locations and listings, the price oracle, alerts and the Trading pages
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
 #+updated: [2026-10-04]
-#+version: 0.4.0
+#+version: 0.5.0
 
 * Market data
 
@@ -448,6 +448,8 @@ Whatever else a provider reads, these keys mean the same thing in every source's
 | =record_types=      | the main-database types the source may write through the records sink: =price_observation= and =exchange_rate=, nothing else                  |
 | =origins=           | a list that narrows =feeds.allowed_origins= for this source; it can never widen it                                                            |
 
+The marketdata module reads seven more -- =mirror_positions=, =auto_promote_accounts=, =account_namespace=, =create_products=, =products_venture_id=, =mirror_max_writes= and =mirror_grace_hours= -- for a source that sends the operator's accounts, and checks them with a save validator of its own; see [[*Settings][Accounts and positions in the books: settings]].
+
 Writes need an administrator, through the same =venture-access-admin-write= type data the currency uses: which host the server calls is configuration. The save validator (=feeds_validate_source()=) parses the settings, checks them against the provider's schema -- a setting the schema marks =x-sensitive= is refused outright, it belongs in the sealed store -- checks declared types and required settings, the schedule, the currency, the namespaces, =track: known= with something known (with marketdata off; with it on the source's instrument records count, and an empty list is accepted), =record_types= against what a feed may write, and that the provider can list its units from them.
 
 A source's store is always =<state_dir>/series/<uuid>/=, derived by =venture_feeds_store_dir()= every time it is needed. No record holds a path.
@@ -601,7 +603,7 @@ A hook added while the worker runs refreezes every source. A module whose frozen
 
 A market is two things: what everybody offers, which the rest of this page is about, and what the operator owns in it. The second half of a series store keeps that: the operator's *accounts* (a character, a seller account, a shared warband bank, a guild bank), their *balances* over time, their *holdings* by place, their own open listings (*positions*), what waits for them to collect (*inbound*: mail), and the source's *external ledger* of what they bought, sold, earned and spent. It is game-agnostic: a place is =bag= or =warbank= or =other=, an account kind is =character= or =shared=, and nothing here knows what a realm is. World of Warcraft is the first user (tsmctl's export, see [[file:plugins.org::*Messages][Plugins: the protocol]]); a marketplace seller with three shops is the same model.
 
-The rows live in the source's store, not in VentureDatabase, for the reasons the market figures do: a first sync of a busy operator is tens of thousands of ledger rows and a snapshot of every bag every few minutes, derived, never edited by a person. A later phase mirrors what a person acts on -- the positions, as =listing= records -- into the main database.
+The rows live in the source's store, not in VentureDatabase, for the reasons the market figures do: a first sync of a busy operator is tens of thousands of ledger rows and a snapshot of every bag every few minutes, derived, never edited by a person. What a person acts on crosses into the main database through the marketdata module: an account becomes a =location= and a position a =listing= (see [[*Accounts and positions in the books][Accounts and positions in the books]]). The store never writes back.
 
 ** The model
 
@@ -695,6 +697,108 @@ Writing is =venture_series_store_apply_accounts(store, batch, fetched_at, &resul
 
 A batch carries at most 10 000 accounts (=VENTURE_FEED_BATCH_MAX_ACCOUNTS=), a million balance, holding, position and inbound rows together (=VENTURE_FEED_BATCH_MAX_ACCOUNT_ROWS=) and a million ledger rows (=VENTURE_FEED_BATCH_MAX_TXNS=); past those a row is refused and counted. The batch keeps every string of these rows in one =GStringChunk= (repeated keys stored once) and the rows in arrays of the store's own input structs, which the worker hands to the store without a copy unless the source has credentials to redact from free text. As measured in a debug build, fifty thousand new ledger rows apply in about a tenth of a second and a push of them -- parsed, batched and stored -- in under half a second; the same rows again write nothing. =tests/test-accounts-store.c= and =tests/test-feeds.c= hold both to a bound.
 
+* Accounts and positions in the books
+
+The operator's accounts and positions live in a source's store, which no record can name and no report can join. Two of them cross into the main database, written by the marketdata module (=src/marketdata/venture-marketdata-mirror.c=) on the main thread and nowhere else:
+
+- an *account* becomes a =location= -- a character, a warband bank, a guild bank, a seller account -- so stock and money can be filed under the place they are in, and a venue can say whose holding its money moves through;
+- a *position* becomes a =listing=, kept in step while it is open and closed when it is gone. That is what makes the sale rate (=listing_performance=), the =undercut= alert and the =upcoming= widget see the operator's real auctions.
+
+Holdings, inbound and the ledger stay in the store; the pages read them from there.
+
+** Accounts become locations
+
+=venture_marketdata_promote_account(context, organization, data_source_id, key, actor, &location, &error)= makes the location an account stands for, or finds it, or restores it:
+
+- *Its reference.* A location gained =external_ref= (technical, unique in the organization with deleted places included) and =data_source_id= (technical: the source that promoted it). An account's reference is ="<namespace>:<key>"= (=venture_marketdata_account_ref()=). The namespace is the source's =account_namespace= setting, else the source's uuid: two sources describing the same characters -- a push from the game machine and an exec pull -- share their places only when both set the same namespace. A namespace is 1 to 64 letters, digits, dots, dashes and underscores; no colon (it ends the namespace) and no slash, so an account's reference can never be a group's.
+- *Its kind* is the account's kind as text: =character=, =shared=, =guild= or =other= (a location's kind is free text).
+- *Its group.* An account that names a group (a realm, a region) is placed inside a location for the group: kind =group=, named after it, reference ="<namespace>/group:<group>"=, made on first need. The location tree then reads "Thorium Brotherhood > Drgold". An account with no group (a warband bank) has no parent.
+- *Its venue.* When the account names a venue the store knows, the venue is promoted too, and its =location_id= -- the location whose holding money moves through when you trade there -- is set to this location *only when it has none*. The first character promoted on a realm takes the link; a second does not, and a link a person made is never replaced.
+- *Once.* An existing location is returned as it is: nothing is overwritten from the store, so a rename survives. A deleted one is restored by an explicit promotion.
+
+A person may set a hand-made location's =external_ref= to an account's reference to adopt it before the account is first seen; the save refuses a reference another place (deleted ones included) already holds, naming it.
+
+=POST /api/v1/market/promote= with ={"kind": "account"}= and =venturectl market promote SOURCE_ID account KEY= call it, like an instrument or a venue.
+
+*** Automatic promotion
+
+With =auto_promote_accounts= (default true) every pass promotes each account in the store that has no location yet -- the account's place exists from its first push. Automatic promotion never restores: a place a person deleted stays deleted, and the account's listings then carry no location. Only an explicit promotion brings one back.
+
+** Positions become listings
+
+Every pass walks every position in the store, soonest expiry first:
+
+- *A position with no listing gets one*, if its instrument comes to a product. The instrument is promoted when it has no record (a deleted one is not restored, and its positions are not mirrored), and its =product_id= is the listing's product. An instrument with no product leaves the position unmirrored and the run says so, with up to five of the item keys: "N positions not mirrored: their items have no product (K items, e.g. 2770); link the instrument to a product, or set create_products and products_venture_id". With =create_products: true= the pass makes the product itself -- named after the instrument, filed under =products_venture_id=, which that setting requires -- and links the instrument to it, so the oracle and the alerts find it too. Products are never made without being asked: a WoW operator's bags hold thousands of items nobody sells.
+- *The listing's fields*: the product; the venue, promoted when it has no record; =channel= the venue's name; =location_id= the account's location (0 without one); =quantity=; =unit_price= and =bid= in the source's currency; =listed_at= the position's =posted_at=, else when the store first saw it (moved back to the expiry when a source's clock put it after); =expires_at=; =outcome= =open=; =external_id= ="<source uuid>:<position id>"=; =data_source_id= the source; =mirror_state=.
+- *A listing the mirror made is kept in step*: the price, the bid, the expiry, the place (a position whose id moved to another account), and the quantity -- which only grows: units that leave a position still listed were *bought*, since an auction loses units only to buyers, so =quantity= stays what was offered and =quantity_sold= becomes offered minus present. A listing the mirror had closed whose position is back is opened again: whatever made it look gone was wrong.
+- *Nothing changed, nothing written.* A pass over an unchanged store reads and writes no record.
+
+*** A person's edit stands
+
+=mirror_state= is a JSON object holding what the mirror last wrote: =quantity=, =sold=, =unit_price= and =currency= (minor units), =bid=, =expires_at=, =location_id=, =outcome=, and the store's keys -- =account=, =instrument=, =venue= -- that match the listing to its ledger rows however its product or place are edited. A field is updated only while it still holds the value =mirror_state= says the mirror wrote; one a person changed differs, and is left alone from then on (its recorded value is not moved, so it keeps differing). A person who sets the *outcome* -- closes an open listing, reopens a closed one -- makes the listing theirs: the mirror never writes it again. A deleted mirrored listing stays deleted and is not made again (its =external_id= is still taken).
+
+The mirror owns exactly the listings filed under the source (=data_source_id=) whose =external_id= starts with the source's uuid; any other listing is never read for writing, never written, never closed. The market validator keeps it that way: only =venture_market_save_mirrored_listing()= -- the save that names the listing as the mirror's -- may set =data_source_id= or =mirror_state=, or change a mirrored listing's =external_id=.
+
+** When a position is gone
+
+An open mirrored listing whose position is no longer in the store is judged -- but only when its account has had a *complete positions snapshot* (=accounts.positions_at=, an =account_snapshot= covering =positions=). Positions are only ever removed by such a snapshot; without one the listing stays open and the run counts it. The time the listing was first found gone (=vanished_at=, the account's =positions_at= then) is kept in =mirror_state=, so later snapshots do not move it.
+
+Each vanished listing is matched to the store's ledger, within its *group*: the listings of the same account and instrument. The ledger rows read are the group's =sale=, =expired= and =cancelled= rows at or after the earliest vanished listing's =listed_at=. A row's units already used by a listing the mirror closed -- its =mirror_state.txns=, ={ledger key: units}= -- are taken off first, so a row is never used twice, across passes as within one.
+
+1. *First in, first out.* Vanished listings are ordered by =listed_at=, then id; ledger rows by time, then key. A row may go only to a listing listed at or before it, at the same venue (a row naming no venue goes anywhere).
+2. *Sales first.* Each sale row's units fill the listings in order, each taking up to what it has not sold: a buyer may take part of a stack, and a source may merge two sales of one item into one row.
+3. *Then expiries and cancellations.* Nothing expires a unit at a time, so such a row ends a listing's whole remainder (=quantity= minus units sold minus units already ended): it goes to the oldest listing whose remainder is *exactly* the row's quantity; failing that, whole remainders are taken oldest first while they fit (a row two expiries were merged into); what fits nowhere is left unused.
+4. *Units sold* are the sale units the rows gave, but never fewer than the listing's =quantity_sold= -- the units it lost while still listed, or a count a person typed. The count never goes down.
+
+Then the outcome:
+
+| The ledger accounts for                  | and                                     | Outcome                                                             | =closed_at=                     |
+|------------------------------------------+-----------------------------------------+---------------------------------------------------------------------+---------------------------------|
+| every unit                                | all sold                                | =sold=                                                              | the latest row used             |
+| every unit                                | some sold                               | =partial=                                                           | the latest row used             |
+| every unit                                | none sold                               | =cancelled= if a cancellation row is among them, else =expired=     | the latest row used             |
+| not every unit                            | gone at or after its =expires_at=       | =partial= if any sold, else as above (=expired= with no cancel row) | its expiry, or a later row used |
+| not every unit                            | gone before its expiry, within the grace | stays open: =vanished_at= is recorded and the next pass judges again | --                              |
+| not every unit                            | gone before its expiry, grace spent     | =partial= if any sold, else =cancelled=                             | =vanished_at=, or a later row   |
+
+The *grace* (=mirror_grace_hours=, default 48, 0 to 720) exists because a sale reaches a ledger when its mail is opened, which can be days after the auction left the house; =0= judges at once. A closing time is never before =listed_at=. =mirror_state.evidence= says which row of the table closed it: =ledger=, =expiry= or =inferred=.
+
+*A judgement is final.* A sale row that arrives after its listing was closed as expired or cancelled (by expiry or inference) is not used to reopen it; a later listing of the same item can take it only if it was listed before the row's time. The grace is the knob.
+
+** Bounds
+
+A pass writes at most =mirror_max_writes= records (default 500, 1 to 5000): listings, locations and their group parents, venue links, products and the instrument links to them. It stops starting work there and the run's notes say how many changes are left. Promoting an instrument or a venue a position names is not counted -- each happens once per key, ever -- so a pass may go a few records past its bound. There is no cursor: whatever a pass did not reach is still out of step with the store, and the next pass (the next run, or =venture_marketdata_mirror_positions()= by hand) does it, the soonest-expiring first. A pass reads at most =VENTURE_MARKETDATA_MIRROR_MAX_LISTINGS= (20 000) open mirrored listings, and as many recently closed ones for the ledger's bookkeeping; past either, a note.
+
+Writes go in transactions of =VENTURE_MARKETDATA_MIRROR_BATCH= (50), as the system actor ="mirror"=. A refusal by a validator is counted and noted (the first ten) and the batch goes on. A database error inside a batch rolls the whole batch back: the pass stops, says so, and the next run writes it again.
+
+** When it runs
+
+The marketdata module registers the feeds hook ="mirror"= (=venture_marketdata_mirror_install()=, after the alerts). Its run callback runs one pass for the run's source after every run that did not fail, on the main thread after the run record is written; inside an automation handler or a transaction it waits (a 50 ms timeout source holding a weak reference on the context) as the alerts do. A pass that changed anything appends a line to the run record's notes -- "mirror: listings C created, U updated, R reopened, K closed (s sold, p partial, e expired, c cancelled), W waiting for the ledger; A accounts promoted" -- followed by its own notes. A store with no accounts (any market source) costs one read and writes nothing.
+
+Every pass walks the whole store, not only what the run touched: an unchanged position costs a lookup, not a write, and a pass that left work for the next one needs no memory of where it stopped. A position stays open while the store has it, even past its expiry: an account nobody has logged into for a week still lists, in the store, what it listed then. A page that wants "expired, waiting for a login" compares =expires_at= with now.
+
+=venture_marketdata_mirror_positions(context, organization, data_source_id, &report, &error)= runs one pass by hand. Its report: ={data_source_id, accounts, positions, promoted, venues_linked, products_created, created, updated, reopened, closed: {sold, partial, expired, cancelled}, waiting, left_alone, not_mirrored, failed, over_cap, writes, notes[]}=. It refuses inside an automation handler or a transaction (=CONFLICT=), with the market, marketdata or feeds module off or without SQLite (=CONFIG=), and for another organization's source (=NOT_FOUND=).
+
+** Settings
+
+Read from the source's =settings= by the mirror, checked by a save validator of the marketdata module when the settings are written:
+
+| Key                     | Default          | Meaning                                                                                       |
+|-------------------------+------------------+-----------------------------------------------------------------------------------------------|
+| =mirror_positions=      | true             | mirror this source's positions at all; false makes a pass a note                              |
+| =auto_promote_accounts= | true             | promote every account that has no location, on every pass                                      |
+| =account_namespace=     | the source's uuid | the namespace of its accounts' references; sources that share it share places                 |
+| =create_products=       | false            | make a product for an instrument that has none                                                |
+| =products_venture_id=   | --               | the venture new products are filed under; required with =create_products=, this organization's |
+| =mirror_max_writes=     | 500              | the records a pass writes, 1 to 5000                                                          |
+| =mirror_grace_hours=    | 48               | how long a listing gone before its expiry waits for its ledger row, 0 to 720                  |
+
+Both promotion switches default on because a source that sends accounts and positions is an operator's source, and mirroring them is why it sends them; a market source has no accounts and is not affected.
+
+** With modules off
+
+The mirror needs =market= (listings), =marketdata= and =feeds= (the store). With any of them off the hook does nothing and says nothing -- the run is not failed, nothing is noted -- and a pass or a promotion by hand is =CONFIG=. Turned back on, the next pass mirrors what the store kept meanwhile.
+
 * Venues, instruments and the price oracle
 
 The =marketdata= module (requires =market=, suggests =feeds=, on by default, no switch of its own) joins the series stores to the books. It owns six record types -- the four below, and the alert rules and hits of the next chapter -- and one lookup: the price oracle, which answers "what is this worth" from a store, and which every valuing report can ask through a =series:= price source.
@@ -730,7 +834,7 @@ A named list of instruments, optionally in one venue group and for one venture, 
 
 *** Listings
 
-The market module's =listing= gained an optional =venue_id=, held to the listing's organization, so an undercut alert has a venue to compare an open listing with. The reference is to a type of this module: with marketdata off it is refused when written, like any reference into a hidden module, and listings work as before. The column is additive; reconciliation adds it, and no migration script is needed.
+The market module's =listing= gained an optional =venue_id=, held to the listing's organization, so an undercut alert has a venue to compare an open listing with. Later it gained =expires_at=, =location_id=, =bid=, =external_id= and the position mirror's =data_source_id= and =mirror_state= ([[file:market.org::*Listings][Market: listings]]); an undercut rule reads a mirrored listing like any other. The reference is to a type of this module: with marketdata off it is refused when written, like any reference into a hidden module, and listings work as before. The column is additive; reconciliation adds it, and no migration script is needed.
 
 ** Promotion
 
@@ -740,7 +844,7 @@ The market module's =listing= gained an optional =venue_id=, held to the listing
 - The namespace is the row's, else the source's =instrument_namespace= (or =venue_namespace=). The reference is looked up *deleted rows included*: a live record is returned as it is, edits kept; a deleted one is restored, never shadowed by a duplicate that would fail the unique index on every later attempt.
 - A new record takes the row's name, its kind (free text read as a nick: "Auction House" is =auction_house=, anything unknown is =other=), its group and currency (venues) or its attributes (instruments). An instrument's category is the existing category whose computed path matches the row's ="Materials/Ore"=, if any, and that may group instruments; categories are never made here, because a store's taxonomy would otherwise grow a branch per string a provider ever sent. An instrument's parent is promoted first; a parent the store does not know is left out, and a loop in the store's own data ends at =VENTURE_CATEGORY_MAX_DEPTH=.
 
-=POST /api/v1/market/promote= ={"data_source_id": N, "kind": "instrument"|"venue", "key": "..."}= (editors) and =venturectl market promote SOURCE_ID instrument|venue KEY= call it.
+=POST /api/v1/market/promote= ={"data_source_id": N, "kind": "instrument"|"venue"|"account", "key": "..."}= (editors) and =venturectl market promote SOURCE_ID instrument|venue|account KEY= call it; an account becomes a location (see [[*Accounts become locations][Accounts become locations]]).
 
 ** Known instruments
 
@@ -804,7 +908,7 @@ series:<basis>[@<venue key or group>]
 
 - =GET /api/v1/market/quote= (viewers): =instrument_id= or =product_id=, =venue_id= or =where=, =basis=, =at=, =currency=, =prefer_currency=, =fallback= (=true=), =source=. Answers ={"basis", "found", "price" (money or null), "value" (number or null), "evidence"}=.
 - =POST /api/v1/market/promote= (editors), above.
-- =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [prefer_currency=C] [fallback=true] [source=S] [organization_id=N]= (=venue= is sent as =where=, =product= as =product_id=) and =venturectl market promote SOURCE_ID instrument|venue KEY [organization_id=N]=.
+- =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [prefer_currency=C] [fallback=true] [source=S] [organization_id=N]= (=venue= is sent as =where=, =product= as =product_id=) and =venturectl market promote SOURCE_ID instrument|venue|account KEY [organization_id=N]=.
 - =venturectl market browse|deals|venues|instrument|watchlist|alerts=, the Trading pages' twins (see /Browsing: the Trading pages/).
 - The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. The Trading pages (see /Browsing: the Trading pages/) browse the stores and price the watchlists.
 - All of it is gone with the module off: the routes answer 404, the types are hidden.

@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-09-27]
-#+version: 0.1.0
+#+updated: [2026-10-04]
+#+version: 0.2.0
 
 * Grouping things without writing C
 
@@ -164,6 +164,8 @@ Guild bank               (kind bank)
 | =kind=        | string    | free text: warehouse, bin, shelf, van, character, bank         |
 | =description= | text      |                                                                |
 | =active=      | boolean   | still in use; an inactive place keeps its history              |
+| =external_ref= | string   | technical: the outside account it stands for, =namespace:key=; unique in the organization, deleted places included |
+| =data_source_id= | reference | technical: the market data source whose account it is   |
 
 =kind= is free text on purpose: the set of kinds is whatever the
 operator's world has, and an enum would need a rebuild to add "van".
@@ -171,6 +173,8 @@ operator's world has, and an enum would need a rebuild to add "van".
 =active= has no default a form can supply; a location made in a form is
 inactive until the box is ticked, like a product's =active=. The ones the
 upgrade made are active.
+
+=external_ref= and =data_source_id= are how an operator's account -- a game character, a warband bank, a seller account in a market data source's store -- is found as a place: promoting the account (=venturectl market promote SOURCE account KEY=, or automatically after each run) makes or finds the location with that reference, kind =character=, =shared=, =guild= or =other=, inside a location of kind =group= for its realm. The save refuses a reference another location already holds and says which; setting one by hand adopts a place made before its account was seen. See [[file:market-data.org::*Accounts become locations][Market data: accounts become locations]].
 
 =location= belongs to the =sales= module with the inventory it describes.
 The same validator as a category's refuses a loop, a parent in another

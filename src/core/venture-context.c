@@ -310,6 +310,11 @@ venture_context_new(
 	 * every run. After the feeds module, whose hook it adds. */
 	venture_marketdata_alerts_install(self);
 
+	/* The operator's accounts as locations and positions as listings: the
+	 * location and settings validators in any build, and with SQLite the
+	 * feeds hook that mirrors after every run. After the feeds module. */
+	venture_marketdata_mirror_install(self);
+
 	return self;
 }
 

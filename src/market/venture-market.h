@@ -48,6 +48,36 @@ gboolean
 venture_market_listing_outcome_is_closed(VentureListingOutcome outcome);
 
 /**
+ * VENTURE_MARKET_MAX_EXTERNAL_ID:
+ *
+ * The longest `external-id` a listing may carry, in bytes.
+ */
+#define VENTURE_MARKET_MAX_EXTERNAL_ID (512)
+
+/**
+ * venture_market_save_mirrored_listing:
+ * @database: the database
+ * @listing: the listing to save
+ * @actor: (nullable): who saves it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Saves @listing as the position mirror, the one writer allowed to set a
+ * listing's `data-source-id` and `mirror-state`, and to change the
+ * `external-id` of a listing filed under a data source. Every other rule
+ * of a listing applies as to any save. Only the marketdata module's
+ * mirror (venture_marketdata_mirror_positions()) calls this.
+ *
+ * Returns: %TRUE when saved
+ */
+gboolean
+venture_market_save_mirrored_listing(
+	VentureDatabase		 *database,
+	VentureEntity		 *listing,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
  * venture_market_latest_price:
  * @database: the database to read
  * @organization_id: the organization whose observations count

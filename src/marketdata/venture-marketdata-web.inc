@@ -163,9 +163,11 @@ venture_marketdata_web_quote(
 }
 
 /*
- * POST /api/v1/market/promote: {"data_source_id": N, "kind": "instrument"
- * or "venue", "key": "...", "organization_id": N (optional)} makes (or finds, or restores) the record and
- * answers with it. An editor's: it creates a record like any other write.
+ * POST /api/v1/market/promote: {"data_source_id": N, "kind": "instrument",
+ * "venue" or "account", "key": "...", "organization_id": N (optional)}
+ * makes (or finds, or restores) the record -- an account becomes a
+ * location -- and answers with it. An editor's: it creates a record like
+ * any other write.
  */
 static HtmxResponse *
 venture_marketdata_web_promote(
@@ -223,11 +225,12 @@ venture_marketdata_web_promote(
 	key = venture_json_object_get_string(body, "key", NULL);
 
 	if ((source_id <= 0) || venture_string_is_empty(key) ||
-	    ((0 != g_strcmp0(kind, "instrument")) && (0 != g_strcmp0(kind, "venue"))))
+	    ((0 != g_strcmp0(kind, "instrument")) && (0 != g_strcmp0(kind, "venue")) &&
+	     (0 != g_strcmp0(kind, "account"))))
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		                    "data_source_id (a positive number), kind (instrument or venue) "
-		                    "and key are required");
+		                    "data_source_id (a positive number), kind (instrument, venue or "
+		                    "account) and key are required");
 		return venture_web_error_response(error);
 	}
 
@@ -237,11 +240,15 @@ venture_marketdata_web_promote(
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
 
-	ok = (0 == g_strcmp0(kind, "venue"))
-		? venture_marketdata_promote_venue(self->context, organization_id, source_id, key,
-		                                   &actor, &record, &error)
-		: venture_marketdata_promote_instrument(self->context, organization_id, source_id, key,
+	if (0 == g_strcmp0(kind, "venue"))
+		ok = venture_marketdata_promote_venue(self->context, organization_id, source_id, key,
+		                                      &actor, &record, &error);
+	else if (0 == g_strcmp0(kind, "account"))
+		ok = venture_marketdata_promote_account(self->context, organization_id, source_id, key,
 		                                        &actor, &record, &error);
+	else
+		ok = venture_marketdata_promote_instrument(self->context, organization_id, source_id, key,
+		                                           &actor, &record, &error);
 
 	if (!ok)
 		return venture_web_error_response(error);

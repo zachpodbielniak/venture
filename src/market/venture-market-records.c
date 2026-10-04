@@ -118,7 +118,31 @@ static const VentureFieldDecl venture_listing_fields[] = {
 	                  "sale", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tags", "Tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("expires-at", "Expires",
+	              "Optional: when the offer runs out if nothing sells",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("location-id", "Posted by",
+	                  "Optional: the account or place that posted it -- a character, a shop",
+	                  "location", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("bid", "Bid",
+	                    "Optional: an auction's bid for one unit, below the asking price"),
+	/* The outside system's id for the offer, unique in the organization,
+	 * deleted rows included. The position mirror writes
+	 * "<data source uuid>:<position id>" and owns every listing it
+	 * filed under a data source; anything else may carry its own id. */
+	VENTURE_FIELD("external-id", "External id",
+	              "Optional: the outside system's id for this offer; unique in the organization",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_REF("data-source-id", "Data source",
+	                  "Set by the position mirror: the data source whose position this listing mirrors",
+	                  "data_source", VENTURE_COLUMN_FLAG_TECHNICAL),
+	/* What the mirror last wrote, so a field a person has changed since
+	 * reads differently and is left alone. Never a person's to write. */
+	VENTURE_FIELD("mirror-state", "Mirror state",
+	              "Set by the position mirror: what it last wrote, as JSON",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 /* "auction house: 5 x 12.50 USD". */

@@ -4255,7 +4255,7 @@ main(
 		"  market quote ID [basis=B] [venue=KEY|GROUP] [at=DATE] [currency=C]\n"
 		"                               the price oracle for an instrument (or\n"
 		"                               product=ID); fallback=true reads observations\n"
-		"  market promote SOURCE_ID instrument|venue KEY\n"
+		"  market promote SOURCE_ID instrument|venue|account KEY\n"
 		"                               make a record of what a source's store saw\n"
 		"  market browse|deals|venues [name=value ...]\n"
 		"                               the Trading pages' answers: every row now,\n"

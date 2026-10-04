@@ -551,7 +551,7 @@ test_help(
 
 	/* A verb that reads organization_id at a fixed place says so on its
 	 * own line; the blanket sentence under them does not say where. */
-	g_assert_nonnull(strstr(market_out, "promote SOURCE_ID instrument|venue KEY [organization_id=N]"));
+	g_assert_nonnull(strstr(market_out, "promote SOURCE_ID instrument|venue|account KEY [organization_id=N]"));
 	g_assert_nonnull(strstr(market_out, "watchlist [ID] [organization_id=N]"));
 	g_assert_nonnull(strstr(market_out, "alerts evaluate RULE_ID [--dry-run] [organization_id=N]"));
 

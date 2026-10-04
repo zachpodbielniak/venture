@@ -729,7 +729,7 @@ static const gchar venture_cli_market_usage[] =
 	"usage: venturectl market VERB ...\n"
 	"  quote INSTRUMENT_ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N]\n"
 	"        [at=DATE] [currency=C] [prefer_currency=C] [fallback=true] [source=S]\n"
-	"  promote SOURCE_ID instrument|venue KEY [organization_id=N]\n"
+	"  promote SOURCE_ID instrument|venue|account KEY [organization_id=N]\n"
 	"  browse [source=N] [search=TEXT] [category=PATH] [venue=KEY] [group=G]\n"
 	"         [stock=true] [sort=COLUMN] [dir=asc|desc] [page=N] [per_page=N]\n"
 	"  deals [source=N] [venue=KEY] [group=G] [category=PATH]\n"
@@ -750,6 +750,7 @@ static const gchar venture_cli_market_usage[] =
 	"  venturectl market alerts evaluate 7 --dry-run\n"
 	"  venturectl market quote 12 basis=region_median venue=eu\n"
 	"  venturectl market promote 1 instrument 2589\n"
+	"  venturectl market promote 4 account \"Drgold-Thorium Brotherhood\"\n"
 	"  venturectl market deals organization_id=2 group=evermoor-eu";
 
 /* GET @path and print it as @member's table. */
@@ -1005,7 +1006,7 @@ venture_cli_command_market(
 	if (0 == g_strcmp0(verb, "promote"))
 	{
 		static const gchar usage[] =
-			"usage: venturectl market promote SOURCE_ID instrument|venue KEY [organization_id=N]";
+			"usage: venturectl market promote SOURCE_ID instrument|venue|account KEY [organization_id=N]";
 		g_autoptr(JsonBuilder) builder = NULL;
 		g_autoptr(JsonNode) body = NULL;
 		gint64 organization_id;
@@ -1013,7 +1014,8 @@ venture_cli_command_market(
 
 		if ((NULL == args[2]) || (NULL == args[3]) || (NULL == args[4]) ||
 		    !g_ascii_string_to_signed(args[2], 10, 1, G_MAXINT64, &source_id, NULL) ||
-		    ((0 != g_strcmp0(args[3], "instrument")) && (0 != g_strcmp0(args[3], "venue"))))
+		    ((0 != g_strcmp0(args[3], "instrument")) && (0 != g_strcmp0(args[3], "venue")) &&
+		     (0 != g_strcmp0(args[3], "account"))))
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, usage);
 			return -1;

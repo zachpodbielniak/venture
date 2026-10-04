@@ -6137,6 +6137,15 @@ static void test_auth_marketdata(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", editor,
 		"{\"kind\":\"thing\"}", NULL, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
 
+	/* An account is a kind promotion takes; it reads a store, which the
+	 * feeds module keeps, and the refusal says so (a configuration error,
+	 * as for an instrument or a venue). */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", editor,
+		"{\"data_source_id\":1,\"kind\":\"account\",\"key\":\"Drgold\"}", &page, NULL), ==,
+		SOUP_STATUS_INTERNAL_SERVER_ERROR);
+	g_assert_nonnull(strstr(page, "feeds module is off"));
+	g_clear_pointer(&page, g_free);
+
 	/* Alert rules are an editor's data; hits are evidence nobody writes. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/alert_rule", editor,
 		"{\"name\":\"Undercuts\",\"kind\":\"undercut\"}", &page, NULL), ==, SOUP_STATUS_CREATED);

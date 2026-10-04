@@ -11,6 +11,10 @@
 
 #define VENTURE_MARKET_STATE_KEY "venture-market-installed"
 
+/* The listing the position mirror is saving right now, on the database:
+ * the one save allowed to write the mirror's own fields. */
+#define VENTURE_MARKET_MIRROR_PERMIT_KEY "venture-market-mirror-permit"
+
 gboolean
 venture_market_listing_outcome_is_closed(VentureListingOutcome outcome)
 {
@@ -203,6 +207,169 @@ venture_market_check_amount(
 	return TRUE;
 }
 
+/* An integer property's value, 0 on a missing @entity. */
+static gint64
+venture_market_int(
+	VentureEntity	*entity,
+	const gchar	*property
+){
+	gint64 value;
+
+	value = 0;
+
+	if (NULL != entity)
+		g_object_get(entity, property, &value, NULL);
+
+	return value;
+}
+
+/* Whether @property differs between @entity and @previous (or is set on a
+ * new @entity), compared as strings; NULL and "" are one value. */
+static gboolean
+venture_market_string_changed(
+	VentureEntity	*entity,
+	VentureEntity	*previous,
+	const gchar	*property
+){
+	g_autofree gchar *now = NULL;
+	g_autofree gchar *was = NULL;
+
+	g_object_get(entity, property, &now, NULL);
+
+	if (NULL != previous)
+		g_object_get(previous, property, &was, NULL);
+
+	return 0 != g_strcmp0(venture_string_is_empty(now) ? "" : now,
+	                      venture_string_is_empty(was) ? "" : was);
+}
+
+/*
+ * The mirror's fields. A listing filed under a data source is the
+ * position mirror's: it made the listing, it compares what it wrote
+ * (`mirror-state`) with what is there to tell a person's edit from its
+ * own, and it finds the listing again by `external-id`. A person writing
+ * any of those would make the mirror fight them or lose the listing, so
+ * only the save venture_market_save_mirrored_listing() names may. Judged
+ * on a change, so a form posting the stored values back is no write.
+ */
+static gboolean
+venture_market_check_mirror_fields(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	GError		**error
+){
+	gint64 source_id;
+	gint64 was_source_id;
+
+	if (g_object_get_data(G_OBJECT(database), VENTURE_MARKET_MIRROR_PERMIT_KEY) == (gpointer)entity)
+		return TRUE;
+
+	source_id = venture_market_int(entity, "data-source-id");
+	was_source_id = venture_market_int(previous, "data-source-id");
+
+	if (source_id != was_source_id)
+	{
+		venture_set_error_validation(error, "Data source",
+			"is set by the position mirror alone: a listing filed under a data source "
+			"is one the mirror made and keeps in step");
+		return FALSE;
+	}
+
+	if (venture_market_string_changed(entity, previous, "mirror-state"))
+	{
+		venture_set_error_validation(error, "Mirror state",
+			"is what the position mirror last wrote, and only the mirror writes it");
+		return FALSE;
+	}
+
+	if ((source_id > 0) && venture_market_string_changed(entity, previous, "external-id"))
+	{
+		venture_set_error_validation(error, "External id",
+			"of a mirrored listing is how the position mirror finds it again; "
+			"it cannot be changed");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * An external id: sane text, and not one another listing of the
+ * organization carries -- deleted ones included, as the unique index
+ * counts them -- said with the listing's number rather than the index's
+ * bare constraint failure.
+ */
+static gboolean
+venture_market_check_external_id(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	GError		**error
+){
+	g_autofree gchar *external_id = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	const gchar *p;
+	guint i;
+
+	if (!venture_market_string_changed(entity, previous, "external-id"))
+		return TRUE;
+
+	g_object_get(entity, "external-id", &external_id, NULL);
+
+	if (venture_string_is_empty(external_id))
+		return TRUE;
+
+	if ((strlen(external_id) > VENTURE_MARKET_MAX_EXTERNAL_ID) ||
+	    !g_utf8_validate(external_id, -1, NULL))
+	{
+		venture_set_error_validation(error, "External id",
+			"must be valid text of at most %d bytes", VENTURE_MARKET_MAX_EXTERNAL_ID);
+		return FALSE;
+	}
+
+	for (p = external_id; '\0' != *p; p++)
+	{
+		if (g_ascii_iscntrl(*p))
+		{
+			venture_set_error_validation(error, "External id",
+				"cannot contain control characters");
+			return FALSE;
+		}
+	}
+
+	query = venture_query_new(VENTURE_TYPE_LISTING);
+	venture_query_set_organization(query, venture_entity_get_organization_id(entity));
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_limit(query, 2);
+
+	if (!venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_EQ,
+	                                     external_id, error))
+		return FALSE;
+
+	rows = venture_database_find(database, query, error);
+
+	if (NULL == rows)
+		return FALSE;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *other = g_ptr_array_index(rows, i);
+
+		if (venture_entity_get_id(other) != venture_entity_get_id(entity))
+		{
+			venture_set_error_validation(error, "External id",
+				"listing #%" G_GINT64_FORMAT " already has the external id %s%s",
+				venture_entity_get_id(other), external_id,
+				venture_entity_is_deleted(other) ? " (it is deleted; restore it instead)" : "");
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 /*
  * A listing's rules, in the order a person would fix them:
  *
@@ -218,7 +385,11 @@ venture_market_check_amount(
  *  - the closing time follows the outcome, the factory's rule: an ended
  *    listing with no closing time is given now, a given one is kept, a
  *    reopened listing loses it, and an open one may not carry one;
- *  - it cannot close before it opened.
+ *  - it cannot close before it opened, and cannot expire before it
+ *    opened either;
+ *  - a bid is in the price's currency, not negative, and not above an
+ *    asking price there is one of (an auction with no buyout asks 0);
+ *  - the external id is unique, and the mirror's fields are the mirror's.
  */
 static gboolean
 venture_market_validate_listing(
@@ -259,7 +430,13 @@ venture_market_validate_listing(
 	                                      "inventory-item-id",
 	                                      VENTURE_TYPE_INVENTORY_ITEM, "Stock", error) ||
 	    !venture_market_same_organization(database, entity, previous, "sale-id",
-	                                      VENTURE_TYPE_SALE, "Sale", error))
+	                                      VENTURE_TYPE_SALE, "Sale", error) ||
+	    !venture_market_same_organization(database, entity, previous, "data-source-id",
+	                                      VENTURE_TYPE_DATA_SOURCE, "Data source", error))
+		return FALSE;
+
+	if (!venture_market_check_mirror_fields(database, entity, previous, error) ||
+	    !venture_market_check_external_id(database, entity, previous, error))
 		return FALSE;
 
 	if (quantity < 1)
@@ -284,8 +461,25 @@ venture_market_validate_listing(
 	currency = venture_money_get_currency(unit_price);
 
 	if (!venture_market_check_amount(entity, "deposit", "Deposit", currency, error) ||
-	    !venture_market_check_amount(entity, "fees", "Fees", currency, error))
+	    !venture_market_check_amount(entity, "fees", "Fees", currency, error) ||
+	    !venture_market_check_amount(entity, "bid", "Bid", currency, error))
 		return FALSE;
+
+	/* A bid above the buyout is an offer nobody would take; an auction
+	 * with no buyout at all asks 0, and any bid goes with it. */
+	{
+		g_autoptr(VentureMoney) bid = NULL;
+
+		g_object_get(entity, "bid", &bid, NULL);
+
+		if ((NULL != bid) && !venture_money_is_zero(unit_price) &&
+		    (venture_money_compare(bid, unit_price) > 0))
+		{
+			venture_set_error_validation(error, "Bid",
+				"is above the unit price; an auction's bid is at most its buyout");
+			return FALSE;
+		}
+	}
 
 	/* --- How many sold, and whether the outcome agrees --- */
 
@@ -390,7 +584,44 @@ venture_market_validate_listing(
 		return FALSE;
 	}
 
+	{
+		g_autoptr(GDateTime) expires_at = NULL;
+
+		g_object_get(entity, "expires-at", &expires_at, NULL);
+
+		if ((NULL != listed_at) && (NULL != expires_at) &&
+		    (g_date_time_compare(expires_at, listed_at) < 0))
+		{
+			venture_set_error_validation(error, "Expires",
+				"a listing cannot run out before it was listed");
+			return FALSE;
+		}
+	}
+
 	return TRUE;
+}
+
+gboolean
+venture_market_save_mirrored_listing(
+	VentureDatabase		 *database,
+	VentureEntity		 *listing,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	gpointer previous;
+	gboolean saved;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(VENTURE_IS_LISTING(listing), FALSE);
+
+	/* The permit names this object for the length of this one save; a
+	 * nested save of another listing (an automation handler) is not it. */
+	previous = g_object_get_data(G_OBJECT(database), VENTURE_MARKET_MIRROR_PERMIT_KEY);
+	g_object_set_data(G_OBJECT(database), VENTURE_MARKET_MIRROR_PERMIT_KEY, listing);
+	saved = venture_database_save(database, listing, actor, error);
+	g_object_set_data(G_OBJECT(database), VENTURE_MARKET_MIRROR_PERMIT_KEY, previous);
+
+	return saved;
 }
 
 void

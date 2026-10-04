@@ -1941,6 +1941,57 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   generic category check judges it as an instrument's reference; do not
   list the type in the validator.
 
+## Accounts and positions as records
+
+`src/marketdata/venture-marketdata-mirror.c`: a source's accounts become
+`location` records and its positions `listing` records, on the main thread
+after every run (feeds hook "mirror"). `docs/market-data.org` ("Accounts
+and positions in the books") has every rule, the matching table included.
+
+- **Compare with `mirror-state`, never with the store, to decide what to
+  write.** The listing's `mirror-state` holds what the mirror last wrote;
+  a field that differs from it is a person's edit and is left alone for
+  good, and an outcome a person set makes the whole listing theirs. A
+  "fix" that writes whatever the store says undoes every correction on the
+  next push.
+- **Only the mirror writes the mirror's fields.** `data-source-id` and
+  `mirror-state`, and a mirrored listing's `external-id`, change only in
+  the save `venture_market_save_mirrored_listing()` names (a permit on the
+  database, like the sessions post). The mirror owns exactly the listings
+  filed under its source whose `external-id` starts with the source's uuid;
+  a typed-in listing is never read for writing.
+- **There is no cursor, on purpose.** A pass walks the whole store, writes
+  at most `mirror_max_writes` records and stops; what it did not reach is
+  still out of step, so the next pass does it, soonest expiry first.
+  Unchanged positions cost a lookup, not a write. Do not add a "since last
+  run" filter: a pass that stopped at its bound would then never come back
+  for the rest.
+- **A position is judged gone only after a complete positions snapshot.**
+  Positions leave the store only through an `account_snapshot` covering
+  them; an account with no `positions_at` keeps its listings open. The time
+  it was first found gone is kept in `mirror-state.vanished_at` -- the
+  account's `positions_at` moves with every snapshot, and a grace measured
+  from it would never run out.
+- **Sales fill units; expiries and cancellations end whole remainders.**
+  First in, first out within one account and instrument; an expired or
+  cancelled row goes to the listing whose remainder is exactly its
+  quantity before any splitting. Filling them unit by unit gave a
+  one-unit cancellation to the oldest five-unit listing and called the
+  cancelled one cancelled by inference, at the wrong time. A row's units
+  used by a closed listing are in its `mirror-state.txns` and are taken
+  off before matching, so no row closes two listings.
+- **Automatic promotion never restores.** A location, instrument or venue a
+  person deleted stays deleted through every push; only an explicit
+  promotion brings one back. Restoring on every pass would be fighting a
+  person every few minutes.
+- **A venue's location is set only when empty.** The first character on a
+  realm becomes the place its money moves through; a later one, or a link
+  a person made, is never replaced.
+- **Products are made only when asked** (`create_products` with
+  `products_venture_id`); otherwise an unpriced item's position is left
+  out and the run note names the items. Never make a product per item by
+  default: a game's bags hold thousands nobody sells.
+
 ## The Trading pages
 
 `/market/...` and `/arbitrage...` with their `/api/v1/` twins, under the

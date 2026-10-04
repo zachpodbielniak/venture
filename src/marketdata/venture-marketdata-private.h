@@ -45,6 +45,69 @@ venture_marketdata_check_same_organization(
 	GError		**error
 );
 
+#ifdef VENTURE_HAVE_SQLITE
+
+/*
+ * venture_marketdata_source_in:
+ * The data source @data_source_id, which must be @organization_id's and
+ * not deleted; NOT_FOUND otherwise.
+ */
+VentureEntity *
+venture_marketdata_source_in(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	gint64		  data_source_id,
+	GError		**error
+);
+
+/*
+ * venture_marketdata_reader:
+ * A main-thread read handle on the source's store; CONFIG with the feeds
+ * module off, NOT_FOUND before the source has stored anything.
+ */
+VentureSeriesStore *
+venture_marketdata_reader(
+	VentureContext	 *context,
+	gint64		  data_source_id,
+	GError		**error
+);
+
+/*
+ * venture_marketdata_promote_instrument_in:
+ * Promotion of one instrument the store @store knows, as the public call
+ * does, except that with @restore FALSE a deleted record is handed back
+ * deleted rather than restored -- what the position mirror asks for, so
+ * it never brings back what a person removed. *@out is set on success.
+ */
+gboolean
+venture_marketdata_promote_instrument_in(
+	VentureContext		 *context,
+	VentureSeriesStore	 *store,
+	VentureEntity		 *source,
+	const gchar		 *key,
+	gboolean		  restore,
+	const VentureActor	 *actor,
+	VentureEntity		**out,
+	GError			**error
+);
+
+/*
+ * venture_marketdata_promote_venue_in:
+ * The same for a venue, from the store's row for it.
+ */
+gboolean
+venture_marketdata_promote_venue_in(
+	VentureContext			 *context,
+	VentureEntity			 *source,
+	const VentureSeriesVenueRow	 *row,
+	gboolean			  restore,
+	const VentureActor		 *actor,
+	VentureEntity			**out,
+	GError				**error
+);
+
+#endif /* VENTURE_HAVE_SQLITE */
+
 G_END_DECLS
 
 #endif /* VENTURE_MARKETDATA_PRIVATE_H */

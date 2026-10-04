@@ -1092,7 +1092,23 @@ calls.
   noted). An `account_snapshot` replaces the covered kinds of that one
   account and must come before its rows. Ledger `txn` rows upsert on `id`:
   re-sending is safe. This data lands in the source's store, not in
-  records -- no `list` verb reads it yet.
+  records -- no `list` verb reads it, except what the mirror below copies.
+- After every run the marketdata module **mirrors** a source's accounts
+  into `location` records (kind `character`/`shared`/`guild`/`other`,
+  inside a `group` location per realm) and its open positions into
+  `listing` records (`list listing data_source_id=ID outcome=open`; their
+  `external_id` is `<source uuid>:<position id>`). A gone position is closed
+  from the ledger: sold, partial, expired, or cancelled after
+  `mirror_grace_hours` (default 48) with no ledger row. The run's `notes`
+  say what it did, including positions "not mirrored: their items have no
+  product" -- link the instrument (`update instrument ID product_id=N`) or
+  set `create_products: true` and `products_venture_id: N` in the source's
+  settings. Never `update listing ID data_source_id=` or `mirror_state=`:
+  refused. Editing a mirrored listing's price or outcome is fine and
+  sticks; an outcome you set makes the listing yours. Source settings:
+  `mirror_positions`, `auto_promote_accounts` (both default true),
+  `account_namespace` (share places between two sources of the same
+  characters), `mirror_max_writes` (500), `mirror_grace_hours`.
 - The data lands in a series store per source, not in records, so `list`
   cannot read it: the `market` verbs and the market reports do.
 - `backup run SCHEDULE_ID` on an installation schedule also copies every
@@ -1175,9 +1191,12 @@ The `marketdata` module (on by default; needs `market`) has `venue`,
 instrument names its store row (`data_source_id` + `key`) and the
 `product_id` it is; that link is what lets reports price a product from feeds.
 
-- `market promote SOURCE_ID instrument|venue KEY` is how a store's row
-  becomes a record (it prints the record; its id is `.id`). Run it twice
-  and you get the same record; a deleted one is restored. Do not `create
+- `market promote SOURCE_ID instrument|venue|account KEY` is how a store's
+  row becomes a record (it prints the record; its id is `.id`); an account
+  becomes a `location`, and the venue it trades on gets that location as
+  its `location_id` when it had none. Run it twice and you get the same
+  record; a deleted one is restored (automatic promotion after a run never
+  restores). Do not `create
   instrument` with a key a record already has: `external_ref`
   (namespace:key) is unique per organization *including deleted rows*, so
   the save is refused -- restore or promote instead.
@@ -1738,13 +1757,19 @@ and `describe price_observation` for the wire names and the enum.
 - `listing`: `product_id`, `inventory_item_id`, `channel`, `quantity`
   (≥ 1), `quantity_sold`, `unit_price`, `deposit`, `fees`, `listed_at`
   (required), `closed_at`, `outcome` (`open` default, `sold`, `partial`,
-  `expired`, `cancelled`), `sale_id`, `tags`, `notes`. A listing creates
-  no sale and moves no stock.
+  `expired`, `cancelled`), `sale_id`, `tags`, `notes`, `venue_id`,
+  `expires_at`, `location_id` (the account or place that posted it),
+  `bid` (per unit; not above `unit_price` unless that is 0), `external_id`
+  (unique per organization, deleted listings included). `data_source_id`
+  and `mirror_state` are the position mirror's; writing them is refused. A
+  listing creates no sale and moves no stock.
 - The save refuses a contradiction instead of guessing: `sold` with some
   but not all units counted (use `partial`), `partial` with none or all,
   `expired`/`cancelled` with units sold, a deposit or fee in another
   currency than `unit_price`, `closed_at` on a listing that was always
-  open, and `closed_at` before `listed_at` (all exit 2, validation).
+  open, `closed_at` or `expires_at` before `listed_at`, a `bid` in another
+  currency or above the price, and an `external_id` another listing holds
+  (all exit 2, validation).
 - It fills in: `outcome=sold` with `quantity_sold` 0 becomes all units;
   an ended listing with no `closed_at` gets now; moving back to `open`
   clears `closed_at`. A given `closed_at` is never overwritten.

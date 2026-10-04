@@ -565,8 +565,8 @@ venture_marketdata_known_keys(
 #ifdef VENTURE_HAVE_SQLITE
 
 /* The data source, which must be the organization's and not deleted. */
-static VentureEntity *
-marketdata_source(
+VentureEntity *
+venture_marketdata_source_in(
 	VentureDatabase	 *database,
 	gint64		  organization_id,
 	gint64		  data_source_id,
@@ -588,8 +588,8 @@ marketdata_source(
 }
 
 /* A read handle on the source's store, or an error that says why not. */
-static VentureSeriesStore *
-marketdata_reader(
+VentureSeriesStore *
+venture_marketdata_reader(
 	VentureContext	 *context,
 	gint64		  data_source_id,
 	GError		**error
@@ -721,8 +721,11 @@ marketdata_category_for_path(
 }
 
 /*
- * The record with @ref, brought back if deleted, re-read so the caller
- * holds the version the restore wrote. *@out is NULL when there is none.
+ * The record with @ref, brought back if deleted and @restore, re-read so
+ * the caller holds the version the restore wrote. *@out is NULL when
+ * there is none, and a deleted record when @restore is FALSE: the
+ * position mirror promotes on its own, and bringing back something a
+ * person deleted every few minutes would be fighting them.
  */
 static gboolean
 marketdata_existing(
@@ -730,6 +733,7 @@ marketdata_existing(
 	GType			  type,
 	gint64			  organization_id,
 	const gchar		 *ref,
+	gboolean		  restore,
 	const VentureActor	 *actor,
 	VentureEntity		**out,
 	GError			**error
@@ -749,7 +753,7 @@ marketdata_existing(
 	if (NULL == existing)
 		return TRUE;
 
-	if (venture_entity_is_deleted(existing))
+	if (restore && venture_entity_is_deleted(existing))
 	{
 		gint64 id = venture_entity_get_id(existing);
 
@@ -776,6 +780,7 @@ marketdata_promote_instrument_at(
 	const gchar		 *key,
 	const VentureActor	 *actor,
 	guint			  depth,
+	gboolean		  restore,
 	VentureEntity		**out,
 	GError			**error
 ){
@@ -807,8 +812,8 @@ marketdata_promote_instrument_at(
 	namespace_ = !venture_string_is_empty(row->namespace_) ? row->namespace_ : source_namespace;
 	ref = venture_marketdata_external_ref(namespace_, key);
 
-	if (!marketdata_existing(database, VENTURE_TYPE_INSTRUMENT, organization_id, ref, actor,
-	                         &existing, error))
+	if (!marketdata_existing(database, VENTURE_TYPE_INSTRUMENT, organization_id, ref, restore,
+	                         actor, &existing, error))
 		return FALSE;
 
 	if (NULL != existing)
@@ -830,8 +835,12 @@ marketdata_promote_instrument_at(
 		g_autoptr(GError) parent_error = NULL;
 
 		if (marketdata_promote_instrument_at(context, store, source, row->parent_key, actor,
-		                                     depth + 1, &parent, &parent_error))
-			parent_id = venture_entity_get_id(parent);
+		                                     depth + 1, restore, &parent, &parent_error))
+		{
+			/* A parent somebody deleted is left out, not named. */
+			if (!venture_entity_is_deleted(parent))
+				parent_id = venture_entity_get_id(parent);
+		}
 		else if (!g_error_matches(parent_error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))
 		{
 			g_propagate_error(error, g_steal_pointer(&parent_error));
@@ -856,6 +865,78 @@ marketdata_promote_instrument_at(
 		return FALSE;
 
 	*out = VENTURE_ENTITY(g_steal_pointer(&instrument));
+
+	return TRUE;
+}
+
+gboolean
+venture_marketdata_promote_instrument_in(
+	VentureContext		 *context,
+	VentureSeriesStore	 *store,
+	VentureEntity		 *source,
+	const gchar		 *key,
+	gboolean		  restore,
+	const VentureActor	 *actor,
+	VentureEntity		**out,
+	GError			**error
+){
+	*out = NULL;
+
+	return marketdata_promote_instrument_at(context, store, source, key, actor, 0, restore,
+	                                        out, error);
+}
+
+gboolean
+venture_marketdata_promote_venue_in(
+	VentureContext			 *context,
+	VentureEntity			 *source,
+	const VentureSeriesVenueRow	 *row,
+	gboolean			  restore,
+	const VentureActor		 *actor,
+	VentureEntity			**out,
+	GError				**error
+){
+	g_autoptr(VentureEntity) existing = NULL;
+	g_autoptr(VentureVenue) venue = NULL;
+	g_autofree gchar *source_namespace = NULL;
+	g_autofree gchar *ref = NULL;
+	VentureDatabase *database;
+	const gchar *namespace_;
+	gint64 organization_id;
+
+	*out = NULL;
+	database = venture_context_get_database(context);
+	organization_id = venture_entity_get_organization_id(source);
+
+	g_object_get(source, "venue-namespace", &source_namespace, NULL);
+	namespace_ = !venture_string_is_empty(row->namespace_) ? row->namespace_ : source_namespace;
+	ref = venture_marketdata_external_ref(namespace_, row->key);
+
+	if (!marketdata_existing(database, VENTURE_TYPE_VENUE, organization_id, ref, restore, actor,
+	                         &existing, error))
+		return FALSE;
+
+	if (NULL != existing)
+	{
+		*out = g_steal_pointer(&existing);
+		return TRUE;
+	}
+
+	venue = venture_venue_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(venue), organization_id);
+	g_object_set(venue,
+	             "name", !venture_string_is_empty(row->name) ? row->name : row->key,
+	             "kind", marketdata_kind(VENTURE_TYPE_VENUE_KIND, row->kind),
+	             "namespace", namespace_, "key", row->key,
+	             "group-key", row->group_key,
+	             "currency", row->currency,
+	             "data-source-id", venture_entity_get_id(source),
+	             NULL);
+
+	if (!venture_database_save(database, VENTURE_ENTITY(venue), actor, error))
+		return FALSE;
+
+	*out = VENTURE_ENTITY(g_steal_pointer(&venue));
 
 	return TRUE;
 }
@@ -916,18 +997,18 @@ venture_marketdata_promote_instrument(
 		g_autoptr(VentureSeriesStore) store = NULL;
 		g_autoptr(VentureEntity) instrument = NULL;
 
-		source = marketdata_source(venture_context_get_database(context), organization_id,
+		source = venture_marketdata_source_in(venture_context_get_database(context), organization_id,
 		                           data_source_id, error);
 
 		if (NULL == source)
 			return FALSE;
 
-		store = marketdata_reader(context, data_source_id, error);
+		store = venture_marketdata_reader(context, data_source_id, error);
 
 		if (NULL == store)
 			return FALSE;
 
-		if (!marketdata_promote_instrument_at(context, store, source, key, actor, 0,
+		if (!marketdata_promote_instrument_at(context, store, source, key, actor, 0, TRUE,
 		                                      &instrument, error))
 			return FALSE;
 
@@ -967,22 +1048,18 @@ venture_marketdata_promote_venue(
 		g_autoptr(VentureEntity) source = NULL;
 		g_autoptr(VentureSeriesStore) store = NULL;
 		g_autoptr(GPtrArray) venues = NULL;
-		g_autoptr(VentureEntity) existing = NULL;
-		g_autoptr(VentureVenue) venue = NULL;
-		g_autofree gchar *source_namespace = NULL;
-		g_autofree gchar *ref = NULL;
+		g_autoptr(VentureEntity) venue = NULL;
 		VentureSeriesVenueRow *row;
 		VentureDatabase *database;
-		const gchar *namespace_;
 		guint i;
 
 		database = venture_context_get_database(context);
-		source = marketdata_source(database, organization_id, data_source_id, error);
+		source = venture_marketdata_source_in(database, organization_id, data_source_id, error);
 
 		if (NULL == source)
 			return FALSE;
 
-		store = marketdata_reader(context, data_source_id, error);
+		store = venture_marketdata_reader(context, data_source_id, error);
 
 		if (NULL == store)
 			return FALSE;
@@ -1008,37 +1085,11 @@ venture_marketdata_promote_venue(
 			return FALSE;
 		}
 
-		g_object_get(source, "venue-namespace", &source_namespace, NULL);
-		namespace_ = !venture_string_is_empty(row->namespace_) ? row->namespace_ : source_namespace;
-		ref = venture_marketdata_external_ref(namespace_, key);
-
-		if (!marketdata_existing(database, VENTURE_TYPE_VENUE, organization_id, ref, actor,
-		                         &existing, error))
-			return FALSE;
-
-		if (NULL != existing)
-		{
-			if (NULL != out_venue)
-				*out_venue = g_steal_pointer(&existing);
-			return TRUE;
-		}
-
-		venue = venture_venue_new();
-		venture_entity_set_organization_id(VENTURE_ENTITY(venue), organization_id);
-		g_object_set(venue,
-		             "name", !venture_string_is_empty(row->name) ? row->name : key,
-		             "kind", marketdata_kind(VENTURE_TYPE_VENUE_KIND, row->kind),
-		             "namespace", namespace_, "key", key,
-		             "group-key", row->group_key,
-		             "currency", row->currency,
-		             "data-source-id", data_source_id,
-		             NULL);
-
-		if (!venture_database_save(database, VENTURE_ENTITY(venue), actor, error))
+		if (!venture_marketdata_promote_venue_in(context, source, row, TRUE, actor, &venue, error))
 			return FALSE;
 
 		if (NULL != out_venue)
-			*out_venue = VENTURE_ENTITY(g_steal_pointer(&venue));
+			*out_venue = g_steal_pointer(&venue);
 
 		return TRUE;
 	}
