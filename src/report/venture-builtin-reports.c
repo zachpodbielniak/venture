@@ -664,11 +664,23 @@ venture_report_arbitrage(
 	guint			 *out_trades,
 	GError			**error
 ){
+	g_autoptr(GDateTime) as_of = NULL;
+
 	if ((0 == venture_id) && (NULL != options))
 		venture_id = venture_json_object_get_int(options, "venture_id", 0);
 
+	/* The same cutoff venture_report_fetch_all() gives the sales and
+	 * expenses beside these lines. */
+	if ((NULL != options) && json_object_has_member(options, "as_of"))
+	{
+		as_of = venture_period_report_as_of(options, error);
+
+		if (NULL == as_of)
+			return FALSE;
+	}
+
 	return venture_arbitrage_realised_totals(context, venture_report_organization(context, options),
-	                                         venture_id, period, out_gains, out_fees, out_result,
+	                                         venture_id, period, as_of, out_gains, out_fees, out_result,
 	                                         out_trades, error);
 }
 

@@ -357,6 +357,10 @@ venture_arbitrage_performance(
  * @organization_id: the organization; zero or less for the default one
  * @venture_id: only trades filed under this venture; zero for every one
  * @period: (nullable): bounds `closed-at`; %NULL for every finished trade
+ * @as_of: (nullable): a report's `as_of` visibility cutoff, as
+ *   venture_query_set_as_of() takes it: a trade deleted after it still
+ *   counts, as a sale deleted after it does in the same report; %NULL
+ *   for what is live now
  * @out_gains: (out) (transfer full) (element-type VentureMoney): per
  *   currency, what the finished trades made before their fees -- the
  *   ledger's "Arbitrage gains" -- as venture_money_totals_new() totals
@@ -385,6 +389,7 @@ venture_arbitrage_realised_totals(
 	gint64			  organization_id,
 	gint64			  venture_id,
 	VentureDateRange	 *period,
+	GDateTime		 *as_of,
 	GPtrArray		**out_gains,
 	GPtrArray		**out_fees,
 	GPtrArray		**out_realised,

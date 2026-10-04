@@ -1942,6 +1942,45 @@ row_where(VentureReportResult *result, const gchar *key, const gchar *value, con
 } G_STMT_END
 
 /*
+ * The P&L asked "as of" a date counts the arbitrage trades visible then,
+ * as it does the sales beside them: a trade deleted since still counts,
+ * and the live P&L leaves it out. The arbitrage lines ignored as_of, so a
+ * P&L reproduced as of a past date moved with every later deletion.
+ */
+static void
+test_pnl_as_of(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureReportResult) live = NULL;
+	g_autoptr(VentureReportResult) then = NULL;
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *gone = NULL;
+	VentureReport *report;
+	gint64 id;
+
+	(void)data;
+	id = closed_flip(f, "Deleted later", "spread", "100.00 USD", "120.00 USD", NULL, NULL,
+	                 "2026-03-10T10:00:00Z");
+	row = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, id);
+	g_assert_true(venture_database_delete(f->db, row, NULL, &error));
+	g_assert_no_error(error);
+
+	live = operational(f, "pnl", "2026-03", 0);
+	gone = pnl_line(live, "Arbitrage result", "USD");
+	g_assert_null(gone);
+
+	json_object_set_string_member(options, "as_of", "2026-03-31");
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "pnl");
+	period = venture_context_parse_period(f->context, "2026-03", &error);
+	g_assert_no_error(error);
+	then = venture_report_generate(report, f->context, period, options, &error);
+	g_assert_no_error(error);
+	ASSERT_LINE(then, "Arbitrage result", "USD", "20.00 USD");
+}
+
+/*
  * The operational reports count realised arbitrage, which the ledger's
  * income statement always did. March finishes two dollar flips under
  * Flips (18.00 made on 2.00 of fees, 10.00 lost: 10.00 of gains before
@@ -2302,6 +2341,7 @@ main(int argc, char **argv)
 	g_test_add("/arbitrage-ledger/record-roles", Fixture, NULL, setup, test_record_roles, teardown);
 	g_test_add("/arbitrage-ledger/second-actor", Fixture, NULL, setup, test_second_actor, teardown);
 	g_test_add("/arbitrage-ledger/performance", Fixture, NULL, setup, test_performance, teardown);
+	g_test_add("/arbitrage-ledger/pnl-as-of", Fixture, NULL, setup, test_pnl_as_of, teardown);
 	g_test_add("/arbitrage-ledger/operational-reports", Fixture, NULL, setup, test_operational_reports,
 	           teardown);
 	g_test_add("/arbitrage-ledger/trade-page", Fixture, NULL, setup, test_trade_page, teardown);

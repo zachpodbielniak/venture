@@ -300,7 +300,7 @@ The option reaches every door: the web API, the report page (with a form for gro
 
 * In the profit and loss: =pnl=, =ventures= and =monthly=
 
-The ledger's =income_statement= always had the trades -- the close journals' Arbitrage gains and the legs' Arbitrage fees. The operational reports, which total records rather than journals, now count them too, through one function, =venture_arbitrage_realised_totals()=: every trade that finished (closed or abandoned) in the period, by =closed_at=, with exactly the arithmetic of the trade page and =arbitrage_performance=.
+The ledger's =income_statement= always had the trades -- the close journals' Arbitrage gains and the legs' Arbitrage fees. The operational reports, which total records rather than journals, now count them too, through one function, =venture_arbitrage_realised_totals()=: every trade that finished (closed or abandoned) in the period, by =closed_at=, with exactly the arithmetic of the trade page and =arbitrage_performance=. A report's =as_of= reaches them as it reaches the sales and expenses: a trade deleted after the cutoff still counts in a P&L asked as of it.
 
 - =pnl= adds three lines to each currency's block, after the expenses: /Arbitrage gains/ (what the trades made before fees, which is what their close journals moved to the gains account), /Less arbitrage fees/ and /Arbitrage result/ (their realised result). /Profit/ is net revenue less expenses plus the arbitrage result. Metrics: =arbitrage= (and =arbitrage_<CODE>= for another currency) and =arbitrage_trades=.
 - =ventures= adds an /Arbitrage result/ column for each venture's own trades (a trade's =venture_id=), and =monthly= one per month, by the month a trade finished; both add it to the row's profit.

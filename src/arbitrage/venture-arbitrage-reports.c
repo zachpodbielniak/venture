@@ -399,6 +399,7 @@ venture_arbitrage_realised_totals(
 	gint64			  organization_id,
 	gint64			  venture_id,
 	VentureDateRange	 *period,
+	GDateTime		 *as_of,
 	GPtrArray		**out_gains,
 	GPtrArray		**out_fees,
 	GPtrArray		**out_realised,
@@ -443,6 +444,12 @@ venture_arbitrage_realised_totals(
 	query = venture_query_new(VENTURE_TYPE_ARBITRAGE_TRADE);
 	venture_query_set_organization(query, organization_id);
 	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
+
+	/* The report's as_of, as its sales and expenses get it: a P&L asked
+	 * "as of" a date counts what was visible then. */
+	if (NULL != as_of)
+		venture_query_set_as_of(query, as_of);
+
 	statuses = g_ptr_array_new_with_free_func(g_free);
 	g_ptr_array_add(statuses, g_strdup("closed"));
 	g_ptr_array_add(statuses, g_strdup("abandoned"));
