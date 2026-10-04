@@ -13010,11 +13010,12 @@ venture_web_ui_account_password(
 /*
  * The API tokens page.
  *
- * Admin, matching POST /api/v1/tokens: a token carries the role of whoever
- * minted it, so minting one is handing out a credential rather than editing
- * a record. This page exists because the alternative was two curl calls --
- * sign in for a cookie, then post with it -- which is a lot of ceremony for
- * something an operator needs before they can use the CLI at all.
+ * Admin-only. A token carries the role of whoever minted it, and this page
+ * lists and revokes every token, not only the caller's; POST /api/v1/tokens
+ * is where anyone else mints their own. This page exists because the
+ * alternative was two curl calls -- sign in for a cookie, then post with
+ * it -- which is a lot of ceremony for something an operator needs before
+ * they can use the CLI at all.
  */
 static HtmxResponse *
 venture_web_ui_tokens(
@@ -13231,8 +13232,8 @@ venture_web_ui_tokens(
 /*
  * Mints a token and redirects to the page that will show it once.
  *
- * Shares venture_web_api_mint_token()'s rule that this is an administrative
- * act, and its consequence that the token carries the minter's role.
+ * Admin-only like the page it belongs to; the token carries the minter's
+ * role. venture_web_api_mint_token() is the route open to every session.
  */
 static HtmxResponse *
 venture_web_ui_tokens_create(
@@ -18734,13 +18735,27 @@ venture_web_api_mint_token(
 	g_autofree gchar *secret = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
+	VentureUserRole minimum;
 	const gchar *name = NULL;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	/* Minting a credential is an administrative act, not an editing one. */
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
+	/*
+	 * A signed-in person may mint a token for themselves at any role. It
+	 * is owned by them, carries their role and a snapshot of their active
+	 * organization memberships (venture-access-policy.c), so it can never
+	 * do more than the session that made it -- which is what lets a
+	 * hosted site owner hand Lightsite their own credential.
+	 *
+	 * A bearer token minting another stays an administrative act: that
+	 * would let a leaked token outlive its own revocation or expiry.
+	 */
+	minimum = (principal->authenticated && 0 == principal->token_id &&
+	           0 < principal->user_id)
+		? VENTURE_USER_ROLE_VIEWER : VENTURE_USER_ROLE_ADMIN;
+
+	if (!venture_web_hosted_auth_require(self, request, principal, minimum,
 	                          &error))
 		return venture_web_error_response(error);
 

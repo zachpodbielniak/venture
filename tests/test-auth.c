@@ -3598,11 +3598,10 @@ server_fixture_mint_token(
 }
 
 /*
- * The page is admin-only, matching POST /api/v1/tokens. A token carries the
- * role of whoever minted it, so an editor who could reach this page could
- * mint themselves a durable editor credential that no password change
- * revokes -- and the whole point of the role split is who may hand out
- * access.
+ * The page is admin-only: it lists and revokes every token, not only the
+ * caller's. An editor mints their own token, bound to their own role and
+ * memberships, with a session at POST /api/v1/tokens instead
+ * (tests/test-account-identity.c).
  */
 static void
 test_auth_tokens_page_is_admin_only(

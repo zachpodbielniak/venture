@@ -21,8 +21,10 @@ export VENTURE_TOKEN=vk_...                     # or pass --token
 venturectl health
 ```
 
-Mint a token from the UI (Settings → API tokens) or
-`POST /api/v1/tokens` as an admin. It is shown once.
+Mint a token from the UI (Settings → API tokens, admins only) or with
+`POST /api/v1/tokens`: any signed-in user may mint their own token there
+with a browser session, but a bearer token may mint only if it is admin.
+The token carries the minter's role and memberships. It is shown once.
 
 For an operation requiring an interactive session (including hosted workspace
 administration), `--session-file /private/session.json` accepts an owner-only,
