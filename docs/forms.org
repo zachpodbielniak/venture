@@ -781,7 +781,8 @@ With =create_lead= on, each response becomes a lead through the lead
 service's own capture: the same inputs, the same campaign check and the
 same duplicate rules as a lead form (=on_duplicate= =merge=, =create= or
 =reject=). A question's =maps_to= names the lead input it fills: =name=,
-=email=, =phone=, =company_name=, =website= or =notes=. Several questions
+=email=, =phone=, =company_name=, =website=, =notes= or =referral_code=
+(see [[file:referrals.org][Referrals]]). Several questions
 mapped to =notes= are kept one per line under their question. The lead's
 source is =lead_source=, else the title, else the name; =campaign_id=
 places it in a campaign of the same organization. The response's
@@ -1505,6 +1506,12 @@ A browser cookie is neither required nor trusted at this capability endpoint.
 #+begin_src json
 {"version":1,"tenant_id":"tenant_one","site_id":"site_one","submission_id":"original-daemon-submission-id","form_id":42,"form_version":3,"answers":{"name":"Reader","email":"reader@example.test","topic":"sales","message":"Please quote this work"}}
 #+end_src
+
+An optional =referral_code= member carries the code the site's visitor
+arrived with (a string of at most 64 bytes, one line). A form with
+=create_lead= on gives it to the lead it makes, unless a question mapped to
+=referral_code= answered; see [[file:referrals.org][Referrals]]. It is the
+only member a site adds beside the answers.
 
 The closed envelope refuses =origin=, organization/owner overrides and unknown
 members. Venture reads origin from the paired site and enforces the form's

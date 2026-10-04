@@ -78,6 +78,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
 - [[file:leads.org][Leads]] — public capture, duplicate handling, assignment, routing rules, scoring, qualification, conversion and recycling
+- [[file:referrals.org][Referrals]] — which customer sent which: shareable codes and links, referrals followed to a won customer, rewards and their report
 - [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 - [[file:actions.org][Record actions]] — shared business operations and approval
 

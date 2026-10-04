@@ -694,6 +694,25 @@ arrives. `round_robin` needs the `orgaccess` module for teams. Never set
 Reports are `lead_sources`, `lead_response_time`, `leads_recycled_due`,
 `lead_routing` and `lead_scoring`; `lead_scoring` takes `band_size=N` (default
 25). See `docs/leads.org` for definitions and public capture forms.
+## Referrals
+
+`describe referral_program`, `referral_code`, `referral` and `referral_reward`
+first. A program needs `active=true` (it is off by default) and a
+`reward_kind` of `none`, `credit` (with a positive `reward_amount`) or
+`free_period`. Get a customer's code with `act company ID referral_code`
+(or `act contact ID referral_code`; add `program_id=N` when the organization
+has more than one active program) -- it returns the existing code or makes
+one, with the `link` to share. A lead attributes itself: create or capture
+it with `referral_code=CODE` and a matching code makes the referral in the
+same write; an unknown code is kept on the lead and attributes nothing,
+without an error, so check `list referral lead_id=N` if it mattered. Never
+set a referral's `status` when it has a lead: it follows the lead and a typed
+value is silently put back. Converting the lead wins it and the reward is
+given after that commits; a reward that could not be given has
+`status=failed` and a `failure` reason -- fix the cause, then
+`act referral_reward ID apply`. A given reward cannot be edited or deleted.
+Report: `report referrals`. See `docs/referrals.org`.
+
 ## Planned activities
 
 `activity complete ID outcome=...` completes a planned activity, writes interaction history and advances recurrence atomically. `activity list mine|overdue|today` reads your daily worklist. Generic `create activity` and `update activity` edit the plan; generic `status=done` is refused. The existing `activity TYPE ID` command still reads a record timeline. Use `report worklist organization_id=ID` for the current UTC week per owner.
@@ -2075,4 +2094,6 @@ Lightsite's daemon posts signed complete answers to
 `submission_id` on retries. Origin comes from Venture's paired site, not the
 browser payload. This uses ordinary form lead mappings and receipts; it does
 not create invoices/quotes. Payments, bookings, uploads and double opt-in use
-the hosted workflow. See `docs/forms.org` for the exact closed envelope.
+the hosted workflow. An optional `referral_code` beside `answers` carries the
+code the visitor arrived with to the lead the form makes. See `docs/forms.org`
+for the exact closed envelope.

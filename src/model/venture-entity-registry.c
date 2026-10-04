@@ -929,6 +929,10 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_attribution_touch_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_attribution_submission_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_attribution_binding_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_referral_program_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_referral_code_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_referral_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_referral_reward_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

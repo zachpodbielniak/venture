@@ -36,16 +36,16 @@ static gboolean envelope_valid(VentureEntity *site, JsonObject *payload, GError 
 }
 static JsonObject *mapped_fields(JsonObject *input, GError **error)
 {
-	static const gchar *const names[] = { "name", "email", "message", "company_name", "phone", "website", NULL };
+	static const gchar *const names[] = { "name", "email", "message", "company_name", "phone", "website", "referral_code", NULL };
 	g_autoptr(JsonObject) output = json_object_new();
 	JsonObjectIter iter;
 	JsonNode *node;
 	const gchar *name;
-	if (json_object_get_size(input) > 6) { refuse(error, "Too many form fields"); return NULL; }
+	if (json_object_get_size(input) > 7) { refuse(error, "Too many form fields"); return NULL; }
 	json_object_iter_init(&iter, input);
 	while (json_object_iter_next(&iter, &name, &node)) {
 		const gchar *text;
-		gsize maximum = !g_strcmp0(name, "message") ? 8192 : !g_strcmp0(name, "website") ? 2048 : 254;
+		gsize maximum = !g_strcmp0(name, "message") ? 8192 : !g_strcmp0(name, "website") ? 2048 : !g_strcmp0(name, "referral_code") ? 64 : 254;
 		if (!g_strv_contains(names, name) || !JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING) {
 			refuse(error, "Form fields must follow the documented string mapping"); return NULL;
 		}

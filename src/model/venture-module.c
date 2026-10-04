@@ -891,6 +891,19 @@ static GType (*const forms_types[]) (void) = {
 };
 static const gchar *const forms_reports[] = { "form_summary", NULL };
 
+/* Who sent whom. It requires leads, whose status a referral follows to a
+ * won customer. It suggests receivables and billing, which pay the two
+ * kinds of reward (a reward that needs one while it is off is recorded
+ * as not given, with the switch named), and forms and attribution, whose
+ * captures carry a code in. */
+static const gchar *const referrals_requires[] = { "crm", "leads", NULL };
+static const gchar *const referrals_suggests[] = { "receivables", "billing", "forms", "attribution", NULL };
+static GType (*const referrals_types[]) (void) = {
+	venture_referral_program_get_type, venture_referral_code_get_type,
+	venture_referral_get_type, venture_referral_reward_get_type, NULL
+};
+static const gchar *const referrals_reports[] = { "referrals", NULL };
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1313,6 +1326,13 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"searchable, audited record.",
 		venture_module_requires_core, forms_suggests, forms_types,
 		forms_reports, NULL, FALSE
+	},
+	{
+		"referrals", "Referrals",
+		"Which customer sent which: shareable codes, referrals that follow "
+		"the lead to a won customer, and the reward the referrer is given.",
+		referrals_requires, referrals_suggests, referrals_types,
+		referrals_reports, NULL, FALSE
 	}
 };
 

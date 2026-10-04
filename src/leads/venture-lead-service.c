@@ -439,7 +439,13 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 			if (VENTURE_IS_LEAD(duplicate))
 			{
 				const gchar *assessment = venture_entity_get_attribute(entity, "assessment_score");
+				g_autofree gchar *code = string_field(entity, "referral-code");
+				g_autofree gchar *kept = string_field(duplicate, "referral-code");
 				g_object_set(duplicate, "last-activity-at", now, NULL);
+				/* A code fills an empty one and never replaces it: whoever
+				 * sent them first sent them. */
+				if (venture_string_is_empty(kept) && !venture_string_is_empty(code))
+					g_object_set(duplicate, "referral-code", code, NULL);
 				if (assessment != NULL)
 				{
 					g_autoptr(VentureEntity) rescored = NULL;
@@ -615,7 +621,7 @@ capture_lead(VentureLeadService *self, gint64 organization_id, gint64 venture, c
 {
 	g_autoptr(VentureEntity) lead = NULL;
 	guint i;
-	const gchar *inputs[] = { "name", "company_name", "email", "phone", "website", "source", "notes" };
+	const gchar *inputs[] = { "name", "company_name", "email", "phone", "website", "source", "notes", "referral_code" };
 	lead = VENTURE_ENTITY(venture_lead_new());
 	g_object_set(lead, "organization-id", organization_id, "venture-id", venture, "source", source, NULL);
 	for (i = 0; i < G_N_ELEMENTS(inputs); i++)

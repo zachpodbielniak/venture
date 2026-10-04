@@ -365,7 +365,7 @@ static const gchar *const forms_autocomplete_tokens[] = {
 };
 
 static const gchar *const forms_lead_targets[] = {
-	"name", "email", "phone", "company_name", "website", "notes", NULL
+	"name", "email", "phone", "company_name", "website", "notes", "referral_code", NULL
 };
 
 static gboolean
@@ -2510,6 +2510,7 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity **subm
 	{
 		g_autoptr(JsonObject) values = forms_lead_values(fields, answers);
 		g_autoptr(VentureEntity) lead = NULL;
+		const gchar *referral = g_object_get_data(G_OBJECT(submission), VENTURE_FORMS_REFERRAL);
 		g_autofree gchar *source = venture_forms_get_string(form, "lead-source");
 		g_autofree gchar *policy = venture_forms_get_string(form, "on-duplicate");
 
@@ -2523,6 +2524,8 @@ forms_write(VentureDatabase *database, VentureEntity *form, VentureEntity **subm
 			g_free(source);
 			source = venture_forms_get_string(form, "name");
 		}
+		if (!venture_string_is_empty(referral) && !json_object_has_member(values, "referral_code"))
+			json_object_set_string_member(values, "referral_code", referral);
 		if (venture_forms_get_bool(submission, "scored") && venture_forms_quiz(fields) != NULL &&
 		    json_object_get_boolean_member_with_default(venture_forms_quiz(fields), "lead_input", FALSE))
 			lead = venture_lead_service_capture_scored_values(venture_database_get_lead_service(database),
@@ -2617,6 +2620,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	g_autoptr(JsonArray) price_lines = NULL;
 	g_autoptr(VentureMoney) price_total = NULL;
 	g_autofree gchar *payment_nonce = g_strdup(forms_first(answers, VENTURE_FORMS_PAYMENT_NONCE));
+	g_autofree gchar *referral = g_strdup(forms_first(answers, VENTURE_FORMS_REFERRAL));
 	g_autofree gchar *receipt_digest = NULL;
 	g_autofree gchar *secret_text = NULL;
 	g_autofree gchar *omitted_text = NULL;
@@ -2686,7 +2690,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	{
 		if (0 == g_strcmp0(key, VENTURE_FORMS_HONEYPOT) || 0 == g_strcmp0(key, VENTURE_FORMS_TICKET) ||
 		    0 == g_strcmp0(key, VENTURE_FORMS_PERSONAL) || 0 == g_strcmp0(key, VENTURE_FORMS_PREFILL) ||
-		    0 == g_strcmp0(key, VENTURE_FORMS_PAYMENT_NONCE))
+		    0 == g_strcmp0(key, VENTURE_FORMS_PAYMENT_NONCE) || 0 == g_strcmp0(key, VENTURE_FORMS_REFERRAL))
 			continue;
 		if (NULL == venture_forms_definition_find(fields, key))
 			forms_refuse(refused, key, "This form has no such question.");
@@ -2815,6 +2819,7 @@ venture_forms_submit(VentureDatabase *database, VentureEntity *form, GHashTable 
 	}
 	g_object_set_data_full(G_OBJECT(response), FORMS_RECEIPT_NONCE, g_strdup(payment_nonce), g_free);
 	g_object_set_data_full(G_OBJECT(response), FORMS_RECEIPT_DIGEST, g_strdup(receipt_digest), g_free);
+	g_object_set_data_full(G_OBJECT(response), VENTURE_FORMS_REFERRAL, g_strdup(referral), g_free);
 	if (!forms_write(database, form, &response, fields, stored, TRUE, now, refused, &follow_error))
 	{
 		g_autofree gchar *note = NULL;

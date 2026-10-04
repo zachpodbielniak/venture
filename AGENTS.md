@@ -221,6 +221,16 @@ first seven columns were empty.
   `price-change:<event uuid>`. A missing address or mail switched off
   skips the notice; it must never refuse the change. Do not move them to
   a timer or a signal handler: the key is what makes them once-only.
+- **A referral reward is paid after the commit that won it, never inside
+  it.** `src/referrals/` remembers a referral that became won and gives the
+  reward on `transaction-finished`, in a transaction of its own: a credit
+  note the books or an approval refuse would otherwise roll the lead's
+  conversion back with it. A reward that cannot be given is saved `failed`
+  with the reason and retried by its `apply` action; the unique index on
+  `referral_id` (deleted rows included) is what makes it once only. The
+  referral itself is written inside the lead's transaction, and its handler
+  sets the derived status before saving, because an empty diff returns
+  before any validator runs.
 - **The portal manages a subscription only by token and only its own.**
   `/portal/:token/subscriptions/:id` answers NOT_FOUND for anything not the
   token's customer's, and goes through `venture_billing_service_execute()`

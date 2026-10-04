@@ -302,6 +302,9 @@ gint venture_forms_receipt_replay(VentureDatabase *database, VentureEntity *form
 	GHashTable *answers, const gchar *digest, gboolean wire, VentureEntity **response, GError **error);
 
 #define VENTURE_FORMS_PAYMENT_NONCE "_vf_payment"
+/* A referral code a relay carried beside the answers. The lead a form
+ * makes takes it unless a question mapped to referral_code answered. */
+#define VENTURE_FORMS_REFERRAL "_vf_referral"
 #define VENTURE_FORMS_PAYMENT_WRITE "venture-forms-payment-write"
 #define VENTURE_FORMS_PAYMENT_SETTLING "venture-forms-payment-settling"
 #define VENTURE_FORMS_PAYMENT_REDIRECT "venture-forms-payment-redirect"

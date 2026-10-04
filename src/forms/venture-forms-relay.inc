@@ -20,7 +20,7 @@ venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now,
 	VentureFormsRelayCheck check, gpointer check_data, GError **error)
 {
-	static const gchar *const names[] = { "version", "tenant_id", "site_id", "submission_id", "form_id", "form_version", "answers", NULL };
+	static const gchar *const names[] = { "version", "tenant_id", "site_id", "submission_id", "form_id", "form_version", "answers", "referral_code", NULL };
 	g_autoptr(VentureEntity) form = NULL, version = NULL, response = NULL;
 	g_autoptr(GPtrArray) fields = NULL;
 	g_autoptr(GHashTable) answers = NULL;
@@ -29,7 +29,7 @@ venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(GDateTime) epoch = g_date_time_new_from_unix_utc(0);
 	g_autofree gchar *material = NULL, *digest = NULL, *id = NULL, *key = NULL, *mac = NULL, *nonce = NULL, *ticket = NULL;
 	JsonObjectIter iter;
-	const gchar *name, *submission;
+	const gchar *name, *submission, *referral = NULL;
 	JsonNode *value, *input;
 	gint64 form_id, number;
 	VentureFormsOutcome outcome;
@@ -59,6 +59,15 @@ venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	if (!value || json_node_get_value_type(value) != G_TYPE_STRING) goto malformed;
 	submission = json_node_get_string(value);
 	if (!submission || !*submission || strlen(submission) > 128 || !g_utf8_validate(submission, -1, NULL) || strpbrk(submission, "\r\n")) goto malformed;
+	/* A connected site passes the code its visitor arrived with beside the
+	 * answers, so no form has to ask for it. Text only, and short. */
+	value = json_object_get_member(envelope, "referral_code");
+	if (value != NULL && !JSON_NODE_HOLDS_NULL(value))
+	{
+		if (!JSON_NODE_HOLDS_VALUE(value) || json_node_get_value_type(value) != G_TYPE_STRING) goto malformed;
+		referral = json_node_get_string(value);
+		if (!referral || strlen(referral) > 64 || !g_utf8_validate(referral, -1, NULL) || strpbrk(referral, "\r\n")) goto malformed;
+	}
 	input = json_object_get_member(envelope, "answers");
 	if (!input || !JSON_NODE_HOLDS_OBJECT(input)) goto malformed;
 	/* The relay owns controls. A visitor cannot forge a draft, personal link,
@@ -90,6 +99,7 @@ venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	ticket = venture_forms_ticket_new_for_version(form, number, epoch);
 	venture_forms_answers_add(answers, VENTURE_FORMS_PAYMENT_NONCE, nonce);
 	venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	if (!venture_string_is_empty(referral)) venture_forms_answers_add(answers, VENTURE_FORMS_REFERRAL, referral);
 	guard.check = check; guard.data = check_data; guard.failed = FALSE;
 	g_object_set_data(G_OBJECT(form), "venture-forms-relay-guard", &guard);
 	accepted = venture_forms_submit(database, form, answers, origin, now, &outcome, &response, &errors, error);

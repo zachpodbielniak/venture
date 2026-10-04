@@ -216,7 +216,9 @@ or disconnect during capture rolls the delivery back.
 Optional =visitor_token= requires separately valid anonymous analytics
 permission; optional =marketing= follows the independent choice contract above.
 Name/email are required, message maps to existing lead notes; company_name,
-phone and website use existing capture matching/routing. The closed envelope
+phone and website use existing capture matching/routing; an optional
+referral_code (at most 64 bytes) attributes the lead to a referrer (see
+[[file:referrals.org][Referrals]]). The closed envelope
 refuses arbitrary organization, owner, CRM source or campaign overrides.
 Receipt time controls attribution; only the email-choice occurrence may be
 supplied, and it cannot be later than receipt. The original submission ID is
