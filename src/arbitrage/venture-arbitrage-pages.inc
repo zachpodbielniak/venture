@@ -161,8 +161,10 @@ arw_hidden_options(
 		if (venture_string_is_empty(text))
 			continue;
 
-		g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" value=\"",
-		                       (const gchar *)member->data);
+		/* The name too: a strategy's narrow keys are its own to choose. */
+		g_string_append(html, "<input type=\"hidden\" name=\"");
+		venture_html_escape_append(html, (const gchar *)member->data);
+		g_string_append(html, "\" value=\"");
 		venture_html_escape_append(html, text);
 		g_string_append(html, "\">");
 	}
@@ -176,8 +178,10 @@ arw_hidden_options(
 		if (venture_string_is_empty(text))
 			continue;
 
-		g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" value=\"",
-		                       (const gchar *)member->data);
+		/* The name too: a strategy's narrow keys are its own to choose. */
+		g_string_append(html, "<input type=\"hidden\" name=\"");
+		venture_html_escape_append(html, (const gchar *)member->data);
+		g_string_append(html, "\" value=\"");
 		venture_html_escape_append(html, text);
 		g_string_append(html, "\">");
 	}
@@ -780,7 +784,12 @@ venture_arbitrage_web_record(
 		return venture_web_error_response(error);
 
 	if (api)
-		return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(trade), FALSE), 201);
+	{
+		/* venture_web_json_response() serialises and keeps no reference. */
+		g_autoptr(JsonNode) created = venture_serializable_to_json(VENTURE_SERIALIZABLE(trade), FALSE);
+
+		return venture_web_json_response(created, 201);
+	}
 
 	location = g_strdup_printf("/e/arbitrage_trade/%" G_GINT64_FORMAT, venture_entity_get_id(trade));
 	redirect = htmx_response_new();
@@ -805,7 +814,6 @@ venture_arbitrage_web_export(
 	g_autoptr(JsonNode) answer = NULL;
 	g_autoptr(GBytes) bytes = NULL;
 	g_autofree gchar *disposition = NULL;
-	g_autofree gchar *body = NULL;
 	const gchar *format;
 	HtmxResponse *gate;
 	HtmxResponse *response;
@@ -846,8 +854,11 @@ venture_arbitrage_web_export(
 	if (NULL == bytes)
 		return venture_web_error_response(error);
 
-	body = g_strndup(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes));
-	response = htmx_response_new_with_content(body);
+	/* Bytes, never a string: an export format is a plugin's to define,
+	 * and a copy through g_strndup() would end the body at its first
+	 * zero byte. */
+	response = htmx_response_new();
+	htmx_response_set_bytes(response, bytes);
 	htmx_response_set_content_type(response, venture_export_format_registry_get_content_type(formats, format));
 	htmx_response_set_status(response, 200);
 	disposition = g_strdup_printf("attachment; filename=\"arbitrage-%s.%s\"", format,
@@ -1127,7 +1138,7 @@ venture_arbitrage_web_registries(
 	g_auto(GStrv) format_names = NULL;
 	JsonObject *root;
 	JsonArray *array;
-	JsonNode *node;
+	g_autoptr(JsonNode) node = NULL;
 	HtmxResponse *gate;
 	guint i;
 

@@ -2370,8 +2370,9 @@ arb_back_lay_instrument(
 	{
 		JsonObject *leg = json_object_new();
 		g_autofree gchar *text = venture_money_to_string(figures.liability);
+		g_autofree gchar *lay_stake = venture_money_to_string(figures.lay_stake);
 		g_autofree gchar *notes = g_strdup_printf("Lay: liability for a lay stake of %s",
-		                                          venture_money_to_string(figures.lay_stake));
+		                                          lay_stake);
 
 		json_object_set_string_member(leg, "kind", "stake");
 		json_object_set_int_member(leg, "data_source_id", source_id);

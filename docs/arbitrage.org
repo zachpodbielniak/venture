@@ -570,7 +570,9 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 | =shopping_list= | built in            | =text/plain; charset=utf-8= | every buy and stake leg of the rows, by venue, the same instrument at the same venue added up, a total per venue per currency (never across two)                                                                                                                               |
 | =tsm=           | the Blizzard plugin | =text/plain=                | one TradeSkillMaster group-import line, =i:<item id>,...,p:<species>=, from each row's instrument and a =transform= row's inputs, each item once in first-seen order, variants collapsed, non-WoW keys skipped; an empty scan is an empty line                                 |
 
-An export function (=VentureExportFunc=) is handed the rows and the options and returns =GBytes=; it runs on the main thread after the scan, and reads nothing else.
+An export function (=VentureExportFunc=) is handed the rows and the options and returns =GBytes=; it runs on the main thread after the scan, and reads nothing else. The download is those bytes exactly, zero bytes included, so a binary format works. The content type goes into a response header verbatim, so one holding a control character is refused at registration.
+
+The CSV's defusing puts an apostrophe ahead of any field that starts with =\==, =+=, =-=, =@=, a tab or a carriage return, except a field that is a whole negative figure (=-1.50 USD=). Starting with a minus and a digit is not enough: =-2+3+cmd|...= does too, and a spreadsheet runs it.
 
 ** Calculators
 

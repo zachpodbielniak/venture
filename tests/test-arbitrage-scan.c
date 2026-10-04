@@ -1387,6 +1387,98 @@ test_export(
 
 	g_assert_null(venture_export_format_registry_export(formats, "tsm", NULL, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+
+	/* A title a data source wrote as a formula is defused, even one that
+	 * starts with a minus and a digit; a negative figure is not. */
+	{
+		g_autoptr(JsonArray) hostile = json_array_new();
+		g_autoptr(VentureMoney) loss = venture_money_new(-150, "USD", 2);
+		g_autoptr(GBytes) defused = NULL;
+		g_autofree gchar *defused_text = NULL;
+		JsonObject *row = json_object_new();
+
+		json_object_set_string_member(row, "strategy", "spread");
+		json_object_set_string_member(row, "key", "k");
+		json_object_set_string_member(row, "title", "-2+3+cmd|' /C calc'!E2");
+		json_object_set_string_member(row, "instrument_name", "\t=1+1");
+		json_object_set_member(row, "net", venture_money_to_json(loss));
+		json_array_add_object_element(hostile, row);
+
+		defused = venture_export_format_registry_export(formats, "csv", hostile, NULL, &error);
+		g_assert_no_error(error);
+		defused_text = g_strndup(g_bytes_get_data(defused, NULL), g_bytes_get_size(defused));
+		g_assert_nonnull(strstr(defused_text, ",'-2+3+cmd|"));
+		g_assert_nonnull(strstr(defused_text, ",'\t=1+1"));
+		g_assert_nonnull(strstr(defused_text, ",-1.50 USD"));
+		g_assert_null(strstr(defused_text, ",'-1.50 USD"));
+	}
+
+	/* A content type becomes a header verbatim: no line breaks in it. */
+	g_assert_false(venture_export_format_registry_add(formats, "split", "Split", "text/plain\r\nX-Evil: 1",
+	                                                  "txt", export_count, (gpointer)"rows", NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
+/*
+ * An export format with zero bytes in it, as a plugin's binary format
+ * would have: the body ends at the format's own length.
+ */
+static GBytes *
+export_with_nuls(
+	JsonArray	 *rows,
+	JsonObject	 *options,
+	gpointer	  user_data,
+	GError		**error
+){
+	(void)rows;
+	(void)options;
+	(void)user_data;
+	(void)error;
+
+	return g_bytes_new_static("PK\0\3\0x", 6);
+}
+
+/*
+ * /arbitrage/export serves a format's bytes as they are. A plugin may
+ * register a binary format (a spreadsheet, an archive); copying its bytes
+ * into a NUL-terminated string ended the download at the first zero byte,
+ * so this one arrived as two bytes of six.
+ */
+static void
+test_export_binary(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	VentureExportFormatRegistry *formats;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	Reply reply;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_venues(fixture);
+	formats = venture_context_get_export_formats(fixture->context);
+	g_assert_true(venture_export_format_registry_add(formats, "zipish", "Zipish", "application/octet-stream",
+	                                                 "bin", export_with_nuls, NULL, NULL, &error));
+	g_assert_no_error(error);
+
+	memset(&reply, 0, sizeof(reply));
+	url = g_strconcat(venture_web_server_get_base_url(fixture->server), "/arbitrage/export?format=zipish",
+	                  NULL);
+	message = soup_message_new("GET", url);
+	soup_session_send_and_read_async(fixture->session, message, G_PRIORITY_DEFAULT, NULL, reply_done,
+	                                 &reply);
+
+	while (!reply.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(reply.error);
+	g_assert_cmpuint(soup_message_get_status(message), ==, 200);
+	g_assert_cmpmem(g_bytes_get_data(reply.body, NULL), g_bytes_get_size(reply.body), "PK\0\3\0x", 6);
+	g_bytes_unref(reply.body);
 }
 
 /*
@@ -1838,6 +1930,108 @@ test_widget(
 	g_assert_nonnull(strstr(result->html, "Peacebloom"));
 }
 
+/*
+ * Every arbitrage-* class @page's markup uses must have a rule in the
+ * stylesheet the page inlined. Returns how many distinct classes it
+ * checked, so the caller can tell a page that rendered nothing from one
+ * that is fully styled.
+ */
+static guint
+assert_arbitrage_classes_styled(
+	const gchar	*page,
+	const gchar	*look
+){
+	g_autoptr(GHashTable) seen = NULL;
+	g_autofree gchar *style = NULL;
+	const gchar *end;
+	const gchar *cursor;
+
+	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+	/* The stylesheet is inlined: everything before the last </style> is
+	 * rules, everything after is markup. */
+	end = g_strrstr(page, "</style>");
+	g_assert_nonnull(end);
+	style = g_strndup(page, (gsize)(end - page));
+	cursor = end;
+
+	while (NULL != (cursor = strstr(cursor, "class=\"")))
+	{
+		g_auto(GStrv) names = NULL;
+		const gchar *close;
+		g_autofree gchar *value = NULL;
+		guint i;
+
+		cursor += strlen("class=\"");
+		close = strchr(cursor, '"');
+		g_assert_nonnull(close);
+		value = g_strndup(cursor, (gsize)(close - cursor));
+		names = g_strsplit(value, " ", -1);
+
+		for (i = 0; NULL != names[i]; i++)
+		{
+			g_autofree gchar *rule = NULL;
+
+			if (!g_str_has_prefix(names[i], "arbitrage-") || g_hash_table_contains(seen, names[i]))
+				continue;
+
+			rule = g_strconcat(".", names[i], NULL);
+
+			if (NULL == strstr(style, rule))
+				g_error("the %s look has no rule for %s", look, rule);
+
+			g_hash_table_add(seen, g_strdup(names[i]));
+		}
+
+		cursor = close;
+	}
+
+	return g_hash_table_size(seen);
+}
+
+/*
+ * Both looks style every class the arbitrage pages draw. The looks share
+ * class names and each is written separately, so a rule added to one
+ * and forgotten in the other leaves a page unstyled in that look only,
+ * which no other test would see.
+ */
+static void
+test_looks(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const looks[] = { "industrial", "classic", NULL };
+	static const gchar *const paths[] = {
+		"/arbitrage?units=2&category_path=Herbs",
+		"/arbitrage/calc?calc=surebet&odds=2.1%2C+2.2&stake=100.00+USD",
+		NULL
+	};
+	guint i;
+	guint j;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_venues(fixture);
+
+	for (i = 0; NULL != looks[i]; i++)
+	{
+		guint checked = 0;
+
+		g_object_set(fixture->config, "ui-look", looks[i], NULL);
+
+		for (j = 0; NULL != paths[j]; j++)
+		{
+			g_autofree gchar *page = get_page(fixture, paths[j]);
+
+			checked += assert_arbitrage_classes_styled(page, looks[i]);
+		}
+
+		/* Tabs, tab, presets, filters, exports, table; calc, answer. */
+		g_assert_cmpuint(checked, >=, 8);
+	}
+}
+
 #define ADD(path, func) \
 	g_test_add("/arbitrage-scan/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -1859,11 +2053,13 @@ main(
 	ADD("started-events", test_started_events);
 	ADD("record-from-plan", test_record_from_plan);
 	ADD("export", test_export);
+	ADD("export-binary", test_export_binary);
 	ADD("presets", test_presets);
 	ADD("fee-model-on-venues", test_fee_model_on_venues);
 	ADD("plugin-strategy", test_plugin_strategy);
 	ADD("modules-off", test_modules_off);
 	ADD("pages", test_pages);
+	ADD("looks", test_looks);
 	ADD("reports", test_reports);
 	ADD("widget", test_widget);
 

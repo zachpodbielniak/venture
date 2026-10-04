@@ -100,10 +100,60 @@ arb_export_lookup(
 /* --- Writing values ---------------------------------------------------------- */
 
 /*
+ * Whether @text is a whole figure: an optional minus, digits with at most
+ * one point, and optionally one space and a currency code ("-1.50 USD").
+ * Only such a field may start with a minus unguarded; "-2+3+cmd|..." also
+ * starts with a minus and a digit, and a spreadsheet runs it.
+ */
+static gboolean
+arb_csv_is_figure(const gchar *text)
+{
+	const gchar *cursor;
+	gboolean point;
+	gboolean digits;
+
+	cursor = text;
+	point = FALSE;
+	digits = FALSE;
+
+	if ('-' == *cursor)
+		cursor++;
+
+	for (; ('\0' != *cursor) && (' ' != *cursor); cursor++)
+	{
+		if (g_ascii_isdigit(*cursor))
+			digits = TRUE;
+		else if (('.' == *cursor) && !point)
+			point = TRUE;
+		else
+			return FALSE;
+	}
+
+	if (!digits)
+		return FALSE;
+
+	if ('\0' == *cursor)
+		return TRUE;
+
+	/* One space, then a code: [A-Z][A-Z0-9_]*. */
+	cursor++;
+
+	if (!g_ascii_isupper(*cursor))
+		return FALSE;
+
+	for (cursor++; '\0' != *cursor; cursor++)
+		if (!g_ascii_isupper(*cursor) && !g_ascii_isdigit(*cursor) && ('_' != *cursor))
+			return FALSE;
+
+	return TRUE;
+}
+
+/*
  * One CSV field. Quoted when it holds a separator, a quote or a line
- * break; and a field a spreadsheet would read as a formula (=, +, -, @
- * first) gets a leading apostrophe, because an instrument's name is
- * whatever a data source said it was.
+ * break; and a field a spreadsheet would read as a formula (=, +, -, @,
+ * a tab or a carriage return first) gets a leading apostrophe, because an
+ * instrument's name is whatever a data source said it was. A negative
+ * figure is the one exception, and only when the whole field is one.
  */
 static void
 arb_csv_field(
@@ -121,8 +171,8 @@ arb_csv_field(
 	if (quote)
 		g_string_append_c(out, '"');
 
-	if ((NULL != strchr("=+-@", text[0])) && ('\0' != text[0]) &&
-	    !(g_ascii_isdigit(text[1]) && ('-' == text[0])))
+	if (('\0' != text[0]) && (NULL != strchr("=+-@\t\r", text[0])) &&
+	    !(('-' == text[0]) && arb_csv_is_figure(text)))
 		g_string_append_c(out, '\'');
 
 	for (cursor = text; '\0' != *cursor; cursor++)
@@ -557,6 +607,7 @@ venture_export_format_registry_add(
 	GError				**error
 ){
 	ArbExport *entry;
+	const gchar *cursor;
 
 	g_return_val_if_fail(VENTURE_IS_EXPORT_FORMAT_REGISTRY(self), FALSE);
 	g_return_val_if_fail(NULL != func, FALSE);
@@ -571,6 +622,18 @@ venture_export_format_registry_add(
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 			                    "An export format needs a content type and an extension");
 		return FALSE;
+	}
+
+	/* It becomes a response header verbatim; a line break in it would
+	 * be a header of the plugin's choosing. */
+	for (cursor = content_type; '\0' != *cursor; cursor++)
+	{
+		if (g_ascii_iscntrl(*cursor))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "Export format %s: the content type holds a control character", name);
+			return FALSE;
+		}
 	}
 
 	if (NULL != arb_export_lookup(self, name))
