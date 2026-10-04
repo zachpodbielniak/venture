@@ -2078,7 +2078,8 @@ identity; legacy clients omitting it remain outside the retry guarantee.
 
 For Lightsite user management, `GET /api/v1/account-authority` describes the
 credential's own principal. Match origin/workspace/organization and require
-`can_manage_sites: true`; a displayed current role alone cannot expand an old
+`can_manage_sites: true` (or `can_edit_sites` / `can_view_sites` for editing and
+reading); a displayed current role alone cannot expand an old
 token. A shared provisioning token does not identify a signed-in customer.
 See `docs/lightsite-accounts.org`. Staging Mailpit uses normal organization mail
 settings and the operator's explicit `mail.plaintext_endpoints` exception;

@@ -127,7 +127,7 @@ token. Lightsite must forward/use a credential belonging to the signed-in
 principal; this endpoint does not turn a Lightsite cookie into Venture identity.
 
 #+begin_src json
-{"origin":"https://venture.example","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","state":"active","user_id":7,"organizations":[{"organization_id":42,"role":"admin","can_manage_sites":true}]}
+{"origin":"https://venture.example","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","state":"active","user_id":7,"organizations":[{"organization_id":42,"role":"admin","can_manage_sites":true,"can_edit_sites":true,"can_view_sites":true}]}
 #+end_src
 
 Match the complete configured origin/workspace and the account's organization.
@@ -137,7 +137,12 @@ requires a write-capable credential and owner/admin membership both now and in t
 snapshot. A viewer token promoted later can report the new current role but
 still has =can_manage_sites: false=. A later demotion immediately removes
 management authority. Tokens omit organizations absent from their snapshot.
-Other roles receive no site-management permission from this API.
+=can_edit_sites= follows the same two-sided rule for owner, admin or editor:
+an editor may change a business's sites without managing them. A token minted
+while its user was a viewer keeps =can_edit_sites: false= after a promotion, and
+a global viewer credential never edits. =can_view_sites= is true for every
+listed organization: any active membership the credential carries may read its
+business's sites. Other roles receive no site-management permission from this API. What each flag allows is Lightsite's to decide.
 
 Only explicit active memberships in active, non-deleted organizations appear.
 Workspace/platform administration does not fabricate organization membership.

@@ -762,7 +762,7 @@ venture_tenant_service_account_authority(VentureTenantService *self, GError **er
 		g_autofree gchar *role_name = record_enum_nick(member, "role");
 		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, org);
 		gint role, captured;
-		gboolean active = FALSE, can_manage;
+		gboolean active = FALSE, can_manage, can_edit;
 		g_object_get(member, "role", &role, NULL);
 		captured = role;
 		if (snapshot != NULL) {
@@ -785,9 +785,16 @@ venture_tenant_service_account_authority(VentureTenantService *self, GError **er
 		can_manage = actor->role != VENTURE_USER_ROLE_VIEWER &&
 			(role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN) &&
 			(captured == VENTURE_ORGANIZATION_ROLE_OWNER || captured == VENTURE_ORGANIZATION_ROLE_ADMIN);
+		/* Editing a site goes with editing ordinary records, on the same two sides. */
+		can_edit = actor->role != VENTURE_USER_ROLE_VIEWER &&
+			(role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN || role == VENTURE_ORGANIZATION_ROLE_EDITOR) &&
+			(captured == VENTURE_ORGANIZATION_ROLE_OWNER || captured == VENTURE_ORGANIZATION_ROLE_ADMIN || captured == VENTURE_ORGANIZATION_ROLE_EDITOR);
 		json_object_set_int_member(entry, "organization_id", org);
 		json_object_set_string_member(entry, "role", role_name);
 		json_object_set_boolean_member(entry, "can_manage_sites", can_manage);
+		json_object_set_boolean_member(entry, "can_edit_sites", can_edit);
+		/* Every active membership the credential carries may read its business's sites. */
+		json_object_set_boolean_member(entry, "can_view_sites", TRUE);
 		json_array_add_object_element(organizations, g_steal_pointer(&entry));
 	}
 	json_object_set_string_member(object, "origin", self->origin);

@@ -687,7 +687,8 @@ See [[file:printing.org][receipt printers]] for deadlines and partial-delivery s
 
 =GET /api/v1/account-authority= returns the authenticated principal's hosted
 origin, workspace, user ID and explicit organization memberships. Consumers
-must use =can_manage_sites=, not the current role alone: the decision also
+must use =can_manage_sites=, =can_edit_sites= and =can_view_sites=, not the
+current role alone: each decision also
 limits bearer tokens to their captured authority. Responses are uncached and
 bounded; arbitrary-user lookup is not supported. See
 [[file:lightsite-accounts.org][Lightsite account validation]] for the full contract.
