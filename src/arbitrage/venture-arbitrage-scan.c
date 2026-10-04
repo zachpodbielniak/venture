@@ -2472,6 +2472,36 @@ venture_arbitrage_plan(
 	return venture_arbitrage_plan_legs(context, organization_id, found, actor, error);
 }
 
+/*
+ * The `record` action's parameters for the opportunity @key names: the
+ * plan, with the organization the action judges it in. Shared by
+ * recording and staging, so an approved proposal performs exactly what a
+ * direct record would have.
+ */
+static GHashTable *
+arb_opportunity_parameters(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	JsonObject		 *options,
+	const gchar		 *key,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(JsonObject) request = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	request = venture_arbitrage_plan(context, organization_id, options, key, actor, NULL, error);
+
+	if (NULL == request)
+		return NULL;
+
+	json_object_set_int_member(request, "organization_id", organization_id);
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, request);
+
+	return venture_action_parameters_from_json(node, error);
+}
+
 VentureEntity *
 venture_arbitrage_record_opportunity(
 	VentureContext		 *context,
@@ -2482,8 +2512,6 @@ venture_arbitrage_record_opportunity(
 	VentureUserRole		  role,
 	GError			**error
 ){
-	g_autoptr(JsonObject) request = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GHashTable) params = NULL;
 	VentureDatabase *database;
 
@@ -2492,26 +2520,64 @@ venture_arbitrage_record_opportunity(
 	if (organization_id <= 0)
 		organization_id = venture_context_get_default_organization_id(context);
 
-	request = venture_arbitrage_plan(context, organization_id, options, key, actor, NULL, error);
+	params = arb_opportunity_parameters(context, organization_id, options, key, actor, error);
 
-	if (NULL == request)
+	if (NULL == params)
 		return NULL;
 
 	/* The action, not the function: the organization's roles, a second
 	 * actor's approval and the action's own consent operation all
 	 * apply, exactly as when a person records a trade by hand. */
-	json_object_set_int_member(request, "organization_id", organization_id);
-	node = json_node_new(JSON_NODE_OBJECT);
-	json_node_set_object(node, request);
-	params = venture_action_parameters_from_json(node, error);
-
-	if (NULL == params)
-		return NULL;
-
 	database = venture_context_get_database(context);
 
 	return venture_action_registry_perform(venture_database_get_action_registry(database),
 	                                       "arbitrage_trade", 0, "record", params, actor, role, error);
+}
+
+VentureConfirmation *
+venture_arbitrage_stage_opportunity(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	JsonObject		 *options,
+	const gchar		 *key,
+	const VentureActor	 *actor,
+	VentureUserRole		  role,
+	const gchar		 *via,
+	GError			**error
+){
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(VentureEntity) placeholder = NULL;
+	VentureActionRegistry *registry;
+	VentureAction *action;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	if (organization_id <= 0)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	registry = venture_database_get_action_registry(venture_context_get_database(context));
+	action = venture_action_registry_lookup(registry, "arbitrage_trade", "record");
+
+	if (NULL == action)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Recording a trade is not available: the arbitrage module is off");
+		return NULL;
+	}
+
+	params = arb_opportunity_parameters(context, organization_id, options, key, actor, error);
+
+	if (NULL == params)
+		return NULL;
+
+	/* A type-level action's target is the ID-0 placeholder, exactly as
+	 * the generic action route stages one; the queue places it in the
+	 * organization the parameters name. */
+	placeholder = g_object_new(VENTURE_TYPE_ARBITRAGE_TRADE, NULL);
+
+	return venture_confirmation_store_stage_action(venture_context_get_confirmations(context), action,
+	                                               placeholder, params, actor, role,
+	                                               (NULL != via) ? via : "rest-api", error);
 }
 
 /* ==========================================================================

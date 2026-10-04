@@ -387,6 +387,8 @@ $(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
 # a real server: both binaries, and the docs it renders are the real ones.
 $(OUTDIR)/tests/test-docs: | $(OUTDIR)/venturectl $(OUTDIR)/venture
 $(OUTDIR)/tests/test-mfa: | $(OUTDIR)/venturectl
+# The trading verbs are driven as a person drives them: the real binary.
+$(OUTDIR)/tests/test-trading-cli: | $(OUTDIR)/venturectl
 # The Blizzard test loads the optional plugin by path; it is built first so
 # `make test-one T=test-plugin-blizzard` does not skip itself on a fresh tree.
 $(OUTDIR)/tests/test-plugin-blizzard: | $(OUTDIR)/plugins-optional/blizzard-auctions.so

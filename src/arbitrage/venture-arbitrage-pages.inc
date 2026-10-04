@@ -689,6 +689,7 @@ venture_arbitrage_web_record(
 	g_autofree gchar *key = NULL;
 	VentureActor actor;
 	gboolean api;
+	gboolean stage = FALSE;
 	HtmxResponse *gate;
 	HtmxResponse *redirect;
 
@@ -728,6 +729,40 @@ venture_arbitrage_web_record(
 
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
+
+	/* ?stage=1 proposes the trade rather than recording it, as every other
+	 * write route does; a stageable action reached only by an unstaged
+	 * route would make --stage a lie for the one write that names money
+	 * before anybody has looked at it. */
+	if (!venture_confirmation_parse_stage_flag(htmx_request_get_query_param(request, "stage"), &stage, &error))
+		return venture_web_error_response(error);
+
+	if (stage)
+	{
+		g_autoptr(JsonNode) staged = NULL;
+		VentureConfirmation *confirmation;
+		JsonObject *object;
+
+		confirmation = venture_arbitrage_stage_opportunity(self->context,
+		                                                   venture_web_active_organization(self, request),
+		                                                   options, key, &actor, principal->role,
+		                                                   "rest-api", &error);
+
+		if (NULL == confirmation)
+			return venture_web_error_response(error);
+
+		object = json_object_new();
+		json_object_set_string_member(object, "status", "awaiting_approval");
+		json_object_set_boolean_member(object, "staged", TRUE);
+		json_object_set_member(object, "confirmation", venture_confirmation_to_json(confirmation));
+		staged = json_node_new(JSON_NODE_OBJECT);
+		json_node_take_object(staged, object);
+
+		/* The page's form never asks for this; a proposal is answered
+		 * the way the action route answers one, whoever asked. */
+		return venture_web_json_response(staged, 202);
+	}
+
 	trade = venture_arbitrage_record_opportunity(self->context, venture_web_active_organization(self, request),
 	                                             options, key, &actor, principal->role, &error);
 
@@ -1022,6 +1057,12 @@ venture_arbitrage_web_calc(
 
 	calculator = mdw_param(request, "calc");
 	input = arw_options(htmx_request_get_query_params(request));
+
+	/* arw_options() drops `format` because on the scan pages it names an
+	 * export; here it is the odds format, and dropping it read "+200 100"
+	 * American odds as decimal ones whatever the form said. */
+	if (NULL != mdw_param(request, "format"))
+		json_object_set_string_member(input, "format", mdw_param(request, "format"));
 
 	if (NULL != calculator)
 		answer = venture_arbitrage_calculate(calculator, input, &error);

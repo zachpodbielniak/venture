@@ -943,6 +943,38 @@ venture_arbitrage_record_opportunity(
 	GError			**error
 );
 
+/**
+ * venture_arbitrage_stage_opportunity:
+ * @context: the wiring
+ * @organization_id: the trade's organization
+ * @options: (nullable): the question that found it
+ * @key: the opportunity's key
+ * @actor: (nullable): who proposes it
+ * @role: the proposer's role
+ * @via: (nullable): the surface it came through ("rest-api" when %NULL)
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Plans the opportunity as venture_arbitrage_record_opportunity() does and
+ * stages the `record` action with that plan instead of performing it:
+ * nothing reaches the books until a second person approves, and approval
+ * performs the same parameters. Planning promotes the venues and
+ * instruments the legs name (idempotent records of what the store saw),
+ * because the legs must name records; the trade and its legs wait.
+ *
+ * Returns: (transfer none) (nullable): the pending confirmation
+ */
+VentureConfirmation *
+venture_arbitrage_stage_opportunity(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	JsonObject		 *options,
+	const gchar		 *key,
+	const VentureActor	 *actor,
+	VentureUserRole		  role,
+	const gchar		 *via,
+	GError			**error
+);
+
 /* ==========================================================================
  * Export formats
  * ========================================================================== */

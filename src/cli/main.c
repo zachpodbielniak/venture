@@ -3756,6 +3756,10 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 	return 0;
 }
 
+/* After act and the market helpers: the arbitrage verbs hand their
+ * actions to act, and both draw their answers with the market tables. */
+#include "arbitrage/venture-arbitrage-cli.inc"
+#include "plugin/venture-plugin-cli.inc"
 #include "autojournal/venture-autojournal-cli.inc"
 #include "docs/venture-docs-cli.inc"
 #include "report/venture-report-pack-cli.inc"
@@ -3793,6 +3797,8 @@ main(
 	gboolean release_replace = FALSE;
 	gboolean release_prerelease = FALSE;
 	gboolean feeds_wait = FALSE;
+	g_autofree gchar *arbitrage_stake = NULL;
+	g_autofree gchar *export_output = NULL;
 	gint result;
 
 	const GOptionEntry entries[] = {
@@ -3809,7 +3815,8 @@ main(
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
-		  "create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing: propose the change for approval "
+		  "create/update/delete/act/dunning sweep/sequence enroll/lead convert/billing/"
+		  "arbitrage record|close|reopen|abandon|execute: propose the change for approval "
 		  "instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -3830,7 +3837,11 @@ main(
 		{ "wait", 0, 0, G_OPTION_ARG_NONE, &feeds_wait,
 		  "feeds sync: wait for the run and print it", NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
-		  "post backfill or billing: validate without retaining writes", NULL },
+		  "post backfill, billing or market alerts evaluate: validate without retaining writes", NULL },
+		{ "stake", 0, 0, G_OPTION_ARG_STRING, &arbitrage_stake,
+		  "arbitrage calc: the total or back stake, e.g. \"100.00 USD\"", "AMOUNT" },
+		{ "output", 'o', 0, G_OPTION_ARG_FILENAME, &export_output,
+		  "arbitrage export: write the file here instead of stdout", "FILE" },
 		/* One --from/--to pair serves every span-taking verb. Registering
 		 * it twice made GOption keep the first and leave the second
 		 * variable NULL, so support rollup refused a span the user had
@@ -3955,6 +3966,27 @@ main(
 		"                               product=ID); fallback=true reads observations\n"
 		"  market promote SOURCE_ID instrument|venue KEY\n"
 		"                               make a record of what a source's store saw\n"
+		"  market browse|deals|venues [name=value ...]\n"
+		"                               the Trading pages' answers: every row now,\n"
+		"                               deals under their group's price, venue index\n"
+		"  market instrument SOURCE_ID KEY [venue=KEY] [units=N]\n"
+		"                               one instrument everywhere; units= prices a bulk buy\n"
+		"  market watchlist [ID]        the lists, or one priced against its targets\n"
+		"  market alerts [evaluate RULE_ID [--dry-run]]\n"
+		"                               rules and recent hits; test a rule now\n"
+		"  market help                  every market verb, its options and examples\n"
+		"  arbitrage scan [STRATEGY] [option=value ...]\n"
+		"                               opportunities now: spread, deal, transform,\n"
+		"                               cover, back_lay or a plugin's\n"
+		"  arbitrage record ROW|KEY [STRATEGY] [option=value ...]\n"
+		"                               record a scan row as a planned trade; --stage\n"
+		"  arbitrage record name=N legs=JSON|@FILE  a trade from explicit legs; --stage\n"
+		"  arbitrage calc surebet|back-lay|flip ...  the calculators; --stake AMOUNT\n"
+		"  arbitrage export FORMAT [option=value ...] [-o FILE]\n"
+		"  arbitrage close|reopen|abandon TRADE_ID, arbitrage execute LEG_ID; --stage\n"
+		"  arbitrage registries         strategies, fee models, export formats\n"
+		"  arbitrage help               every arbitrage verb, its options and examples\n"
+		"  plugins [list]               loaded plugins, their runtime and what they provide\n"
 		"  commerce import [JSON]       import orders; JSON organization_id selects the account\n"
 		"  deal move ID STAGE [NOTE]     move a deal through its pipeline\n"
 		"  deal quote ID                create or revise a quote from the deal's lines\n"
@@ -4043,6 +4075,16 @@ main(
 		"  venturectl report arbitrage_scan strategy=spread group_key=eu min_profit=\"10.00 GOLD\" min_roi=15 top=20\n"
 		"  venturectl report craft_arbitrage recipe_id=4 units=10\n"
 		"  venturectl report watchlist watchlist_id=3\n"
+		"  venturectl feeds sync 1 --wait\n"
+		"  venturectl market deals group=eu min_value=\"10.00 GOLD\" max_pct=80 top=20\n"
+		"  venturectl market instrument 1 2589 units=200\n"
+		"  venturectl market alerts evaluate 7 --dry-run\n"
+		"  venturectl arbitrage scan spread group_key=eu min_profit=\"10.00 GOLD\" top=20\n"
+		"  venturectl arbitrage record 1 spread group_key=eu min_profit=\"10.00 GOLD\" top=20\n"
+		"  venturectl arbitrage calc surebet 2.10 2.05 --stake \"100.00 USD\"\n"
+		"  venturectl arbitrage export csv spread -o opportunities.csv\n"
+		"  venturectl --stage arbitrage close 4\n"
+		"  venturectl plugins list\n"
 		"  venturectl -f csv report receivables > aging.csv\n"
 		"  venturectl forge settings 1 < protected-settings.json\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"
@@ -4102,6 +4144,13 @@ main(
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
+	/* Refused rather than ignored, like --wait: each belongs to one verb. */
+	if (((NULL != arbitrage_stake) || (NULL != export_output)) && (0 != g_strcmp0(args[0], "arbitrage")))
+	{
+		g_printerr("venturectl: --stake belongs to arbitrage calc and -o to arbitrage export\n");
+		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+
 	if ((release_replace || release_prerelease) &&
 	    (0 != g_strcmp0(args[0], "release")))
 	{
@@ -4109,9 +4158,9 @@ main(
 		return 2;
 	}
 
-	if (dry_run && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "batch") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
+	if (dry_run && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "batch") != 0 && g_strcmp0(args[0], "market") != 0 && (g_strcmp0(args[0], "post") != 0 || g_strcmp0(args[1], "backfill") != 0))
 	{
-		g_printerr("venturectl: --dry-run requires post backfill, billing, recurring or batch\n");
+		g_printerr("venturectl: --dry-run requires post backfill, billing, recurring, batch or market alerts evaluate\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
@@ -4178,10 +4227,12 @@ main(
 	    (0 != g_strcmp0(args[0], "act")) &&
 	    (0 != g_strcmp0(args[0], "dunning")) &&
 	    (0 != g_strcmp0(args[0], "dedupe")) &&
+	    !((0 == g_strcmp0(args[0], "arbitrage")) && venture_cli_arbitrage_stages(args[1])) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
-		           "update, delete, act, dunning sweep, dedupe, journal post, sequence enroll, lead convert and billing. \"%s\" would ignore it.\n", args[0]);
+		           "update, delete, act, dunning sweep, dedupe, journal post, sequence enroll, lead convert, billing "
+		           "and arbitrage record|close|reopen|abandon|execute. \"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -4308,7 +4359,11 @@ main(
 	else if (0 == g_strcmp0(args[0], "feeds"))
 		result = venture_cli_command_feeds(&cli, args, feeds_wait, &error);
 	else if (0 == g_strcmp0(args[0], "market"))
-		result = venture_cli_command_market(&cli, args, &error);
+		result = venture_cli_command_market(&cli, args, dry_run, &error);
+	else if (0 == g_strcmp0(args[0], "arbitrage"))
+		result = venture_cli_command_arbitrage(&cli, args, arbitrage_stake, export_output, &error);
+	else if (0 == g_strcmp0(args[0], "plugins"))
+		result = venture_cli_command_plugins(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "commerce"))
 		result = venture_cli_command_commerce(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "deal"))

@@ -389,6 +389,8 @@ An =arbitrage_strategy= record is a saved question: =name=, =strategy=, =data_so
 
 Each opportunity carries a =key= (unique within its strategy's answer), a =narrow= mapping (the options that find it again cheaply: its instrument, recipe or event) and =legs= in store terms: kind, source, venue key, instrument key, quantity, unit price, amount, fees. "Record attempt" -- the page's button, =POST /api/v1/arbitrage/record= with the question and the key, or =venture_arbitrage_record_opportunity()= -- runs the question again with =top= at its most, finds the key, and asks the strategy's plan for the =record= request. The default plan (=venture_arbitrage_plan_legs()=) promotes each leg's venue and instrument to records (idempotent; a deleted one is restored), writes every leg =planned= in its venue's currency, and fills =expected= with the profit (as a money string the performance report reads), capital, ROI, confidence, data age and key. The request goes through the =record= action, so the organization's roles, a second actor's approval and the action's consent operation apply as they do by hand. A blank opportunity cannot be planned.
 
+=POST /api/v1/arbitrage/record?stage=1= (and =venture_arbitrage_stage_opportunity()=) plans the same way and stages the =record= action with the plan instead of performing it: the answer is =202= with the pending confirmation, exactly as the generic action route answers a staged action, and approval performs the same parameters. Planning still promotes the venues and instruments the legs name -- a leg must name a record, and promotion is idempotent -- but the trade and its legs wait for the approval.
+
 | Strategy   | Legs                                                                         |
 |------------+------------------------------------------------------------------------------|
 | =spread=, =deal= | buy at the buy venue; sell at the sell venue with its fees; a fee for each venue's transfer cost when the lot moves |
@@ -405,7 +407,7 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 
 ** Calculators
 
-=/arbitrage/calc= answers three questions on the server, from forms that work without scripting, and =/api/v1/arbitrage/calc?calc=...= returns the same JSON (=venture_arbitrage_calculate()=). An amount with no currency is in the install's default.
+=/arbitrage/calc= answers three questions on the server, from forms that work without scripting, and =/api/v1/arbitrage/calc?calc=...= returns the same JSON (=venture_arbitrage_calculate()=). An amount with no currency is in the install's default. =format= is the odds format here; the scan's routes drop a =format= field (on them it names an export), so the calculator route passes it on by name -- it was once dropped there too, and "+200 100" read as decimal odds whatever the form said.
 
 | Calculator | Fields                                                                                                   | Answers                                                                     |
 |------------+----------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------|
@@ -422,12 +424,16 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 | =GET /arbitrage/export=                | =format= and the question; a download                                                      |
 | =GET /arbitrage/calc=                  | the three calculators                                                                      |
 | =GET /api/v1/arbitrage/scan=           | the scan's JSON                                                                            |
-| =POST /api/v1/arbitrage/record=        | ={...question, "key": "..."}=; 201 with the trade                                          |
+| =POST /api/v1/arbitrage/record=        | ={...question, "key": "..."}=; 201 with the trade; =?stage=1=: 202 with the confirmation    |
 | =GET /api/v1/arbitrage/export=         | as the page                                                                                |
 | =GET /api/v1/arbitrage/calc=           | =calc= and the fields; the calculator's JSON                                              |
 | =GET /api/v1/arbitrage/registries=     | the registered strategies, fee models, export formats and option names                     |
 
 Every route checks its own session or token and the =arbitrage= module. The scan and the export read data sources (=data_source= at viewer); recording writes trades (=arbitrage_trade= at editor, and the action's own organization roles); the calculators and the registries need a viewer of presets. The =/api/v1/arbitrage= routes are registered before the generic =/api/v1/:type= routes, which would otherwise read =arbitrage= as a type.
+
+** From the command line
+
+=venturectl arbitrage= is a thin client of these routes and of the actions: =scan [STRATEGY] [option=value ...]= (the table numbers its rows), =record ROW|KEY [STRATEGY] [option=value ...]= (the same question plus the row's key and =narrow=, posted to the record route), =record name=... legs=JSON|@FILE= and =close|reopen|abandon TRADE_ID=, =execute LEG_ID= (the =act= verb, typed from each action's schema), =calc surebet|back-lay|flip= (=--stake AMOUNT=), =export FORMAT [-o FILE]= and =registries=. Every writing verb takes =--stage=. The scan's routes answer for the active organization, so the CLI refuses =organization_id= (and =venture_id=, =as_of=, =key=, =format=) rather than let the route ignore it; =report arbitrage_scan organization_id=N= asks for another organization. See [[file:cli.org][venturectl]].
 
 ** Reports
 
@@ -645,6 +651,9 @@ JsonObject *venture_arbitrage_plan_legs(VentureContext *context, gint64 organiza
 VentureEntity *venture_arbitrage_record_opportunity(VentureContext *context,
     gint64 organization_id, JsonObject *options, const gchar *key, const VentureActor *actor,
     VentureUserRole role, GError **error);
+VentureConfirmation *venture_arbitrage_stage_opportunity(VentureContext *context,
+    gint64 organization_id, JsonObject *options, const gchar *key, const VentureActor *actor,
+    VentureUserRole role, const gchar *via, GError **error);
 JsonNode *venture_arbitrage_calculate(const gchar *calculator, JsonObject *input, GError **error);
 
 /* What a strategy's scan function is handed. */
@@ -690,6 +699,7 @@ gdouble venture_arbitrage_confidence(const VentureArbitrageEvidence *evidence);
 - *Never compare or add a scan's amounts across currencies.* Convert through =venture_arbitrage_scan_convert()= (the =exchange_rate= table) or skip with a note; a sort by profit groups by currency first.
 - *Never read an unquoted price or fee as zero.* Blank the row and name it in =missing=; a blank row has no plan.
 - *Never record an opportunity by any path but its plan and the =record= action.* A plan is made from a fresh run of the question, so what is recorded is what the data says now.
+- *A route that drops or ignores a field must not be reached with it.* The scan's routes drop =key= and =format= and ignore =organization_id=, =venture_id= and =as_of=; the calculator reads =format= by name, and the CLI refuses the others by name rather than send a question the route will answer differently.
 - *Every scan option is a report option.* A new one goes into the option table in =venture-arbitrage-scan.c=, the =arbitrage_scan= schema, and all five doors in the same commit.
 - *A fee model or strategy name is judged when written, never when kept,* and only while the module is on.
 - *Bound every read a strategy makes.* Choose candidates by an indexed query with a limit; never walk a region's rows.

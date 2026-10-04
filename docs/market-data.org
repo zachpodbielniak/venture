@@ -539,6 +539,7 @@ series:<basis>[@<venue key or group>]
 - =GET /api/v1/market/quote= (viewers): =instrument_id= or =product_id=, =venue_id= or =where=, =basis=, =at=, =currency=, =prefer_currency=, =fallback= (=true=), =source=. Answers ={"basis", "found", "price" (money or null), "value" (number or null), "evidence"}=.
 - =POST /api/v1/market/promote= (editors), above.
 - =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]= and =venturectl market promote=.
+- =venturectl market browse|deals|venues|instrument|watchlist|alerts=, the Trading pages' twins (see /Browsing: the Trading pages/).
 - The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. The Trading pages (see /Browsing: the Trading pages/) browse the stores and price the watchlists.
 - All of it is gone with the module off: the routes answer 404, the types are hidden.
 
@@ -638,6 +639,7 @@ alerts->on_created where event->type == "alert_hit"
 
 - The records through the generic routes and =venturectl list|get|create|update|delete alert_rule= (and =list|get alert_hit=); =venturectl act alert_rule ID evaluate [record=true]=.
 - =/market/alerts= lists the recent hits and the rules, with an /Evaluate now/ button per rule (=POST /market/alerts/ID/evaluate=, editors; it records, as a run would); its twins are =GET /api/v1/market/alerts= and =POST /api/v1/market/alerts/ID/evaluate= (=?record=false= for a dry run). The =market_alerts= dashboard widget shows the latest hits.
+- =venturectl market alerts [count=N]= (the rules and the hits) and =venturectl market alerts evaluate RULE_ID [--dry-run]= (=--dry-run= sends =record=false=; without it the hits are written under the cooldown).
 
 * Browsing: the Trading pages
 
@@ -748,6 +750,21 @@ Three reports read the same answers, through every door (the report API, the rep
 | =watchlist= | =watchlist_id= (required) |
 
 Each also takes =organization_id=. They read the stores as they are now; the period does not narrow them, and a note says so. Their parameter schemas are what a dashboard =report= widget forwards options through (={"group_key": "eu", "top": 10}= on a =market_deals= card).
+
+** From the command line
+
+Each page's twin has a =venturectl market= verb that asks it under the page's own query names, typed before anything is sent (=page=two= is refused, not read as page one):
+
+| Verb | Route | Options |
+|------+-------+---------|
+| =market browse= | =/api/v1/market/browse= | =source=, =search=, =category=, =venue=, =group=, =stock= (true/false), =sort=, =dir= (asc/desc), =page=, =per_page= |
+| =market deals= | =/api/v1/market/deals= | =source=, =venue=, =group=, =category=, =min_value= ("10.00 GOLD"), =max_pct=, =top= |
+| =market venues= | =/api/v1/market/venues= | =source=, =group= |
+| =market instrument SOURCE_ID KEY= | =/api/v1/market/i/SOURCE/KEY= | =venue=, =units= (a bulk buy priced) |
+| =market watchlist [ID]= | =/api/v1/market/watchlists[/ID]= | |
+| =market alerts [evaluate RULE_ID [--dry-run]]= | =/api/v1/market/alerts=, =POST .../alerts/ID/evaluate= | =count= |
+
+=data_source_id=, =group_key= and =category_path= are accepted for =source=, =group= and =category=, so an option that works on the report works here. They answer for the active organization (a token's is the default one). See [[file:cli.org][venturectl]].
 
 ** Widgets
 

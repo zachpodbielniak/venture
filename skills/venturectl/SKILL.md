@@ -133,6 +133,21 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `feeds due` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
 | `market quote ID [basis=B] [venue=KEY\|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]` | the price oracle for an `instrument` ID (or `product=ID` instead of ID): `{basis, found, price, value, evidence}`. Bases: `market` (default), `min`, `market_14d`, `historical_60d`, `region_median`, `region_p33`, `region_market_avg`, `sale_avg`, and the numbers `sale_rate`, `sold_per_day`, `quantity` (in `value`) |
 | `market promote SOURCE_ID instrument\|venue KEY` | make (or find, or restore) the record for a venue or instrument a data source's store has seen |
+| `market browse [source=N] [search=T] [category=PATH] [venue=KEY] [group=G] [stock=true] [sort=COL] [dir=asc\|desc] [page=N] [per_page=N]` | every store row now, as `/market/browse` shows it (`rows`) |
+| `market deals [source=N] [venue=KEY] [group=G] [category=PATH] [min_value="10.00 GOLD"] [max_pct=80] [top=N]` | in stock at or under the group's deal price (`rows`) |
+| `market venues [source=N] [group=G]` | the venue index: cheaper/equal/dearer than the region, update interval, data age (`venues`) |
+| `market instrument SOURCE_ID KEY [venue=KEY] [units=N]` | one instrument: its figures, every venue's row, history; `units=` prices a bulk buy (`bulk`) |
+| `market watchlist [ID]` | the watchlists, or one priced now against its targets (`entries`) |
+| `market alerts [count=N]` | the alert rules and the recent hits |
+| `market alerts evaluate RULE_ID [--dry-run]` | what the rule fires now; **writes the hits** (under the cooldown) unless `--dry-run` |
+| `arbitrage scan [STRATEGY] [option=value ...]` | opportunities now (`rows`; the table numbers them); options are the `arbitrage_scan` report's |
+| `arbitrage record ROW\|KEY [STRATEGY] [option=value ...]` | record scan row ROW (same options) or KEY as a planned trade; `--stage` proposes it |
+| `arbitrage record name=N legs=JSON\|@FILE [strategy=S] [venture_id=N] [expected=JSON\|@FILE] [notes=T] [organization_id=N]` | a trade from explicit legs (the `record` action); `--stage` |
+| `arbitrage calc surebet ODDS... --stake AMOUNT`, `calc back-lay BACK LAY --stake AMOUNT [commission=PCT]`, `calc flip BUY SELL [units=N] [cut=PCT] ...` | the calculators, on the server |
+| `arbitrage export FORMAT [STRATEGY] [option=value ...] [-o FILE]` | the scan as a registered export (`csv`, `shopping_list`, a plugin's) |
+| `arbitrage close\|reopen\|abandon TRADE_ID [...]`, `arbitrage execute LEG_ID [occurred_at=T]` | the trade and leg actions, typed from their schemas; `--stage` |
+| `arbitrage registries` | registered strategies, fee models, export formats and scan options |
+| `plugins [list]` | loaded plugins: kind, runtime, what each provides (owner only) |
 | `ticket ID sla` | a ticket's service-level clocks: state and seconds remaining for first reply and resolution |
 | `ticket ID macro NAME` | apply a macro (canned reply plus field changes) — not stageable |
 | `ticket ID worklog HOURS [NOTE]` | log time; the ticket's `logged_hours` follows |
@@ -165,7 +180,12 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `mcp [--apply-writes]` | serve the API to an AI agent as a stdio MCP server |
 
 Flags: `--server/-s`, `--token/-t`, `--session-file FILE`, `--format/-f table|json|yaml|csv`,
-`--quiet/-q`.
+`--quiet/-q`. One-verb flags are refused anywhere else: `--wait` (feeds sync),
+`--dry-run` (post backfill, billing, recurring, batch, market alerts
+evaluate), `--stake AMOUNT` (arbitrage calc), `-o/--output FILE` (arbitrage
+export), `--stage` (the writes that honour it; `act` checks the action is
+stageable). `venturectl market help` and `venturectl arbitrage help` print
+every verb of the group with options and examples.
 
 `mcp` is the one command that refuses `--token`: it is spawned from an agent's
 config file, and a credential written there is visible in `ps` to every
@@ -1053,6 +1073,37 @@ needs an administrator: it decides which outside host the server calls.
   Without `create_products` recipes whose items have no product are
   skipped, and say which.
 
+Traps across feeds, market and arbitrage, in the order they bite:
+
+- **Wire names use underscores**, and `describe` is the truth:
+  `data_source_id`, `group_key` (not `group`), `venue_namespace`,
+  `instrument_namespace`, `fee_model`, `fee_params`, `transfer_cost`,
+  `threshold_number`, `cooldown_minutes`, `buy_venues`, `trade_id`. A
+  dashed key in a body is ignored field by field. (The `market` verbs take
+  the *pages'* query names `source`/`group`/`category`, and the report
+  spellings too.)
+- **Money names its currency** wherever a bound or a stake is asked for:
+  `min_value="10.00 GOLD"`, `min_profit=`, `max_capital=`,
+  `total_stake=`, `--stake "100.00 USD"`. A bare amount there is refused,
+  never read as dollars. Ratios are plain percent strings (`min_roi=15`,
+  `max_pct=80`); `min_confidence` is a 0-1 fraction. A leg's bare
+  `amount=100` is the exception: it is read in its venue's currency.
+- **`series:` is a price source, not a record source.**
+  `price_source=series:min@realm-a` prices from the stores; an
+  observation's `source` may not start with `series:`; a number basis
+  (`quantity`, `sale_rate`) is refused as a price.
+- **`track: known`** (`create data_source ... track=known`) stores only
+  the instruments in the settings' `instruments` list and the `instrument`
+  records filed under the source -- promote or create the instrument
+  first, or a feed run stores nothing for it.
+- **Exec plugins need `plugins.allow_exec: true`** (operator config,
+  default off): with it off an exec plugin does not load at all -- it is
+  missing from `plugins list` and its provider name is unknown -- and a
+  source frozen while it was off fails its sync saying so. Nothing from
+  the CLI turns it on.
+- Feeds are off by default (`feeds.enabled`); the market and arbitrage
+  verbs then answer `available: false` with a note, not an error.
+
 ### Market data records and the price oracle
 
 The `marketdata` module (on by default; needs `market`) has `venue`,
@@ -1115,13 +1166,25 @@ The Trading pages have JSON twins, and three reports read the same answers:
 - The period does not narrow any of them: they read the stores as they are.
 - With feeds off they answer with no rows and a note ("No data sources"),
   not an error. Another organization's source or list is NOT_FOUND (exit 3).
-- For anything else the pages show, `GET /api/v1/market/browse`,
-  `/api/v1/market/i/SOURCE/KEY`, `/api/v1/market/deals`,
-  `/api/v1/market/venues`, `/api/v1/market/watchlists[/ID]` and
-  `/api/v1/market/alerts` answer JSON; browse sorts only by
+- The pages themselves have verbs: `market browse|deals|venues|instrument|
+  watchlist|alerts` (table above). They take the **page's** query names --
+  `source`, `group`, `category` -- and also the report spellings
+  `data_source_id`, `group_key`, `category_path`. Each option is typed
+  before anything is sent: `page=two`, `stock=maybe`, `dir=sideways`, an
+  unknown name (`limit=5`) are exit 2. `browse` sorts only by
   `min_price, quantity, market_value, region_median, pct_vs_region,
   sale_rate, sold_per_day, deal_price, listings, name, updated, venue`
-  (anything else is a 400).
+  (anything else is a 400, exit 2).
+- They answer for the **active organization** -- with a token, the default
+  one. For another organization's figures use the reports with
+  `organization_id=N`.
+- `market instrument SOURCE_ID KEY`: KEY is the store key (`herb`,
+  `2589:b1234`), not an instrument record id; a key with `/` is fine.
+- `market alerts evaluate RULE_ID` **writes** hits (cooldown applies, a
+  webhook and the inbox fire); add `--dry-run` to only look. Neither is
+  stageable, and `--stage` is refused.
+- Tables show money with its currency and leave a missing figure blank;
+  `-f json` is the whole answer (notes, echoes), `-f csv` the rows.
 
 ## Organization sign-in
 
@@ -1898,12 +1961,37 @@ Finding opportunities (read-only until recorded):
 - Presets are `arbitrage_strategy` records (`name`, `strategy`,
   `data_source_id`, `buy_venues`, `sell_venues`, `options` as YAML of the
   other filters); the save refuses a misspelt filter.
-- To record one, `POST /api/v1/arbitrage/record` with the same options plus
-  the row's `key` (and its `narrow` members): the server re-runs the scan
-  and performs `record` with the plan — a moved opportunity is a 404 "no
-  longer there". `GET /api/v1/arbitrage/calc?calc=surebet|back_lay|flip`
-  is the calculators; `/api/v1/arbitrage/registries` lists strategies,
-  fee models and export formats.
+- `arbitrage scan STRATEGY [option=value ...]` asks the same question
+  through `/api/v1/arbitrage/scan`; the table numbers its rows.
+  `arbitrage record N STRATEGY [same options]` records row N: the CLI
+  re-asks the question, takes the row's `key` and `narrow`, and the server
+  re-runs the scan and performs `record` with the plan — a moved
+  opportunity is exit 3 "no longer there", a row number past the end is
+  exit 3 too. **Pass exactly the options the scan had**, or row N is a
+  different row. `arbitrage record KEY [options]` takes a key from
+  `-f json` output instead. `--stage` proposes it (202 + confirmation);
+  planning still promotes the legs' venues and instruments.
+- The scan verbs **refuse `organization_id`** (and `venture_id`, `as_of`,
+  `key`, `format`): the routes answer for the active organization and
+  would ignore it. Use `report arbitrage_scan organization_id=N` to scan
+  another organization, and `arbitrage record name=... legs=...
+  organization_id=N` to record there.
+- `arbitrage record name=... legs=JSON|@FILE` is the `record` action with
+  typed arguments (`legs=@legs.json` reads a file; `expected=@FILE` too).
+  `arbitrage close|reopen|abandon TRADE_ID` and `arbitrage execute LEG_ID`
+  are the actions (`closed_at`, `goods=keep|write_off`, `abandoned_at`,
+  `occurred_at`); an unknown parameter is exit 2. All five take `--stage`.
+- `arbitrage calc surebet 2.10 2.05 --stake "100.00 USD"` (odds as bare
+  words; a negative American price would read as a flag, so write
+  `odds="+150 -120" format=american`), `calc back-lay BACK LAY --stake X
+  [commission=5] [back_commission=0]`, `calc flip BUY SELL [units=N]
+  [cut=5] [fixed=AMOUNT] [deposit=15] [refundable=true] [sale_rate=40]
+  [sold_per_day=12] [share=100] [transfer=AMOUNT] [transit_hours=0]`.
+  Stakes are rounded to the currency's minor unit; `residual` is what the
+  rounding left over.
+- `arbitrage export csv|shopping_list|<plugin's> [STRATEGY] [options] [-o FILE]`;
+  `arbitrage registries` lists strategies, fee models, export formats and
+  the scan's option names.
 - A venue's `fee_model` (`percent`, `commission`, `none`, or a plugin's)
   and `fee_params` YAML are checked when written: `percent` takes
   `cut_percent`, `fixed_per_unit`, `fixed_per_order`, `min_fee`,
@@ -1913,7 +2001,25 @@ Finding opportunities (read-only until recorded):
 ```sh
 venturectl report arbitrage_scan strategy=spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
 venturectl report craft_arbitrage recipe_id=4 units=10
+venturectl arbitrage scan spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
+venturectl arbitrage record 1 spread group_key=eu min_profit="10.00 GOLD" min_roi=15 top=20
+venturectl --stage arbitrage record name="Peacebloom flip" strategy=spread legs=@legs.json organization_id=1
+venturectl arbitrage execute 12 occurred_at=2026-03-05T10:00:00Z
+venturectl arbitrage close 4
+venturectl arbitrage calc surebet 2.10 2.05 --stake "100.00 USD"
+venturectl arbitrage export shopping_list transform recipe_id=4 units=10 -o list.txt
 ```
+
+### Plugins
+
+`venturectl plugins list` (owner only; the answer names server paths)
+shows each loaded plugin's `name`, `kind`, `runtime` (`native`, `crispy`,
+`exec`, `declarative` for a venture-type YAML) and `provides` (`data_source_provider`,
+`automation_handler`). An exec plugin runs only with the operator's
+`plugins.allow_exec: true`; a provider it registers is then an ordinary
+`data_source` `provider`. "No plugins are loaded." is an answer, not an
+error. Strategies, fee models and export formats plugins add appear in
+`arbitrage registries`.
 
 ## Goals: targets, steps and the shopping list
 

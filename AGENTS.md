@@ -319,6 +319,16 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   organization's roles, second-actor approval and consent apply. Never
   record from a JSON opportunity a client posted; a moved one is
   NOT_FOUND "no longer there".
+  Staging (`?stage=1`, `venture_arbitrage_stage_opportunity()`) shares
+  the parameter building, so approval performs exactly the plan a direct
+  record would have; it still promotes the legs' venues and instruments.
+- **The scan routes drop `key` and `format` and ignore
+  `organization_id`, `venture_id`, `as_of`.** Anything sending a question
+  must not rely on them: `venturectl arbitrage` refuses them by name, and
+  the calculator route passes `format` (the odds format) on explicitly --
+  dropping it read American odds as decimal. The routes answer for the
+  active organization; another organization is `report arbitrage_scan
+  organization_id=N` or an explicit `record ... organization_id=N`.
 - **The option table in `venture-arbitrage-scan.c` is the one list of scan
   options, and every one is a report option.** A new option goes there,
   into the `arbitrage_scan` schema, and through all five doors in the
