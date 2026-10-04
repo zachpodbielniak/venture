@@ -832,6 +832,22 @@ venture_data_source_provider_registry_add(
 );
 
 /**
+ * venture_data_source_provider_registry_remove:
+ * @self: a registry
+ * @name: (nullable): a provider's name
+ *
+ * Takes a provider back out. A plugin whose load fails has every name it added removed again (see venture_plugin_manager_load_file()). A source naming it then fails its next
+ * freeze with "no data source provider named ...".
+ *
+ * Returns: %TRUE when there was one to remove
+ */
+gboolean
+venture_data_source_provider_registry_remove(
+	VentureDataSourceProviderRegistry	*self,
+	const gchar				*name
+);
+
+/**
  * venture_data_source_provider_registry_lookup:
  * @self: a registry
  * @name: (nullable): a provider's name

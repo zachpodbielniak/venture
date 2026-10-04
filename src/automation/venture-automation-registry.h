@@ -118,6 +118,22 @@ venture_automation_handler_registry_add(
 );
 
 /**
+ * venture_automation_handler_registry_remove:
+ * @self: a #VentureAutomationHandlerRegistry
+ * @name: (nullable): a handler's name
+ *
+ * Takes a handler back out. A plugin whose load fails has every name it added removed again (see venture_plugin_manager_load_file()). A rule naming it is refused at its next
+ * call, as one naming a handler that never existed is.
+ *
+ * Returns: %TRUE when there was one to remove
+ */
+gboolean
+venture_automation_handler_registry_remove(
+	VentureAutomationHandlerRegistry	*self,
+	const gchar				*name
+);
+
+/**
  * venture_automation_handler_registry_has:
  * @self: a #VentureAutomationHandlerRegistry
  * @name: (nullable): a handler name

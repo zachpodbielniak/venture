@@ -1058,6 +1058,285 @@ test_provides_dispatched_to_registered_kind(
 	g_ptr_array_unref(probe.names);
 }
 
+/*
+ * A manifest's provides are all or nothing. Every entry is judged before
+ * any is registered, so a plugin whose third entry is malformed leaves
+ * neither its provider nor its handler behind; and two entries naming
+ * the same provider -- which judging one at a time cannot see -- take the
+ * first back when the second is refused. The names are free again for a
+ * plugin that loads.
+ *
+ * What breaks if this regresses: a plugin reported as not loaded still
+ * offers a data source provider or an automation handler whose program
+ * the manager has withdrawn, and the next plugin that wants the name is
+ * refused as a duplicate of something that never loaded.
+ */
+static void
+test_provides_all_or_nothing(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *malformed = NULL;
+	g_autofree gchar *twice = NULL;
+	g_autofree gchar *good = NULL;
+	VentureDataSourceProviderRegistry *providers;
+	VentureAutomationHandlerRegistry *handlers;
+
+	(void)user_data;
+
+	allow_exec(fixture, TRUE);
+	providers = venture_context_get_data_source_providers(fixture->context);
+	handlers = venture_context_get_automation_handlers(fixture->context);
+
+	malformed = write_exec_plugin(fixture, "malformed", "echo", NULL,
+	                              "provides:\n"
+	                              "  - kind: data_source_provider\n    name: whole_feed\n"
+	                              "  - kind: automation_handler\n    name: whole_step\n"
+	                              "  - kind: data_source_provider\n    name: Not A Name\n");
+	g_assert_false(venture_plugin_manager_load_file(fixture->manager, malformed, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+	g_clear_error(&error);
+	g_assert_null(venture_data_source_provider_registry_lookup(providers, "whole_feed"));
+	g_assert_false(venture_automation_handler_registry_has(handlers, "whole_step"));
+
+	twice = write_exec_plugin(fixture, "twice", "echo", NULL,
+	                          "provides:\n"
+	                          "  - kind: data_source_provider\n    name: twice_feed\n"
+	                          "  - kind: data_source_provider\n    name: twice_feed\n");
+	g_assert_false(venture_plugin_manager_load_file(fixture->manager, twice, &error));
+	g_assert_nonnull(strstr(error->message, "already registered"));
+	g_clear_error(&error);
+	g_assert_null(venture_data_source_provider_registry_lookup(providers, "twice_feed"));
+	g_assert_null(venture_plugin_manager_lookup_exec(fixture->manager, "twice"));
+
+	good = write_exec_plugin(fixture, "whole", "echo", NULL,
+	                         "provides:\n"
+	                         "  - kind: data_source_provider\n    name: whole_feed\n"
+	                         "  - kind: automation_handler\n    name: whole_step\n");
+	g_assert_true(venture_plugin_manager_load_file(fixture->manager, good, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(venture_data_source_provider_registry_lookup(providers, "whole_feed"));
+	g_assert_true(venture_automation_handler_registry_has(handlers, "whole_step"));
+}
+
+/* --- A plugin whose register function fails ------------------------------ */
+
+static gboolean
+rollback_fee(
+	JsonObject		 *params,
+	VentureFeeSide		  side,
+	const VentureMoney	 *amount,
+	gint64			  units,
+	const VentureMoney	 *reference,
+	JsonObject		 *attrs,
+	VentureFeeQuote		 *out,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)params; (void)side; (void)amount; (void)units; (void)reference;
+	(void)attrs; (void)out; (void)user_data; (void)error;
+	return TRUE;
+}
+
+static GBytes *
+rollback_export(
+	JsonArray	 *rows,
+	JsonObject	 *options,
+	gpointer	  user_data,
+	GError		**error
+){
+	(void)rows; (void)options; (void)user_data; (void)error;
+	return g_bytes_new_static("", 0);
+}
+
+static gboolean
+rollback_handler(
+	VentureContext	 *context,
+	const gchar	 *name,
+	GVariant	 *params,
+	GVariant	**result,
+	gpointer	  user_data,
+	GError		**error
+){
+	(void)context; (void)name; (void)params; (void)result; (void)user_data; (void)error;
+	return TRUE;
+}
+
+static VentureFeedBatch *
+rollback_fetch(
+	VentureFeedRequest	 *request,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)request;
+	(void)user_data;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN, "never fetched");
+	return NULL;
+}
+
+static gboolean
+rollback_web(
+	VentureWebServer	 *server,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)server; (void)user_data; (void)error;
+	return TRUE;
+}
+
+static gboolean
+rollback_kind(
+	VenturePluginManager	 *manager,
+	VenturePluginManifest	 *manifest,
+	JsonObject		 *entry,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)manager; (void)manifest; (void)entry; (void)user_data; (void)error;
+	return TRUE;
+}
+
+/*
+ * What a native plugin's venture_plugin_register() does, from a runtime's
+ * load: register a fee model, an export format, an automation handler, a
+ * data source provider, a provides kind, a web extension and a runtime;
+ * then, for a .fail file, load another plugin through that runtime from
+ * inside this load, and refuse.
+ */
+static gboolean
+rollback_load(
+	VenturePluginManager	 *manager,
+	VentureContext		 *context,
+	const gchar		 *path,
+	VenturePluginManifest	 *manifest,
+	VenturePluginRecord	 *record,
+	gpointer		  user_data,
+	GError			**error
+){
+	static const gchar *const inner_extensions[] = { ".inner", NULL };
+	g_autoptr(VentureDataSourceProvider) provider = NULL;
+	g_autoptr(VenturePluginRuntime) inner = NULL;
+
+	(void)manifest;
+	(void)record;
+	(void)user_data;
+
+	if (g_str_has_suffix(path, ".inner"))
+	{
+		venture_context_add_web_extension(context, rollback_web, NULL, NULL);
+
+		return venture_automation_handler_registry_add(
+			venture_context_get_automation_handlers(context), "inner_step", NULL,
+			rollback_handler, NULL, NULL, error);
+	}
+
+	g_assert_true(venture_fee_model_registry_add(venture_context_get_fee_models(context),
+		"rollback_fee", NULL, rollback_fee, NULL, NULL, NULL, NULL));
+	g_assert_true(venture_export_format_registry_add(venture_context_get_export_formats(context),
+		"rollback_fmt", "Rollback", "text/plain", "txt", rollback_export, NULL, NULL, NULL));
+	g_assert_true(venture_automation_handler_registry_add(
+		venture_context_get_automation_handlers(context), "rollback_step", NULL,
+		rollback_handler, NULL, NULL, NULL));
+	provider = venture_func_data_source_provider_new("rollback_feed", NULL, NULL,
+	                                                 rollback_fetch, NULL, NULL);
+	g_assert_true(venture_data_source_provider_registry_add(
+		venture_context_get_data_source_providers(context), provider, NULL));
+	g_assert_true(venture_plugin_provides_registry_add(venture_context_get_plugin_provides(context),
+		"rollback_kind", NULL, rollback_kind, NULL, NULL, NULL));
+	venture_context_add_web_extension(context, rollback_web, NULL, NULL);
+	inner = venture_func_plugin_runtime_new("inner", inner_extensions, rollback_load, NULL, NULL);
+	g_assert_true(venture_plugin_manager_add_runtime(manager, inner, NULL));
+
+	if (g_str_has_suffix(path, ".fail"))
+	{
+		g_autofree gchar *directory = g_path_get_dirname(path);
+		g_autofree gchar *nested = g_build_filename(directory, "nested.inner", NULL);
+
+		/* A plugin that loads another from its own register function:
+		 * the inner load succeeds, inside this one. */
+		g_assert_true(venture_plugin_manager_load_file(manager, nested, NULL));
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		            "%s refused to register after all", path);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * A plugin whose register function fails after registering takes nothing
+ * with it into the registries: every name it added is removed again and
+ * its web extension dropped, while what was there before (the built-in
+ * percent model, the csv format) stays. A plugin it loaded from inside
+ * its own load did load, and keeps what it registered.
+ *
+ * What breaks if this regresses: a scan offers a fee model, a page an
+ * export, a rule a handler, all from a plugin the server reports as not
+ * loaded; and a retried load is refused as a duplicate of itself.
+ */
+static void
+test_failed_register_takes_back(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const extensions[] = { ".fail", ".pass", NULL };
+	g_autoptr(VenturePluginRuntime) runtime = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *nested = NULL;
+	g_autofree gchar *failing = NULL;
+	g_autofree gchar *passing = NULL;
+	g_auto(GStrv) runtimes = NULL;
+	VentureContext *context;
+	guint extensions_before;
+
+	(void)user_data;
+
+	context = fixture->context;
+	runtime = venture_func_plugin_runtime_new("rollback", extensions, rollback_load, NULL, NULL);
+	g_assert_true(venture_plugin_manager_add_runtime(fixture->manager, runtime, &error));
+	g_assert_no_error(error);
+	extensions_before = venture_context_count_web_extensions(context);
+
+	nested = write_file(fixture->plugin_dir, "nested.inner", "");
+
+	failing = write_file(fixture->plugin_dir, "broken.fail", "");
+	g_assert_false(venture_plugin_manager_load_file(fixture->manager, failing, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN);
+	g_clear_error(&error);
+
+	g_assert_false(venture_fee_model_registry_has(venture_context_get_fee_models(context),
+	                                              "rollback_fee"));
+	g_assert_true(venture_fee_model_registry_has(venture_context_get_fee_models(context), "percent"));
+	g_assert_false(venture_export_format_registry_has(venture_context_get_export_formats(context),
+	                                                  "rollback_fmt"));
+	g_assert_true(venture_export_format_registry_has(venture_context_get_export_formats(context),
+	                                                 "csv"));
+	g_assert_false(venture_automation_handler_registry_has(
+		venture_context_get_automation_handlers(context), "rollback_step"));
+	g_assert_null(venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(context), "rollback_feed"));
+	g_assert_false(venture_plugin_provides_registry_has(venture_context_get_plugin_provides(context),
+	                                                    "rollback_kind"));
+	/* Its own extension went; the nested plugin's, added after it, stayed. */
+	g_assert_cmpuint(venture_context_count_web_extensions(context), ==, extensions_before + 1);
+	runtimes = venture_plugin_manager_list_runtimes(fixture->manager);
+	g_assert_false(g_strv_contains((const gchar *const *)runtimes, "inner"));
+
+	/* The plugin loaded inside the failed one keeps its own. */
+	g_assert_true(venture_automation_handler_registry_has(
+		venture_context_get_automation_handlers(context), "inner_step"));
+
+	/* Nothing is left to collide with: the same registrations load. */
+	passing = write_file(fixture->plugin_dir, "fixed.pass", "");
+	g_assert_true(venture_plugin_manager_load_file(fixture->manager, passing, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_fee_model_registry_has(venture_context_get_fee_models(context),
+	                                             "rollback_fee"));
+	g_assert_cmpuint(venture_context_count_web_extensions(context), ==, extensions_before + 2);
+}
+
 /* ==========================================================================
  * Exec
  * ========================================================================== */
@@ -2210,6 +2489,8 @@ main(
 
 	ADD("/plugin-runtime/provides/dispatched-to-registered-kind",
 	    test_provides_dispatched_to_registered_kind);
+	ADD("/plugin-runtime/provides/all-or-nothing", test_provides_all_or_nothing);
+	ADD("/plugin-runtime/failed-register-takes-back", test_failed_register_takes_back);
 
 	ADD("/plugin-runtime/exec/round-trip", test_exec_round_trip);
 	ADD("/plugin-runtime/exec/deadline-kills-the-group",

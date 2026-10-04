@@ -1495,9 +1495,12 @@ feed_exec_provider_iface_init(VentureDataSourceProviderInterface *iface)
  * in code -- and the keys are a closed list. It is accepted whether or not
  * the feeds module is on, so turning feeds on needs no plugin reload;
  * nothing runs while it is off.
+ *
+ * Judged whole (feed_validate_provider()) before any entry of the
+ * manifest is registered, so a refused manifest registers nothing.
  */
 static gboolean
-feed_accept_provider(
+feed_validate_provider(
 	VenturePluginManager	 *manager,
 	VenturePluginManifest	 *manifest,
 	JsonObject		 *entry,
@@ -1508,11 +1511,8 @@ feed_accept_provider(
 		"kind", "name", "label", "command", "description", NULL
 	};
 	g_autoptr(GList) members = NULL;
-	g_autoptr(GError) local_error = NULL;
-	FeedExecProvider *provider;
 	const gchar *name;
 	const gchar *command;
-	const gchar *label;
 	const gchar *plugin;
 	GList *l;
 
@@ -1535,7 +1535,6 @@ feed_accept_provider(
 
 	name = feed_setting_string(entry, "name");
 	command = feed_setting_string(entry, "command");
-	label = feed_setting_string(entry, "label");
 
 	if (!venture_data_source_provider_name_is_valid(name))
 	{
@@ -1562,10 +1561,43 @@ feed_accept_provider(
 		return FALSE;
 	}
 
+	if (NULL != venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(venture_plugin_manager_get_context(manager)),
+		name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+		            "A data source provider named %s is already registered", name);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static gboolean
+feed_accept_provider(
+	VenturePluginManager	 *manager,
+	VenturePluginManifest	 *manifest,
+	JsonObject		 *entry,
+	gpointer		  user_data,
+	GError			**error
+){
+	g_autoptr(GError) local_error = NULL;
+	FeedExecProvider *provider;
+	const gchar *name;
+	const gchar *command;
+	const gchar *label;
+
+	if (!feed_validate_provider(manager, manifest, entry, user_data, error))
+		return FALSE;
+
+	name = feed_setting_string(entry, "name");
+	command = feed_setting_string(entry, "command");
+	label = feed_setting_string(entry, "label");
+
 	provider = g_object_new(feed_exec_provider_get_type(), NULL);
 	provider->name = g_strdup(name);
 	provider->label = g_strdup((NULL != label) ? label : name);
-	provider->plugin = g_strdup(plugin);
+	provider->plugin = g_strdup(venture_plugin_manifest_get_name(manifest));
 	provider->command = g_strdup((NULL != command) ? command : "fetch");
 
 	if (!venture_data_source_provider_registry_add(
@@ -1582,13 +1614,30 @@ feed_accept_provider(
 	return TRUE;
 }
 
+/* Takes back an entry this manifest registered when a later one failed. */
+static void
+feed_remove_provider(
+	VenturePluginManager	*manager,
+	VenturePluginManifest	*manifest,
+	JsonObject		*entry,
+	gpointer		 user_data
+){
+	(void)manifest;
+	(void)user_data;
+
+	venture_data_source_provider_registry_remove(
+		venture_context_get_data_source_providers(venture_plugin_manager_get_context(manager)),
+		feed_setting_string(entry, "name"));
+}
+
 void
 venture_feeds_register_provides(VenturePluginProvidesRegistry *registry)
 {
 	g_autoptr(GError) error = NULL;
 
-	if (!venture_plugin_provides_registry_add(registry, "data_source_provider",
+	if (!venture_plugin_provides_registry_add_full(registry, "data_source_provider",
 		"A source of market data for feeds, run as the plugin's program",
-		feed_accept_provider, NULL, NULL, &error))
+		feed_validate_provider, feed_accept_provider, feed_remove_provider,
+		NULL, NULL, &error))
 		g_debug("feeds: %s", error->message);
 }

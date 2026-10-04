@@ -1561,6 +1561,18 @@ is the tour.
   one is registered by the subsystem that understands it, and an unknown
   kind fails the plugin's load. A kind whose module can be switched off
   stays registered and skips while off.
+- **A failed load leaves nothing registered.** A manifest's `provides` is
+  judged whole (each kind's validate function) before any entry is
+  registered (`venture_plugin_provides_registry_add_full()`), and the
+  manager wraps every load in a frame: on failure every name added since
+  to the providers, fee models, export formats, strategies, automation
+  handlers, reports, posting rules, provides kinds and runtimes is
+  removed, and web extensions by position. A nested success is kept.
+  Record types, modules, actions, validators, ledger sources and service
+  registries are *not* rolled back -- register them last. Adding a named
+  registry a plugin may write means adding it to `manager_registries[]`
+  in `venture-plugin-manager.c` with a `_remove()`;
+  `/plugin-runtime/failed-register-takes-back` pins the list.
 - **What the `venture` pod module answers to is a registry, not a list.**
   `venture_context_get_automation_handlers()` holds every handler and
   event; the built-ins and the three record events are registered first

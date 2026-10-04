@@ -46,11 +46,14 @@ struct _VenturePluginManager
 	GHashTable			*exec;		/* name -> VentureExecSpec */
 
 	guint				 load_depth;
+	GPtrArray			*frames;	/* ManagerFrame, one per load in progress */
 	gboolean			 retry_pending;
 	gboolean			 retrying;
 };
 
 G_DEFINE_FINAL_TYPE(VenturePluginManager, venture_plugin_manager, G_TYPE_OBJECT)
+
+static void manager_frame_free(gpointer data);
 
 typedef enum
 {
@@ -188,6 +191,7 @@ venture_plugin_manager_finalize(GObject *object)
 	g_clear_pointer(&self->deferred, g_ptr_array_unref);
 	g_clear_pointer(&self->failures, g_ptr_array_unref);
 	g_clear_pointer(&self->exec, g_hash_table_unref);
+	g_clear_pointer(&self->frames, g_ptr_array_unref);
 
 	G_OBJECT_CLASS(venture_plugin_manager_parent_class)->finalize(object);
 }
@@ -233,6 +237,7 @@ venture_plugin_manager_init(VenturePluginManager *self)
 		venture_plugin_failure_free);
 	self->exec = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                   (GDestroyNotify)venture_exec_spec_unref);
+	self->frames = g_ptr_array_new_with_free_func(manager_frame_free);
 }
 
 VenturePluginManager *
@@ -540,6 +545,339 @@ venture_plugin_manager_list_deferred(VenturePluginManager *self)
 }
 
 /* ==========================================================================
+ * Taking back a failed load
+ * ==========================================================================
+ *
+ * A plugin's register function (native or crispy) and its manifest's
+ * provides write into registries the manager does not own. When the load
+ * then fails -- the function returns FALSE after registering a fee model,
+ * a provides entry is refused after the program was registered -- the
+ * plugin is reported as not loaded, and nothing it registered may stay
+ * behind for a scan, a rule or a source to find.
+ *
+ * Each load opens a frame: the names every rollback-able registry holds
+ * before the load. A failed load removes every name that appeared since;
+ * a successful one inside another (a plugin registering a runtime makes
+ * held plugins load at once, inside it) hands its names to the frame
+ * around it, so an outer failure does not take back an inner success.
+ *
+ * Rolled back: data source providers, fee models, export formats,
+ * arbitrage strategies, automation handlers, reports, posting rules,
+ * provides kinds, plugin runtimes and web extensions. Not: record types
+ * and modules (a GType cannot be unregistered, and the module registry is
+ * written bottom-up for the process), actions, save validators, ledger
+ * source types, feeds hooks, automation events, venture types and the
+ * registries that hang off a module's service (bank feeds, commerce
+ * connectors, reconciliation matchers, tax filing adapters). A plugin
+ * that registers any of those should do so last, after everything that
+ * can fail. docs/plugins.org "When a load fails" says the same.
+ */
+
+typedef gchar **(*ManagerNamesFunc) (VenturePluginManager *self);
+typedef void (*ManagerRemoveFunc) (VenturePluginManager *self, const gchar *name);
+
+typedef struct
+{
+	ManagerNamesFunc	names;
+	ManagerRemoveFunc	remove;
+} ManagerRegistry;
+
+static gchar **
+manager_names_from(GPtrArray *names)
+{
+	g_ptr_array_add(names, NULL);
+
+	return (gchar **)g_ptr_array_free(names, FALSE);
+}
+
+static gchar **
+manager_provider_names(VenturePluginManager *self)
+{
+	g_autoptr(GPtrArray) providers = NULL;
+	GPtrArray *names;
+	guint i;
+
+	providers = venture_data_source_provider_registry_list(
+		venture_context_get_data_source_providers(self->context));
+	names = g_ptr_array_new();
+
+	for (i = 0; i < providers->len; i++)
+		g_ptr_array_add(names, g_strdup(venture_data_source_provider_get_name(
+			g_ptr_array_index(providers, i))));
+
+	return manager_names_from(names);
+}
+
+static void
+manager_provider_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_data_source_provider_registry_remove(
+		venture_context_get_data_source_providers(self->context), name);
+}
+
+static gchar **
+manager_fee_model_names(VenturePluginManager *self)
+{
+	return venture_fee_model_registry_dup_names(venture_context_get_fee_models(self->context));
+}
+
+static void
+manager_fee_model_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_fee_model_registry_remove(venture_context_get_fee_models(self->context), name);
+}
+
+static gchar **
+manager_export_names(VenturePluginManager *self)
+{
+	return venture_export_format_registry_dup_names(
+		venture_context_get_export_formats(self->context));
+}
+
+static void
+manager_export_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_export_format_registry_remove(venture_context_get_export_formats(self->context), name);
+}
+
+static gchar **
+manager_strategy_names(VenturePluginManager *self)
+{
+	return venture_arbitrage_strategy_registry_dup_names(
+		venture_context_get_arbitrage_strategies(self->context));
+}
+
+static void
+manager_strategy_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_arbitrage_strategy_registry_remove(
+		venture_context_get_arbitrage_strategies(self->context), name);
+}
+
+static gchar **
+manager_handler_names(VenturePluginManager *self)
+{
+	return g_strdupv((gchar **)venture_automation_handler_registry_get_names(
+		venture_context_get_automation_handlers(self->context)));
+}
+
+static void
+manager_handler_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_automation_handler_registry_remove(
+		venture_context_get_automation_handlers(self->context), name);
+}
+
+static gchar **
+manager_report_names(VenturePluginManager *self)
+{
+	g_autoptr(GPtrArray) reports = NULL;
+	GPtrArray *names;
+	guint i;
+
+	reports = venture_report_registry_list(venture_context_get_report_registry(self->context));
+	names = g_ptr_array_new();
+
+	for (i = 0; i < reports->len; i++)
+		g_ptr_array_add(names, g_strdup(venture_report_get_name(g_ptr_array_index(reports, i))));
+
+	return manager_names_from(names);
+}
+
+static void
+manager_report_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_report_registry_remove(venture_context_get_report_registry(self->context), name);
+}
+
+static VenturePostingRuleRegistry *
+manager_posting_rules(VenturePluginManager *self)
+{
+	return venture_posting_service_get_rules(venture_database_get_posting_service(
+		venture_context_get_database(self->context)));
+}
+
+static gchar **
+manager_rule_names(VenturePluginManager *self)
+{
+	g_autoptr(GPtrArray) rules = NULL;
+	GPtrArray *names;
+	guint i;
+
+	rules = venture_posting_rule_registry_list(manager_posting_rules(self));
+	names = g_ptr_array_new();
+
+	for (i = 0; i < rules->len; i++)
+		g_ptr_array_add(names, g_strdup(venture_posting_rule_get_name(g_ptr_array_index(rules, i))));
+
+	return manager_names_from(names);
+}
+
+static void
+manager_rule_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_posting_rule_registry_remove(manager_posting_rules(self), name);
+}
+
+static gchar **
+manager_kind_names(VenturePluginManager *self)
+{
+	return venture_plugin_provides_registry_list(venture_context_get_plugin_provides(self->context));
+}
+
+static void
+manager_kind_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_plugin_provides_registry_remove(venture_context_get_plugin_provides(self->context), name);
+}
+
+static void
+manager_runtime_remove(VenturePluginManager *self, const gchar *name)
+{
+	guint i;
+
+	for (i = 0; i < self->runtimes->len; i++)
+	{
+		if (0 == g_strcmp0(venture_plugin_runtime_get_name(g_ptr_array_index(self->runtimes, i)),
+		                   name))
+		{
+			g_ptr_array_remove_index(self->runtimes, i);
+			return;
+		}
+	}
+}
+
+static const ManagerRegistry manager_registries[] = {
+	{ manager_provider_names, manager_provider_remove },
+	{ manager_fee_model_names, manager_fee_model_remove },
+	{ manager_export_names, manager_export_remove },
+	{ manager_strategy_names, manager_strategy_remove },
+	{ manager_handler_names, manager_handler_remove },
+	{ manager_report_names, manager_report_remove },
+	{ manager_rule_names, manager_rule_remove },
+	{ manager_kind_names, manager_kind_remove },
+	{ venture_plugin_manager_list_runtimes, manager_runtime_remove }
+};
+
+typedef struct
+{
+	GHashTable	*before[G_N_ELEMENTS(manager_registries)];	/* name set */
+	guint		 web_extensions;	/* how many there were */
+	GArray		*kept;			/* guint start, end pairs: a nested success's */
+} ManagerFrame;
+
+static void
+manager_frame_free(gpointer data)
+{
+	ManagerFrame *frame = data;
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(manager_registries); i++)
+		g_clear_pointer(&frame->before[i], g_hash_table_unref);
+
+	g_clear_pointer(&frame->kept, g_array_unref);
+	g_free(frame);
+}
+
+/* Opens a frame over every registry as it is now. */
+static void
+manager_frame_begin(VenturePluginManager *self)
+{
+	ManagerFrame *frame;
+	guint i;
+
+	frame = g_new0(ManagerFrame, 1);
+
+	for (i = 0; i < G_N_ELEMENTS(manager_registries); i++)
+	{
+		g_auto(GStrv) names = manager_registries[i].names(self);
+		guint j;
+
+		frame->before[i] = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+		for (j = 0; (NULL != names) && (NULL != names[j]); j++)
+			g_hash_table_add(frame->before[i], g_strdup(names[j]));
+	}
+
+	frame->web_extensions = venture_context_count_web_extensions(self->context);
+	frame->kept = g_array_new(FALSE, FALSE, sizeof(guint));
+	g_ptr_array_add(self->frames, frame);
+}
+
+/* Closes the innermost frame. A failed load takes back every name that
+ * appeared since it opened; a successful one hands those names to the
+ * frame around it, which must not take them back. */
+static void
+manager_frame_end(
+	VenturePluginManager	*self,
+	gboolean		 loaded
+){
+	ManagerFrame *frame;
+	ManagerFrame *outer;
+	guint i;
+
+	g_return_if_fail(self->frames->len > 0);
+
+	frame = g_ptr_array_index(self->frames, self->frames->len - 1);
+	outer = (self->frames->len > 1) ? g_ptr_array_index(self->frames, self->frames->len - 2) : NULL;
+
+	for (i = 0; i < G_N_ELEMENTS(manager_registries); i++)
+	{
+		g_auto(GStrv) names = manager_registries[i].names(self);
+		guint j;
+
+		for (j = 0; (NULL != names) && (NULL != names[j]); j++)
+		{
+			if (g_hash_table_contains(frame->before[i], names[j]))
+				continue;
+
+			if (!loaded)
+			{
+				g_debug("venture_plugin_manager: taking back %s, registered by a "
+				        "plugin that did not load", names[j]);
+				manager_registries[i].remove(self, names[j]);
+			}
+			else if (NULL != outer)
+				g_hash_table_add(outer->before[i], g_strdup(names[j]));
+		}
+	}
+
+	/*
+	 * Web extensions have only their position. Everything added since the
+	 * frame opened goes, newest first so the positions below stay put,
+	 * except a nested success's run of them. A frame only ever appends,
+	 * and a nested failure only removes past its own start, so a kept run
+	 * recorded earlier still names the same extensions.
+	 */
+	if (!loaded)
+	{
+		guint index = venture_context_count_web_extensions(self->context);
+
+		while (index-- > frame->web_extensions)
+		{
+			gboolean keep = FALSE;
+			guint k;
+
+			for (k = 0; !keep && (k + 1 < frame->kept->len); k += 2)
+				keep = (index >= g_array_index(frame->kept, guint, k)) &&
+				       (index < g_array_index(frame->kept, guint, k + 1));
+
+			if (!keep)
+				venture_context_remove_web_extension(self->context, index);
+		}
+	}
+	else if (NULL != outer)
+	{
+		guint end = venture_context_count_web_extensions(self->context);
+
+		g_array_append_val(outer->kept, frame->web_extensions);
+		g_array_append_val(outer->kept, end);
+	}
+
+	g_ptr_array_set_size(self->frames, self->frames->len - 1);
+}
+
+/* ==========================================================================
  * Loading
  * ========================================================================== */
 
@@ -598,6 +936,7 @@ manager_dispatch(
 	                                   venture_plugin_runtime_get_name(runtime));
 
 	self->load_depth++;
+	manager_frame_begin(self);
 
 	ok = venture_plugin_runtime_load(runtime, self, self->context, load_path,
 	                                 manifest, record, &local_error);
@@ -615,6 +954,9 @@ manager_dispatch(
 			g_hash_table_remove(self->exec, name);
 	}
 
+	/* Everything a refused load registered goes, wherever it was in
+	 * its register function or its manifest when it was refused. */
+	manager_frame_end(self, ok);
 	self->load_depth--;
 
 	if (!ok)

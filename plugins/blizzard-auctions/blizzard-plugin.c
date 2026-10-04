@@ -460,6 +460,9 @@ venture_plugin_register(
 			return FALSE;
 	}
 
+	/* Last: a record action is not taken back when a later step of the
+	 * load fails (docs/plugins.org, "When a load fails"); everything
+	 * above is. */
 	if (!blizzard_recipes_register(context, error))
 		return FALSE;
 #else

@@ -179,17 +179,18 @@ A manifest's =provides= list says what the plugin offers to the rest of VENTURE.
 Kinds are registered by the subsystem that understands them, on the context:
 
 #+begin_src C
-venture_plugin_provides_registry_add(
+venture_plugin_provides_registry_add_full(
 	venture_context_get_plugin_provides(context),
 	"data_source_provider", "A source of market data for feeds",
-	accept_provider, NULL, NULL, error);
+	validate_provider, accept_provider, remove_provider,
+	NULL, NULL, error);
 #+end_src
 
-When a plugin with a manifest loads, the manager hands each entry, in order, to its kind's handler, with the plugin's manifest. The plugin is already loaded at that point -- an exec plugin's program can be looked up with =venture_plugin_manager_lookup_exec()= -- so the handler can register whatever the entry describes.
+=venture_plugin_provides_registry_add()= is the same without the validate and remove halves. When a plugin with a manifest loads, the manager judges every entry first and only then hands each, in order, to its kind's handler, with the plugin's manifest. The plugin is already loaded at that point -- an exec plugin's program can be looked up with =venture_plugin_manager_lookup_exec()= -- so the handler can register whatever the entry describes.
 
 - An entry naming a kind nobody registered *fails the plugin's load*, naming the kinds that exist. A typo must not load a plugin that quietly provides nothing.
-- A handler that refuses its entry fails the load too.
-- When a load fails at this stage, an exec plugin's program is withdrawn, so nothing can run a plugin that did not load. Native and crispy code has already run and cannot be withdrawn; keep their =provides= lists to things a handler can check before it registers anything.
+- *All or nothing.* Every entry is judged by its kind's validate function (when it has one) before any entry is registered, so a manifest whose third entry is malformed registers neither of the first two. A handler that refuses its entry anyway -- two entries naming the same provider, which judging one at a time cannot see -- fails the load, and the entries before it are taken back through their kinds' remove functions (and by the manager's rollback below).
+- When a load fails at this stage, an exec plugin's program is withdrawn too, so nothing can run a plugin that did not load.
 - A kind registered twice is refused: two handlers would each believe they own the plugins that name it.
 
 The runtime never needs to know what a kind is. That is what lets later kinds -- data-source providers for feeds, and whatever follows -- arrive without touching the loader. A kind belonging to a module that can be switched off should stay registered and *skip* its entries while the module is off, rather than leave the plugin to fail with an unknown kind on every start.
@@ -202,6 +203,25 @@ The kinds that ship:
 | =data_source_provider= | the feeds module     | =name=, =label=, =command=, =description= | A market data provider a =data_source= can name, run as the plugin's program; exec plugins only. See below. |
 
 *Registries a native or crispy plugin calls directly.* Some extension points have no manifest kind, because what they take is a C function, not a program to run: a plugin's =venture_plugin_register()= adds to them on the context it is handed. Besides record types, reports, automation handlers and web extensions (see [[file:extending.org][Extending]]), the arbitrage engine's three registries take a plugin's fee models (=venture_context_get_fee_models()=), strategies (=venture_context_get_arbitrage_strategies()=) and export formats (=venture_context_get_export_formats()=), each with a plain function and no subclass; see [[file:arbitrage.org::*Plugins: strategies, fee models and export formats][Arbitrage]]. A name is never registered twice, so a plugin cannot replace a built-in.
+
+** When a load fails
+
+A plugin that fails to load must leave nothing behind for a scan, a rule, a page or a source to find. The manager opens a frame around every load (the runtime's load -- a native or crispy =venture_plugin_register()= -- and then its =provides=): the names each registry below holds before it starts. When the load fails, every name that appeared since is removed again, whatever step failed; the plugin is reported as not loaded and the same names are free for a retry. A plugin loaded from inside another plugin's load keeps what it registered if it succeeded, even when the outer one then fails.
+
+| Rolled back                     | How                                                                 |
+|---------------------------------+---------------------------------------------------------------------|
+| data source providers           | =venture_data_source_provider_registry_remove()=                     |
+| fee models                      | =venture_fee_model_registry_remove()=                                |
+| export formats                  | =venture_export_format_registry_remove()=                            |
+| arbitrage strategies            | =venture_arbitrage_strategy_registry_remove()=                       |
+| automation handlers             | =venture_automation_handler_registry_remove()=                       |
+| reports                         | =venture_report_registry_remove()=                                   |
+| posting rules                   | =venture_posting_rule_registry_remove()=                             |
+| provides kinds                  | =venture_plugin_provides_registry_remove()=                          |
+| plugin runtimes                 | the manager's own list                                              |
+| web extensions                  | by position (=venture_context_remove_web_extension()=): they have no names |
+
+*Not rolled back:* record types and modules (=venture_context_register_module()=; a GType cannot be unregistered, and the module registry is written bottom-up for the life of the process), record actions, database save validators, ledger source registrations (=venture_ledger_register_source_type()=), feeds hooks, automation events, declarative venture types, and the registries that hang off a module's service -- bank feeds, commerce connectors, reconciliation matchers, tax filing adapters. A plugin that registers any of these should do so *last*, after every step that can fail; the Blizzard plugin registers its record action last for this reason. The library itself is never unloaded (it may have registered a GType), so nothing left behind points at unmapped code.
 
 * Automation handlers from an exec plugin
 

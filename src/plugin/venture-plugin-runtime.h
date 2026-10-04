@@ -468,6 +468,46 @@ typedef gboolean (*VenturePluginProvidesFunc) (
 	GError			**error
 );
 
+/**
+ * VenturePluginProvidesValidateFunc:
+ * @manager: the manager loading the plugin
+ * @manifest: the plugin's manifest
+ * @entry: one element of its `provides` list
+ * @user_data: the data the kind was registered with
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Judges one entry without registering anything: whether the kind's
+ * #VenturePluginProvidesFunc would accept it now. Every entry of a
+ * manifest is judged before any is registered, so a plugin whose third
+ * entry is malformed registers nothing at all.
+ *
+ * Returns: %TRUE if the entry would be accepted
+ */
+typedef gboolean (*VenturePluginProvidesValidateFunc) (
+	VenturePluginManager	 *manager,
+	VenturePluginManifest	 *manifest,
+	JsonObject		 *entry,
+	gpointer		  user_data,
+	GError			**error
+);
+
+/**
+ * VenturePluginProvidesRemoveFunc:
+ * @manager: the manager loading the plugin
+ * @manifest: the plugin's manifest
+ * @entry: an entry this kind accepted
+ * @user_data: the data the kind was registered with
+ *
+ * Takes back what accepting @entry registered, when a later entry of the
+ * same manifest (or a later step of the load) is refused after all.
+ */
+typedef void (*VenturePluginProvidesRemoveFunc) (
+	VenturePluginManager	*manager,
+	VenturePluginManifest	*manifest,
+	JsonObject		*entry,
+	gpointer		 user_data
+);
+
 #define VENTURE_TYPE_PLUGIN_PROVIDES_REGISTRY \
 	(venture_plugin_provides_registry_get_type())
 
@@ -510,6 +550,54 @@ venture_plugin_provides_registry_add(
 );
 
 /**
+ * venture_plugin_provides_registry_add_full:
+ * @self: a registry
+ * @kind: the name a `provides` entry uses, lower case
+ * @description: (nullable): a line for the documentation and the list
+ * @validate: (nullable): judges an entry without registering it
+ * @func: what accepting an entry does
+ * @remove: (nullable): takes back what @func registered
+ * @user_data: (closure): handed to @validate, @func and @remove
+ * @destroy: (nullable): frees @user_data with the registry
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_plugin_provides_registry_add() with the two halves that make a
+ * manifest all or nothing: @validate runs over every entry before any
+ * @func does, and @remove undoes the accepted entries when a later one is
+ * refused anyway (two entries naming the same provider, say).
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_plugin_provides_registry_add_full(
+	VenturePluginProvidesRegistry	 *self,
+	const gchar			 *kind,
+	const gchar			 *description,
+	VenturePluginProvidesValidateFunc validate,
+	VenturePluginProvidesFunc	  func,
+	VenturePluginProvidesRemoveFunc	  remove,
+	gpointer			  user_data,
+	GDestroyNotify			  destroy,
+	GError				**error
+);
+
+/**
+ * venture_plugin_provides_registry_remove:
+ * @self: a registry
+ * @kind: a kind
+ *
+ * Takes a kind back out (a plugin that registered one and then failed to
+ * load). What plugins already registered through it stays.
+ *
+ * Returns: %TRUE when there was one to remove
+ */
+gboolean
+venture_plugin_provides_registry_remove(
+	VenturePluginProvidesRegistry	*self,
+	const gchar			*kind
+);
+
+/**
  * venture_plugin_provides_registry_has:
  * @self: a registry
  * @kind: a kind
@@ -539,9 +627,11 @@ venture_plugin_provides_registry_list(VenturePluginProvidesRegistry *self);
  * @error: (out) (optional): return location for a #GError
  *
  * Hands every entry of the manifest's `provides` list to its kind, in
- * order. An entry naming an unregistered kind is refused, naming the
- * registered ones -- a typo in a manifest must not load a plugin that
- * silently provides nothing.
+ * order, all or nothing. First every entry is judged -- its kind must be
+ * registered (a typo in a manifest must not load a plugin that silently
+ * provides nothing) and the kind's validate function must accept it --
+ * and only then is any registered. An entry refused while registering
+ * takes back the ones before it through their kinds' remove functions.
  *
  * Returns: %TRUE if every entry was accepted
  */

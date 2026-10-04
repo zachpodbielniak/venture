@@ -1728,6 +1728,18 @@ venture_data_source_provider_registry_add(
 	return TRUE;
 }
 
+gboolean
+venture_data_source_provider_registry_remove(
+	VentureDataSourceProviderRegistry	*self,
+	const gchar				*name
+){
+	g_return_val_if_fail(VENTURE_IS_DATA_SOURCE_PROVIDER_REGISTRY(self), FALSE);
+
+	/* A frozen source holds its own reference to its provider, so a run
+	 * already queued finishes with it. */
+	return (NULL != name) && g_hash_table_remove(self->providers, name);
+}
+
 VentureDataSourceProvider *
 venture_data_source_provider_registry_lookup(
 	VentureDataSourceProviderRegistry	*self,

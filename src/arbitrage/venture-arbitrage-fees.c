@@ -806,6 +806,23 @@ venture_fee_model_registry_has(
 	return NULL != arb_fee_lookup(self, name);
 }
 
+gboolean
+venture_fee_model_registry_remove(
+	VentureFeeModelRegistry	*self,
+	const gchar	*name
+){
+	gpointer entry;
+
+	g_return_val_if_fail(VENTURE_IS_FEE_MODEL_REGISTRY(self), FALSE);
+
+	entry = (gpointer)arb_fee_lookup(self, name);
+
+	/* Only the plugin manager's rollback calls this: a scan, a venue or
+	 * a page holds a name, never an entry, so nothing is left pointing
+	 * at what is freed here. */
+	return (NULL != entry) && g_ptr_array_remove(self->entries, entry);
+}
+
 gchar **
 venture_fee_model_registry_dup_names(VentureFeeModelRegistry *self)
 {

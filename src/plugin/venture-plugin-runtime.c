@@ -640,7 +640,9 @@ typedef struct
 {
 	gchar				*kind;
 	gchar				*description;
+	VenturePluginProvidesValidateFunc validate;
 	VenturePluginProvidesFunc	 func;
+	VenturePluginProvidesRemoveFunc	 remove;
 	gpointer			 user_data;
 	GDestroyNotify			 destroy;
 } ProvidesKind;
@@ -714,6 +716,32 @@ venture_plugin_provides_registry_add(
 	GDestroyNotify			  destroy,
 	GError				**error
 ){
+	return venture_plugin_provides_registry_add_full(self, kind, description, NULL, func,
+	                                                 NULL, user_data, destroy, error);
+}
+
+gboolean
+venture_plugin_provides_registry_remove(
+	VenturePluginProvidesRegistry	*self,
+	const gchar			*kind
+){
+	g_return_val_if_fail(VENTURE_IS_PLUGIN_PROVIDES_REGISTRY(self), FALSE);
+
+	return (NULL != kind) && g_hash_table_remove(self->kinds, kind);
+}
+
+gboolean
+venture_plugin_provides_registry_add_full(
+	VenturePluginProvidesRegistry	 *self,
+	const gchar			 *kind,
+	const gchar			 *description,
+	VenturePluginProvidesValidateFunc validate,
+	VenturePluginProvidesFunc	  func,
+	VenturePluginProvidesRemoveFunc	  remove,
+	gpointer			  user_data,
+	GDestroyNotify			  destroy,
+	GError				**error
+){
 	ProvidesKind *entry;
 
 	g_return_val_if_fail(VENTURE_IS_PLUGIN_PROVIDES_REGISTRY(self), FALSE);
@@ -736,7 +764,9 @@ venture_plugin_provides_registry_add(
 	entry = g_new0(ProvidesKind, 1);
 	entry->kind = g_strdup(kind);
 	entry->description = g_strdup(description);
+	entry->validate = validate;
 	entry->func = func;
+	entry->remove = remove;
 	entry->user_data = user_data;
 	entry->destroy = destroy;
 
@@ -777,6 +807,37 @@ venture_plugin_provides_registry_list(VenturePluginProvidesRegistry *self)
 	return (gchar **)g_ptr_array_free(names, FALSE);
 }
 
+/* The kind an entry names, or NULL with the refusal set. */
+static ProvidesKind *
+provides_kind_for(
+	VenturePluginProvidesRegistry	 *self,
+	VenturePluginManifest		 *manifest,
+	JsonObject			 *entry,
+	GError				**error
+){
+	ProvidesKind *kind;
+	const gchar *name;
+	g_auto(GStrv) known = NULL;
+	g_autofree gchar *joined = NULL;
+
+	name = json_object_get_string_member(entry, "kind");
+	kind = g_hash_table_lookup(self->kinds, name);
+
+	if (NULL != kind)
+		return kind;
+
+	known = venture_plugin_provides_registry_list(self);
+	joined = g_strjoinv(", ", known);
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+	            "%s provides a \"%s\", which nothing in this "
+	            "install understands (known: %s). Is the module "
+	            "that handles it switched on?",
+	            venture_plugin_manifest_get_path(manifest), name,
+	            ('\0' != joined[0]) ? joined : "none");
+	return NULL;
+}
+
 gboolean
 venture_plugin_provides_registry_dispatch(
 	VenturePluginProvidesRegistry	 *self,
@@ -785,6 +846,7 @@ venture_plugin_provides_registry_dispatch(
 	GError				**error
 ){
 	JsonArray *provides;
+	guint count;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_PLUGIN_PROVIDES_REGISTRY(self), FALSE);
@@ -795,44 +857,70 @@ venture_plugin_provides_registry_dispatch(
 	if (NULL == provides)
 		return TRUE;
 
-	for (i = 0; i < json_array_get_length(provides); i++)
+	count = json_array_get_length(provides);
+
+	/*
+	 * Judge every entry before registering any. Registering as we went
+	 * left the first entries of a plugin whose third was malformed in the
+	 * registries, though the plugin was reported as not loaded.
+	 */
+	for (i = 0; i < count; i++)
 	{
 		JsonObject *entry;
 		ProvidesKind *kind;
-		const gchar *name;
 		g_autoptr(GError) local_error = NULL;
 
 		entry = json_array_get_object_element(provides, i);
-		name = json_object_get_string_member(entry, "kind");
-		kind = g_hash_table_lookup(self->kinds, name);
+		kind = provides_kind_for(self, manifest, entry, error);
 
 		if (NULL == kind)
-		{
-			g_auto(GStrv) known = NULL;
-			g_autofree gchar *joined = NULL;
-
-			known = venture_plugin_provides_registry_list(self);
-			joined = g_strjoinv(", ", known);
-
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
-			            "%s provides a \"%s\", which nothing in this "
-			            "install understands (known: %s). Is the module "
-			            "that handles it switched on?",
-			            venture_plugin_manifest_get_path(manifest), name,
-			            ('\0' != joined[0]) ? joined : "none");
 			return FALSE;
-		}
 
-		if (!kind->func(manager, manifest, entry, kind->user_data,
-		                &local_error))
+		if ((NULL != kind->validate) &&
+		    !kind->validate(manager, manifest, entry, kind->user_data, &local_error))
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
 			            "%s: its %s was refused: %s",
-			            venture_plugin_manifest_get_path(manifest), name,
+			            venture_plugin_manifest_get_path(manifest), kind->kind,
 			            (NULL != local_error) ? local_error->message
 			                                  : "no reason given");
 			return FALSE;
 		}
+	}
+
+	for (i = 0; i < count; i++)
+	{
+		JsonObject *entry;
+		ProvidesKind *kind;
+		g_autoptr(GError) local_error = NULL;
+
+		entry = json_array_get_object_element(provides, i);
+		kind = g_hash_table_lookup(self->kinds,
+		                           json_object_get_string_member(entry, "kind"));
+
+		if (kind->func(manager, manifest, entry, kind->user_data, &local_error))
+			continue;
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		            "%s: its %s was refused: %s",
+		            venture_plugin_manifest_get_path(manifest), kind->kind,
+		            (NULL != local_error) ? local_error->message
+		                                  : "no reason given");
+
+		/* Something validation could not see -- two entries naming the
+		 * same thing -- refused it after all: take back the ones before
+		 * it, newest first. */
+		while (i-- > 0)
+		{
+			JsonObject *earlier = json_array_get_object_element(provides, i);
+			ProvidesKind *earlier_kind = g_hash_table_lookup(self->kinds,
+				json_object_get_string_member(earlier, "kind"));
+
+			if ((NULL != earlier_kind) && (NULL != earlier_kind->remove))
+				earlier_kind->remove(manager, manifest, earlier, earlier_kind->user_data);
+		}
+
+		return FALSE;
 	}
 
 	return TRUE;

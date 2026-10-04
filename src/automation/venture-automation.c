@@ -836,8 +836,22 @@ venture_automation_exec_handler(
  * a closed list, because a misspelt one would load a plugin that quietly
  * runs the wrong command.
  */
+static const gchar *
+automation_entry_string(
+	JsonObject	*entry,
+	const gchar	*member
+){
+	JsonNode *node = json_object_get_member(entry, member);
+
+	return ((NULL != node) && JSON_NODE_HOLDS_VALUE(node) &&
+	        (G_TYPE_STRING == json_node_get_value_type(node)))
+		? json_node_get_string(node) : NULL;
+}
+
+/* Judges one entry without registering anything: the whole manifest is
+ * judged before any of it is registered. */
 static gboolean
-venture_automation_accept_handler(
+venture_automation_validate_handler(
 	VenturePluginManager	 *manager,
 	VenturePluginManifest	 *manifest,
 	JsonObject		 *entry,
@@ -848,13 +862,9 @@ venture_automation_accept_handler(
 		"kind", "name", "command", "description", NULL
 	};
 	g_autoptr(GList) members = NULL;
-	g_autofree gchar *fallback = NULL;
-	VentureExecHandler *handler;
-	VentureContext *context;
 	const gchar *plugin;
 	const gchar *name;
 	const gchar *command;
-	const gchar *description;
 	GList *l;
 
 	(void)user_data;
@@ -874,15 +884,8 @@ venture_automation_accept_handler(
 		}
 	}
 
-	name = json_object_has_member(entry, "name") &&
-	       JSON_NODE_HOLDS_VALUE(json_object_get_member(entry, "name"))
-		? json_object_get_string_member(entry, "name") : NULL;
-	command = json_object_has_member(entry, "command") &&
-	          JSON_NODE_HOLDS_VALUE(json_object_get_member(entry, "command"))
-		? json_object_get_string_member(entry, "command") : NULL;
-	description = json_object_has_member(entry, "description") &&
-	              JSON_NODE_HOLDS_VALUE(json_object_get_member(entry, "description"))
-		? json_object_get_string_member(entry, "description") : NULL;
+	name = automation_entry_string(entry, "name");
+	command = automation_entry_string(entry, "command");
 
 	if (!venture_automation_name_is_valid(name))
 	{
@@ -911,6 +914,42 @@ venture_automation_accept_handler(
 		return FALSE;
 	}
 
+	if (venture_automation_handler_registry_has(venture_context_get_automation_handlers(
+		venture_plugin_manager_get_context(manager)), name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+		            "An automation handler called \"%s\" is already "
+		            "registered", name);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static gboolean
+venture_automation_accept_handler(
+	VenturePluginManager	 *manager,
+	VenturePluginManifest	 *manifest,
+	JsonObject		 *entry,
+	gpointer		  user_data,
+	GError			**error
+){
+	g_autofree gchar *fallback = NULL;
+	VentureExecHandler *handler;
+	VentureContext *context;
+	const gchar *plugin;
+	const gchar *name;
+	const gchar *command;
+	const gchar *description;
+
+	if (!venture_automation_validate_handler(manager, manifest, entry, user_data, error))
+		return FALSE;
+
+	plugin = venture_plugin_manifest_get_name(manifest);
+	name = automation_entry_string(entry, "name");
+	command = automation_entry_string(entry, "command");
+	description = automation_entry_string(entry, "description");
+
 	if (NULL == description)
 	{
 		fallback = g_strdup_printf("Runs the %s plugin", plugin);
@@ -938,6 +977,21 @@ venture_automation_accept_handler(
 	return TRUE;
 }
 
+/* Takes back an entry this manifest registered when a later one failed. */
+static void
+venture_automation_remove_handler(
+	VenturePluginManager	*manager,
+	VenturePluginManifest	*manifest,
+	JsonObject		*entry,
+	gpointer		 user_data
+){
+	(void)manifest;
+	(void)user_data;
+
+	venture_automation_handler_registry_remove(venture_context_get_automation_handlers(
+		venture_plugin_manager_get_context(manager)), automation_entry_string(entry, "name"));
+}
+
 void
 venture_automation_register_provides(VenturePluginProvidesRegistry *registry)
 {
@@ -945,9 +999,10 @@ venture_automation_register_provides(VenturePluginProvidesRegistry *registry)
 
 	g_return_if_fail(VENTURE_IS_PLUGIN_PROVIDES_REGISTRY(registry));
 
-	if (!venture_plugin_provides_registry_add(registry, "automation_handler",
+	if (!venture_plugin_provides_registry_add_full(registry, "automation_handler",
 		"A step an automation rule can call, run as the plugin's program",
-		venture_automation_accept_handler, NULL, NULL, &error))
+		venture_automation_validate_handler, venture_automation_accept_handler,
+		venture_automation_remove_handler, NULL, NULL, &error))
 	{
 		g_debug("venture_automation: %s", error->message);
 	}

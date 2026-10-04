@@ -694,6 +694,25 @@ venture_web_extension_free(gpointer data)
 	g_free(extension);
 }
 
+guint
+venture_context_count_web_extensions(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), 0);
+
+	return (NULL != self->web_extensions) ? self->web_extensions->len : 0;
+}
+
+void
+venture_context_remove_web_extension(
+	VentureContext	*self,
+	guint		 index
+){
+	g_return_if_fail(VENTURE_IS_CONTEXT(self));
+
+	if ((NULL != self->web_extensions) && (index < self->web_extensions->len))
+		g_ptr_array_remove_index(self->web_extensions, index);
+}
+
 void
 venture_context_add_web_extension(
 	VentureContext		*self,

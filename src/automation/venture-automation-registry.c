@@ -219,6 +219,30 @@ venture_automation_handler_registry_add(
 }
 
 gboolean
+venture_automation_handler_registry_remove(
+	VentureAutomationHandlerRegistry	*self,
+	const gchar				*name
+){
+	HandlerEntry *entry;
+
+	g_return_val_if_fail(VENTURE_IS_AUTOMATION_HANDLER_REGISTRY(self), FALSE);
+
+	entry = (NULL != name) ? g_hash_table_lookup(self->by_name, name) : NULL;
+
+	if (NULL == entry)
+		return FALSE;
+
+	g_hash_table_remove(self->by_name, name);
+	g_ptr_array_remove(self->handlers, entry);
+
+	/* A name list handed out earlier stays readable (name_lists); the
+	 * next get_names() leaves this one out. */
+	self->handler_names = NULL;
+
+	return TRUE;
+}
+
+gboolean
 venture_automation_handler_registry_has(
 	VentureAutomationHandlerRegistry	*self,
 	const gchar				*name

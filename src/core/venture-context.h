@@ -430,6 +430,31 @@ venture_context_add_web_extension(
 );
 
 /**
+ * venture_context_count_web_extensions:
+ * @self: a #VentureContext
+ *
+ * Returns: how many web extensions are registered
+ */
+guint
+venture_context_count_web_extensions(VentureContext *self);
+
+/**
+ * venture_context_remove_web_extension:
+ * @self: a #VentureContext
+ * @index: the position, counting from 0 in the order added
+ *
+ * Drops one extension, freeing its data. Extensions have no names and are
+ * kept in the order added, so the plugin manager takes back a failed
+ * plugin's by position: those added since its load began. Nothing else
+ * should need to.
+ */
+void
+venture_context_remove_web_extension(
+	VentureContext	*self,
+	guint		 index
+);
+
+/**
  * venture_context_run_web_extensions:
  * @self: a #VentureContext
  * @server: the server being built

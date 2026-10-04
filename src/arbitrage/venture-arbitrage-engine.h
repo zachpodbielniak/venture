@@ -218,6 +218,21 @@ venture_fee_model_registry_add(
 );
 
 /**
+ * venture_fee_model_registry_remove:
+ * @self: the registry
+ * @name: a fee model's name
+ *
+ * Takes a registration back out. A plugin whose load fails has every name it added removed again (see venture_plugin_manager_load_file()).
+ *
+ * Returns: %TRUE when there was one to remove
+ */
+gboolean
+venture_fee_model_registry_remove(
+	VentureFeeModelRegistry	*self,
+	const gchar	*name
+);
+
+/**
  * venture_fee_model_registry_has:
  * @self: the registry
  * @name: (nullable): a model name
@@ -424,6 +439,21 @@ venture_arbitrage_strategy_registry_add(
 	gpointer				  user_data,
 	GDestroyNotify				  destroy,
 	GError					**error
+);
+
+/**
+ * venture_arbitrage_strategy_registry_remove:
+ * @self: the registry
+ * @name: a strategy's name
+ *
+ * Takes a registration back out. A plugin whose load fails has every name it added removed again (see venture_plugin_manager_load_file()).
+ *
+ * Returns: %TRUE when there was one to remove
+ */
+gboolean
+venture_arbitrage_strategy_registry_remove(
+	VentureArbitrageStrategyRegistry	*self,
+	const gchar	*name
 );
 
 /**
@@ -1032,6 +1062,21 @@ venture_export_format_registry_add(
 	gpointer			  user_data,
 	GDestroyNotify			  destroy,
 	GError				**error
+);
+
+/**
+ * venture_export_format_registry_remove:
+ * @self: the registry
+ * @name: a export format's name
+ *
+ * Takes a registration back out. A plugin whose load fails has every name it added removed again (see venture_plugin_manager_load_file()).
+ *
+ * Returns: %TRUE when there was one to remove
+ */
+gboolean
+venture_export_format_registry_remove(
+	VentureExportFormatRegistry	*self,
+	const gchar	*name
 );
 
 /**
