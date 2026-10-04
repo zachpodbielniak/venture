@@ -118,7 +118,15 @@ blizzard_parse_word(
 
 	text = venture_json_object_get_string(settings, member, fallback);
 
-	if ((NULL == text) || !g_regex_match_simple(pattern, text, 0, 0))
+	/*
+	 * Fix: CWE-93 (CRLF injection) -- this value goes into a query
+	 * string unescaped (see the comment above). Without
+	 * G_REGEX_DOLLAR_ENDONLY, PCRE's "$" matches just before a single
+	 * trailing newline as well as at the true end of the string, so
+	 * "en_US\n" passed "^[a-z]{2}_[A-Z]{2}$" and the newline rode along
+	 * into the address Battle.net's HTTP client sends on the wire.
+	 */
+	if ((NULL == text) || !g_regex_match_simple(pattern, text, G_REGEX_DOLLAR_ENDONLY, 0))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 		            "%s is not one Battle.net accepts", member);

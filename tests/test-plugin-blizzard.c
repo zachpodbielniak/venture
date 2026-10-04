@@ -589,6 +589,16 @@ test_settings(
 		"include_commodities: maybe\n",
 		"locale: english\n",
 		"realms_per_fetch: 0\n",
+		/*
+		 * PCRE's "$" matches just before a single trailing newline as
+		 * well as at the true end of the subject, so "en_US\n" passed
+		 * "^[a-z]{2}_[A-Z]{2}$" under the default compile options --
+		 * and locale goes into the request's query string unescaped,
+		 * which is exactly where that stray newline must never reach.
+		 * What breaks if this regresses: a crafted locale smuggles a
+		 * CRLF into the request this plugin sends to Battle.net.
+		 */
+		"locale: \"en_US\\n\"\n",
 		NULL
 	};
 	guint i;

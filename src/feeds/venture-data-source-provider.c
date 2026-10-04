@@ -27,8 +27,10 @@
 #include "feeds/venture-feeds-private.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 G_DEFINE_QUARK(venture-feeds-error-quark, venture_feeds_error)
 
@@ -614,14 +616,40 @@ venture_feed_request_read_file(
 	g_autoptr(GMappedFile) mapped = NULL;
 	g_autoptr(GError) local_error = NULL;
 	GStatBuf info;
+	int fd;
 
 	resolved = venture_feed_request_resolve_file(self, path, error);
 
 	if (NULL == resolved)
 		return NULL;
 
-	if ((0 != g_stat(resolved, &info)) || !S_ISREG(info.st_mode))
+	/*
+	 * Fix: CWE-367 (TOCTOU race) -- the previous code re-resolved @path
+	 * from the filesystem three times (realpath() inside resolve_file(),
+	 * then a path-based g_stat(), then a path-based g_mapped_file_new()
+	 * which reopens it again), each a fresh symlink traversal. A root
+	 * writable by anything other than the server itself could swap the
+	 * leaf between any of those steps and make this read a file outside
+	 * feeds.file_roots that the earlier prefix check never saw.
+	 *
+	 * One open(), O_NOFOLLOW so a symlink placed at the resolved leaf
+	 * after the check is refused rather than followed, then fstat() and
+	 * the mapping both go through that single descriptor: once it is
+	 * open, nothing the filesystem does afterwards can change what it
+	 * refers to.
+	 */
+	fd = open(resolved, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+
+	if (-1 == fd)
 	{
+		g_set_error(error, VENTURE_FEEDS_ERROR, VENTURE_FEEDS_ERROR_FILE,
+		            "The file cannot be opened: %s", g_strerror(errno));
+		return NULL;
+	}
+
+	if ((0 != fstat(fd, &info)) || !S_ISREG(info.st_mode))
+	{
+		close(fd);
 		g_set_error_literal(error, VENTURE_FEEDS_ERROR, VENTURE_FEEDS_ERROR_FILE,
 		                    "The file is not a regular file");
 		return NULL;
@@ -629,13 +657,15 @@ venture_feed_request_read_file(
 
 	if ((guint64)info.st_size > (guint64)self->source->max_response_bytes)
 	{
+		close(fd);
 		g_set_error(error, VENTURE_FEEDS_ERROR, VENTURE_FEEDS_ERROR_TOO_LARGE,
 		            "The file is larger than feeds.max_response_mb (%" G_GSIZE_FORMAT " bytes)",
 		            self->source->max_response_bytes);
 		return NULL;
 	}
 
-	mapped = g_mapped_file_new(resolved, FALSE, &local_error);
+	mapped = g_mapped_file_new_from_fd(fd, FALSE, &local_error);
+	close(fd);
 
 	if (NULL == mapped)
 	{
@@ -1500,8 +1530,11 @@ venture_data_source_provider_fetch_finish(
 gboolean
 venture_data_source_provider_name_is_valid(const gchar *name)
 {
+	/* Fix: CWE-20 -- see venture_feed_batch_add_record()'s comment:
+	 * without G_REGEX_DOLLAR_ENDONLY, "$" also matches just before a
+	 * single trailing newline, so "widget\n" would pass this check. */
 	return (NULL != name) && (strlen(name) <= 64) &&
-	       g_regex_match_simple("^[a-z][a-z0-9_]*$", name, 0, 0);
+	       g_regex_match_simple("^[a-z][a-z0-9_]*$", name, G_REGEX_DOLLAR_ENDONLY, 0);
 }
 
 /* --- A provider from functions ---------------------------------------------------- */

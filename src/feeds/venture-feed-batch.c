@@ -605,8 +605,16 @@ venture_feed_batch_add_record(
 
 	g_return_val_if_fail(NULL != self, FALSE);
 
+	/*
+	 * Fix: CWE-20 (improper input validation) -- PCRE's $ matches not
+	 * only at the end of the subject but also immediately before a
+	 * single trailing newline, so "foo\n" passes "^[a-z][a-z0-9_]*$"
+	 * under the default compile options. G_REGEX_DOLLAR_ENDONLY pins $
+	 * to the true end of the string, as every caller here already
+	 * assumed.
+	 */
 	if (venture_string_is_empty(record_type) || (strlen(record_type) > 64) ||
-	    !g_regex_match_simple("^[a-z][a-z0-9_]*$", record_type, 0, 0) ||
+	    !g_regex_match_simple("^[a-z][a-z0-9_]*$", record_type, G_REGEX_DOLLAR_ENDONLY, 0) ||
 	    (NULL == fields))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,

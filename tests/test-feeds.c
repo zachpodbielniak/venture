@@ -965,6 +965,43 @@ test_feeds_exact_conversions(void)
 }
 
 /*
+ * PCRE's "$" matches not only at the end of a subject but also just
+ * before a single trailing newline, so a validator written as
+ * "^...$" with the default compile options accepts "widget\n" as
+ * readily as "widget". A record type or a provider name with a
+ * trailing newline must be refused exactly like one with a trailing
+ * space or a digit at the front -- not pass a check whose pattern says
+ * it should not.
+ *
+ * What breaks if this regresses: venture_data_source_provider_name_is_valid()
+ * and venture_feed_batch_add_record() both silently accept a name with a
+ * trailing "\n" one byte short of what their own pattern allows, and in
+ * the plugins that build a request URL from an equivalently-anchored
+ * setting (the-odds-api's sport/regions/api_base, Battle.net's locale and
+ * namespaces) that stray newline rides, unescaped, into the request line
+ * sent on the wire -- a CRLF/header injection into an outbound request.
+ */
+static void
+test_feeds_dollar_anchor_rejects_trailing_newline(void)
+{
+	g_autoptr(VentureFeedBatch) batch = NULL;
+	g_autoptr(JsonObject) fields = NULL;
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_data_source_provider_name_is_valid("widget"));
+	g_assert_false(venture_data_source_provider_name_is_valid("widget\n"));
+
+	batch = venture_feed_batch_new();
+	fields = json_object_new();
+
+	g_assert_true(venture_feed_batch_add_record(batch, "exchange_rate", fields, NULL, &error));
+	g_assert_no_error(error);
+
+	g_assert_false(venture_feed_batch_add_record(batch, "exchange_rate\n", fields, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
+/*
  * A listing's time left travels in the protocol and reaches the store.
  *
  * What breaks if this regresses: without expires_in_min every listing
@@ -2736,6 +2773,8 @@ main(
 
 	g_test_add_func("/feeds/module-is-opt-in", test_feeds_module_is_opt_in);
 	g_test_add_func("/feeds/exact-conversions", test_feeds_exact_conversions);
+	g_test_add_func("/feeds/dollar-anchor-rejects-trailing-newline",
+	                test_feeds_dollar_anchor_rejects_trailing_newline);
 	g_test_add_func("/feeds/listing-expiry-in-the-protocol", test_feeds_listing_expiry_in_the_protocol);
 	g_test_add_func("/feeds/adaptive-interval", test_feeds_adaptive_interval);
 	g_test_add_func("/feeds/home-thread-critical", test_feeds_home_thread_critical);

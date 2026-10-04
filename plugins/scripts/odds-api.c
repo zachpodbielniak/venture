@@ -319,9 +319,18 @@ odds_api_fetch(
 	base = venture_json_object_get_string(settings, "api_base", ODDS_API_DEFAULT_BASE);
 	key = venture_feed_request_get_secret(request, "api_key");
 
-	/* What goes into the address unescaped is held to a spelling that
-	 * needs no escaping; the key is escaped. */
-	if (!g_regex_match_simple("^[a-z0-9_]{1,100}$", sport, 0, 0))
+	/*
+	 * What goes into the address unescaped is held to a spelling that
+	 * needs no escaping; the key is escaped.
+	 *
+	 * Fix: CWE-93 (CRLF injection) -- PCRE's "$" matches not only at the
+	 * end of the subject but also immediately before one trailing
+	 * newline, so e.g. "soccer_epl\n" passed every one of these checks
+	 * under the default compile options, and the newline rode along
+	 * into the request line this sends on the wire. G_REGEX_DOLLAR_ENDONLY
+	 * pins "$" to the true end of the string.
+	 */
+	if (!g_regex_match_simple("^[a-z0-9_]{1,100}$", sport, G_REGEX_DOLLAR_ENDONLY, 0))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 		            "%s is not a sport key: the units are the-odds-api's sport keys, e.g. soccer_epl",
@@ -329,14 +338,14 @@ odds_api_fetch(
 		return NULL;
 	}
 
-	if (!g_regex_match_simple("^[a-z]{2}(,[a-z]{2}){0,7}$", regions, 0, 0))
+	if (!g_regex_match_simple("^[a-z]{2}(,[a-z]{2}){0,7}$", regions, G_REGEX_DOLLAR_ENDONLY, 0))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 		                    "regions is a comma list of region codes: us, uk, eu, au");
 		return NULL;
 	}
 
-	if (!g_regex_match_simple("^https?://[A-Za-z0-9.:\\[\\]-]+/?$", base, 0, 0))
+	if (!g_regex_match_simple("^https?://[A-Za-z0-9.:\\[\\]-]+/?$", base, G_REGEX_DOLLAR_ENDONLY, 0))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 		                    "api_base is an origin, such as https://api.the-odds-api.com");
