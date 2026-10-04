@@ -4970,3 +4970,72 @@ input:not([type="hidden"]):focus-visible {
 @media (max-width: 640px) {
 	table.line-items:not(:has(tr.line-row)) { display: block; overflow-x: auto; }
 }
+
+/* ==========================================================================
+   Market data: the charts and the Trading pages
+   ========================================================================== */
+
+/*
+ * The charts are drawn by the server in currentColor; these rules pick
+ * the colour from the tokens, so both looks and every theme draw them
+ * without a literal colour in the markup. Nothing here is the accent: a
+ * chart is something to read, and red means "look here". A heat cell's
+ * strength is its fill-opacity, set in the markup, which is not a colour.
+ */
+.chart { margin: 0 0 var(--space-4); color: var(--text); }
+.chart-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-heat .chart-svg { max-width: 640px; }
+.chart-grid { color: var(--border); stroke-width: 1; }
+.chart-axis { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.chart-line { stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round;
+              vector-effect: non-scaling-stroke; }
+.chart-line-1 { color: var(--text); }
+.chart-line-2 { color: var(--text-muted); stroke-dasharray: 4 3; }
+.chart-dot { stroke: none; }
+.chart-bar { color: var(--text-muted); }
+.chart-bar:hover { color: var(--text); }
+.chart-heat-cell { color: var(--text); }
+.chart-heat-empty { color: var(--border); stroke-width: 1; }
+.chart-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-4);
+	margin-top: var(--space-2);
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-muted);
+}
+.chart-key::before {
+	content: "";
+	display: inline-block;
+	width: 18px;
+	margin-right: 6px;
+	vertical-align: middle;
+	border-top: 2px solid var(--text);
+}
+.chart-key-2::before { border-top: 2px dashed var(--text-muted); }
+.chart-empty { margin: var(--space-3) 0; }
+.chart-caption { margin-top: var(--space-2); font-size: 12px; color: var(--text-muted); }
+.sparkline { display: inline-block; width: 100px; height: 24px; vertical-align: middle;
+             color: var(--text-muted); }
+.sparkline-line { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+
+.market-filters { align-items: end; }
+.market-note { margin-bottom: var(--space-3); }
+.market-action-row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+.form-inline { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; }
+.form-inline label { display: inline-flex; align-items: center; gap: var(--space-2); }
+.market-heat { display: grid; gap: var(--space-4); }
+.market-days summary { cursor: pointer; margin: var(--space-3) 0; }
+.market-table tr.selected td { background: var(--surface-hover); }
+.market-figure { font-variant-numeric: tabular-nums; }
+.market-widget td, .market-widget th { font-size: 12.5px; }
+.market-hits li { line-height: 1.4; }
+.market-more { padding: var(--space-3) var(--space-4); }
+
+@media (max-width: 640px) {
+	.market-action-row { flex-direction: column; align-items: stretch; }
+	.market-table { display: block; overflow-x: auto; }
+}

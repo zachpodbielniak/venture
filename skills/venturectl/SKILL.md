@@ -1078,6 +1078,31 @@ thresholds, and the others must be left empty or the save is refused:
   editing an `alert_hit` is refused (403); read them with `list alert_hit
   rule_id=N`.
 
+The Trading pages have JSON twins, and three reports read the same answers:
+
+- `report market_deals [PERIOD] [data_source_id=N] [venue=KEY] [group_key=G]
+  [category_path=PATH] [min_value="10.00 GOLD"] [max_pct=80] [top=N]` --
+  instruments in stock at or under their group's deal price, cheapest against
+  the region first. `min_value` must carry its currency (`min_value=10` is
+  refused, never read as dollars) and is compared in that currency only;
+  `max_pct` is a percent of the region median; `top` is 1-500 (50). There is
+  no `limit` option.
+- `report venue_index [data_source_id=N] [group_key=G]` -- per venue: shares
+  cheaper/equal/dearer than the region, price to region, listings, last
+  snapshot, the learned update interval and the data's age.
+- `report watchlist watchlist_id=N` -- the list priced now against its
+  targets; a target in another currency is not compared.
+- The period does not narrow any of them: they read the stores as they are.
+- With feeds off they answer with no rows and a note ("No data sources"),
+  not an error. Another organization's source or list is NOT_FOUND (exit 3).
+- For anything else the pages show, `GET /api/v1/market/browse`,
+  `/api/v1/market/i/SOURCE/KEY`, `/api/v1/market/deals`,
+  `/api/v1/market/venues`, `/api/v1/market/watchlists[/ID]` and
+  `/api/v1/market/alerts` answer JSON; browse sorts only by
+  `min_price, quantity, market_value, region_median, pct_vs_region,
+  sale_rate, sold_per_day, deal_price, listings, name, updated, venue`
+  (anything else is a 400).
+
 ## Organization sign-in
 
 OIDC configuration and explicit identity linking use the web settings described

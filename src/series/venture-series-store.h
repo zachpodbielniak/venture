@@ -138,6 +138,10 @@ typedef enum
  * @VENTURE_SERIES_SORT_NAME: the instrument's name
  * @VENTURE_SERIES_SORT_UPDATED: when the row was last updated
  * @VENTURE_SERIES_SORT_VENUE: the venue's key
+ * @VENTURE_SERIES_SORT_SALE_RATE: the share of units that sold rather than
+ *   expired over fourteen days
+ * @VENTURE_SERIES_SORT_SOLD_PER_DAY: units sold per day with history over
+ *   fourteen days
  *
  * The columns a listing can be sorted by: an allowlist, so a sort named
  * in a query string never reaches SQL as text.
@@ -153,7 +157,9 @@ typedef enum
 	VENTURE_SERIES_SORT_REGION_MEDIAN,
 	VENTURE_SERIES_SORT_NAME,
 	VENTURE_SERIES_SORT_UPDATED,
-	VENTURE_SERIES_SORT_VENUE
+	VENTURE_SERIES_SORT_VENUE,
+	VENTURE_SERIES_SORT_SALE_RATE,
+	VENTURE_SERIES_SORT_SOLD_PER_DAY
 } VentureSeriesSort;
 
 /* --- What goes in ---------------------------------------------------------- */
@@ -404,6 +410,11 @@ typedef struct
  *   either direction, or %VENTURE_SERIES_NONE when it never has (a row's
  *   first sighting is not a change). Equal to @taken_at exactly when the
  *   newest snapshot is the one that took it out of or put it back in stock.
+ * @sale_rate: units sold / (sold + expired) over the last fourteen days, as
+ *   of the last region recompute; NAN when nothing sold or expired, or the
+ *   recompute has not run since the row's history began
+ * @sold_per_day: units sold per day with history over the same days, or
+ *   NAN
  *
  * One instrument at one venue, now. Every price is
  * %VENTURE_SERIES_NONE when unknown.
@@ -434,6 +445,8 @@ typedef struct
 	gint64	 deal_price;
 	gdouble	 pct_vs_region;
 	gint64	 stock_changed_at;
+	gdouble	 sale_rate;
+	gdouble	 sold_per_day;
 } VentureSeriesRow;
 
 /**
@@ -460,6 +473,10 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesRow, venture_series_row_free)
  * @min_value_currency: (nullable): the currency of @min_value, required
  *   with it: a bound in one currency says nothing about another
  * @in_stock_only: leave out rows with nothing offered
+ * @deals_only: only rows in stock whose minimum is at or under their
+ *   group's deal price
+ * @max_pct_vs_region: only rows whose minimum is at most this percent of
+ *   the region median (80 is 20% cheaper); NAN for no bound
  * @sort: the column to sort by
  * @descending: sort largest first
  * @offset: rows to skip
@@ -468,8 +485,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesRow, venture_series_row_free)
  *
  * Narrows and orders venture_series_store_list_current(). Zero-filled
  * means everything, sorted by minimum price -- except @min_value, which
- * must be %VENTURE_SERIES_NONE to mean no bound; use
- * venture_series_filter_init().
+ * must be %VENTURE_SERIES_NONE to mean no bound, and @max_pct_vs_region,
+ * which must be NAN; use venture_series_filter_init().
  */
 typedef struct
 {
@@ -481,6 +498,8 @@ typedef struct
 	gint64			 min_value;
 	const gchar		*min_value_currency;
 	gboolean		 in_stock_only;
+	gboolean		 deals_only;
+	gdouble			 max_pct_vs_region;
 	VentureSeriesSort	 sort;
 	gboolean		 descending;
 	guint			 offset;
@@ -1323,7 +1342,8 @@ venture_series_store_purge(
 /**
  * venture_series_sort_from_string:
  * @name: a sort's name: min_price, market_value, quantity, listings,
- *   pct_vs_region, deal_price, region_median, name, updated or venue
+ *   pct_vs_region, deal_price, region_median, name, updated, venue,
+ *   sale_rate or sold_per_day
  * @out: (out): the sort
  *
  * Returns: %FALSE for any other name

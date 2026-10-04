@@ -115,10 +115,14 @@ The latest figures for each venue and instrument -- what browsing sorts and filt
 | =deal_price=      | the group's deal price, from the last region recompute                                  |
 | =pct_vs_region=   | =min_price= as a percent of =region_median= (80 is 20% cheaper); NULL out of stock       |
 | =stock_changed_at= | the snapshot at which =quantity= last crossed zero, either way; NULL when it never has   |
+| =sale_rate=       | units sold ÷ (sold + expired) over the last 14 days, from the last region recompute; NULL when nothing sold or expired |
+| =sold_per_day=    | units sold ÷ days with history over the same 14 days, from the last region recompute     |
 
-Indexes: (=instrument_id=, =min_price=) for "other venues"; (=venue_id=, =min_price=), (=venue_id=, =market_value=), (=venue_id=, =pct_vs_region=) for one venue's page; =pct_vs_region= and =deal_price= alone (partial, non-NULL) for deals across every venue.
+Indexes: (=instrument_id=, =min_price=) for "other venues"; (=venue_id=, =min_price=), (=venue_id=, =market_value=), (=venue_id=, =pct_vs_region=), (=venue_id=, =sale_rate=) for one venue's page; =pct_vs_region=, =deal_price= and =sale_rate= alone (partial, non-NULL) for deals and sorts across every venue.
 
 =pct_vs_region= is refreshed against the stored =region_median= at every snapshot, so a sort by it is right between recomputes; the median itself only moves when the region is recomputed.
+
+=sale_rate= and =sold_per_day= (schema step 4) are what the browse page sorts "how fast it sells" by. The server answers pages on its main thread, and a sort computed from two weeks of =daily= history per request is a sort over millions of rows, so the figures are kept on the row: the region recompute, which already runs every half hour on the worker, writes them with two set-based statements after the region figures -- the same arithmetic as =venture_series_store_reference()= for one venue, over the days in the row's own currency -- and clears the rows whose history has aged out of the window. They are not counted in the recompute's =current_updated=, which says how many rows' region figures moved. A store upgraded to step 4 has them NULL until its next recompute.
 
 =stock_changed_at= (schema step 3) is written by the statement that makes the change: the snapshot upsert stamps it when the stored and the new quantity sit on different sides of zero, and leaves it alone when either side is unknown (a stats row that did not say how many); marking an absent instrument out of stock stamps it when the row had units. A new row leaves it NULL -- the first sighting of an instrument is not "back in stock", or the first sync of a source would say so about everything. Equal to =taken_at= exactly when the newest snapshot took the instrument out of or back into stock, which is what the stock alerts read.
 
@@ -262,9 +266,9 @@ The pass is linear in =current=: a million venue-instrument rows take about thre
 
 ** Browsing
 
-=venture_series_store_list_current(store, filter)= returns plain rows (=VentureSeriesRow=) with the venue's and instrument's names. The filter narrows by a set of venues (at most 512), a group, one instrument, a search (case-folded, matching the name or the key), a category and the ones beneath it (=herbs= matches =herbs= and =herbs/rare=, never =herbsx=), a minimum value (the market value, else the minimum, in a named currency -- a bound with no currency is refused), and in-stock only. Every value reaches SQL as a parameter, and a search for =%= finds a literal percent sign.
+=venture_series_store_list_current(store, filter)= returns plain rows (=VentureSeriesRow=) with the venue's and instrument's names. The filter narrows by a set of venues (at most 512), a group, one instrument, a search (case-folded, matching the name or the key), a category and the ones beneath it (=herbs= matches =herbs= and =herbs/rare=, never =herbsx=), a minimum value (the market value, else the minimum, in a named currency -- a bound with no currency is refused), in-stock only, deals only (in stock at or under the row's =deal_price=), and a percent of the region median at most (=max_pct_vs_region=, NAN for none; a negative or infinite bound is refused). Every value reaches SQL as a parameter, and a search for =%= finds a literal percent sign. =venture_series_filter_init()= is the only correct way to start a filter: two of its "no bound" values are not zero.
 
-Sorts come from an allowlist -- =min_price=, =market_value=, =quantity=, =listings=, =pct_vs_region=, =deal_price=, =region_median=, =name=, =updated=, =venue= -- so a sort named in a query string never reaches SQL as text. Unknown values sort last whichever way the sort runs, ties break on venue and instrument so paging is stable, and a page is at most 1000 rows (50 by default). =venture_series_store_count_current()= counts the same filter.
+Sorts come from an allowlist -- =min_price=, =market_value=, =quantity=, =listings=, =pct_vs_region=, =deal_price=, =region_median=, =name=, =updated=, =venue=, =sale_rate=, =sold_per_day= -- so a sort named in a query string never reaches SQL as text. Unknown values sort last whichever way the sort runs, ties break on venue and instrument so paging is stable, and a page is at most 1000 rows (50 by default). =venture_series_store_count_current()= counts the same filter.
 
 Also: =_get_current()=, =_other_venues()= (every venue's row for one instrument, cheapest first), =_hourly()=, =_daily()=, =_get_tiers()=, =_bulk_cost()=, =_get_region()=, =_venue_index()= (per venue: instruments compared with the region, how many are cheaper, equal and dearer, the mean ratio, listings, last snapshot and learned interval), =_get_venue_state()=, =_list_venues()=, =_get_instrument()=, =_list_quotes()= (by instrument or by parent), =_list_entries()=.
 
@@ -513,7 +517,7 @@ series:<basis>[@<venue key or group>]
 - =GET /api/v1/market/quote= (viewers): =instrument_id= or =product_id=, =venue_id= or =where=, =basis=, =at=, =currency=, =prefer_currency=, =fallback= (=true=), =source=. Answers ={"basis", "found", "price" (money or null), "value" (number or null), "evidence"}=.
 - =POST /api/v1/market/promote= (editors), above.
 - =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]= and =venturectl market promote=.
-- The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. Pages to browse a store arrive with the browse pages.
+- The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. The Trading pages (see /Browsing: the Trading pages/) browse the stores and price the watchlists.
 - All of it is gone with the module off: the routes answer 404, the types are hidden.
 
 * Alerts
@@ -611,4 +615,126 @@ alerts->on_created where event->type == "alert_hit"
 ** Surfaces
 
 - The records through the generic routes and =venturectl list|get|create|update|delete alert_rule= (and =list|get alert_hit=); =venturectl act alert_rule ID evaluate [record=true]=.
-- Pages to browse rules and hits arrive with the browse pages.
+- =/market/alerts= lists the recent hits and the rules, with an /Evaluate now/ button per rule (=POST /market/alerts/ID/evaluate=, editors; it records, as a run would); its twins are =GET /api/v1/market/alerts= and =POST /api/v1/market/alerts/ID/evaluate= (=?record=false= for a dry run). The =market_alerts= dashboard widget shows the latest hits.
+
+* Browsing: the Trading pages
+
+The pages under =/market= are how a person reads the stores: the catalogue, an instrument at every venue with its history, the deals, how cheap each venue runs against its region, the watchlists and the alerts -- what Undermine Exchange, FlippingPal and Saddlebag show for one game, for any venue and instrument. They are the =marketdata= module's, drawn under *Trading* in the sidebar.
+
+** One answer per page
+
+Each page is one function in =src/marketdata/venture-marketdata-browse.c= that answers in plain JSON, and every door reads that answer:
+
+| Page | Function | API twin |
+|------+----------+----------|
+| =/market/browse= | =venture_marketdata_browse()= | =GET /api/v1/market/browse= |
+| =/market/i/SOURCE/KEY= | =venture_marketdata_instrument()= | =GET /api/v1/market/i/SOURCE/KEY= |
+| =/market/deals= | =venture_marketdata_deals()= | =GET /api/v1/market/deals= |
+| =/market/venues= | =venture_marketdata_venue_index()= | =GET /api/v1/market/venues= |
+| =/market/watchlists=, =/market/watchlists/ID= | =venture_marketdata_watchlists()=, =venture_marketdata_watchlist_view()= | =GET /api/v1/market/watchlists[/ID]= |
+| =/market/alerts= | =venture_marketdata_alerts_overview()= | =GET /api/v1/market/alerts= |
+
+The page and its twin are the same handler: the request is parsed into the function's question the same way, and the twin returns the answer untouched, so the page cannot show what the API would not say. The reports (=market_deals=, =venue_index=, =watchlist=) and the dashboard widgets (=watchlist=, =market_alerts=, =source_health=) read the same functions. The web layer only draws.
+
+Every handler checks its own session or token and the =marketdata= module, and reads only the active organization: another organization's data source, watchlist or rule is NOT_FOUND, never FORBIDDEN, so whether it exists is not told. Reading is a viewer's; promoting and evaluating are an editor's.
+
+** What a store read may cost
+
+The server is single-threaded. Every list a page asks a store for is a page of an indexed sort on a precomputed column of =current= -- which is why the sale rate became a column (schema step 4) rather than a figure computed per request -- and every history read is one instrument at one venue: fourteen days of hourly points, sixty days of daily rows, the 64 cheapest tiers. Nothing here sorts or filters store rows in C. Pages are at most 200 rows, deals at most 500, and a page number past a million is refused.
+
+** No data sources
+
+With feeds off, or in a build without SQLite, every page is still a page: the answer's =available= is false, its =notes= say why ("No data sources: market data feeds are off (feeds.enabled)."), and its lists are empty. A source that has stored nothing yet says so by name. Watchlists, rules and hits are records and are always listed. An instrument page whose store is empty, whose key it does not know, or whose =?venue= never listed it, is NOT_FOUND with the reason.
+
+** Browse
+
+=/market/browse?source=&search=&category=&venue=&group=&stock=1&sort=&dir=&page=&per_page== lists one source's current rows (the organization's first source by name when none is chosen), a row per venue and instrument. The columns:
+
+| Column | Meaning |
+|--------+---------|
+| Instrument | the store's name for it (else its key) and category path; links to its page at that venue |
+| Venue | the venue's name, else its key |
+| Lowest | =min_price=, the cheapest unit on offer in the newest snapshot |
+| Quantity | units on offer; 0 out of stock; blank when the source did not say |
+| Market value | the TSM-style market value of the book (see /The figures/) |
+| Region median | the median of the lowest prices across the venue's group, from the last region recompute |
+| Of region | Lowest ÷ Region median × 100: 80% is 20% under the region |
+| Sale rate | sold ÷ (sold + expired) over 14 days, from the last recompute |
+| Updated | when the row's snapshot was taken |
+
+Every heading is a link that sorts by that column (=aria-sort= marks the active one; a second click turns it round), keeping the rest of the question; the sorts are =venture_marketdata_browse_sorts()= -- =min_price=, =quantity=, =market_value=, =region_median=, =pct_vs_region=, =sale_rate=, =sold_per_day=, =deal_price=, =listings=, =name=, =updated=, =venue= -- and anything else is refused with a 400, never ignored or passed on. Unknown values sort last either way. Search matches the name or key, case-folded; category matches the path and everything beneath it.
+
+** An instrument
+
+=/market/i/SOURCE/KEY?venue=&units== is Undermine's item page. =KEY= is the store's key, escaped as one path segment in every link (=venture_marketdata_instrument_path()=); the server hands handlers the path already unescaped, so a key holding a slash arrives as two segments, and the route takes the whole rest of the path as the key. With no =?venue= it opens at the cheapest venue that has it in stock, else the first.
+
+- *Now* (base stats): the venue's lowest price, quantity, last seen, the median of each day's lowest price over 14 days at this venue, the region median, the region's deal price, "of region" and the market value. The region figures are the group's =region= row in the venue's currency.
+- *Sales*: units sold a day, the sale rate and what units sold for on average over 14 days, the 14-day weighted market value and the 60-day historical one -- =venture_series_store_reference()= for the venue.
+- *Snapshots*: the lowest price and the quantity every hour for 14 days, one line against each axis (quantity on the right). An hour in another currency is a gap on the price line, not a number in the wrong unit.
+- *Heat map*: two weekday-by-hour maps of the last seven days, lowest price (cheapest darkest) and quantity (most darkest), in the configured =locale.timezone= at its offset now (a daylight-saving change inside the week shifts the hours before it by one). Only points in the newest point's currency count. Each cell is the mean of the hourly figures that fell in it.
+- *Daily history*: per day for 60 days, the most units on offer in any one snapshot and the lowest price in that snapshot (the fullest market of the day, which is the one Undermine keeps), the day's lowest, and the units estimated sold and expired; as a chart, and as a table newest first.
+- *Bulk pricing*: =?units=N= walks the venue's book from its cheapest tier (=venture_series_store_bulk_cost()=): units filled, total cost, average and the price of the last unit, and says when the book runs out first. The 20 cheapest tiers are listed under it.
+- *Every venue*: the instrument's current row at every venue, cheapest first -- Undermine's "other realms" -- each linking to the page at that venue.
+- *Act*: view at another venue; *Promote to a record* (or a link to the record once there is one); *Add to watchlist* with a list to choose; *Create an alert*. These are forms that POST to the page's own address with =action=promote=, =watch= or =alert= (editors). Each promotes the instrument (=venture_marketdata_promote_instrument()=, idempotent), then goes back to the page, or to the generic =/e/watchlist_entry/new= form with =instrument_id= and =watchlist_id= filled in, or to =/e/alert_rule/new= with =instrument_id=, =data_source_id=, =kind=below= and the venue's =group_key=. The action is a form field rather than a path segment because the key is the rest of the path.
+
+** Deals
+
+=/market/deals?source=&venue=&group=&category=&min_value=&max_pct=&top== lists every instrument in stock at a venue whose lowest price is at or under its group's deal price -- the median of the group's lowest prices, or their 33rd percentile when 15 or more venues offer it (=venture_series_math_deal_price()=), withheld when the median is under the source's =min-value=. Every source of the organization is read unless one is named; each answers its best =top= + 1 from the deal index and the merge keeps the best =top=, cheapest against the region first, and says when it cut some.
+
+| Column | Meaning |
+|--------+---------|
+| Lowest | the venue's lowest price |
+| Deal price | the group's deal price |
+| Region median | the group's median |
+| Of region | Lowest ÷ Region median × 100 |
+| Under by | Deal price − Lowest, exact, in the row's currency |
+| Quantity, Sale rate | as on Browse |
+
+=min_value= is an amount with its currency ("10.00 GOLD"); the row's market value (else its lowest price) must be at least that, compared in that currency only, so a gold bound lets no dollar row through. An amount with no currency is refused rather than read in the install's default (=venture_marketdata_parse_amount()=). =max_pct= is a percent of the region median ("80").
+
+** Venues
+
+=/market/venues?source=&group== is FlippingPal's realm index with Saddlebag's upload timer, per venue of every source:
+
+| Column | Meaning |
+|--------+---------|
+| Compared | instruments in stock at the venue that have a region median |
+| Cheaper, Equal, Dearer | the shares of those under, at and over the region median (they add to 100%) |
+| Price to region | the mean over those instruments of lowest ÷ region median |
+| Listings | listings across every instrument |
+| Last snapshot | the venue's newest snapshot |
+| Updates every | the interval the store learned from the venue's last 36 gaps (median of 3-gap maxima, capped at two hours) |
+| Next expected | last snapshot + interval |
+| Data age | now − last snapshot; /late/ past twice the interval |
+
+** Watchlists
+
+=/market/watchlists= lists the lists; =/market/watchlists/ID= prices one now. Each entry's instrument record names its data source and key; the venues are the instrument's current rows in the list's =group_key= (every venue when it has none). The cheapest in-stock one is /Cheapest at/; /Against buy/ and /Against sell/ are that price minus the targets, exact, and only when the target is in the same currency -- nothing here converts. /Now/ says /buy/ when the price is at or under the buy target and /sell/ when at or over the sell target. The sparkline is the cheapest venue's lowest price each day over 14 days. An entry whose instrument has no data source says so.
+
+** Alerts
+
+See /Alerts/ above: the recent hits newest first (each with the rule, the message, a link to the instrument's prices and, for an entry, its source link when it is a web address) and the rules with when each last fired and an /Evaluate now/ button.
+
+** Reports
+
+Three reports read the same answers, through every door (the report API, the report page and its controls, =venturectl report=, the MCP =venture_report= tool and the assistant's), with these options:
+
+| Report | Options |
+|--------+---------|
+| =market_deals= | =data_source_id=, =venue=, =group_key=, =category_path=, =min_value= ("10.00 GOLD"), =max_pct= ("80"), =top= (1 to 500, 50) |
+| =venue_index= | =data_source_id=, =group_key= |
+| =watchlist= | =watchlist_id= (required) |
+
+Each also takes =organization_id=. They read the stores as they are now; the period does not narrow them, and a note says so. Their parameter schemas are what a dashboard =report= widget forwards options through (={"group_key": "eu", "top": 10}= on a =market_deals= card).
+
+** Widgets
+
+- =watchlist= (=record_id=, =limit=): one list priced now -- the first by name with no id -- instrument, cheapest venue, price and signal.
+- =market_alerts= (=limit=): the latest hits.
+- =source_health= (feeds module): each source's last run status and rows, and how many of its venues are late.
+
+Each answers about the scope's primary organization, and writes its JSON and its card from one loop over the same answer.
+
+** Charts
+
+The pictures are drawn by =src/web/venture-web-chart.c= on the server as inline SVG: a line (two series, the second on its own axis), bars, a sparkline and a heat map. No script is needed and they print. Colour comes from the stylesheets' tokens through =currentColor= and classes (see [[file:interface.org][The interface]]); every chart has a =<title>=, a =<desc>=, an =aria-label= and -- except the sparkline, which is named by its label -- a visually hidden table of every figure. Every label is escaped, because an instrument's name is whatever a feed said it was. Series figures arrive as integer minor units and are formatted as the currency reads them.

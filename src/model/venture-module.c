@@ -675,6 +675,7 @@ static GType (*const bankfeed_types[]) (void) = { venture_bank_connection_get_ty
  * oracle answers from observations when it is allowed to. */
 static const gchar *const marketdata_requires[] = { "market", NULL };
 static const gchar *const marketdata_suggests[] = { "feeds", NULL };
+static const gchar *const marketdata_reports[] = { "market_deals", "venue_index", "watchlist", NULL };
 static GType (*const marketdata_types[]) (void) = {
 	venture_venue_get_type, venture_instrument_get_type,
 	venture_watchlist_get_type, venture_watchlist_entry_get_type,
@@ -1331,7 +1332,7 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"alert rules and their hits, and the price oracle every valuing "
 		"report can ask through a series: price source: min, market, 14-day "
 		"and 60-day averages, region figures, sale rate and quantity.",
-		marketdata_requires, marketdata_suggests, marketdata_types, NULL,
+		marketdata_requires, marketdata_suggests, marketdata_types, marketdata_reports,
 		NULL, FALSE
 	}
 };

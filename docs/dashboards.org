@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-27]
+#+updated: [2026-10-03]
 #+version: 0.7.0
 
 * What this is
@@ -67,6 +67,11 @@ Every widget has a kind, a title (or the kind supplies one), a width — one col
 | =milestone=      | one milestone's tickets done over planned; the soonest-due open one when no id is given (needs =factory=) | =record_id=                                   |
 | =sum=            | the total of a money or number field over the records matching a filter, optionally within a period; money is one figure per currency | =entity_type=, =field=, =filter=, =period=, =options= (={"date_field": "occurred_at"}=) |
 | =progress=       | a value field against a target field as a percentage and a bar: of one record, or summed over a filter, per currency | =entity_type=, =field=, =record_id=, =filter=, =period=, =options= (={"target_field": "budget"}=, =start_field=, =date_field=) |
+| =watchlist=      | one market data watchlist priced now (the first by name with no id): each instrument's cheapest in-stock venue in the list's group, the price, and /buy/ or /sell/ against the targets (needs =marketdata=) | =record_id=, =limit= |
+| =market_alerts=  | the latest market data alert hits, newest first, each linking to the hit (needs =marketdata=) | =limit= |
+| =source_health=  | each market data source's last run (status and rows) and how many of its venues are late (needs =feeds=) | nothing |
+
+*The market kinds* read the answers the Trading pages draw (=venture_marketdata_watchlist_view()=, =venture_marketdata_alerts_overview()=, =venture_marketdata_source_health()=; see [[file:market-data.org][Market data]]), for the scope's primary organization like a report widget, and write their JSON and their card from one loop: a watchlist card's =price_formatted= is the text in its cell. A list that is gone or another organization's is an error in place. To put the deals or the venue index on a page, use a =report= widget on =market_deals= or =venue_index=, whose options (=group_key=, =top=, ...) it forwards.
 
 *Sum and progress* add up a numeric field --- money, an integer or a double, built in or custom, never sensitive --- with the same accumulator as the =aggregate= report (see [[file:reporting.org][Reporting]]), so the card and the report cannot disagree. Money is totalled per currency and shown as one figure each: a shop selling in dollars and gold shows two, never one number in neither. A number over no records is 0; money over none has no currency to be zero in, and says "Nothing to add up". A =period= bounds =options.date_field=, a declared date field; a period with no date field is an error in place rather than an all-time figure labelled "this month". A total reads every match, not the widget's =limit=, and is refused past the report's 20 000-record bound. =progress= divides the value by the target in the same currency; the bar stops at full while the words say how far past it ("(140%)"), a target of zero or none reads "no target", and a currency on one side only still gets its line (a gold target with no gold yet is 0%). With =record_id= it follows one record, otherwise it sums both fields over the filter. The value and the target must both be money or both numbers. =options.start_field= names where the measure started, and the percentage becomes (value − start) ÷ (target − start): a goal of 90 kg toward 80 at 85 is 50%, where value ÷ target would say 106% (see [[file:goals.org][Goals]]); the card adds "from" and the start, and each JSON line gains =start=. Without it nothing changes. The JSON carries each total as =venture_money_to_json()= (the exact minor units) beside the text the card shows.
 

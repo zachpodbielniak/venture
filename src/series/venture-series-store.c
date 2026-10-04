@@ -227,10 +227,25 @@ static const gchar series_schema_step_3[] =
 	"ALTER TABLE current ADD COLUMN stock_changed_at INTEGER;"
 	"CREATE INDEX entries_fetched ON entries (fetched_at);";
 
+/*
+ * How fast an instrument sells at a venue, kept on the current row so a
+ * browse page can sort by it: the series server answers pages on the main
+ * thread, and a sort computed over two weeks of history per request would
+ * be a sort over millions of rows. Written by the region recompute, which
+ * already runs every half hour on the worker; NULL until it has.
+ */
+static const gchar series_schema_step_4[] =
+	"ALTER TABLE current ADD COLUMN sale_rate REAL;"
+	"ALTER TABLE current ADD COLUMN sold_per_day REAL;"
+	"CREATE INDEX current_venue_sale_rate ON current (venue_id, sale_rate);"
+	"CREATE INDEX current_sale_rate ON current (sale_rate)"
+	"  WHERE sale_rate IS NOT NULL;";
+
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
 	series_schema_step_2,
-	series_schema_step_3
+	series_schema_step_3,
+	series_schema_step_4
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -3732,6 +3747,42 @@ static const gchar series_sql_region_orphans[] =
 	"                     AND r.instrument_id = current.instrument_id"
 	"                     AND r.currency = current.currency)";
 
+/*
+ * The sale rate and units sold per day of every current row, over the
+ * same fourteen days and with the same arithmetic as
+ * venture_series_store_reference() for one venue: sold / (sold + expired)
+ * and sold / days with history. Only days in the row's own currency count,
+ * since the row's prices are in it. Rows with no history in the window are
+ * cleared rather than left with a figure that has aged out.
+ */
+static const gchar series_sql_sales_apply[] =
+	"UPDATE current AS c SET sale_rate = s.rate, sold_per_day = s.per_day"
+	" FROM (SELECT d.venue_id, d.instrument_id, d.currency,"
+	"         CASE WHEN SUM(d.sold_estimate) + SUM(d.expired_estimate) > 0"
+	"              THEN SUM(d.sold_estimate) * 1.0"
+	"                   / (SUM(d.sold_estimate) + SUM(d.expired_estimate))"
+	"         END AS rate,"
+	"         SUM(d.sold_estimate) * 1.0 / COUNT(*) AS per_day"
+	"       FROM daily d"
+	"       WHERE d.day >= ?2 AND d.day <= ?3"
+	"         AND (?1 IS NULL OR d.venue_id IN (SELECT id FROM venues"
+	"                                           WHERE group_key = ?1))"
+	"       GROUP BY d.venue_id, d.instrument_id, d.currency) AS s"
+	" WHERE s.venue_id = c.venue_id AND s.instrument_id = c.instrument_id"
+	"   AND s.currency = c.currency"
+	"   AND (c.sale_rate IS NOT s.rate OR c.sold_per_day IS NOT s.per_day)";
+
+static const gchar series_sql_sales_orphans[] =
+	"UPDATE current SET sale_rate = NULL, sold_per_day = NULL"
+	" WHERE (sale_rate IS NOT NULL OR sold_per_day IS NOT NULL)"
+	"   AND (?1 IS NULL OR venue_id IN (SELECT id FROM venues"
+	"                                   WHERE group_key = ?1))"
+	"   AND NOT EXISTS (SELECT 1 FROM daily d"
+	"                   WHERE d.venue_id = current.venue_id"
+	"                     AND d.instrument_id = current.instrument_id"
+	"                     AND d.currency = current.currency"
+	"                     AND d.day >= ?2 AND d.day <= ?3)";
+
 /* One group, instrument and currency, gathered from the sorted stream. */
 typedef struct
 {
@@ -3959,6 +4010,35 @@ series_region_apply(
 		result->current_updated += sqlite3_changes(self->db);
 	}
 
+	/* And how fast each row sells, over the last fourteen days. */
+	{
+		static const gchar *const statements[] = {
+			series_sql_sales_apply, series_sql_sales_orphans
+		};
+		gint64 today;
+		guint i;
+
+		today = series_day_of(now);
+
+		for (i = 0; i < G_N_ELEMENTS(statements); i++)
+		{
+			g_autoptr(SeriesCachedStmt) sales = NULL;
+
+			sales = series_stmt(self, statements[i], error);
+			if (NULL == sales)
+				goto out;
+
+			series_bind_text(sales, 1, group_key);
+			sqlite3_bind_int64(sales, 2, today - VENTURE_SERIES_EWMA_DAYS + 1);
+			sqlite3_bind_int64(sales, 3, today);
+
+			/* Not counted in current_updated, which says how many
+			 * rows' region figures moved. */
+			if (!series_step_done(self, sales, "computing sale rates", error))
+				goto out;
+		}
+	}
+
 	ok = TRUE;
 
 out:
@@ -4151,7 +4231,7 @@ venture_series_store_purge(
 	" c.currency, c.taken_at, c.seen_at, c.quantity, c.listings, c.min_price," \
 	" c.market_value, c.median, c.p15, c.mean, c.stddev, c.bid_price," \
 	" c.bid_quantity, c.region_median, c.deal_price, c.pct_vs_region," \
-	" c.stock_changed_at"
+	" c.stock_changed_at, c.sale_rate, c.sold_per_day"
 
 #define SERIES_ROW_FROM \
 	" FROM current c JOIN venues v ON v.id = c.venue_id" \
@@ -4188,6 +4268,10 @@ series_row_from(sqlite3_stmt *stmt)
 	row->pct_vs_region = (SQLITE_NULL == sqlite3_column_type(stmt, 22)) ?
 	                     NAN : sqlite3_column_double(stmt, 22);
 	row->stock_changed_at = series_column_figure(stmt, 23);
+	row->sale_rate = (SQLITE_NULL == sqlite3_column_type(stmt, 24)) ?
+	                 NAN : sqlite3_column_double(stmt, 24);
+	row->sold_per_day = (SQLITE_NULL == sqlite3_column_type(stmt, 25)) ?
+	                    NAN : sqlite3_column_double(stmt, 25);
 
 	if (NULL == row->group_key)
 		row->group_key = g_strdup("");
@@ -4218,19 +4302,22 @@ venture_series_filter_init(VentureSeriesFilter *filter)
 
 	memset(filter, 0, sizeof(*filter));
 	filter->min_value = VENTURE_SERIES_NONE;
+	filter->max_pct_vs_region = NAN;
 	filter->sort = VENTURE_SERIES_SORT_MIN_PRICE;
 }
 
 static const gchar *const series_sort_names[] = {
 	"min_price", "market_value", "quantity", "listings", "pct_vs_region",
-	"deal_price", "region_median", "name", "updated", "venue"
+	"deal_price", "region_median", "name", "updated", "venue", "sale_rate",
+	"sold_per_day"
 };
 
 /* The SQL each sort orders by: fixed text, never built from input. */
 static const gchar *const series_sort_columns[] = {
 	"c.min_price", "c.market_value", "c.quantity", "c.listings",
 	"c.pct_vs_region", "c.deal_price", "c.region_median",
-	"COALESCE(i.name_fold, i.key)", "c.taken_at", "v.key"
+	"COALESCE(i.name_fold, i.key)", "c.taken_at", "v.key", "c.sale_rate",
+	"c.sold_per_day"
 };
 
 gboolean
@@ -4285,8 +4372,10 @@ series_like_escape(const gchar *text)
 typedef struct
 {
 	gboolean	 is_text;
+	gboolean	 is_double;
 	gchar		*text;
 	gint64		 value;
+	gdouble		 real;
 } SeriesBinding;
 
 static void
@@ -4302,9 +4391,22 @@ series_bind_add_text(
 ){
 	SeriesBinding binding;
 
+	memset(&binding, 0, sizeof(binding));
 	binding.is_text = TRUE;
 	binding.text = g_strdup(text);
-	binding.value = 0;
+	g_array_append_val(bindings, binding);
+}
+
+static void
+series_bind_add_double(
+	GArray	*bindings,
+	gdouble	 value
+){
+	SeriesBinding binding;
+
+	memset(&binding, 0, sizeof(binding));
+	binding.is_double = TRUE;
+	binding.real = value;
 	g_array_append_val(bindings, binding);
 }
 
@@ -4315,8 +4417,7 @@ series_bind_add_int(
 ){
 	SeriesBinding binding;
 
-	binding.is_text = FALSE;
-	binding.text = NULL;
+	memset(&binding, 0, sizeof(binding));
 	binding.value = value;
 	g_array_append_val(bindings, binding);
 }
@@ -4442,6 +4543,33 @@ series_filter_where(
 		g_string_append(sql, " AND c.min_price IS NOT NULL"
 		                     " AND (c.quantity IS NULL OR c.quantity > 0)");
 
+	/*
+	 * A deal is a price at or under the group's deal price, in stock.
+	 * Both sides are precomputed columns and deal_price has a partial
+	 * index, so the page that asks this does not scan the store.
+	 */
+	if (filter->deals_only)
+		g_string_append(sql, " AND c.deal_price IS NOT NULL"
+		                     " AND c.min_price IS NOT NULL"
+		                     " AND c.min_price <= c.deal_price"
+		                     " AND (c.quantity IS NULL OR c.quantity > 0)");
+
+	if (!isnan(filter->max_pct_vs_region))
+	{
+		if (!isfinite(filter->max_pct_vs_region) || (filter->max_pct_vs_region < 0.0))
+		{
+			g_set_error_literal(error, VENTURE_ERROR,
+			                    VENTURE_ERROR_INVALID_ARGUMENT,
+			                    "A percent of the region median is a finite "
+			                    "number, zero or more");
+			return FALSE;
+		}
+
+		g_string_append(sql, " AND c.pct_vs_region IS NOT NULL"
+		                     " AND c.pct_vs_region <= ?");
+		series_bind_add_double(bindings, filter->max_pct_vs_region);
+	}
+
 	return TRUE;
 }
 
@@ -4474,6 +4602,8 @@ series_prepare_bound(
 
 		if (binding->is_text)
 			series_bind_text(stmt, (gint)i + 1, binding->text);
+		else if (binding->is_double)
+			sqlite3_bind_double(stmt, (gint)i + 1, binding->real);
 		else
 			sqlite3_bind_int64(stmt, (gint)i + 1, binding->value);
 	}

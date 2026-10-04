@@ -825,6 +825,15 @@ venture_mcp_catalog_add_tool_extras(
 		/* The ledger's holdings. */
 		venture_mcp_catalog_add_integer_property(builder, "location_id", "holdings: only this location and every location beneath it.");
 		venture_mcp_catalog_add_boolean_property(builder, "include_on_hand", "goal_materials: true (default) takes stock on hand off what is needed; false does not.");
+		/* The market data reports' questions. */
+		venture_mcp_catalog_add_integer_property(builder, "data_source_id", "market_deals, venue_index: only this data source; every source of the organization by default.");
+		venture_mcp_catalog_add_string_property(builder, "venue", "market_deals: only this venue, by its key in the store.");
+		venture_mcp_catalog_add_string_property(builder, "group_key", "market_deals, venue_index: only venues in this group (a region).");
+		venture_mcp_catalog_add_string_property(builder, "category_path", "market_deals: only instruments in this store category path and beneath.");
+		venture_mcp_catalog_add_string_property(builder, "min_value", "market_deals: only instruments worth at least this, with its currency, e.g. 10.00 GOLD.");
+		venture_mcp_catalog_add_string_property(builder, "max_pct", "market_deals: only prices at most this percent of the region median, e.g. 80.");
+		venture_mcp_catalog_add_integer_property(builder, "top", "market_deals: how many deals, 1 to 500; 50 by default.");
+		venture_mcp_catalog_add_integer_property(builder, "watchlist_id", "watchlist: the watchlist to price.");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

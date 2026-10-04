@@ -1683,6 +1683,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/accounting", "Books", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Accounting", "accounting" },
 	{ "/bankfeed", "Bank feeds", VENTURE_ICON("<path d=\"M4 12h16M4 7h16M4 17h10\"/>"), NULL, "bankfeed" },
 	{ "/feeds", "Market data", VENTURE_ICON("<path d=\"M3 17l5-6 4 4 8-9\"/><path d=\"M14 6h6v6\"/>"), NULL, "feeds" },
+	{ "/market/browse", "Browse", VENTURE_ICON("<circle cx=\"11\" cy=\"11\" r=\"6\"/><path d=\"M20 20l-4.5-4.5\"/>"), NULL, "marketdata" },
+	{ "/market/deals", "Deals", VENTURE_ICON("<path d=\"M3 12l9-9h8v8l-9 9z\"/><circle cx=\"15.5\" cy=\"8.5\" r=\"1.2\"/>"), NULL, "marketdata" },
+	{ "/market/venues", "Venues", VENTURE_ICON("<path d=\"M4 20V9l8-5 8 5v11\"/><path d=\"M9 20v-6h6v6\"/>"), NULL, "marketdata" },
+	{ "/market/watchlists", "Watchlists", VENTURE_ICON("<path d=\"M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>"), NULL, "marketdata" },
+	{ "/market/alerts", "Alerts", VENTURE_ICON("<path d=\"M6 16V11a6 6 0 0 1 12 0v5l2 2H4z\"/><path d=\"M10 21h4\"/>"), NULL, "marketdata" },
 	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
 	{ "/equity", "Owner equity", VENTURE_ICON("<path d=\"M12 3v18M5 10h14\"/>"), NULL, "equity" },
 	{ "/group", "Group", VENTURE_ICON("<circle cx=\"8\" cy=\"8\" r=\"3\"/><circle cx=\"16\" cy=\"8\" r=\"3\"/>"), NULL, "group" },
@@ -1776,10 +1781,14 @@ static const gchar *const venture_web_nav_operations[] = {
 	NULL
 };
 
-/* Outside prices and what is done with them: feeds now, and the browse,
- * deal and arbitrage pages that read them. */
+/* Outside prices and what is done with them: the browse, deal, venue,
+ * watchlist and alert pages that read the feeds' stores, and the feeds
+ * themselves. The market pages are the marketdata module's, so the
+ * heading is drawn whenever it is on; with feeds off they say there are
+ * no data sources rather than vanish. */
 static const gchar *const venture_web_nav_trading[] = {
-	"/feeds",
+	"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
+	"/market/alerts", "/feeds",
 	NULL
 };
 
@@ -3713,8 +3722,8 @@ venture_web_api_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7620,6 +7629,15 @@ venture_web_holdings_controls(
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
 }
 
+/* The market reports' controls live with the Trading pages. */
+static void
+venture_marketdata_web_report_controls(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureReport		*report,
+	GString			*content
+);
+
 static HtmxResponse *
 venture_web_ui_report(
 	HtmxRequest	*request,
@@ -7678,8 +7696,8 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
-		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7718,6 +7736,7 @@ venture_web_ui_report(
 		venture_web_sessions_controls(self, request, report, form);
 		venture_web_goals_controls(self, request, report, form);
 		venture_web_holdings_controls(self, request, report, form);
+		venture_marketdata_web_report_controls(self, request, report, form);
 		body = g_strdup_printf("%s<div class=\"notice negative\" role=\"alert\">%s</div>",
 		                       form->str, words);
 		return venture_web_html_response(
@@ -7728,7 +7747,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -7792,7 +7811,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -7817,6 +7836,7 @@ venture_web_ui_report(
 	venture_web_sessions_controls(self, request, report, content);
 	venture_web_goals_controls(self, request, report, content);
 	venture_web_holdings_controls(self, request, report, content);
+	venture_marketdata_web_report_controls(self, request, report, content);
 	rendered = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_HTML);
 	g_string_append(content, rendered);
 
@@ -31882,6 +31902,7 @@ venture_web_api_ticket_draft(
 #include "feeds/venture-feeds-web.inc"
 #endif
 #include "marketdata/venture-marketdata-web.inc"
+#include "marketdata/venture-marketdata-pages.inc"
 #include "commerce/venture-commerce-web.inc"
 #include "budgets/venture-budget-web.inc"
 #include "equity/venture-equity-web.inc"
@@ -32409,8 +32430,10 @@ venture_web_server_new(
 	/* Before the generic record routes: /api/v1/feeds is not a type. */
 	venture_feeds_web_register(self);
 #endif
-	/* Likewise /api/v1/market: the oracle and promotion, not a type. */
+	/* Likewise /api/v1/market: the oracle, promotion and the Trading
+	 * pages' twins, not a type. */
 	venture_marketdata_web_register(self);
+	venture_marketdata_pages_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);

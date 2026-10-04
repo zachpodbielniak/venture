@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-09-25]
+#+updated: [2026-10-03]
 #+version: 0.6.0
 
 * The interface
@@ -106,6 +106,34 @@ A plugin page or a custom widget should use these and nothing else.
 | =--space-1= … =--space-8=          | 4, 8, 12, 16, 24, 40, 64, 96 pixels                        |
 
 The classes worth knowing when writing markup: =.card= with =.card-head= and =.card-body=; =.grid.cols-N= and =.bento= for compartments that share rules; =.stat= with =.stat-label= and =.stat-value=; =table.data=; =.badge= with =.positive= / =.negative= / =.warning= / =.info=; =.btn= with =.btn-primary=, =.btn-ghost=, =.btn-danger=, =.btn-sm=; =.notice= with the same four statuses; =.field= with =.field-label= and =.field-help=; =.page-head= with =.page-title=, =.eyebrow= and =.page-actions=; =.crumbs= for the trail above a title; =.record-layout= with =.record-main= and =.record-aside=; =dl.facts= of =.fact= rows; =details.all-fields= and =details.form-section= for folded content; =.status-badge= with a tone class.
+
+** Charts
+
+Charts are drawn by the server as inline SVG (=src/web/venture-web-chart.c=): a line with an optional second series on its own right-hand axis, bars, a word-sized sparkline and a weekday-by-hour heat map. They need no script and they print. The markup never carries a colour: every mark is stroked or filled with =currentColor= and carries a class, and both stylesheets colour the classes from the tokens, in one block written once against the tokens and appended to each.
+
+| Class | What it is | Colour |
+|-------+------------+--------|
+| =.chart=, =.chart-line=, =.chart-bar=, =.chart-heat= | the =<figure>= around a chart, by kind | =--text= |
+| =.chart-svg= | the picture, full width, scaling with its box | |
+| =.chart-grid= | the horizontal rules | =--border= |
+| =.chart-axis= | the axis and cell labels, in the mono | =--text-faint= |
+| =.chart-line-1= | the first series, solid | =--text= |
+| =.chart-line-2= | the second series, dashed, against the right-hand axis | =--text-muted= |
+| =.chart-dot= | a point alone between gaps | its series' colour |
+| =.chart-bar= (on a =rect=) | a bar | =--text-muted=, =--text= under the pointer |
+| =.chart-heat-cell= | a heat cell; its strength is =fill-opacity= (0.12 to 0.92), not a colour | =--text= |
+| =.chart-heat-empty= | a cell with nothing in it: outlined, never filled, so empty never reads as cheapest | =--border= |
+| =.chart-legend=, =.chart-key-1=, =.chart-key-2= | the legend, in the micro register, each key a short rule in its series' style | =--text-muted= |
+| =.chart-caption= | a heat map's title in words, and which way its shading runs, in the caption register | =--text-muted= |
+| =.chart-data= | the figures as a table, =.visually-hidden= | |
+| =.chart-empty= | "nothing to draw yet", in place of a chart with no data | |
+| =.sparkline=, =.sparkline-line= | the word-sized line in a table cell | =--text-muted= |
+
+Red is not used: a chart is something to read, and red means "look here". A heat map of prices shades the cheapest cell darkest, because cheap is what a buyer looks for; a map of quantities shades the most darkest. No radius, no gradient, no shadow, as everywhere.
+
+Every chart has a =<title>=, a =<desc>= when it has a sentence to say, =role="img"= with an =aria-label=, and a table of every figure -- a picture of numbers is not the numbers. Every label is escaped; the coordinates are written in the C locale, because a decimal comma would split one SVG number into two.
+
+The Trading pages add =.market-filters= (a filter form), =.market-action-row= and =.form-inline= (a row of small forms), =.market-stats= and =.market-figure= (stat rows), =.market-heat= (two heat maps stacked), =.market-table= (a data table that scrolls inside its card on a phone), =.market-widget= and =.market-hits= (the market dashboard cards).
 
 ** Pickers
 

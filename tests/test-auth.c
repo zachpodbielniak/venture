@@ -1298,6 +1298,25 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/quote?product_id=1"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", NULL,
 		"{\"data_source_id\":1,\"kind\":\"instrument\",\"key\":\"1\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* The Trading pages and their twins. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/browse"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/deals"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/venues"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/watchlists"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/watchlists/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/alerts"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/market/i/1/2770"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/alerts/1/evaluate", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/i/1/2770", NULL, "action=promote", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/i/1/a/key/with/slashes", NULL, "action=watch", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/browse"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/deals"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/venues"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/watchlists"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/watchlists/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/alerts"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/i/1/2770"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/alerts/1/evaluate", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/mail_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/connectors/calendar_account/1/settings"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/connectors/mail_account/1/settings", NULL, "operation=test", NULL, NULL), ==, SOUP_STATUS_FOUND);
@@ -5178,6 +5197,7 @@ test_auth_sidebar_asks_the_five_questions(
 		"<summary class=\"nav-section\">Growth</summary>",
 		"<summary class=\"nav-section\">Support</summary>",
 		"<summary class=\"nav-section\">Operations</summary>",
+		"<summary class=\"nav-section\">Trading</summary>",
 		"<summary class=\"nav-section\">Build</summary>",
 		"<summary class=\"nav-section\">Settings</summary>",
 	};
@@ -5230,7 +5250,21 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_null(strstr(page, "class=\"nav-section\">Accounting<"));
 	g_assert_null(strstr(page, "class=\"nav-section\">Business<"));
 	g_assert_nonnull(strstr(page, "href=\"/deals\""));
-	g_assert_null(strstr(page, "<summary class=\"nav-section\">Trading</summary>"));
+
+	/* Trading is the marketdata module's pages, on by default; with feeds
+	 * off -- the default -- the feeds row is not among them. */
+	{
+		const gchar *trading = strstr(page, headings[10]);
+		const gchar *build = strstr(page, headings[11]);
+		const gchar *browse = strstr(page, "href=\"/market/browse\"");
+		const gchar *alerts = strstr(page, "href=\"/market/alerts\"");
+
+		g_assert_nonnull(browse);
+		g_assert_nonnull(alerts);
+		g_assert_true((browse > trading) && (browse < build));
+		g_assert_true((alerts > browse) && (alerts < build));
+		g_assert_null(strstr(page, "href=\"/feeds\""));
+	}
 
 	/* Reports is an overview page: no question is open over it. */
 	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"money\" open>"));
@@ -5243,16 +5277,15 @@ test_auth_sidebar_asks_the_five_questions(
 	g_assert_null(strstr(page, "<details class=\"nav-group\" data-nav-group=\"customers\" open>"));
 	g_clear_pointer(&page, g_free);
 
-	/* Trading holds only module-gated pages; with feeds off -- the
-	 * default -- it is not drawn over nothing (asserted on /reports
-	 * above), and with them on it sits between Operations and Build. */
+	/* With feeds on, their page joins the market pages under Trading,
+	 * which sits between Operations and Build. */
 	g_object_set(fixture->config, "feeds-enabled", TRUE, NULL);
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/reports",
 		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
 	{
 		const gchar *operations = strstr(page, headings[9]);
-		const gchar *trading = strstr(page, "<summary class=\"nav-section\">Trading</summary>");
-		const gchar *build = strstr(page, headings[10]);
+		const gchar *trading = strstr(page, headings[10]);
+		const gchar *build = strstr(page, headings[11]);
 		const gchar *feeds = strstr(page, "href=\"/feeds\"");
 
 		g_assert_nonnull(trading);
@@ -5569,10 +5602,12 @@ static void test_auth_feeds(ServerFixture *fixture, gconstpointer unused)
  */
 static void test_auth_marketdata(ServerFixture *fixture, gconstpointer unused)
 {
-	g_autofree gchar *viewer = NULL, *editor = NULL, *page = NULL;
+	g_autofree gchar *viewer = NULL, *editor = NULL, *page = NULL, *member = NULL;
 	(void)unused;
 	server_fixture_create_user(fixture, "md-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
 	viewer = server_fixture_login(fixture, "md-viewer", "viewer-long-password");
+	server_fixture_create_member(fixture, "md-member", "member-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	member = server_fixture_login(fixture, "md-member", "member-long-password");
 	server_fixture_create_member(fixture, "md-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
 	editor = server_fixture_login(fixture, "md-editor", "editor-long-password");
 
@@ -5603,9 +5638,37 @@ static void test_auth_marketdata(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/alert_hit", editor,
 		"{\"rule_id\":1,\"message\":\"made up\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 
+	/*
+	 * The Trading pages answer a viewer with feeds off -- "no data
+	 * sources", not an error -- and the writes behind their buttons
+	 * are an editor's: a viewer may neither promote nor evaluate.
+	 */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/market/browse", member, NULL, &page, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "No data sources"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/deals", member, NULL, &page, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "\"available\" : false"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/market/alerts", member, NULL, &page, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page, "Undercuts"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/i/1/2770", member, "action=promote", NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/alerts/1/evaluate", member, "{}",
+		NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/browse?sort=password", member, NULL,
+		NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+
 	/* Off: gone, not an error. */
 	venture_config_set_module_enabled(fixture->config, "marketdata", FALSE);
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/quote?product_id=1",
+		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/market/browse",
+		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/market/alerts",
 		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/instrument",
 		editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);

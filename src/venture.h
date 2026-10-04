@@ -305,6 +305,7 @@
 #include "forge/venture-work-service.h"
 
 #include "web/venture-web-server.h"
+#include "web/venture-web-chart.h"
 #include "assets/venture-asset-service.h"
 #include "budgets/venture-budget-service.h"
 #include "equity/venture-equity-service.h"
@@ -340,6 +341,7 @@
 #include "marketdata/venture-marketdata.h"
 #include "marketdata/venture-marketdata-oracle.h"
 #include "marketdata/venture-marketdata-alerts.h"
+#include "marketdata/venture-marketdata-browse.h"
 #include "series/venture-series-math.h"
 #ifdef VENTURE_HAVE_SQLITE
 #include "series/venture-series-store.h"

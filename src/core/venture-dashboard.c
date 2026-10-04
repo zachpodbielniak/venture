@@ -3860,6 +3860,439 @@ venture_widget_kind_progress(
 	return g_steal_pointer(&result);
 }
 
+/* --- market data: watchlist, alerts, source health -------------------------- */
+
+/*
+ * The organization a market widget answers about: the scope's primary
+ * entity, as a report widget's is, else the default. A widget never picks
+ * it itself.
+ */
+static gint64
+venture_widget_primary_organization(
+	VentureContext			*context,
+	const VentureWidgetScope	*scope
+){
+	if ((NULL != scope) && (NULL != scope->organization_ids) &&
+	    (scope->n_organizations > 0))
+		return scope->organization_ids[0];
+
+	return venture_context_get_default_organization_id(context);
+}
+
+/* A money object of an answer as display text, or NULL. */
+static gchar *
+venture_widget_money_text(
+	JsonObject	*object,
+	const gchar	*member
+){
+	g_autoptr(VentureMoney) money = NULL;
+	JsonNode *node;
+
+	node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+		return NULL;
+
+	money = venture_money_from_json(node, NULL, NULL);
+
+	return (NULL != money) ? venture_money_to_display_string(money, TRUE) : NULL;
+}
+
+static const gchar *
+venture_widget_json_text(
+	JsonObject	*object,
+	const gchar	*member
+){
+	JsonNode *node;
+
+	node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node) ||
+	    (G_TYPE_STRING != json_node_get_value_type(node)))
+		return NULL;
+
+	return json_node_get_string(node);
+}
+
+/* A copy of a member, null when it is absent: never a shared node. */
+static JsonNode *
+venture_widget_json_copy(
+	JsonObject	*object,
+	const gchar	*member
+){
+	g_autofree gchar *text = NULL;
+	JsonNode *node;
+
+	node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if (NULL == node)
+		return json_node_new(JSON_NODE_NULL);
+
+	/* JSON-GLib shares nested containers between copies; a widget's
+	 * data must own its own. */
+	text = json_to_string(node, FALSE);
+
+	return json_from_string(text, NULL);
+}
+
+/*
+ * watchlist: one watchlist priced now (the record_id, else the first by
+ * name), its cheapest in-stock venue per instrument and whether that is a
+ * buy or a sell against the targets. Read from the same answer the
+ * watchlist page draws.
+ */
+static VentureWidgetResult *
+venture_widget_kind_watchlist(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	JsonObject *root;
+	JsonArray *entries;
+	gint64 organization_id;
+	gint64 record_id;
+	guint limit;
+	guint i;
+
+	(void)user_data;
+
+	organization_id = venture_widget_primary_organization(context, scope);
+	record_id = venture_widget_get_int(widget, "record-id");
+
+	if (0 == record_id)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(VentureEntity) first = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_WATCHLIST);
+		venture_query_set_organization(query, organization_id);
+		venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 1);
+		first = venture_database_find_one(venture_context_get_database(context), query, NULL);
+
+		if (NULL == first)
+		{
+			result = venture_widget_result_new();
+			result->title = g_strdup("Watchlist");
+			result->link = g_strdup("/market/watchlists");
+			result->link_label = g_strdup("All");
+			result->data = json_node_new(JSON_NODE_NULL);
+			result->html = g_strdup("<p class=\"muted\">No watchlists yet.</p>");
+
+			return g_steal_pointer(&result);
+		}
+
+		record_id = venture_entity_get_id(first);
+	}
+
+	answer = venture_marketdata_watchlist_view(context, organization_id, record_id, 0, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	entries = json_object_get_array_member(root, "entries");
+	limit = venture_widget_get_limit(widget, 10);
+
+	result = venture_widget_result_new();
+	result->title = g_strdup(venture_widget_json_text(
+		json_object_get_object_member(root, "watchlist"), "name"));
+	result->link = g_strdup_printf("/market/watchlists/%" G_GINT64_FORMAT, record_id);
+	result->link_label = g_strdup("Open");
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+	html = g_string_new(NULL);
+
+	if ((NULL == entries) || (0 == json_array_get_length(entries)))
+		g_string_append(html, "<p class=\"muted\">Nothing on this list yet.</p>");
+	else
+		g_string_append(html, "<table class=\"data market-widget\"><thead><tr>"
+		                      "<th scope=\"col\">Instrument</th><th scope=\"col\">Cheapest at</th>"
+		                      "<th scope=\"col\" class=\"num\">Lowest</th><th scope=\"col\">Now</th>"
+		                      "</tr></thead><tbody>");
+
+	/* One loop draws the card and fills the data, so they agree. */
+	for (i = 0; (NULL != entries) && (i < json_array_get_length(entries)) && (i < limit); i++)
+	{
+		JsonObject *entry = json_array_get_object_element(entries, i);
+		JsonNode *best_node = json_object_get_member(entry, "best");
+		JsonObject *best = ((NULL != best_node) && JSON_NODE_HOLDS_OBJECT(best_node))
+			? json_node_get_object(best_node) : NULL;
+		g_autofree gchar *price = venture_widget_money_text(best, "min_price");
+		const gchar *name = venture_widget_json_text(entry, "instrument_name");
+		const gchar *venue = venture_widget_json_text(best, "venue_name");
+		const gchar *url = venture_widget_json_text(entry, "url");
+		const gchar *signal;
+
+		if (NULL == name)
+			name = venture_widget_json_text(entry, "key");
+
+		if (NULL == venue)
+			venue = venture_widget_json_text(best, "venue_key");
+
+		signal = json_object_get_boolean_member(entry, "buy_now") ? "buy"
+		       : (json_object_get_boolean_member(entry, "sell_now") ? "sell" : NULL);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "instrument_id");
+		json_builder_add_int_value(builder, json_object_get_int_member(entry, "instrument_id"));
+		json_builder_set_member_name(builder, "instrument");
+		json_builder_add_string_value(builder, (NULL != name) ? name : "");
+		json_builder_set_member_name(builder, "venue");
+
+		if (NULL != venue)
+			json_builder_add_string_value(builder, venue);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_set_member_name(builder, "price");
+		json_builder_add_value(builder, venture_widget_json_copy(best, "min_price"));
+		json_builder_set_member_name(builder, "price_formatted");
+
+		if (NULL != price)
+			json_builder_add_string_value(builder, price);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_set_member_name(builder, "signal");
+
+		if (NULL != signal)
+			json_builder_add_string_value(builder, signal);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_end_object(builder);
+
+		g_string_append(html, "<tr><td>");
+
+		if (NULL != url)
+		{
+			g_string_append(html, "<a href=\"");
+			venture_html_escape_append(html, url);
+			g_string_append(html, "\">");
+			venture_html_escape_append(html, (NULL != name) ? name : "");
+			g_string_append(html, "</a>");
+		}
+		else
+			venture_html_escape_append(html, (NULL != name) ? name : "");
+
+		g_string_append(html, "</td><td>");
+		venture_html_escape_append(html, (NULL != venue) ? venue : "\xe2\x80\x94");
+		g_string_append(html, "</td><td class=\"num\">");
+		venture_html_escape_append(html, (NULL != price) ? price : "\xe2\x80\x94");
+		g_string_append(html, "</td><td>");
+
+		if (NULL != signal)
+			g_string_append_printf(html, "<span class=\"badge %s\">%s</span>",
+			                       (0 == g_strcmp0(signal, "buy")) ? "positive" : "info", signal);
+
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL != entries) && (json_array_get_length(entries) > 0))
+		g_string_append(html, "</tbody></table>");
+
+	if (!json_object_get_boolean_member(root, "available"))
+		g_string_append(html, "<p class=\"muted\">No data sources: market data feeds are off.</p>");
+
+	json_builder_end_array(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
+/* market_alerts: the latest hits, FlippingPal's "recent hits". */
+static VentureWidgetResult *
+venture_widget_kind_market_alerts(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	JsonArray *hits;
+	guint i;
+
+	(void)user_data;
+
+	answer = venture_marketdata_alerts_overview(context,
+		venture_widget_primary_organization(context, scope),
+		venture_widget_get_limit(widget, 8), error);
+
+	if (NULL == answer)
+		return NULL;
+
+	hits = json_object_get_array_member(json_node_get_object(answer), "hits");
+	result = venture_widget_result_new();
+	result->title = g_strdup("Alert hits");
+	result->link = g_strdup("/market/alerts");
+	result->link_label = g_strdup("All");
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+	html = g_string_new(NULL);
+
+	if ((NULL == hits) || (0 == json_array_get_length(hits)))
+		g_string_append(html, "<p class=\"muted\">Nothing has fired yet.</p>");
+	else
+		g_string_append(html, "<ul class=\"relation-list market-hits\">");
+
+	for (i = 0; (NULL != hits) && (i < json_array_get_length(hits)); i++)
+	{
+		JsonObject *hit = json_array_get_object_element(hits, i);
+		const gchar *message = venture_widget_json_text(hit, "message");
+		const gchar *rule = venture_widget_json_text(hit, "rule_name");
+		const gchar *observed = venture_widget_json_text(hit, "observed_at");
+		g_autoptr(GDateTime) moment = NULL;
+		g_autofree gchar *when = NULL;
+
+		moment = (NULL != observed) ? g_date_time_new_from_iso8601(observed, NULL) : NULL;
+		when = (NULL != moment) ? venture_time_to_relative_string(moment) : NULL;
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder, json_object_get_int_member(hit, "id"));
+		json_builder_set_member_name(builder, "rule");
+		json_builder_add_string_value(builder, (NULL != rule) ? rule : "");
+		json_builder_set_member_name(builder, "message");
+		json_builder_add_string_value(builder, (NULL != message) ? message : "");
+		json_builder_set_member_name(builder, "observed_at");
+
+		if (NULL != observed)
+			json_builder_add_string_value(builder, observed);
+		else
+			json_builder_add_null_value(builder);
+
+		json_builder_end_object(builder);
+
+		g_string_append_printf(html, "<li><a href=\"/e/alert_hit/%" G_GINT64_FORMAT "\">",
+		                       json_object_get_int_member(hit, "id"));
+		venture_html_escape_append(html, (NULL != message) ? message : "");
+		g_string_append(html, "</a> <span class=\"muted\">");
+		venture_html_escape_append(html, (NULL != rule) ? rule : "");
+
+		if (NULL != when)
+		{
+			g_string_append(html, " \xc2\xb7 ");
+			venture_html_escape_append(html, when);
+		}
+
+		g_string_append(html, "</span></li>");
+	}
+
+	if ((NULL != hits) && (json_array_get_length(hits) > 0))
+		g_string_append(html, "</ul>");
+
+	json_builder_end_array(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
+/* source_health: each data source's last run, schedule and stale venues. */
+static VentureWidgetResult *
+venture_widget_kind_source_health(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	JsonObject *root;
+	JsonArray *sources;
+	guint i;
+
+	(void)widget;
+	(void)user_data;
+
+	answer = venture_marketdata_source_health(context,
+		venture_widget_primary_organization(context, scope), 0, error);
+
+	if (NULL == answer)
+		return NULL;
+
+	root = json_node_get_object(answer);
+	sources = json_object_get_array_member(root, "sources");
+	result = venture_widget_result_new();
+	result->title = g_strdup("Data sources");
+	result->link = g_strdup("/feeds");
+	result->link_label = g_strdup("Feeds");
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+	html = g_string_new(NULL);
+
+	if ((NULL == sources) || (0 == json_array_get_length(sources)))
+		g_string_append(html, "<p class=\"muted\">No data sources yet.</p>");
+	else
+		g_string_append(html, "<table class=\"data market-widget\"><thead><tr>"
+		                      "<th scope=\"col\">Source</th><th scope=\"col\">Last run</th>"
+		                      "<th scope=\"col\" class=\"num\">Rows</th>"
+		                      "<th scope=\"col\" class=\"num\">Late venues</th></tr></thead><tbody>");
+
+	for (i = 0; (NULL != sources) && (i < json_array_get_length(sources)); i++)
+	{
+		JsonObject *source = json_array_get_object_element(sources, i);
+		JsonNode *run_node = json_object_get_member(source, "last_run");
+		JsonObject *run = ((NULL != run_node) && JSON_NODE_HOLDS_OBJECT(run_node))
+			? json_node_get_object(run_node) : NULL;
+		const gchar *status = (NULL != run) ? venture_widget_json_text(run, "status") : "never";
+		const gchar *tone;
+		gint64 rows = (NULL != run) ? json_object_get_int_member(run, "rows") : 0;
+		gint64 stale = json_object_get_int_member(source, "stale_venues");
+
+		tone = (0 == g_strcmp0(status, "ok")) ? "positive"
+		     : ((0 == g_strcmp0(status, "failed")) ? "negative" : "warning");
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder, json_object_get_int_member(source, "id"));
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, venture_widget_json_text(source, "name"));
+		json_builder_set_member_name(builder, "status");
+		json_builder_add_string_value(builder, status);
+		json_builder_set_member_name(builder, "rows");
+		json_builder_add_int_value(builder, rows);
+		json_builder_set_member_name(builder, "stale_venues");
+		json_builder_add_int_value(builder, stale);
+		json_builder_end_object(builder);
+
+		g_string_append_printf(html, "<tr><td><a href=\"/e/data_source/%" G_GINT64_FORMAT "\">",
+		                       json_object_get_int_member(source, "id"));
+		venture_html_escape_append(html, venture_widget_json_text(source, "name"));
+		g_string_append_printf(html, "</a></td><td><span class=\"badge %s\">", tone);
+		venture_html_escape_append(html, status);
+		g_string_append_printf(html, "</span></td><td class=\"num\">%" G_GINT64_FORMAT
+		                       "</td><td class=\"num\">%" G_GINT64_FORMAT "</td></tr>", rows, stale);
+	}
+
+	if ((NULL != sources) && (json_array_get_length(sources) > 0))
+		g_string_append(html, "</tbody></table>");
+
+	json_builder_end_array(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
 /* ==========================================================================
  * The registry
  * ========================================================================== */
@@ -3980,6 +4413,12 @@ static const gchar *const venture_widget_uses_sum[] = {
 static const gchar *const venture_widget_uses_progress[] = {
 	"entity_type", "field", "record_id", "filter", "period", "options", NULL
 };
+static const gchar *const venture_widget_uses_watchlist[] = {
+	"record_id", "limit", NULL
+};
+static const gchar *const venture_widget_uses_market_alerts[] = {
+	"limit", NULL
+};
 
 static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 	{
@@ -4089,6 +4528,26 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"A value field against a target field (options.target_field), "
 		"of one record or summed over a filter, as a percentage.",
 		NULL, venture_widget_uses_progress, venture_widget_kind_progress
+	},
+	{
+		"watchlist", "Watchlist",
+		"One watchlist priced now (record_id, else the first by name): "
+		"each instrument's cheapest in-stock venue and whether it is a "
+		"buy or a sell against the targets.",
+		"marketdata", venture_widget_uses_watchlist, venture_widget_kind_watchlist
+	},
+	{
+		"market_alerts", "Alert hits",
+		"The latest market data alert hits, newest first, each linking "
+		"to the hit.",
+		"marketdata", venture_widget_uses_market_alerts,
+		venture_widget_kind_market_alerts
+	},
+	{
+		"source_health", "Data sources",
+		"Each market data source's last run, the rows it brought and "
+		"how many of its venues are late.",
+		"feeds", NULL, venture_widget_kind_source_health
 	}
 };
 

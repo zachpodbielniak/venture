@@ -870,6 +870,129 @@ test_sale_estimate(
 }
 
 /*
+ * The sale rate and sold-per-day a browse page sorts by are columns on the
+ * current row, written by the region recompute with the reference's own
+ * arithmetic; the deal filter and the percent bound are precomputed
+ * columns too. What breaks if this regresses: a browse page sorts "sale
+ * rate" by nothing (every row NULL), a sort that runs over two weeks of
+ * history per request, or a deals page listing a venue dearer than the
+ * deal price.
+ */
+static void
+test_precomputed_sales_and_deals(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureSeriesRow) row = NULL;
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesReference reference;
+	VentureSeriesFilter filter;
+	gint64 count;
+
+	set_venue(fixture->store, "a", "Alpha", "eu");
+	set_venue(fixture->store, "b", "Beta", "eu");
+	set_venue(fixture->store, "c", "Gamma", "eu");
+
+	/* Venue a sells: the sale estimate's own case, 11 of 13 units. */
+	snapshot = begin(fixture->store, "a", T0 + 10 * HOUR, TRUE);
+	add_listing(snapshot, "herb", 101, 100, 5, 7200);
+	add_listing(snapshot, "herb", 102, 110, 5, 7200);
+	add_listing(snapshot, "herb", 103, 90, 2, 0);
+	add_listing(snapshot, "herb", 104, 95, 10, -1);
+	commit(fixture->store, snapshot);
+	snapshot = begin(fixture->store, "a", T0 + 11 * HOUR, TRUE);
+	add_listing(snapshot, "herb", 102, 110, 5, 7200);
+	add_listing(snapshot, "herb", 104, 95, 4, -1);
+	add_listing(snapshot, "herb", 105, 99, 1, 7200);
+	commit(fixture->store, snapshot);
+
+	/* b and c only list. */
+	put_price(fixture->store, "b", "herb", T0 + 11 * HOUR, 200, 3);
+	put_price(fixture->store, "c", "herb", T0 + 11 * HOUR, 150, 2);
+
+	/* Before a recompute there is nothing to sort by. */
+	row = current_of(fixture->store, "a", "herb");
+	g_assert_true(isnan(row->sale_rate));
+	g_clear_pointer(&row, venture_series_row_free);
+
+	g_assert_true(venture_series_store_recompute_region(fixture->store, NULL, T0 + 12 * HOUR,
+	                                                    VENTURE_SERIES_NONE, NULL, NULL, &error));
+	g_assert_no_error(error);
+
+	/* The same figures the reference computes for the venue. */
+	g_assert_true(venture_series_store_reference(fixture->store, "a", NULL, "herb",
+	                                             T0 + 12 * HOUR, &reference, &error));
+	row = current_of(fixture->store, "a", "herb");
+	g_assert_cmpfloat_with_epsilon(row->sale_rate, reference.sale_rate, 1e-9);
+	g_assert_cmpfloat_with_epsilon(row->sale_rate, 11.0 / 13.0, 1e-9);
+	g_assert_cmpfloat_with_epsilon(row->sold_per_day, 11.0, 1e-9);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* Listed but nothing sold or expired: no rate, and none a day. */
+	row = current_of(fixture->store, "b", "herb");
+	g_assert_true(isnan(row->sale_rate));
+	g_assert_cmpfloat_with_epsilon(row->sold_per_day, 0.0, 1e-9);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* Sorted by it, the seller first and the unknowns last either way. */
+	venture_series_filter_init(&filter);
+	g_assert_true(venture_series_sort_from_string("sale_rate", &filter.sort));
+	g_assert_cmpstr(venture_series_sort_to_string(VENTURE_SERIES_SORT_SOLD_PER_DAY), ==,
+	                "sold_per_day");
+	filter.descending = TRUE;
+	rows = venture_series_store_list_current(fixture->store, &filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 3);
+	g_assert_cmpstr(((VentureSeriesRow *)rows->pdata[0])->venue_key, ==, "a");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	filter.descending = FALSE;
+	rows = venture_series_store_list_current(fixture->store, &filter, &error);
+	g_assert_cmpstr(((VentureSeriesRow *)rows->pdata[0])->venue_key, ==, "a");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	/*
+	 * Minimums 95, 200 and 150: the median, and so the deal price (three
+	 * venues, under the p33 threshold), is 150. a and c are at or under
+	 * it; b is not. At 150 exactly is a deal: "at or under".
+	 */
+	venture_series_filter_init(&filter);
+	filter.deals_only = TRUE;
+	filter.sort = VENTURE_SERIES_SORT_PCT_VS_REGION;
+	rows = venture_series_store_list_current(fixture->store, &filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	g_assert_cmpstr(((VentureSeriesRow *)rows->pdata[0])->venue_key, ==, "a");
+	g_assert_cmpstr(((VentureSeriesRow *)rows->pdata[1])->venue_key, ==, "c");
+	g_assert_cmpint(((VentureSeriesRow *)rows->pdata[1])->deal_price, ==, 150);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	g_assert_true(venture_series_store_count_current(fixture->store, &filter, &count, &error));
+	g_assert_cmpint(count, ==, 2);
+
+	/* A percent bound: 95 is 63.3% of 150, 150 is 100%. */
+	filter.max_pct_vs_region = 70.0;
+	rows = venture_series_store_list_current(fixture->store, &filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesRow *)rows->pdata[0])->venue_key, ==, "a");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	filter.max_pct_vs_region = -1.0;
+	g_assert_null(venture_series_store_list_current(fixture->store, &filter, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* Two weeks on, the history has aged out of the window: cleared. */
+	g_assert_true(venture_series_store_recompute_region(fixture->store, NULL, T0 + 20 * DAY,
+	                                                    VENTURE_SERIES_NONE, NULL, NULL, &error));
+	g_assert_no_error(error);
+	row = current_of(fixture->store, "a", "herb");
+	g_assert_true(isnan(row->sale_rate));
+	g_assert_true(isnan(row->sold_per_day));
+}
+
+/*
  * A snapshot whose listings carry no ids says nothing about sales, even
  * after one that did: otherwise a source that stopped sending ids would
  * read as everything selling at once.
@@ -1915,6 +2038,7 @@ main(
 	ADD("stats-snapshot", test_stats_snapshot);
 	ADD("sale-estimate", test_sale_estimate);
 	ADD("sale-needs-ids", test_sale_needs_ids);
+	ADD("precomputed-sales-and-deals", test_precomputed_sales_and_deals);
 	ADD("region-small", test_region_small);
 	ADD("region-deal-price", test_region_deal_price);
 	ADD("list-current", test_list_current);

@@ -2773,6 +2773,22 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"holdings: only this location (a wallet, till or character) and every location beneath it", FALSE);
 	ai_tool_add_parameter(report, "include_on_hand", "boolean",
 		"goal_materials: take stock on hand off what is needed; true by default", FALSE);
+	ai_tool_add_parameter(report, "data_source_id", "integer",
+		"market_deals and venue_index: only this data source; every source of the organization by default", FALSE);
+	ai_tool_add_parameter(report, "venue", "string",
+		"market_deals: only this venue, by its key in the store", FALSE);
+	ai_tool_add_parameter(report, "group_key", "string",
+		"market_deals and venue_index: only venues in this group (a region)", FALSE);
+	ai_tool_add_parameter(report, "category_path", "string",
+		"market_deals: only instruments in this store category path and beneath, e.g. Trade Goods/Herb", FALSE);
+	ai_tool_add_parameter(report, "min_value", "string",
+		"market_deals: only instruments worth at least this, with its currency, e.g. 10.00 GOLD", FALSE);
+	ai_tool_add_parameter(report, "max_pct", "string",
+		"market_deals: only prices at most this percent of the region median, e.g. 80", FALSE);
+	ai_tool_add_parameter(report, "top", "integer",
+		"market_deals: how many deals, 1 to 500; 50 by default", FALSE);
+	ai_tool_add_parameter(report, "watchlist_id", "integer",
+		"watchlist: the watchlist to price", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);

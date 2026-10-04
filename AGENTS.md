@@ -225,6 +225,36 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   generic category check judges it as an instrument's reference; do not
   list the type in the validator.
 
+## The Trading pages
+
+- **One answer per page, and the twin is the same handler.** Each
+  `/market/...` page is one function in
+  `src/marketdata/venture-marketdata-browse.c` that answers JSON; the page
+  and its `/api/v1/market/...` twin are one handler branching on the path
+  prefix, and the reports and widgets read the same functions. Never
+  compute a figure in `venture-marketdata-pages.inc` or in a widget kind.
+- **A store is only sorted and filtered on its own indexed columns.** The
+  server is single-threaded. A new browse sort or filter means a column on
+  `current` (a schema step), its index, and a writer -- the region
+  recompute, on the worker -- never a per-request aggregate. That is why
+  `sale_rate` and `sold_per_day` are columns (step 4). Sorts are an
+  allowlist (`venture_marketdata_browse_sorts()`) and an unknown one is a
+  400, never ignored.
+- **An instrument key is the rest of the path.** libsoup hands handlers the
+  path already unescaped, so a key holding `%2F` arrives as two segments:
+  the routes are `/market/i/:source/*` and `mdw_path_key()` takes
+  everything after the source. Do not unescape again (a key holding `%`
+  would change), and do not add an action as a path suffix -- the actions
+  are a POST to the page itself with `action=promote|watch|alert`.
+- **A bound must name its currency.** `venture_money_from_string()` falls
+  back on the install's default currency; `venture_marketdata_parse_amount()`
+  refuses an amount that reads differently under two defaults. Use it for
+  any amount a market filter compares.
+- **Charts carry no colour.** `src/web/venture-web-chart.c` draws in
+  `currentColor` with classes both stylesheets colour from tokens; a new
+  chart class goes into both, in the market block at their end, and
+  `/market-pages/doors-and-looks` checks the page in both looks.
+
 ## Conventions
 
 - gnu89, tabs, 4-wide. `/* */` comments only, never `//`.
