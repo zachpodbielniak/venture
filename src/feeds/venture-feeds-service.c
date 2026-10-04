@@ -124,9 +124,11 @@ venture_feeds_add_hook(
 	hook->destroy = destroy;
 	g_ptr_array_add(hooks, hook);
 
-	/* A running worker sees the hook from the next freeze on. */
-	if (NULL != venture_context_get_feeds_service(context))
-		venture_feeds_service_refresh(venture_context_get_feeds_service(context));
+	/* A running worker sees the hook from the next freeze on. Only a
+	 * service that exists is refreshed: hooks are added while the context
+	 * is built, before the schema may exist, and asking for the service
+	 * there would make one and read tables that are not there yet. */
+	venture_feeds_queue_refresh(context);
 
 	return TRUE;
 }
@@ -906,6 +908,21 @@ feeds_service_queue_refresh(VentureFeedsService *self)
 		return;
 
 	self->refresh_source = g_idle_add(feeds_service_refresh_idle, self);
+}
+
+static VentureFeedsService *feeds_service_slot(VentureContext *context);
+
+void
+venture_feeds_queue_refresh(VentureContext *context)
+{
+	VentureFeedsService *service;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(context));
+
+	service = feeds_service_slot(context);
+
+	if (NULL != service)
+		feeds_service_queue_refresh(service);
 }
 
 /* --- A run comes back ------------------------------------------------------------------ */

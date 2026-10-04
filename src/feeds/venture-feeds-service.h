@@ -116,6 +116,19 @@ venture_feeds_add_hook(
 	GDestroyNotify			 destroy
 );
 
+/**
+ * venture_feeds_queue_refresh:
+ * @context: the context
+ *
+ * Asks for every source to be frozen again on the next turn of the main
+ * loop -- after the transaction that caused it -- when a feeds service
+ * exists; nothing otherwise. Coalesced: a thousand calls are one freeze.
+ * For a module whose hook freezes records of its own (alert rules, open
+ * listings), called when one of those is saved or deleted.
+ */
+void
+venture_feeds_queue_refresh(VentureContext *context);
+
 /* --- The service ------------------------------------------------------------------- */
 
 #define VENTURE_TYPE_FEEDS_SERVICE (venture_feeds_service_get_type())

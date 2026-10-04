@@ -1707,6 +1707,55 @@ GType
 venture_marketdata_basis_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureAlertKind:
+ * @VENTURE_ALERT_KIND_BELOW: a venue's cheapest unit is at or below the
+ *   threshold price; the zero value, because it is the alert most rules
+ *   are (a snipe) and because it needs a threshold, so a rule saved
+ *   without saying what kind it is is refused for want of one rather than
+ *   quietly watching for something nobody asked about
+ * @VENTURE_ALERT_KIND_ABOVE: a venue's cheapest unit is at or above the
+ *   threshold price
+ * @VENTURE_ALERT_KIND_PCT_VS_REFERENCE: a venue's cheapest unit is at most
+ *   the threshold percent of a reference basis (80: 20% under it)
+ * @VENTURE_ALERT_KIND_SPREAD: within a group, the best other venue's
+ *   reference figure is at least the threshold above the cheapest venue's
+ *   minimum, fees not counted
+ * @VENTURE_ALERT_KIND_OUT_OF_STOCK: the newest snapshot took a venue's
+ *   quantity to zero
+ * @VENTURE_ALERT_KIND_BACK_IN_STOCK: the newest snapshot brought a venue's
+ *   quantity back above zero
+ * @VENTURE_ALERT_KIND_SHORTAGE: a venue has fewer units on offer than the
+ *   threshold number
+ * @VENTURE_ALERT_KIND_SPIKE: the min, market value or quantity moved by at
+ *   least the threshold percent (up for a positive one, down for a
+ *   negative one) against the hourly figure the window's hours ago
+ * @VENTURE_ALERT_KIND_UNDERCUT: an open listing at a venue is priced above
+ *   the cheapest unit the venue now offers
+ * @VENTURE_ALERT_KIND_ENTRY_MATCH: a newly arrived entry (news, a patch
+ *   note) contains the pattern, ignoring case
+ *
+ * What an alert rule watches for (docs/market-data.org, "Alerts").
+ */
+typedef enum
+{
+	VENTURE_ALERT_KIND_BELOW = 0,
+	VENTURE_ALERT_KIND_ABOVE,
+	VENTURE_ALERT_KIND_PCT_VS_REFERENCE,
+	VENTURE_ALERT_KIND_SPREAD,
+	VENTURE_ALERT_KIND_OUT_OF_STOCK,
+	VENTURE_ALERT_KIND_BACK_IN_STOCK,
+	VENTURE_ALERT_KIND_SHORTAGE,
+	VENTURE_ALERT_KIND_SPIKE,
+	VENTURE_ALERT_KIND_UNDERCUT,
+	VENTURE_ALERT_KIND_ENTRY_MATCH
+} VentureAlertKind;
+
+#define VENTURE_TYPE_ALERT_KIND (venture_alert_kind_get_type())
+
+GType
+venture_alert_kind_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureDashboardLayout:
  * @VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS: three across, the default
  * @VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS: two across
@@ -1819,6 +1868,9 @@ venture_link_kind_get_type(void) G_GNUC_CONST;
  *   line or ran out
  * @VENTURE_NOTIFICATION_KIND_RUN: a coding run finished, one way or another
  * @VENTURE_NOTIFICATION_KIND_SYSTEM: anything else the install wants to say
+ * @VENTURE_NOTIFICATION_KIND_ALERT: a market data alert rule fired; appended
+ *   last, because the kind is stored as its number and every older row must
+ *   keep reading as what it was
  *
  * Why a notification exists. The inbox groups and colours by it, and a
  * filter on it is how "just the mentions" is answered.
@@ -1831,7 +1883,8 @@ typedef enum
 	VENTURE_NOTIFICATION_KIND_SLA,
 	VENTURE_NOTIFICATION_KIND_BUDGET,
 	VENTURE_NOTIFICATION_KIND_RUN,
-	VENTURE_NOTIFICATION_KIND_SYSTEM
+	VENTURE_NOTIFICATION_KIND_SYSTEM,
+	VENTURE_NOTIFICATION_KIND_ALERT
 } VentureNotificationKind;
 
 #define VENTURE_TYPE_NOTIFICATION_KIND (venture_notification_kind_get_type())

@@ -233,6 +233,20 @@ G_BEGIN_DECLS
 	  VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_SEARCHABLE |     \
 	  VENTURE_COLUMN_FLAG_INDEXED }
 
+/**
+ * VENTURE_CATEGORY_APPLIES_AS_QDATA:
+ *
+ * The name of the type qdata (a static string, a record type name) under
+ * which a record type's category references are judged against a tree's
+ * applies-to instead of its own name. An alert rule names the category its
+ * instruments are filed under -- a tree that applies to instruments -- so
+ * alert_rule sets "instrument"; without it every instrument category would
+ * be refused as "not for alert rules". Derived from the class, not listed
+ * in the validator: a plugin type that scopes by another type's category
+ * says so the same way.
+ */
+#define VENTURE_CATEGORY_APPLIES_AS_QDATA "venture-category-applies-as"
+
 G_END_DECLS
 
 #endif /* VENTURE_ENTITY_MACROS_H */

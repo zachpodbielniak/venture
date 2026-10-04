@@ -146,6 +146,22 @@ gboolean
 venture_automation_is_running(VentureAutomation *self);
 
 /**
+ * venture_automation_is_dispatching:
+ * @self: (nullable): a #VentureAutomation
+ *
+ * Whether an event is being handed to the pods right now -- that is,
+ * whether the caller is running inside an automation handler, where the
+ * cascade guard swallows every event a write would raise. Work whose
+ * whole point is the events it raises (an alert hit's webhook and
+ * on_created) waits until this is %FALSE rather than being written where
+ * nobody would hear it.
+ *
+ * Returns: %TRUE inside a handler; %FALSE otherwise, and for %NULL
+ */
+gboolean
+venture_automation_is_dispatching(VentureAutomation *self);
+
+/**
  * venture_automation_load_dsl:
  * @self: a #VentureAutomation
  * @dsl: the rules to parse

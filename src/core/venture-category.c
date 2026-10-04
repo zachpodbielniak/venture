@@ -651,11 +651,20 @@ venture_category_validate_references(
 			target_name, target_id, error))
 			return FALSE;
 
-		if (is_category &&
-		    !venture_category_check_applies_to(database, target_id,
-		                                       venture_entity_get_entity_name(entity),
-		                                       error))
-			return FALSE;
+		if (is_category)
+		{
+			const gchar *applies_as;
+
+			/* A type that scopes by another type's categories says
+			 * which, on its class (an alert rule: instrument). */
+			applies_as = g_type_get_qdata(G_TYPE_FROM_INSTANCE(entity),
+				g_quark_from_static_string(VENTURE_CATEGORY_APPLIES_AS_QDATA));
+
+			if (!venture_category_check_applies_to(database, target_id,
+				(NULL != applies_as) ? applies_as : venture_entity_get_entity_name(entity),
+				error))
+				return FALSE;
+		}
 	}
 
 	return TRUE;

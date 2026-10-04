@@ -255,12 +255,6 @@ venture_feed_run_new_internal(
 );
 
 void
-venture_feed_run_add_note(
-	VentureFeedRun	*self,
-	const gchar	*note
-);
-
-void
 venture_feed_run_finish(
 	VentureFeedRun	*self,
 	gint64		 finished_at

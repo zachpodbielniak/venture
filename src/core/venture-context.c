@@ -296,6 +296,11 @@ venture_context_new(
 	venture_feeds_install(self);
 #endif
 
+	/* Alert rules and hits: their validators and the evaluate action in
+	 * any build, and with SQLite the feeds hook that evaluates rules after
+	 * every run. After the feeds module, whose hook it adds. */
+	venture_marketdata_alerts_install(self);
+
 	return self;
 }
 

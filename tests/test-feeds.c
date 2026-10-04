@@ -1933,6 +1933,59 @@ thread_named(const gchar *name)
 }
 
 /*
+ * A sync is pending from the moment it is asked for until its run is
+ * written: count_pending() never reads zero in between.
+ *
+ * What breaks if this regresses: the sync command is freed on the worker
+ * before the pass that answers it starts on the worker's next timer, and a
+ * caller polling count_pending() -- every test's settle(), a CLI waiting
+ * on --wait -- sees nothing pending in that gap and reads the runs before
+ * the one it asked for exists. It failed test-alerts about one run in
+ * five under load before the queued sync was counted as live.
+ */
+static void
+test_feeds_pending_covers_a_queued_sync(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *path = NULL;
+	gint64 id;
+	guint i;
+
+	(void)user_data;
+
+	path = write_root_file(fixture, "pending.jsonl",
+		"{\"type\":\"venue\",\"key\":\"argent\",\"currency\":\"USD\"}\n"
+		"{\"type\":\"snapshot\",\"venue\":\"argent\",\"currency\":\"USD\","
+		"\"taken_at\":\"2026-10-03T12:00:00Z\",\"complete\":true}\n"
+		"{\"type\":\"listing\",\"venue\":\"argent\",\"instrument\":\"ore\","
+		"\"price\":\"1.25\",\"quantity\":2,\"id\":\"a1\"}\n");
+	id = create_source(fixture, "Pending", "file_jsonl", "file: pending.jsonl\n", "manual");
+
+	for (i = 0; i < 25; i++)
+	{
+		g_autoptr(GError) error = NULL;
+		gint64 deadline;
+
+		g_assert_true(venture_feeds_service_sync(service_of(fixture), id,
+		                                         VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL, &error));
+		g_assert_no_error(error);
+		deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+		/* Poll without sleeping: the gap is a few microseconds wide. */
+		while (venture_feeds_service_count_pending(service_of(fixture)) > 0)
+		{
+			if (g_get_monotonic_time() > deadline)
+				g_error("the feeds worker did not settle within 30 seconds");
+
+			g_main_context_iteration(NULL, FALSE);
+		}
+
+		g_assert_cmpint(count_runs(fixture, id), ==, (gint64)i + 1);
+	}
+}
+
+/*
  * The worker starts only when asked, stops when feeds go off, and is
  * joined when the context goes.
  *
@@ -2090,6 +2143,8 @@ main(
 	           test_feeds_credentials_never_leak, fixture_tear_down);
 	g_test_add("/feeds/handoff-waits-for-the-transaction", Fixture, NULL, fixture_set_up,
 	           test_feeds_handoff_waits_for_the_transaction, fixture_tear_down);
+	g_test_add("/feeds/pending-covers-a-queued-sync", Fixture, NULL, fixture_set_up,
+	           test_feeds_pending_covers_a_queued_sync, fixture_tear_down);
 	g_test_add("/feeds/worker-lifecycle", Fixture, NULL, fixture_set_up,
 	           test_feeds_worker_lifecycle, fixture_tear_down);
 	g_test_add("/feeds/actions-and-automation", Fixture, NULL, fixture_set_up,

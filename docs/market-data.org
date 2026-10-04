@@ -63,7 +63,7 @@ A reader is opened read-write without =CREATE= and then made =query_only=: a WAL
 
 ** Schema
 
-Version 2. Step 1 is the price data; step 2 adds quotes and entries.
+Version 3. Step 1 is the price data; step 2 adds quotes and entries; step 3 adds =current.stock_changed_at= and an index on when an entry first arrived, for the alerts.
 
 *** =meta=
 
@@ -114,10 +114,13 @@ The latest figures for each venue and instrument -- what browsing sorts and filt
 | =region_median=   | the group's median of minimums, from the last region recompute                          |
 | =deal_price=      | the group's deal price, from the last region recompute                                  |
 | =pct_vs_region=   | =min_price= as a percent of =region_median= (80 is 20% cheaper); NULL out of stock       |
+| =stock_changed_at= | the snapshot at which =quantity= last crossed zero, either way; NULL when it never has   |
 
 Indexes: (=instrument_id=, =min_price=) for "other venues"; (=venue_id=, =min_price=), (=venue_id=, =market_value=), (=venue_id=, =pct_vs_region=) for one venue's page; =pct_vs_region= and =deal_price= alone (partial, non-NULL) for deals across every venue.
 
 =pct_vs_region= is refreshed against the stored =region_median= at every snapshot, so a sort by it is right between recomputes; the median itself only moves when the region is recomputed.
+
+=stock_changed_at= (schema step 3) is written by the statement that makes the change: the snapshot upsert stamps it when the stored and the new quantity sit on different sides of zero, and leaves it alone when either side is unknown (a stats row that did not say how many); marking an absent instrument out of stock stamps it when the row had units. A new row leaves it NULL -- the first sighting of an instrument is not "back in stock", or the first sync of a source would say so about everything. Equal to =taken_at= exactly when the newest snapshot took the instrument out of or back into stock, which is what the stock alerts read.
 
 *** =hourly=
 
@@ -156,7 +159,7 @@ Per venue: =last_taken_at=, =last_fetched_at=, =gaps= (the last 36 gaps between 
 
 *** =entries=
 
-Non-price items, matched on =key= (an RSS guid): =venue_id=, =instrument_id=, =published_at=, =fetched_at=, =title=, =url= (http or https only -- only a web address is a link), =summary=, =attrs=.
+Non-price items, matched on =key= (an RSS guid): =venue_id=, =instrument_id=, =published_at=, =fetched_at=, =title=, =url= (http or https only -- only a web address is a link), =summary=, =attrs=. =fetched_at= is the first arrival and is never updated, so =venture_series_store_list_new_entries(store, since, count)= -- on the =entries_fetched= index from schema step 3 -- is "what arrived since", whatever the entries' publication times.
 
 ** Packed blobs
 
@@ -389,7 +392,9 @@ A batch may carry =record= upserts. The worker keeps those whose type the source
 - =commit= runs on the worker after each unit's batch is committed, with the store's writer handle, and may attach plain JSON to the run with =venture_feed_run_set_payload()=.
 - =run= runs on the main thread after the run record is written, outside any transaction, and reads the payload back with =venture_feed_run_get_payload()=.
 
-A hook added while the worker runs refreezes every source.
+A hook added while the worker runs refreezes every source. A module whose frozen copy is made of its own records calls =venture_feeds_queue_refresh(context)= when one of them is saved or deleted: a coalesced refreeze after the transaction, and nothing while no feeds service exists. On the worker a hook may add a line to the run's notes with =venture_feed_run_add_note()= and read when the run began with =venture_feed_run_get_started_at()=.
+
+=venture_feeds_service_count_pending()= counts a sync from the moment it is asked for until its run is written: the queued command, then the sync waiting for the worker's timer, then the pass, then the delivery, each counted before the one before it stops being. A gap between the command and the pass once let a caller read zero and look for a run that did not exist yet.
 
 ** Surfaces
 
@@ -402,7 +407,7 @@ A hook added while the worker runs refreezes every source.
 
 * Venues, instruments and the price oracle
 
-The =marketdata= module (requires =market=, suggests =feeds=, on by default, no switch of its own) joins the series stores to the books. It owns four record types and one lookup: the price oracle, which answers "what is this worth" from a store, and which every valuing report can ask through a =series:= price source.
+The =marketdata= module (requires =market=, suggests =feeds=, on by default, no switch of its own) joins the series stores to the books. It owns six record types -- the four below, and the alert rules and hits of the next chapter -- and one lookup: the price oracle, which answers "what is this worth" from a store, and which every valuing report can ask through a =series:= price source.
 
 ** Records
 
@@ -510,3 +515,100 @@ series:<basis>[@<venue key or group>]
 - =venturectl market quote ID|product=ID [basis=B] [venue=KEY|GROUP] [venue_id=N] [at=DATE] [currency=C] [fallback=true] [source=S]= and =venturectl market promote=.
 - The records themselves through the generic routes and =venturectl list|get|create|update|delete venue|instrument|watchlist|watchlist_entry=. Pages to browse a store arrive with the browse pages.
 - All of it is gone with the module off: the routes answer 404, the types are hidden.
+
+* Alerts
+
+An =alert_rule= says what somebody wants to hear about the market data -- a price under a line, a venue running out, a listing of theirs undercut, a news entry naming an item -- and an =alert_hit= is one time it fired. Both belong to the =marketdata= module and are tenant records. The evaluation follows the feeds module's threading exactly: rules are frozen on the main thread, candidates are found on the worker against the store it just wrote, and hits are written back on the main thread by the system.
+
+** Rules
+
+| Field | Meaning |
+|-------+---------|
+| =name= | what it watches for |
+| =kind= | one of the kinds below; =below= is the zero value |
+| =enabled= | evaluated after every feed run; a new rule starts on (the column's zero value, off, is the safe reading of a row nobody wrote it on) |
+| =watchlist-id=, =instrument-id=, =category-id= | what it watches: the watchlist's instruments, one instrument, or every instrument filed under the category or beneath it. Any of them; together they are a union. Required for every kind but =undercut= and =entry_match=, which they only narrow |
+| =data-source-id= | optional: only this source's data; empty is every source of the organization |
+| =venue-id= or =group-key= | optional, not both: only at that venue, or at venues in that group. A watchlist's own group applies when the rule names neither |
+| =threshold= | a price, for =below=, =above= and =spread= |
+| =threshold-number= | a number, for =pct_vs_reference= (a percent), =shortage= (units) and =spike= (a percent change) |
+| =pattern= | plain text, for =entry_match= |
+| =basis= | the reference price for =pct_vs_reference= and =spread=; the series a =spike= reads |
+| =window-hours= | =spike= only: 1 to 336 |
+| =cooldown-minutes= | quiet time after a hit about the same thing; a new rule starts at 60; 0 to 43200 |
+| =notify-username= | whose inbox a hit reaches; empty is whoever created the rule |
+
+The save validator holds each kind to exactly the fields it reads, and refuses the ones it does not when they are set -- a price left on an =out_of_stock= rule would read as if it mattered. =basis= is an enum with no empty value, so a kind that does not read it ignores it. References are held to the rule's organization, and a venue in another data source than the one the rule is narrowed to is refused. A category reference is judged against the tree's =applies-to= as an instrument's would be: a rule names the category its instruments are filed under, and the class says so with the =VENTURE_CATEGORY_APPLIES_AS_QDATA= qdata rather than the validator listing it.
+
+A rule has no personal owner: a record with one is kept from webhooks and automation, and a hit is exactly what those are for. Whose inbox a hit reaches is =notify-username= (refused when written unless it is an active user), or, left empty, the actor of the rule's creation in the audit log -- an API token stands for its owner. Nobody resolvable is nobody told; the hit is still written and published.
+
+** Kinds
+
+Every kind but =spread= and =entry_match= is judged per instrument per venue, on the venue's newest snapshot only: a row that snapshot did not touch was judged when it was new. Prices are compared in minor units of one currency and never converted -- a row in another currency than the threshold says nothing about it.
+
+| Kind | Fires when | Hit's =observed= / =reference= | Numbers |
+|------+------------+-------------------------------+---------|
+| =below= | the venue's cheapest unit is at or below =threshold= | the minimum / the threshold | |
+| =above= | the venue's cheapest unit is at or above =threshold= | the minimum / the threshold | |
+| =pct_vs_reference= | 100 x minimum / reference is at or below =threshold-number= (80 fires 20% under the reference) | the minimum / the reference | the percent / the threshold |
+| =spread= | within the group (the rule's, else the venue's), the best other venue's =basis= figure is at least =threshold= above the cheapest venue's minimum | the buy venue's minimum / the sell figure | |
+| =out_of_stock= | the newest snapshot took the quantity to zero (=stock_changed_at= is that snapshot) | | 0 |
+| =back_in_stock= | the newest snapshot brought it back above zero; never a first sighting | the minimum | the quantity |
+| =shortage= | fewer units are on offer than =threshold-number= | | the quantity / the threshold |
+| =spike= | the =basis= figure (=market=, =min= or =quantity=) moved by =threshold-number= percent or more -- up for a positive one, down for a negative one -- against the newest hourly point at or before =window-hours= earlier | the price now / then (prices) | the change / the threshold |
+| =undercut= | an open listing at a venue with prices here asks more than the cheapest unit that venue now offers of its product, in the listing's currency | the minimum / the listing's price | |
+| =entry_match= | an entry's title or summary contains =pattern=, both case-folded | | |
+
+- *Reference prices.* =pct_vs_reference= reads =market= (the venue's market value), =market_14d=, =historical_60d=, =sale_avg= (the venue's daily history) or a region figure of the venue's group, in the row's currency; =min= is refused, being the figure itself. =spread= reads the same bases for each other venue; a region basis is the group's one figure.
+- *Spread* is net of nothing: fees and transfers belong to the arbitrage engine. The buy side is the cheapest in-stock venue in the threshold's currency, the sell side the best figure among the *other* venues, and the hit is about the buy venue.
+- *Stock* is read from =stock_changed_at=, which the store writes in the statement that makes the change, so the worker never has to remember the previous snapshot.
+- *Undercut.* Your own listing is among the units on offer, so a cheapest unit below it is somebody else's. The organization's open listings that name a =venue-id= are frozen with the source: the venue's key when its prices are in this source, and the store keys of the instrument records naming the listing's product. Up to 1000.
+- *Entries* are matched on what a run brought (=fetched_at= at or after the run's start); an evaluation by hand looks back a day. A pattern is plain text of at most 200 characters, never a regular expression, so nobody's rule can make the worker backtrack. A scoped =entry_match= rule matches only entries about an instrument in scope.
+
+** Evaluation
+
+1. *Freezing, main thread.* The alerts register a feeds hook (=VENTURE_ALERTS_HOOK=, "alerts"). Whenever the feeds service freezes a source, every enabled rule of its organization (oldest first, up to 500) is reduced to plain data for that source: the store keys its scope comes to, the category's store path ("Materials / Ore" becomes "Materials/Ore"), the venue's key, the group, the threshold in its currency's minor units, the case-folded pattern. A rule that says nothing about the source -- narrowed to another, its venue in another, its scope naming no instrument there -- is left out. Saving or deleting a rule, a watchlist or its entries, a venue, a listing or a category queues a refreeze (=venture_feeds_queue_refresh()=); instruments already do.
+2. *Finding, worker thread.* After each unit's commit the hook takes the run's venues it has not judged at their newest snapshot (=venture_feed_run_get_venues()=, remembered as "venue@time"), and the entries that arrived since the run began, and evaluates every frozen rule against the writer handle. Candidates are plain JSON on the run's "alerts" payload, keyed by rule and subject so a later unit's sighting replaces an earlier one; past 1000 they are only counted. A failed read is a note on the run. The worker never touches the database.
+3. *Writing, main thread.* After the run record is written, outside any transaction, each candidate is held to its rule as it is now (deleted, moved or switched off since the freeze: dropped), to the cooldown, and to the cap of 100 hits a run; then it is saved as an =alert_hit= by the system actor ("alerts") and told to the recipient's inbox as an =alert= notification. A run that ends while an automation handler is running waits for the handler to return: a hit written inside one would raise no =on_created=.
+
+Nothing is ever evaluated from inside an automation handler. The run hook waits, and the =evaluate= action is refused there (=VENTURE_ERROR_CONFLICT=).
+
+** Cooldown and the cap
+
+The cooldown is kept per rule and *subject*: the venue and instrument, plus the listing for =undercut= or the entry for =entry_match= (the hit's technical =subject= field). A candidate is dropped when the rule's newest hit about that subject was observed at the same snapshot or later -- always, so an evaluation by hand after a run says nothing twice -- or less than =cooldown-minutes= before it. Deleted hits count: deleting one is not asking to be told again at once. With a cooldown of 0 every new snapshot that matches is a hit.
+
+A run writes at most =VENTURE_ALERTS_MAX_HITS_PER_RUN= (100) hits; the rest are counted, and the run record's notes say how many, as they do for candidates past =VENTURE_ALERTS_MAX_CANDIDATES= (1000). A loose rule on a large store's first sync would otherwise write a hit, a notification and a webhook delivery per instrument.
+
+** Hits
+
+An =alert_hit= carries =rule-id=, =kind=, =observed-at= (the snapshot's time, or the entry's arrival), =message= (one sentence, prices formatted on the main thread), =data-source-id=, =instrument-key= and =instrument-id= (when a record names that key in the source), =venue-key= and =venue-id= likewise, =listing-id= (=undercut=), =entry-key= and =url= (=entry_match=), the money =observed= and =reference=, the numbers =observed-number= and =reference-number=, and =subject=. Its display name is its message, cut to a line, so ={event->label}= and a webhook body's =label= say what happened. Instruments and venues the store saw but nobody promoted have their key and no record; a hit never promotes.
+
+A hit is evidence: =venture_web_type_accepts_writes()= refuses creating or editing one through the generic routes, as it does a data source run, and it must belong to an organization. Its creation is the event. There is no separate alert event:
+
+- *Webhooks* publish =alert_hit.created= -- subscribe with =alert_hit.created= or =alert_hit.*= (see [[file:webhooks.org][Webhooks]]). The system actor's creation is published like anybody's: only its updates are kept from the inbox.
+- *Automation* hears =on_created= with =event->type= ="alert_hit"= (see [[file:automation.org][Automation]]).
+- *The inbox* gets one notification of kind =alert=, titled with the rule's name and the message.
+
+Forwarding to a phone or a chat is an automation rule, with podomation's =ntfy= or =discord= module configured:
+
+#+begin_src
+pod alerts = venture->new();
+alerts->on_created where event->type == "alert_hit"
+	=> ntfy->publish("trading", "{event->label}", "Market alert");
+alerts->on_created where event->type == "alert_hit"
+	=> discord->send_message("123456789012345678", "{event->label}");
+#+end_src
+
+** Evaluating by hand
+
+=venture_marketdata_alerts_evaluate(context, rule, record, &report, &error)= and the record action =evaluate= on =alert_rule= (editors; not stageable) hold one rule against the newest snapshot of every venue in the store of each source it covers, now, on the main thread through a read handle -- the same evaluation the worker makes. =record= false says what would fire and writes nothing; true writes the hits under the cooldown and the cap, as a run would. A disabled rule is evaluated too: trying one before switching it on is the point. The action's answer is the rule's transient =result=; the function's report is ={"candidates", "written", "cooled", "over_cap", "failed", "sources", "matches": [{"message", "subject", "venue_key", "instrument_key", "observed_at", "data_source_id"}], "hits", "notes"}=.
+
+** Modules off
+
+- *Feeds off* (or a build without SQLite): no store, no worker, no evaluation; =evaluate= refuses with =VENTURE_ERROR_CONFIG=. Rules can still be written.
+- *Marketdata off*: the types are hidden like any module's, the freeze contributes nothing, a run writes no hits and =evaluate= refuses.
+
+** Surfaces
+
+- The records through the generic routes and =venturectl list|get|create|update|delete alert_rule= (and =list|get alert_hit=); =venturectl act alert_rule ID evaluate [record=true]=.
+- Pages to browse rules and hits arrive with the browse pages.

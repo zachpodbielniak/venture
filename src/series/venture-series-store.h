@@ -400,6 +400,10 @@ typedef struct
  * @deal_price: the group's deal price
  * @pct_vs_region: @min_price as a percent of @region_median (80 is 20%
  *   cheaper), or NAN
+ * @stock_changed_at: the snapshot at which @quantity last crossed zero, in
+ *   either direction, or %VENTURE_SERIES_NONE when it never has (a row's
+ *   first sighting is not a change). Equal to @taken_at exactly when the
+ *   newest snapshot is the one that took it out of or put it back in stock.
  *
  * One instrument at one venue, now. Every price is
  * %VENTURE_SERIES_NONE when unknown.
@@ -429,6 +433,7 @@ typedef struct
 	gint64	 region_median;
 	gint64	 deal_price;
 	gdouble	 pct_vs_region;
+	gint64	 stock_changed_at;
 } VentureSeriesRow;
 
 /**
@@ -1680,6 +1685,30 @@ GPtrArray *
 venture_series_store_list_entries(
 	VentureSeriesStore	 *self,
 	gint64			  since,
+	guint			  count,
+	GError			**error
+);
+
+/**
+ * venture_series_store_list_new_entries:
+ * @self: a #VentureSeriesStore
+ * @fetched_since: the earliest first arrival wanted
+ * @count: entries to return, 0 for %VENTURE_SERIES_DEFAULT_PAGE, at most
+ *   %VENTURE_SERIES_MAX_PAGE
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The entries that first reached the store at or after @fetched_since,
+ * whatever their publication time: what a run brought, as opposed to what
+ * was published lately. An entry fetched again keeps its first arrival, so
+ * it is not new twice.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesEntryRow) (nullable):
+ *   the earliest arrivals first; %NULL on error
+ */
+GPtrArray *
+venture_series_store_list_new_entries(
+	VentureSeriesStore	 *self,
+	gint64			  fetched_since,
 	guint			  count,
 	GError			**error
 );

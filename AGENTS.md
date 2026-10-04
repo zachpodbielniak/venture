@@ -125,6 +125,13 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   zero, bounded, iterating the default context; the worker is joined when
   the context is disposed, so a test that drops its context leaves no
   thread behind.
+- **Pending never reads zero mid-sync.** Each stage counts itself before
+  the one before it stops counting: the command, the sync waiting for the
+  worker's timer (`worker_source_set_manual()`), the pass, the delivery. A
+  gap between the command being freed and the pass starting let a settle
+  loop read zero and look for a run that did not exist yet -- one
+  test-alerts run in five, under load. `/feeds/pending-covers-a-queued-sync`
+  polls without sleeping and fails within a few syncs if a gap returns.
 
 ## Market data records and the price oracle
 
@@ -163,6 +170,60 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   `venture_marketdata_known_keys()` runs in `feeds_freeze()` on the main
   thread; the worker sees only the frozen set. An instrument save queues a
   coalesced refreeze -- keep it coalesced, promotion saves in bulk.
+
+## Market data alerts
+
+`src/marketdata/venture-marketdata-alerts.c`: `alert_rule` and `alert_hit`
+in the marketdata module. `docs/market-data.org` ("Alerts").
+
+- **Candidates are found on the worker against frozen rules; hits are
+  written on the main thread.** The feeds hook "alerts" freezes every
+  enabled rule of a source's organization into plain structs (store keys,
+  venue key, threshold in minor units, open listings for undercut) in
+  `feeds_freeze()`; the after-commit runs the evaluation against the
+  writer and leaves JSON on the run; the after-run writes `alert_hit` as
+  the system ("alerts"). The worker never touches the database. A rule,
+  watchlist(-entry), venue, listing or category save queues
+  `venture_feeds_queue_refresh()` -- keep the list in
+  `alerts_entity_changed()` in step with what the freeze reads.
+- **One evaluation, two callers.** The worker and the `evaluate` action
+  (`venture_marketdata_alerts_evaluate()`, a read handle on the main
+  thread) run the same `alerts_evaluate()`. Never write a second matcher
+  for "test this rule".
+- **The cooldown is judged on the main thread, per rule and `subject`.**
+  A hit about the same subject observed at the same snapshot or later
+  always suppresses (so a hand evaluation after a run says nothing twice);
+  within `cooldown-minutes` it suppresses. Deleted hits count. The cap is
+  `VENTURE_ALERTS_MAX_HITS_PER_RUN`, and the overflow is a note on the run
+  record -- never silently dropped.
+- **No separate alert event.** The hit's creation is the event:
+  `alert_hit.created` to webhooks, `on_created` to automation, a
+  `VENTURE_NOTIFICATION_KIND_ALERT` (appended last; the kind is stored by
+  number) to the recipient's inbox. Do not add a custom "alert_fired"
+  event: two events for one fact is two things to keep in step. A rule has
+  no personal owner for the same reason -- a personal record is kept from
+  webhooks and automation.
+- **Never evaluated inside an automation handler.** A hit written there
+  raises no `on_created` (the cascade guard). The run hook defers while
+  `venture_automation_is_dispatching()`, and `evaluate` refuses with
+  `VENTURE_ERROR_CONFLICT`.
+- **Stock transitions come from the store, not from memory.**
+  `current.stock_changed_at` (series schema step 3) is stamped by the
+  statement that crosses zero; out_of_stock/back_in_stock fire when it
+  equals the row's `taken_at`. A first sighting leaves it NULL -- otherwise
+  a source's first sync is "back in stock" for everything. Never keep the
+  previous snapshot in hook state: frozen data is immutable and the worker
+  is restarted at will.
+- **Each kind carries exactly its fields.** The validator refuses a
+  threshold, number, pattern or window a kind does not read. `below` is the
+  zero kind *because* it requires a threshold: a rule saved without its kind
+  is refused, not quietly watching something. Patterns are bounded plain
+  text, case-folded substring -- never a user regular expression on the
+  worker.
+- **A rule's category is an instrument category.** `alert_rule` sets the
+  `VENTURE_CATEGORY_APPLIES_AS_QDATA` type qdata to "instrument" so the
+  generic category check judges it as an instrument's reference; do not
+  list the type in the validator.
 
 ## Conventions
 

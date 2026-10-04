@@ -1060,6 +1060,24 @@ instrument names its store row (`data_source_id` + `key`) and the
   refused. An observation's own `source` may not start with `series:`.
 - A `listing` may name its `venue_id`; refused while marketdata is off.
 
+Alert rules (`alert_rule`) and their hits (`alert_hit`) are generic records too.
+Run `describe alert_rule` for the kind nicks; each kind takes only its own
+thresholds, and the others must be left empty or the save is refused:
+
+- `below`/`above`/`spread` take `threshold` (money, e.g. `"1.20 USD"`);
+  `pct_vs_reference` (a percent: 80 fires 20% under), `shortage` (units) and
+  `spike` (a percent change, negative for a drop) take `threshold_number`;
+  `spike` also needs `window_hours` (1-336); `entry_match` takes `pattern`
+  (plain text, not a regex).
+- Every kind but `undercut` and `entry_match` needs a scope: `watchlist_id`,
+  `instrument_id` or `category_id`. `venue_id` or `group_key` narrows, never
+  both. `enabled` starts true and `cooldown_minutes` 60.
+- `act alert_rule ID evaluate` says what would fire now without writing;
+  `record=true` writes the hits under the cooldown, as a feed run would.
+  Refused with feeds off. Hits are written only by the server -- creating or
+  editing an `alert_hit` is refused (403); read them with `list alert_hit
+  rule_id=N`.
+
 ## Organization sign-in
 
 OIDC configuration and explicit identity linking use the web settings described

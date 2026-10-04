@@ -677,7 +677,8 @@ static const gchar *const marketdata_requires[] = { "market", NULL };
 static const gchar *const marketdata_suggests[] = { "feeds", NULL };
 static GType (*const marketdata_types[]) (void) = {
 	venture_venue_get_type, venture_instrument_get_type,
-	venture_watchlist_get_type, venture_watchlist_entry_get_type, NULL
+	venture_watchlist_get_type, venture_watchlist_entry_get_type,
+	venture_alert_rule_get_type, venture_alert_hit_get_type, NULL
 };
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
@@ -1326,10 +1327,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"marketdata", "Market data",
-		"Venues and instruments promoted from market data, watchlists, and "
-		"the price oracle every valuing report can ask through a series: "
-		"price source: min, market, 14-day and 60-day averages, region "
-		"figures, sale rate and quantity.",
+		"Venues and instruments promoted from market data, watchlists, "
+		"alert rules and their hits, and the price oracle every valuing "
+		"report can ask through a series: price source: min, market, 14-day "
+		"and 60-day averages, region figures, sale rate and quantity.",
 		marketdata_requires, marketdata_suggests, marketdata_types, NULL,
 		NULL, FALSE
 	}

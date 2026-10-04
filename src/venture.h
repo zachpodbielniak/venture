@@ -339,6 +339,7 @@
 #include "goals/venture-goals.h"
 #include "marketdata/venture-marketdata.h"
 #include "marketdata/venture-marketdata-oracle.h"
+#include "marketdata/venture-marketdata-alerts.h"
 #include "series/venture-series-math.h"
 #ifdef VENTURE_HAVE_SQLITE
 #include "series/venture-series-store.h"

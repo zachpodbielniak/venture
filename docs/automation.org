@@ -153,6 +153,18 @@ books agree. The same shape covers subscriptions, retainers invoiced
 monthly, and any other transaction that recurs on a clock rather than an
 event.
 
+** A market data alert
+
+A rule that fires writes an =alert_hit= as the system, outside any handler, so =on_created= hears it like any other record -- there is no separate alert event. The hit's =event->label= is its message, which is what a phone wants to show:
+
+#+begin_src
+pod alerts = venture->new();
+alerts->on_created where event->type == "alert_hit"
+	=> ntfy->publish("trading", "{event->label}", "Market alert");
+#+end_src
+
+=discord->send_message("CHANNEL_ID", "{event->label}")= does the same for a Discord channel; both modules need their podomation configuration. Rules are never evaluated from inside a handler: a hit written there would raise no =on_created=, so the =evaluate= action refuses there and a feed run that ends during one waits for it (see [[file:market-data.org][Market data]], "Alerts").
+
 * From the command line
 
 The file is ordinary text; the page is a convenience, not a gatekeeper.

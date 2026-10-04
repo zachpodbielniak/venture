@@ -869,6 +869,18 @@ venture_web_type_accepts_writes(
 		return FALSE;
 	}
 
+	/* Nor is an alert hit: it is what a rule saw, written by the system
+	 * when it fired. A hit somebody could write would deliver a webhook
+	 * and run an automation for a price nobody saw. */
+	if (VENTURE_TYPE_ALERT_HIT == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "An alert hit is written when its rule fires; "
+		                    "it cannot be written or edited");
+		return FALSE;
+	}
+
 	/* A calendar_event row is the sync's memory of what both sides looked
 	 * like; editing one would make the next sweep overwrite or duplicate. */
 	if (VENTURE_TYPE_CALENDAR_EVENT == entity_type)

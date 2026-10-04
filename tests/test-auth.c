@@ -1289,6 +1289,10 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/instrument"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/watchlist"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/watchlist_entry"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/alert_rule"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/alert_hit"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/alert_rule"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/alert_hit"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/venue"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/instrument"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/quote?product_id=1"), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -5588,6 +5592,16 @@ static void test_auth_marketdata(ServerFixture *fixture, gconstpointer unused)
 		"{\"data_source_id\":1,\"kind\":\"instrument\",\"key\":\"1\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/promote", editor,
 		"{\"kind\":\"thing\"}", NULL, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* Alert rules are an editor's data; hits are evidence nobody writes. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/alert_rule", editor,
+		"{\"name\":\"Undercuts\",\"kind\":\"undercut\"}", &page, NULL), ==, SOUP_STATUS_CREATED);
+	g_assert_nonnull(strstr(page, "\"enabled\""));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/alert_rule", editor,
+		"{\"name\":\"Cheap\",\"kind\":\"below\"}", NULL, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/alert_hit", editor,
+		"{\"rule_id\":1,\"message\":\"made up\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 
 	/* Off: gone, not an error. */
 	venture_config_set_module_enabled(fixture->config, "marketdata", FALSE);

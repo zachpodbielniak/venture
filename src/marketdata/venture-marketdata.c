@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "marketdata/venture-marketdata-private.h"
 
 #include <string.h>
 
@@ -55,8 +56,8 @@ marketdata_int(
  * and no control characters. These end up in a store lookup, a page and
  * an export; a newline in one is never what somebody meant.
  */
-static gboolean
-marketdata_check_text(
+gboolean
+venture_marketdata_check_text(
 	const gchar	 *value,
 	const gchar	 *label,
 	GError		**error
@@ -92,8 +93,8 @@ marketdata_check_text(
  * written is judged, so a row pointing somewhere since moved stays
  * editable.
  */
-static gboolean
-marketdata_same_organization(
+gboolean
+venture_marketdata_check_same_organization(
 	VentureDatabase	 *database,
 	VentureEntity	 *entity,
 	VentureEntity	 *previous,
@@ -183,8 +184,8 @@ marketdata_derive_ref(
 
 	g_object_get(entity, "namespace", &namespace_, "key", &key, NULL);
 
-	if (!marketdata_check_text(namespace_, "Namespace", error) ||
-	    !marketdata_check_text(key, "Key", error))
+	if (!venture_marketdata_check_text(namespace_, "Namespace", error) ||
+	    !venture_marketdata_check_text(key, "Key", error))
 		return FALSE;
 
 	if (!venture_string_is_empty(namespace_) && (NULL != strchr(namespace_, ':')))
@@ -279,8 +280,8 @@ marketdata_validate_venue(
 	g_object_get(entity, "group-key", &group_key, "currency", &currency,
 	             "fee-model", &fee_model, "transfer-hours", &hours, NULL);
 
-	if (!marketdata_check_text(group_key, "Group", error) ||
-	    !marketdata_check_text(fee_model, "Fee model", error) ||
+	if (!venture_marketdata_check_text(group_key, "Group", error) ||
+	    !venture_marketdata_check_text(fee_model, "Fee model", error) ||
 	    !marketdata_derive_ref(database, entity, previous, VENTURE_TYPE_VENUE, "Venue", error))
 		return FALSE;
 
@@ -306,12 +307,12 @@ marketdata_validate_venue(
 		return FALSE;
 	}
 
-	return marketdata_same_organization(database, entity, previous, "data-source-id",
-	                                    VENTURE_TYPE_DATA_SOURCE, "Data source", error) &&
-	       marketdata_same_organization(database, entity, previous, "location-id",
-	                                    VENTURE_TYPE_LOCATION, "Location", error) &&
-	       marketdata_same_organization(database, entity, previous, "account-id",
-	                                    VENTURE_TYPE_ACCOUNT, "Account", error);
+	return venture_marketdata_check_same_organization(database, entity, previous, "data-source-id",
+	                                                  VENTURE_TYPE_DATA_SOURCE, "Data source", error) &&
+	       venture_marketdata_check_same_organization(database, entity, previous, "location-id",
+	                                                  VENTURE_TYPE_LOCATION, "Location", error) &&
+	       venture_marketdata_check_same_organization(database, entity, previous, "account-id",
+	                                                  VENTURE_TYPE_ACCOUNT, "Account", error);
 }
 
 /* ==========================================================================
@@ -339,10 +340,10 @@ marketdata_validate_instrument(
 	                           "Instrument", error))
 		return FALSE;
 
-	if (!marketdata_same_organization(database, entity, previous, "data-source-id",
-	                                  VENTURE_TYPE_DATA_SOURCE, "Data source", error) ||
-	    !marketdata_same_organization(database, entity, previous, "product-id",
-	                                  VENTURE_TYPE_PRODUCT, "Product", error))
+	if (!venture_marketdata_check_same_organization(database, entity, previous, "data-source-id",
+	                                                VENTURE_TYPE_DATA_SOURCE, "Data source", error) ||
+	    !venture_marketdata_check_same_organization(database, entity, previous, "product-id",
+	                                                VENTURE_TYPE_PRODUCT, "Product", error))
 		return FALSE;
 
 	return venture_category_check_tree_node(database, entity, error);
@@ -366,9 +367,9 @@ marketdata_validate_watchlist(
 
 	g_object_get(entity, "group-key", &group_key, NULL);
 
-	return marketdata_check_text(group_key, "Group", error) &&
-	       marketdata_same_organization(database, entity, previous, "venture-id",
-	                                    VENTURE_TYPE_VENTURE, "Venture", error);
+	return venture_marketdata_check_text(group_key, "Group", error) &&
+	       venture_marketdata_check_same_organization(database, entity, previous, "venture-id",
+	                                                  VENTURE_TYPE_VENTURE, "Venture", error);
 }
 
 /*
@@ -409,10 +410,10 @@ marketdata_validate_watchlist_entry(
 		return FALSE;
 	}
 
-	if (!marketdata_same_organization(database, entity, previous, "watchlist-id",
-	                                  VENTURE_TYPE_WATCHLIST, "Watchlist", error) ||
-	    !marketdata_same_organization(database, entity, previous, "instrument-id",
-	                                  VENTURE_TYPE_INSTRUMENT, "Instrument", error) ||
+	if (!venture_marketdata_check_same_organization(database, entity, previous, "watchlist-id",
+	                                                VENTURE_TYPE_WATCHLIST, "Watchlist", error) ||
+	    !venture_marketdata_check_same_organization(database, entity, previous, "instrument-id",
+	                                                VENTURE_TYPE_INSTRUMENT, "Instrument", error) ||
 	    !marketdata_check_amount(entity, "target-buy", "Buy at", error) ||
 	    !marketdata_check_amount(entity, "target-sell", "Sell at", error))
 		return FALSE;
@@ -1093,7 +1094,7 @@ venture_marketdata_parse_price_source(
 			return FALSE;
 		}
 
-		if (!marketdata_check_text(where, "price_source", error))
+		if (!venture_marketdata_check_text(where, "price_source", error))
 			return FALSE;
 
 		if (NULL != out_where)

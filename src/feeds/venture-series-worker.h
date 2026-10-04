@@ -145,6 +145,33 @@ const gchar *const *
 venture_feed_run_get_venues(VentureFeedRun *self);
 
 /**
+ * venture_feed_run_get_started_at:
+ * @self: a run
+ *
+ * When the run's first fetch began, in Unix seconds: a hook that wants
+ * "what this run brought" asks the store for rows that arrived since.
+ *
+ * Returns: the start
+ */
+gint64
+venture_feed_run_get_started_at(VentureFeedRun *self);
+
+/**
+ * venture_feed_run_add_note:
+ * @self: a run
+ * @note: (nullable): one line; empty is ignored
+ *
+ * Adds a note the run record will carry, on the worker while the run is
+ * being built -- a hook's commit function may call it to say what it left
+ * out. A run keeps at most forty: it is a record, not a log.
+ */
+void
+venture_feed_run_add_note(
+	VentureFeedRun	*self,
+	const gchar	*note
+);
+
+/**
  * venture_feed_run_set_payload:
  * @self: a run
  * @name: the hook's name

@@ -28,6 +28,8 @@ A webhook subscribes with a comma-separated list of patterns:
 
 A prefix is not a type: =ticket.*= does not match =ticket_link.created=.
 
+A market data alert firing is one of these too: it writes an =alert_hit= as the system, so =alert_hit.created= is the alert event, with the hit's message as the body's =label=. There is no separate alert event to subscribe to (see [[file:market-data.org][Market data]], "Alerts"). The system's own creations are published like anybody's.
+
 ** What is never published
 
 Some types are quiet, whatever a webhook subscribes to: =webhook= and =webhook_delivery= (a delivery about a delivery is the obvious loop), =notification= and =watch= (bookkeeping), =audit_entry=, =chat_thread= and =chat_message= (private), =kb_chunk= and =kb_link= (derived, and a reindex would post a thousand times), =api_token= and =user= (access management). The list is in =src/core/venture-webhook.c= beside the one the inbox uses, and for the same reasons.

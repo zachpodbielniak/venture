@@ -216,9 +216,21 @@ static const gchar series_schema_step_2[] =
 	");"
 	"CREATE INDEX entries_when ON entries (COALESCE(published_at, fetched_at));";
 
+/*
+ * When an instrument last went into or out of stock at a venue, so an
+ * alert can say "out of stock" or "back in stock" about the snapshot that
+ * did it without remembering the previous one itself: the transition is
+ * recorded by the statement that makes it. And an index on when an entry
+ * first arrived, which is how "the entries this run brought" is asked.
+ */
+static const gchar series_schema_step_3[] =
+	"ALTER TABLE current ADD COLUMN stock_changed_at INTEGER;"
+	"CREATE INDEX entries_fetched ON entries (fetched_at);";
+
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
-	series_schema_step_2
+	series_schema_step_2,
+	series_schema_step_3
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -2501,6 +2513,12 @@ static const gchar series_sql_insert_snapshot[] =
  * pct_vs_region is kept fresh against the stored region median at every
  * snapshot, so browsing by it is right between region recomputes; the
  * median itself only moves when the region is recomputed.
+ *
+ * stock_changed_at moves only when the quantity crosses zero, in either
+ * direction, and stays put when either side is unknown: a stats row that
+ * did not say how many is not evidence of a sell-out. A brand-new row
+ * leaves it NULL -- the first sighting of an instrument is not "back in
+ * stock", or the first sync of a source would say so about everything.
  */
 static const gchar series_sql_upsert_current[] =
 	"INSERT INTO current (venue_id, instrument_id, currency, taken_at, seen_at,"
@@ -2523,6 +2541,10 @@ static const gchar series_sql_upsert_current[] =
 	"  bid_price = excluded.bid_price,"
 	"  bid_quantity = excluded.bid_quantity,"
 	"  tiers = excluded.tiers,"
+	"  stock_changed_at = CASE"
+	"    WHEN excluded.quantity IS NULL OR quantity IS NULL THEN stock_changed_at"
+	"    WHEN (quantity > 0) <> (excluded.quantity > 0) THEN excluded.taken_at"
+	"    ELSE stock_changed_at END,"
 	"  pct_vs_region = CASE"
 	"    WHEN excluded.min_price IS NULL OR region_median IS NULL"
 	"         OR region_median = 0 OR excluded.quantity = 0"
@@ -2532,10 +2554,13 @@ static const gchar series_sql_upsert_current[] =
 /*
  * Whatever a complete snapshot left out is out of stock now. Rows already
  * at nothing are left alone, so an instrument that sold out a week ago is
- * not rewritten every hour since.
+ * not rewritten every hour since. A row that had units is stamped as
+ * having gone out of stock at this snapshot.
  */
 static const gchar series_sql_mark_absent[] =
-	"UPDATE current SET taken_at = ?2, quantity = 0, listings = 0,"
+	"UPDATE current SET taken_at = ?2,"
+	"  stock_changed_at = CASE WHEN quantity > 0 THEN ?2 ELSE stock_changed_at END,"
+	"  quantity = 0, listings = 0,"
 	"  min_price = NULL, market_value = NULL, median = NULL, p15 = NULL,"
 	"  mean = NULL, stddev = NULL, bid_price = NULL, bid_quantity = 0,"
 	"  tiers = NULL, pct_vs_region = NULL"
@@ -4125,7 +4150,8 @@ venture_series_store_purge(
 	"v.key, v.name, v.group_key, i.key, i.name, i.category, i.kind," \
 	" c.currency, c.taken_at, c.seen_at, c.quantity, c.listings, c.min_price," \
 	" c.market_value, c.median, c.p15, c.mean, c.stddev, c.bid_price," \
-	" c.bid_quantity, c.region_median, c.deal_price, c.pct_vs_region"
+	" c.bid_quantity, c.region_median, c.deal_price, c.pct_vs_region," \
+	" c.stock_changed_at"
 
 #define SERIES_ROW_FROM \
 	" FROM current c JOIN venues v ON v.id = c.venue_id" \
@@ -4161,6 +4187,7 @@ series_row_from(sqlite3_stmt *stmt)
 	row->deal_price = series_column_figure(stmt, 21);
 	row->pct_vs_region = (SQLITE_NULL == sqlite3_column_type(stmt, 22)) ?
 	                     NAN : sqlite3_column_double(stmt, 22);
+	row->stock_changed_at = series_column_figure(stmt, 23);
 
 	if (NULL == row->group_key)
 		row->group_key = g_strdup("");
@@ -5755,4 +5782,46 @@ venture_series_store_list_entries(
 	return series_collect(self, stmt, series_entry_row_from,
 	                      (GDestroyNotify)venture_series_entry_row_free,
 	                      "listing entries", error);
+}
+
+static const gchar series_sql_list_new_entries[] =
+	"SELECT e.key, e.title, e.url, e.summary, e.published_at, e.fetched_at,"
+	"       v.key, i.key"
+	" FROM entries e LEFT JOIN venues v ON v.id = e.venue_id"
+	" LEFT JOIN instruments i ON i.id = e.instrument_id"
+	" WHERE e.fetched_at >= ?1"
+	" ORDER BY e.fetched_at, e.id"
+	" LIMIT ?2";
+
+GPtrArray *
+venture_series_store_list_new_entries(
+	VentureSeriesStore	 *self,
+	gint64			  fetched_since,
+	guint			  count,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (0 == count)
+		count = VENTURE_SERIES_DEFAULT_PAGE;
+
+	if (count > VENTURE_SERIES_MAX_PAGE)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A page holds at most %d rows", VENTURE_SERIES_MAX_PAGE);
+		return NULL;
+	}
+
+	stmt = series_stmt(self, series_sql_list_new_entries, error);
+	if (NULL == stmt)
+		return NULL;
+
+	sqlite3_bind_int64(stmt, 1, fetched_since);
+	sqlite3_bind_int64(stmt, 2, count);
+
+	return series_collect(self, stmt, series_entry_row_from,
+	                      (GDestroyNotify)venture_series_entry_row_free,
+	                      "listing new entries", error);
 }

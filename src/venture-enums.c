@@ -857,6 +857,24 @@ VENTURE_DEFINE_ENUM_TYPE(venture_marketdata_basis_get_type,
                          "VentureMarketdataBasis",
                          venture_marketdata_basis_values)
 
+static const GEnumValue venture_alert_kind_values[] = {
+	VE(VENTURE_ALERT_KIND_BELOW,            "below"),
+	VE(VENTURE_ALERT_KIND_ABOVE,            "above"),
+	VE(VENTURE_ALERT_KIND_PCT_VS_REFERENCE, "pct_vs_reference"),
+	VE(VENTURE_ALERT_KIND_SPREAD,           "spread"),
+	VE(VENTURE_ALERT_KIND_OUT_OF_STOCK,     "out_of_stock"),
+	VE(VENTURE_ALERT_KIND_BACK_IN_STOCK,    "back_in_stock"),
+	VE(VENTURE_ALERT_KIND_SHORTAGE,         "shortage"),
+	VE(VENTURE_ALERT_KIND_SPIKE,            "spike"),
+	VE(VENTURE_ALERT_KIND_UNDERCUT,         "undercut"),
+	VE(VENTURE_ALERT_KIND_ENTRY_MATCH,      "entry_match"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_alert_kind_get_type,
+                         "VentureAlertKind",
+                         venture_alert_kind_values)
+
 static const GEnumValue venture_dashboard_layout_values[] = {
 	VE(VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS, "three_columns"),
 	VE(VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,   "two_columns"),
@@ -1203,6 +1221,7 @@ static const GEnumValue venture_notification_kind_values[] = {
 	VE(VENTURE_NOTIFICATION_KIND_BUDGET,   "budget"),
 	VE(VENTURE_NOTIFICATION_KIND_RUN,      "run"),
 	VE(VENTURE_NOTIFICATION_KIND_SYSTEM,   "system"),
+	VE(VENTURE_NOTIFICATION_KIND_ALERT,    "alert"),
 	VE_END
 };
 

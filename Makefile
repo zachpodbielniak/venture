@@ -328,7 +328,7 @@ PUBLIC_HDRS += $(wildcard src/sessions/*.h)
 PUBLIC_HDRS += $(wildcard src/goals/*.h)
 PUBLIC_HDRS += src/series/venture-series-math.h
 PUBLIC_HDRS += src/feeds/venture-feeds-records.h
-PUBLIC_HDRS += $(wildcard src/marketdata/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/marketdata/*.h))
 ifeq ($(SQLITE),1)
 PUBLIC_HDRS += src/series/venture-series-store.h
 PUBLIC_HDRS += $(filter-out src/feeds/venture-feeds-records.h %-private.h,$(wildcard src/feeds/*.h))

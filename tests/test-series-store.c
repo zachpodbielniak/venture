@@ -660,6 +660,91 @@ test_absent_out_of_stock(
 }
 
 /*
+ * stock_changed_at marks the snapshot at which a venue's quantity crossed
+ * zero, either way, and nothing else: not the first sighting, not a price
+ * change, not a stats row that did not say how many.
+ *
+ * What breaks if this regresses: the out_of_stock and back_in_stock alerts
+ * read "changed at the newest snapshot" off this column; stamped on a
+ * first sighting, a source's first sync says every instrument is back in
+ * stock; stamped on every snapshot, every one says it again.
+ */
+static void
+test_stock_changed_at(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesRow) row = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesStats stats;
+
+	/* First sighting: no change yet. */
+	snapshot = begin(fixture->store, "realm", T0, TRUE);
+	add_listing(snapshot, "ore", 0, 50, 2, -1);
+	add_listing(snapshot, "herb", 0, 10, 1, -1);
+	commit(fixture->store, snapshot);
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_cmpint(row->stock_changed_at, ==, VENTURE_SERIES_NONE);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* A new price is not a change of stock. */
+	snapshot = begin(fixture->store, "realm", T0 + HOUR, TRUE);
+	add_listing(snapshot, "ore", 0, 55, 3, -1);
+	add_listing(snapshot, "herb", 0, 10, 1, -1);
+	commit(fixture->store, snapshot);
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_cmpint(row->stock_changed_at, ==, VENTURE_SERIES_NONE);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* Left out of a complete snapshot: out, stamped then. */
+	snapshot = begin(fixture->store, "realm", T0 + 2 * HOUR, TRUE);
+	add_listing(snapshot, "herb", 0, 10, 1, -1);
+	commit(fixture->store, snapshot);
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_cmpint(row->quantity, ==, 0);
+	g_assert_cmpint(row->stock_changed_at, ==, T0 + 2 * HOUR);
+	g_assert_cmpint(row->taken_at, ==, T0 + 2 * HOUR);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* Still out an hour later: the stamp stays where it went out. */
+	snapshot = begin(fixture->store, "realm", T0 + 3 * HOUR, TRUE);
+	add_listing(snapshot, "herb", 0, 10, 1, -1);
+	commit(fixture->store, snapshot);
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_cmpint(row->stock_changed_at, ==, T0 + 2 * HOUR);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* Back: stamped at the snapshot that brought it back. */
+	snapshot = begin(fixture->store, "realm", T0 + 4 * HOUR, TRUE);
+	add_listing(snapshot, "ore", 0, 60, 1, -1);
+	add_listing(snapshot, "herb", 0, 10, 1, -1);
+	commit(fixture->store, snapshot);
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_cmpint(row->quantity, ==, 1);
+	g_assert_cmpint(row->stock_changed_at, ==, T0 + 4 * HOUR);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	/* A stats row that does not say how many is not a sell-out. */
+	memset(&stats, 0, sizeof(stats));
+	stats.instrument_key = "herb";
+	stats.min_price = 11;
+	stats.market_value = VENTURE_SERIES_NONE;
+	stats.mean = VENTURE_SERIES_NONE;
+	stats.median = VENTURE_SERIES_NONE;
+	stats.sale_avg = VENTURE_SERIES_NONE;
+	stats.quantity = VENTURE_SERIES_NONE;
+	stats.listings = VENTURE_SERIES_NONE;
+	stats.sold = VENTURE_SERIES_NONE;
+	snapshot = begin(fixture->store, "realm", T0 + 5 * HOUR, FALSE);
+	g_assert_true(venture_series_snapshot_add_stats(snapshot, &stats, &error));
+	g_assert_no_error(error);
+	commit(fixture->store, snapshot);
+	row = current_of(fixture->store, "realm", "herb");
+	g_assert_cmpint(row->stock_changed_at, ==, VENTURE_SERIES_NONE);
+}
+
+/*
  * Precomputed figures stand in for listings, and one instrument cannot be
  * both in one snapshot.
  */
@@ -1564,6 +1649,18 @@ test_entries(
 	g_assert_cmpstr(((VentureSeriesEntryRow *)entries->pdata[0])->instrument_key,
 	                ==, "herb");
 
+	/* New is when it first arrived, however old it was published: the
+	 * revised copy fetched at T0 + 20 is not new since T0 + 15. */
+	g_clear_pointer(&entries, g_ptr_array_unref);
+	entries = venture_series_store_list_new_entries(fixture->store, T0 + 10, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(entries->len, ==, 1);
+	g_clear_pointer(&entries, g_ptr_array_unref);
+	entries = venture_series_store_list_new_entries(fixture->store, T0 + 15, 0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(entries->len, ==, 0);
+	g_clear_pointer(&entries, g_ptr_array_unref);
+
 	/* Only a web address is a link. */
 	entry.key = "guid-2";
 	entry.url = "javascript:alert(1)";
@@ -1814,6 +1911,7 @@ main(
 	ADD("idempotent", test_idempotent);
 	ADD("late-snapshot", test_late_snapshot);
 	ADD("absent-out-of-stock", test_absent_out_of_stock);
+	ADD("stock-changed-at", test_stock_changed_at);
 	ADD("stats-snapshot", test_stats_snapshot);
 	ADD("sale-estimate", test_sale_estimate);
 	ADD("sale-needs-ids", test_sale_needs_ids);

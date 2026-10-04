@@ -171,3 +171,186 @@ static const VentureFieldDecl venture_watchlist_entry_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureWatchlistEntry, venture_watchlist_entry,
 	venture_watchlist_entry_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Watchlist entry", NULL);)
+
+/* ==========================================================================
+ * Alert rules
+ *
+ * What somebody wants to be told about the market data: a price at or
+ * under a line, a venue running out, a listing of theirs undercut, a news
+ * entry naming something. A rule watches a scope -- a watchlist's
+ * instruments, one instrument, or a category of them -- optionally at one
+ * venue or within one venue group, and one kind of thing; the fields a
+ * kind reads are held to it by the save validator in
+ * venture-marketdata-alerts.c, and the ones it does not read must be
+ * empty, so a threshold nobody's rule looks at is never left looking
+ * meaningful.
+ *
+ * Shared in the organization, with no personal owner: a record with one is
+ * kept from webhooks and automation, and a hit is exactly what those are
+ * for. Whose inbox a hit reaches is `notify-username`, or, left empty,
+ * whoever created the rule (read back from the audit log; an API token
+ * stands for its owner).
+ *
+ * `enabled` starts TRUE on a new object, as a data source's does; the
+ * column's zero value, FALSE, is the safe reading of a row nobody wrote it
+ * on. `cooldown-minutes` starts at 60 the same way.
+ *
+ * Category references are judged as an instrument's would be (the
+ * qdata below): a rule names the category its instruments are filed
+ * under, which is a tree that applies to instruments, not to alert rules.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_alert_rule_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What it watches for: cheap copper ore, my listings undercut"),
+	VENTURE_FIELD_ENUM("kind", "Kind",
+	                   "below, above, pct_vs_reference, spread, out_of_stock, back_in_stock, "
+	                   "shortage, spike, undercut or entry_match",
+	                   venture_alert_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("enabled", "Enabled",
+	              "Evaluated after every feed run; switched off, it keeps its hits and fires no more",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("watchlist-id", "Watchlist",
+	                  "The instruments on this watchlist (its group too, when the rule names none)",
+	                  "watchlist", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("instrument-id", "Instrument", "This one instrument",
+	                  "instrument", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("category-id", "Category",
+	                  "Every instrument filed under this category or beneath it",
+	                  "category", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("data-source-id", "Data source",
+	                  "Optional: only this source's data; empty for every source of the organization",
+	                  "data_source", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("venue-id", "Venue", "Optional: only at this venue",
+	                  "venue", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("group-key", "Group",
+	              "Optional: only at venues in this group -- a region",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("threshold", "Threshold price",
+	                    "below and above: the line the cheapest unit crosses; spread: the least gap worth hearing about"),
+	VENTURE_FIELD("threshold-number", "Threshold number",
+	              "pct_vs_reference: a percent of the reference (80 is 20% under it); shortage: units; "
+	              "spike: a percent change, negative for a drop",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("pattern", "Pattern",
+	              "entry_match: text an entry's title or summary contains, ignoring case",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("basis", "Basis",
+	                   "pct_vs_reference and spread: the reference price; spike: min, market or quantity",
+	                   venture_marketdata_basis_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("window-hours", "Window hours",
+	              "spike: compare with the hourly figure this many hours earlier, 1 to 336",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("cooldown-minutes", "Cooldown minutes",
+	              "Quiet time after a hit, per instrument and venue; 0 tells you about every snapshot",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("notify-username", "Tell",
+	              "Optional: whose inbox a hit reaches; empty is whoever created the rule",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("result", "Result", "What the last evaluation said; shown once, never stored",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT)
+};
+
+static void venture_alert_rule_constructed(GObject *object);
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAlertRule, venture_alert_rule, venture_alert_rule_fields,
+	G_OBJECT_CLASS(klass)->constructed = venture_alert_rule_constructed;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Alert rule", NULL);
+	g_type_set_qdata(G_TYPE_FROM_CLASS(klass),
+		g_quark_from_static_string(VENTURE_CATEGORY_APPLIES_AS_QDATA), (gpointer)"instrument");)
+
+/* On, and an hour's quiet between hits about the same thing: what
+ * somebody adding a rule means. A row read back overwrites both. */
+static void
+venture_alert_rule_constructed(GObject *object)
+{
+	if (NULL != G_OBJECT_CLASS(venture_alert_rule_parent_class)->constructed)
+		G_OBJECT_CLASS(venture_alert_rule_parent_class)->constructed(object);
+
+	g_object_set(object, "enabled", TRUE, "cooldown-minutes", (gint64)60, NULL);
+}
+
+/* ==========================================================================
+ * Alert hits
+ *
+ * One time a rule fired: what was seen, against what, where and when. Written
+ * once, by the system, on the main thread after a feed run (or an explicit
+ * evaluation), and never edited -- it is evidence, like a data source run,
+ * and the generic write routes refuse it. Its creation is the event:
+ * webhooks publish `alert_hit.created` and automation hears `on_created`
+ * for it, with no separate alert event to keep in step.
+ *
+ * Prices are money in the store's currency; percents and quantities are
+ * the numbers. An instrument or venue the store saw but nobody promoted
+ * has its key and no record. `subject` is what the cooldown is kept per.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_alert_hit_fields[] = {
+	VENTURE_FIELD_REF("rule-id", "Rule", "The rule that fired",
+	                  "alert_rule", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_ENUM("kind", "Kind", "What the rule watched for when it fired",
+	                   venture_alert_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("observed-at", "Observed", "When the data was seen: the snapshot or the entry's arrival",
+	              VENTURE_FIELD_KIND_DATETIME,
+	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("message", "Message", "What happened, in a sentence"),
+	VENTURE_FIELD_REF("data-source-id", "Data source", "Whose store it was seen in",
+	                  "data_source", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("instrument-id", "Instrument", "The instrument, when it has a record",
+	                  "instrument", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("instrument-key", "Instrument key", "The instrument's key in the store",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("venue-id", "Venue", "The venue, when it has a record",
+	                  "venue", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("venue-key", "Venue key", "The venue's key in the store",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("listing-id", "Listing", "undercut: the listing that was undercut",
+	                  "listing", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("entry-key", "Entry", "entry_match: the entry's key in the store",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("url", "Link", "entry_match: the entry's link",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("observed", "Observed price", "The price seen, for a kind that reads one"),
+	VENTURE_FIELD_MONEY("reference", "Reference price",
+	                    "What it was held against: the threshold, the reference, the listing, the earlier price"),
+	VENTURE_FIELD("observed-number", "Observed number",
+	              "The percent, change or quantity seen, for a kind that reads one",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("reference-number", "Reference number",
+	              "The rule's threshold number it was held against",
+	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("subject", "Subject",
+	              "What the cooldown is kept per: the venue, the instrument, and the listing or entry",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+
+/*
+ * The hit's own sentence, cut to a line: it is the label a webhook body
+ * and an automation's {event->label} carry, so a rule forwarding hits to a
+ * phone can say what happened without reading the record back. "Alert #12"
+ * for a hit with no message.
+ */
+static gchar *
+venture_alert_hit_display_name(VentureEntity *self)
+{
+	g_autofree gchar *message = NULL;
+
+	g_object_get(self, "message", &message, NULL);
+
+	if ((NULL == message) || ('\0' == message[0]) || !g_utf8_validate(message, -1, NULL))
+		return g_strdup_printf("Alert #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+
+	if (g_utf8_strlen(message, -1) > 120)
+	{
+		g_autofree gchar *cut = g_utf8_substring(message, 0, 119);
+
+		return g_strconcat(cut, "\xe2\x80\xa6", NULL);
+	}
+
+	return g_steal_pointer(&message);
+}
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAlertHit, venture_alert_hit, venture_alert_hit_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_alert_hit_display_name;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Alert hit", NULL);)

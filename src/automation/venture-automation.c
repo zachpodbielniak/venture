@@ -1544,6 +1544,17 @@ venture_automation_is_running(VentureAutomation *self)
 	return self->running;
 }
 
+gboolean
+venture_automation_is_dispatching(VentureAutomation *self)
+{
+	if (NULL == self)
+		return FALSE;
+
+	g_return_val_if_fail(VENTURE_IS_AUTOMATION(self), FALSE);
+
+	return 0 != self->dispatching;
+}
+
 guint
 venture_automation_get_pod_count(VentureAutomation *self)
 {

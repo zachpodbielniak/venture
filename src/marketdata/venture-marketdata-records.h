@@ -10,8 +10,10 @@
  * can name the series store row they stand for -- a data source and a
  * key -- which is what lets the price oracle answer for a product. A
  * watchlist is a shared list of instruments with the prices somebody is
- * waiting for. All four are field tables and nothing else: the rules
- * that span rows are save validators in venture-marketdata.c.
+ * waiting for. An alert rule says what somebody wants to be told about
+ * that data, and an alert hit is one time it fired. All are field tables
+ * and nothing else: the rules that span rows are save validators in
+ * venture-marketdata.c and venture-marketdata-alerts.c.
  */
 
 #ifndef VENTURE_MARKETDATA_RECORDS_H
@@ -34,6 +36,12 @@ VENTURE_DECLARE_ENTITY(VentureWatchlist, venture_watchlist, WATCHLIST)
 
 #define VENTURE_TYPE_WATCHLIST_ENTRY (venture_watchlist_entry_get_type())
 VENTURE_DECLARE_ENTITY(VentureWatchlistEntry, venture_watchlist_entry, WATCHLIST_ENTRY)
+
+#define VENTURE_TYPE_ALERT_RULE (venture_alert_rule_get_type())
+VENTURE_DECLARE_ENTITY(VentureAlertRule, venture_alert_rule, ALERT_RULE)
+
+#define VENTURE_TYPE_ALERT_HIT (venture_alert_hit_get_type())
+VENTURE_DECLARE_ENTITY(VentureAlertHit, venture_alert_hit, ALERT_HIT)
 
 G_END_DECLS
 

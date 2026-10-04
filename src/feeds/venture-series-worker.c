@@ -152,6 +152,14 @@ venture_feed_run_get_venues(VentureFeedRun *self)
 	return (const gchar *const *)self->venues->pdata;
 }
 
+gint64
+venture_feed_run_get_started_at(VentureFeedRun *self)
+{
+	g_return_val_if_fail(NULL != self, 0);
+
+	return self->started_at;
+}
+
 void
 venture_feed_run_set_payload(
 	VentureFeedRun	*self,
@@ -185,6 +193,8 @@ venture_feed_run_add_note(
 	VentureFeedRun	*self,
 	const gchar	*note
 ){
+	g_return_if_fail(NULL != self);
+
 	if (venture_string_is_empty(note) || (self->notes->len >= WORKER_MAX_RUN_NOTES))
 		return;
 
@@ -380,6 +390,25 @@ worker_source_free(gpointer data)
 	g_clear_pointer(&source->open_run, venture_feed_run_unref);
 	g_clear_pointer(&source->spec, venture_feed_source_unref);
 	g_free(source);
+}
+
+/*
+ * A sync asked for and not yet started is live work: the command that
+ * asked has been freed and the pass that answers starts on the worker's
+ * next timer, and in between nothing else counts it. Without this a test
+ * waiting for count_pending() to reach zero could find it zero between
+ * the two and look for a run that had not happened yet.
+ */
+static void
+worker_source_set_manual(
+	WorkerSource	*source,
+	gboolean	 pending
+){
+	if (pending == source->manual_pending)
+		return;
+
+	source->manual_pending = pending;
+	worker_live_add(source->worker, pending ? 1 : -1);
 }
 
 static void worker_reschedule(VentureSeriesWorker *self);
@@ -1331,7 +1360,10 @@ worker_pass_finish(WorkerPass *pass)
 	worker_live_add(self, -1);
 
 	if (source->removed)
+	{
+		worker_source_set_manual(source, FALSE);
 		g_hash_table_remove(self->sources, &source->spec->id);
+	}
 
 	worker_publish_status(self);
 	worker_reschedule(self);
@@ -1443,6 +1475,10 @@ worker_pass_start(
 
 	if (0 == pass->units->len)
 	{
+		/* Asked for and nothing to do: answered all the same. */
+		if (manual)
+			worker_source_set_manual(source, FALSE);
+
 		worker_pass_free(pass);
 		return;
 	}
@@ -1450,10 +1486,14 @@ worker_pass_start(
 	/* The same order every time: the units' names. */
 	g_ptr_array_sort_values(pass->units, (GCompareFunc)g_strcmp0);
 
+	/* Counted before the sync it answers stops being: never a moment at
+	 * zero in between. */
+	worker_live_add(self, 1);
+
 	if (manual)
 	{
 		pass->run = venture_feed_run_new_internal(source->spec, source->manual_trigger, now);
-		source->manual_pending = FALSE;
+		worker_source_set_manual(source, FALSE);
 	}
 	else
 	{
@@ -1465,7 +1505,6 @@ worker_pass_start(
 	}
 
 	source->pass = pass;
-	worker_live_add(self, 1);
 	worker_publish_status(self);
 	worker_pass_next(pass);
 }
@@ -1795,7 +1834,7 @@ worker_command(gpointer data)
 		/* A sync waiting already: this one joins it. */
 		if (!source->manual_pending)
 		{
-			source->manual_pending = TRUE;
+			worker_source_set_manual(source, TRUE);
 			source->manual_trigger = command->trigger;
 		}
 		break;
@@ -1807,9 +1846,14 @@ worker_command(gpointer data)
 		{
 			/* A pass in flight finishes; the source goes after it. */
 			if (NULL != source->pass)
+			{
 				source->removed = TRUE;
+			}
 			else
+			{
+				worker_source_set_manual(source, FALSE);
 				g_hash_table_remove(self->sources, &command->id);
+			}
 		}
 		break;
 
