@@ -286,6 +286,9 @@ oracle_note(
 	va_end(args);
 }
 
+#ifdef VENTURE_HAVE_SQLITE
+
+/* Only the store's readers name a currency, so only they need this. */
 static void
 oracle_set_currency(
 	OracleAnswer	*answer,
@@ -293,8 +296,6 @@ oracle_set_currency(
 ){
 	g_strlcpy(answer->currency, (NULL != currency) ? currency : "", sizeof(answer->currency));
 }
-
-#ifdef VENTURE_HAVE_SQLITE
 
 /*
  * A read handle on a source's store, opened once per oracle. A store that
