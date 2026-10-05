@@ -408,8 +408,40 @@ acw_level_class(
 	if ((NULL != level) && JSON_NODE_HOLDS_VALUE(level))
 		g_string_append_printf(html, "%" G_GINT64_FORMAT " ", json_node_get_int(level));
 
-	if (NULL != klass)
+	if (NULL == klass)
+		return;
+
+	/* In its class colour, on a chip of its own so the colour reads on
+	 * either theme (a white or pale class vanishes on a light page). The
+	 * colour was checked as #rrggbb when the answer was built. */
+	if (NULL != mdw_text(row, "class_color"))
+	{
+		g_string_append_printf(html, "<span class=\"class-chip\" style=\"--class-color:%s\">",
+		                       mdw_text(row, "class_color"));
 		venture_html_escape_append(html, klass);
+		g_string_append(html, "</span>");
+	}
+	else
+		venture_html_escape_append(html, klass);
+}
+
+/* An account's name, in its class colour where the theme is dark enough
+ * for it (see .class-name); plain otherwise. */
+static void
+acw_account_name(
+	GString		*html,
+	JsonObject	*account,
+	const gchar	*member
+){
+	const gchar *color = mdw_text(account, "class_color");
+
+	if (NULL != color)
+		g_string_append_printf(html, "<span class=\"class-name\" style=\"--class-color:%s\">", color);
+
+	venture_html_escape_append(html, mdw_text(account, member));
+
+	if (NULL != color)
+		g_string_append(html, "</span>");
 }
 
 static const gchar *
@@ -527,7 +559,7 @@ acw_attention_list(
 			g_string_append(html, "<a href=\"");
 			venture_html_escape_append(html, mdw_text(account, "url"));
 			g_string_append(html, "\">");
-			venture_html_escape_append(html, mdw_text(account, "name"));
+			acw_account_name(html, account, "name");
 			g_string_append(html, "</a>");
 		}
 
@@ -1031,7 +1063,7 @@ venture_marketdata_web_accounts(
 		                       ? " class=\"needs-login\"" : "");
 		venture_html_escape_append(html, mdw_text(row, "url"));
 		g_string_append(html, "\">");
-		venture_html_escape_append(html, mdw_text(row, "display_name"));
+		acw_account_name(html, row, "display_name");
 		g_string_append(html, "</a>");
 
 		if ((NULL != kind) && (0 != g_strcmp0(kind, "character")))
@@ -1246,7 +1278,7 @@ venture_marketdata_web_account(
 	                      "aria-label=\"Breadcrumb\"><a href=\"/accounts\">Accounts</a> / ");
 	venture_html_escape_append(html, mdw_text(root, "source_name"));
 	g_string_append(html, "</nav><h1>");
-	venture_html_escape_append(html, name);
+	acw_account_name(html, account, "display_name");
 	g_string_append(html, "</h1><p class=\"muted account-identity\">");
 
 	if (JSON_NODE_HOLDS_VALUE(json_object_get_member(account, "level")) ||

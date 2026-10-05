@@ -202,6 +202,8 @@ Pick the organization in the sidebar, then *Trading -> Your accounts*.
 
 ** Overview: =/accounts=
 
+/Class colours./ A character's class is drawn as the game draws it -- the class as a chip in its colour (Druid orange, Rogue yellow, Death Knight red...) and, on the dark themes, the name too (a white or pale class would vanish on a light page, so there the name keeps the link colour). The colours are World of Warcraft's own, registered by the blizzard-auctions plugin (=venture_context_set_account_class_color()=); an account whose source sends its own =attrs.color= is drawn in that instead. Without the plugin the class is plain text.
+
 With more than one login, a card per login comes first: its characters and realms, its gold, what its bags are worth, its listings and its thirty days' net, and how many of its places need a visit -- the cards add up to the headline, and a shared warband or a guild bank is its own "No login" card, counted once. Then the attention list, one entry per realm *per login*, titled "Log in to Main → Thornmere", sorted by what is most overdue and then grouped by login under a heading each: everything to do on one licence before you sign out of it for the other. =login=ZAKMANN= narrows the whole page to one login.
 
 The attention list's reasons:

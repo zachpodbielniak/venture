@@ -2472,6 +2472,89 @@ ma_threshold(
 	return TRUE;
 }
 
+/*
+ * An account's class colour, as "class_color": the source's own
+ * attrs.color when it sends a #rrggbb one, else the colour a plugin
+ * registered for its class (venture_context_set_account_class_color()).
+ */
+static void
+ma_set_class_color(
+	VentureContext	*context,
+	JsonObject	*account
+){
+	JsonObject *attrs;
+	const gchar *color = NULL;
+	const gchar *klass;
+	guint i;
+
+	attrs = json_object_has_member(account, "attrs") &&
+	        JSON_NODE_HOLDS_OBJECT(json_object_get_member(account, "attrs"))
+		? json_object_get_object_member(account, "attrs") : NULL;
+
+	if (NULL != attrs)
+	{
+		const gchar *own = json_object_get_string_member_with_default(attrs, "color", NULL);
+
+		for (i = 1; (NULL != own) && (i < 7) && g_ascii_isxdigit(own[i]); i++)
+			;
+
+		if ((NULL != own) && ('#' == own[0]) && (7 == i) && ('\0' == own[7]))
+			color = own;
+	}
+
+	if (NULL == color)
+	{
+		klass = (NULL != attrs) ? json_object_get_string_member_with_default(attrs, "class", NULL) : NULL;
+		color = venture_context_lookup_account_class_color(context, klass);
+	}
+
+	if (NULL != color)
+		json_object_set_string_member(account, "class_color", color);
+}
+
+/* Colours every account of an overview and, by key, the accounts each
+ * attention row names. */
+static void
+ma_set_class_colors(
+	VentureContext	*context,
+	JsonObject	*root
+){
+	g_autoptr(GHashTable) colors = g_hash_table_new(g_str_hash, g_str_equal);
+	JsonArray *accounts = json_object_get_array_member(root, "accounts");
+	JsonArray *attention = json_object_has_member(root, "attention")
+		? json_object_get_array_member(root, "attention") : NULL;
+	guint i;
+
+	for (i = 0; (NULL != accounts) && (i < json_array_get_length(accounts)); i++)
+	{
+		JsonObject *account = json_array_get_object_element(accounts, i);
+		const gchar *key = json_object_get_string_member_with_default(account, "key", NULL);
+
+		ma_set_class_color(context, account);
+
+		if ((NULL != key) && json_object_has_member(account, "class_color"))
+			g_hash_table_insert(colors, (gpointer)key,
+			                    (gpointer)json_object_get_string_member(account, "class_color"));
+	}
+
+	for (i = 0; (NULL != attention) && (i < json_array_get_length(attention)); i++)
+	{
+		JsonArray *named = json_object_get_array_member(json_array_get_object_element(attention, i),
+		                                                "accounts");
+		guint j;
+
+		for (j = 0; (NULL != named) && (j < json_array_get_length(named)); j++)
+		{
+			JsonObject *account = json_array_get_object_element(named, j);
+			const gchar *color = g_hash_table_lookup(colors,
+				json_object_get_string_member_with_default(account, "key", ""));
+
+			if (NULL != color)
+				json_object_set_string_member(account, "class_color", color);
+		}
+	}
+}
+
 JsonNode *
 venture_marketdata_accounts(
 	VentureContext				 *context,
@@ -2685,6 +2768,7 @@ venture_marketdata_accounts(
 		}
 
 		json_object_set_array_member(root, "accounts", rows);
+		ma_set_class_colors(context, root);
 		json_object_set_array_member(root, "sources", json_array_ref(view.sources));
 
 		/* A card per login, only when some account has one: an operator
@@ -3208,6 +3292,7 @@ venture_marketdata_account(
 		row = ma_account_row(&view, source, account, realm, ops, currency, NULL, 0);
 		ma_ops_free(ops);
 		json_object_set_object_member(root, "account", g_steal_pointer(&row->json));
+		ma_set_class_color(context, json_object_get_object_member(root, "account"));
 		ma_account_free(row);
 		g_hash_table_unref(view.attention);
 
