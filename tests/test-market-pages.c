@@ -1039,10 +1039,163 @@ test_deals(
 	g_assert_nonnull(strstr(page, "&amp;max_pct=95"));
 	g_assert_nonnull(strstr(page, "&amp;group_key=eu"));
 
+	/* Where to sell: never the venue it is bought at, in its currency, and
+	 * the profit exactly the sell price less the cut (rounded up, so never
+	 * overstated) less the buy price; most profit first when asked. */
+	g_clear_pointer(&answer, json_node_unref);
+	answer = get_json(fixture, "/api/v1/market/deals?sort=profit", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpfloat(json_object_get_double_member(root_of(answer), "cut_pct"), ==, 5.0);
+
+	{
+		gint64 last_profit = G_MAXINT64;
+		gboolean any_sell = FALSE;
+
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, i);
+			JsonObject *sell;
+			gint64 sell_price;
+			gint64 profit;
+
+			if (!json_object_has_member(row, "sell"))
+			{
+				last_profit = G_MININT64;
+				continue;
+			}
+
+			any_sell = TRUE;
+			sell = json_object_get_object_member(row, "sell");
+			g_assert_cmpstr(json_object_get_string_member(sell, "venue_key"), !=,
+			                json_object_get_string_member(row, "venue_key"));
+			g_assert_cmpstr(json_object_get_string_member(sell, "currency"), ==,
+			                json_object_get_string_member(row, "currency"));
+			sell_price = money_amount(sell, "min_price");
+			profit = money_amount(row, "profit");
+			g_assert_cmpint(profit, ==, sell_price - (gint64)ceil(sell_price * 0.05) - money_amount(row, "min_price"));
+			g_assert_cmpfloat(fabs(json_object_get_double_member(row, "roi_pct") -
+			                       100.0 * profit / money_amount(row, "min_price")), <, 0.001);
+			g_assert_cmpint(profit, <=, last_profit);
+			last_profit = profit;
+		}
+
+		g_assert_true(any_sell);
+	}
+
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* No cut: the profit is the plain difference. */
+	answer = get_json(fixture, "/api/v1/market/deals?cut=0", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		if (json_object_has_member(row, "sell"))
+			g_assert_cmpint(money_amount(row, "profit"), ==,
+			                money_amount(json_object_get_object_member(row, "sell"), "min_price") -
+			                money_amount(row, "min_price"));
+	}
+
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?cut=100", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?cut=five", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?sort=price", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?sort=buy&dir=up", NULL, NULL, NULL), ==, 400);
+
+	/* Every column sorts, either way: buy price cheapest first by default,
+	 * dearest first when turned round; names A to Z, case-folded. */
+	g_clear_pointer(&answer, json_node_unref);
+	answer = get_json(fixture, "/api/v1/market/deals?sort=buy", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 1; i < json_array_get_length(rows); i++)
+		g_assert_cmpint(money_amount(json_array_get_object_element(rows, i - 1), "min_price"), <=,
+		                money_amount(json_array_get_object_element(rows, i), "min_price"));
+
+	g_clear_pointer(&answer, json_node_unref);
+	answer = get_json(fixture, "/api/v1/market/deals?sort=buy&dir=desc", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 1; i < json_array_get_length(rows); i++)
+		g_assert_cmpint(money_amount(json_array_get_object_element(rows, i - 1), "min_price"), >=,
+		                money_amount(json_array_get_object_element(rows, i), "min_price"));
+
+	g_clear_pointer(&answer, json_node_unref);
+	answer = get_json(fixture, "/api/v1/market/deals?sort=name", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 1; i < json_array_get_length(rows); i++)
+	{
+		g_autofree gchar *x = g_utf8_casefold(json_object_get_string_member(json_array_get_object_element(rows, i - 1),
+		                                                                     "instrument_name"), -1);
+		g_autofree gchar *y = g_utf8_casefold(json_object_get_string_member(json_array_get_object_element(rows, i),
+		                                                                     "instrument_name"), -1);
+
+		g_assert_cmpint(g_utf8_collate(x, y), <=, 0);
+	}
+
+	/* The headings sort, keeping the question; the active one turns
+	 * round and says which way it is sorted. */
+	g_clear_pointer(&page, g_free);
+	page = get_page(fixture, "/market/deals?group=eu&sort=buy");
+	g_assert_nonnull(strstr(page, "href=\"/market/deals?group=eu&amp;sort=ilvl\""));
+	g_assert_nonnull(strstr(page, "aria-sort=\"ascending\"><a href=\"/market/deals?group=eu&amp;sort=buy&amp;dir=desc\""));
+
 	g_clear_pointer(&page, g_free);
 	page = get_page(fixture, "/market/deals?group=eu");
-	g_assert_nonnull(strstr(page, "Deal price"));
+	g_assert_nonnull(strstr(page, "Buy at"));
+	g_assert_nonnull(strstr(page, "Sell at"));
+	g_assert_nonnull(strstr(page, "tone-chip"));
 	assert_buttons_named(page, "/market/deals");
+}
+
+/*
+ * A listing far above what an item goes for is an asking price, not a
+ * market: a venue whose lowest price is over twice the region's median is
+ * never where a deal is sold, however dear.
+ */
+static void
+test_deals_ignore_asking_prices(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *dir = NULL;
+	JsonArray *rows;
+	gint64 now;
+	guint i;
+	static const Offer d2[] = { { "2770", 40, 100000, 1 }, { "2447", 41, 90000, 1 } };
+
+	(void)user_data;
+	seed_store(fixture);
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	now = g_get_real_time() / G_USEC_PER_SEC;
+	add_venue(store, "realm-troll", "eu", "USD", now - 3600);
+	snapshot(store, "realm-troll", "USD", now - 3600, d2, G_N_ELEMENTS(d2));
+	g_assert_true(venture_series_store_recompute_region(store, NULL, now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&store);
+
+	answer = get_json(fixture, "/api/v1/market/deals?sort=profit", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		if (json_object_has_member(row, "sell"))
+			g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(row, "sell"),
+			                                              "venue_key"), !=, "realm-troll");
+	}
 }
 
 /*
@@ -2314,6 +2467,7 @@ main(
 	ADD("instrument-escaping", test_instrument_escaping);
 	ADD("other-organization", test_other_organization);
 	ADD("deals", test_deals);
+	ADD("deals-ignore-asking-prices", test_deals_ignore_asking_prices);
 	ADD("venue-index", test_venue_index);
 	ADD("watchlist-and-actions", test_watchlist_and_actions);
 	ADD("alerts", test_alerts);
