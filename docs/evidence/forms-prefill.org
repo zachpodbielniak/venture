@@ -1,0 +1,30 @@
+#+title: Prefill and personal links: built-server demonstration
+
+Demonstrated on 2026-10-02 with the DEBUG server SHA-256
+=76b72c3a3960e8f31a0ff0a1370bcccb8906f45db9afa5b02e83193cfea98bfc=.
+The server used a disposable SQLite database, loopback listener and synthetic
+contact, with AI, plugins and automation disabled. Chromium exercised hosted
+HTML with JavaScript disabled and the loader on a separate local host page.
+No email provider was contacted. The server was stopped afterward.
+
+Created a two-page form with a mapped name and email, an opted-in hidden
+campaign question, and =one_per_contact=true=. Generated a one-day personal
+link through the owner =personal_links= action.
+
+- A tampered link returned HTTP 404 with the same body as an unknown form.
+- Hosted HTML used =Referrer-Policy: no-referrer=.
+- JavaScript off: the known name appeared, the opted-in campaign was retained,
+  and an unknown URL parameter plus the contact's internal notes were absent.
+- Editing the name, continuing, and editing the prefilled email on page two
+  produced one response with the edited answers and original contact binding.
+- The loader displayed the same mapped defaults. Repeating final submission
+  showed the server's duplicate-contact error and created no second response.
+
+The service tests additionally exercise expiry, wrong-form signatures,
+per-link and per-contact limits, erasure after the email answer changes,
+later-page signed defaults and seed tampering. Campaign and sequence tests
+check private delivery content and exclusion from generic serialization.
+
+The invalid-personal-POST regression returned 200 before the early token
+check and returns the documented 404 with the check restored, including
+when the request has no valid fill-time ticket.

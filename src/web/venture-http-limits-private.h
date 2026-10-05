@@ -3,5 +3,7 @@
 #define VENTURE_HTTP_LIMITS_PRIVATE_H
 #include <venture.h>
 gboolean venture_http_limits_validate(VentureConfig *config, GError **error);
-void venture_http_limits_install(SoupServer *server, VentureConfig *config);
+void venture_http_limits_shutdown(SoupServer *server);
+typedef gsize (*VentureHttpBodyLimit)(SoupServerMessage *message, gpointer data);
+void venture_http_limits_install(SoupServer *server, VentureConfig *config, VentureHttpBodyLimit body_limit, gpointer data);
 #endif

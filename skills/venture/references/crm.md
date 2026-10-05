@@ -55,6 +55,25 @@ venturectl update lead 31 status=recycled unqualified_reason="Budget next year" 
 - Reports `lead_sources`, `lead_response_time`, `leads_recycled_due`,
   `lead_routing`, `lead_scoring` (`band_size=N`, default 25).
 
+## Referrals (module `referrals`)
+
+`describe referral_program`, `referral_code`, `referral` and `referral_reward`
+first. A program needs `active=true` (it is off by default) and a
+`reward_kind` of `none`, `credit` (with a positive `reward_amount`) or
+`free_period`. Get a customer's code with `act company ID referral_code`
+(or `act contact ID referral_code`; add `program_id=N` when the organization
+has more than one active program) -- it returns the existing code or makes
+one, with the `link` to share. A lead attributes itself: create or capture
+it with `referral_code=CODE` and a matching code makes the referral in the
+same write; an unknown code is kept on the lead and attributes nothing,
+without an error, so check `list referral lead_id=N` if it mattered. Never
+set a referral's `status` when it has a lead: it follows the lead and a typed
+value is silently put back. Converting the lead wins it and the reward is
+given after that commits; a reward that could not be given has
+`status=failed` and a `failure` reason -- fix the cause, then
+`act referral_reward ID apply`. A given reward cannot be edited or deleted.
+Report: `report referrals`. See `docs/referrals.org`.
+
 ## Deals and pipelines (module `pipelines`)
 
 ```bash

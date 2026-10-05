@@ -174,6 +174,8 @@ SERVER_ONLY_SRCS += $(filter-out src/sequences/venture-sequence-records.c,$(wild
 CORE_SRCS += src/attribution/venture-attribution-records.c
 SERVER_ONLY_SRCS += $(filter-out src/attribution/venture-attribution-records.c,$(wildcard src/attribution/*.c))
 CORE_SRCS += src/marketing/venture-marketing-records.c
+CORE_SRCS += src/referrals/venture-referral-records.c
+SERVER_ONLY_SRCS += $(filter-out src/referrals/venture-referral-records.c,$(wildcard src/referrals/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/marketing/venture-marketing-records.c,$(wildcard src/marketing/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
 CORE_SRCS += src/recurring/venture-recurring-records.c
@@ -217,6 +219,8 @@ SERVER_ONLY_SRCS += $(filter-out src/marketdata/venture-marketdata-records.c,$(w
 # describes them); the rules, posting, actions and report are the server's.
 CORE_SRCS += src/arbitrage/venture-arbitrage-records.c
 SERVER_ONLY_SRCS += $(filter-out src/arbitrage/venture-arbitrage-records.c,$(wildcard src/arbitrage/*.c))
+CORE_SRCS += src/forms/venture-forms-records.c
+SERVER_ONLY_SRCS += $(filter-out src/forms/venture-forms-records.c,$(wildcard src/forms/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -310,6 +314,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sales/*.h))
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(wildcard src/marketing/*.h)
 PUBLIC_HDRS += $(wildcard src/attribution/*.h)
+PUBLIC_HDRS += $(wildcard src/referrals/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
@@ -340,6 +345,7 @@ PUBLIC_HDRS += src/series/venture-series-store.h
 PUBLIC_HDRS += src/series/venture-series-accounts.h
 PUBLIC_HDRS += $(filter-out src/feeds/venture-feeds-records.h %-private.h,$(wildcard src/feeds/*.h))
 endif
+PUBLIC_HDRS += $(wildcard src/forms/*.h)
 PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;

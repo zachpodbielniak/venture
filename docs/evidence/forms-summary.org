@@ -1,0 +1,33 @@
+#+title: Form AI summary demonstration
+
+* Built-server walkthrough
+
+Ran a DEBUG HTTP acceptance fixture in a disposable SQLite instance with the
+ordinary forms and action endpoints. A deterministic injected provider
+returned the model response; no external model was contacted. The binary
+SHA-256 was =73eeeb27b4bd8079fa74b54d087f00c3bf9c602ce9791a2ec5d05d336e4afe5b=.
+
+Submitted a public text answer containing an instruction injection and a
+separate sensitive answer. Requested the editor summary action for that
+question and version, then compared the stored responses before and after.
+The provider asserted that no tools were offered and the sensitive answer
+was absent. Its response included duplicate theme citations and a fabricated
+quote to exercise the output checks.
+
+#+begin_example
+DEBUG acceptance fixture SHA256: 73eeeb27b4bd8079fa74b54d087f00c3bf9c602ce9791a2ec5d05d336e4afe5b
+PASS: editor summary action returned a structured proposal; duplicate theme citations counted once and fabricated quote dropped.
+{"summary":"The workshop was clear.","themes":[{"title":"Clarity","count":1}],"quotes":[{"text":"A clear workshop.","answer_id":1}],"answer_count":1,"proposal":true,"form_id":1,"first_version":1,"last_version":1,"response_count":1,"question":"note"}
+PASS: stored responses unchanged; zero external model contact (injected canned provider).
+no tools offered; private answer absent; injection remained untrusted input.
+#+end_example
+
+* Regression evidence
+
+All nine AI summary tests and 83 forms tests pass. Coverage includes empty
+input, current and deleted sensitive questions, organization/version/date
+scope, malformed output, response and byte bounds, disabled modules,
+distinct citation counts, exact quotation checks and proposal-only actions.
+The bounded provider input keeps submitted instructions inside the explicitly
+untrusted records section. The summary is a proposal for a person to review;
+no result is automatically saved and no model command is executed.

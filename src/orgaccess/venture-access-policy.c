@@ -724,7 +724,11 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	g_autoptr(VentureEntity) member = NULL;
 	g_autoptr(GError) veto = NULL;
 	gint role;
-	if (self->organization_id != 0 && venture_entity_get_organization_id(entity) != self->organization_id)
+	/* An organization is judged in itself, as venture_access_policy_can()
+	 * judges it; its own organization column says nothing about who runs
+	 * it, and reading it refused an owner her own profile as not found. */
+	gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
+	if (self->organization_id != 0 && org != self->organization_id)
 	{
 		refuse(error, TRUE);
 		return FALSE;
@@ -733,7 +737,12 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	 * membership row in a later-created organization to write there. */
 	if (administrator(actor) || tenant_administrator(self, actor))
 		return FALSE;
-	member = membership(self, actor, venture_entity_get_organization_id(entity));
+	/* A new organization belongs to no organization yet. Its membership
+	 * lookup would match any of the caller's, letting a viewer elsewhere
+	 * propose one; the save's own guard refuses it instead. */
+	if (VENTURE_IS_ORGANIZATION(entity) && org <= 0)
+		return FALSE;
+	member = membership(self, actor, org);
 	if (NULL == member)
 	{
 		refuse(error, TRUE);
@@ -744,7 +753,7 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 		return FALSE;
 	if (actor->token_id > 0)
 	{
-		gint minted = token_role(self, actor, venture_entity_get_organization_id(entity));
+		gint minted = token_role(self, actor, org);
 		if (!role_proposes(minted, action, entity) && !role_allows(self, actor, "write", entity, minted))
 			return refuse(error, FALSE);
 	}
@@ -791,6 +800,22 @@ venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GErro
 	}
 	return result;
 }
+/* Where other people's records land (the default organization) and what
+ * a parent's reports roll up (the hierarchy) are workspace decisions. An
+ * organization's own owner or admin keeps its profile, not these. */
+static gboolean
+organization_structure_changed(VentureEntity *entity, VentureEntity *previous)
+{
+	gboolean was_default = FALSE;
+	gboolean is_default = FALSE;
+	if (!VENTURE_IS_ORGANIZATION(entity))
+		return FALSE;
+	g_object_get(entity, "is-default", &is_default, NULL);
+	if (NULL == previous)
+		return is_default || reference(entity, "parent-id") != 0;
+	g_object_get(previous, "is-default", &was_default, NULL);
+	return !was_default != !is_default || reference(entity, "parent-id") != reference(previous, "parent-id");
+}
 static gboolean
 check_mutation_authority(VentureAccessPolicy *self, VentureEntity *entity, const gchar *action, gboolean record_write, GError **error)
 {
@@ -811,6 +836,9 @@ check_mutation_authority(VentureAccessPolicy *self, VentureEntity *entity, const
 			venture_access_policy_check_read(self, previous, error)))
 			return FALSE;
 	}
+	if (NULL != self->actor && !administrator(self->actor) && !tenant_administrator(self, self->actor) &&
+	    organization_structure_changed(entity, previous))
+		return refuse(error, FALSE);
 	return self->actor ? venture_access_policy_can(self, self->actor, action, entity, error) :
 		venture_access_policy_check_read(self, entity, error);
 }
@@ -879,6 +907,25 @@ public_capability_request(HtmxRequest *request)
 	}
 	if (g_str_has_prefix(path, "/f/") && path[3] != '\0')
 		return method == HTMX_METHOD_POST && strchr(path + 3, '/') == NULL;
+	if (g_str_has_prefix(path, "/book/") && path[6] != '\0' && path[6] != '/')
+	{
+		suffix = strchr(path + 6, '/');
+		if (suffix != NULL && g_str_has_prefix(suffix, "/manage/") && suffix[8] != '\0' && strchr(suffix + 8, '/') == NULL)
+			return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+	}
+	/* The forms door: /pub/form/<token> takes GET and POST; its /fragment
+	 * and /schema only GET. Nothing deeper and nothing else. */
+	if (g_str_has_prefix(path, "/pub/form/") && path[10] != '\0' && path[10] != '/')
+	{
+		suffix = strchr(path + 10, '/');
+		if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+		if (((g_str_has_prefix(suffix, "/resume/") && suffix[8] != '\0') ||
+		     (g_str_has_prefix(suffix, "/confirm/") && suffix[9] != '\0')) &&
+		    strchr(suffix + (g_str_has_prefix(suffix, "/resume/") ? 8 : 9), '/') == NULL)
+			return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+		return method == HTMX_METHOD_GET && (!g_strcmp0(suffix, "/fragment") || !g_strcmp0(suffix, "/schema"));
+	}
+	if (!g_strcmp0(path, "/pub/forms.js")) return method == HTMX_METHOD_GET;
 	if (!g_str_has_prefix(path, "/q/") || path[3] == '\0' || path[3] == '/') return FALSE;
 	suffix = strchr(path + 3, '/');
 	if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;

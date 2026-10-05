@@ -239,6 +239,34 @@ deliveries(Fixture *f)
 	return found;
 }
 
+/* An email adapter can consume the private body, but generic surfaces and
+ * tracking destinations must never gain the form's bearer capability. */
+static void
+test_personal_survey(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", (gint64)1,
+		"name", "Survey", "state", VENTURE_FORM_LIVE, NULL);
+	g_autoptr(VentureEntity) field = NULL, version = NULL, row = enrollment(f);
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) json = NULL;
+	g_autofree gchar *body = NULL, *private_body = NULL, *serialized = NULL;
+	(void)unused;
+	save(f, form);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", (gint64)1, "form-id", venture_entity_get_id(form),
+		"key", "email", "label", "Email", "kind", VENTURE_FORM_FIELD_EMAIL, "contact-field", "email", NULL); save(f, field);
+	version = venture_forms_publish(f->db, form, NULL, &error); g_assert_no_error(error);
+	g_object_set(venture_sequence_service_get(f->db), "base-url", "https://forms.example.test", NULL);
+	g_object_set(f->step, "survey-form-id", venture_entity_get_id(form), NULL); save(f, f->step); save(f, row);
+	g_assert_cmpint(run(f, "2026-09-14T13:00:00Z", &error), ==, 1); g_assert_no_error(error);
+	g_assert_cmpint(run(f, "2026-09-14T13:00:00Z", &error), ==, 0); g_assert_no_error(error);
+	found = deliveries(f); g_assert_cmpuint(found->len, ==, 1);
+	g_object_get(g_ptr_array_index(found, 0), "body", &body, "private-body", &private_body, NULL);
+	g_assert_null(strstr(body, "personal=")); g_assert_nonnull(strstr(private_body, "personal="));
+	json = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(found, 0)), FALSE);
+	serialized = json_to_string(json, FALSE); g_assert_null(strstr(serialized, "personal="));
+}
+
 static void
 test_sweep(Fixture *f, gconstpointer unused)
 {
@@ -844,6 +872,7 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/sequences/records", test_records);
+	g_test_add("/sequences/personal-survey", Fixture, NULL, setup, test_personal_survey, teardown);
 	g_test_add("/sequences/enroll_window", Fixture, NULL, setup, test_enroll_window, teardown);
 	g_test_add("/sequences/duplicate", Fixture, NULL, setup, test_duplicate, teardown);
 	g_test_add("/sequences/suppression", Fixture, NULL, setup, test_suppression, teardown);

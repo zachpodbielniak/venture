@@ -1,0 +1,55 @@
+#+TITLE: Form uploads — built DEBUG server demonstration
+
+* Artifact and setup
+
+The fixture links the actual =build/debug/libventure.a=, creates a disposable
+SQLite database/state directory, and starts the ordinary web server on a
+kernel-assigned loopback port. Chromium/Playwright exercises its real routes.
+The fixture binary SHA256 was:
+
+=14af633978327ad7cb521be75772113f16504de7f6db6212636a57ec23d5d5d2=
+
+The native browser has JavaScript disabled. The loader browser hosts the
+unmodified =/pub/forms.js= at a separate origin and grants Chromium's local
+network permission for this loopback-only fixture. CORS remains enforced; the
+form explicitly allows that embedding origin. Authentication is tested by the
+separate real-server role tests below; the demonstration fixture disables it.
+
+* Observed transcript
+
+#+begin_example
+PASS: JavaScript-disabled multipart upload survived Back/Next and completed.
+PASS: Cross-origin loader submitted multipart data and completed without a preflight dependency.
+PASS: Filename remained metadata; content sniffed as text/plain; download used attachment, nosniff and private cache headers.
+PASS: Owner erasure removed attachment bytes and invalidated the download.
+#+end_example
+
+The browser submits plain-text bytes with a false image/PDF MIME header and an
+original filename containing markup. Stored type is =text/plain=; records
+contain name/size/type/references and never the file body. Download returns
+attachment/nosniff/private headers. Erasure turns its URL into a 404.
+
+This walkthrough exposed a native POST failure with an origin allow-list:
+=no-referrer= made Chromium send =Origin: null=. The form now uses
+=strict-origin=, retaining the origin but never the capability path or query.
+The same walkthrough failed before that change and passed after it.
+
+* Executable coverage
+
+- =/forms/upload-http=: native multipart, generated storage name, sniffing,
+  forbidden generic attachment reads, immutable document association, download
+  and complete file/document erasure.
+- =/forms/upload-refusals=: oversize, over-count, form/client quotas, scanner
+  refusal, renamed MZ/ELF executables, script, HTML/SVG and field type limits.
+- =/forms/upload-drafts= and =/forms/upload-groups=: Back/Next retention,
+  private repeated files, final claim and expired-draft cleanup.
+- =/forms/upload-version-privacy=: an older upload adopts a newer sensitive
+  question's stricter download gate.
+- =/auth/forms-upload-authority= and =/auth/forms-upload-viewer=: real sessions,
+  anonymous refusal, another organization's refusal, ordinary viewer download,
+  and owner-only sensitive download.
+- =/http-limits/form-upload-bounds=: rejection before body completion for
+  Content-Length and chunked requests; only a file form gets a larger bound,
+  and the operator's smaller global cap still wins.
+- =/migrations/forms-schema=: optional modules and repeated migration startup;
+  the configured disposable PostgreSQL migration integration also runs.

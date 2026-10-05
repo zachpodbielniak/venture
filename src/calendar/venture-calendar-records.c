@@ -52,7 +52,25 @@ static const VentureFieldDecl booking_fields[] = {
 	STR("timezone", "Timezone", "IANA zone the availability windows are written in, for example America/Chicago"),
 	VENTURE_FIELD("availability", "Availability", "{\"mon\":\"09:00-12:00,13:00-17:00\",...}", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	INT("horizon-days", "Horizon", "How many days ahead may be booked; 14 when empty"),
+	INT("capacity", "Seats per slot", "Zero uses one seat; at most 10000"),
+	STR("public-origin", "Public origin", "HTTPS origin for private booking management links"),
 	VENTURE_FIELD_TEXT("description", "Description", "Shown above the slots"),
 	VENTURE_FIELD("active", "Active", "Whether the public page answers", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureBookingPage, venture_booking_page, booking_fields)
+
+/* Holds are service-owned working copies: a payment hold or a nested intake
+ * must reserve capacity without emitting a business event or exposing a key. */
+static const VentureFieldDecl reservation_fields[] = {
+	VENTURE_FIELD_NAME("name", "Reservation", "Service-owned slot reservation"),
+	VENTURE_FIELD_REF("page-id", "Booking page", NULL, "booking_page", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("activity-id", "Meeting", NULL, "activity", VENTURE_COLUMN_FLAG_NONE),
+	STR("owner", "Owner", "Owner whose calendar is reserved"),
+	DATE("starts-at", "Starts"), DATE("ends-at", "Ends"), DATE("expires-at", "Hold expires"),
+	VENTURE_FIELD("state", "State", "held, confirmed, cancelled or expired", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("secret", "Signing secret", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("public-origin", "Public origin", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	INT("generation", "Internal revision", "Changed only by the service")
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBookingReservation, venture_booking_reservation, reservation_fields,
+	venture_entity_class_set_working_copy(VENTURE_ENTITY_CLASS(klass));)

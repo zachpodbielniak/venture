@@ -99,3 +99,10 @@ created the database before the listener refused them. Validation now runs
 before database opening as well as before embedded tenant initialization.
 The three invalid hosted dispatch settings in the transcript each leave the
 database absent. These checks do not replace the final combined epic gate.
+
+Shutdown also interrupts a peer stalled before TLS ClientHello. The transport
+bounds blocking handshake reads with the configured receive timeout and closes
+tracked sockets before libsoup synchronously closes TLS streams; otherwise
+shutdown can wait for the backend's handshake timeout. The DEBUG regression
+=/http-limits/tls-active-teardown= stops a listener with an unfinished handshake
+and requires shutdown to return within three seconds.

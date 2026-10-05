@@ -302,7 +302,7 @@ test_missing_key(void)
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
 	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live; gchar *last_invoice_id; guint invoice_count, payment_calls; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
@@ -382,9 +382,9 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	if (self->reservation_database)
 		g_assert_false(venture_database_has_transaction(self->reservation_database));
-	if (self->checkout_drop)
+	if (self->checkout_drop || self->checkout_timeout)
 	{
-		g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED, "Checkout response lost");
+		g_set_error_literal(error, G_IO_ERROR, self->checkout_timeout ? G_IO_ERROR_TIMED_OUT : G_IO_ERROR_CONNECTION_CLOSED, "Checkout response lost");
 		return NULL;
 	}
 	if (self->checkouts > 1) return stripe_response_new(200, "{\"id\":\"cs_second\",\"url\":\"https://checkout.stripe.com/second\"}", NULL, NULL);
@@ -867,7 +867,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "fbc66e52ddaa8e6294aaa5c48d36bf206c286105");
+		g_assert_cmpstr(g_strstrip(out), ==, "ad435805a0b0f4228ef7a98ae9b03bb3d06591ac");
 	}
 }
 
@@ -1047,6 +1047,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
 
+#include "test-stripe-forms.inc"
 #include "test-stripe-settings.inc"
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
@@ -1057,6 +1058,18 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/stripe/records", test_records);
+	g_test_add("/stripe/forms/expired-paid", Fixture, "expired-paid", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/deadline", Fixture, "deadline", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/uncertain", Fixture, "uncertain", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/paid", Fixture, "paid", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/erased", Fixture, "erased", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/limits", Fixture, "limits", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/delayed", Fixture, "delayed", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/expired", Fixture, "expired", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-paid", Fixture, "booking-paid", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-expired", Fixture, "booking-expired", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-failed", Fixture, "booking-failed", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/forms/booking-late", Fixture, "booking-late", set_up, test_paid_form, tear_down);
 	g_test_add("/stripe/payment-link/basic", Fixture, NULL, set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/authorization", Fixture, "authorization", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/changed", Fixture, "changed", set_up, test_payment_link, tear_down);

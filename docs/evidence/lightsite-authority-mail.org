@@ -1,0 +1,87 @@
+#+title: Lightsite authority and staging mail acceptance
+
+* Scope
+
+Issues #170 and #171, based on =3ec6c54= (PR #169, which depends on #163).
+The worktree was created under the shared =flock= lock. Neither master nor
+PR #163's branch was modified. Lightsite's =docs/venture-accounts.org= was
+read from =/home/user/lightsite-daemon/trees/core= before implementation.
+
+* Failing-first checks
+
+The account HTTP regression linked against the prior DEBUG library returned
+404 for =/api/v1/account-authority= instead of 200. The staging outbox test
+failed at configuration with "SMTP settings require TLS" before the explicit
+operator exception existed. A later read-only-token regression reproduced
+=can_manage_sites=1 instead of 0 before the credential-role restriction.
+
+The repaired HTTP test checks current principal identity, real authenticated
+bearer requests, token snapshot intersection, read-only tokens, later grants,
+promotion/demotion, expired/revoked credentials, wrong host, deleted
+organizations, inactive users/membership, suspended workspace, a failed
+membership-table read and recovery. Responses carry =no-store= and fit the
+4096-byte client budget. No arbitrary-user lookup or shared-token impersonation
+is introduced.
+
+* Demonstration: actual DEBUG HTTP server
+
+An instrumented copy of the HTTP fixture links the current DEBUG library,
+starts the real Venture server on a kernel-assigned port, and authenticates
+with a synthetic user's bearer token. The safe response transcript is:
+
+#+begin_example
+AUTHORITY_RESPONSE={"origin":"http://127.0.0.1:8443","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","state":"active","user_id":1,"organizations":[{"organization_id":1,"role":"admin","can_manage_sites":true},{"organization_id":2,"role":"admin","can_manage_sites":true}]}
+ok 1 /account-identity/http-authority
+#+end_example
+
+The same fixture then verifies the refusal and restricted-token cases above.
+No real user credentials are printed or sent to another service.
+
+* Demonstration: configured outbox to Mailpit
+
+An owned Mailpit v1.29.2 container listens only on published loopback ports.
+The actual DEBUG library creates encrypted organization SMTP settings with
+=auth=none=, =tls=none= and the exact endpoint in both operator lists, enqueues
+one synthetic message, and invokes the ordinary outbox. Its transcript is:
+
+#+begin_example
+PASS: organization SMTP settings delivered through the outbox to local Mailpit; state=sent.
+#+end_example
+
+Mailpit's local HTTP API reports exactly one message:
+
+#+begin_src json
+{"total":1,"subject":"Lightsite staging acceptance","from":"staging@example.test","to":"reader@example.test"}
+#+end_src
+
+The hermetic socket regression additionally drops the first final SMTP reply,
+checks =uncertain=, explicitly retries through the outbox, and verifies =sent=
+and the actual sender/body on the second connection. It checks default refusal,
+credential refusal even with an exception, the ordinary endpoint allowlist,
+and removal of the exception before later transport preparation.
+
+* Validation
+
+Targeted: the account HTTP authority test, all 25 mail tests, eight routing tests
+and six mail-surface tests pass. The real Mailpit demonstration passes. The
+single full DEBUG run built all 153 binaries without warnings on
+=cc62e6d110cde378e252e37e20a2dbd196e63ec2=. 152 passed in that run;
+the tenant-lifecycle subprocess hit its existing 30-second alarm under parallel
+disk load. Its 31 checks passed unchanged on isolated reruns: 1.8 seconds on
+/tmp and 12.2 seconds on the same disk. The failed fixture is preserved.
+All 153 binaries therefore have passing results without a second full run.
+Live PostgreSQL migration coverage passed; 22 optional checks skipped.
+The litter check (with the failed fixture preserved outside the run directory),
+version check and both foreground/clock demonstrations passed.
+Raw local logs and owned demonstration fixtures are retained under
+=/home/user/venture-wt/lightsite-authority-notes/=.
+
+* Integration responsibilities
+
+Lightsite's management caller must use the signed-in user's Venture credential
+and require =can_manage_sites=, while matching the complete canonical account
+reference. Its existing shared provisioning credential cannot identify a
+customer. Staging operators must configure their actual Mailpit endpoint,
+sender and the two explicit allowlists; no deployment configuration was changed.
+The authority listing fails closed above twenty explicit memberships instead
+of returning partial permissions. TLS is still the production default.

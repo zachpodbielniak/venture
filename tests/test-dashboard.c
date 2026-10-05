@@ -2620,6 +2620,8 @@ test_dashboard_http_today_home(
 	g_assert_null(strstr(page, "<span class=\"figure-note\">all<"));
 }
 
+#include "test-dashboard-forms.inc"
+
 int
 main(
 	int	 argc,
@@ -2643,6 +2645,7 @@ main(
 	ADD("/dashboard/report-scope", test_dashboard_report_scope);
 	ADD("/dashboard/report-options", test_dashboard_report_options);
 	ADD("/dashboard/sum", test_dashboard_sum);
+	ADD("/dashboard/forms", test_dashboard_forms);
 	ADD("/dashboard/progress", test_dashboard_progress);
 	ADD("/dashboard/numeric-validation", test_dashboard_numeric_validation);
 	ADD("/dashboard/widget-off-and-unknown",

@@ -59,6 +59,15 @@ The caller decides which navigation events to observe and retries with the
 same identity. Sessions renew after 30 minutes without an accepted observation.
 A visitor is a consenting browser capability, not proof of a unique person.
 
+Each browser request has a 15-second deadline covering headers and JSON body.
+A stalled request rejects and releases queued consent work; withdrawal keeps
+tracking stopped. The browser logs one content-free cause for a failed request.
+The helper does not retry automatically: retain the same submission envelope
+or observation ID, and retry transient network/5xx failures with bounded
+exponential backoff and jitter. Honor =Retry-After= on 429. A timeout leaves
+acceptance uncertain; never replace the submission ID merely because it timed
+out. Validation and identity conflicts require correction, not a retry loop.
+
 The script sends simple =text/plain;charset=UTF-8= JSON POSTs with credentials
 omitted and no referrer. Every browser endpoint checks the exact configured
 Origin and returns CORS permission only for it. It does not use cookies or a
@@ -207,7 +216,9 @@ or disconnect during capture rolls the delivery back.
 Optional =visitor_token= requires separately valid anonymous analytics
 permission; optional =marketing= follows the independent choice contract above.
 Name/email are required, message maps to existing lead notes; company_name,
-phone and website use existing capture matching/routing. The closed envelope
+phone and website use existing capture matching/routing; an optional
+referral_code (at most 64 bytes) attributes the lead to a referrer (see
+[[file:referrals.org][Referrals]]). The closed envelope
 refuses arbitrary organization, owner, CRM source or campaign overrides.
 Receipt time controls attribution; only the email-choice occurrence may be
 supplied, and it cannot be later than receipt. The original submission ID is
@@ -355,3 +366,11 @@ receipt, independent email withdrawal and exact replay after server restart.
 The [[file:evidence/125-attribution-server.org][recorded transcript]] explains expected amounts, source identities, cleanup
 and the boundaries of this demonstration. It sends no mail and invokes no
 external provider or Lightsite provisioning.
+
+* Operational failures
+
+A failed database lookup is a retryable HTTP 500, not proof that a site's
+endpoint is gone. Internal diagnostics are replaced with a generic public
+message. The intake boundary logs one cause category plus error domain/code;
+it never logs the signed body, signature, visitor token or enquiry fields.
+After repairing storage, retry the unchanged envelope and submission identity.

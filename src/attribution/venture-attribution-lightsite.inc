@@ -72,9 +72,34 @@ static gboolean signature_valid(const gchar *timestamp, const gchar *signature, 
 denied:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Lightsite delivery authentication refused"); return FALSE;
 }
-VentureAttributionSubmission *venture_attribution_service_receive(VentureAttributionService *self,
+typedef struct {
+	VentureAttributionService *service;
+	VentureEntity *site;
+	VentureEntity *connection;
+} LightsiteFormGuard;
+
+static gboolean lightsite_form_check(gpointer data, GError **error)
+{
+	LightsiteFormGuard *guard = data;
+	g_autoptr(VentureEntity) site = NULL, connection = NULL;
+	site = site_get(guard->service, venture_entity_get_uuid(guard->site), NULL, TRUE, error);
+	if (site == NULL) return FALSE;
+	connection = get_row(guard->service, VENTURE_TYPE_INTEGRATION_CONNECTION,
+		venture_entity_get_organization_id(guard->site), venture_entity_get_id(guard->connection), error);
+	if (connection == NULL) return FALSE;
+	if (venture_entity_get_version(site) != venture_entity_get_version(guard->site) ||
+	    venture_entity_get_version(connection) != venture_entity_get_version(guard->connection))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"Lightsite pairing changed during delivery; retry");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static VentureEntity *lightsite_receive(VentureAttributionService *self,
 	const gchar *site_uuid, gint64 connection_id, const gchar *timestamp, const gchar *signature,
-	GBytes *body, GDateTime *now, GError **error)
+	GBytes *body, GDateTime *now, gboolean form_relay, JsonNode **relay_result, GError **error)
 {
 	g_autoptr(VentureAccessScope) capability = NULL;
 	g_autoptr(VentureEntity) site = NULL, connection = NULL, result = NULL, current = NULL;
@@ -107,10 +132,26 @@ VentureAttributionSubmission *venture_attribution_service_receive(VentureAttribu
 	if (memchr(bytes, 0, length) || !json_parser_load_from_data(parser, (const gchar *)bytes, length, NULL) ||
 		!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) { refuse(error, "Lightsite delivery requires bounded JSON without embedded NUL"); goto fail; }
 	payload = json_node_get_object(json_parser_get_root(parser));
-	if (!json_object_has_member(payload, "tenant_id") || !json_object_has_member(payload, "site_id") || !json_object_has_member(payload, "origin")) {
+	if (!json_object_has_member(payload, "tenant_id") || !json_object_has_member(payload, "site_id") || (!form_relay && !json_object_has_member(payload, "origin"))) {
 		refuse(error, "Signed Lightsite delivery requires verified tenant, site and origin"); goto fail;
 	}
-	result = capture_payload(self, site, connection, version, payload, now, &local);
+	if (form_relay) {
+		g_autofree gchar *origin = string(site, "origin");
+		g_autofree gchar *external = string(site, "external-site-id");
+		g_autofree gchar *scope = g_strdup_printf("%s:%s", venture_entity_get_uuid(site), venture_entity_get_uuid(connection));
+		LightsiteFormGuard guard;
+		const gchar *sent_tenant = optional_string(payload, "tenant_id", &local);
+		const gchar *sent_site = local ? NULL : optional_string(payload, "site_id", &local);
+		if (!local && (g_strcmp0(sent_tenant, tenant) || g_strcmp0(sent_site, external))) refuse(&local, "Lightsite form identity mismatch");
+		if (local) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
+		/* The form service owns its rollback/retry boundary. Revalidate this
+		 * authenticated snapshot inside each write, including after automation. */
+		if (!venture_database_commit(self->database, error)) goto fail;
+		guard.service = self; guard.site = site; guard.connection = connection;
+		*relay_result = venture_forms_relay_checked(self->database, org, scope, origin,
+			payload, now, lightsite_form_check, &guard, error);
+		return NULL;
+	} else result = capture_payload(self, site, connection, version, payload, now, &local);
 	if (local) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
 	/* Automation may disconnect or rotate synchronously during capture. */
 	current = get_row(self, VENTURE_TYPE_INTEGRATION_CONNECTION, org, connection_id, error); if (!current) goto fail;
@@ -118,7 +159,25 @@ VentureAttributionSubmission *venture_attribution_service_receive(VentureAttribu
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Lightsite connection changed during delivery; retry"); goto fail;
 	}
 	if (!venture_database_commit(self->database, error)) goto fail;
-	return VENTURE_ATTRIBUTION_SUBMISSION(g_steal_pointer(&result));
+	return g_steal_pointer(&result);
 fail:
+	if (relay_result != NULL) g_clear_pointer(relay_result, json_node_unref);
 	venture_database_rollback(self->database); return NULL;
+}
+
+VentureAttributionSubmission *venture_attribution_service_receive(VentureAttributionService *self,
+	const gchar *site_uuid, gint64 connection_id, const gchar *timestamp, const gchar *signature,
+	GBytes *body, GDateTime *now, GError **error)
+{
+	return VENTURE_ATTRIBUTION_SUBMISSION(lightsite_receive(self, site_uuid, connection_id,
+		timestamp, signature, body, now, FALSE, NULL, error));
+}
+
+JsonNode *venture_attribution_service_receive_form(VentureAttributionService *self,
+	const gchar *site_uuid, gint64 connection_id, const gchar *timestamp, const gchar *signature,
+	GBytes *body, GDateTime *now, GError **error)
+{
+	JsonNode *result = NULL;
+	lightsite_receive(self, site_uuid, connection_id, timestamp, signature, body, now, TRUE, &result, error);
+	return result;
 }

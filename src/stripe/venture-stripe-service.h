@@ -93,6 +93,21 @@ gboolean venture_stripe_service_can_checkout(VentureStripeService *self, gint64 
  */
 VentureStripeCheckout *venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id, const VentureActor *actor, GError **error);
 /**
+ * venture_stripe_service_checkout_until:
+ * @self: provider
+ * @invoice_id: invoice to pay
+ * @deadline: checkout expiry, 30 minutes through 24 hours from creation
+ * @cards_only: disallow delayed bank settlement for a short capacity hold
+ * @actor: (nullable): requesting actor
+ * @error: (out) (optional): refusal
+ *
+ * Uses the ordinary invoice Checkout reservation and idempotency path.
+ * A retained reservation keeps its original payment-method policy.
+ * Returns: (transfer full) (nullable): stored Checkout record
+ */
+VentureStripeCheckout *venture_stripe_service_checkout_until(VentureStripeService *self,
+	gint64 invoice_id, GDateTime *deadline, gboolean cards_only, const VentureActor *actor, GError **error);
+/**
  * venture_stripe_service_handle_webhook:
  * @self: endpoint provider
  * @raw: original bytes

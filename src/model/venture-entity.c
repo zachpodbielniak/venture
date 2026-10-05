@@ -491,6 +491,68 @@ venture_entity_class_set_labels(
 	                 venture_entity_labels_quark(), labels);
 }
 
+void
+venture_entity_class_set_working_copy(VentureEntityClass *klass)
+{
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass),
+		g_quark_from_static_string("venture-working-copy"), GINT_TO_POINTER(1));
+}
+
+gboolean
+venture_entity_is_working_copy(VentureEntity *self)
+{
+	GType type;
+	g_return_val_if_fail(VENTURE_IS_ENTITY(self), FALSE);
+	for (type = G_OBJECT_TYPE(self); type != VENTURE_TYPE_ENTITY; type = g_type_parent(type))
+		if (g_type_get_qdata(type, g_quark_from_static_string("venture-working-copy"))) return TRUE;
+	return FALSE;
+}
+
+static GQuark
+venture_entity_audit_private_quark(void)
+{
+	return g_quark_from_static_string("venture-entity-audit-private");
+}
+
+void
+venture_entity_class_set_audit_private(
+	VentureEntityClass	*klass,
+	const gchar *const	*properties
+){
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != properties);
+
+	/* Type data, kept for the life of the process like the labels. */
+	g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass), venture_entity_audit_private_quark(),
+	                 g_strdupv((gchar **)properties));
+}
+
+const gchar *const *
+venture_entity_type_get_audit_private(GType type)
+{
+	GType walk;
+
+	for (walk = type; G_TYPE_INVALID != walk && VENTURE_TYPE_ENTITY != walk; walk = g_type_parent(walk))
+	{
+		gpointer data = g_type_get_qdata(walk, venture_entity_audit_private_quark());
+
+		if (NULL != data)
+			return data;
+	}
+	return NULL;
+}
+
+const gchar *const *
+venture_entity_get_audit_private(VentureEntity *self)
+{
+	VentureEntityClass *klass;
+	g_return_val_if_fail(VENTURE_IS_ENTITY(self), NULL);
+	klass = VENTURE_ENTITY_GET_CLASS(self);
+	return klass->get_audit_private != NULL ? klass->get_audit_private(self) :
+		venture_entity_type_get_audit_private(G_OBJECT_TYPE(self));
+}
+
 /*
  * "attribution_submission" or "VentureAttributionSubmission" to
  * "Attribution submission". ASCII only, as every type name is.

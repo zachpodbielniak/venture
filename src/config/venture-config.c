@@ -61,6 +61,8 @@ typedef struct
 	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
 
 static const VentureConfigSetting venture_config_settings[] = {
+	VC_STR("forms-scanner-executable", "forms", "scanner_executable", "", "Optional trusted upload scanner executable; receives bytes on stdin"),
+	VC_INT("forms-scanner-timeout-ms", "forms", "scanner_timeout_ms", 10000, "Total upload scanning budget in milliseconds, 1..30000"),
 	VC_BOOL("ocr-enabled", "ocr", "enabled", FALSE, "Enable bounded local OCR explicitly"),
 	VC_STR("ocr-executable", "ocr", "executable", "tesseract", "Local OCR executable, chosen by the operator"),
 	VC_STR("ocr-language", "ocr", "language", "eng", "Installed OCR languages joined with +"),
@@ -395,6 +397,7 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR("imap-allowed-endpoints", "imap", "allowed_endpoints", "", "Operator-allowed IMAP host:port pairs, comma-separated; empty denies all"),
 	VC_STR("calendar-allowed-origins", "calendar", "allowed_origins", "", "Operator-allowed CalDAV HTTPS origins, comma-separated; empty denies all"),
 	VC_BOOL("connectors-allow-plaintext-loopback", "connectors", "allow_plaintext_loopback", FALSE, "Allow explicitly configured loopback IMAP fixtures without TLS; never permits remote plaintext"),
+	VC_STR("mail-plaintext-endpoints", "mail", "plaintext_endpoints", "", "Explicit staging SMTP host:port exceptions; also require allowed_endpoints and auth none"),
 	VC_STR("mail-allowed-endpoints", "mail", "allowed_endpoints", "", "Operator-allowed organization SMTP host:port pairs, comma-separated; empty denies all"),
 	VC_STR("mail-tls-ca-file", "mail", "tls_ca_file", "", "Operator-owned SMTP CA bundle; empty uses system trust"),
 	VC_STR("mail-host", "mail", "host", "", "SMTP relay host"),

@@ -238,6 +238,33 @@ test_capture(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "lead"), ==, 1);
 }
 
+/* A lead form's field list limits what a capture may set. JSON fields are
+ * stored as text; reading one straight into a JsonNode pointer treated a
+ * string as a node, so a form with a list either crashed the capture or
+ * ignored the list. */
+static void
+test_capture_allowed_fields(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = record(f, "lead_form", "Short");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LEAD);
+	g_autoptr(VentureEntity) lead = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *email = NULL, *phone = NULL;
+	(void)data;
+	g_object_set(form, "public-token", "allowed-test", "active", TRUE, "fields", "[\"name\",\"email\"]", NULL);
+	save(f, form);
+	g_object_set(form, "fields", "{\"name\":true}", NULL);
+	g_assert_false(venture_database_save(f->db, form, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	start_http(f);
+	g_assert_cmpuint(post(f, "/f/allowed-test", "name=Alice&email=alice%40example.com&phone=5551234567", FALSE), ==, 200);
+	lead = venture_database_find_one(f->db, query, NULL);
+	g_assert_nonnull(lead);
+	g_object_get(lead, "email", &email, "phone", &phone, NULL);
+	g_assert_cmpstr(email, ==, "alice@example.com");
+	g_assert_true(venture_string_is_empty(phone));
+}
+
 static void
 test_convert(Fixture *f, gconstpointer data)
 {
@@ -849,6 +876,7 @@ main(int argc, char **argv)
 	g_test_add("/leads/history", Fixture, NULL, setup, test_history, teardown);
 	g_test_add("/leads/recycle-reason", Fixture, NULL, setup, test_recycle_reason, teardown);
 	g_test_add("/leads/capture", Fixture, NULL, setup, test_capture, teardown);
+	g_test_add("/leads/capture-allowed-fields", Fixture, NULL, setup, test_capture_allowed_fields, teardown);
 	g_test_add("/leads/convert", Fixture, NULL, setup, test_convert, teardown);
 	g_test_add("/leads/convert-rollback", Fixture, NULL, setup, test_convert_rollback, teardown);
 	g_test_add("/leads/reports", Fixture, NULL, setup, test_reports, teardown);

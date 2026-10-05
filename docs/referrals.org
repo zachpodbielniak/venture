@@ -1,0 +1,156 @@
+#+title: Referrals
+#+description: Which customer sent which: shareable codes, referrals followed to a won customer, and the referrer's reward
+#+authors: Ben Doty
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* Who sent whom
+
+The =referrals= module requires =crm= and =leads=. It owns four record
+types, and everything about them -- tables, REST resources, CLI commands,
+forms, lists, audit -- derives from their field tables:
+
+| Type | What it is |
+|------+------------|
+| =referral_program= | The reward an organization gives, and the page a shared link points at |
+| =referral_code= | A customer's or contact's shareable code, and its link |
+| =referral= | One person sent by one referrer, following their lead to a won customer |
+| =referral_reward= | What the referrer was given for one referral, or why it was not |
+
+It suggests =receivables= and =billing=, which pay the two kinds of reward,
+and =forms= and =attribution=, whose captures carry a code in. Switching
+the module off hides all four types and the =referrals= report; a lead
+saved with a code then saves exactly as it did before, and nothing is
+attributed.
+
+* Programs and codes
+
+A program belongs to one organization. Its =reward_kind= is =none= (track,
+give nothing -- the zero value, so a program written without choosing
+pays nobody), =credit= (a credit note of =reward_amount=, which must be
+positive) or =free_period= (the referrer's next subscription invoice is
+credited in full). =landing_url= is an http or https address; a code's
+link is that page with =ref=CODE= added. Only an =active= program's codes
+attribute anything.
+
+#+begin_src sh
+venturectl create referral_program name=Friends organization_id=1 active=true \
+  reward_kind=credit reward_amount='25 USD' landing_url=https://shop.example/join
+#+end_src
+
+A code names its referrer -- a customer (=company_id=), a contact
+(=contact_id=), or both -- and a program. Left blank, the code is made:
+eight characters with no 0/O or 1/I to misread. A typed code is trimmed
+and stored in upper case; it is 3 to 32 letters, digits, hyphens or
+underscores, and unique within the organization, counting deleted codes.
+Arriving codes are matched without regard to case. With no program named
+and exactly one active program in the organization, that one is used;
+otherwise the save says to name one. A =retired= code attributes nothing;
+unticked is the zero value, so a new code works. The =link= is derived on
+every save, so a program whose page moved updates its codes the next time
+each is saved.
+
+Each customer gets their code from the =referral_code= action on the
+company or the contact, which returns the existing code or makes it:
+
+#+begin_src sh
+venturectl act company 12 referral_code
+venturectl act contact 40 referral_code program_id=3
+#+end_src
+
+* A lead arriving with a code
+
+A lead carries =referral_code=, the code as it arrived. Every writer of
+leads sets it the same way, because it is a lead field and a capture
+input:
+
+- the generic API, CLI and CSV import (=venturectl create lead ... referral_code=AB3K9QZT=)
+- a lead form's public capture (=POST /f/TOKEN= with =referral_code=), subject
+  to the form's =fields= list
+- a form with =create_lead= on, from a question whose =maps_to= is
+  =referral_code= -- usually a hidden question keyed =ref= with
+  =allow_prefill= on, so a program whose =landing_url= is the hosted form
+  fills it from the shared link's =?ref==, with nothing typed
+- the signed Lightsite form relay, as =referral_code= beside =answers=
+  (see [[file:forms.org][Forms]]), which a mapped question's answer outranks
+- the Lightsite site capture, as a mapped =referral_code= field (see
+  [[file:attribution.org][Attribution]])
+
+When the lead is saved, a code that matches a live, unretired code in an
+active program of the lead's organization makes a =referral= naming the
+lead, the code, its referrer and its program, in the same transaction as
+the lead. A code that matches nothing is kept on the lead as it arrived
+and attributes nothing: refusing it would lose the inquiry. A capture that
+merges into an existing lead fills that lead's empty code and never
+replaces one -- whoever sent them first sent them -- and a capture that
+matches an existing contact or company attributes nothing, since they are
+already known.
+
+A referral may also be recorded by hand, for a customer who never was a
+lead: name a referrer (a company, a contact, or a =code_id=, which then
+decides the referrer and program) and who was referred (=lead_id=,
+=company_id= or =contact_id=). A customer cannot be recorded as referring
+themselves, and a lead is referred at most once.
+
+* Status follows the lead
+
+With a lead, a referral's =status= is the lead's: =pending= while the lead
+is new, working or recycled, =qualified= when it is qualified, =lost= when
+unqualified and =won= when it converts. A status typed on the referral
+that disagrees is put back, not refused, because a form posts every field
+back. Conversion fills the referral's =company_id= and =contact_id= with
+the customer and contact it made. =won_at= is stamped when the referral is
+won, kept when given and cleared on leaving won. Without a lead the status
+is whatever was recorded.
+
+* Rewards
+
+A referral that becomes =won= in a program with a reward gets exactly one
+=referral_reward=. It names the referrer (=company_id=; for a referring
+contact, the contact's company) and the customer won
+(=referred_company_id=), so it appears on both records, and the referral it
+was for. The organization-scoped unique index on =referral_id=, counting
+deleted rows, is what makes it once only.
+
+- =credit= writes a =customer_credit= of kind =credit_note= for
+  =reward_amount= to the referrer, through receivables' ordinary posting and
+  approvals, and records it as =credit_id=.
+- =free_period= credits the referrer's oldest subscription that will renew
+  (trialing, active or past due, not ending at renewal) with what its next
+  period will charge -- price, seats and discount -- through the billing
+  service. The credit is carried as the subscription's pending adjustment,
+  so the renewal invoice is issued and paid by a credit note in the same
+  step. The reward records the =subscription_id= and the amount.
+
+The reward is given after the transaction that won the customer commits,
+in a transaction of its own. A credit note can be refused by the books or
+an approval rule, and winning the customer must not depend on paying the
+referrer: a conversion whose reward cannot be given still converts. Such a
+reward is saved with =status= =failed= and =failure= saying why -- no
+subscription, the module off, an approval required. Fix the cause and run
+its =apply= action, which re-reads the row and refuses a reward that was
+given already:
+
+#+begin_src sh
+venturectl act referral_reward 7 apply
+#+end_src
+
+A given reward cannot be changed or deleted; what it gave is in the books,
+and a correction goes there.
+
+* Report
+
+=referrals= covers referrals made in the period, one row per referrer:
+referrals, pending, qualified, won, lost, the conversion rate (won as a
+share of all their referrals) and the rewards given for those referrals
+with their value. A referrer rewarded in two currencies gets a row per
+currency with the counts repeated; the metrics keep the book currency's
+value under =reward_value= and every other currency's under
+=reward_value_CODE=. Past the aggregate row bound it refuses and says to
+choose a shorter period.
+
+#+begin_src sh
+venturectl report referrals --period this-year
+#+end_src

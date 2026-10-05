@@ -52,6 +52,8 @@ New to VENTURE? Two pages, in this order:
 - [[file:purchasing.org][Purchasing]] — purchase orders, receiving and three-way match
 - [[file:inventory.org][Inventory ledger]] — FIFO cost layers and COGS, costed per currency
 - [[file:production.org][Production]] — recipes (bills of materials), crafting them in one transaction at FIFO cost, and each recipe's margin at a chosen price source
+- [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost, and what an hour of each kind is worth
+- [[file:forms.org][Forms]] — contact forms, surveys, signups and intake built here and embedded on any site in its own styles: an HTML snippet that works with JavaScript off, a script loader, a hosted page and a JSON schema, every response an audited record
 - [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost and money into the location's holding, and what an hour of each kind is worth
 - [[file:goals.org][Goals]] — measurable targets (a skill to level, a sum to save, a weight to lose) with ordered steps, progress measured from the start, a straight-line forecast, and the shopping list for recipe steps still ahead
 - [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
@@ -78,6 +80,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:sequences.org][Follow-up sequences]] — enrollment, scheduling, exits, delivery evidence and the mail adapter seam
 - [[file:testing.org][Testing]] — running the suite, and what it guarantees
 - [[file:leads.org][Leads]] — public capture, duplicate handling, assignment, routing rules, scoring, qualification, conversion and recycling
+- [[file:referrals.org][Referrals]] — which customer sent which: shareable codes and links, referrals followed to a won customer, rewards and their report
 - [[file:activities.org][Planned activities]] — tasks, calls, meetings, reminders and the daily rep worklist
 - [[file:actions.org][Record actions]] — shared business operations and approval
 
@@ -218,3 +221,5 @@ screen's ordinary sync-and-import test.
 - [[file:evidence/backup-retention-demonstration.org][Local backup retention demonstration]] — archive catalog, explicit expiry plans, holds and crash reconciliation
 
 - [[file:printing.org][Receipt printers]] — named ESC/POS printers, thermal receipts and invoice summaries.
+
+- [[file:evidence/forms-consent.org][Forms consent demonstration]] — built-server capture of explicitly checked marketing permission.

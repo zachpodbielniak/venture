@@ -149,5 +149,24 @@ void venture_attribution_actions_register(VentureDatabase *database);
  * Registers source-linked first/last-touch attribution.
  */
 void venture_attribution_register_reports(VentureReportRegistry *registry);
+/**
+ * venture_attribution_service_receive_form:
+ * @self: the attribution service
+ * @site_uuid: configured site identity
+ * @connection_id: paired encrypted connection
+ * @timestamp: signed Unix timestamp
+ * @signature: hexadecimal HMAC of timestamp, newline and original body
+ * @body: exact received bytes
+ * @now: trusted receipt time
+ * @error: return location for an error
+ *
+ * Authenticates a bounded form relay using the existing Lightsite pairing.
+ * The site's stored origin and organization, never browser values, govern intake.
+ * Returns: (transfer full) (nullable): acceptance or field validation result
+ */
+JsonNode *venture_attribution_service_receive_form(VentureAttributionService *self,
+	const gchar *site_uuid, gint64 connection_id, const gchar *timestamp, const gchar *signature,
+	GBytes *body, GDateTime *now, GError **error);
+
 G_END_DECLS
 #endif

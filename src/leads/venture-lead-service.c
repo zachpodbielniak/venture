@@ -438,11 +438,27 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 			}
 			if (VENTURE_IS_LEAD(duplicate))
 			{
+				const gchar *assessment = venture_entity_get_attribute(entity, "assessment_score");
+				g_autofree gchar *code = string_field(entity, "referral-code");
+				g_autofree gchar *kept = string_field(duplicate, "referral-code");
 				g_object_set(duplicate, "last-activity-at", now, NULL);
-				if (!write_record(self, duplicate, actor, error)) goto fail;
+				/* A code fills an empty one and never replaces it: whoever
+				 * sent them first sent them. */
+				if (venture_string_is_empty(kept) && !venture_string_is_empty(code))
+					g_object_set(duplicate, "referral-code", code, NULL);
+				if (assessment != NULL)
+				{
+					g_autoptr(VentureEntity) rescored = NULL;
+					venture_entity_set_attribute(duplicate, "assessment_score", assessment);
+					/* Persisted leads take the same scoring/history path as any
+					 * edit. A manual score remains the operator's decision. */
+					rescored = save_lead(self, duplicate, "reject", actor, error);
+					if (rescored == NULL) goto fail;
+				}
+				else if (!write_record(self, duplicate, actor, error)) goto fail;
 			}
-			/* A merge leaves the existing record as it was, so the
-			 * history entry is where their message is kept. */
+			/* Ordinary capture fields do not overwrite CRM details. The
+			 * optional assessment input above is the explicit exception. */
 			body = venture_string_is_empty(notes) ? g_strdup(source)
 				: g_strdup_printf("%s\n\n%s", source != NULL ? source : "", notes);
 			if (!history(self, duplicate, "Lead capture", body, actor, error)) goto fail;
@@ -496,8 +512,14 @@ validate_form(VentureLeadService *self, VentureEntity *entity, GError **error)
 	g_autoptr(JsonNode) fields = NULL;
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LEAD_FORM);
 	g_autoptr(GPtrArray) forms = NULL;
+	g_autofree gchar *fields_text = string_field(entity, "fields");
 	guint i;
-	g_object_get(entity, "fields", &fields, NULL);
+	/* A JSON field is stored as its text; parse it before judging it. */
+	if (!venture_string_is_empty(fields_text))
+	{
+		fields = json_from_string(fields_text, NULL);
+		if (fields == NULL) return refuse(error, VENTURE_ERROR_VALIDATION, "form fields must be a JSON array of field names");
+	}
 	if (fields != NULL && !JSON_NODE_HOLDS_NULL(fields))
 	{
 		JsonArray *array;
@@ -588,46 +610,20 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 	return saved != NULL;
 }
 
-gboolean
-venture_lead_service_capture_result(VentureLeadService *self, const gchar *token, JsonObject *fields,
-	const gchar *source, gint64 campaign_id, VentureEntity **captured, gchar **redirect_url, GError **error)
+/* Builds a lead from capture inputs and saves it under @policy. Shared by
+ * a lead form and a general form that maps its answers onto a lead, so
+ * both honour the same inputs, the same campaign check and the same
+ * duplicate rules. Runs inside the caller's transaction. */
+static VentureEntity *
+capture_lead(VentureLeadService *self, gint64 organization_id, gint64 venture, const gchar *source,
+	const gchar *forced_source, gint64 campaign_id, JsonObject *fields, JsonNode *allowed,
+	const gchar *policy, const gint64 *assessment, GError **error)
 {
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) forms = NULL;
 	g_autoptr(VentureEntity) lead = NULL;
-	g_autoptr(VentureEntity) saved = NULL;
-	g_autofree gchar *honeypot = NULL;
-	g_autofree gchar *policy = NULL;
-	g_autofree gchar *name = NULL;
-	g_autoptr(JsonNode) allowed = NULL;
-	VentureEntity *form;
-	gboolean active = FALSE;
-	gint64 venture = 0;
 	guint i;
-	const gchar *inputs[] = { "name", "company_name", "email", "phone", "website", "source", "notes" };
-	if (captured != NULL) *captured = NULL;
-	if (redirect_url != NULL) *redirect_url = NULL;
-	if (campaign_id < 0 || (source != NULL && (!*source || strlen(source) > 254 ||
-		!g_utf8_validate(source, -1, NULL) || strpbrk(source, "\r\n"))))
-		return refuse(error, VENTURE_ERROR_VALIDATION, "verified attribution requires a bounded source and nonnegative campaign identity");
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "lead_form") == G_TYPE_INVALID)
-		return refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable");
-	if (!venture_database_begin(self->database, error)) return FALSE;
-	query = venture_query_new(VENTURE_TYPE_LEAD_FORM);
-	venture_query_set_limit(query, 2);
-	venture_query_add_filter_string(query, "public-token", VENTURE_FILTER_OP_EQ, token, NULL);
-	forms = venture_database_find(self->database, query, error);
-	if (forms == NULL) goto fail;
-	if (forms->len != 1) { refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable"); goto fail; }
-	form = g_ptr_array_index(forms, 0);
-	g_object_get(form, "active", &active, "venture-id", &venture, "honeypot", &honeypot,
-		"on-duplicate", &policy, "name", &name, "fields", &allowed, NULL);
-	if (!active) { refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable"); goto fail; }
-	if (!venture_string_is_empty(honeypot) && json_object_has_member(fields, honeypot) &&
-		!venture_string_is_empty(venture_json_object_get_string(fields, honeypot, "")))
-		return venture_database_commit(self->database, error);
+	const gchar *inputs[] = { "name", "company_name", "email", "phone", "website", "source", "notes", "referral_code" };
 	lead = VENTURE_ENTITY(venture_lead_new());
-	g_object_set(lead, "organization-id", venture_entity_get_organization_id(form), "venture-id", venture, "source", name, NULL);
+	g_object_set(lead, "organization-id", organization_id, "venture-id", venture, "source", source, NULL);
 	for (i = 0; i < G_N_ELEMENTS(inputs); i++)
 	{
 		g_autofree gchar *property = g_strdup(inputs[i]);
@@ -644,21 +640,73 @@ venture_lead_service_capture_result(VentureLeadService *self, const gchar *token
 		node = json_object_get_member(fields, inputs[i]);
 		if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING)
 		{
-			refuse(error, VENTURE_ERROR_VALIDATION, "capture fields must be strings"); goto fail;
+			refuse(error, VENTURE_ERROR_VALIDATION, "capture fields must be strings");
+			return NULL;
 		}
 		g_strdelimit(property, "_", '-');
 		g_object_set(lead, property, json_node_get_string(node), NULL);
 	}
 	if (campaign_id > 0) {
 		g_autoptr(VentureEntity) campaign = venture_database_get(self->database, VENTURE_TYPE_CAMPAIGN, campaign_id, error);
-		if (!campaign) goto fail;
-		if (venture_entity_is_deleted(campaign) || venture_entity_get_organization_id(campaign) != venture_entity_get_organization_id(form)) {
-			refuse(error, VENTURE_ERROR_VALIDATION, "capture campaign belongs to another organization or is unavailable"); goto fail;
+		if (!campaign) return NULL;
+		if (venture_entity_is_deleted(campaign) || venture_entity_get_organization_id(campaign) != organization_id) {
+			refuse(error, VENTURE_ERROR_VALIDATION, "capture campaign belongs to another organization or is unavailable");
+			return NULL;
 		}
 		g_object_set(lead, "campaign-id", campaign_id, NULL);
 	}
-	if (source != NULL) g_object_set(lead, "source", source, NULL);
-	saved = save_lead(self, lead, policy != NULL ? policy : "merge", NULL, error);
+	if (assessment != NULL)
+	{
+		g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, *assessment);
+		venture_entity_set_attribute(lead, "assessment_score", value);
+	}
+	/* A verified attribution source outranks whatever the page posted. */
+	if (forced_source != NULL) g_object_set(lead, "source", forced_source, NULL);
+	return save_lead(self, lead, policy != NULL ? policy : "merge", NULL, error);
+}
+
+gboolean
+venture_lead_service_capture_result(VentureLeadService *self, const gchar *token, JsonObject *fields,
+	const gchar *source, gint64 campaign_id, VentureEntity **captured, gchar **redirect_url, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) forms = NULL;
+	g_autoptr(VentureEntity) saved = NULL;
+	g_autofree gchar *honeypot = NULL;
+	g_autofree gchar *policy = NULL;
+	g_autofree gchar *name = NULL;
+	g_autoptr(JsonNode) allowed = NULL;
+	VentureEntity *form;
+	gboolean active = FALSE;
+	gint64 venture = 0;
+	if (captured != NULL) *captured = NULL;
+	if (redirect_url != NULL) *redirect_url = NULL;
+	if (campaign_id < 0 || (source != NULL && (!*source || strlen(source) > 254 ||
+		!g_utf8_validate(source, -1, NULL) || strpbrk(source, "\r\n"))))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "verified attribution requires a bounded source and nonnegative campaign identity");
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "lead_form") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable");
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	query = venture_query_new(VENTURE_TYPE_LEAD_FORM);
+	venture_query_set_limit(query, 2);
+	venture_query_add_filter_string(query, "public-token", VENTURE_FILTER_OP_EQ, token, NULL);
+	forms = venture_database_find(self->database, query, error);
+	if (forms == NULL) goto fail;
+	if (forms->len != 1) { refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable"); goto fail; }
+	form = g_ptr_array_index(forms, 0);
+	g_object_get(form, "active", &active, "venture-id", &venture, "honeypot", &honeypot,
+		"on-duplicate", &policy, "name", &name, NULL);
+	{
+		/* Stored as text, validated as an array of names at the save. */
+		g_autofree gchar *allowed_text = string_field(form, "fields");
+		if (!venture_string_is_empty(allowed_text)) allowed = json_from_string(allowed_text, NULL);
+	}
+	if (!active) { refuse(error, VENTURE_ERROR_NOT_FOUND, "capture form unavailable"); goto fail; }
+	if (!venture_string_is_empty(honeypot) && json_object_has_member(fields, honeypot) &&
+		!venture_string_is_empty(venture_json_object_get_string(fields, honeypot, "")))
+		return venture_database_commit(self->database, error);
+	saved = capture_lead(self, venture_entity_get_organization_id(form), venture,
+		name, source, campaign_id, fields, allowed, policy, NULL, error);
 	if (saved == NULL) goto fail;
 	if (!venture_database_commit(self->database, error)) return FALSE;
 	if (redirect_url != NULL) *redirect_url = string_field(form, "redirect-url");
@@ -667,6 +715,41 @@ venture_lead_service_capture_result(VentureLeadService *self, const gchar *token
 fail:
 	venture_database_rollback(self->database);
 	return FALSE;
+}
+
+static VentureEntity *
+capture_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
+	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, const gint64 *assessment, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_LEAD_SERVICE(self), NULL);
+	g_return_val_if_fail(fields != NULL, NULL);
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "lead") == G_TYPE_INVALID)
+	{
+		refuse(error, VENTURE_ERROR_NOT_FOUND, "the leads module is off");
+		return NULL;
+	}
+	if (policy != NULL && *policy != '\0' && g_strcmp0(policy, "merge") != 0 &&
+		g_strcmp0(policy, "reject") != 0 && g_strcmp0(policy, "create") != 0)
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "on_duplicate must be reject, merge or create");
+		return NULL;
+	}
+	return capture_lead(self, organization_id, venture_id, source, NULL, campaign_id, fields, NULL,
+		policy != NULL && *policy != '\0' ? policy : "merge", assessment, error);
+}
+
+VentureEntity *
+venture_lead_service_capture_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
+	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, GError **error)
+{
+	return capture_values(self, organization_id, venture_id, source, campaign_id, fields, policy, NULL, error);
+}
+
+VentureEntity *
+venture_lead_service_capture_scored_values(VentureLeadService *self, gint64 organization_id, gint64 venture_id,
+	const gchar *source, gint64 campaign_id, JsonObject *fields, const gchar *policy, gint64 assessment, GError **error)
+{
+	return capture_values(self, organization_id, venture_id, source, campaign_id, fields, policy, &assessment, error);
 }
 
 gboolean

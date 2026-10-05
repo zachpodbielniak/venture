@@ -41,7 +41,10 @@ organization, deleted rows included -- reactivate the existing one.
 Tokens intersect mint-time memberships with current authority; new grants
 never widen an old token; legacy non-admin tokens without a snapshot need
 rotation. Missing membership gives empty results or 404; a refused
-in-organization write gives 403. `journal post ID` returns a confirmation
+in-organization write gives 403. An organization owner/admin may `update
+organization ID` for its own profile (name, phone, email, address, ...), but
+`parent_id` and `is_default` are workspace authority: 403 for them.
+`create organization` leaves `organization_id` 0. `journal post ID` returns a confirmation
 for an organization editor -- pending until finance approves. An outside
 accountant: global `viewer` user plus an `organization_membership` with
 role `accountant` per client organization; they read and export the books

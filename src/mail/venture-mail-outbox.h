@@ -105,5 +105,22 @@ gboolean venture_mail_check_removal(VentureEntity *entity, GError **error);
  */
 gint venture_mail_outbox_deliver_one(VentureMailOutbox *self, gint64 org, gint64 id,
 	gint64 expected_connection, gint64 expected_version, GCancellable *cancellable, GError **error);
+/**
+ * venture_mail_outbox_forget_pending:
+ * @self: outbox
+ * @organization_id: exact owning organization
+ * @id: private intake message
+ * @actor: (nullable): audited caller
+ * @error: (out) (optional): refusal
+ *
+ * Cancels and removes recipient/content copies from a private intake message
+ * known not to be in flight (queued, failed, dead or cancelled). Retains its
+ * identity and idempotency key. Sending, uncertain and sent mail is refused.
+ * Works with mail disabled and cannot erase an ordinary business message.
+ * Returns: whether the private copy was forgotten
+ */
+gboolean venture_mail_outbox_forget_pending(VentureMailOutbox *self, gint64 organization_id,
+	gint64 id, const VentureActor *actor, GError **error);
+
 G_END_DECLS
 #endif

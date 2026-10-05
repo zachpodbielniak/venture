@@ -5139,7 +5139,24 @@ static const gchar *const venture_widget_uses_opportunities[] = {
 	"record_id", "options", "limit", NULL
 };
 
+static const gchar *const venture_widget_uses_forms[] = {
+	"record_id", "field", "period", "options", NULL
+};
+#include "venture-dashboard-forms.inc"
+
 static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
+	{ "form_responses", "Responses over time", "Daily submitted response counts, split by published version.",
+	  "forms", venture_widget_uses_forms, venture_widget_kind_forms },
+	{ "form_choices", "Form choices", "Counts by stable choice ID across compatible versions.",
+	  "forms", venture_widget_uses_forms, venture_widget_kind_forms },
+	{ "form_nps", "Net promoter score", "Promoters minus detractors, as a percentage of answered 0-10 ratings.",
+	  "forms", venture_widget_uses_forms, venture_widget_kind_forms },
+	{ "form_rating", "Average rating", "Mean of answered ratings, split when the published scale changes.",
+	  "forms", venture_widget_uses_forms, venture_widget_kind_forms },
+	{ "form_scores", "Quiz score distribution", "Exact score counts by published assessment version.",
+	  "forms", venture_widget_uses_forms, venture_widget_kind_forms },
+	{ "form_dropoff", "Unfinished form pages", "Retained unfinished drafts by current page; excludes purged history.",
+	  "forms", venture_widget_uses_forms, venture_widget_kind_forms },
 	{
 		"count", "Count",
 		"One figure: how many records of a type match a filter, "
@@ -7415,7 +7432,9 @@ static const VentureDashboardTemplate venture_dashboard_templates[] = {
 		" {\"kind\": \"confirmations\"},"
 		" {\"kind\": \"activity\", \"limit\": 8, \"span\": \"full\"}"
 		"]}"
-	}
+	},
+	{ "form-results", "Form results", "Version-aware survey results; select a form and question keys after creation.", "forms",
+	  "{\"name\":\"Form results\",\"slug\":\"form-results\",\"description\":\"Set each widget record_id to a published form; choose stable question keys for choice and rating widgets.\",\"layout\":\"two_columns\",\"widgets\":[{\"kind\":\"form_responses\",\"title\":\"Responses over time\",\"record_id\":0,\"period\":\"all\",\"position\":1},{\"kind\":\"form_choices\",\"title\":\"Choices\",\"record_id\":0,\"period\":\"all\",\"position\":2,\"field\":\"choice\"},{\"kind\":\"form_nps\",\"title\":\"Net promoter score\",\"record_id\":0,\"period\":\"all\",\"position\":3,\"field\":\"rating\"},{\"kind\":\"form_rating\",\"title\":\"Average rating\",\"record_id\":0,\"period\":\"all\",\"position\":4,\"field\":\"rating\"},{\"kind\":\"form_scores\",\"title\":\"Quiz scores\",\"record_id\":0,\"period\":\"all\",\"position\":5},{\"kind\":\"form_dropoff\",\"title\":\"Unfinished pages\",\"record_id\":0,\"period\":\"all\",\"position\":6}]}" }
 };
 
 const VentureDashboardTemplate *

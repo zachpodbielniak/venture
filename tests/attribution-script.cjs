@@ -3,10 +3,13 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const calls = [], storage = new Map();
+const calls = [], storage = new Map(), deadlines = new Map();
+let timerId = 0;
 let reads = 0, writes = 0, failWithdrawal = false;
 const sandbox = {
-    URL, Date, JSON, Error, Promise, Object,
+    URL, Date, JSON, Error, Promise, Object, AbortController,
+    setTimeout(callback, delay) { const id = ++timerId; deadlines.set(id, {callback, delay}); return id; },
+    clearTimeout(id) { deadlines.delete(id); },
     document: {currentScript: {src: 'https://venture.example.test/attribution.js', dataset: {site: 'configured-uuid'}}, referrer: 'https://ref.example.test/search?q=private'},
     location: {href: 'https://site.example.test/page?utm_source=newsletter'},
     crypto: {randomUUID: () => 'stable-random-id'},
@@ -76,5 +79,30 @@ vm.runInNewContext(fs.readFileSync('data/static/attribution.js', 'utf8'), sandbo
     assert.equal(storage.size, 0);
     await tracker.grant('current-policy');
     assert.equal(JSON.parse([...storage.values()][0]).policy, 'current-policy');
+    /* A stalled grant must release serialized consent work. The same deadline
+     * includes reading the response body, not only receiving its headers. */
+    for (const stallBody of [false, true]) {
+        sandbox.fetch = async (url, options) => {
+            if (!url.endsWith('/grant')) return normalFetch(url, options);
+            const stalled = () => new Promise((resolve, reject) => {
+                if (options.signal) options.signal.addEventListener('abort', () => reject(new Error('aborted')), {once: true});
+            });
+            return stallBody ? {ok: true, status: 200, json: stalled} : stalled();
+        };
+        const waiting = tracker.grant(stallBody ? 'slow-body' : 'slow-headers');
+        const refused = assert.rejects(waiting, /timed out/);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(deadlines.size, 1, 'a hung request needs a bounded deadline');
+        const deadline = [...deadlines.values()][0];
+        assert.ok(deadline.delay > 0 && deadline.delay <= 30000);
+        const withdrawal = tracker.withdraw();
+        deadline.callback();
+        await refused; await withdrawal;
+        assert.equal(deadlines.size, 0, 'settled requests must clear their timer');
+        assert.equal(storage.size, 0);
+    }
+    sandbox.fetch = normalFetch;
+    await tracker.submit(plain);
+    assert.equal(deadlines.size, 0);
     console.log('Attribution script: no pre-consent storage/tracking; independent form/email choice; stable replay; offline withdrawal stops tracking');
 })().catch(error => {console.error(error); process.exitCode = 1;});

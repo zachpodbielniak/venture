@@ -267,6 +267,7 @@ venture_database_init(VentureDatabase *self)
 	venture_connector_install(self);
 	venture_marketing_install(self);
 	venture_attribution_install(self);
+	venture_referrals_install(self);
 }
 
 VentureQuoteService *
@@ -837,8 +838,8 @@ venture_database_record_audit(
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(GError) local_error = NULL;
 
-	/* An audit record about an audit record would recurse forever. */
-	if (VENTURE_IS_AUDIT_ENTRY(target))
+	/* Audit records cannot recurse; disposable working copies are not events. */
+	if (VENTURE_IS_AUDIT_ENTRY(target) || venture_entity_is_working_copy(target))
 		return;
 
 	entry = venture_audit_entry_new_for_change(action,
@@ -1329,6 +1330,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_sessions_check_write,
 		venture_holdings_check_write,
 		venture_arbitrage_books_check_write
+		venture_forms_check_write
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(guards); i++)
@@ -1883,8 +1885,9 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
 		venture_accounting_operation_suspend(self);
-		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
-		              entity, created);
+		if (!venture_entity_is_working_copy(entity))
+			g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_SAVED], 0,
+			              entity, created);
 		venture_accounting_operation_resume(self);
 	}
 	return TRUE;
@@ -2116,7 +2119,8 @@ venture_database_delete(
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
 		return FALSE;
-	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error))
+	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error) ||
+	    !venture_referrals_check_removal(entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
@@ -2162,7 +2166,8 @@ venture_database_delete(
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
 		venture_accounting_operation_suspend(self);
-		g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
+		if (!venture_entity_is_working_copy(entity))
+			g_signal_emit(self, venture_database_signals[SIGNAL_ENTITY_DELETED], 0,
 		              entity);
 		venture_accounting_operation_resume(self);
 	}
@@ -2216,7 +2221,8 @@ venture_database_restore(
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
 		return FALSE;
-	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error))
+	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error) ||
+	    !venture_referrals_check_removal(entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
@@ -2294,7 +2300,8 @@ venture_database_purge(
 		return FALSE;
 	if (!venture_assets_check_removal(self, entity, error))
 		return FALSE;
-	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error))
+	if (!venture_attribution_check_removal(entity, error) || !venture_marketing_check_removal(entity, error) ||
+	    !venture_referrals_check_removal(entity, error))
 		return FALSE;
 	if (!venture_mail_check_removal(entity, error))
 		return FALSE;
@@ -2943,6 +2950,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_ai_provider_actions_register(self);
 		venture_marketing_actions_register(self);
 		venture_attribution_actions_register(self);
+		venture_referrals_actions_register(self);
 		venture_close_actions_register(self);
 	}
 	return self->actions;

@@ -1,7 +1,21 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 static HtmxResponse *attribution_web_result(JsonNode *node, GError *error, const gchar *origin)
 {
-	HtmxResponse *response = error ? venture_web_error_response(error) : venture_web_json_response(node, 200);
+	g_autoptr(GError) public_error = NULL;
+	HtmxResponse *response;
+	if (error != NULL) {
+		gboolean limited = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_BUSY);
+		gboolean internal = !limited && (error->domain != VENTURE_ERROR ||
+			venture_error_to_http_status(error->code) >= 500);
+		const gchar *cause = limited ? "rate_limit" : internal ? "storage_or_internal_failure" : venture_error_get_slug(error->code);
+		/* Raw database/parser diagnostics can contain private input. Keep
+		 * one cause at the HTTP boundary and no capabilities or payloads. */
+		g_message("Attribution request failed: cause=%s domain=%s code=%d",
+			cause, g_quark_to_string(error->domain), error->code);
+		if (internal) g_set_error_literal(&public_error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+			"Intake temporarily unavailable; retry the same request later");
+	}
+	response = error ? venture_web_error_response(public_error != NULL ? public_error : error) : venture_web_json_response(node, 200);
 	if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_BUSY)) {
 		htmx_response_set_status(response, 429); htmx_response_add_header(response, "Retry-After", "60");
 	}
@@ -47,7 +61,9 @@ static HtmxResponse *venture_web_attribution_ingest(HtmxRequest *request, GHashT
 	gboolean recognized = !g_strcmp0(operation, "grant") || !g_strcmp0(operation, "observe") || !g_strcmp0(operation, "capture") || !g_strcmp0(operation, "withdraw");
 	if (!recognized || !site_uuid || !g_uuid_string_is_valid(site_uuid) || !origin || strlen(origin) > 2048) goto missing;
 	venture_query_set_include_deleted(query, TRUE); venture_query_add_filter_string(query, "uuid", VENTURE_FILTER_OP_EQ, site_uuid, NULL);
-	site = venture_database_find_one(database, query, NULL); if (!site) goto missing;
+	site = venture_database_find_one(database, query, &error);
+	if (error != NULL) return attribution_web_result(NULL, error, NULL);
+	if (!site) goto missing;
 	g_object_get(site, "origin", &expected, NULL);
 	if (g_strcmp0(origin, expected)) goto missing;
 	/* Simple text/plain POSTs need no preflight. Every write still checks an
@@ -97,4 +113,27 @@ static HtmxResponse *venture_web_lightsite_receive(HtmxRequest *request, GHashTa
 		g_hash_table_lookup(params, "site"), connection, soup_message_headers_get_one(headers, "X-Venture-Timestamp"),
 		soup_message_headers_get_one(headers, "X-Venture-Signature"), htmx_request_get_body_bytes(request), now, &error);
 	return attribution_web_result(result, error, NULL);
+}
+
+static HtmxResponse *venture_web_lightsite_form_receive(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	SoupMessageHeaders *headers = soup_server_message_get_request_headers(htmx_request_get_message(request));
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	const gchar *id = g_hash_table_lookup(params, "connection");
+	gint64 connection;
+	HtmxResponse *response;
+	if (!id || !g_ascii_string_to_signed(id, 10, 1, G_MAXINT64, &connection, NULL))
+		venture_set_error_validation(&error, "connection", "Expected exact Lightsite connection identity");
+	else result = venture_attribution_service_receive_form(venture_attribution_service_get(venture_context_get_database(self->context)),
+		g_hash_table_lookup(params, "site"), connection, soup_message_headers_get_one(headers, "X-Venture-Timestamp"),
+		soup_message_headers_get_one(headers, "X-Venture-Signature"), htmx_request_get_body_bytes(request), now, &error);
+	response = attribution_web_result(result, error, NULL);
+	if (result && !json_object_get_boolean_member(json_node_get_object(result), "accepted")) {
+		g_message("Lightsite form relay failed: cause=field_validation");
+		htmx_response_set_status(response, 422);
+	}
+	return response;
 }

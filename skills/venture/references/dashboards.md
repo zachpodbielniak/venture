@@ -35,7 +35,7 @@ headline cards, else the overview).
 **Templates** (`dashboard create NAME`): `today` (the daily questions;
 the demo's home), `factory`, `reporting`, `progress`, `work`, `operations`
 (the operator's game accounts -- file it under the organization whose
-accounts it shows), `overview`. A definition is plain JSON (no ids or
+accounts it shows), `overview`, `form-results` (one form's answers). A definition is plain JSON (no ids or
 owners) -- keep it in git. Importing a taken slug suffixes a number; every
 widget is checked before anything is written.
 

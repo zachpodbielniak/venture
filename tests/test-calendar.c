@@ -488,6 +488,22 @@ static void test_booking_slots(Fixture *f, gconstpointer data)
 		g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 2);
 	}
 }
+static void test_booking_bound_ignores_tasks(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) booking_page = page(f);
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = NULL;
+	(void)data;
+	/* These valid task rows must be narrowed out before the 10,000-row
+	 * availability bound, rather than refused and then ignored in C. */
+	sql = g_strdup_printf("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<10001) INSERT INTO activities(uuid, subject, owner, organization_id, kind, status, version) SELECT 'bounded-task-' || CAST(n AS TEXT), 'Unscheduled task', 'ben', %" G_GINT64_FORMAT ", 'task', 'planned', 1 FROM numbers", f->org);
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+	slots = venture_booking_service_slots(f->booking, booking_page, now, &error); g_assert_no_error(error); g_assert_nonnull(slots);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+}
+
 static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) p = page(f);
@@ -569,6 +585,76 @@ static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data
 	save(f, p);
 	g_assert_null(venture_booking_service_find_page(f->booking, "ben-intro", &error));
 	g_assert_no_error(error);
+}
+
+/* Capacity belongs to the target and is re-read at the booking boundary:
+ * two stale callers cannot consume the same last seat. */
+static void test_booking_capacity(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), first = NULL, second = NULL, refused = NULL, changed = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(p), "capacity"));
+	g_object_set(p, "capacity", (gint64)2, NULL); save(f, p);
+	first = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z", "First", "first@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(first);
+	second = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z", "Second", "second@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(second);
+	refused = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z", "Third", "third@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	g_assert_cmpint(count_type(f, "activity"), ==, 2);
+	g_assert_cmpint(count_type(f, "contact"), ==, 3);
+	changed = venture_database_get(f->db, VENTURE_TYPE_BOOKING_PAGE, venture_entity_get_id(p), NULL);
+	g_object_set(changed, "active", FALSE, NULL); save(f, changed);
+	refused = venture_booking_service_book(f->booking, p, "2026-09-21T14:30:00Z", "Third", "third@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
+/* A hold has no business side effects and expires independently of cleanup.
+ * Only a current signed capability may move or cancel the confirmed meeting. */
+static void test_booking_holds_and_capabilities(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), hold = NULL, refused = NULL, booked = NULL, current = NULL, changed = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL), later = g_date_time_add_seconds(now, 31);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL, *token = NULL, *bad = NULL;
+	gint64 audits = count_type(f, "audit_entry");
+	(void)data;
+	hold = venture_booking_service_reserve(f->booking, p, "2026-09-21T14:00:00Z", 30, now, &error);
+	g_assert_no_error(error); g_assert_nonnull(hold);
+	g_assert_cmpint(count_type(f, "activity"), ==, 0); g_assert_cmpint(count_type(f, "contact"), ==, 1);
+	g_assert_cmpint(count_type(f, "audit_entry"), ==, audits);
+	refused = venture_booking_service_reserve(f->booking, p, "2026-09-21T14:00:00Z", 30, now, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	current = venture_booking_service_reserve(f->booking, p, "2026-09-21T14:00:00Z", 30, later, &error);
+	g_assert_no_error(error); g_assert_nonnull(current);
+	refused = venture_booking_service_confirm(f->booking, hold, "Old", "old@example.test", NULL, NULL, later, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	booked = venture_booking_service_confirm(f->booking, current, "Person", "person@example.test", NULL, "https://book.example.test", later, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	g_clear_object(&hold); hold = venture_database_get(f->db, VENTURE_TYPE_BOOKING_RESERVATION, venture_entity_get_id(current), NULL);
+	url = venture_booking_service_manage_url(f->booking, hold, "https://book.example.test", &error); g_assert_no_error(error);
+	token = g_strdup(strrchr(url, '/') + 1); bad = g_strdup(token); bad[strlen(bad) - 1] = bad[strlen(bad) - 1] == 'a' ? 'b' : 'a';
+	refused = venture_booking_service_manage(f->booking, p, bad, NULL, later, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	changed = venture_booking_service_manage(f->booking, p, token, "2026-09-21T14:30:00Z", later, NULL, &error);
+	g_assert_no_error(error); g_assert_cmpint(venture_entity_get_id(changed), ==, venture_entity_get_id(booked));
+	refused = venture_booking_service_manage(f->booking, p, token, NULL, later, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_clear_object(&hold); hold = venture_database_get(f->db, VENTURE_TYPE_BOOKING_RESERVATION, venture_entity_get_id(current), NULL);
+	g_clear_pointer(&url, g_free); url = venture_booking_service_manage_url(f->booking, hold, "https://book.example.test", &error);
+	g_clear_object(&changed); changed = venture_booking_service_manage(f->booking, p, strrchr(url, '/') + 1, NULL, later, NULL, &error);
+	g_assert_no_error(error);
+	{
+		gint status; g_object_get(changed, "status", &status, NULL); g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_CANCELLED);
+		g_autoptr(JsonNode) slots = venture_booking_service_slots(f->booking, p, later, &error);
+		g_assert_no_error(error); g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+	}
+	g_clear_object(&hold); hold = venture_booking_service_reserve(f->booking, p, "2026-09-21T14:00:00Z", 900, later, &error);
+	g_assert_no_error(error); g_assert_true(venture_booking_service_release(f->booking, hold, &error)); g_assert_no_error(error);
+	g_clear_object(&current); current = venture_booking_service_reserve(f->booking, p, "2026-09-21T14:00:00Z", 900, later, &error);
+	g_assert_no_error(error); g_assert_nonnull(current);
 }
 
 /* Rule 5: the organization sweep, and its report of a failing account. */
@@ -774,10 +860,13 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/pull", Fixture, NULL, setup, test_pull, teardown);
 	g_test_add("/calendar/deletions-cancel", Fixture, NULL, setup, test_deletions_cancel, teardown);
 	g_test_add("/calendar/conflict-last-modified-wins", Fixture, NULL, setup, test_conflict_last_modified_wins, teardown);
+	g_test_add("/calendar/booking-holds-capabilities", Fixture, NULL, setup, test_booking_holds_and_capabilities, teardown);
+	g_test_add("/calendar/booking-capacity", Fixture, NULL, setup, test_booking_capacity, teardown);
 	g_test_add("/calendar/booking-slots", Fixture, NULL, setup, test_booking_slots, teardown);
 	g_test_add("/calendar/booking-books-and-refuses-double", Fixture, NULL, setup, test_booking_books_and_refuses_double, teardown);
 	g_test_add("/calendar/sweep", Fixture, NULL, setup, test_sweep, teardown);
 	g_test_add("/calendar/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add_func("/calendar/migrate-disabled", test_migrate_disabled);
+	g_test_add("/calendar/booking-bound-ignores-tasks", Fixture, NULL, setup, test_booking_bound_ignores_tasks, teardown);
 	return g_test_run();
 }

@@ -1043,3 +1043,18 @@ database opening. The combined artifact passes both =test-hosted-maintenance= ca
 the 20 =test-http-limits= transport cases, the one =test-caldav-http= case
 and the 15 =test-tenant= cases; the real HTTP/TLS demonstration
 also verifies each invalid setting before database creation.
+
+* Referrals
+
+=test-referrals= drives the writers that never mention referrals -- a plain
+lead save, lead-form capture with a merge, a form with a mapped hidden
+question, the signed relay's =referral_code=, conversion and billing -- and
+checks the referral and reward each leaves. A reward is checked where it
+lands: the credit note on the referrer, and a renewal invoice whose balance
+the free period brings to zero. The failure case converts with nothing to
+pay, asserts the conversion stood and the reward says why, then gives it
+after the cause is fixed, and refuses to give it twice. The upgrade case
+removes both scripts' columns, tables and history from a migrated database
+holding a lead, migrates twice and checks the lead survived; it runs on
+PostgreSQL in its own schema when =VENTURE_TEST_MIGRATION_POSTGRES_URI= is
+set.

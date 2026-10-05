@@ -144,6 +144,10 @@ struct _VentureWebServer
 	GHashTable	*chat_turns;
 	HtmxRateLimiter *quote_limiter;
 	HtmxRateLimiter *lead_limiter;
+	/* The forms door's buckets: one per client address, and one per form
+	 * keyed by its public token, sized by that form's hourly limit. */
+	HtmxRateLimiter *form_client_limiter;
+	GHashTable	*form_limiters;
 	/* One bucket belongs to the pinned workspace, never a caller-supplied ID.
 	 * Nested provider main loops can reenter this server on the same thread. */
 	HtmxRateLimiter *workspace_limiter;
@@ -178,6 +182,8 @@ G_DEFINE_FINAL_TYPE(VentureWebServer, venture_web_server, G_TYPE_OBJECT)
 #include "ai/venture-ai-organization-web.inc"
 
 static void venture_web_append_lead_actions(GString *html, VentureEntity *record);
+static void venture_web_append_form_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_append_form_answers(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_connector_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
@@ -204,6 +210,8 @@ venture_web_server_finalize(GObject *object)
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 	g_clear_object(&self->lead_limiter);
+	g_clear_object(&self->form_client_limiter);
+	g_clear_pointer(&self->form_limiters, g_hash_table_unref);
 	g_clear_object(&self->workspace_limiter);
 	g_clear_pointer(&self->get_patterns, g_ptr_array_unref);
 	g_clear_pointer(&self->plugin_nav, g_array_unref);
@@ -853,6 +861,16 @@ venture_web_type_accepts_writes(
 		return FALSE;
 	}
 
+	/* A form version is what a form asked when it was published. Answers
+	 * are read against it, so nothing edits or deletes one; publishing
+	 * makes it. */
+	if (VENTURE_TYPE_FORM_VERSION == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			"Form versions are made by publishing the form and cannot be edited or deleted");
+		return FALSE;
+	}
+
 	if (VENTURE_TYPE_LEDGER_ENTRY == entity_type)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
@@ -1279,6 +1297,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		),
 		NULL,
 		"goals"
+	},
+	{
+		"/e/form", "Forms",
+		VENTURE_ICON(
+			"<rect x=\"4\" y=\"3\" width=\"16\" height=\"18\" rx=\"1\"/>"
+			"<path d=\"M8 8h8M8 12h8M8 16h4\"/>"
+		),
+		NULL,
+		"forms"
 	},
 	{
 		"/e/expense", "Expenses",
@@ -1851,7 +1878,7 @@ static const gchar *const venture_web_nav_customers[] = {
 };
 
 static const gchar *const venture_web_nav_growth[] = {
-	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post",
+	"/deals", "/e/deal", "/e/campaign", "/e/newsletter", "/e/post", "/e/form",
 	NULL
 };
 
@@ -3467,8 +3494,12 @@ venture_web_api_write(
 	}
 
 	/* A record that names no organisation belongs to the caller's, rather
-	 * than to organisation zero where nothing would ever find it. */
-	if (0 == venture_entity_get_organization_id(record))
+	 * than to organisation zero where nothing would ever find it. An
+	 * organisation is the exception, as on the web form: it is not filed
+	 * against another one, and stamping the creator's on it made its own
+	 * members' writes be judged in the creator's organisation. */
+	if (0 == venture_entity_get_organization_id(record) &&
+	    !VENTURE_IS_ORGANIZATION(record))
 	{
 		venture_entity_set_organization_id(record,
 			venture_context_get_default_organization_id(self->context));
@@ -3820,6 +3851,8 @@ venture_web_api_report(
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "language", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "form_id", "location_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7861,6 +7894,8 @@ venture_web_ui_report(
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", NULL };
+		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "language", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "form_id", "location_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7913,6 +7948,7 @@ venture_web_ui_report(
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
 		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "form_id", "location_id", "language", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -7977,6 +8013,7 @@ venture_web_ui_report(
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
 				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "form_id", "location_id", "language", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -11773,6 +11810,14 @@ venture_web_ui_detail(
 			venture_web_append_build_block(self, content, record);
 	}
 
+	/* A form's questions, responses, preview and embed codes. */
+	if ((VENTURE_TYPE_FORM == entity_type) &&
+	    venture_web_module_enabled(self, "forms"))
+		venture_web_append_form_block(self, content, record);
+	if ((VENTURE_TYPE_FORM_SUBMISSION == entity_type) &&
+	    venture_web_module_enabled(self, "forms"))
+		venture_web_append_form_answers(self, content, record);
+
 	/* A goal's progress and its steps, in order. */
 	if ((VENTURE_TYPE_GOAL == entity_type) &&
 	    venture_web_module_enabled(self, "goals"))
@@ -13891,11 +13936,12 @@ venture_web_ui_account_password(
 /*
  * The API tokens page.
  *
- * Admin, matching POST /api/v1/tokens: a token carries the role of whoever
- * minted it, so minting one is handing out a credential rather than editing
- * a record. This page exists because the alternative was two curl calls --
- * sign in for a cookie, then post with it -- which is a lot of ceremony for
- * something an operator needs before they can use the CLI at all.
+ * Admin-only. A token carries the role of whoever minted it, and this page
+ * lists and revokes every token, not only the caller's; POST /api/v1/tokens
+ * is where anyone else mints their own. This page exists because the
+ * alternative was two curl calls -- sign in for a cookie, then post with
+ * it -- which is a lot of ceremony for something an operator needs before
+ * they can use the CLI at all.
  */
 static HtmxResponse *
 venture_web_ui_tokens(
@@ -14112,8 +14158,8 @@ venture_web_ui_tokens(
 /*
  * Mints a token and redirects to the page that will show it once.
  *
- * Shares venture_web_api_mint_token()'s rule that this is an administrative
- * act, and its consequence that the token carries the minter's role.
+ * Admin-only like the page it belongs to; the token carries the minter's
+ * role. venture_web_api_mint_token() is the route open to every session.
  */
 static HtmxResponse *
 venture_web_ui_tokens_create(
@@ -19601,6 +19647,51 @@ venture_web_ui_chat(
 
 /* --- API tokens ---------------------------------------------------------- */
 
+/* A token minted below the admin role: its default and longest life. */
+#define VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS 30
+#define VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS 90
+/* Bounds an admin's explicit expiry so the date arithmetic cannot overflow. */
+#define VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS 3650
+
+/*
+ * The organization a minted token is filed under. The workspace's default
+ * one when the caller belongs to it (or is not a user), else the first
+ * organization the caller is an active member of: a business owner who is
+ * not in the default organization cannot reference it, and their token is
+ * theirs, not the workspace's. Its authority still comes only from the
+ * membership snapshot taken when it is saved.
+ */
+static gint64
+mint_organization(VentureWebServer *self, const VentureAuthPrincipal *principal)
+{
+	gint64 fallback = venture_context_get_default_organization_id(self->context);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) members = NULL;
+	gint64 first = 0;
+	guint i;
+
+	if (0 == principal->user_id)
+		return fallback;
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ,
+	                             principal->user_id, NULL);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
+	                                "true", NULL);
+	members = venture_database_find(venture_context_get_database(self->context),
+	                                query, NULL);
+	for (i = 0; NULL != members && i < members->len; i++)
+	{
+		gint64 organization = venture_entity_get_organization_id(
+			VENTURE_ENTITY(g_ptr_array_index(members, i)));
+
+		if (organization == fallback)
+			return fallback;
+		if (0 == first)
+			first = organization;
+	}
+	return (0 != first) ? first : fallback;
+}
+
 /*
  * Mints an API token and returns the plaintext once.
  *
@@ -19625,13 +19716,29 @@ venture_web_api_mint_token(
 	g_autofree gchar *secret = NULL;
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
+	VentureUserRole minimum;
+	gint64 expires_in_days = 0;
+	gboolean days_given = FALSE;
 	const gchar *name = NULL;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
 
-	/* Minting a credential is an administrative act, not an editing one. */
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
+	/*
+	 * A signed-in person may mint a token for themselves at any role. It
+	 * is owned by them, carries their role and a snapshot of their active
+	 * organization memberships (venture-access-policy.c), so it can never
+	 * do more than the session that made it -- which is what lets a
+	 * hosted site owner hand Lightsite their own credential.
+	 *
+	 * A bearer token minting another stays an administrative act: that
+	 * would let a leaked token outlive its own revocation or expiry.
+	 */
+	minimum = (principal->authenticated && 0 == principal->token_id &&
+	           0 < principal->user_id)
+		? VENTURE_USER_ROLE_VIEWER : VENTURE_USER_ROLE_ADMIN;
+
+	if (!venture_web_hosted_auth_require(self, request, principal, minimum,
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -19639,13 +19746,76 @@ venture_web_api_mint_token(
 
 	if ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
 	{
-		name = venture_json_object_get_string(json_node_get_object(body),
-		                                      "name", NULL);
+		JsonObject *object = json_node_get_object(body);
+
+		name = venture_json_object_get_string(object, "name", NULL);
+
+		/* Present means a whole number of days; a string, a fraction or
+		 * null is refused rather than read as "no expiry". */
+		if (json_object_has_member(object, "expires_in_days"))
+		{
+			JsonNode *days = json_object_get_member(object,
+			                                        "expires_in_days");
+
+			if (!JSON_NODE_HOLDS_VALUE(days) ||
+			    G_TYPE_INT64 != json_node_get_value_type(days))
+			{
+				g_set_error_literal(&error, VENTURE_ERROR,
+				                    VENTURE_ERROR_VALIDATION,
+				                    "expires_in_days must be a whole "
+				                    "number of days");
+				return venture_web_error_response(error);
+			}
+
+			expires_in_days = json_node_get_int(days);
+			days_given = TRUE;
+		}
+	}
+
+	/*
+	 * A token minted below the admin role expires: thirty days unless
+	 * fewer are asked for, ninety at most. A session somebody stole must
+	 * not become a credential that outlives every sign-out and password
+	 * change. An admin may still mint one that never expires.
+	 */
+	if (VENTURE_USER_ROLE_OWNER != principal->role &&
+	    VENTURE_USER_ROLE_ADMIN != principal->role)
+	{
+		if (!days_given)
+			expires_in_days = VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS;
+
+		if (expires_in_days < 1 ||
+		    expires_in_days > VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS)
+		{
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "expires_in_days must be between 1 and %d",
+			            VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS);
+			return venture_web_error_response(error);
+		}
+	}
+	else if (days_given &&
+	         (expires_in_days < 1 ||
+	          expires_in_days > VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "expires_in_days must be between 1 and %d; omit it "
+		            "for a token that does not expire",
+		            VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS);
+		return venture_web_error_response(error);
 	}
 
 	token = venture_api_token_new();
 	g_object_set(token, "name", (NULL != name) ? name : "api token",
 	             "role", principal->role, NULL);
+
+	if (expires_in_days > 0)
+	{
+		g_autoptr(GDateTime) now = venture_time_now();
+		g_autoptr(GDateTime) expires_at = g_date_time_add_days(now,
+			(gint)expires_in_days);
+
+		g_object_set(token, "expires-at", expires_at, NULL);
+	}
 
 	/* Whose token this is, so the list on /account/tokens can answer that
 	 * for a token minted here as well as for one minted in the browser. */
@@ -19653,7 +19823,7 @@ venture_web_api_mint_token(
 		g_object_set(token, "user-id", principal->user_id, NULL);
 
 	venture_entity_set_organization_id(VENTURE_ENTITY(token),
-		venture_context_get_default_organization_id(self->context));
+		mint_organization(self, principal));
 
 	secret = venture_api_token_generate(token);
 
@@ -32268,6 +32438,7 @@ venture_web_api_ticket_draft(
 #include "pipelines/venture-pipeline-web.inc"
 
 #include "leads/venture-lead-web.inc"
+#include "forms/venture-forms-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
 #include "tax/venture-tax-rate-web.inc"
@@ -32354,7 +32525,7 @@ venture_web_server_new(
 	htmx_config_set_port(config, (guint16)port);
 
 	self->server = htmx_server_new_with_config(config);
-	venture_http_limits_install(htmx_server_get_soup_server(self->server), venture_context_get_config(context));
+	venture_http_limits_install(htmx_server_get_soup_server(self->server), venture_context_get_config(context), venture_web_forms_body_limit, self);
 	self->classified_routes = htmx_router_new();
 	router = htmx_server_get_router(self->server);
 
@@ -32614,6 +32785,20 @@ venture_web_server_new(
 	/* API */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);
+	/* The forms door: no session, a capability token, and the form's own
+	 * origin list. See src/forms/venture-forms-web.inc. */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/forms.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_script, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/resume/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_resume, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token/resume/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_resume, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/fragment", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_fragment, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/forms/:id/definition", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_definition, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_schema, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/forms/uploads/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_download, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/forms/:id/publish", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_publish, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/leads/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/customers/duplicates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_duplicates, self);
@@ -32784,6 +32969,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/calendar/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_calendar_sync, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/connectors/:type/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_connector_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/connectors/:type/:id/settings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_connector_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/book/:slug/manage/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_manage, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/book/:slug/manage/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_manage, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/book/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_page, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/book/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_booking_page, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
@@ -32812,6 +32999,8 @@ venture_web_server_new(
 	htmx_router_get(router, "/api/v1/headline", venture_web_api_headline, self);
 	htmx_router_post(router, "/api/v1/customers/health/sweep", venture_web_api_customer_health_sweep, self);
 	htmx_router_post(router, "/api/v1/calendar/sync", venture_web_calendar_sync, self);
+	htmx_router_get(router, "/book/:slug/manage/:capability", venture_web_booking_manage, self);
+	htmx_router_post(router, "/book/:slug/manage/:capability", venture_web_booking_manage, self);
 	htmx_router_get(router, "/book/:slug", venture_web_booking_page, self);
 	htmx_router_post(router, "/book/:slug", venture_web_booking_page, self);
 	htmx_router_post(router, "/api/v1/deals/:id/quote", venture_web_deal_quote, self);
@@ -32824,6 +33013,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_click, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/attribution.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/attribution/:site/:operation", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN, venture_web_attribution_ingest, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection/forms", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_form_receive, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_receive, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/attribution", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_settings, self);
@@ -33005,6 +33195,7 @@ venture_web_server_stop(VentureWebServer *self)
 
 	venture_federation_sync_stop(self->context);
 	venture_stripe_collection_stop(self->context);
+	venture_http_limits_shutdown(htmx_server_get_soup_server(self->server));
 	soup_server_disconnect(htmx_server_get_soup_server(self->server));
 	htmx_server_stop(self->server);
 }

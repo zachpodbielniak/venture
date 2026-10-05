@@ -1,0 +1,43 @@
+#+title: Repeating groups: built-server demonstration
+
+* Artifact and isolation
+
+Demonstrated on 2026-10-02 with the DEBUG server whose SHA-256 is
+=c5c22de085d3019c4e5d67d8087fa5bda4f41a5462834a5be47400b1f2145691=.
+The server used a disposable SQLite database and state directory, a
+loopback listener, synthetic answers, and disabled AI, plugins and
+automation. Chromium ran both with JavaScript disabled and with the
+public script loader on a separate local host page. The server was
+terminated after the demonstration.
+
+* Scenario and observed behavior
+
+Created an Attendee group through the generic REST API with minimum 1,
+maximum 2, and Name, Needs detail and Details questions. Published show
+and require rules made Details depend on Needs detail in the same row.
+
+1. The public schema described the group and both row bounds.
+2. With JavaScript disabled, entered First in the first row and selected
+   Add another while other required answers were still empty. The server
+   returned two rows and retained First. Add was disabled at the maximum.
+3. Filled the second row, removed the first, and observed the retained
+   row at index 0 with its answers intact. Completed it and submitted.
+4. Repeated through the loader. Changing the second row's Needs detail to
+   yes revealed and required only that row's Details. The first row's
+   Details stayed hidden. Removing the first row retained the second
+   row's value and condition at index 0.
+5. Ran axe-core against the loader page after that transition: zero
+   WCAG 2 A/AA and 2.1 AA violations.
+6. Submitted through the loader. The ordinary response API contained
+   exactly two final responses. Each stored one =attendee= row object
+   with the retained detail, rather than indexed property names.
+
+The =/forms/repeat-groups= regression separately exercises the public
+HTTP door with Add, an over-maximum Add refusal, Remove, required-answer
+errors and final intake. =/forms/repeat-rules-privacy= checks sparse,
+under-minimum and excessive rows, per-row required conditions, forged
+hidden-answer exclusion, sensitive storage, response rendering and
+owner export/erasure. =/forms/repeat-json= checks both JSON encodings and
+ambiguous/nested input refusal. =/forms/repeat-early-add= ensures an
+immediate first Add cannot bypass the original ticket's fill-time floor
+on final submission.

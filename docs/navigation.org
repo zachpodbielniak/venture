@@ -25,7 +25,7 @@ Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds
 |           | Bank              | Bank feeds, Money calendar                                                                                                                         |
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
 | Customers |                   | Companies, Contacts, My day, Duplicates                                                                                                            |
-| Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts                                                                                                  |
+| Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts, Forms                                                                                           |
 | Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |
 | Trading   | Your accounts, Markets | Overview, Inventory, Profit and loss; Browse, Deals, Venues, Watchlists, Alerts, Arbitrage, Calculators, Trades, Market data                                                       |

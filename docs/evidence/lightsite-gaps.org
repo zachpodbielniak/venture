@@ -1,0 +1,97 @@
+#+title: Lightsite retry and dependency budget acceptance
+
+* Scope
+
+Venture issues #166, #167 and #168. Branch =feat/lightsite-retry-budgets=
+starts at =ba79d5d=, the forms epic plus the earlier robustness pass. Master
+and PR #163's branch were not modified. This work depends on that forms epic.
+
+* Test-first evidence
+
+- Ordinary final retry: the new test failed with response IDs 1 and 2 before
+  receipts; now both calls return the same response. It also reopens the SQLite
+  database, refuses changed answers, refuses replay after erasure, injects a
+  receipt write failure and succeeds after repairing storage.
+- Final page retry: linking the new test against the previous =ba79d5d= library
+  returned 404 after the draft was consumed; receipts now return the accepted
+  response without another save signal.
+- Static snippet: the start marker initially returned 422 rather than opening
+  a private confirmation. The implemented confirmation passes. A further test
+  caught an unknown name being dropped (200 instead of 422); it now refuses it.
+- Stripe retry budget: a one-second budget formerly permitted another provider
+  mutation after Retry-After. The new test failed with a non-null result; it now
+  times out with one transport call and the same idempotency key.
+- Stripe slow body: an owned socket peer streamed a body for about three seconds
+  under a one-second timeout. The old implementation failed the elapsed-time
+  assertion; the default transport now stops within its whole-operation budget.
+  Additional checks cover stalled headers and caller cancellation.
+- Paid form deadline: the existing generic failure cause failed the new expected
+  deadline log assertion. The new cause is explicit and redacted, while the same
+  invoice remains available for retry and settlement remains once-only.
+- External scanner: the new configured-scanner test initially returned 200
+  instead of 503 for a stalled executable. It now stops at the deadline with
+  no upload or response. Content refusal, crash, signal, unavailable executable
+  and recovery are also checked; operational failures emit one safe cause.
+
+* Demonstration: actual DEBUG server library and Chromium
+
+An owned fixture links the current DEBUG Venture library, starts its real web
+server on a kernel-assigned port, migrates an isolated database and creates a
+published form through the ordinary REST API. No live providers are contacted.
+Chromium loads the cross-origin embed loader. The test proxy lets the first
+POST commit, then drops its reply. The person presses Submit again. A second
+browser context disables JavaScript and posts the native form, followed by an
+identical HTTP replay. The verbatim browser transcript is:
+
+#+begin_example
+PASS: server accepted one response; simulated lost reply released the submit control.
+PASS: retry returned success with exactly one stored response.
+PASS: JavaScript-disabled form and identical replay produced one additional response.
+PASS: concurrent identical POSTs accepted one response; changed-content replay returned 409.
+#+end_example
+
+The recording and fixture are retained locally under
+=/home/user/venture-wt/lightsite-gap-demo/=. The transcript above is the portable
+acceptance evidence; the local video is not required to reproduce the tests.
+
+* Demonstration: provider and scanner failures
+
+The DEBUG GTest artifacts exercise real bounded I/O: an owned socket peer for
+Stripe and owned subprocesses for scanning, plus the actual Venture public
+upload route and paid-form service. Relevant passing transcript lines:
+
+#+begin_example
+ok 1 /client/total-budget
+ok 1 /edge/slow-body
+ok 2 /edge/slow-headers
+ok 3 /edge/cancel-headers
+ok 56 /stripe/forms/deadline
+ok 91 /forms/upload-external-scanner
+#+end_example
+
+No external charge, mail delivery or antivirus service is used. The scanner
+accepts after its executable is repaired; earlier failures leave no accepted
+response. The Stripe failure retains invoice identity for a caller retry.
+
+* Validation and limits
+
+Targeted checks: 103 forms tests, 113 Venture Stripe tests and 21 migrations,
+including the owned PostgreSQL migration fixture. stripe-glib's complete DEBUG
+unit and owned stripe-mock integration suite passed; the final edge suite also
+passes caller cancellation. The full run on =7442c34= passed 152 of 153 binaries; Stripe stopped at its
+old hardcoded dependency-revision assertion. Commit =5c732f3= updates only
+that expected revision to the published =ad43580=. Rerunning the Stripe binary
+passed all 113 tests, and the litter, version, foreground-demo and clock-demo
+checks passed. Thus all 153 DEBUG binaries are green after one complete run
+and one targeted repair rerun; the complete build was warning-free.
+There were 22 optional test skips. The source remained fixed during each run.
+
+The provider budget applies to each Stripe operation across its attempts, not
+an entire multi-operation checkout workflow. Trusted custom transports and
+in-process scanner callbacks cannot be forcibly preempted; their contracts
+require prompt return. Use the default transport and external scanner for the
+bounded paths. No antivirus engine is bundled. Legacy clients omitting a form
+identity remain non-idempotent. Existing public availability and rate checks
+still precede receipt replay. Intermediate draft mutations are not made into a
+general retry protocol. Erasure retains only an unlinked consumed-identity
+hash, preventing an old accepted request from recreating erased answers.

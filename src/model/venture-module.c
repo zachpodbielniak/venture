@@ -863,7 +863,7 @@ static const gchar *const customer_health_requires[] = { "headline", "activities
 static const gchar *const customer_health_suggests[] = { "tickets", "dunning", "mail_sync", NULL };
 static const gchar *const customer_health_reports[] = { "customer_health", NULL };
 static const gchar *const calendar_requires[] = { "activities", "crm", "leads", NULL };
-static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, NULL };
+static GType (*const calendar_types[]) (void) = { venture_calendar_account_get_type, venture_calendar_event_get_type, venture_booking_page_get_type, venture_booking_reservation_get_type, NULL };
 static const gchar *const dedupe_requires[] = { "crm", NULL };
 static const gchar *const dedupe_suggests[] = { "leads", "invoicing", "payables", NULL };
 static GType (*const dedupe_types[]) (void) = { venture_duplicate_candidate_get_type, NULL };
@@ -925,6 +925,30 @@ static GType (*const goals_types[]) (void) = {
 	venture_goal_get_type, venture_goal_step_get_type, NULL
 };
 static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", NULL };
+
+/* Embeddable forms and their responses. It requires only core: a survey
+ * or a signup names nothing else. It suggests leads, which a form may turn
+ * each response into (the mapping notes and skips it while leads is off),
+ * and mail, which sends the optional confirmation the same way. */
+static const gchar *const forms_suggests[] = { "leads", "mail", "marketing", "calendar", "stripe", NULL };
+static GType (*const forms_types[]) (void) = {
+	venture_form_get_type, venture_form_field_get_type, venture_form_rule_get_type, venture_form_group_get_type, venture_form_translation_get_type, venture_form_result_band_get_type, venture_form_price_get_type, venture_form_upload_get_type, venture_form_receipt_get_type, venture_form_payment_get_type, venture_form_pending_get_type,
+	venture_form_submission_get_type, venture_form_version_get_type, venture_form_draft_get_type, NULL
+};
+static const gchar *const forms_reports[] = { "form_summary", NULL };
+
+/* Who sent whom. It requires leads, whose status a referral follows to a
+ * won customer. It suggests receivables and billing, which pay the two
+ * kinds of reward (a reward that needs one while it is off is recorded
+ * as not given, with the switch named), and forms and attribution, whose
+ * captures carry a code in. */
+static const gchar *const referrals_requires[] = { "crm", "leads", NULL };
+static const gchar *const referrals_suggests[] = { "receivables", "billing", "forms", "attribution", NULL };
+static GType (*const referrals_types[]) (void) = {
+	venture_referral_program_get_type, venture_referral_code_get_type,
+	venture_referral_get_type, venture_referral_reward_get_type, NULL
+};
+static const gchar *const referrals_reports[] = { "referrals", NULL };
 
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
@@ -1368,6 +1392,19 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"external ledger's days or flips posted to the books.",
 		arbitrage_requires, arbitrage_suggests, arbitrage_types, arbitrage_reports,
 		NULL, FALSE
+		"forms", "Forms",
+		"Contact forms, surveys, signups and intake, built here and embedded "
+		"on any site in that site's own styles, with every response a "
+		"searchable, audited record.",
+		venture_module_requires_core, forms_suggests, forms_types,
+		forms_reports, NULL, FALSE
+	},
+	{
+		"referrals", "Referrals",
+		"Which customer sent which: shareable codes, referrals that follow "
+		"the lead to a won customer, and the reward the referrer is given.",
+		referrals_requires, referrals_suggests, referrals_types,
+		referrals_reports, NULL, FALSE
 	}
 };
 

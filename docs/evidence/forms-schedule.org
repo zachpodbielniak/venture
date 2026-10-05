@@ -1,0 +1,33 @@
+#+title: Forms scheduling and response-limit demonstration
+
+* Scope
+
+Built DEBUG server, isolated SQLite database and loopback listener, synthetic
+email addresses, authentication disabled on the fixture only. AI, automation
+and plugins were disabled. No external provider was contacted.
+
+The run creates a live published form with a required email question and
+=unique_email_field=email=. Its opening time initially lies in the future.
+API updates then open it, close it after a signed ticket was issued, reopen
+it and set a total cap of two. Two HTTP clients submit concurrently for the
+remaining place. The transcript records assertions against actual HTTP
+responses and the final stored response count.
+
+This is evidence for the schedule, total-cap and email-limit portions of #148.
+Personal-link and contact limits were completed subsequently; see
+[[file:forms-prefill.org][the prefill and personal-link demonstration]] and =/forms/personal-links=.
+Exact boundary times and stale form objects are additionally covered by
+=/forms/schedule=.
+
+* Transcript
+
+#+begin_example
+Isolated server: http://127.0.0.1:41041
+Binary SHA256: 3dd253486cb93cb54bb22f349063fd75927f4b11743cd6d827f2c4b9680f48a3
+Not yet open: 404, byte-identical to unknown form
+Open form: first email accepted
+Same email with different case: 422, question-specific duplicate message
+Closed after page loaded: submit refused with identical 404
+Two concurrent requests for final slot: one 200, one 404; total responses 2
+PASS: built-server schedule, email limit and last-slot flow
+#+end_example

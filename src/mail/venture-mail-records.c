@@ -24,7 +24,23 @@ static const VentureFieldDecl message_fields[] = {
 	INT("connection-id", "Delivery account"), INT("connection-version", "Delivery configuration version"),
 	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
-VENTURE_DEFINE_ENTITY(VentureMailMessage, venture_mail_message, message_fields)
+/* Private intake mail may outlive the record whose answers it copied.
+ * Keep delivery state in history, never an immutable second copy of answers. */
+static const gchar *const *message_audit_private(VentureEntity *entity)
+{
+	static const gchar *const properties[] = {
+		"to", "cc", "bcc", "reply-to", "subject", "text-body", "html-body",
+		"attachments", "attributes", "last-error", NULL
+	};
+	g_autofree gchar *related = NULL;
+	g_object_get(entity, "related-type", &related, NULL);
+	if (g_strcmp0(related, "form") == 0 || g_strcmp0(related, "form_draft") == 0 ||
+	    g_strcmp0(related, "form_pending") == 0 || g_strcmp0(related, "booking_reservation") == 0)
+		return properties;
+	return venture_entity_type_get_audit_private(G_OBJECT_TYPE(entity));
+}
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMailMessage, venture_mail_message, message_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_audit_private = message_audit_private;)
 static const VentureFieldDecl template_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD_NAME("subject", "Subject", NULL),

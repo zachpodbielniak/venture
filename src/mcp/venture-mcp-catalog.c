@@ -865,6 +865,9 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "stale_days", "accounts: an account unseen this many days needs a visit; 14 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "dead_days", "account_holdings: dead stock only, items with no sale for this many days.");
 		venture_mcp_catalog_add_string_property(builder, "login", "accounts, account_holdings, external_pnl: only the accounts reached through this login (a game account or licence), by its key in the data source.");
+		/* The forms report's question. */
+		venture_mcp_catalog_add_string_property(builder, "language", "form_summary: language for labels; combines answers from every language.");
+		venture_mcp_catalog_add_integer_property(builder, "form_id", "form_summary: the form whose answers to count (required).");
 
 		json_builder_set_member_name(builder, "format");
 		json_builder_begin_object(builder);

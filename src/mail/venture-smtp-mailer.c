@@ -254,8 +254,8 @@ static void venture_smtp_mailer_class_init(VentureSmtpMailerClass *klass)
 static void venture_smtp_mailer_init(VentureSmtpMailer *self) { }
 VentureSmtpMailer *venture_smtp_mailer_new(VentureConfig *config) { return g_object_new(VENTURE_TYPE_SMTP_MAILER, "config", config, NULL); }
 
-VentureSmtpMailer *
-venture_smtp_mailer_new_from_values(JsonObject *values, GError **error)
+static VentureSmtpMailer *
+smtp_from_values(JsonObject *values, gboolean allow_plaintext, GError **error)
 {
 	g_autoptr(MailConfig) resolved = NULL;
 	g_autoptr(GError) local_error = NULL;
@@ -267,7 +267,10 @@ venture_smtp_mailer_new_from_values(JsonObject *values, GError **error)
 	from = resolved != NULL ? mail_config_get(resolved, "from") : NULL;
 	if (resolved == NULL || from == NULL || *from == '\0' ||
 		g_strcmp0(mail_config_get(resolved, "transport"), "smtp") != 0 ||
-		g_strcmp0(mail_config_get(resolved, "tls"), "none") == 0 ||
+		(g_strcmp0(mail_config_get(resolved, "tls"), "none") == 0 &&
+		 (!allow_plaintext || g_strcmp0(mail_config_get(resolved, "auth"), "none") != 0 ||
+		  !venture_string_is_empty(mail_config_get(resolved, "username")) ||
+		  !venture_string_is_empty(mail_config_get(resolved, "password")))) ||
 		mail_config_get_uint(resolved, "retries") != 0 ||
 		mail_config_get_uint(resolved, "timeout") > 30)
 	{
@@ -300,5 +303,20 @@ VentureSmtpMailer *venture_smtp_mailer_new_for_connection(JsonObject *values,
 		self->connection_id = connection_id;
 		self->connection_version = version;
 	}
+	return self;
+}
+
+VentureSmtpMailer *venture_smtp_mailer_new_from_values(JsonObject *values, GError **error)
+{
+	return smtp_from_values(values, FALSE, error);
+}
+
+VentureSmtpMailer *venture_smtp_mailer_new_for_endpoint(JsonObject *values,
+	gint64 connection_id, gint64 version, gboolean allow_plaintext, GError **error)
+{
+	VentureSmtpMailer *self;
+	g_return_val_if_fail((connection_id == 0 && version == 0) || (connection_id > 0 && version > 0), NULL);
+	self = smtp_from_values(values, allow_plaintext, error);
+	if (self != NULL) { self->connection_id = connection_id; self->connection_version = version; }
 	return self;
 }

@@ -678,7 +678,7 @@ test_report_pipeline_weights_by_probability(
 	venture_entity_set_organization_id(VENTURE_ENTITY(open_deal),
 	                                   fixture->organization_id);
 	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(open_deal),
-		"value", "1000.00", NULL));
+		"value", "50.00", NULL));
 	g_assert_true(venture_database_save(fixture->database,
 	                                    VENTURE_ENTITY(open_deal), NULL, NULL));
 

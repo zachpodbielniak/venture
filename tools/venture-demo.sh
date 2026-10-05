@@ -955,7 +955,7 @@ data = "Date,Amount,Description,Reference,FitID\n" + \
 print(json.dumps({
     "format": "csv", "data": data,
     "period_start": sys.argv[4], "period_end": sys.argv[5],
-    "opening_balance": "1000.00", "closing_balance": "2125.00",
+    "opening_balance": "50.00", "closing_balance": "2125.00",
 }))' "$(day -19)" "$(month_start 0)" "$(day -8)" "$(day -35)" "$(day 0)" \
         > "${feed}" || die "could not write the bank feed"
 

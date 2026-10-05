@@ -226,6 +226,64 @@ static gpointer smtp_server(gpointer data)
 	}
 	return NULL;
 }
+/* Production selection must deliver from organization settings, including a
+ * deliberately allowed staging relay, without injected legacy credentials. */
+static void test_staging_smtp(Fixture *fixture, gconstpointer data)
+{
+	SmtpFixture wire;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureOrganizationMailer) selector = NULL;
+	g_autoptr(VentureMailOutbox) outbox = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMailMessage) row = NULL;
+	g_autofree gchar *endpoint = NULL;
+	GThread *thread;
+	guint16 port;
+	(void)data;
+	wire.listener = g_socket_listener_new(); wire.bodies[0] = NULL; wire.bodies[1] = NULL; wire.recipients = 0;
+	port = g_socket_listener_add_any_inet_port(wire.listener, NULL, &error); g_assert_no_error(error);
+	endpoint = g_strdup_printf("127.0.0.1:%u", port);
+	g_object_set(config, "mail-allowed-endpoints", endpoint, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->db), key, &error));
+	selector = venture_organization_mailer_new(fixture->db, config);
+	json_object_set_string_member(values, "host", "127.0.0.1");
+	json_object_set_int_member(values, "port", port);
+	json_object_set_string_member(values, "tls", "none");
+	json_object_set_string_member(values, "auth", "none");
+	json_object_set_string_member(values, "from", "staging@example.test");
+	connection = venture_organization_mailer_configure(selector, fixture->org, values, 0, 0, NULL, &error);
+	g_assert_null(connection); g_assert_nonnull(error); g_clear_error(&error);
+	g_object_set(config, "mail-plaintext-endpoints", endpoint, NULL);
+	connection = venture_organization_mailer_configure(selector, fixture->org, values, 0, 0, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(connection);
+	json_object_set_string_member(values, "password", "must-not-cross-plaintext");
+	g_assert_null(venture_organization_mailer_configure(selector, fixture->org, values, 0, 0, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG); g_clear_error(&error);
+	json_object_remove_member(values, "password");
+	g_object_set(config, "mail-allowed-endpoints", "other.invalid:1025", NULL);
+	g_assert_null(venture_organization_mailer_configure(selector, fixture->org, values, 0, 0, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG); g_clear_error(&error);
+	g_object_set(config, "mail-allowed-endpoints", endpoint, NULL);
+	outbox = venture_mail_outbox_new(fixture->db, VENTURE_MAILER(selector));
+	row = enqueue(fixture, "staging-smtp");
+	thread = g_thread_new("staging-smtp", smtp_server, &wire);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, fixture->org, 1, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error); assert_state(fixture, venture_entity_get_id(VENTURE_ENTITY(row)), "uncertain");
+	g_assert_true(venture_mail_outbox_retry(outbox, fixture->org, venture_entity_get_id(VENTURE_ENTITY(row)), NULL, &error));
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, fixture->org, 1, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error); assert_state(fixture, venture_entity_get_id(VENTURE_ENTITY(row)), "sent");
+	g_thread_join(thread);
+	g_object_set(config, "mail-plaintext-endpoints", "", NULL);
+	g_assert_null(venture_mailer_prepare(VENTURE_MAILER(selector), row, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG); g_clear_error(&error);
+	g_assert_nonnull(strstr(wire.bodies[1], "Hello"));
+	g_assert_nonnull(strstr(wire.bodies[1], "staging@example.test"));
+	g_free(wire.bodies[0]); g_free(wire.bodies[1]); g_object_unref(wire.listener);
+}
+
 static void test_smtp_uncertain_wire(void)
 {
 	SmtpFixture f;
@@ -534,6 +592,35 @@ static void test_async_registry(void)
 	g_assert_cmpuint(venture_log_mailer_get_messages(mailer)->len, ==, 1);
 }
 
+/* Erasure retains the durable key, cancels delivery, clears both public and
+ * private copies, and cannot silently destroy ordinary business mail. */
+static void test_forget_private_intake(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureMailMessage) input = venture_mail_message_new(), queued = NULL, ordinary = enqueue(f, "ordinary-retained");
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *body = NULL, *private_body = NULL, *key = NULL;
+	gint64 id;
+	(void)data;
+	g_object_set(input, "organization-id", f->org, "to", "erasable@example.test", "subject", "Private intake", "text-body", "Personal copied answer", "private-text-body", "private-capability", "related-type", "form_draft", "idempotency-key", "retained-private-key", NULL);
+	queued = venture_mail_outbox_enqueue(f->outbox, input, NULL, &error); g_assert_no_error(error); g_assert_nonnull(queued);
+	id = venture_entity_get_id(VENTURE_ENTITY(queued));
+	g_assert_true(venture_mail_outbox_forget_pending(f->outbox, f->org, id, NULL, &error)); g_assert_no_error(error); assert_state(f, id, "cancelled");
+	row = venture_database_get(f->db, VENTURE_TYPE_MAIL_MESSAGE, id, &error); g_assert_no_error(error);
+	g_object_get(row, "text-body", &body, "private-text-body", &private_body, "idempotency-key", &key, NULL);
+	g_assert_true(venture_string_is_empty(body)); g_assert_true(venture_string_is_empty(private_body)); g_assert_cmpstr(key, ==, "retained-private-key");
+	g_assert_true(venture_mail_outbox_forget_pending(f->outbox, f->org, id, NULL, &error)); g_assert_no_error(error);
+	g_assert_false(venture_mail_outbox_retry(f->outbox, f->org, id, NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+	g_assert_false(venture_mail_outbox_forget_pending(f->outbox, f->org, venture_entity_get_id(VENTURE_ENTITY(ordinary)), NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+	assert_state(f, venture_entity_get_id(VENTURE_ENTITY(ordinary)), "queued");
+	{
+		g_autofree gchar *sql = g_strdup_printf("UPDATE mail_messages SET state = 'sending' WHERE id = %" G_GINT64_FORMAT, id);
+		g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+		g_assert_false(venture_mail_outbox_forget_pending(f->outbox, f->org, id, NULL, &error)); g_assert_nonnull(error); g_clear_error(&error);
+		assert_state(f, id, "sending");
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -545,6 +632,7 @@ main(int argc, char **argv)
 	g_test_add("/mail/refuse-generic", Fixture, NULL, setup, test_refuse_generic, teardown);
 	g_test_add("/mail/private-body", Fixture, NULL, setup, test_private_body, teardown);
 	g_test_add_func("/mail/template", test_template);
+	g_test_add("/mail/staging-smtp", Fixture, NULL, setup, test_staging_smtp, teardown);
 	g_test_add_func("/mail/smtp-connection-failure", test_smtp_configuration);
 	g_test_add_func("/mail/smtp-uncertain-wire", test_smtp_uncertain_wire);
 	g_test_add_func("/mail/smtp-private-html-wire", test_smtp_private_html_wire);
@@ -561,5 +649,6 @@ main(int argc, char **argv)
 	g_test_add("/mail/organization-unique", Fixture, NULL, setup, test_organization_unique, teardown);
 	g_test_add_func("/mail/restart-lease", test_restart_lease);
 	g_test_add_func("/mail/async-registry", test_async_registry);
+	g_test_add("/mail/forget-private-intake", Fixture, NULL, setup, test_forget_private_intake, teardown);
 	return g_test_run();
 }

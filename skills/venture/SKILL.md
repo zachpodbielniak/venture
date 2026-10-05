@@ -144,6 +144,7 @@ and `~/.agents/skills/venture` by `make install-skill`.
 - [`references/billing.md`](references/billing.md) -- SaaS subscriptions, usage, MRR/churn, dunning, recurring documents, batch entry, Stripe
 - [`references/payables.md`](references/payables.md) -- bills, purchasing and sales orders, capture and OCR, claims, payroll, banking, tax filings
 - [`references/crm.md`](references/crm.md) -- companies, contacts, leads, routing and scoring, deals, activities and calls, customer health, duplicates, territories, CRM import
+- [`references/forms.md`](references/forms.md) -- forms: questions, publishing, embeds, results, languages, quizzes, bookings, payments, uploads, Lightsite forms
 - [`references/outreach.md`](references/outreach.md) -- sequences, marketing sends and consent, attribution, campaigns
 - [`references/mail.md`](references/mail.md) -- the outbox, SMTP accounts, inbound IMAP, CalDAV, booking pages
 - [`references/desk.md`](references/desk.md) -- tickets, SLAs, macros, sprints, AI triage, comments on any record, knowledge bases, the assistant
@@ -332,6 +333,7 @@ ids, notes) in words.
 | "Move a deal / log a call / plan a follow-up" | `deal move ID STAGE`, `act contact ID log_call`, `activity complete` | [crm.md](references/crm.md) |
 | "Which customers are at risk? / merge duplicates" | `report customer_health`, `customers health-sweep`; `dedupe scan\|merge` | [crm.md](references/crm.md) |
 | "Migrate from HubSpot/Salesforce/Zoho" | `crm preview\|import\|activate` | [crm.md](references/crm.md) |
+| "Build / publish / embed a form, read its answers" | `create form`, `form_field`, `act form ID publish`, `report form_summary` | [forms.md](references/forms.md) |
 | "Enroll in a sequence / send a newsletter" | `sequence enroll`; `marketing_send` preview -> approve -> run | [outreach.md](references/outreach.md) |
 | "Send / retry / sync mail" | `mail send\|deliver\|retry\|sync` | [mail.md](references/mail.md) |
 | "Open / triage / answer a ticket" | `create ticket`, `ticket ID triage\|draft\|macro\|worklog` | [desk.md](references/desk.md) |

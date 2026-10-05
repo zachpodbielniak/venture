@@ -23,16 +23,30 @@
         try { if (value) localStorage.setItem(key, JSON.stringify(value)); else localStorage.removeItem(key); } catch (_) { /* Memory-only consent when browser storage is unavailable. */ }
     }
     async function send(operation, payload) {
-        const response = await fetch(base + operation, {
-            method: 'POST', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
-            headers: {'Content-Type': 'text/plain;charset=UTF-8'}, body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            const error = new Error('Attribution request refused (' + response.status + ')');
-            error.status = response.status;
+        const controller = new AbortController();
+        let timedOut = false;
+        const deadline = setTimeout(() => { timedOut = true; controller.abort(); }, 15000);
+        try {
+            const response = await fetch(base + operation, {
+                method: 'POST', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
+                headers: {'Content-Type': 'text/plain;charset=UTF-8'}, body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+            if (!response.ok) {
+                const error = new Error('Attribution request refused (' + response.status + ')');
+                error.status = response.status;
+                throw error;
+            }
+            return await response.json();
+        } catch (error) {
+            /* No URL, capability or inquiry content belongs in a diagnostic. */
+            console.warn('Attribution request failed: ' + (timedOut ? 'deadline exceeded' :
+                error.status ? 'HTTP ' + error.status : 'network or response failure'));
+            if (timedOut) throw new Error('Attribution request timed out; retry with the same identity');
             throw error;
+        } finally {
+            clearTimeout(deadline);
         }
-        return response.json();
     }
     async function revoke(record) {
         if (!record || !record.token) { remember(null); return; }

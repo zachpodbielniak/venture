@@ -12,6 +12,7 @@
  */
 
 #include <venture.h>
+#include "../src/forms/venture-forms-private.h"
 
 #include <libsoup/soup.h>
 #include <glib/gstdio.h>
@@ -1120,6 +1121,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/account"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/account-authority"), ==, 401);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/forms/1/definition"), ==, 401);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/account-identity/1"),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/signups", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -1939,6 +1941,32 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/goal"),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/goal_step"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	/* Forms: everything but the public door is behind a session. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_field"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_submission"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/form_summary"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/reports/form_summary"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_field"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_submission"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/form_version"),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/form_version"),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/forms/uploads/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/forms/1/publish", NULL, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/form/1/actions/publish", NULL, "{}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/reports/collections"),
 		==, SOUP_STATUS_FOUND);
@@ -3683,11 +3711,10 @@ server_fixture_mint_token(
 }
 
 /*
- * The page is admin-only, matching POST /api/v1/tokens. A token carries the
- * role of whoever minted it, so an editor who could reach this page could
- * mint themselves a durable editor credential that no password change
- * revokes -- and the whole point of the role split is who may hand out
- * access.
+ * The page is admin-only: it lists and revokes every token, not only the
+ * caller's. An editor mints their own token, bound to their own role and
+ * memberships, with a session at POST /api/v1/tokens instead
+ * (tests/test-account-identity.c).
  */
 static void
 test_auth_tokens_page_is_admin_only(
@@ -4891,6 +4918,149 @@ test_orgaccess_public_capabilities(ServerFixture *fixture, gconstpointer unused)
 		g_object_get(current, "status", &state, NULL);
 		g_assert_cmpint(state, ==, VENTURE_QUOTE_ACCEPTED);
 	}
+}
+
+/* The forms door is the one set of routes a stranger reaches with no
+ * session: the hosted page, the fragment, the schema, the loader and the
+ * post. A signed-in user with no membership gets exactly what a guest
+ * gets; the capability is the token, never the cookie. Anything past the
+ * documented shapes is not public. */
+/* A file ID is a reference, not a download capability. Authority comes
+ * from the actual response, including organization and sensitive ownership. */
+static void
+test_forms_upload_authority(ServerFixture *f, gconstpointer data)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org, "name", "Files", "public-token", "auth-files", "state", VENTURE_FORM_LIVE, NULL), field = NULL, version = NULL, upload = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), then = g_date_time_add_seconds(now, -60);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FORM_UPLOAD);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *ticket = NULL, *body = NULL, *url = NULL, *viewer = NULL, *owner = NULL, *outsider = NULL, *text = NULL;
+	gint64 id;
+	(void)data;
+	g_assert_true(venture_database_save(f->database, form, NULL, &error)); g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "file", "label", "File", "kind", VENTURE_FORM_FIELD_FILE, "sensitive", data != NULL, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error); g_assert_no_error(error);
+	id = venture_entity_get_id(form); g_clear_object(&form); form = venture_database_get(f->database, VENTURE_TYPE_FORM, id, NULL);
+	ticket = venture_forms_ticket_new(form, then);
+	body = g_strdup_printf("--files\r\nContent-Disposition: form-data; name=\"_vf_t\"\r\n\r\n%s\r\n--files\r\nContent-Disposition: form-data; name=\"file\"; filename=\"private.txt\"\r\nContent-Type: image/png\r\n\r\nPrivate resume bytes\r\n--files--\r\n", ticket);
+	bytes = g_bytes_new(body, strlen(body));
+	g_assert_cmpuint(server_fixture_post_raw(f, "/pub/form/auth-files", NULL, "multipart/form-data; boundary=files", bytes, NULL), ==, 200);
+	upload = venture_database_find_one(f->database, query, &error); g_assert_no_error(error); g_assert_nonnull(upload);
+	url = g_strdup_printf("/forms/uploads/%" G_GINT64_FORMAT, venture_entity_get_id(upload));
+	server_fixture_create_member(f, "file-viewer", "password", VENTURE_USER_ROLE_VIEWER, NULL);
+	server_fixture_create_member(f, "file-owner", "password", VENTURE_USER_ROLE_OWNER, NULL);
+	server_fixture_create_user(f, "file-outsider", "password", VENTURE_USER_ROLE_EDITOR, &id);
+	{
+		g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "Other uploads organization", NULL), membership = NULL;
+		g_assert_true(venture_database_save(f->database, other, NULL, &error)); g_assert_no_error(error);
+		membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", venture_entity_get_id(other), "user-id", id, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, "active", TRUE, NULL);
+		g_assert_true(venture_database_save(f->database, membership, NULL, &error)); g_assert_no_error(error);
+	}
+	viewer = server_fixture_login(f, "file-viewer", "password"); owner = server_fixture_login(f, "file-owner", "password"); outsider = server_fixture_login(f, "file-outsider", "password");
+	g_assert_cmpuint(server_fixture_get_anonymous(f, url), ==, 302);
+	g_assert_cmpuint(server_fixture_request(f, "GET", url, outsider, NULL, NULL, NULL), ==, 404);
+	g_assert_cmpuint(server_fixture_request(f, "GET", url, viewer, NULL, NULL, NULL), ==, data != NULL ? 404 : 200);
+	g_assert_cmpuint(server_fixture_request(f, "GET", url, owner, NULL, &text, NULL), ==, 200);
+	g_assert_cmpstr(text, ==, "Private resume bytes");
+	{
+		g_autofree gchar *definition = g_strdup_printf("/api/v1/forms/%" G_GINT64_FORMAT "/definition", venture_entity_get_id(form));
+		g_assert_cmpuint(server_fixture_get_anonymous(f, definition), ==, 401);
+		g_assert_cmpuint(server_fixture_request(f, "GET", definition, outsider, NULL, NULL, NULL), ==, 404);
+		g_assert_cmpuint(server_fixture_request(f, "GET", definition, viewer, NULL, NULL, NULL), ==, 200);
+	}
+
+}
+
+/* A capability is its own authority. An unrelated site's logged-in user
+ * must neither restrict nor acquire authority over the owner's draft. */
+static void
+test_forms_resume_session_authority(ServerFixture *f, gconstpointer data)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org, "name", "Resume", "public-token", "session-resume", "state", VENTURE_FORM_LIVE, "allow-resume", TRUE, "public-origin", "https://forms.example.test", NULL), field = NULL, version = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), issued = g_date_time_add_seconds(now, -60);
+	g_autoptr(GHashTable) answers = venture_forms_answers_new();
+	g_autoptr(VentureFormsStep) saved = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ticket = NULL, *cookie = NULL;
+	const gchar *path;
+	gint64 id;
+	(void)data;
+	g_assert_true(venture_database_save(f->database, form, NULL, &error)); g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "name", "label", "Name", "position", (gint64)1, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error); g_clear_object(&field);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "next", "label", "Next", "position", (gint64)2, "kind", VENTURE_FORM_FIELD_PAGE_BREAK, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error); g_clear_object(&field);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "email", "label", "Email", "position", (gint64)3, "kind", VENTURE_FORM_FIELD_EMAIL, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error); g_assert_no_error(error);
+	id = venture_entity_get_id(form); g_clear_object(&form); form = venture_database_get(f->database, VENTURE_TYPE_FORM, id, NULL);
+	ticket = venture_forms_ticket_new(form, issued); venture_forms_answers_add(answers, VENTURE_FORMS_TICKET, ticket);
+	venture_forms_answers_add(answers, VENTURE_FORMS_MOVE, "save"); venture_forms_answers_add(answers, "name", "Private unfinished answer");
+	saved = venture_forms_step(f->database, form, answers, NULL, now, &error); g_assert_no_error(error); g_assert_nonnull(saved); g_assert_nonnull(saved->resume_url);
+	path = strstr(saved->resume_url, "/pub/form/"); g_assert_nonnull(path);
+	server_fixture_create_user(f, "resume-outsider", "password", VENTURE_USER_ROLE_VIEWER, NULL); cookie = server_fixture_login(f, "resume-outsider", "password");
+	g_assert_cmpuint(server_fixture_get_anonymous(f, path), ==, 200);
+	g_assert_cmpuint(server_fixture_request(f, "GET", path, cookie, NULL, NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_request(f, "POST", path, cookie, "", NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_get_anonymous(f, path), ==, 404);
+}
+
+static void
+test_forms_public_door(ServerFixture *fixture, gconstpointer unused)
+{
+	gint64 org = venture_context_get_default_organization_id(fixture->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org,
+		"name", "Door", "public-token", "door-form", "state", VENTURE_FORM_LIVE, NULL);
+	g_autoptr(VentureEntity) field = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) then = g_date_time_add_seconds(now, -60);
+	g_autofree gchar *cookie = NULL, *ticket = NULL, *escaped = NULL, *body = NULL;
+	static const gchar *const gets[] = {
+		"/pub/form/door-form", "/pub/form/door-form/fragment", "/pub/form/door-form/schema", "/pub/forms.js", NULL
+	};
+	guint i;
+	(void)unused;
+	g_assert_true(venture_database_save(fixture->database, form, NULL, &error));
+	g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form),
+		"key", "name", "label", "Name", "required", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, field, NULL, &error));
+	g_assert_no_error(error);
+	g_object_unref(venture_forms_publish(fixture->database, form, NULL, &error));
+	g_assert_no_error(error);
+	{
+		/* Publishing saved the form; read the version the door will see. */
+		gint64 id = venture_entity_get_id(form);
+		g_clear_object(&form);
+		form = venture_database_get(fixture->database, VENTURE_TYPE_FORM, id, NULL);
+	}
+	server_fixture_create_user(fixture, "door-outsider", "password", VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "door-outsider", "password");
+	for (i = 0; gets[i] != NULL; i++)
+	{
+		g_assert_cmpuint(server_fixture_get_anonymous(fixture, gets[i]), ==, 200);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", gets[i], cookie, NULL, NULL, NULL), ==, 200);
+	}
+	ticket = venture_forms_ticket_new(form, then);
+	escaped = g_uri_escape_string(ticket, NULL, TRUE);
+	body = g_strdup_printf("_vf_t=%s&name=Guest", escaped);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form", NULL, body, NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form", cookie, body, NULL, NULL), ==, 200);
+	/* Only the documented shapes are public. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/door-form/anything"), !=, 200);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form/schema", NULL, body, NULL, NULL), !=, 200);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/no-such-form"), ==, 404);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/book/no-page/manage/no-capability"), ==, 404);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/book/no-page/manage/no-capability", NULL, "operation=cancel", NULL, NULL), ==, 404);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/door-form/resume/no-capability"), ==, 404);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form/resume/no-capability", NULL, "", NULL, NULL), ==, 404);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/pub/form/door-form/confirm/no-capability"), ==, 404);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/pub/form/door-form/confirm/no-capability", NULL, "", NULL, NULL), ==, 404);
 }
 
 static void
@@ -6775,6 +6945,7 @@ main(
 	g_test_add("/orgaccess/journal-action-veto", ServerFixture, "action-veto", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/journal-header-changed", ServerFixture, "header-changed", server_fixture_set_up, test_orgaccess_journal_proposal, server_fixture_tear_down);
 	g_test_add("/orgaccess/public-capabilities-session", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_public_capabilities, server_fixture_tear_down);
+	g_test_add("/auth/forms-public-door", ServerFixture, NULL, server_fixture_set_up, test_forms_public_door, server_fixture_tear_down);
 	g_test_add("/auth/health-sweep-is-judged-in-its-organization", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_health_sweep_is_judged_in_its_organization,
 	           server_fixture_tear_down);
@@ -6796,5 +6967,8 @@ main(
 	g_test_add("/auth/marketdata", ServerFixture, NULL, server_fixture_set_up, test_auth_marketdata, server_fixture_tear_down);
 	g_test_add("/auth/settings-organization-editor", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_organization_editor, server_fixture_tear_down);
 	g_test_add("/auth/list-leaves-prototype-untouched", ServerFixture, NULL, server_fixture_set_up, test_orgaccess_list_leaves_prototype_untouched, server_fixture_tear_down);
+	g_test_add("/auth/forms-upload-authority", ServerFixture, GINT_TO_POINTER(1), server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
+	g_test_add("/auth/forms-upload-viewer", ServerFixture, NULL, server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
+	g_test_add("/auth/forms-resume-session-authority", ServerFixture, NULL, server_fixture_set_up, test_forms_resume_session_authority, server_fixture_tear_down);
 	return g_test_run();
 }

@@ -143,6 +143,13 @@ static gboolean document_path_validate(VentureDatabase *database, VentureEntity 
 	VentureDocumentService *self = venture_document_service_get(database);
 	g_autofree gchar *path = NULL, *old = NULL;
 	(void)data;
+	{
+		gint64 upload = 0, previous_upload = 0;
+		g_object_get(row, "form-upload-id", &upload, NULL);
+		if (previous != NULL) g_object_get(previous, "form-upload-id", &previous_upload, NULL);
+		if (upload != previous_upload && (self->filing != row || previous != NULL))
+			return refuse(error, "Form attachment identities are assigned only by the filing service");
+	}
 	g_object_get(row, "path", &path, NULL);
 	if (previous != NULL) g_object_get(previous, "path", &old, NULL);
 	if (g_strcmp0(path, old) == 0 && (venture_string_is_empty(path) || previous == NULL ||
@@ -196,6 +203,12 @@ GBytes *venture_document_service_read_attachment(VentureDocumentService *self, V
 	if (live == NULL) return NULL;
 	if (venture_entity_is_deleted(live) || venture_entity_get_organization_id(live) != venture_entity_get_organization_id(document)) {
 		refuse(error, "Attachment document is unavailable in this organization"); return NULL;
+	}
+	{
+		gint64 upload = 0;
+		g_object_get(live, "form-upload-id", &upload, NULL);
+		if (upload > 0 && g_object_get_data(G_OBJECT(document), "venture-forms-upload-download") == NULL)
+		{ refuse(error, "Form attachment bytes are available only through their authorized response download"); return NULL; }
 	}
 	path = attachment_path(live, attachment_root, &root, error); if (path == NULL) return NULL;
 	if (!attachment_owner(self, live, path, FALSE, error)) return NULL;

@@ -113,6 +113,7 @@
 #include "mail/venture-mail-records.h"
 #include "attribution/venture-attribution-records.h"
 #include "marketing/venture-marketing-records.h"
+#include "referrals/venture-referral-records.h"
 #include "mail/venture-mail-sync-records.h"
 
 #include "leads/venture-lead-records.h"
@@ -136,6 +137,7 @@
 #include "feeds/venture-feeds-records.h"
 #include "marketdata/venture-marketdata-records.h"
 #include "arbitrage/venture-arbitrage-records.h"
+#include "forms/venture-forms-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -234,6 +236,7 @@
 #include "sequences/venture-sequence-service.h"
 #include "marketing/venture-marketing-service.h"
 #include "attribution/venture-attribution-service.h"
+#include "referrals/venture-referral-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
@@ -363,6 +366,7 @@
 #include "arbitrage/venture-arbitrage-math.h"
 #include "arbitrage/venture-arbitrage-engine.h"
 #include "arbitrage/venture-arbitrage-books.h"
+#include "forms/venture-forms.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

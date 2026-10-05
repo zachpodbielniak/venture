@@ -56,5 +56,97 @@ JsonNode *venture_booking_service_slots(VentureBookingService *self, VentureEnti
  * Returns: (transfer full) (nullable): the new activity
  */
 VentureEntity *venture_booking_service_book(VentureBookingService *self, VentureEntity *page, const gchar *start, const gchar *name, const gchar *email, const gchar *notes, GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_booking_service_reserve:
+ * @self: the service
+ * @page: saved booking target; re-read under the save lock
+ * @start: offered ISO 8601 slot start
+ * @seconds: hold duration, 1 to 2700 seconds
+ * @now: (nullable): reference clock
+ * @error: (out) (optional): return location for an error
+ *
+ * Reserves one seat as a private working copy, without a contact, meeting,
+ * audit entry or business signal. Safe inside an existing transaction.
+ * Returns: (transfer full) (nullable): the saved hold
+ */
+VentureEntity *venture_booking_service_reserve(VentureBookingService *self, VentureEntity *page,
+	const gchar *start, guint seconds, GDateTime *now, GError **error);
+/**
+ * venture_booking_service_confirm:
+ * @self: the service
+ * @reservation: saved, unexpired hold
+ * @name: bounded respondent name
+ * @email: respondent inbox
+ * @notes: (nullable): bounded meeting notes
+ * @origin: (nullable): configured public origin, or the page's origin
+ * @now: (nullable): reference clock
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): return location for an error
+ *
+ * Rechecks the hold and availability, creates the contact and meeting, and
+ * queues a private confirmation when mail and a public origin are configured.
+ * Returns: (transfer full) (nullable): the booked activity
+ */
+VentureEntity *venture_booking_service_confirm(VentureBookingService *self, VentureEntity *reservation,
+	const gchar *name, const gchar *email, const gchar *notes, const gchar *origin,
+	GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_booking_service_manage_url:
+ * @self: the service
+ * @reservation: current saved reservation
+ * @origin: configured HTTPS origin, or loopback HTTP for local use
+ * @error: (out) (optional): return location for an error
+ *
+ * The private signed capability permits cancellation or rescheduling. Do not
+ * put it in public record fields, audit text, logs or generic action results.
+ * Returns: (transfer full) (nullable): private management URL
+ */
+gchar *venture_booking_service_manage_url(VentureBookingService *self, VentureEntity *reservation,
+	const gchar *origin, GError **error);
+/**
+ * venture_booking_service_lookup_capability:
+ * @self: the service
+ * @page: owning booking target
+ * @capability: private signed token
+ * @now: (nullable): reference clock
+ * @error: (out) (optional): uniform not-found or database failure
+ *
+ * Verifies the token without consuming it or changing the booking.
+ * Returns: (transfer full) (nullable): current private reservation
+ */
+VentureEntity *venture_booking_service_lookup_capability(VentureBookingService *self, VentureEntity *page,
+	const gchar *capability, GDateTime *now, GError **error);
+/**
+ * venture_booking_service_manage:
+ * @self: the service
+ * @page: owning booking target
+ * @capability: private signed token
+ * @start: (nullable): new offered start, or %NULL to cancel
+ * @now: (nullable): reference clock
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): return location for an error
+ *
+ * Rechecks capacity under the save lock and rotates the capability on success.
+ * Returns: (transfer full) (nullable): updated meeting
+ */
+VentureEntity *venture_booking_service_manage(VentureBookingService *self, VentureEntity *page,
+	const gchar *capability, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_booking_service_release:
+ * @self: the service
+ * @reservation: saved hold
+ * @error: (out) (optional): return location for an error
+ *
+ * Releases an unconfirmed hold. Confirmed bookings are left unchanged.
+ * Returns: whether the operation succeeded
+ */
+gboolean venture_booking_service_release(VentureBookingService *self, VentureEntity *reservation, GError **error);
+/**
+ * venture_booking_service_install:
+ * @database: owning main-thread database
+ *
+ * Installs target and reservation save validators once per database.
+ */
+void venture_booking_service_install(VentureDatabase *database);
 G_END_DECLS
 #endif

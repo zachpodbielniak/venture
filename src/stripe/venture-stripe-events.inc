@@ -264,6 +264,28 @@ fail:
 	return FALSE;
 }
 
+/* Forms observe committed Checkout state. Their failure never rolls back
+ * accounting; webhook retries revisit the same retained intake. */
+static gboolean stripe_complete_paid_form(VentureStripeService *self, JsonObject *event, GError **error)
+{
+	const gchar *type = string_member(event, "type");
+	JsonObject *object;
+	const gchar *session;
+	g_autoptr(GPtrArray) sessions = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	guint i;
+	if (type == NULL || !g_str_has_prefix(type, "checkout.session.")) return TRUE;
+	object = object_member(object_member(event, "data"), "object");
+	session = string_member(object, "id");
+	if (session == NULL) return TRUE;
+	sessions = find_rows(self, VENTURE_TYPE_STRIPE_CHECKOUT, "session-id", session, error);
+	if (sessions == NULL) return FALSE;
+	for (i = 0; i < sessions->len; i++)
+		if (!venture_forms_payment_reconcile(self->database, self->organization_id,
+		    venture_entity_get_id(g_ptr_array_index(sessions, i)), now, error)) return FALSE;
+	return TRUE;
+}
+
 gboolean
 venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 	const gchar *signature, GError **error)
@@ -305,7 +327,8 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 			return refuse(error, "Stripe event account or environment does not match its binding");
 		}
 	}
-	return stripe_process_verified(self, event, raw, observations, FALSE, NULL, error);
+	if (!stripe_process_verified(self, event, raw, observations, FALSE, NULL, error)) return FALSE;
+	return stripe_complete_paid_form(self, event, error);
 }
 
 gboolean
@@ -347,5 +370,6 @@ venture_stripe_service_retry_event(VentureStripeService *self, gint64 event_id,
 	if (!operation) return FALSE;
 	if (!stripe_process_verified(self, json_node_get_object(json_parser_get_root(parser)),
 		raw, NULL, accept_balance_change, actor, error)) return FALSE;
-	return venture_accounting_operation_finish(operation, error);
+	if (!venture_accounting_operation_finish(operation, error)) return FALSE;
+	return stripe_complete_paid_form(self, json_node_get_object(json_parser_get_root(parser)), error);
 }

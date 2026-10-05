@@ -154,3 +154,15 @@ history by hand.
 A *released* script must never be edited in the first place (see
 "Authoring a database feature"); this refusal on a production database is a
 defect in the release, not a local problem to rebuild away.
+
+* Form acceptance receipts
+
+=000904_form_receipts.sql= verifies the metadata-declared private receipt table
+on both backends. The forms module guard permits installations without forms.
+Receipts reserve an organization/form-scoped unique nonce digest before follow-up
+writes and commit the response link in the same transaction. Working-copy
+metadata suppresses business events and audits for these service records.
+Owner erasure and retention clear answer fingerprints and response links while
+retaining a consumed-identity tombstone, so a lost acknowledgement cannot later
+recreate erased personal data. No historical responses are assigned invented
+retry identities.

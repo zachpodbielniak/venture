@@ -6,7 +6,7 @@
 
 /* A real socket must be rejected before either a future plugin route or generic
  * record writer can see its body. Handler-side Content-Length checks miss this. */
-typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; } Fixture;
+typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; guint marked_writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; } Fixture;
 typedef struct { guint port; gchar *request; gchar *response; gint done; GError *error; guint delay; guint timeout; gboolean tls; } Exchange;
 static gchar *exchange(Fixture *f, const gchar *request);
 static gchar *probe(Fixture *f, const gchar *request, guint seconds);
@@ -16,6 +16,7 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 	GBytes *body = htmx_request_get_body_bytes(request);
 	(void)params;
 	f->writes++;
+	if (body != NULL && g_bytes_get_size(body) > 0 && ((const gchar *)g_bytes_get_data(body, NULL))[0] == 'y') f->marked_writes++;
 	if (f->nested_request)
 	{
 		const gchar *request_text = f->nested_request;
@@ -87,7 +88,12 @@ static gchar *run_exchange(Fixture *f, const gchar *request, guint seconds, GErr
 static gchar *exchange(Fixture *f, const gchar *request)
 {
 	g_autoptr(GError) error = NULL;
-	gchar *response = run_exchange(f, request, 5, &error);
+	gchar *response;
+	gint64 server_timeout = 0;
+	/* The aggregate fixture deliberately waits five seconds for a 408.
+	 * An identical client deadline races the response it is asserting. */
+	g_object_get(f->config, "server-request-timeout", &server_timeout, NULL);
+	response = run_exchange(f, request, (guint)MAX((gint64)5, server_timeout + 3), &error);
 	g_assert_no_error(error);
 	return response;
 }
@@ -319,9 +325,16 @@ static void test_nested_dispatch(Fixture *f, gconstpointer data)
 	/* The receive budget and the connection slots survived the abandoned
 	 * attempt: a further full-size request is served, and exactly once. */
 	g_clear_pointer(&response, g_free);
+	g_clear_pointer(&request, g_free);
+	/* The abandoned nested request may dispatch after pump() returns.
+	 * Identify the follow-up itself instead of counting that late request. */
+	body[0] = 'y';
+	request = g_strdup_printf("POST /fixture/write HTTP/1.1\r\nHost: localhost\r\nContent-Length: 600000\r\nConnection: close\r\n\r\n%s", body);
 	response = exchange(f, request);
 	g_assert_nonnull(strstr(response, " 200 "));
-	g_assert_cmpuint(f->writes, ==, settled + 1);
+	g_assert_cmpuint(f->marked_writes, ==, 1);
+	g_assert_cmpuint(f->writes, >=, settled + 1);
+	g_assert_cmpuint(f->writes, <=, 3);
 }
 static void test_nested_rejection(Fixture *f, gconstpointer data)
 {
@@ -357,6 +370,23 @@ static void test_active_teardown(Fixture *f, gconstpointer data)
 	venture_web_server_stop(f->server); g_clear_object(&f->server); pump();
 	g_assert_null(weak);
 	g_assert_cmpint(g_input_stream_read(g_io_stream_get_input_stream(G_IO_STREAM(connection)), &byte, 1, NULL, &error), ==, 0); g_assert_no_error(error);
+}
+static void test_tls_active_teardown(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GSocketClient) client = g_socket_client_new();
+	g_autoptr(GSocketConnection) connection = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 started;
+	(void)data;
+	g_socket_client_set_timeout(client, 3);
+	connection = g_socket_client_connect_to_host(client, "127.0.0.1", (guint16)f->port, NULL, &error);
+	g_assert_no_error(error);
+	pump();
+	/* An unfinished TLS handshake must not hold synchronous shutdown until
+	 * the TLS backend's much longer handshake timeout expires. */
+	started = g_get_monotonic_time();
+	venture_web_server_stop(f->server);
+	g_assert_cmpint(g_get_monotonic_time() - started, <, 3 * G_USEC_PER_SEC);
 }
 static void test_negative_length(Fixture *f, gconstpointer data)
 {
@@ -413,6 +443,32 @@ static void test_private_context(void)
 	g_assert_nonnull(strstr(response, " 408 ")); g_assert_cmpuint(f.writes, ==, 0);
 	teardown(&f, NULL);
 }
+/* The public form bound is chosen at headers, not after Soup has buffered
+ * an anonymous body's bytes. Both framing methods must enforce it. */
+static void test_form_upload_bounds(Fixture *f, gconstpointer data)
+{
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	g_autoptr(VentureEntity) form = g_object_new(VENTURE_TYPE_FORM, "organization-id", org, "name", "Files", "public-token", "file-limit", "state", VENTURE_FORM_LIVE, NULL), field = NULL, version = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *response = NULL, *body = g_strnfill(65537, 'x');
+	g_autoptr(GString) request = g_string_new("POST /pub/form/missing HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n10001\r\n");
+	(void)data;
+	response = exchange(f, "POST /pub/form/missing HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65537\r\nConnection: close\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 413 ")); g_clear_pointer(&response, g_free);
+	g_string_append(request, body); g_string_append(request, "\r\n0\r\n\r\n");
+	response = exchange(f, request->str); g_assert_nonnull(strstr(response, " 413 ")); g_clear_pointer(&response, g_free);
+	g_assert_true(venture_database_save(f->database, form, NULL, &error)); g_assert_no_error(error);
+	field = g_object_new(VENTURE_TYPE_FORM_FIELD, "organization-id", org, "form-id", venture_entity_get_id(form), "key", "file", "label", "File", "kind", VENTURE_FORM_FIELD_FILE, NULL);
+	g_assert_true(venture_database_save(f->database, field, NULL, &error)); g_assert_no_error(error);
+	version = venture_forms_publish(f->database, form, NULL, &error); g_assert_no_error(error);
+	/* A file field raises the route bound; the configured 1 MiB global
+	 * bound still wins. No body is needed to prove the early rejection. */
+	response = exchange(f, "POST /pub/form/file-limit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n");
+	g_assert_nonnull(strstr(response, " 413 ")); g_clear_pointer(&response, g_free);
+	response = exchange(f, "POST /pub/form/file-limit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65537\r\nConnection: close\r\n\r\nx");
+	g_assert_nonnull(strstr(response, " 408 "));
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -428,6 +484,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/tls-declared", Fixture, GINT_TO_POINTER(1), setup, test_declared, teardown);
 	g_test_add("/http-limits/tls-slow-body", Fixture, GINT_TO_POINTER(1), setup, test_slow_body, teardown);
 	g_test_add("/http-limits/connections-and-neighbor", Fixture, GINT_TO_POINTER(2), setup, test_connections, teardown);
+	g_test_add("/http-limits/tls-active-teardown", Fixture, GINT_TO_POINTER(1), setup, test_tls_active_teardown, teardown);
 	g_test_add("/http-limits/tls-handshake-stall", Fixture, GINT_TO_POINTER(1), setup, test_tls_stall, teardown);
 	g_test_add("/http-limits/generic-record", Fixture, NULL, setup, test_generic, teardown);
 	g_test_add("/http-limits/aggregate-release", Fixture, GINT_TO_POINTER(2), setup, test_aggregate, teardown);
@@ -437,5 +494,6 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/active-teardown", Fixture, NULL, setup, test_active_teardown, teardown);
 	g_test_add("/http-limits/negative-length", Fixture, NULL, setup, test_negative_length, teardown);
 	g_test_add_func("/http-limits/private-context", test_private_context);
+	g_test_add("/http-limits/form-upload-bounds", Fixture, NULL, setup, test_form_upload_bounds, teardown);
 	return g_test_run();
 }

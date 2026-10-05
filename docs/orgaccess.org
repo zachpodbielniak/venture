@@ -75,8 +75,21 @@ owner, active team member, or a child of an assigned venture.
 Members can read their organization's row for the picker. Membership does
 not inherit through =parent_id=. Personal chat, watch and notification
 records declare a personal owner reference in their field table and keep
-that user's boundary. This describes access to whole records; it does not
-introduce field permissions.
+that user's boundary. This describes access to whole records, with one
+exception below.
+
+An organization's own row is judged in that organization, never in its
+=organization_id= column: its owner or admin reads and updates its profile
+-- name, legal name, phone, email, website, address, notes -- and a viewer
+reads it. The exception is its structure. Changing =parent_id= (what a
+parent's reports roll up) or =is_default= (where records that name no
+organization land) needs a global owner/admin or the hosted workspace
+administrator; an organization owner or admin gets 403. An organization
+is filed against no organization: =POST /api/v1/organization= leaves its
+=organization_id= at 0, as the web form always did. Rows created before
+that carry the creator's organization there; access no longer reads it,
+so they need no repair. =/account-identity/owner-edits-own-organization= pins
+this over HTTP in a hosted workspace.
 
 Organization membership, including organization owner or admin, cannot grant access to another user's personal record. Global administrator authority remains unchanged.
 

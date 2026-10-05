@@ -214,7 +214,7 @@ venture_stripe_service_pay_link(VentureStripeService *self,
 	if (binding != self->connection_id || venture_entity_get_organization_id(VENTURE_ENTITY(link)) != self->organization_id)
 	{ refuse(error, "Payment link belongs to another Stripe account"); return NULL; }
 	checkout = stripe_checkout_create(self, invoice_id,
-		g_date_time_compare(expires, maximum) < 0 ? expires : maximum, link, NULL, error);
+		g_date_time_compare(expires, maximum) < 0 ? expires : maximum, link, FALSE, NULL, error);
 	if (!checkout) return NULL;
 	return g_steal_pointer(&checkout);
 }

@@ -49,6 +49,7 @@ static void venture_booking_service_init(VentureBookingService *self) { (void)se
 VentureBookingService *venture_booking_service_new(VentureDatabase *database)
 {
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
+	venture_booking_service_install(database);
 	return g_object_new(VENTURE_TYPE_BOOKING_SERVICE, "database", database, NULL);
 }
 
@@ -68,7 +69,7 @@ typedef struct {
 	gchar *owner, *title;
 	GTimeZone *zone;
 	JsonObject *availability;
-	gint64 duration, buffer, horizon;
+	gint64 duration, buffer, horizon, capacity, id, ignore;
 } Page;
 static void page_clear(Page *p)
 {
@@ -82,7 +83,10 @@ static gboolean page_read(VentureEntity *page, Page *p, GError **error)
 	g_autoptr(JsonNode) node = NULL;
 	memset(p, 0, sizeof *p);
 	g_object_get(page, "owner", &p->owner, "title", &p->title, "timezone", &tz, "availability", &availability,
-		"duration-minutes", &p->duration, "buffer-minutes", &p->buffer, "horizon-days", &p->horizon, NULL);
+		"duration-minutes", &p->duration, "buffer-minutes", &p->buffer, "horizon-days", &p->horizon, "capacity", &p->capacity, NULL);
+	p->id = venture_entity_get_id(page);
+	if (p->capacity < 0 || p->capacity > 10000) return refuse(error, VENTURE_ERROR_CONFIG, "Capacity must be between 0 and 10000");
+	if (p->capacity == 0) p->capacity = 1;
 	if (venture_string_is_empty(p->owner)) return refuse(error, VENTURE_ERROR_CONFIG, "The booking page has no owner");
 	if (p->duration <= 0 || p->duration > 24 * 60) return refuse(error, VENTURE_ERROR_CONFIG, "The booking page needs a duration between 1 and 1440 minutes");
 	if (p->buffer < 0) p->buffer = 0;
@@ -115,55 +119,119 @@ static const gchar *windows_for(Page *p, GDateTime *local_day)
 }
 
 /* --- Busy time: the owner's planned calls and meetings -------------------- */
-typedef struct { GDateTime *from, *to; } Busy;
+typedef struct { GDateTime *from, *to; gint64 page; } Busy;
 static void busy_free(gpointer data)
 {
 	Busy *b = data;
-	g_date_time_unref(b->from); g_date_time_unref(b->to); g_free(b);
+	g_clear_pointer(&b->from, g_date_time_unref); g_clear_pointer(&b->to, g_date_time_unref); g_free(b);
 }
-static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GError **error)
+static gint64 booking_int(VentureEntity *entity, const gchar *name)
+{
+	gint64 value = 0;
+	g_object_get(entity, name, &value, NULL);
+	return value;
+}
+static gchar *booking_string(VentureEntity *entity, const gchar *name)
+{
+	gchar *value = NULL;
+	g_object_get(entity, name, &value, NULL);
+	return value;
+}
+static gboolean reservation_write(VentureBookingService *self, VentureEntity *row, GError **error)
+{
+	g_object_set(row, "generation", booking_int(row, "generation") + 1, NULL);
+	g_object_set_data(G_OBJECT(row), "venture-booking-write", GINT_TO_POINTER(1));
+	return venture_database_save(self->database, row, NULL, error);
+}
+static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GDateTime *now, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
-	g_autoptr(GPtrArray) rows = NULL;
-	GPtrArray *busy;
+	g_autoptr(VentureQuery) reservations = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GPtrArray) rows = NULL, holds = NULL;
+	g_autoptr(GHashTable) meetings = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autofree gchar *cutoff = venture_time_to_string(now);
+	g_autoptr(GPtrArray) busy = g_ptr_array_new_with_free_func(busy_free);
 	guint i;
+	venture_query_set_organization(reservations, org);
+	venture_query_add_filter_string(reservations, "owner", VENTURE_FILTER_OP_EQ, p->owner, NULL);
+	venture_query_add_filter_string(reservations, "ends-at", VENTURE_FILTER_OP_GT, cutoff, NULL);
+	venture_query_set_limit(reservations, 10001);
+	holds = venture_database_find(self->database, reservations, error);
+	if (holds == NULL) return NULL;
+	if (holds->len > 10000) return refuse(error, VENTURE_ERROR_CONFLICT, "Too many future reservations; shorten the booking horizon"), NULL;
+	for (i = 0; i < holds->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(holds, i);
+		g_autofree gchar *state = booking_string(row, "state");
+		g_autoptr(GDateTime) expires = NULL;
+		gint64 activity = booking_int(row, "activity-id");
+		if (activity > 0 && g_strcmp0(state, "confirmed") == 0)
+		{
+			gint64 *key = g_new(gint64, 1); *key = activity;
+			g_hash_table_insert(meetings, key, row);
+		}
+		if (g_strcmp0(state, "held") == 0 && venture_entity_get_id(row) != p->ignore)
+		{
+			Busy *b;
+			g_object_get(row, "expires-at", &expires, NULL);
+			if (expires == NULL || g_date_time_compare(expires, now) <= 0) continue;
+			b = g_new0(Busy, 1);
+			g_object_get(row, "starts-at", &b->from, "ends-at", &b->to, NULL);
+			b->page = booking_int(row, "page-id");
+			if (b->from == NULL || b->to == NULL) { busy_free(b); continue; }
+			g_ptr_array_add(busy, b);
+		}
+	}
 	venture_query_set_organization(query, org);
 	venture_query_add_filter_string(query, "owner", VENTURE_FILTER_OP_EQ, p->owner, NULL);
 	venture_query_add_filter_int(query, "status", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_STATUS_PLANNED, NULL);
-	venture_query_set_limit(query, 0);
+	{
+		g_autoptr(GPtrArray) kinds = g_ptr_array_new_with_free_func(g_free);
+		g_ptr_array_add(kinds, g_strdup("call")); g_ptr_array_add(kinds, g_strdup("meeting"));
+		if (!venture_query_add_filter(query, "kind", VENTURE_FILTER_OP_IN, kinds, error)) return NULL;
+	}
+	venture_query_set_limit(query, 10001);
 	rows = venture_database_find(self->database, query, error);
-	if (!rows) return NULL;
-	busy = g_ptr_array_new_with_free_func(busy_free);
-	for (i = 0; i < rows->len; i++) {
-		VentureEntity *row = g_ptr_array_index(rows, i);
+	if (rows == NULL) return NULL;
+	if (rows->len > 10000) return refuse(error, VENTURE_ERROR_CONFLICT, "Too many planned activities to calculate availability"), NULL;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i), *reservation;
 		g_autoptr(GDateTime) starts = NULL, ends = NULL, due = NULL;
+		gint64 id = venture_entity_get_id(row);
 		Busy *b;
 		gint kind;
+		reservation = g_hash_table_lookup(meetings, &id);
+		if (reservation != NULL && venture_entity_get_id(reservation) == p->ignore) continue;
 		g_object_get(row, "kind", &kind, "starts-at", &starts, "ends-at", &ends, "due-at", &due, NULL);
 		if ((kind != VENTURE_ACTIVITY_KIND_CALL && kind != VENTURE_ACTIVITY_KIND_MEETING) || (!starts && !due)) continue;
 		b = g_new0(Busy, 1);
 		b->from = g_date_time_ref(starts ? starts : due);
 		b->to = ends && starts ? g_date_time_ref(ends) : g_date_time_add_minutes(b->from, (gint)p->duration);
+		b->page = reservation != NULL ? booking_int(reservation, "page-id") : 0;
 		g_ptr_array_add(busy, b);
 	}
-	return busy;
+	return g_steal_pointer(&busy);
 }
-static gboolean is_free(GPtrArray *busy, GDateTime *start, GDateTime *end, gint64 buffer)
+static gboolean is_free(GPtrArray *busy, GDateTime *start, GDateTime *end, Page *page)
 {
 	guint i;
-	for (i = 0; i < busy->len; i++) {
+	gint64 seats = 0;
+	for (i = 0; i < busy->len; i++)
+	{
 		Busy *b = g_ptr_array_index(busy, i);
-		g_autoptr(GDateTime) from = g_date_time_add_minutes(b->from, -(gint)buffer);
-		g_autoptr(GDateTime) to = g_date_time_add_minutes(b->to, (gint)buffer);
-		if (g_date_time_compare(from, end) < 0 && g_date_time_compare(to, start) > 0) return FALSE;
+		g_autoptr(GDateTime) from = g_date_time_add_minutes(b->from, -(gint)page->buffer);
+		g_autoptr(GDateTime) to = g_date_time_add_minutes(b->to, (gint)page->buffer);
+		if (b->page == page->id && g_date_time_equal(b->from, start) && g_date_time_equal(b->to, end)) seats++;
+		else if (g_date_time_compare(from, end) < 0 && g_date_time_compare(to, start) > 0) return FALSE;
 	}
-	return TRUE;
+	return seats < page->capacity;
 }
 
 /* Every free slot from now to the horizon, ascending. */
 static GPtrArray *compute_slots(VentureBookingService *self, VentureEntity *page, Page *p, GDateTime *now, GError **error)
 {
-	g_autoptr(GPtrArray) busy = load_busy(self, venture_entity_get_organization_id(page), p, error);
+	g_autoptr(GPtrArray) busy = load_busy(self, venture_entity_get_organization_id(page), p, now, error);
 	g_autoptr(GDateTime) local_now = NULL;
 	GPtrArray *slots;
 	gint64 day;
@@ -189,7 +257,7 @@ static GPtrArray *compute_slots(VentureBookingService *self, VentureEntity *page
 				start = g_date_time_to_utc(local_start);
 				end = g_date_time_add_minutes(start, (gint)p->duration);
 				if (g_date_time_compare(start, now) <= 0) continue;
-				if (!is_free(busy, start, end, p->buffer)) continue;
+				if (!is_free(busy, start, end, p)) continue;
 				g_ptr_array_add(slots, g_date_time_ref(start));
 			}
 		}
@@ -218,10 +286,12 @@ JsonNode *venture_booking_service_slots(VentureBookingService *self, VentureEnti
 		g_autoptr(GDateTime) local = g_date_time_to_timezone(start, p.zone);
 		g_autofree gchar *start_text = venture_time_to_string(start), *end_text = venture_time_to_string(end);
 		g_autofree gchar *label = g_date_time_format(local, "%a %d %b %Y %H:%M %Z");
+		g_autofree gchar *day = g_date_time_format(local, "%Y-%m-%d");
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "start"); json_builder_add_string_value(builder, start_text);
 		json_builder_set_member_name(builder, "end"); json_builder_add_string_value(builder, end_text);
 		json_builder_set_member_name(builder, "label"); json_builder_add_string_value(builder, label);
+		json_builder_set_member_name(builder, "day"); json_builder_add_string_value(builder, day);
 		json_builder_end_object(builder);
 	}
 	json_builder_end_array(builder);
@@ -251,60 +321,4 @@ static VentureEntity *find_contact(VentureBookingService *self, gint64 org, cons
 	return NULL;
 }
 
-VentureEntity *venture_booking_service_book(VentureBookingService *self, VentureEntity *page, const gchar *start, const gchar *name, const gchar *email, const gchar *notes, GDateTime *now, const VentureActor *actor, GError **error)
-{
-	g_autoptr(GDateTime) reference = NULL, when = NULL, ends = NULL;
-	g_autoptr(GPtrArray) slots = NULL;
-	g_autoptr(VentureEntity) contact = NULL, activity = NULL;
-	g_autofree gchar *normal = NULL, *subject = NULL, *body = NULL;
-	gint64 org;
-	Page p;
-	guint i;
-	gboolean offered = FALSE;
-	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
-	g_return_val_if_fail(VENTURE_IS_BOOKING_PAGE(page), NULL);
-	if (!self->database) return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed"), NULL;
-	if (venture_database_has_transaction(self->database)) return refuse(error, VENTURE_ERROR_CONFLICT, "Booking requires a committed database"), NULL;
-	if (!venture_entity_get_id(page)) return refuse(error, VENTURE_ERROR_VALIDATION, "Booking requires a saved page"), NULL;
-	normal = venture_lead_normalize_email(email);
-	if (venture_string_is_empty(name)) return refuse(error, VENTURE_ERROR_VALIDATION, "A name is required"), NULL;
-	if (!*normal || !strchr(normal, '@')) return refuse(error, VENTURE_ERROR_VALIDATION, "An email address is required"), NULL;
-	/* The page is public: what a stranger types is bounded before it becomes a subject. */
-	if (strlen(name) > BOOKING_MAX_NAME || strlen(normal) > BOOKING_MAX_EMAIL || (notes && strlen(notes) > BOOKING_MAX_NOTES))
-		return refuse(error, VENTURE_ERROR_VALIDATION, "The name, email or notes are too long"), NULL;
-	if (!g_utf8_validate(name, -1, NULL) || (notes && !g_utf8_validate(notes, -1, NULL)))
-		return refuse(error, VENTURE_ERROR_VALIDATION, "The name and notes must be UTF-8"), NULL;
-	when = venture_string_is_empty(start) ? NULL : venture_time_from_string(start, NULL);
-	if (!when) return refuse(error, VENTURE_ERROR_VALIDATION, "A start time is required"), NULL;
-	if (!page_read(page, &p, error)) { page_clear(&p); return NULL; }
-	reference = now ? g_date_time_ref(now) : venture_time_now();
-	slots = compute_slots(self, page, &p, reference, error);
-	if (!slots) { page_clear(&p); return NULL; }
-	for (i = 0; i < slots->len && !offered; i++) offered = g_date_time_equal(g_ptr_array_index(slots, i), when);
-	if (!offered) { page_clear(&p); return refuse(error, VENTURE_ERROR_CONFLICT, "That time is not available"), NULL; }
-	ends = g_date_time_add_minutes(when, (gint)p.duration);
-	org = venture_entity_get_organization_id(page);
-	if (!venture_database_begin(self->database, error)) { page_clear(&p); return NULL; }
-	{
-		g_autoptr(GError) lookup = NULL;
-		contact = find_contact(self, org, email, &lookup);
-		if (lookup) { g_propagate_error(error, g_steal_pointer(&lookup)); goto fail; }
-	}
-	if (!contact) {
-		contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", org, "name", name, "email", normal, "source", "booking", NULL);
-		if (!venture_database_save(self->database, contact, actor, error)) goto fail;
-	}
-	subject = g_strdup_printf("%s with %s", venture_string_is_empty(p.title) ? "Meeting" : p.title, name);
-	body = g_strdup_printf("Booked through /book: %s <%s>%s%s", name, normal, venture_string_is_empty(notes) ? "" : "\n\n", venture_string_is_empty(notes) ? "" : notes);
-	activity = g_object_new(VENTURE_TYPE_ACTIVITY, "organization-id", org, "kind", VENTURE_ACTIVITY_KIND_MEETING, "owner", p.owner,
-		"subject", subject, "body", body, "starts-at", when, "ends-at", ends, "due-at", when, "status", VENTURE_ACTIVITY_STATUS_PLANNED,
-		"contact-id", venture_entity_get_id(contact), "related-type", "contact", "related-id", venture_entity_get_id(contact), NULL);
-	if (!venture_database_save(self->database, activity, actor, error)) goto fail;
-	if (!venture_database_commit(self->database, error)) { page_clear(&p); return NULL; }
-	page_clear(&p);
-	return g_steal_pointer(&activity);
-fail:
-	venture_database_rollback(self->database);
-	page_clear(&p);
-	return NULL;
-}
+#include "venture-booking-reservations.inc"

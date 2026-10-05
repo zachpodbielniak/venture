@@ -521,6 +521,45 @@ static guint attribution_http(SoupSession *session, const gchar *base, const gch
 {
 	return attribution_http_with_host(session, base, method, path, origin, payload, text, cors, NULL);
 }
+/* An unavailable database is retryable, never evidence that a paired site
+ * disappeared. Restore the table to prove the same request can recover. */
+static void test_http_storage_failure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = g_object_new(SOUP_TYPE_SESSION, "timeout", 10, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-attribution-failure-XXXXXX", NULL);
+	g_autofree gchar *path = g_strdup_printf("/attribution/%s/grant", venture_entity_get_uuid(f->site));
+	g_autofree gchar *text = NULL;
+	const gchar *base;
+	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)0, "security-require-auth", TRUE, NULL);
+	context = venture_context_new(config, f->db);
+	server = venture_web_server_new(context, &error); g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	base = venture_web_server_get_base_url(server);
+	g_object_set(config, "server-base-url", base, NULL);
+	g_assert_true(venture_database_execute(f->db,
+		"ALTER TABLE attribution_sites RENAME TO unavailable_attribution_sites", NULL, &error));
+	g_assert_no_error(error);
+	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+		"Attribution request failed: cause=storage_or_internal_failure domain=* code=*");
+	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test",
+		"{\"policy\":\"analytics-v1\"}", &text, NULL), ==, 500);
+	g_test_assert_expected_messages();
+	g_assert_null(strstr(text, "attribution_sites"));
+	g_clear_pointer(&text, g_free);
+	g_assert_true(venture_database_execute(f->db,
+		"ALTER TABLE unavailable_attribution_sites RENAME TO attribution_sites", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(attribution_http(session, base, "POST", path, "https://site.example.test",
+		"{\"policy\":\"analytics-v1\"}", &text, NULL), ==, 200);
+	venture_web_server_stop(server);
+	g_clear_object(&server); g_clear_object(&context);
+	venture_test_remove_tree(directory);
+}
 static void test_http(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureConfig) config = venture_config_new();
@@ -1138,6 +1177,7 @@ int main(int argc, char **argv)
 	g_test_add("/attribution/signed-capture", Fixture, NULL, setup, test_signed_capture, teardown);
 	g_test_add("/attribution/signed-boundaries", Fixture, NULL, setup, test_signed_boundaries, teardown);
 	g_test_add("/attribution/site-removal", Fixture, NULL, setup, test_site_removal, teardown);
+	g_test_add("/attribution/http-storage-failure", Fixture, NULL, setup, test_http_storage_failure, teardown);
 	g_test_add("/attribution/http", Fixture, NULL, setup, test_http, teardown);
 	g_test_add("/attribution/http-hosted", Fixture, "hosted", setup, test_http, teardown);
 	g_test_add("/attribution/report-surfaces", Fixture, NULL, setup, test_report_surfaces, teardown);

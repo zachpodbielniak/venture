@@ -10,5 +10,11 @@ VENTURE_DECLARE_ENTITY(VentureCalendarAccount, venture_calendar_account, CALENDA
 VENTURE_DECLARE_ENTITY(VentureCalendarEvent, venture_calendar_event, CALENDAR_EVENT)
 #define VENTURE_TYPE_BOOKING_PAGE (venture_booking_page_get_type())
 VENTURE_DECLARE_ENTITY(VentureBookingPage, venture_booking_page, BOOKING_PAGE)
+#define VENTURE_TYPE_BOOKING_RESERVATION (venture_booking_reservation_get_type())
+VENTURE_DECLARE_ENTITY(VentureBookingReservation, venture_booking_reservation, BOOKING_RESERVATION)
+/**
+ * venture_booking_reservation_new:
+ * Returns: (transfer full): an unsaved service-owned booking reservation
+ */
 G_END_DECLS
 #endif

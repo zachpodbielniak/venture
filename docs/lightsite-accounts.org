@@ -27,8 +27,18 @@ The current authenticated principal must be an active hosted member and
 have organization owner/admin authority. For a token, both its captured
 membership snapshot and current membership must allow that organization.
 A later grant cannot enlarge an existing token. Use a token attached to the
-provisioning member, minted through the existing account/token flow after
-the organization's authority has been granted; no new token type is needed.
+provisioning member, minted after the organization's authority has been
+granted; no new token type is needed. The member mints it themselves with
+=POST /api/v1/tokens= while signed in to Venture with a browser session: any
+signed-in user may mint a token for their own account, owned by them and
+carrying their own global role and current membership snapshot. That token
+expires: 30 days by default, or =expires_in_days= from 1 to 90 (anything else
+is refused with 422). An expired token gets 401 from =account-authority=, so
+Lightsite must treat 401 as "ask the owner for a fresh token", not as a
+revoked account. A bearer
+token cannot mint one unless it carries the global admin role, and the
+=/account/tokens= page stays administrator-only. See [[file:api.org][the API's
+Authentication section]].
 An interactive tenant administrator retains the existing organization-policy
 semantics. Ordinary token calls do not inherit tenant-administrator authority.
 
@@ -82,6 +92,16 @@ promotion does not enlarge a token minted with a viewer membership. Successful
 responses are checked for exactly the four documented fields; successful and
 refused responses both prohibit caching. =tests/test-auth.c= includes the new
 route in anonymous checks.
+
+The same file's =/account-identity/member-mints-own-token= signs in a hosted
+member (global editor, tenant =member=, admin of one organization) with a
+browser session and mints a token at =POST /api/v1/tokens=. Before the change
+that was refused with 403. The minted token reports the organization with
+=can_manage_sites= true, omits an organization the member is not in, cannot
+mint another token, and a read-only workspace refuses the session's mint. It
+also pins the member expiry: about 30 days by default, about 7 for
+=expires_in_days: 7=, 422 for 0, 91, -1, a string, a fraction and =null=, and
+401 from =account-authority= once the stored expiry has passed.
 
 #+begin_src sh
 make DEBUG=1 test-one T=test-account-identity

@@ -26,7 +26,7 @@ $(CORE_OBJS) $(SERVER_OBJS) $(CLI_OBJS) $(MAIN_OBJ) $(TEST_OBJS): src/venture-ve
 $(CORE_OBJS) $(SERVER_OBJS) $(MAIN_OBJ): $(OUTDIR)/venture-default-config.h
 
 # Only the web server embeds the assets, and it is server-only.
-$(SERVER_OBJS): $(OUTDIR)/venture-assets.h
+$(OBJDIR)/server/web/venture-web-server.o: $(OUTDIR)/venture-assets.h
 
 # The model catalogue goes into both trees: the CLI lists providers too.
 $(CORE_OBJS) $(SERVER_OBJS): $(OUTDIR)/venture-models.h
@@ -224,7 +224,8 @@ ASSET_FILES := data/static/venture-classic.css \
                data/static/venture-industrial.css \
                data/static/venture-hx.js \
                data/static/venture.js \
-               data/static/attribution.js
+               data/static/attribution.js \
+               data/static/forms.js
 
 $(OUTDIR)/venture-assets.h: $(ASSET_FILES) | $(OUTDIR)
 	@echo "  GEN     $@"

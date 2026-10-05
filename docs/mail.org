@@ -82,7 +82,8 @@ The operator owns DNS/egress policy for those hosts. An organization cannot
 supply a local CA/DKIM file, another transport's endpoint or an environment
 variable reference. Passwords beginning =env:= are literal passwords.
 Certificates are verified. =starttls= and =implicit= TLS are supported;
-unencrypted SMTP is refused. The socket I/O timeout is at most 30 seconds,
+unencrypted SMTP is refused unless the operator explicitly grants the
+staging-only endpoint exception described below. The socket I/O timeout is at most 30 seconds,
 and mail-glib retries are zero because the outbox owns retry decisions.
 
 As an organization owner/admin, open *Mail settings* on its record, or
@@ -647,3 +648,52 @@ C callers can use =venture_organization_mailer_dup_schema()= to derive
 write-only settings inputs, and =venture_mail_outbox_deliver_one()= to
 restrict a deliberate test to its message and exact configuration. The
 ordinary outbox claim, veto, retry and uncertainty rules remain shared.
+
+* Private intake copies
+
+Mail related to =form=, =form_draft=, =form_pending= or
+=booking_reservation= redacts recipients, bodies, attachment references and
+error content in its audit diff, and uses a type/id audit label. Ordinary
+business mail keeps its existing audit behavior. Migration 000902 repairs
+older intake audit copies.
+
+Form erasure and retention use =venture_mail_outbox_forget_pending()= for
+queued, failed, dead or cancelled intake mail. The method clears copied
+personal content and leaves a cancelled row with the original idempotency
+key, preventing a retry from recreating delivery. It refuses ordinary mail
+and sending, uncertain or sent states; those retain the outbox's own policy.
+
+* Staging delivery to local Mailpit
+
+Use the same organization Mail settings and outbox as production. For a trusted
+isolated staging relay without TLS, the operator must explicitly list the exact
+endpoint in both settings; there is no automatic TLS downgrade:
+
+#+begin_src yaml
+mail:
+  allowed_endpoints: mailpit:1025
+  plaintext_endpoints: mailpit:1025
+#+end_src
+
+Set the organization's relay host to =mailpit=, port =1025=, TLS mode =none=,
+authentication =none=, and a valid sender such as =staging@example.test=.
+Leave username/password empty. For a host-published container port use
+=127.0.0.1:<published-port>= in both lists and the matching host/port in the
+organization settings. Configure the integration encryption key and enable
+=mail= and =integrations= as for production; even unauthenticated connection
+settings use the normal per-organization encrypted integration records.
+
+Plaintext exceptions default to empty and are rechecked before every delivery.
+Credentials over plaintext are refused even for an allowed endpoint. Removing
+the exception stops later preparation; it does not reroute queued messages.
+Only use this exception on the operator's isolated staging network. Production
+relays continue to require verified TLS. Legacy global =mail.host= settings do
+not replace the organization's connection and are not a fallback.
+
+Use *Send test message* in organization Mail settings, then check the outbox
+state and Mailpit UI. =sent= means relay acceptance, not external inbox delivery.
+The hermetic =/mail/staging-smtp= test configures a real local socket relay
+through the organization settings service and sends using the outbox. It checks
+refusal without the operator exception, credential and endpoint refusal,
+uncertain delivery recovery, actual sender/body bytes, and revocation of the
+plaintext exception. No public mail server is contacted.

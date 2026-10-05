@@ -1,0 +1,47 @@
+#+title: Forms accessibility evidence
+#+description: What checks the forms renderer's accessibility, and what the checks reported
+#+created: [2026-09-28]
+
+* What is checked, and by what
+
+- =/forms/a11y-contract= (=tests/test-forms.c=, in =make test=): a
+  structural checker over libxml2's parse of every answer field kind (
+  alternating required, some with help), in five renderings: the bare
+  fragment, the hosted page, the hosted page with every question refused
+  and one unknown name, and the thank-you bare and as a page. It fails on
+  an unnamed control, a duplicate id, an =aria-describedby= naming nothing,
+  a =fieldset= without a first =legend=, a required control that does not
+  say so to assistive technology (or a radio group that does not), an
+  =aria-invalid= without a visible message tied to it, refused answers
+  with no visible focusable summary, a summary link to nowhere, a positive
+  =tabindex=, a =style= attribute, an empty button, required questions
+  with no note, and a page with no =lang= or =<title>=.
+- =/forms/a11y-checker-catches=: ten pieces of bad markup, one per rule;
+  the checker must fail each.
+- The contract test fails against the renderer as it was before the
+  accessibility child: radio groups did not carry =aria-required= and
+  nothing said what the asterisk meant.
+- =tools/venture-forms-axe.sh=: axe-core 4 in jsdom over the same five
+  renderings, colour contrast excluded (no layout in jsdom; the host
+  page's colours are the host's).
+
+* axe-core run
+
+Against the epic branch after the accessibility child:
+
+#+begin_example
+$ tools/venture-forms-axe.sh --keep /tmp/forms-a11y-out
+==> rendering into /tmp/forms-a11y-out
+ok bare-thanks.html: 0 violation(s), 12 rule(s) passed
+ok blank.html: 0 violation(s), 27 rule(s) passed
+ok page.html: 0 violation(s), 29 rule(s) passed
+ok refused.html: 0 violation(s), 34 rule(s) passed
+ok thanks.html: 0 violation(s), 14 rule(s) passed
+#+end_example
+
+* What is not claimed here
+
+No human screen-reader session and no cross-browser certification. The
+keyboard-only walkthrough of a multi-page form with server errors, both with
+JavaScript disabled and with the loader, is recorded in
+[[file:forms-pages.org][the built-server multi-page evidence]].

@@ -1,0 +1,95 @@
+#+TITLE: Native Lightsite forms: definition and signed relay evidence
+
+* Scope and reuse
+
+Issue #173 adds authenticated discovery and a paired-daemon adapter. PR #163
+already supplies published schemas, field validation, branching, response
+storage and configured lead capture. PR #169 supplies durable receipts. The
+new routes reuse those implementations; they do not introduce a second form
+builder or a parallel lead-capture path.
+
+* Regression evidence
+
+Before implementation, the authenticated definition regression returned 404
+instead of 200. The signed relay regression reached the old Lightsite hook,
+but stored zero form responses instead of one. Both tests subsequently pass.
+
+The expanded tests cover unpublished edits, organization isolation, bad
+signatures, forged controls and origins, unknown versions, invalid choices,
+retries after reopening the database, changed-answer conflicts, receipt-write
+rollback and recovery, erasure, disabled sites, and a later publication adding
+an unsupported upload field. The earlier ordinary version remains usable.
+
+The authentication suite checks anonymous refusal, cross-organization refusal,
+and authorized viewer access to the definition. Shared pairing regressions
+continue to check the existing connection and signature boundaries.
+
+* Built-server demonstration
+
+On 2026-10-03, an owned SQLite instance of the actual DEBUG server was started
+with authentication enabled and a synthetic owner. Through authenticated REST,
+the demonstration created and published a contact/quote form, configured its
+name/email lead mappings, and paired a synthetic Lightsite site. No external
+provider was contacted.
+
+Observed results:
+
+- Anonymous definition fetch: 401.
+- Authenticated definition: published name, email and message fields, labels,
+  required flags, and form/version identifiers.
+- Two concurrent, identically signed relay requests: two accepted replies,
+  exactly one form response and one lead.
+- Stored origin: the paired site's configured origin.
+- Reusing the submission ID with changed answers: 409.
+- Adding a browser-selected origin to the signed payload: 422.
+
+The demonstrated DEBUG binary's SHA-256 was
+=5245bea4ee4de9b60059ca5066f4f6571166ca896dc2cf96b8475b294e7b9da8=.
+
+* Final validation
+
+Fixed implementation commit =faa80b417a5070c773016530cafd264a195907c2=
+passed a warning-free DEBUG build and all 153 test binaries in one complete
+run. This includes all 105 forms tests, 108 authentication tests, 37 attribution
+tests and 21 migration tests, with an owned PostgreSQL 18 fixture enabled.
+The litter, version, foreground-demo and clock-demo post-checks also passed.
+
+The GTest output contains 2664 cases, of which 22 explicitly skip separately
+configured optional integrations (embedding, accounting PostgreSQL isolation,
+authenticated TLS mail, OCR, Keycloak and PostgreSQL process leases). The
+remaining 2642 cases passed. No failed test needed a rerun in this full run.
+
+* Integration boundary
+
+Lightsite/libresite must render the published definition, preserve its version,
+and send the documented closed envelope through the trusted daemon. The daemon
+owns browser abuse controls and the stable submission ID; signing credentials
+and Venture API credentials stay server-side. =relay_supported=false= directs
+payments, bookings, uploads and double opt-in to the existing hosted form flow.
+See [[../forms.org][the forms guide]] for the wire contract and failure semantics.
+
+* Review regression evidence
+
+The missing-form definition request returned HTTP 500 before its fix; it now
+returns 404. The signed relay's missing-form case formerly returned neither
+an acceptance result nor an error; it now reports NOT_FOUND.
+
+With duplicate lead capture configured to reject, the relay formerly failed
+with "The transaction was already rolled back" instead of retaining the form
+response. The shared response-only retry now succeeds, records its follow-up
+note, creates no additional lead, and returns the same response on replay.
+
+The regression also changes the paired site synchronously from a response-save
+handler. Acceptance refuses the changed pairing and rolls back the response;
+removing that handler permits the same submission identity to succeed. These
+checks run in =/forms/authenticated-definition= and =/forms/signed-relay=.
+
+The review's complete DEBUG run passed all 153 test binaries, followed by
+litter, version, foreground-demo and clock-demo checks. A separate migration
+run against an owned disposable PostgreSQL 18 instance passed all 21 cases,
+including the nonempty privacy upgrade. Unconfigured optional integrations
+remain explicit skips; no live payment, mail or AI provider was contacted.
+
+The final definition 404 also retains the API's JSON error format. After that
+refinement, a warning-free DEBUG rebuild and both affected regression tests
+passed again. =git diff --check= is clean.

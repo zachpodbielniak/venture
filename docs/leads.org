@@ -13,7 +13,9 @@ existing stage remains the opportunity's stage; leads add no pipeline.
 A lead belongs to one organization and may name a venture and a campaign.
 It carries name, company name, email, phone, website, source, integer score,
 owner, qualification state, notes, first-seen and last-activity timestamps,
-the =score_manual= mark and =routing_rule_id=, the rule that last placed it.
+the =score_manual= mark, =routing_rule_id=, the rule that last placed it,
+and =referral_code=, the code a referrer shared, as it arrived (see
+[[file:referrals.org][Referrals]]).
 The score is the sum of the organization's scoring rules unless an operator
 types one; see [[*Scoring formula][Scoring formula]]. Campaign references
 require outreach to be enabled when written, but leads otherwise work
@@ -41,7 +43,7 @@ Create a form through the ordinary record editor. Set its organization,
 optional venture, =active=true= and =on_duplicate= (=merge= by default).
 =fields= is an optional JSON array of accepted field names; the permitted
 public inputs are =name=, =company_name=, =email=, =phone=, =website=,
-=source= and =notes=. Public callers cannot choose organization, venture,
+=source=, =notes= and =referral_code=. Public callers cannot choose organization, venture,
 owner, qualification or conversion references. The form's name supplies the
 source when the submission does not provide one.
 
@@ -77,6 +79,15 @@ accepted captures return 200; form submissions redirect with 302 when the
 form has an HTTP(S) or local-path =redirect_url=. JSON submissions stay 200.
 Inactive, missing or disabled forms answer 404; rate exhaustion answers 429.
 
+A lead form is the lead-specific shortcut and stays for what already posts
+to it, the attribution capture included. For anything else --- more than
+the fixed lead inputs, a survey, a choice, a form styled by its site ---
+build a =form= with =create_lead= on (see [[file:forms.org][Forms]]). Its
+mapping captures through the same code as a lead form, so the inputs, the
+campaign check and the duplicate rules are the same. The =fields= list is
+JSON stored as text: a list of the input names the form may set, refused
+at the save when it is anything else.
+
 * Duplicate handling and assignment
 
 =VentureLeadService= normalizes email to lowercase and removes the local
@@ -90,7 +101,8 @@ contacts, then companies, with the lowest id breaking ties.
 
 - =reject=: refuse with 409 and leave the transaction unchanged.
 - =merge=: retain the existing record and append a capture interaction
-  containing the new source. Existing customer details are not overwritten.
+  containing the new source. Existing customer details are not overwritten;
+  a referral code fills an existing lead's empty one and never replaces it.
 - =create=: deliberately retain another inquiry.
 
 Generic REST, CLI and CSV creation use =reject=. A CSV import therefore

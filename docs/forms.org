@@ -1,0 +1,1555 @@
+#+title: Forms
+#+description: Contact forms, surveys, signups and intake, built in VENTURE and embedded on any site in that site's own styles
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-09-28]
+#+updated: [2026-10-02]
+#+version: 0.1.0
+
+* What a form is
+
+The =forms= module builds forms --- contact forms, surveys, signups,
+intake, feedback --- and puts them on any site. VENTURE supplies the
+structure and the handling; the host site supplies the look. The records and report are:
+
+- =form= :: what a site embeds. Its =name= and =notes= are internal; its
+  =title=, =description=, =submit_label= and =success_message= are what a
+  visitor reads. It has a =state= (=draft=, =live=, =closed=; draft is the
+  zero value), an optional =closes_at= and =response_limit=, a
+  =redirect_url=, the sites allowed to use it, a per-hour limit, a minimum
+  fill time, and what a response turns into.
+- =form_field= :: one question: a =key=, a =label=, a =kind=, =required=,
+  =help=, =placeholder=, =position= and the per-kind settings below.
+  Labelled "Form question".
+- =form_rule= :: conditional visibility, requiredness and forward navigation.
+- =form_translation= :: versioned public wording by language and text key.
+- =form_group= :: a bounded repeating set of questions.
+- =form_result_band= :: a published score range and its result text or page.
+- =form_draft= :: private intermediate answers while navigating pages or rows.
+- =form_pending= :: private double opt-in input awaiting inbox confirmation.
+- =form_version= :: what a form asked when it was published, frozen.
+  The public sees the published version; editing questions changes the
+  draft until the next publish.
+- =form_submission= :: one person's answers, labelled "Form response"
+  (the attribution module already owns "Form submission" for its site
+  captures). Searchable, exportable and audited like any record.
+- =form_summary= :: every choice counted, including the ones nobody picked,
+  and every scale averaged, for one form in a period.
+
+The module requires only =core=. It suggests =leads= (a form may turn each
+response into a lead), =mail= (confirmation), =marketing= (explicit opt-in),
+and =calendar= (booking questions). Ordinary lead/mail follow-up failure keeps
+the response with a note. A booking selection requires the calendar module.
+
+* Questions
+
+A question's =key= is its identity. Answers are stored under it, the
+schema names it, the input is posted under it. It must start with a
+lowercase letter and use only lowercase letters, digits and =_=; it is
+unique within its form and fixed once saved. A deleted question's key is
+retired rather than freed, because its old answers are still filed under
+it: reusing it for a different question would make them read as answers
+to the new one. The database enforces the same rule
+(=uq_form_fields_organization_form_id_key=, deleted rows included), and
+the save says so in words before the index has to.
+
+| Kind              | Input                  | Stored as                   | Checked                                                  |
+|-------------------+------------------------+-----------------------------+----------------------------------------------------------|
+| =short_text=      | text                   | string                      | one line, length, =pattern=                              |
+| =long_text=       | textarea               | string                      | length (10,000 by default), =pattern=                    |
+| =email=           | email                  | string                      | one =@=, a dotted domain, no spaces, 254 at most         |
+| =phone=           | tel                    | string                      | digits and =+ - ( ) .= and spaces; 4 to 20 digits        |
+| =url=             | url                    | string                      | =http://= or =https://= with a host                      |
+| =number=          | number                 | number                      | a finite number, within =min_value= / =max_value=        |
+| =date=            | date                   | string =YYYY-MM-DD=         | a real calendar date                                     |
+| =single_choice=   | radio buttons          | the choice's id             | one of the choices                                       |
+| =multiple_choice= | checkboxes             | an array of choice ids      | each one of the choices; duplicates dropped              |
+| =checkbox=        | one checkbox           | true or false               | required means it must be ticked                         |
+| =rating=          | radio buttons          | a whole number              | on the scale (=min_value= to =max_value=, or 1 to 5)     |
+| =hidden=          | hidden input           | string                      | length; =default_value= when the page sends nothing      |
+| =consent=         | unchecked checkbox     | wording, version and time   | affirmative choice; no default                          |
+| =page_break=      | page heading           | no answer                   | forward navigation and required questions               |
+| =booking=         | slot radio buttons     | ISO 8601 start              | current target availability and seat capacity           |
+
+=min_value= applies when either bound is set; =max_value= of 0 means no
+maximum. =min_length= and =max_length= of 0 mean the kind's default. A
+=pattern= must match the whole answer. Settings that cannot mean anything
+--- a maximum below the minimum, a pattern that does not compile, a choice
+question with no choices, a rating scale of more than 100 steps --- are
+refused when the question is saved.
+
+** Choices keep their ids
+
+=choices= is one choice per line, optionally =id | Label=. A line with no
+id is given one from its label when the question is saved
+(=Dark blue= becomes =dark_blue=, a second =Red= becomes =red_2=) and the
+line is rewritten as =id | Label=. From then on the label can be corrected
+freely: answers store the id, so they follow the relabel rather than
+splitting from it. Change an id only if you mean a new choice.
+
+* Versions
+
+Editing a live form must not change what past answers meant. Answers to
+"How satisfied were you (1-5)?" must not be read as answers to "How likely
+are you to recommend us (0-10)?". So a form has versions.
+
+- *Publishing freezes the questions.* =venturectl act form ID publish=, the
+  Publish button on the form's page, or =POST
+  /api/v1/form/ID/actions/publish= make the next =form_version= from the
+  current questions --- keys, labels, kinds, choices and limits, as JSON
+  in its =definition= --- and point the form's =published_version_id= at
+  it. A second publish with nothing changed returns the same version; a
+  form with no questions is refused.
+- *The public sees the published version.* The hosted page, the fragment,
+  the schema and the snippet render it, and answers are validated against
+  it. Editing a question, adding one or removing one changes the draft,
+  which only the builder's preview shows; the form's page says when the
+  draft differs from what is public. A live form never published is not
+  available, like a draft.
+- *Every response records its version* (=version_id=, =version_number=)
+  and is read back against that version: its page lists the answers under
+  the questions as they were asked, so a response to version 1 and one to
+  version 2 read correctly side by side. Its =summary= was written with
+  the labels of its version, too.
+- *A relabel is a new version, but not a new question.* Answers store
+  question keys and choice ids, so the summary counts a relabelled choice
+  as one row under its newest label. A question whose meaning changed ---
+  a new kind, or a rating on a new scale --- is split: one row group per
+  run of versions in which it meant the same, with the versions in the
+  =versions= column.
+- *Whoever started on a version finishes on it.* The ticket in every
+  rendering names the version it was handed out at. A person who opened
+  version 1 and submits after version 2 is published is checked against
+  version 1's questions and filed under version 1: nothing they could not
+  see is required of them, and nothing they typed is refused as unknown.
+  Save-and-resume and multi-page drafts follow the same rule.
+- *Versions are read-only.* Only publishing makes one; nothing edits or
+  deletes one, from any door (the generic API refuses writes to
+  =form_version=). To go back, set the form's =published_version_id= to an
+  earlier version of the same form; its number is copied from the version,
+  and a version of another form is refused.
+- The form's own texts --- title, introduction, button, thank-you --- are
+  not versioned: they change what a page says, not what an answer means.
+
+* Pages and unfinished responses
+
+Insert a =form_field= with =kind=page_break= between questions. Its =label=
+is the next page's heading and its =help= is the introduction. =position=
+orders breaks and questions together; every question belongs to exactly one
+page. Publishing refuses empty pages and more than 32 pages. A page break
+cannot be required or mapped to a lead attribute.
+
+Each Next is a real POST. Only that page's answers are accepted and validated;
+posting an earlier question cannot overwrite its stored value. Back preserves
+the current entries without requiring them to be valid. The final Send
+validates the complete response against the version at which filling began,
+including if the form was republished meanwhile. Closing the form or reaching
+its response limit still stops an in-progress submission.
+
+The hosted form and HTML snippet work without JavaScript. The loader replaces
+the current page in place and moves focus to the error summary or page progress.
+The public schema's =pages= array lists each page's number, title, introduction
+and question keys. Custom clients POST the current answers and retain the
+returned =html='s =_vf_draft= token; JSON intermediate replies also include
+=page=, =pages= and =errors=. =_vf_move=back= requests Back. A successful
+intermediate step has =ok=false= because no response has been submitted yet.
+
+Earlier answers stay on the server in a =form_draft= working copy, never in
+hidden inputs. Its signed token binds the form, published version, expiry and
+current generation. Every step rotates the token; stale, tampered, expired or
+already completed tokens return the same 404 as an unavailable form. Refreshing
+or resubmitting an old page therefore requires starting again. This prevents
+parallel tabs or a replay from submitting the same draft twice.
+
+=draft_minutes= sets the lifetime from the first valid Next (1–1440 minutes;
+0 means 60). It does not extend on activity. Drafts emit no audit or business
+save/delete events, so they cannot trigger automation, webhooks or inbox
+notifications. Their answer and ticket properties are sensitive and absent
+from generic views, API responses and assistant context. Generic create/update
+is refused; only the form service writes working copies.
+
+The bounded retention sweep purges expired drafts as well as expired responses,
+reporting =expired_drafts=. Owner export and erasure by email include drafts.
+Final submission claims the draft before intake; if the process fails during
+that operation, its token remains unavailable rather than risking duplicate
+side effects. Such a draft expires and is swept normally. These short-lived
+step tokens are not cross-device save-and-resume links; the opt-in feature
+below issues a separate capability.
+
+The built-server keyboard walkthrough, including server errors with JavaScript
+off and with the loader, is in [[file:evidence/forms-pages.org][multi-page evidence]].
+
+* Save and continue later
+
+Enable =allow_resume= on a multi-page form and set =public_origin= to its
+HTTPS origin (loopback HTTP is allowed for development). =resume_days= is
+1–30 days; 0 means seven. The public schema advertises =allow_resume=.
+
+Save and continue later keeps the current page, including incomplete answers,
+and displays a private link. The optional inbox field emails it through the
+outbox when mail is enabled. Saving does not create a response, contact, lead,
+marketing permission or list membership. The same form/client rate limits,
+fill-time ticket, body limit and honeypot apply. Email is limited to three
+messages per draft, at least a minute apart. A mail refusal keeps the entries
+editable; leave the inbox empty to obtain the link on screen.
+
+The link contains 32 random bytes; only its SHA-256 digest is stored in the
+working copy. Treat it like a password: its holder can read unfinished answers.
+The emailed bearer lives only in the outbox's sensitive body. GET shows a
+Resume form button without answers, so a mail scanner does not consume the
+link. POST invalidates the link and all earlier browser step tokens, and shows
+a replacement private link on the resumed page. Save again also issues a new link. The expiry starts at the first Save and never extends on
+activity or another email. Wrong, expired, consumed, closed and disabled links
+all receive the same 404.
+
+Explicit Resume always loads the latest published version. Compatible answers
+keep their stable question keys; removed questions, changed kinds, changed
+sensitivity and removed repeat rows are dropped. Conditions are re-evaluated.
+A changed version clears consent answers so the person sees the current
+wording and agrees again. New required or invalid questions on earlier reachable
+pages send the person back there; final submission still validates everything.
+The selected language is retained when available, with the normal fallback.
+Uninterrupted Back/Next continues to use its original version as documented
+above. A personal link must still be valid when its saved draft resumes.
+
+Expired drafts are purged by the bounded retention sweep. Final submission and
+owner erasure also purge them and cancel queued/failed resume mail. Mail already
+sent or being delivered cannot be recalled; its link stops working when the
+draft disappears. Export and erasure match the requested resume inbox as well
+as addresses in answers and a personal-link contact. Exports omit capability
+and signed-prefill controls. Drafts remain private working copies throughout.
+
+Custom clients send =_vf_move=save= with the current page's answers and optionally
+=_vf_resume_email=. The normal intermediate HTML reply contains the link and
+fresh =_vf_draft= token. The link's explicit POST returns a hosted form; subsequent
+page submissions use the ordinary public form endpoint.
+
+The built-server walkthrough is recorded in [[file:evidence/forms-resume.org][save-and-resume evidence]].
+
+* Conditional questions and branching
+
+A =form_rule= belongs to a form and is edited through the ordinary record
+pages, API and CLI. Its =conditions= is a JSON array of 1–16 objects:
+
+#+begin_src json
+[{"field":"customer_kind","operator":"equals","value":"business"}]
+#+end_src
+
+The operators are =equals=, =not_equals=, =contains=, =any_of= (newline-separated
+values), =greater_than=, =less_than= and =is_empty= (no value needed). Comparisons
+are case-sensitive. Numeric comparisons refuse non-numbers and non-finite
+values. A multiple-choice answer matches if any selected id matches;
+=not_equals= means none matches. By default all conditions must match;
+=any_condition=true= changes this to any. There is no expression or script
+language. Conditions can combine questions from earlier pages.
+
+The =action= is =show=, =hide=, =require=, =jump= or =end=. =target_key= names a
+question for the first three, a later page-break key for =jump=, and is empty
+for =end=. A show rule hides its target unless it matches; a matching hide rule
+hides it; a matching require rule adds a requirement only while the question is
+visible. Multiple show rules all have to match, and any matching hide rule wins.
+The field's ordinary Required setting still applies whenever it is visible.
+
+Question targets must follow every condition's source question. A jump must
+move to a later page than every source. End finishes after the last source page.
+These forward-only constraints rule out cycles at save. Unknown questions,
+unknown operators and invalid targets are refused. Publication rechecks all
+rules, so deleting or reordering questions cannot publish a dangling rule.
+At most 256 rules are frozen in one version. Editing rules has no public effect
+until Publish, and existing drafts keep their original rules.
+
+Navigation rules run after the current page validates. The first matching
+navigation rule in =position= then record-id order wins. Back returns to the
+previous visited page, including after a jump. The server drops all answers on
+skipped pages and all answers to hidden questions before checking requirements,
+storing responses or creating any follow-up. Sending a forged hidden answer or
+omitting a required branch therefore cannot bypass the questionnaire.
+
+The loader updates same-page visibility and requirements on input, including
+native validation and accessible required markers. Conditions on previous pages
+arrive as server-computed booleans; earlier answer values remain on the server.
+With JavaScript off, put a condition's source before a page break when its
+result must change what the visitor sees next. Page navigation is always a real
+server-validated POST.
+
+The schema exposes a =rules= array alongside =fields= and =pages=. Each entry
+contains =conditions=, =any=, =target=, zero-based =from_page=/=to_page= and
+=action= (0 show, 1 hide, 2 require, 3 jump, 4 end). These numbers are the stable
+=VentureFormRuleAction= values. The loader's =data-vf-rules= additionally carries
+initial match results, and =data-vf-required-base= preserves a question's ordinary
+requirement. Host styles must honor =[hidden]= and should not re-enable disabled
+controls.
+
+The summary separates “Not shown” from “Not answered” for non-sensitive
+questions. Private branch accounting is stored separately from public answers;
+it is immutable and removed by anonymisation. Sensitive questions do not expose
+these branch counts. No answer is reconstructed from a hidden or skipped field.
+
+The [[file:evidence/forms-rules.org][built-server branching demonstration]] records the public-route checks.
+
+* Privacy
+
+- *Consent.* A =consent= question is one box whose answer is the words it
+  was given to: =label=, with =help= as detail, stored as
+  ={"given":true,"wording":...}= under the response's version and time.
+  An unticked box records nothing, so consent is never made up from a
+  default. Consent questions cannot declare a default answer; older defaults
+  are ignored by both the renderer and the public schema. They can be required. Set =marketing_consent=true= only on a
+  non-sensitive consent question whose wording explicitly asks for marketing
+  permission. With =create_lead= and name/email mappings, a checked answer
+  writes through the marketing service in the response transaction. Its
+  evidence contains the published label, help, question key, form version
+  and submission time. Ordinary consent and unchecked boxes grant nothing.
+  The marketing module must be enabled; a refusal (including an existing
+  address suppression) rolls back follow-ups and keeps the response with
+  =mapping_note=. Permission never clears suppression. Without lead capture,
+  consent remains response evidence only.
+- *Sensitive questions.* A question marked =sensitive= is checked like any
+  other and stored apart, in the response's =sensitive_answers=, a
+  sensitive column: never in the API's JSON, the assistant's view,
+  webhooks, notifications, search or the audit log. The summary names the
+  question only. The response's page omits it too. A sensitive question
+  cannot fill a lead or declare a default value. Older private defaults are
+  removed from field records and frozen definitions by migration 000903.
+  =/webhook/form-sensitive-delivery= checks actual
+  outgoing HTTP create/update bodies and an emitted inbox notification.
+- *The audit log holds no answers.* A response's audit entries are
+  labelled "Form response #N", and changes to its name, answers, summary,
+  notes and origin are recorded as changed and redacted.
+- *Privacy notice.* =privacy_url= puts a "Privacy notice" link
+  (=vf-privacy=) by the button and in the schema.
+- *Retention.* =retention_days= keeps responses that long;
+  =retention_action= =anonymise= (the default: the response and its
+  version stay for the counts, everything typed goes) or =purge=. The
+  sweep runs when asked, never on a timer, at most =limit= (100, up to
+  1000) responses a run: =venturectl act form 0 sweep_retention
+  organization_id=1 limit=200=. It returns how many it anonymised and
+  purged and whether it hit the limit. Soft-deleted forms and responses remain
+  subject to retention; hiding a record cannot exempt its private data.
+- *Erasure.* =venturectl act form 0 erase_person organization_id=1
+  email=someone@example.com= (owners only) purges matching responses,
+  drafts, opt-in working copies and uploads across the organization,
+  including soft-deleted records. Instead of =email=, pass =contact_id=42=
+  to match personal-link bindings even after a contact's email changes or
+  becomes empty. Choose exactly one selector. A contact must belong to the
+  named organization; its current address also matches ordinary submissions.
+  Queued, failed, dead and cancelled confirmation, resume, opt-in and booking
+  mail loses its recipient and body content while retaining its idempotency
+  key and cancelled delivery record. Sending, uncertain and sent mail follow
+  the outbox's separate retention policy: it cannot recall delivery.
+  Private intake mail audits redact recipients, bodies and labels from the
+  start; migration 000902 removes earlier copied values. One audit entry,
+  "Erasure request", records how many, without the erased person or answers.
+  Leads, marketing consent, bookings and financial records have their own
+  subsystem retention; erasure of a form does not cancel those transactions.
+- *Export.* =venturectl act form 0 export_person organization_id=1
+  email=someone@example.com=, or =contact_id=42=, is owner-only and never
+  staged. It returns retained responses and working copies with form,
+  version, time, ordinary and sensitive answers. Unfinished upload claims
+  become filename, content type, size and upload references; bearer claims
+  are not exported. Generated assistant and MCP action tools always stage
+  calls, so they cannot run this export. Save the result to a private file
+  for the access request, outside an AI conversation.
+
+* Putting it on a site
+
+Every way in is the one renderer, =venture_forms_render()=, so the preview,
+the snippet, the script loader's fragment and the hosted page are the same
+markup.
+
+1. *HTML snippet.* Markup that posts straight to VENTURE. Paste it into any
+   page; it works with JavaScript off. The page's CSS styles it.
+2. *Script tag.* =<div data-venture-form="…/pub/form/TOKEN/fragment"></div>=
+   and =<script src="…/pub/forms.js" defer></script>=. The loader fetches
+   the form into the element --- in the page's own DOM, no shadow root, so
+   the page's CSS applies --- submits it without leaving the page and shows
+   the server's messages beside the questions.
+3. *Hosted page.* =/pub/form/TOKEN= is a whole page with nothing but the
+   form, for a link or an iframe. It carries no stylesheet; add
+   =?style=basic= for a minimal layout-only one.
+4. *JSON schema.* =/pub/form/TOKEN/schema= describes the form for a site
+   that renders it in its own framework and posts the answers back.
+
+A form's page in VENTURE shows its questions, how many responses it has,
+a live preview and a copy button for each of these. Set =server.base_url=
+so the codes carry this install's full address.
+
+** The class-name contract
+
+The markup is unstyled semantic HTML: =<form>=, =<fieldset>= and
+=<legend>= for choice groups, =<label for>=, native inputs,
+=aria-describedby= linking help and error text, =aria-invalid= on a
+refused answer, =role="alert"= on the error summary and =role="status"= on
+the thank-you. No inline styles, no stylesheet (except the opt-in hosted
+one), and none of VENTURE's own class names or theme tokens.
+
+These names are a public contract. Stylesheets on other people's sites
+are written against them; they are documented here, tested in
+=tests/test-forms.c= (=/forms/class-contract=) and never renamed. Later
+features add names; none is removed.
+
+| Name                          | On                                                                  |
+|-------------------------------+---------------------------------------------------------------------|
+| =vf-form=                     | the =<form>=; also =data-vf-form="TOKEN"=                           |
+| =vf-title=, =vf-description=  | the heading (=h2=, =h1= on the hosted page) and the introduction    |
+| =vf-errors=                   | the error summary, =role="alert"=, =tabindex="-1"=, =hidden= when there are none |
+| =vf-errors-title=, =vf-error-list= | the summary's count and its list of links to the refused questions |
+| =vf-required-note=            | "Questions marked * are required.", when any is                    |
+| =vf-field=                    | each question; also =vf-field--KIND= (=vf-field--short-text=, …), =data-vf-field="KEY"=, =data-vf-kind="KIND"= |
+| =vf-field--invalid=           | a question whose answer was refused                                 |
+| =vf-label=                    | the =<label>= or =<legend>=                                         |
+| =vf-required=                 | the required marker inside the label                                |
+| =vf-input=                    | every input, textarea and choice input                              |
+| =vf-choices=, =vf-choice=     | the list of choices and each choice's label                         |
+| =vf-help=                     | a question's help text (=id= =…-help=)                              |
+| =vf-error=                    | a question's error text (=id= =…-error=), =hidden= when none        |
+| =vf-hp=                       | the honeypot's container, =hidden=; a page that overrides =[hidden]= must hide it |
+| =vf-actions=, =vf-submit=     | the button's container and the button                               |
+| =vf-success=                  | the thank-you, =role="status"=                                      |
+| =vf-privacy=                  | the privacy notice link                                             |
+| =vf-page=                     | a current page section, and the hosted page's =<main>=                                          |
+
+Element ids are =vf-TOKEN-KEY= for an input, with =-help= and =-error=
+for its texts, and =vf-TOKEN-KEY--CHOICE= for each box of a choice or
+scale question.
+
+| =vf-progress=                 | current page and total; a focusable status message |
+| =vf-next=, =vf-back=           | real submit buttons for page navigation |
+| =vf-page-intro= | a page break's heading and introduction |
+
+** Accessibility
+
+The markup is ours even when the styles are not, so accessibility is part
+of the contract. Every rendering keeps these rules, and
+=/forms/a11y-contract= checks them over every field kind, blank, refused
+and thanked, bare and as a whole page, on every build:
+
+- Every input has a =<label for>= or sits inside its =<label>=. Choice and
+  scale questions are a =<fieldset>= whose first child is its =<legend>=.
+- Required is said in text and to assistive technology: an asterisk in the
+  label (=aria-hidden=, since the next point says it better), a sentence at
+  the top saying what the asterisk means, =required= and
+  =aria-required="true"= on the input, and on a radio group's fieldset
+  (=role="radiogroup"=). A box group (=role="group"=) cannot be required
+  in HTML; the asterisk, the sentence and the server say it.
+- Help and the error are tied to the input with =aria-describedby=; a
+  refused answer gets =aria-invalid="true"= and its message in words beside
+  it. Nothing is said by colour alone.
+- A refused submission is summarised at the top: =role="alert"=, the
+  number of problems, then one link per refused question to its input (or
+  the group's first box), in the order asked. The hosted page gives the
+  summary =autofocus=; the loader moves focus to it. Following a link
+  lands on the question.
+- The thank-you is =role="status"=; the loader moves focus to it.
+- Autofill tokens: email, phone and web address questions set =email=,
+  =tel= and =url=; a question mapped to a lead's name or company sets
+  =name= or =organization=; any question may name its own (=autocomplete=,
+  from the HTML standard's list, payment tokens excluded).
+- No positive =tabindex=, no =style=, no stylesheet of ours: focus order
+  and focus rings are the host page's.
+- The hosted page has =lang= and a =<title>=.
+
+*Keyboard and screen-reader patterns.* A rating is a group of native
+radio buttons: Tab reaches the group, the arrow keys move between points,
+Space picks, and the legend names the question. A multiple choice is
+native checkboxes, each its own Tab stop. Later question types (repeating groups and the booking slot picker)
+write their pattern here as they are added.
+
+*The loader* never traps focus: it only moves it to the summary or the
+thank-you, and never holds it. It never removes the no-script path: the
+fragment it fetches is the same form with the same =action=, so if the
+script fails after the markup arrives, the form still posts natively.
+
+*axe-core.* =tools/venture-forms-axe.sh= renders the same pages through the
+test and runs axe-core over them in jsdom (it installs axe-core and jsdom
+into a cache the first time; it needs node). Colour contrast is excluded:
+jsdom has no layout, and the colours on a host page are the host's. It
+reports no violations; the run is kept in
+[[file:evidence/forms-accessibility.org][the accessibility evidence]].
+
+* Repeating rows
+
+Create a =form_group= with a stable =key= (for example =attendee=), a
+=label=, =form_id=, =min_rows= and =max_rows=. Maximum 0 means 10; the
+absolute maximum is 50. Set each member question's =group_id= and keep
+its questions consecutive on one page. Publish to make the group, its
+bounds and its questions public together. Existing drafts keep their
+published definition when you edit the group.
+
+The ordinary question kinds and validation apply separately to every
+row. A rule's source and target may be in the same row; it is evaluated
+independently for that row. A non-repeated earlier question can also
+control a repeated question. A repeated answer cannot control navigation
+or a question outside its row: choosing which row would be ambiguous.
+Lead mappings, marketing permission, confirmation recipients and email
+uniqueness use non-repeated questions.
+
+=Add another= and =Remove= are real submit buttons. With scripts disabled
+they return the form with the other answers kept; the loader replaces
+its fragment in place. These edits permit incomplete answers and create
+only a private draft. They create no response, lead or business event.
+The final submission validates the row bounds and every visible answer
+again, including the original fill-time ticket. Removing a row renumbers
+the later rows, preserving their answers.
+
+The embed contract uses =attendee[0][name]= and =attendee[0][email]= for
+the first row, then index 1, and so on. The hidden
+=attendee[0][_row]=1= marker preserves an otherwise empty row; it is not
+stored as an answer. Indices must be consecutive from zero. The JSON
+schema gives each question a =group= object with =key=, =label=,
+=min_rows= and =max_rows=. JSON clients can send the indexed names or
+structured rows:
+
+#+begin_src json
+{"attendee": [{"name": "Alex", "email": "alex@example.com"}]}
+#+end_src
+
+Do not mix both encodings for the same answer. Nested groups, unknown
+questions, sparse indices and excessive rows are refused. The form's
+maximum possible input count, including row markers, is bounded at
+publication. Use =vf-group=, =vf-row=, =vf-group-limits=, =vf-add-row= and
+=vf-remove-row= to style these controls; the existing question hooks
+carry the indexed name. Row legends and group error links remain usable
+with keyboard navigation.
+
+Responses store arrays of row objects under the group key. Sensitive
+members are stored separately using the same row indices; the response
+page, ordinary API and reports never expose their values. Owner export
+returns both =answers= and =sensitive_answers= with that structure.
+Email-based export and erasure search inside rows too. The summary's
+=Rows= and answer counts use row totals for repeated questions, and
+numeric averages use answered rows. A question moved into or out of a
+group starts a separate version segment. Final response counts still
+count people submitting forms, not their rows.
+
+* Answer piping
+
+Write ={name}= in a later question's label or help, a page break's heading
+or introduction, or the form's =success_message=. It inserts the earlier
+answer as text. The syntax is fixed: ={field_key}=, or ={attendee.count}=
+for a repeating group's row count. ={{= and =}}= produce literal braces.
+There are no expressions, property paths, scripts or markup evaluation.
+
+A source must precede the text that uses it in the form's order (position,
+then record ID). A group member can refer to an earlier member of its own
+row; a question outside that group can use the group's count after the
+group, but cannot choose an arbitrary row's member. The success message
+can use any non-repeated question and any group count. Sensitive answers
+cannot be piped. Unknown, forward, malformed and sensitive references are
+refused at save and publish. Moving a source or making it sensitive also
+checks the templates that already refer to it.
+
+The server substitutes only validated, visible answers. Invalid, hidden,
+skipped and missing answers produce empty text. Choice IDs are displayed
+using their choice labels; multiple choices are joined with commas. Numeric
+answers and row counts remain numbers rendered as text. An answer containing
+=<script>= is HTML-escaped, and braces inside an answer are never evaluated
+again. Output is bounded to 32 KiB. Consent records retain the actual
+substituted wording shown, using the published question definition.
+
+With JavaScript off, submitting a page carries its validated answers into
+the next page's text and the final success message. A refused page also
+redisplays its labels and error-summary links with validated substitutions.
+The loader updates same-page references while typing, clears substitutions
+when a rule hides the source, and uses text nodes for every update. The
+server revalidates at submission. A source named =constructor= is an
+ordinary question, never an inherited JavaScript object property.
+
+The public schema's =piping= object describes the syntax and text-only
+contract. The root =pipeable_text= array names =success_message=. Each question's
+=pipeable_text= array names =label= and =help=;
+those strings contain the templates. In HTML, =data-vf-pipe= marks a text
+node's template and =data-vf-piping= holds only the referenced public values
+and source descriptions needed on that page. Custom renderers must perform
+text substitution and honor visibility/validation, never insert answers as
+HTML. Private drafts do not expose unrelated earlier answers through these
+attributes. Saved response pages resolve labels against their own version
+and public answers, preserving row identity.
+
+Migration =000810_form_piping= adds no columns: piping derives from existing
+text metadata and versioned definitions. See the
+[[file:evidence/forms-piping.org][built-server answer-piping demonstration]].
+
+* Double opt-in signups
+
+Set =double_opt_in=true=, =optin_email_field= to a required, non-sensitive
+email question outside repeating groups, and =public_origin= to the public
+HTTPS origin (loopback HTTP is allowed for development). Add a required
+=consent= question with =marketing_consent=true=, write the exact permission
+being requested, then publish. An optional =optin_list_id= names a static
+marketing list in the same organization. Mail, contacts and marketing must
+be enabled; this workflow cannot silently skip its confirmation.
+
+A valid first submission creates only a private =form_pending= working copy
+and an outbox confirmation message. It creates no final response, lead,
+contact, permission or list membership, and the working copy emits no
+business save event, audit, webhook or notification. Its answers, address
+and token digest are sensitive. The message's bearer URL lives only in its
+private body. The page and loader say "Check your inbox"; the configured
+success message or redirect runs only after confirmation.
+
+The signed random link uses =/pub/form/TOKEN/confirm/CAPABILITY= and expires
+after 24 hours. Its unstyled markup uses =vf-confirm= for the confirmation
+page and =vf-complete= for the check-inbox page. Opening it displays a button;
+pressing *Confirm signup* consumes it. GET never confirms, so an email
+scanner cannot subscribe someone. Confirmation uses the original published
+questions and list, rechecks current availability and response limits, and
+atomically creates one response, finds or creates the contact, records the
+published permission with the confirmation time, and adds list membership.
+Existing contact details are preserved. A personal-link signup must confirm
+that contact's own inbox. Ambiguous matching contacts are refused. Address
+suppression always wins, including if added after the signup was requested.
+A failed confirmation rolls back all writes and leaves the link retryable.
+
+Submitting again with the same form and normalized address resends without
+replacing the original answers. At most three messages are queued, at least
+60 seconds apart, within the original expiration. A resend invalidates the
+previous link. The public per-client and per-form rate limits apply as well.
+The same check-inbox response is used for a coalesced or suppressed address.
+Expired, altered, wrong-form and consumed links receive the uniform 404.
+
+The bounded retention sweep purges expired pending signups and reports
+=expired_signups=. Owner export and erasure include unconfirmed signups;
+erasure and expiration cancel and erase content from confirmation mail
+known not to be in flight. Sent mail follows the outbox's separate retention policy.
+Migration =000800_form_optin= supports SQLite and PostgreSQL. Generic CRUD
+cannot manufacture or confirm =form_pending= records. See the
+[[file:evidence/forms-optin.org][built-server double opt-in demonstration]].
+
+* Prefill and personal links
+
+A question opts into public URL values with =allow_prefill=true=. For
+example, =?name=Alex&utm_campaign=autumn= sets those questions only if
+both opt in. Unknown parameters and questions that do not opt in are
+ignored. Values pass the same field validator as typed answers before
+they are rendered; invalid values are omitted. A person can edit visible
+prefilled answers, and final submission validates them again. Consent,
+sensitive questions, page breaks and repeated questions cannot be
+prefilled. =personal= and =style= are reserved query parameters.
+
+For a known contact, set each question's =contact_field= to =name=,
+=email=, =phone=, =role=, =website= or =address=. No other contact property
+is exposed. A mapped contact value takes precedence over query prefill.
+Publish the mapping with the questions. An owner generates links using:
+
+#+begin_src sh
+venturectl act form 12 personal_links contact_ids='[3,8]' origin=https://forms.example days=7
+#+end_src
+
+The action returns a JSON array in =result=, with =contact_id= and =url=
+for each contact. It accepts 1–200 IDs in this form's organization and an
+expiry of 1–30 days (7 by default). It is not stageable: generated
+capabilities must not appear on a shared confirmation card. =origin=
+is an HTTPS origin; HTTP is accepted only for loopback development.
+Treat each URL as a bearer link: forwarding it forwards access to the
+mapped initial values. It does not create a login or permit contact edits.
+
+The token is signed for one form and contact identity. A modified,
+expired, other-form or deleted-contact token gets the same 404 as an
+unknown form, both when rendering and when submitting. A valid personal
+submission records =contact_id= even if the person edits the email
+answer. The form's =one_per_link= and =one_per_contact= switches check
+retained responses inside the submission transaction; anonymous
+responses are not assigned a contact by guessing from an email address.
+Erasure/anonymisation removes these bindings and their duplicate limits.
+Owner email export/erasure also finds bound responses and drafts through
+the contact's current email when the submitted answer was different.
+
+Initial values for later pages travel in a bounded, signed
+=_vf_prefill= hidden payload until the first page is saved, then in the
+private draft. Personal identity travels as =_vf_personal= and cannot be
+swapped within an existing draft. The final save checks the personal
+token again. Custom clients receive the same validated values and control
+fields in the public schema's =prefill= object. The loader and HTML
+renderer use the ordinary inputs and styling hooks. Public form responses
+set =Referrer-Policy: strict-origin= and are not cacheable. Only the origin
+is sent as a referrer, never a capability path or prefill query. This also
+preserves a native hosted POST's Origin header when an embed allow-list is set.
+
+A hidden opted-in question can retain UTM or campaign text in the answer
+object. That text does not replace an attribution visitor identity,
+grant analytics consent, or change the form's configured CRM campaign.
+The attribution module continues to own its consenting visitor records.
+
+** Campaigns and sequences
+
+Set a marketing send's =survey_form_id= before previewing it. Preview
+creates a seven-day personal link for each eligible contact and freezes
+it in the private delivery bodies. Non-contact audience members are
+excluded with =form_requires_contact=. The ordinary preview/API bodies
+contain no capability. Approval, suppression checks, unsubscribe and
+idempotent delivery still go through the marketing service and outbox.
+Send within the link lifetime; a later campaign needs a fresh preview.
+
+An email sequence step can also set =survey_form_id=. Execution generates
+its seven-day link using the sequence service's configured public
+=base-url= and delivery clock. The existing in-process mail adapter must
+prefer =sequence_delivery.private_body= when present, otherwise =body=.
+Private body is service-owned and absent from generic reads. The personal
+URL is not added to ordinary tracking-destination records. A non-email
+step with a survey form fails visibly. The sequence engine retains its
+existing adapter boundary and does not itself send mail.
+
+* The public door
+
+=/pub/form/TOKEN= (GET and POST), =/pub/form/TOKEN/fragment= and
+=/pub/form/TOKEN/schema= (GET) and =/pub/forms.js= take no session: a
+stranger's browser is the caller, and the token is the capability. A
+signed-in user gets exactly what a guest gets. =tests/test-auth.c= pins
+this (=/auth/forms-public-door=). Everything else about forms --- the
+records, the report --- is behind the ordinary roles.
+
+- *Only a live form answers.* A draft, a closed form, one past =closes_at=,
+  one at its =response_limit=, an unknown token and the module switched
+  off --- and a live form that has never been published --- all return
+  the same 404 page, byte for byte, so the door says
+  nothing about which. The limit and the state are checked again under the
+  database lock at the save, so two people posting for the last place get
+  one response between them.
+- *Size before parsing.* A body over 64 KiB is refused with 413 before it
+  is read.
+- *Rates.* Each client address may post 20 responses a minute across all
+  forms; each form accepts =hourly_limit= an hour (600 when 0). Over
+  either is 429 with =Retry-After=.
+- *Robots.* Every rendering carries a honeypot (=_vf_hp=) and a ticket
+  (=_vf_t=): the time the form was handed out, signed with the form's
+  private =ticket_key=. A filled honeypot, a missing or forged ticket, or
+  a response faster than =min_fill_seconds= (3 when 0) is told it
+  succeeded and nothing is saved --- telling a robot why teaches it. The
+  ticket guards the script loader, the hosted page and the schema, which
+  are fetched fresh; a copied HTML snippet carries the ticket it was
+  generated with, so on a static page the honeypot is the guard. A captcha
+  provider is later work.
+- *Origins.* =allowed_origins= lists the only sites (=https://host= or
+  =https://host:port=, one per line) whose pages may use the form. A
+  browser on any other gets 403. The hosted page posting to this server is
+  always allowed. Empty allows any site. Allowed requests get
+  =Access-Control-Allow-Origin= so a script can read the answer; the
+  hosted page's =frame-ancestors= follows the same list.
+- *No preflight.* This server answers no =OPTIONS= request, so everything
+  public is a CORS "simple" request: the loader posts form-encoded with only
+  an =Accept= header, and a site posting JSON from another origin sends it
+  as =text/plain= (the body is still JSON). =application/json= works from
+  a server or the same origin.
+- *Validated here.* Every answer is checked against its question whatever
+  the browser did. A name that is no question on the form is refused with
+  its own message, never silently dropped: the sender believes it was
+  received. A question answered twice is refused.
+- *Nothing internal leaks.* The renderer and the schema write out only the
+  public half of a form: no =name=, =notes=, organization, mappings,
+  allowed sites, lead settings or ticket key. =tests/test-forms.c=
+  (=/forms/no-internal-config=) checks every rendering and the schema.
+
+** What comes back
+
+A form post (no script) gets a page: the thank-you, a 303 to
+=redirect_url=, or the form again with each message beside its question,
+the answers still in the boxes and =aria-invalid= set (422). A request
+with =Accept: application/json= or a JSON body gets JSON:
+
+#+begin_src json
+{"ok":true,"message":"Thank you. Your response has been received.","redirect":"https://example.com/thanks"}
+{"ok":false,"message":"Please correct the answers marked below.","errors":{"email":"Enter an email address, like name@example.com."}}
+#+end_src
+
+** Without JavaScript
+
+The snippet and the hosted page need no script at all: native inputs,
+native =required=, =pattern=, =min= and =max= for a quick check in the
+browser, and the server's messages on a re-rendered page. The loader is
+an improvement on that, not a requirement. One place degrades: a required
+multiple-choice question cannot say "at least one" in HTML, so only the
+server refuses it.
+
+* After a response
+
+A response is saved through the ordinary path, so it is audited and
+automation rules, outbound webhooks and inbox notifications hear about it
+with no form code. Its =name= is the answer mapped to a lead's name, else
+a question keyed =name=, else the first email, else "Response to TITLE".
+Its =summary= is every answer as "Question: answer", which is what search
+reads.
+
+Only the forms service creates a response. A generic create --- the API,
+the CLI, an import --- is refused and pointed at the public address. The
+answers, the summary, the form and the time are fixed once written; staff
+may mark it =reviewed= and add =notes=.
+
+** A lead from each response
+
+With =create_lead= on, each response becomes a lead through the lead
+service's own capture: the same inputs, the same campaign check and the
+same duplicate rules as a lead form (=on_duplicate= =merge=, =create= or
+=reject=). A question's =maps_to= names the lead input it fills: =name=,
+=email=, =phone=, =company_name=, =website=, =notes= or =referral_code=
+(see [[file:referrals.org][Referrals]]). Several questions
+mapped to =notes= are kept one per line under their question. The lead's
+source is =lead_source=, else the title, else the name; =campaign_id=
+places it in a campaign of the same organization. The response's
+=lead_id= points at the lead made or merged into.
+
+** A confirmation email
+
+With =confirmation_field= naming an email question, a response queues
+=confirmation_subject= and =confirmation_message= (the thank-you when
+empty) to that address through the mail outbox, once per response.
+
+** When a follow-up cannot be done
+
+The lead, the confirmation and the response are written in one
+transaction. If the lead or the email cannot be made --- leads off, a
+=reject= policy meeting a known lead, a campaign from another
+organization --- the transaction is undone and the response alone is
+saved, with =mapping_note= saying what was not done. A response is never
+lost because its follow-up failed.
+
+* The summary
+
+=form_summary= takes =form_id= (required) and the period, on the
+responses' =submitted_at=. One row per choice of every choice question,
+=Yes= and =No= for a box, one row per step of a scale and an =Average=
+row for scales and numbers, and =Answered= for text, each with the
+=versions= it covers (see Versions). =share= is a ratio in JSON (0 to 1), formatted as a percentage of the
+responses in the period that were asked that question. It reads at most 50,000
+responses and asks for a shorter period beyond that.
+
+#+begin_src sh
+venturectl report form_summary all form_id=3
+#+end_src
+
+* Lead forms
+
+=lead_form= (see [[file:leads.org][Leads]]) is kept as the lead-specific
+shortcut: a fixed set of lead inputs posted to =/f/TOKEN=, which the
+attribution capture and existing sites already use. It is not a second,
+unrelated intake: a form's lead mapping goes through the same
+=capture_lead()= in the lead service, so both apply the same inputs, campaign
+check and duplicate rules. A new form should be a =form= with
+=create_lead=; a lead form stays for what already posts to it.
+
+* From the command line
+
+The records are generic, so =venturectl= needs nothing form-specific:
+
+#+begin_src sh
+venturectl describe form_field
+venturectl create form name="Website contact" title="Contact us" state=draft
+venturectl create form_field form_id=3 key=email label="Email" kind=email required=true position=10
+venturectl create form_field form_id=3 key=topic label="Topic" kind=single_choice \
+    choices="Sales
+Support" position=20
+venturectl update form 3 state=live
+venturectl act form 3 publish
+venturectl list form_submission form_id=3
+#+end_src
+
+* Upgrading
+
+Migrations =000790=–=000792= check prefill/link fields and optional marketing
+and sequence integration tables. Each optional table has its own guard.
+
+Migration =000780= checks the metadata-created group table and field
+references for both database backends.
+
+Migration =000760= checks the metadata-created draft table and draft lifetime
+column on SQLite and PostgreSQL; it is safe when the forms module is disabled.
+
+Migration =000741_form_marketing_consent= leaves existing questions without
+marketing permission; it never converts historical acknowledgements into
+marketing consent.
+
+Migration =000711_forms= pins the schema the module relies on --- the
+per-form key index and the columns the door reads --- on SQLite and
+PostgreSQL. =000720_form_versions= pins the version table and the columns
+that tie a form and a response to a version. With forms switched off the
+tables are absent and both pass; switched on later, reconciliation makes
+them. Forms and versions ship in one release, so no released install
+holds a response without a version; one would be read against the first.
+
+The [[file:evidence/forms-consent.org][marketing consent demonstration]] records
+the built-server unchecked and checked submissions and retained evidence.
+
+* Scheduled availability and the last response
+
+=opens_at= is inclusive: a live, published form begins accepting responses at
+that instant. =closes_at= is exclusive: it stops at that instant. Either may
+be empty; when both are set, closing must be later than opening. Use the
+normal date-time input format, including an offset for an unambiguous instant.
+These are live settings, so changing them does not require republishing.
+
+Availability is checked both when the form is opened and again inside the
+submission transaction, after rereading the form. Someone holding a form open
+cannot submit after its closing time. =response_limit= is checked under the
+same lock; zero means unlimited. Two in-flight requests for the last place
+produce one response and one refusal.
+
+The public door retains its uniform 404 for not-yet-open, closed, expired,
+full, draft, disabled and unknown forms. It does not reveal which state caused
+the refusal. This follows the public-door privacy contract, including the
+fragment and schema endpoints. There is no browser-only scheduling check.
+
+Migration =000750_form_schedule= leaves existing forms without an opening
+restriction. =/forms/schedule= checks exact boundary instants and stale form
+objects; =/forms/last-slot= checks simultaneous requests for one place.
+
+Set =unique_email_field= to a required email question's stable key in the
+published version to allow one response per address. Blank disables the limit.
+The comparison ignores ASCII case and surrounding whitespace. A duplicate is
+shown beside that question, before any lead or confirmation email is created.
+This proves only that the same address was entered, not who controls it.
+
+The check includes earlier responses to that key, even those received before
+the limit was enabled, and reads both ordinary and sensitive answers. It scans
+retained responses in batches of 100 inside the transaction; checking a large
+form therefore takes time proportional to its retained responses. Anonymising,
+erasing or purging a response removes its identity and allows that address to
+respond again. There is no separate identity list surviving erasure. Changing
+the configured question changes which answer key is compared.
+
+Browser storage is not an identity guarantee: it can be cleared and is not a
+server-enforced response limit. For verified identity, use the signed personal
+links and =one_per_link= / =one_per_contact= limits described above.
+
+The [[file:evidence/forms-schedule.org][built-server demonstration]] exercises these public flows.
+
+* Languages
+
+A form's =default_language= identifies the original wording (default =en=).
+Add =form_translation= records through the ordinary editor, API or CLI, then
+publish. Each record names =form_id=, =language=, =text_key= and plain =text=;
+its display name is derived on save. Tags are case-insensitive and stored in
+lowercase, for example =fr= or =fr-ca=. Each form/language/text key has one
+active translation. Partial translations are allowed: the save validator emits
+an advisory count of missing strings and the default wording fills the gaps.
+An empty translated string also falls back. Invalid keys, unsafe piping and
+invalid language tags are refused. At most 2000 texts belong to a form, with a 1 MiB catalog bound.
+
+Text keys address public wording, never answer identities:
+
+| Key | What it translates |
+|-----+--------------------|
+| =form.title=, =form.description= | Heading and introduction |
+| =form.submit_label=, =form.success_message= | Final button and thanks |
+| =form.confirmation_subject=, =form.confirmation_message= | Ordinary response email |
+| =field.KEY.label=, =field.KEY.help=, =field.KEY.placeholder= | A question, including a page-break heading/introduction |
+| =choice.KEY.ID= | A choice label; =ID= stays fixed in answers |
+| =group.KEY.label= | A repeating group's label |
+| =message.NAME= | A validation or system message from the catalog below |
+
+#+begin_src sh
+venturectl create form_translation form_id=12 language=fr text_key=field.name.label text='Votre nom'
+venturectl create form_translation form_id=12 language=fr text_key=choice.topic.sales text=Ventes
+venturectl create form_translation form_id=12 language=fr text_key=message.required text='Une réponse est nécessaire.'
+venturectl create form_translation form_id=12 language=fr text_key=form.success_message text='Merci {name}.'
+venturectl act form 12 publish
+venturectl report form_summary all form_id=12 language=fr
+#+end_src
+
+Select =?lang=fr= on the hosted URL or fragment. A loader element can carry
+=data-venture-form-lang="fr"=; an explicit =lang= in its URL wins over the
+attribute. Otherwise the server negotiates the bounded =Accept-Language=
+header, including quality weights and parent-language fallback, then uses the
+default. Unsupported explicit tags fall through to that negotiation. The
+rendered =form= carries =lang=. The public schema reports the selected and
+available languages and retains stable choice ids.
+
+The language is carried in signed form state, not trusted from a posted
+language field. Working copies retain it through validation and Back/Next.
+Translations and default wording are frozen at publication. Editing a
+translation does not change an in-flight response or its consent evidence.
+=form_submission.language= records the language used; it is immutable like
+the answers. Reports combine all languages by key and choice id. The report's
+=language= option only changes labels, falling back within each original
+version; it does not filter responses.
+
+Piping uses translated labels and selected choice labels. Consent records the
+actual translated, substituted wording. Confirmation emails use that same
+language. Double-opt-in resends and confirmation preserve the original pending
+version and language even if a different language is used for a later request.
+Text is escaped on HTML surfaces and never used as a printf format or code.
+
+The =message.NAME= catalog includes =required=, =email=, =phone=, =url=,
+=date=, =number=, =choice=, =multiple=, =one_answer=, =checkbox=, =consent=,
+=single_line=, =pattern=, =max_length=, =min_length=, =minimum=, =maximum=,
+=rating=, =required_note=, =errors=, =next=, =back=, =send=, =page=, =of=,
+=privacy=, =yes=, =no=, =given=, =add_row=, =remove_row=, =success=,
+=inbox_title=, =inbox=, =confirm=, =confirm_intro=, =optin_subject=,
+=optin_intro=, =optin_expiry= and =mail_subject=. Bound-related translations
+are plain instructions; native input constraints still carry the numeric
+bounds. Browser-native validation messages follow the browser's locale.
+
+Unavailable forms retain the uniform public 404 contract: they do not reveal
+that a particular form is closed, full, scheduled or unknown, so there is no
+per-form closed-message override.
+
+Additional validation keys are =row_marker=, =group_heading=, =page_heading=,
+=unknown_question=, =email_required=, =duplicate_email=, =optin_permission=,
+=optin_email=, =personal_inbox=, =current_page=, =row_numbers=,
+=row_consecutive=, =rows_excess=, =rows_minimum=, =rows_maximum=,
+=rows_keep= and =row_operation=. System failures before an authenticated
+form state exists retain generic messages.
+
+* Quizzes and scored assessments
+
+Set =quiz_enabled=true= and declare =scoring= on the question records.
+Publish the form to activate the grading scheme. Choice scores use stable
+choice IDs, not translated labels:
+
+#+begin_src json
+{"choices":{"yes":5,"no":-2},"correct":["yes"]}
+#+end_src
+
+Number and rating questions accept non-overlapping inclusive ranges:
+
+#+begin_src json
+{"ranges":[{"min":0,"max":5,"points":1},{"min":6,"max":10,"points":3}]}
+#+end_src
+
+Points are integers between -1000000 and 1000000; input numbers may be
+fractional. Each declaration has at most 128 entries and 16 KiB of JSON.
+An unmatched or unanswered value scores zero. Hidden answers are discarded
+before grading. Repeated rows each contribute their validated answers.
+Sensitive questions cannot be scored. Correct choice IDs are optional;
+=show_answer_key=true= publishes the key only after a completed response,
+for questions actually answered. Neither grading declarations nor correct
+answers appear in the public schema or the initial form.
+
+Create =form_result_band= records with =form_id=, a stable =key=, inclusive
+=minimum=/=maximum= bounds, and =message= or =redirect_url=. At most 128
+non-overlapping bands belong to a form. Redirects require HTTPS, without
+credentials. A band's message is plain text, without answer piping; translate
+it through =result.KEY.message=. The score and matched result are stored
+with the response. JavaScript-free forms and the loader use the same result;
+HTML in result text is displayed literally. A result redirect takes precedence
+over the form's general redirect. No matching band still displays the score.
+
+Only the server computes =score=, =result_key= and =result_message=. Public
+POSTs cannot supply them, and saved results cannot be edited through CRUD.
+Published versions freeze the points, bands and answer-key setting. A later
+edit does not regrade existing responses. =form_summary= includes score
+counts and shares separated by published version, because different grading
+schemes need not be comparable. Privacy exports include scores and results;
+anonymisation clears them together with the answers.
+
+For ordinary lead capture, =score_to_lead=true= supplies the computed score
+as the =assessment_score= attribute before the existing lead-scoring rules
+run. For example, a rule with =conditions=assessment_score=8= can add points
+to the existing formula. This does not replace the formula or a manual score
+override. With the option off, no assessment input is supplied. A duplicate
+lead receives the new input through the same scoring service; a contact or
+company match does not create a lead or alter that CRM record's score.
+Double opt-in's contact/list workflow remains a contact/list workflow.
+A refused follow-up keeps the response and its computed result with a note.
+
+Migration =000840= covers the assessment properties and result-band records
+on both database backends. See [[file:evidence/forms-quiz.org][the built-server quiz demonstration]].
+
+* Booking a time or a seat
+
+A =booking= question points at an existing =booking_page= through
+=booking_page_id=. It uses that service's availability windows, timezone,
+calendar conflicts, duration and buffer. There is no separate forms calendar.
+Set the form's =public_origin= to the configured HTTPS origin used for private
+management links; loopback HTTP is accepted for local development.
+
+A form has at most one booking question. It cannot repeat, be sensitive, have
+a default, accept prefill or map a selected time into lead fields. Its
+=booking_name_field= and =booking_email_field= name required, non-sensitive,
+non-repeated short-text and email questions; empty uses =name= and =email=.
+These references are frozen when published. The booking target's current
+availability is always re-read, including at final submit.
+
+Slots render as ordinary radios, with =vf-slot= labels inside =vf-slot-day=
+groups. They work without JavaScript and inherit host CSS. The public schema
+includes each available slot's start, end, label and local calendar day.
+An unavailable selection returns a field error and offers current slots.
+Neither viewing a form nor saving a draft reserves anything.
+
+A booking page's =capacity= is seats per exact slot: zero means one, at most
+10000. A meeting or hold from another target still blocks overlapping time;
+capacity never makes unrelated meetings disappear. A short service-owned hold
+reserves the seat under the save lock during final intake, before follow-ups
+can run. Expired holds do not count even before cleanup. Confirmation creates
+an ordinary meeting linked by the response's =booking_id=, with the contact
+on that meeting. Existing CalDAV synchronization carries the meeting to the
+owner's calendar. The selected time and booking link cannot be rewritten on
+an accepted response.
+
+With mail enabled, the outbox queues a confirmation containing a private,
+signed cancellation/rescheduling URL. It lives in the private mail body, not
+in audit or generic API output. Opening the link only shows explicit buttons;
+POST performs the change. A successful change rotates the capability, and
+replays and tampered links return not found. A link expires one day after its
+booked start. Rescheduling uses the same availability and capacity checks.
+Cancellation changes the existing meeting's status and releases its seat.
+The configured public origin is never taken from a respondent's Host header.
+
+The existing =/book/<slug>= surface remains compatible. It calls the same
+reservation and confirmation service rather than creating hidden one-field
+forms or changing the meaning of existing scheduling links. Standalone
+booking pages may set their own =public_origin= for confirmation links.
+
+Migrations =000850= and =000851= cover form booking references and the calendar
+service's private reservations on SQLite and PostgreSQL independently, so
+turning either module off does not prevent the other from migrating.
+
+* Payments and paid bookings
+
+Enable Stripe for the organization, then set =form.payment_enabled=true= and
+=public_origin=. Required non-sensitive short-text and email questions name
+the payer; =payment_name_field= and =payment_email_field= default to =name=
+and =email=. Payment and double-opt-in signup are separate forms: a purchase
+must not be treated as newsletter confirmation.
+
+Create =form_price= records with =form_id=, a stable =key=, public line =name=,
+=product_id= and exact =unit_price=. A line without conditions is fixed.
+=choice_field= plus a declared =choice_id= includes it only for that selected
+choice. =quantity_field= multiplies it by a visible number answer, restricted
+to whole counts from zero through 1000000. Missing/hidden quantities add no
+line. Price controls cannot use sensitive answers or repeating groups. All
+lines use one ISO currency, at most 100 per form, and the final total must be
+positive. Publish freezes the price declarations alongside the questions.
+
+The server computes every amount using =VentureMoney= and checked integer
+multiplication. The invoice contains exact computed line amounts at quantity
+one; its balance is checked against the computed total. A submitted =amount=
+or =currency= is an unknown question and is refused, never a price override.
+Checkout displays the final amount using the existing invoice payment path;
+no card or bank account data passes through the form.
+
+A paid submit creates an invoice and private =form_payment= working copy in
+state =pending_payment=, then leaves the database transaction before contacting
+Stripe. There is no ordinary response yet. The signed =_vf_payment= control
+identifies one intake across retries, pages and resume; retain the schema's
+=payment_field=/=payment_nonce= when building a custom client. It is distinct
+from the fill-time ticket and never appears in final answers, audit or export.
+Retrying the same intake reuses its invoice and provider idempotency key;
+changed answers require a fresh form. Payment records are service-owned. Generic record surfaces may show their
+processing metadata, but cannot read private contents or create, edit, delete,
+restore or purge them. The assistant and MCP never receive pending answers.
+
+Each public purchase gets a fresh guest company/contact. An unverified email
+cannot select an existing Stripe customer's saved Checkout details. Invoice
+and guest CRM records are financial/business records and may emit their own
+normal events. *Form response* automation, lead follow-ups, confirmation mail
+and booking confirmation wait until verified settlement has committed.
+A pending intake reserves response/email/personal-link limits under the save
+lock. ACH completion with an unpaid status stays private in =processing=;
+the later successful settlement creates exactly one ordinary response linked
+by =invoice_id=. Refunds and disputes remain on that invoice.
+
+Checkout expires after 45 minutes. Paid bookings hold their seat for that same
+window and require a start later than the deadline. They offer card Checkout,
+since delayed bank settlement cannot promise a short-lived seat. Ordinary
+paid forms retain the organization's configured ACH behavior. Expired or
+failed Checkout releases the seat and response reservation. A late successful
+payment rechecks released form capacity. It remains =paid_needs_capacity= if
+capacity is unavailable, or =paid_needs_booking= if its booking hold expired;
+it never overbooks or creates another charge.
+
+An owner can recover after a missed callback or repaired follow-up with the
+form action =reconcile_payment= and =invoice_id=. For =paid_needs_booking=,
+include =booking_start= naming a newly offered ISO timestamp arranged with the
+customer. The action uses the same availability lock, preserves the original
+answer as evidence and links the replacement meeting. It is not stageable.
+If capacity cannot be supplied, handle the refund on the invoice.
+
+Owner export includes pending payment answers without bearer controls.
+Erasure removes those answers and releases an unconfirmed hold; later payment
+callbacks cannot recreate an erased response. Completed working copies drop
+their answer payload immediately. The bounded retention sweep forgets any
+remaining payment payload after 30 days, or the form's shorter retention
+period. Independent invoice, guest CRM and
+mail records retain their own policies; form erasure never silently voids an
+invoice or issues a refund. Migration =000860= covers both database backends.
+
+* Results on dashboards
+
+Six widget kinds use the same answer-counting rules as the survey summary:
+=form_responses= (daily counts), =form_choices= (stable choice IDs), =form_nps=,
+=form_rating= (average), =form_scores= and =form_dropoff=. Set =record_id= to
+the form ID, =period= to a dashboard period, and =field= to the stable question
+key for choice, NPS and rating widgets. =options={"version":2}= restricts the
+published version before the row bound is applied; omit it for all versions.
+
+Choice labels can change without splitting their IDs. A changed rating scale
+starts a separate version segment. NPS requires a non-sensitive rating from
+0 through 10 in every selected version: 9-10 are promoters, 0-6 detractors,
+7-8 passive, and the result is 100 times (promoters minus detractors) divided
+by answered ratings. Empty ratings have no value, rather than a fabricated
+zero. Repeating questions count each answered row, as the survey does.
+
+Counts and score distributions show the published version boundary. The
+unfinished-page widget counts *retained unfinished drafts by their current
+page*, scoped by the draft's creation date. It is a current drop-off snapshot,
+not a historical visitor funnel: it does not count people who never advanced
+past the initial page, and retention/erasure remove their draft counts.
+It never reads draft answers. Submitted-response widgets use submitted dates.
+
+All kinds obey the viewer's organization and venture scope, refuse sensitive
+questions, and show the ordinary module-off state when forms are disabled.
+JSON and HTML are emitted together; the assistant reads the same aggregates.
+Queries are bounded and ask for a narrower period/version rather than silently
+truncating. The [[file:../data/examples/form-results-dashboard.json][form results dashboard template]] imports without a fixture
+form ID; set its IDs and question keys after import.
+
+* Proposed summaries of free-text answers
+
+The form's =summarize= action reads one form, an inclusive published-version
+range and a submitted-date period. Editors can request it through the generic
+action UI or CLI:
+
+#+begin_src sh
+venturectl act form 12 summarize first_version=1 last_version=3 period=this_month question=comments limit=100
+#+end_src
+
+=first_version= defaults to 1, =last_version= to the current published version,
+=period= to all dates and =limit= to 100 responses (maximum 200). Omit =question=
+for all short/long text questions. Other field kinds, file contents and all
+sensitive fields are excluded. A question marked sensitive after publication
+is excluded from historical summaries too, even if that field was later deleted.
+Repeating text rows are separate answers.
+
+Input is bounded to the response limit, 200 text answers and 32 KiB of answer
+text. An excessive range or empty eligible input is refused before calling a
+model; narrow the version range, period or question. The request goes through
+the existing organization-bound, toolless completion service. Strangers' text
+is JSON-encoded between =BEGIN RECORDS=/=END RECORDS= under instructions to
+ignore any instructions in those records.
+
+The result is a proposal with a short summary, up to ten themes, and up to five
+quotes. The model names answer IDs for each theme; the server counts distinct
+valid IDs, so a duplicated citation cannot inflate its count. Themes may
+overlap, and their classification is still a model proposal. Every retained
+quote is a verbatim substring of its named input answer; invented quotes and
+invalid references are dropped. A malformed output format is refused. No tools
+are offered to the model, and no form, response, score or note is updated.
+The action is not stageable. A person may copy the proposal into their own
+ordinary saved note; there is no automatic summary persistence.
+
+* Templates and portable definitions
+
+Use the generic =form= actions from the record UI, REST, CLI or MCP. The
+=templates= type action lists the same portable definitions that
+=import_definition= uses; there is no second template construction path.
+
+| Template | Starting questions and behavior |
+|----------+---------------------------------|
+| =contact= | Name, email and message |
+| =feedback= | A 1–5 rating and comments |
+| =nps= | A 0–10 recommendation question and reason |
+| =event-signup= | Name, email and a sensitive accessibility request |
+| =job-application= | Name, email, experience, portfolio link and optional sensitive resume file |
+| =newsletter= | Email and explicit required permission; double opt-in |
+| =appointment-request= | Name, email, preferred date and details |
+| =order= | Name, email, requested item and quantity |
+
+Templates start as drafts, with labelled questions, no prechecked consent,
+and a 90-day purge policy. Review the wording, privacy notice and retention
+for your use before publishing. Set the newsletter's =public_origin= to the
+real HTTPS form origin before publishing; it never substitutes a fake mail
+link. Appointment and order templates collect requests: their wording says
+that the team must confirm them. Add a =booking= question or published price
+declarations to use actual reservations or payment collection.
+
+#+begin_src sh
+venturectl act form 0 templates organization_id=1
+venturectl act form 0 import_definition organization_id=1 template=contact
+venturectl act form 12 export_definition format=yaml
+#+end_src
+
+=export_definition= returns both a portable =definition= object and =text=
+in the requested =json= or =yaml= format. The type action
+=import_definition= accepts that text in its =definition= parameter, or a
+built-in =template= name, but not both. It creates a new form, never updates
+an existing one. The generic CLI =act= schema types the parameters; a REST
+caller sends definition text as a JSON string, for example:
+
+#+begin_src json
+{"organization_id":1,"definition":"{\"format\":\"venture-form\",\"version\":1,\"form\":{\"name\":\"Contact\"},\"fields\":[{\"key\":\"message\",\"label\":\"Message\",\"kind\":\"long_text\"}]}"}
+#+end_src
+
+The version-1 envelope contains =form= and arrays =groups=, =fields=,
+=rules=, =translations=, =result_bands= and =prices=. Field settings come
+from the ordinary record metadata and use the JSON underscore spelling.
+A question names its repeat group with =group: "stable_group_key"=, not a
+database ID. Pages, conditional rules, translations, quiz bands and exact
+minor-unit prices survive JSON and YAML round trips.
+
+External references become symbolic objects, such as
+=product_id: {binding: "product:17"}=. Supply an explicit =bindings= object
+mapping that symbol to the destination ID, for example
+={"product:17":42}=. Each target must exist, be enabled, and belong to the
+destination organization. Numeric IDs from another install are never reused
+implicitly. This applies equally to ventures, campaigns, booking pages and
+marketing lists. The original symbolic name is just a mapping key, not a
+claim that destination record 17 exists.
+
+Exports contain the editable definition, including internal author notes,
+but no responses, drafts, published history, public tokens or signing keys.
+Sensitive question defaults are omitted. An import gets fresh tokens and a
+fresh slug, stays draft, and uses one transaction for its definition records.
+Unknown or forbidden fields, wrong value types, unresolved groups and bad
+references are refused. Inputs are bounded to 1 MiB, 2,000 definition records,
+32 nesting levels and one JSON/YAML document. YAML aliases are refused before
+node expansion. Review imported origins, redirects, notices and mail wording
+before making the draft live.
+
+* File uploads
+
+A =file= question accepts attachments through the same native form and script
+loader. Enable both =forms= and =documents=. Set =file_max_bytes= (default
+5 MiB, at most 20 MiB), =file_max_count= (default 1, at most 10), and
+=file_types=, a comma-separated subset of =application/pdf,image/png,image/jpeg,text/plain=.
+The default permits all four. The limits are frozen with each published
+version. The job-application template includes an optional sensitive resume
+attachment restricted to PDF or plain text.
+
+The renderer uses =multipart/form-data= and works without JavaScript. Back and
+Next retain private upload capabilities; the visitor can remove an attachment
+with its checkbox. Repeat groups and sensitive questions use the same path.
+The loader checks size/count as a courtesy and adds an accessible progress
+indicator. Same-origin uploads show transferred bytes; cross-origin embeds show
+indeterminate progress so they remain simple requests without a CORS preflight.
+Validation on the server is authoritative. File answers cannot be defaults,
+prefills, lead mappings, rule conditions or answer-piping sources.
+
+The HTTP transport enforces the body bound before retaining a complete body,
+for both Content-Length and chunked requests. Only a live form with a retained
+published file question receives the larger 32 MiB route bound; ordinary and
+unknown forms keep 64 KiB. The operator's =server.max_request_size_mb= and
+aggregate buffered-body limits still apply and can be smaller. Multipart text
+is separately bounded to 64 KiB, with at most 100 files and 1000 parts per
+request. Per-file limits apply before bytes reach disk.
+
+Content is sniffed; neither the browser's MIME header nor an extension grants
+permission. Executables, scripts, HTML and SVG are refused even when renamed.
+Files use generated names under the existing private attachment directory,
+exclusive creation and mode 0600. Original names are data, escaped on response
+pages and encoded in the download header. File bodies are never extracted,
+audited, sent to AI, included in webhooks or placed in notifications. Ordinary
+response metadata contains only upload/document references, name, type and
+size; sensitive metadata stays in the private answer column.
+
+=form.upload_quota_bytes= bounds retained bytes (default 100 MiB per form).
+=upload_client_hourly_bytes= bounds bytes from a client in the last hour
+(default 20 MiB). Both accept 0 for the default or a positive limit, at most
+1 TiB. Client identity is a form-specific HMAC of the remote address; the raw
+address is not retained with the upload. These quotas include unclaimed files,
+in addition to the existing request rate limits. At most 10,000 private upload
+records are retained per form. Erasure frees the bytes and their identity.
+
+An upload is a private =form_upload= working copy until a valid submission
+claims it as an ordinary =document=. Only =/forms/uploads/ID= downloads bytes:
+it requires a user session, read access to the actual response and, for a
+sensitive question, owner authority. Anonymous capability URLs never download
+files. Generic document/image/OCR consumers refuse form attachment bytes.
+Responses use =Content-Disposition: attachment=, =X-Content-Type-Options: nosniff=
+and private, non-cacheable headers; files never render inline.
+
+Unbound uploads expire after an hour. Drafts and pending opt-in submissions
+bind files to their own expiry; a pending payment retains its private intake
+for the existing bounded recovery window. The ordinary retention sweep removes
+expired orphan files, and erasure/retention removes a response's files and
+documents. A failed file removal keeps its row and quota so cleanup can be
+retried. No background upload-cleanup thread is introduced.
+
+A host may install a synchronous optional scanner with
+=venture_forms_set_upload_scanner()=. It runs after size/type checks and before
+disk writes; refusal or scanner error refuses the file. The callback must not
+run a nested main loop. No scanner is bundled, and the ordinary content and
+quota checks always run. Migrations 000900 and 000901 pin the forms and document
+metadata on SQLite and PostgreSQL.
+
+The [[file:evidence/forms-uploads.org][built-server upload demonstration]] records native and loader flows,
+download headers and erasure, with links to the refusal and authority tests.
+
+Final privacy acceptance, including contact erasure and queued copies, is
+recorded in [[file:evidence/forms-privacy.org][the privacy demonstration]].
+
+* Browser network failures
+
+The embed loader allows 15 seconds to load a fragment and two minutes for a
+submission, including response-body transfer and file uploads. A timeout
+releases the submit button and focuses the existing error summary. The
+original answers and payment nonce remain in the form. It emits one browser
+log line naming the failure category, without URLs, capabilities or answers.
+
+The loader never automatically resends an uncertain POST. Paid forms retain
+the same invoice/Checkout identity when retried unchanged. Ordinary forms do
+not promise general exactly-once delivery after a lost final response; use
+the configured email/contact limits where a second response is forbidden.
+
+A failed Checkout attempt records one server log line with its local invoice
+ID and a cause category (transport, provider availability/rate limit, or local
+error domain/code). Customer answers, provider response text, Checkout URLs
+and bearer links are excluded. The visitor keeps the generic retry message;
+operators can use the invoice ID to find retained reconciliation evidence.
+
+Upload storage failures return HTTP 503 with =Retry-After: 60=. Invalid file
+content, count and size remain 422. Filesystem create/write/close failures
+preserve the OS error category, and failed batches remove incomplete bytes
+and roll back upload metadata. The boundary emits one redacted cause and
+keeps filesystem paths and database diagnostics out of the public response.
+The write-failure regression uses a child process file-size limit, so it
+exercises a short write and refusal without filling the machine's disk.
+
+* Bounded external upload scanning
+
+Operators may set =forms.scanner_executable= to an absolute path and
+=forms.scanner_timeout_ms= to 1..30000 milliseconds (default 10000). An empty
+path disables the external scanner. The executable receives bounded file bytes
+on stdin and the content-sniffed MIME type as its sole argument. No filename or
+shell command is interpolated. Exit 0 accepts, exit 1 rejects content, and other
+exit codes, signals, unavailable executables and deadlines fail closed with 503
+and Retry-After. Scanner output is discarded; the boundary logs one safe cause.
+
+The budget covers scanning all files in one request, including feeding stdin
+and waiting for exit. The deadline kills the owned scanner process group and
+reaps the direct child. A trusted scanner must not daemonize or escape its
+process group. Scanning runs before the database transaction or attachment
+writes, using a private main context that cannot dispatch application callbacks.
+There are no automatic retries. After repairing the scanner, retrying the same
+upload can succeed. Normal size, content-type, count and quota checks still apply.
+
+The existing in-process =venture_forms_set_upload_scanner()= hook remains an
+additional trusted check. Venture cannot preempt arbitrary C callbacks; use the
+external executable path for a scanner that can block. Callbacks must return
+promptly, must not enter a nested application loop, and must not access the
+database from another thread. No antivirus engine is bundled.
+
+* Retrying an ordinary final submission
+
+A fresh hosted page, embed fragment or schema response supplies a unique signed
+submission identity. JSON clients copy =submission_nonce= under the key named
+by =submission_field=. The historical wire key is =_vf_payment=; it now serves
+ordinary forms as well as paid intake. Paid schemas retain =payment_field= and
+=payment_nonce= aliases for compatibility. Keep the identity and exact submitted
+answers when a response is lost. Do not fetch a new identity or edit answers to
+retry an uncertain operation. A new intentional response uses a fresh form.
+
+Ordinary final acceptance reserves a private =form_receipt= and commits it with
+the response. Identical retries reuse that response without repeating leads,
+bookings, mail or response-save signals. Reuse with different content returns
+409. Normalized request digests ignore multipart boundaries and JSON object-key
+ordering, but include value ordering, files, control fields and the version
+carried by the fill ticket. Draft navigation and resume retain the identity.
+A final-page replay can find acceptance even after its draft was consumed.
+Intermediate page tokens still rotate; this is not an automatic retry protocol
+for every unfinished-page edit.
+
+The signed identity is form-specific. Public module, availability, origin and
+rate checks still apply: a closed/full/deleted form returns its existing uniform
+404 even for a receipt. An erased response is not recreated. Erasure and retention
+remove receipt answer/request fingerprints and the response link, retaining only
+a consumed random-identity digest and its form. These small tombstones remain
+for the lifetime of the form identity; they contain no answers or contact/email
+binding. Rotating the form's signing key invalidates old identities. Receipt
+records cannot be written, deleted or restored through generic record actions.
+
+The receipt survives process restart; a failed transaction leaves no accepted
+identity. Restore storage availability before retrying. Venture does not blindly
+reconnect and replay an ambiguous database commit. Old hand-written clients
+without an identity retain their legacy behavior and are not retry-safe; migrate
+them to fresh schema/fragment identities. Network failures do not trigger an
+automatic browser resend.
+
+Copied HTML snippets include =_vf_start= rather than a shared visitor identity.
+Their first native POST opens a fresh hosted confirmation form with the answers
+preserved; only its final submission accepts a response. This extra step works
+without JavaScript and keeps a copied snippet from deduplicating unrelated
+visitors. Files remain private upload claims until final acceptance. Prefer the
+loader or hosted page to avoid this confirmation step.
+
+* Native Lightsite forms and signed daemon relay
+
+Contact forms, quote requests and lead-capture questions belong to Venture.
+Libresite may render their published contract in a site's own style; Lightsite's
+daemon receives the browser POST and signs its stored submission for Venture.
+This does not create a quote/invoice automatically: =create_lead= and each
+question's =maps_to= retain their ordinary form meanings.
+
+** Fetch the published definition
+
+=GET /api/v1/forms/ID/definition= requires a Venture session or bearer API token
+with read access to that form's organization. It returns the same published
+=fields=, =pages=, =rules=, labels, kinds, required flags, choices and validation
+bounds as =/pub/form/TOKEN/schema=. Draft question edits are excluded. It adds
+=form_id= and retains =form_version=. =relay_supported= tells the client whether
+this definition can use the complete-response relay; false means use the hosted
+workflow instead. Internal mapping, ticket keys, personal
+answers and browser submission capabilities are excluded. The response is
+=no-store, private=. Read credentials stay in Lightsite's daemon, never in the
+rendered site. Definitions do not grant submission permission.
+
+Libresite must render the advertised kind/constraints (and stable choice IDs),
+not invent another list of four contact fields. Server validation remains final.
+A frontend which does not implement a kind must refuse that form explicitly.
+
+** Pair and relay
+
+Reuse the encrypted =lightsite_capture= connection and =attribution_site=
+pairing described in [[file:attribution.org][attribution]]. The site's organization,
+external tenant/site identities and exact HTTPS origin are operator-owned.
+The legacy attribution site's =lead_form_id= remains its legacy capture mapping;
+this relay instead uses the published Venture =form_id= and its own mappings.
+The daemon must select that form from its authorized site configuration, not
+from a browser-selected organization or credential.
+
+=POST /hooks/lightsite/SITE_UUID/CONNECTION_ID/forms= takes a maximum 32768-byte
+JSON object, authenticated before parsing using the existing timestamp/HMAC
+headers. Sign the exact UTF-8 bytes =timestamp + newline + body= using the
+64-character secret as UTF-8 text. =X-Venture-Timestamp= is Unix seconds within
+five minutes and =X-Venture-Signature= is lowercase hexadecimal HMAC-SHA256.
+A browser cookie is neither required nor trusted at this capability endpoint.
+
+#+begin_src json
+{"version":1,"tenant_id":"tenant_one","site_id":"site_one","submission_id":"original-daemon-submission-id","form_id":42,"form_version":3,"answers":{"name":"Reader","email":"reader@example.test","topic":"sales","message":"Please quote this work"}}
+#+end_src
+
+An optional =referral_code= member carries the code the site's visitor
+arrived with (a string of at most 64 bytes, one line). A form with
+=create_lead= on gives it to the lead it makes, unless a question mapped to
+=referral_code= answered; see [[file:referrals.org][Referrals]]. It is the
+only member a site adds beside the answers.
+
+The closed envelope refuses =origin=, organization/owner overrides and unknown
+members. Venture reads origin from the paired site and enforces the form's
+allowed origins. =submission_id= is a nonempty string of at most 128 bytes;
+keep it stable across daemon restarts and retry attempts. =answers= uses the
+ordinary JSON form format, including arrays for multiple choices/repeated rows.
+Internal =_vf_= controls are forbidden. All answers arrive together; this is
+not a draft navigation API. Hidden/skipped answers, required values, choices,
+patterns, bounds and sensitive answers use the existing published validator.
+
+The supported relay workflow is an ordinary complete response. Payments,
+bookings, uploads and double opt-in are refused explicitly; use their hosted
+form workflow. The trusted daemon owns browser spam screening and rate limiting;
+it must not expose its signing secret or act as an arbitrary signing proxy.
+Venture still enforces form availability, origin, response/email/contact limits
+and its HTTP request bounds.
+
+** Acceptance and retries
+
+HTTP 200 with ={"accepted":true}= means one accepted form response. Venture
+runs the configured lead/mail follow-ups through the ordinary form service;
+a refused follow-up follows that service's existing retained-response/note
+behavior. Each save attempt rechecks the authenticated site and connection
+before writes and before commit, so a pairing changed by synchronous automation
+rolls the attempt back. The relay service must run outside an enclosing
+transaction to allow the response-only fallback to start a fresh transaction.
+No CRM identifiers or submitted answers are returned to the caller.
+HTTP 422 with =accepted:false= and =errors= names invalid fields. Authentication,
+identity, availability and malformed envelope errors use ordinary HTTP errors;
+changed reuse returns 409. Unknown form IDs return 404 from both definition
+lookup and relay acceptance. Failures log one cause without the signed payload.
+
+A receipt identity is derived from the form, paired site, connection identity
+and original submission ID. Identical retries return acceptance without another
+response, lead, mail or automation event. Changed answers or version conflict.
+Retry with the same envelope and a freshly signed timestamp after a transient
+transport/storage failure; do not generate another submission ID. Connection
+secret rotation retains identity, while disconnect/replacement refuses the old
+binding. Erasure keeps the existing consumed receipt tombstone and does not
+allow a retry to recreate an erased response. Public availability checks still
+apply to retries, so closed/full forms retain the uniform 404 contract.

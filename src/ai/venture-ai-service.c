@@ -2860,6 +2860,10 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"account_holdings: dead stock only, items with no sale in the ledger for this many days", FALSE);
 	ai_tool_add_parameter(report, "login", "string",
 		"accounts, account_holdings and external_pnl: only the accounts reached through this login (a game account or licence the operator signs in with), by its key in the data source", FALSE);
+	ai_tool_add_parameter(report, "language", "string",
+		"form_summary: language for labels; combines answers from every language", FALSE);
+	ai_tool_add_parameter(report, "form_id", "integer",
+		"form_summary: the form whose answers to count; required for that report", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);

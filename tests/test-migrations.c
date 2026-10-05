@@ -1240,10 +1240,224 @@ test_fresh_without_finance(void)
 	venture_test_remove_tree(directory);
 }
 
+/* How many times @version is recorded as applied. */
+static gint64
+applied(VentureDatabase *database, gint64 version)
+{
+	g_autofree gchar *sql = g_strdup_printf(
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = %" G_GINT64_FORMAT, version);
+	g_autofree gchar *text = query_text(database, sql);
+
+	return g_ascii_strtoll(text, NULL, 10);
+}
+
+/*
+ * 000711 and 000720 pin what the forms module relies on: a question's key unique per
+ * form, deleted questions included, and the columns the public door reads.
+ * With forms switched off the tables are absent and the script passes and
+ * is recorded; switched on later, reconciliation makes the tables with the
+ * index, which is why the script need not. A schema missing the index --
+ * a restore from somewhere else, a hand edit -- is refused, not trusted.
+ */
+static void
+test_forms_schema(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autofree gchar *script = NULL;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	gboolean migrated;
+
+	/* Forms off: nothing to check, and it is recorded as done. */
+	venture_config_set_module_enabled(config, "forms", FALSE);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+	g_assert_no_error(error);
+	g_assert_true(migrated);
+	g_assert_false(table_exists(database, "form_fields"));
+	g_assert_false(table_exists(database, "form_versions"));
+	g_assert_false(table_exists(database, "form_drafts"));
+	g_assert_false(table_exists(database, "form_rules"));
+	g_assert_false(table_exists(database, "form_groups"));
+	g_assert_false(table_exists(database, "form_pendings"));
+	g_assert_false(table_exists(database, "form_translations"));
+	g_assert_false(table_exists(database, "form_result_bands"));
+	g_assert_false(table_exists(database, "form_prices"));
+	g_assert_false(table_exists(database, "form_payments"));
+	g_assert_false(table_exists(database, "form_uploads"));
+	g_assert_cmpint(applied(database, 711), ==, 1);
+	g_assert_cmpint(applied(database, 720), ==, 1);
+	g_assert_cmpint(applied(database, 730), ==, 1);
+	g_assert_cmpint(applied(database, 740), ==, 1);
+	g_assert_cmpint(applied(database, 741), ==, 1);
+	g_assert_cmpint(applied(database, 750), ==, 1);
+	g_assert_cmpint(applied(database, 760), ==, 1);
+	g_assert_cmpint(applied(database, 770), ==, 1);
+	g_assert_cmpint(applied(database, 780), ==, 1);
+	g_assert_cmpint(applied(database, 790), ==, 1);
+	g_assert_cmpint(applied(database, 791), ==, 1);
+	g_assert_cmpint(applied(database, 792), ==, 1);
+	g_assert_cmpint(applied(database, 800), ==, 1);
+	g_assert_cmpint(applied(database, 810), ==, 1);
+	g_assert_cmpint(applied(database, 820), ==, 1);
+	g_assert_cmpint(applied(database, 830), ==, 1);
+	g_assert_cmpint(applied(database, 840), ==, 1);
+	g_assert_cmpint(applied(database, 850), ==, 1);
+	g_assert_cmpint(applied(database, 851), ==, 1);
+	g_assert_cmpint(applied(database, 860), ==, 1);
+	g_assert_cmpint(applied(database, 900), ==, 1);
+	g_assert_cmpint(applied(database, 901), ==, 1);
+	g_clear_object(&context);
+	g_clear_object(&database);
+
+	/* On, twice: the tables and the index arrive, nothing runs again. */
+	venture_config_set_module_enabled(config, "forms", TRUE);
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, database);
+		migrated = venture_database_migrate(database, venture_entity_registry_get_default(), &error);
+		g_assert_no_error(error);
+		g_assert_true(migrated);
+		g_assert_true(table_exists(database, "form_fields"));
+		g_assert_true(table_exists(database, "form_versions"));
+		g_assert_true(table_exists(database, "form_drafts"));
+		g_assert_true(table_exists(database, "form_rules"));
+		g_assert_true(table_exists(database, "form_groups"));
+		g_assert_true(table_exists(database, "form_pendings"));
+		g_assert_true(table_exists(database, "form_translations"));
+		g_assert_true(table_exists(database, "form_result_bands"));
+		g_assert_true(table_exists(database, "form_prices"));
+		g_assert_true(table_exists(database, "form_payments"));
+		g_assert_true(table_exists(database, "form_uploads"));
+		g_assert_cmpint(applied(database, 711), ==, 1);
+		g_assert_cmpint(applied(database, 720), ==, 1);
+		g_assert_cmpint(applied(database, 730), ==, 1);
+		g_assert_cmpint(applied(database, 740), ==, 1);
+		g_assert_cmpint(applied(database, 741), ==, 1);
+		g_assert_cmpint(applied(database, 750), ==, 1);
+		g_assert_cmpint(applied(database, 760), ==, 1);
+		g_assert_cmpint(applied(database, 770), ==, 1);
+		g_assert_cmpint(applied(database, 780), ==, 1);
+		g_assert_cmpint(applied(database, 790), ==, 1);
+		g_assert_cmpint(applied(database, 791), ==, 1);
+		g_assert_cmpint(applied(database, 792), ==, 1);
+		g_assert_cmpint(applied(database, 800), ==, 1);
+		g_assert_cmpint(applied(database, 810), ==, 1);
+		g_assert_cmpint(applied(database, 820), ==, 1);
+		g_assert_cmpint(applied(database, 830), ==, 1);
+		g_assert_cmpint(applied(database, 840), ==, 1);
+		g_assert_cmpint(applied(database, 850), ==, 1);
+		g_assert_cmpint(applied(database, 851), ==, 1);
+	g_assert_cmpint(applied(database, 860), ==, 1);
+	g_assert_cmpint(applied(database, 900), ==, 1);
+	g_assert_cmpint(applied(database, 901), ==, 1);
+		{
+			g_autofree gchar *index = query_text(database,
+				"SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_master WHERE type = 'index' "
+				"AND name = 'uq_form_fields_organization_form_id_key'");
+
+			g_assert_cmpstr(index, ==, "1");
+		}
+		g_clear_object(&context);
+		g_clear_object(&database);
+	}
+
+	/* The script itself refuses a schema without the index. */
+	g_assert_true(g_file_get_contents("migrations/sqlite/000711_forms.sql", &script, NULL, &error));
+	g_assert_no_error(error);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database, script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP INDEX uq_form_fields_organization_form_id_key", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(database, script, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_clear_pointer(&script, g_free);
+
+	/* 000720 likewise refuses responses that cannot say their version. */
+	g_assert_true(g_file_get_contents("migrations/sqlite/000720_form_versions.sql", &script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database, script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP INDEX IF EXISTS idx_form_submissions_version_id;"
+		"ALTER TABLE form_submissions DROP COLUMN version_id", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_database_execute(database, script, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
+}
+
+/* Upgrading retained private records must redact old content while keeping
+ * ordinary mail, public defaults and unrelated audit events intact. */
+static void
+test_forms_private_upgrade(gconstpointer data)
+{
+	const gchar *backend = data;
+	gboolean postgres = g_str_equal(backend, "postgresql");
+	const gchar *uri = postgres ? g_getenv("VENTURE_TEST_MIGRATION_POSTGRES_URI") : "sqlite://:memory:";
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *uuid = NULL, *setup_sql = NULL, *cleanup_sql = NULL;
+	g_autofree gchar *text = NULL;
+	guint i;
+	const gchar *scripts[] = { "000902_private_intake_mail_audit.sql", "000903_form_private_defaults.sql" };
+	if (uri == NULL) { g_test_skip("Set VENTURE_TEST_MIGRATION_POSTGRES_URI for a disposable PostgreSQL server"); return; }
+	database = venture_database_new(uri, &error); g_assert_no_error(error);
+	if (postgres)
+	{
+		uuid = g_uuid_string_random(); g_strdelimit(uuid, "-", '_');
+		setup_sql = g_strdup_printf("CREATE SCHEMA privacy_%s; SET search_path TO privacy_%s", uuid, uuid);
+		cleanup_sql = g_strdup_printf("DROP SCHEMA privacy_%s CASCADE", uuid);
+		g_assert_true(venture_database_execute(database, setup_sql, NULL, &error)); g_assert_no_error(error);
+	}
+	g_assert_true(venture_database_execute(database,
+		"CREATE TABLE mail_messages (id BIGINT, related_type TEXT);"
+		"CREATE TABLE audit_entries (target_type TEXT, target_id BIGINT, target_label TEXT, diff TEXT);"
+		"CREATE TABLE form_fields (id BIGINT, sensitive BOOLEAN, default_value TEXT);"
+		"CREATE TABLE form_versions (definition TEXT);"
+		"INSERT INTO mail_messages VALUES (1,'form'),(2,'invoice');"
+		"INSERT INTO audit_entries VALUES ('mail_message',1,'PRIVATE ADDRESS','{\"to\":\"PRIVATE ADDRESS\",\"text_body\":\"PRIVATE ANSWER\",\"state\":\"queued\"}'),"
+		"('mail_message',1,'PRIVATE ADDRESS',NULL),('mail_message',2,'Public invoice','{\"text_body\":\"Public invoice\"}'),"
+		"('form_field',3,'Field','{\"default_value\":\"PRIVATE DEFAULT\",\"required\":true}');"
+		"INSERT INTO form_fields VALUES (3,TRUE,'PRIVATE DEFAULT'),(4,FALSE,'Public default');"
+		"INSERT INTO form_versions VALUES ('{\"fields\":[{\"key\":\"private\",\"sensitive\":true,\"default_value\":\"PRIVATE DEFAULT\"},{\"key\":\"public\",\"sensitive\":false,\"default_value\":\"Public default\"}]}');",
+		NULL, &error)); g_assert_no_error(error);
+	for (i = 0; i < G_N_ELEMENTS(scripts); i++)
+	{
+		g_autofree gchar *path = g_build_filename("migrations", backend, scripts[i], NULL), *script = NULL;
+		g_assert_true(g_file_get_contents(path, &script, NULL, &error)); g_assert_no_error(error);
+		g_assert_true(venture_migrations_execute_sql(venture_database_get_connection(database), script, &error)); g_assert_no_error(error);
+	}
+	text = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM audit_entries WHERE REPLACE(target_label, 'PRIVATE', '') != target_label OR REPLACE(COALESCE(diff, ''), 'PRIVATE', '') != COALESCE(diff, '')");
+	g_assert_cmpstr(text, ==, "0"); g_clear_pointer(&text, g_free);
+	text = query_text(database, "SELECT definition FROM form_versions");
+	g_assert_null(strstr(text, "PRIVATE")); g_assert_nonnull(strstr(text, "Public default")); g_clear_pointer(&text, g_free);
+	text = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM form_fields WHERE sensitive = TRUE AND default_value IS NOT NULL");
+	g_assert_cmpstr(text, ==, "0"); g_clear_pointer(&text, g_free);
+	text = query_text(database, "SELECT diff FROM audit_entries WHERE target_type = 'mail_message' AND target_id = 2");
+	g_assert_nonnull(strstr(text, "Public invoice"));
+	if (postgres) { g_assert_true(venture_database_execute(database, cleanup_sql, NULL, &error)); g_assert_no_error(error); }
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add_data_func("/migrations/forms-private-sqlite", "sqlite", test_forms_private_upgrade);
+	g_test_add_data_func("/migrations/forms-private-postgresql", "postgresql", test_forms_private_upgrade);
 	g_test_add_func("/migrations/generator", test_generator);
 	g_test_add_func("/migrations/optional-table", test_optional_table);
 	g_test_add_func("/migrations/optional-module", test_optional_module);
@@ -1265,5 +1479,6 @@ main(int argc, char **argv)
 	g_test_add_data_func("/migrations/unknown-version", "UPDATE schema_migrations SET version = 999999 WHERE version = 1", test_history_refusal);
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);
 	g_test_add_func("/migrations/nested-refused", test_nested_refused);
+	g_test_add_func("/migrations/forms-schema", test_forms_schema);
 	return g_test_run();
 }

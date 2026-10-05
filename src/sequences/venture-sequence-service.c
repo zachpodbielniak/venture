@@ -845,6 +845,7 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 	g_autofree gchar *subject_template = string(step, "subject");
 	g_autofree gchar *body_template = string(step, "body");
 	g_autofree gchar *subject = NULL;
+	g_autofree gchar *personal_form_url = NULL;
 	g_autofree gchar *body = NULL;
 	gint64 org = venture_entity_get_organization_id(row);
 	gint channel = choice(step, "channel");
@@ -880,6 +881,19 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 		if (strchr(email, '@') == NULL)
 			refuse(&render_error, VENTURE_ERROR_VALIDATION, "Email step requires a contact email address");
 	}
+	if (render_error == NULL && number(step, "survey-form-id") > 0)
+	{
+		g_autoptr(VentureEntity) form = NULL;
+		g_autoptr(GDateTime) expires = g_date_time_add_days(as_of, 7);
+		if (channel != 0) refuse(&render_error, VENTURE_ERROR_VALIDATION, "Personal form links require an email step");
+		else
+		{
+			form = reference(self, VENTURE_TYPE_FORM, number(step, "survey-form-id"), org, &render_error);
+			if (form != NULL) personal_form_url = venture_forms_personal_link(self->database, form, contact,
+				self->base_url, expires, as_of, &render_error);
+		}
+	}
+
 	if (render_error == NULL && (channel == 1 || channel == 2))
 	{
 		g_autoptr(VentureEntity) owner = NULL;
@@ -922,6 +936,17 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 			}
 		}
 	}
+	if (personal_form_url != NULL && render_error == NULL)
+	{
+		g_autofree gchar *public_body = string(delivery, "body");
+		g_autofree gchar *escaped = g_markup_escape_text(personal_form_url, -1);
+		g_autofree gchar *private_body = g_strdup_printf("%s<p><a href=\"%s\">Your personal form</a></p>",
+			public_body != NULL ? public_body : "", escaped);
+		/* Do not track this URL into the ordinary sequence_link records.
+		 * The adapter reads the private body only when actually sending. */
+		g_object_set(delivery, "private-body", private_body, NULL);
+	}
+
 	if (!persist(self, delivery, actor, error))
 		return FALSE;
 	{

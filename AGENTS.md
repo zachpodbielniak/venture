@@ -306,6 +306,16 @@ order the data flows.
   `price-change:<event uuid>`. A missing address or mail switched off
   skips the notice; it must never refuse the change. Do not move them to
   a timer or a signal handler: the key is what makes them once-only.
+- **A referral reward is paid after the commit that won it, never inside
+  it.** `src/referrals/` remembers a referral that became won and gives the
+  reward on `transaction-finished`, in a transaction of its own: a credit
+  note the books or an approval refuse would otherwise roll the lead's
+  conversion back with it. A reward that cannot be given is saved `failed`
+  with the reason and retried by its `apply` action; the unique index on
+  `referral_id` (deleted rows included) is what makes it once only. The
+  referral itself is written inside the lead's transaction, and its handler
+  sets the derived status before saving, because an empty diff returns
+  before any validator runs.
 - **The portal manages a subscription only by token and only its own.**
   `/portal/:token/subscriptions/:id` answers NOT_FOUND for anything not the
   token's customer's, and goes through `venture_billing_service_execute()`
@@ -435,6 +445,18 @@ order the data flows.
   `data/static/*` verify `build/debug/venture` is newer than
   `build/debug/venture-assets.h`, or the browser serves last hour's JS
   while the tests pass against this hour's.
+
+- **Assessment scores are final server results.** Score only validated visible
+  answers against the published definition, before repeated rows are folded.
+  A follow-up retry copies that result; it must not grade the folded input
+  again. Lead capture can return a contact or company on a duplicate match,
+  so only a `VentureLead` may populate a response's `lead-id`.
+
+- **Form bookings use the calendar booking service.** Availability and seat
+  capacity are checked under the save lock, with a private reservation before
+  follow-ups can re-enter the main loop. A draft never holds a slot. A working
+  copy hold emits no business event; confirming it creates the ordinary meeting.
+  Management URLs are signed capabilities and belong only in private mail bodies.
 
 ## The CLI, and its skill
 
@@ -2576,3 +2598,154 @@ and `docs/examples/wow-operations.org` have the rest.
   `test-plugin-examples` drives it with a fake `tsmctl` on `PATH`; `PATH`
   is captured when the plugin loads, so the test sets it before loading
   and puts it back straight after.
+
+## Forms
+
+- **A JSON field is a string property.** `VENTURE_FIELD_KIND_JSON` installs
+  `g_param_spec_string`; `g_object_get()` into a `JsonNode *` hands back a
+  `gchar *` wearing the wrong type, which `JSON_NODE_HOLDS_*` reads as
+  garbage and `json_node_unref()` frees as a node. A lead form with a
+  `fields` list crashed its capture this way. Read the text and parse it.
+- **One renderer.** `venture_forms_render()` is the preview, the snippet,
+  the loader's fragment and the hosted page. The `vf-*` class names and
+  `data-vf-*` hooks are a public contract other sites' stylesheets are
+  written against: add names, never rename or remove one.
+  `/forms/class-contract` is the alarm. No inline style, no stylesheet
+  (the hosted `?style=basic` is the one opt-in), no shadow DOM.
+- **The public door answers every refusal the same.** Draft, closed, past
+  `closes_at`, at `response_limit`, unknown token and module off are one
+  byte-identical 404. The state and the cap are checked again under the
+  lock at the save.
+- **Nothing public may need a preflight.** The server answers no
+  `OPTIONS`. The loader posts form-encoded or multipart with only `Accept`; a site
+  posting JSON cross-origin sends it as `text/plain`, which the door
+  parses as JSON. Do not add a custom request header to forms.js.
+- **A robot is told it succeeded.** A filled `_vf_hp`, a missing, forged
+  or too-young `_vf_t` ticket is a 200 that saves nothing. Tests that post
+  must carry a ticket from `venture_forms_ticket_new()` dated a minute
+  back, or they are silently treated as robots.
+- **Only the service creates a response.** `venture_forms_submit()` marks
+  the object; the validator refuses an unmarked insert and any change to
+  the answers. A new writer of responses goes through `submit`.
+- **A question's key is retired, never reused.** The unique index
+  includes deleted rows because answers stay filed under the key; the
+  validator looks up deleted rows for the same reason.
+- **A follow-up never costs the response.** The lead, the confirmation and
+  the response are one transaction; if a follow-up fails the transaction
+  is undone and the response alone is saved with `mapping_note`. Build the
+  retry's response afresh: a rolled-back save has already stamped the
+  object it was given.
+- **The public sees a published version, never the questions.** The
+  renderer, the validator, the schema and the summary take a
+  `VentureFormsField` definition, read either from the form_field records
+  (the draft, for the builder's preview only) or from a `form_version`'s
+  frozen JSON. Code that reads form_field records to answer a stranger is
+  the bug versions exist to prevent. A `VentureFormsRender` has a
+  `version` member: NULL means the draft.
+- **A ticket names its version,** and a submission is checked against
+  that version even after a newer one is published. Tests that build a
+  ticket from a form object must have that object's `published-number`
+  current, or the ticket names no version.
+- **The renderer is checked for accessibility on every build.**
+  `/forms/a11y-contract` parses every kind in every state and fails on an
+  unnamed control, a dangling aria reference, a legendless group, a silent
+  required or invalid answer, a summary that cannot take focus, a positive
+  tabindex or a style attribute. A new question kind must pass it: add the
+  kind and the test renders it automatically.
+- **The forms baseline migration is 000711.** Master used 000710 for
+  account holdings while the forms epic was in draft. Later forms children
+  retain 000720 onward in delivery order (the table is on the epic PR).
+  Databases made with the unreleased 000710_forms branch are not release
+  upgrade sources; rebuild those disposable fixtures.
+
+- **Unfinished forms are working copies, not business events.** `form_draft`
+  declares `venture_entity_class_set_working_copy()`: ordinary metadata storage,
+  validation and optimistic concurrency still apply, but audit and entity
+  save/delete signals do not. Only the form service may save it. All answer and
+  ticket values are sensitive; the non-sensitive generation counter both makes
+  a sensitive-only edit persist and invalidates the previous signed step token.
+  Final intake claims the draft before calling the ordinary submission service,
+  whose follow-up retry must not run inside an enclosing transaction.
+
+- **Resume is a publication boundary; Next is not.** Saved form capabilities
+  contain random bytes and the working copy stores only their digest. GET must
+  neither disclose answers nor consume the link. Explicit POST invalidates it,
+  upgrades compatible answers to the newest published version, clears consent
+  on a version change and revisits newly required questions. Ordinary Back/Next
+  remains version-pinned. Draft expiry never slides; cleanup cancels queued
+  capability mail before purging the working copy.
+
+- **A form rule runs on the published definition, not today's rule records.**
+  Conditions and their forward targets are frozen alongside questions. Clear
+  hidden questions and skipped pages in question order before checking required
+  answers or making follow-ups: an untrusted hidden value must not select a later
+  branch. Navigation uses the last condition's page and moves strictly forward;
+  Back recomputes the previous visited page. The loader receives prior-condition
+  booleans, never hidden copies of earlier answers. `not-shown` is private,
+  immutable accounting for the summary and is cleared by anonymisation.
+
+- **Repeated answers retain their row identity.** `form_group` bounds and
+  member metadata freeze with the published definition. Public indexed names
+  and JSON row arrays normalize before validation; `venture_forms_expand_groups()`
+  instantiates per-row rules, and folding happens only after validation. Keep
+  public and sensitive row arrays aligned. Add/remove are draft operations,
+  never intake; final intake rechecks the original ticket and every row.
+
+- **A personal form link is a capability, not a contact ID from the browser.**
+  The forms service checks its form-bound signature, contact UUID, organization,
+  deletion and expiry again under the final save lock. Contact/link limits count
+  retained responses there. Query prefill is separately opted in and validated;
+  its signed seed carries later-page defaults, never authentication. Marketing
+  and sequence links belong only in private delivery bodies, not previews or
+  ordinary tracking destinations.
+
+- **Double opt-in creates no business response before inbox confirmation.**
+  `form_pending` is a sensitive, service-owned working copy. Only confirmation
+  POST consumes its signed digest; GET is safe for mail scanners. Contact,
+  permission, list membership and final response share one transaction, with
+  no ordinary follow-up fallback on error. Resends preserve the first answers
+  and expiry, rotate the capability, and obey address and public rate limits.
+  The private outbox body is the only persisted raw confirmation URL. Expiry
+  and erasure purge the pending copy and cancel queued mail where possible.
+
+- **Piping consumes validated public answers, never raw refill data.**
+  The closed `{key}` / `{group.count}` grammar cannot reference a sensitive
+  question or a later field. Validation checks existing dependents when a
+  source changes. Render and intake share the same source validation; consent
+  evidence keeps substituted wording. Loader updates use text nodes and own
+  JSON properties, so a question named `constructor` cannot resolve an
+  inherited object member. The HTML context contains only referenced public
+  values; saved-response labels use their own version and row.
+
+- **Form translations belong to the published definition.** Localize the frozen
+  `VentureFormsField` descriptors before validation, piping or rendering; never
+  translate choice IDs. A language selected at GET travels in the signed prefill
+  seed and private working copy. `venture_forms_answers_to_json()` intentionally
+  drops internal controls; use `venture_forms_answers_state()` only for private
+  navigation/signup state, so language and personal binding survive confirmation.
+
+- **Paid forms cross the provider boundary only after local commit.**
+  `form_payment` is a private working copy, never an ordinary response.
+  Prices are frozen `VentureMoney` declarations; a signed intake nonce is
+  distinct from the shared fill-time ticket. Invoice Checkout keeps its own
+  durable idempotency reservation. Verified settlement commits before
+  `venture_forms_payment_reconcile()` writes the response and follow-ups.
+  A response retry never repeats a debit; a late booking payment needs a new
+  available hold, never resurrection of expired capacity. Erasure marks the
+  intake terminal so a later webhook cannot recreate personal answers.
+
+- **Form attachments are private until a response claims them.** `form_upload`
+  is a guarded working copy; its bearer, path and original name are sensitive.
+  Claiming files creates documents with an immutable `form-upload-id`. Generic
+  attachment readers refuse them: only the response-authorized download route
+  may read their bytes. Never extract their text for OCR or AI. Streaming body
+  limits run at HTTP headers/chunks, before multipart parsing; a handler-only
+  check is too late. Erasure/retention unlinks bytes before dropping metadata
+  so a failed unlink remains retryable and continues to count against quota.
+
+- **Audit privacy can depend on the instance.** Private intake mail shares
+  its record type with ordinary business mail. Audit writers use
+  `venture_entity_get_audit_private(entity)`, which falls back to the type
+  metadata; using only the type would persist queued answers in audit history.
+  Erasure forgets known-not-in-flight mail content through the outbox service,
+  retaining its idempotency identity, and includes soft-deleted form records.

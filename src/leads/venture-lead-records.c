@@ -36,6 +36,7 @@ static const VentureFieldDecl lead_fields[] = {
 	VENTURE_FIELD_REF("team-id", "Team", "Current owning team", "team", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("territory-id", "Territory", "Current assignment; history is retained separately", "sales_territory", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", NULL, "campaign", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("referral-code", "Referral code", "The code a referrer shared, as it arrived; a matching code makes a referral", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("status", "Status", NULL, venture_lead_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("score", "Score", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("unqualified-reason", "Unqualified reason", NULL, VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),

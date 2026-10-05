@@ -35,6 +35,14 @@ A mail adapter picks up =sequence_delivery= rows with =channel=email= and
 not send mail or depend on a mail implementation. The adapter must recheck
 pending state before sending, since an exit can cancel a queued delivery.
 
+For a step with =survey_form_id=, the forms service appends a seven-day
+personal form link to =sequence_delivery.private_body=. The in-process
+adapter prefers that body when present. Generic API serialization never
+exposes it. The ordinary =body= remains suitable for previews; do not
+copy the private body into a log, activity record or tracking destination.
+The link uses the sequence =base-url= and the sweep's clock. Only email
+steps can carry a survey. See [[file:forms.org][Forms: prefill and personal links]].
+
 * Running and inspecting steps
 
 Call =venture_sequence_service_run_due()=, =venturectl sequence run= or

@@ -70,6 +70,7 @@ G_DECLARE_DERIVABLE_TYPE(VentureEntity, venture_entity, VENTURE, ENTITY, GObject
  * @validate: check the record's own invariants before it is saved
  * @before_save: last chance to compute derived fields
  * @after_load: fix up state after the record is read back
+ * @get_audit_private: optional per-record privacy fields, falling back to type metadata
  * @get_field_specs: describe the record's fields for form and schema
  *   generation; the default derives them from the GObject properties
  *
@@ -95,8 +96,10 @@ struct _VentureEntityClass
 
 	GPtrArray   *(*get_field_specs)  (VentureEntity *self);
 
+	const gchar *const *(*get_audit_private)(VentureEntity *self);
+
 	/*< private >*/
-	gpointer padding[8];
+	gpointer padding[7];
 };
 
 /**
@@ -560,6 +563,24 @@ venture_entity_class_get_field_order(
 );
 
 /**
+ * venture_entity_class_set_working_copy:
+ * @klass: a #VentureEntityClass
+ *
+ * Marks a service-owned intermediate record type. Its writes still obey
+ * validation and concurrency rules, but emit no audit or business signals.
+ * Use only for disposable drafts, never completed business records.
+ */
+void venture_entity_class_set_working_copy(VentureEntityClass *klass);
+
+/**
+ * venture_entity_is_working_copy:
+ * @self: a #VentureEntity
+ *
+ * Returns: whether the type stores intermediate state without business events
+ */
+gboolean venture_entity_is_working_copy(VentureEntity *self);
+
+/**
  * venture_entity_class_set_labels:
  * @klass: a #VentureEntityClass
  * @singular: what one record is called, in sentence case: "Form submission"
@@ -631,6 +652,47 @@ venture_entity_class_set_commentable(
  */
 gboolean
 venture_entity_type_is_commentable(GType type);
+
+/**
+ * venture_entity_class_set_audit_private:
+ * @klass: a #VentureEntityClass
+ * @properties: (array zero-terminated=1): the properties whose values are
+ *   personal data
+ *
+ * Keeps a record's personal data out of the shared audit log. Its audit
+ * entries are labelled by type and number ("Form response #12") rather
+ * than by the display name, and a change to any of @properties is recorded
+ * as changed and redacted, never with its old or new value. The audit log
+ * is readable by every viewer and outlives an erasure; what somebody sent
+ * belongs on the record, where erasing the record erases it.
+ */
+void
+venture_entity_class_set_audit_private(
+	VentureEntityClass	*klass,
+	const gchar *const	*properties
+);
+
+/**
+ * venture_entity_type_get_audit_private:
+ * @type: a #VentureEntity subtype
+ *
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): the
+ *   properties redacted in @type's audit diffs, or %NULL when @type's audit
+ *   entries may carry its display name and values
+ */
+const gchar *const *
+venture_entity_type_get_audit_private(GType type);
+
+/**
+ * venture_entity_get_audit_private:
+ * @self: record being audited
+ *
+ * Resolves per-record privacy through the class hook, or the existing
+ * type-level declaration when the class has no override.
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): redacted properties
+ */
+const gchar *const *venture_entity_get_audit_private(VentureEntity *self);
+
 
 /**
  * venture_entity_type_dup_label:
