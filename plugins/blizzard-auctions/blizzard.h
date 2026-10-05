@@ -149,17 +149,49 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(BlizzardSettings, blizzard_settings_free)
  * @vendor_sell: what a vendor pays for one, in copper; -1 when unknown
  * @quality: (nullable): POOR, COMMON, ... as Blizzard spells it
  * @level: the item level, or 0
+ * @display_json: (nullable): the item as VENTURE draws it -- its name's
+ *   colour, its icon and its tooltip lines (see blizzard_item_display())
+ * @stale: known by name from the store but not looked up by this build,
+ *   so its display is missing: used as it is, and looked up again
  *
  * What the static item endpoint said about one item id.
  */
 typedef struct
 {
-	gchar	*name;
-	gchar	*category;
-	gint64	 vendor_sell;
-	gchar	*quality;
-	gint64	 level;
+	gchar		*name;
+	gchar		*category;
+	gint64		 vendor_sell;
+	gchar		*quality;
+	gint64		 level;
+	gchar		*display_json;
+	gboolean	 stale;
 } BlizzardItem;
+
+/**
+ * BLIZZARD_ICON_ROUTE:
+ *
+ * Where the plugin serves the icons it has cached, by Blizzard's file id:
+ * BLIZZARD_ICON_ROUTE "133001.jpg".
+ */
+#define BLIZZARD_ICON_ROUTE "/blizzard/icons/"
+
+/**
+ * blizzard_set_icon_dir:
+ * @dir: (nullable): the plugin's cache directory for icons, or %NULL for
+ *   none (icons are then neither fetched nor served)
+ *
+ * Set once at registration, from venture_context_get_plugin_cache_dir().
+ */
+void
+blizzard_set_icon_dir(const gchar *dir);
+
+/**
+ * blizzard_get_icon_dir:
+ *
+ * Returns: (transfer none) (nullable): the icon cache directory
+ */
+const gchar *
+blizzard_get_icon_dir(void);
 
 /**
  * BlizzardFrozen:

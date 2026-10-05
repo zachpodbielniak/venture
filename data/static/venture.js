@@ -5026,6 +5026,55 @@
 		scrollChatToBottom();
 	}
 
+	/*
+	 * Item tooltips: the card is shown by CSS on hover (and on a focused
+	 * link); this only moves it beside the pointer -- or beside the link,
+	 * for the keyboard -- and keeps it inside the window. Delegated from
+	 * the document once, so rows swapped in later need nothing.
+	 */
+	function placeItemTip(card, x, y) {
+		var width = card.offsetWidth;
+		var height = card.offsetHeight;
+		var left = x + 16;
+		var top = y + 16;
+
+		if (left + width > window.innerWidth - 8) {
+			left = Math.max(8, x - width - 16);
+		}
+
+		if (top + height > window.innerHeight - 8) {
+			top = Math.max(8, window.innerHeight - height - 8);
+		}
+
+		card.style.left = left + "px";
+		card.style.top = top + "px";
+	}
+
+	function itemTipCard(target) {
+		var tip = target && target.closest ? target.closest(".item-tip") : null;
+		var card = tip ? tip.querySelector(".item-tip-card") : null;
+
+		return card && !card.classList.contains("is-static") ? card : null;
+	}
+
+	document.addEventListener("mousemove", function (event) {
+		var card = itemTipCard(event.target);
+
+		if (card) {
+			placeItemTip(card, event.clientX, event.clientY);
+		}
+	});
+
+	document.addEventListener("focusin", function (event) {
+		var card = itemTipCard(event.target.querySelector ? event.target.querySelector(".item-tip") : null);
+		var rect;
+
+		if (card) {
+			rect = event.target.getBoundingClientRect();
+			placeItemTip(card, rect.left, rect.bottom);
+		}
+	});
+
 	window.venture = {
 		toast: toast,
 		openModal: openModal,

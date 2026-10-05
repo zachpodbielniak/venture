@@ -6,6 +6,8 @@
  */
 
 #include "venture.h"
+#include <string.h>
+#include <errno.h>
 
 struct _VentureContext
 {
@@ -413,6 +415,44 @@ venture_context_get_confirmations(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->confirmations;
+}
+
+gchar *
+venture_context_get_plugin_cache_dir(
+	VentureContext	 *self,
+	const gchar	 *plugin,
+	GError		**error
+){
+	g_autofree gchar *path = NULL;
+	const gchar *p;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	for (p = plugin; (NULL != p) && ('\0' != *p); p++)
+		if (!(g_ascii_islower(*p) || g_ascii_isdigit(*p) || ('-' == *p) || ('_' == *p)))
+			break;
+
+	if ((NULL == plugin) || ('\0' == *plugin) || ('\0' != *p) || (strlen(plugin) > 64))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a plugin name a cache directory can be named for",
+		            (NULL != plugin) ? plugin : "");
+		return NULL;
+	}
+
+	path = g_build_filename(venture_config_get_state_dir(venture_context_get_config(self)),
+	                        "plugin-cache", plugin, NULL);
+
+	if (0 != g_mkdir_with_parents(path, 0700))
+	{
+		gint saved = errno;
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Cannot create %s: %s", path, g_strerror(saved));
+		return NULL;
+	}
+
+	return g_steal_pointer(&path);
 }
 
 VentureConfig *

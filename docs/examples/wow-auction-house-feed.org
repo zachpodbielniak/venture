@@ -38,7 +38,7 @@ plugins:
 
 feeds:
   enabled: true
-  allowed_origins: https://us.api.blizzard.com,https://oauth.battle.net
+  allowed_origins: https://us.api.blizzard.com,https://oauth.battle.net,https://render.worldofwarcraft.com
 #+end_src
 
 Use the region's API origin: =https://eu.api.blizzard.com=, =https://kr.api.blizzard.com= or =https://tw.api.blizzard.com=. The token endpoint is =https://oauth.battle.net= for every region. From a build tree, =VENTURE_PLUGIN_PATH=build/debug/plugins:build/debug/plugins-optional= loads it without installing. The server's log says =Loaded plugin .../blizzard-auctions.so=, and =/api/v1/arbitrage/registries= lists =wow_auction= and =tsm=.
@@ -112,6 +112,12 @@ Listing realms in =connected_realm_ids= is better for a whole region than leavin
 - *Instruments*: one per item, and one per variant of an item, in the =wow-item= namespace (the source's instrument namespace). A variant is filed under its plain item.
 - *Listings*: one per auction, with its id, so the store can tell what sold between two snapshots. Each snapshot is complete -- an item that vanished is out of stock -- and dated by Blizzard's =Last-Modified=.
 - *Names and details*, lazily: up to =item_names_per_fetch= items a fetch has not named yet are looked up at =/data/wow/item/{id}=, lowest id first; the name, a category =Item class/Subclass= and attributes (=vendor_sell= in copper, =quality=, =level=) are stored once known and kept after.
+
+** Icons, quality colours and tooltips
+
+Looking an item up also builds how VENTURE draws it (=attrs.display=): its name in its quality's colour (grey, white, green, blue, purple, orange...), its icon, and its tooltip from the item endpoint's =preview_item= in the game's order -- item level, binding, unique, slot and type, damage and speed, armor, stats in their colours, /Use:/ and /Equip:/ effects in green, durability, requirements, the flavour text, the sell price. Pages draw the icon and colour beside the name and show the tooltip on hover.
+
+Icons are fetched once. The media endpoint names an icon's file (=/data/wow/media/item/ID=, one request against the budget); the plugin downloads it from Blizzard's CDN only if its cache (=<state_dir>/plugin-cache/blizzard-auctions/icons/<file id>.jpg=, see [[file:../plugins.org][Plugins]]) does not have it -- an icon shared by many items is one file -- and serves it at =/blizzard/icons/<file id>.jpg= with =Cache-Control: max-age=31536000, immutable=, so browsers never reach Blizzard and do not ask again. Add =https://render.worldofwarcraft.com= to =feeds.allowed_origins= for the download. Items named by an earlier build are looked up again, at =item_names_per_fetch= a fetch, to get theirs.
 
 ** Links to Wowhead and Undermine Exchange
 

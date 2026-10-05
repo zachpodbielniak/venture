@@ -386,6 +386,32 @@ VentureAutomationHandlerRegistry *
 venture_context_get_automation_handlers(VentureContext *self);
 
 /**
+ * venture_context_get_plugin_cache_dir:
+ * @self: a #VentureContext
+ * @plugin: the plugin's name: lower-case letters, digits, '-' and '_'
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A directory a plugin may keep files in across restarts and upgrades --
+ * images it fetched once, a vendor's catalogue -- at
+ * `<state_dir>/plugin-cache/<plugin>`, created owner-only on first use.
+ * It is the plugin's: VENTURE never reads, prunes or backs it up as
+ * records, so anything kept here must be safe to lose and fetch again.
+ *
+ * Callable from any thread. A name outside the allowed characters is
+ * refused with %VENTURE_ERROR_INVALID_ARGUMENT, so a plugin's name can
+ * never reach another directory.
+ *
+ * Returns: (transfer full) (nullable): the directory's path, or %NULL on
+ *   error
+ */
+gchar *
+venture_context_get_plugin_cache_dir(
+	VentureContext	 *self,
+	const gchar	 *plugin,
+	GError		**error
+);
+
+/**
  * VentureWebExtensionFunc:
  * @server: the web server being built
  * @user_data: the data given to venture_context_add_web_extension()

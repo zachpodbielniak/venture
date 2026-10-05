@@ -344,8 +344,72 @@ mdw_when(
 	g_string_append(html, "</time>");
 }
 
+/*
+ * The tooltip card of an instrument's display: its icon, its name in its
+ * colour, and its lines, each in its own colour with an optional
+ * right-hand column -- the way a game draws an item. The display was
+ * checked when the answer was built (colours are #rrggbb, the icon is
+ * this server's or https); every text is escaped here.
+ */
+static void
+mdw_tooltip_card(
+	GString		*html,
+	JsonObject	*display,
+	const gchar	*name,
+	const gchar	*extra_class
+){
+	JsonArray *lines;
+	const gchar *icon = mdw_text(display, "icon");
+	const gchar *color = mdw_text(display, "color");
+	guint i;
+
+	g_string_append_printf(html, "<span class=\"item-tip-card%s%s\" role=\"tooltip\">",
+	                       (NULL != extra_class) ? " " : "", (NULL != extra_class) ? extra_class : "");
+
+	if (NULL != icon)
+	{
+		g_string_append(html, "<img class=\"item-tip-icon\" src=\"");
+		venture_html_escape_append(html, icon);
+		g_string_append(html, "\" width=\"56\" height=\"56\" alt=\"\" loading=\"lazy\">");
+	}
+
+	g_string_append(html, "<span class=\"item-tip-body\"><span class=\"item-tip-name\"");
+	if (NULL != color)
+		g_string_append_printf(html, " style=\"color:%s\"", color);
+	g_string_append(html, ">");
+	venture_html_escape_append(html, name);
+	g_string_append(html, "</span>");
+
+	lines = json_object_has_member(display, "lines") ? json_object_get_array_member(display, "lines") : NULL;
+
+	for (i = 0; (NULL != lines) && (i < json_array_get_length(lines)); i++)
+	{
+		JsonObject *line = json_array_get_object_element(lines, i);
+
+		g_string_append(html, "<span class=\"item-tip-line\"");
+		if (NULL != mdw_text(line, "color"))
+			g_string_append_printf(html, " style=\"color:%s\"", mdw_text(line, "color"));
+		g_string_append(html, "><span>");
+		venture_html_escape_append(html, mdw_text(line, "text"));
+		g_string_append(html, "</span>");
+
+		if (NULL != mdw_text(line, "right"))
+		{
+			g_string_append(html, "<span class=\"item-tip-right\">");
+			venture_html_escape_append(html, mdw_text(line, "right"));
+			g_string_append(html, "</span>");
+		}
+
+		g_string_append(html, "</span>");
+	}
+
+	g_string_append(html, "</span></span>");
+}
+
 /* A name, or the key when the store gave none; an instrument's variant
- * (its bonuses, a pet's breed) after it, since variants share a name. */
+ * (its bonuses, a pet's breed) after it, since variants share a name.
+ * An instrument with a display is drawn with its icon, in its colour, and
+ * shows its tooltip card on hover or focus. */
 static void
 mdw_name(
 	GString		*html,
@@ -355,9 +419,34 @@ mdw_name(
 ){
 	const gchar *name;
 	const gchar *variant;
+	JsonObject *display;
 
 	name = mdw_text(object, name_member);
-	venture_html_escape_append(html, (NULL != name) ? name : mdw_text(object, key_member));
+	display = ((NULL != name) && json_object_has_member(object, "display"))
+		? json_object_get_object_member(object, "display") : NULL;
+
+	if (NULL != display)
+	{
+		g_string_append(html, "<span class=\"item-tip\">");
+
+		if (NULL != mdw_text(display, "icon"))
+		{
+			g_string_append(html, "<img class=\"item-icon\" src=\"");
+			venture_html_escape_append(html, mdw_text(display, "icon"));
+			g_string_append(html, "\" width=\"18\" height=\"18\" alt=\"\" loading=\"lazy\">");
+		}
+
+		g_string_append(html, "<span class=\"item-name\"");
+		if (NULL != mdw_text(display, "color"))
+			g_string_append_printf(html, " style=\"color:%s\"", mdw_text(display, "color"));
+		g_string_append(html, ">");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</span>");
+		mdw_tooltip_card(html, display, name, NULL);
+		g_string_append(html, "</span>");
+	}
+	else
+		venture_html_escape_append(html, (NULL != name) ? name : mdw_text(object, key_member));
 
 	variant = mdw_text(object, "variant");
 
@@ -1310,8 +1399,27 @@ venture_marketdata_web_instrument(
 	g_string_append(html, "<div class=\"page-head\"><div class=\"page-title\"><nav class=\"crumbs\" "
 	                      "aria-label=\"Breadcrumb\"><a href=\"/market/browse\">Browse</a> / ");
 	venture_html_escape_append(html, mdw_text(root, "source_name"));
-	g_string_append(html, "</nav><h1>");
-	venture_html_escape_append(html, name);
+	g_string_append(html, "</nav><h1 class=\"item-title\">");
+
+	{
+		JsonObject *display = json_object_has_member(instrument, "display")
+			? json_object_get_object_member(instrument, "display") : NULL;
+
+		if ((NULL != display) && (NULL != mdw_text(display, "icon")))
+		{
+			g_string_append(html, "<img class=\"item-title-icon\" src=\"");
+			venture_html_escape_append(html, mdw_text(display, "icon"));
+			g_string_append(html, "\" width=\"40\" height=\"40\" alt=\"\">");
+		}
+
+		g_string_append(html, "<span");
+		if ((NULL != display) && (NULL != mdw_text(display, "color")))
+			g_string_append_printf(html, " style=\"color:%s\"", mdw_text(display, "color"));
+		g_string_append(html, ">");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</span>");
+	}
+
 	g_string_append(html, "</h1><p class=\"muted\">");
 	venture_html_escape_append(html, key);
 
@@ -1350,6 +1458,14 @@ venture_marketdata_web_instrument(
 	}
 
 	g_string_append(html, "</div></div>");
+
+	/* The item as the game shows it, drawn in place on its own page. */
+	if (json_object_has_member(instrument, "display"))
+	{
+		g_string_append(html, "<div class=\"item-tip-static\">");
+		mdw_tooltip_card(html, json_object_get_object_member(instrument, "display"), name, "is-static");
+		g_string_append(html, "</div>");
+	}
 
 	/* At the top: the whole page is the source's data, and a line at the
 	 * foot of the charts would be anything but conspicuous. */

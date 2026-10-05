@@ -5425,3 +5425,32 @@ input:not([type="hidden"]):focus-visible {
 	.accounts-attrs { grid-template-columns: 1fr; }
 	.accounts-attrs dd { margin-bottom: var(--space-2); }
 }
+
+/* --------------------------------------------------------------------------
+ * Item tooltips -- an instrument a provider gives a display (an icon, a
+ * name colour, tooltip lines) is drawn the way its game draws it. The card
+ * keeps the game's own dark look in either theme: it is the item's, not
+ * the page's. Fixed, so a scrolling table never clips it; venture.js puts
+ * it beside the pointer and inside the window.
+ * -------------------------------------------------------------------------- */
+.item-tip { position: relative; display: inline-flex; align-items: center; gap: 0.35em; }
+.item-icon { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #000;
+	flex: none; vertical-align: middle; }
+.item-name { font-weight: 600; }
+.item-tip-card { display: none; position: fixed; z-index: 1000; gap: 6px; align-items: flex-start;
+	pointer-events: none; max-width: 360px; }
+.item-tip:hover > .item-tip-card,
+a:focus .item-tip > .item-tip-card { display: flex; }
+.item-tip-card.is-static { display: inline-flex; position: static; pointer-events: auto; max-width: 420px; }
+.item-tip-static { margin: 0 0 1rem 0; }
+.item-tip-icon { width: 56px; height: 56px; border-radius: 6px; border: 1px solid #000;
+	box-shadow: 0 0 0 1px #5a5a66; flex: none; }
+.item-tip-body { display: flex; flex-direction: column; gap: 1px; min-width: 220px;
+	background: rgba(4, 8, 30, 0.95); color: #ffffff; border: 1px solid #a0a4b0;
+	border-radius: 5px; padding: 8px 10px; font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6); text-align: left; white-space: normal; }
+.item-tip-name { font-size: 15px; font-weight: 600; margin-bottom: 2px; }
+.item-tip-line { display: flex; justify-content: space-between; gap: 1.5em; }
+.item-tip-right { white-space: nowrap; }
+.item-title { display: flex; align-items: center; gap: 0.5em; }
+.item-title-icon { width: 40px; height: 40px; border-radius: 5px; border: 1px solid #000; }

@@ -846,7 +846,7 @@ test_instrument_escaping(
 	page = get_page(fixture, path);
 	g_assert_null(strstr(page, hostile_name));
 	g_assert_null(strstr(page, "<script>alert"));
-	g_assert_nonnull(strstr(page, "<h1>&lt;script&gt;alert(&quot;pwn&quot;)&lt;/script&gt;</h1>"));
+	g_assert_nonnull(strstr(page, "<h1 class=\"item-title\"><span>&lt;script&gt;alert(&quot;pwn&quot;)&lt;/script&gt;</span></h1>"));
 	g_assert_nonnull(strstr(page, "aria-label=\"&lt;script&gt;alert(&quot;pwn&quot;)&lt;/script&gt;: "));
 	g_assert_nonnull(strstr(page, "<title>&lt;script&gt;"));
 
@@ -1988,7 +1988,10 @@ test_venue_groups_and_find(
 	variant.kind = "item";
 	variant.parent_key = "2770";
 	variant.attrs_json = "{\"undermine_item\":\"2770 x\",\"links\":[{\"label\":\"Wowhead\","
-		"\"url\":\"https://www.wowhead.com/item=2770?bonus=1472\"}]}";
+		"\"url\":\"https://www.wowhead.com/item=2770?bonus=1472\"}],"
+		"\"display\":{\"color\":\"#a335ee\",\"icon\":\"/blizzard/icons/1.jpg\",\"lines\":["
+		"{\"text\":\"Item Level 9\",\"color\":\"#ffd100\"},"
+		"{\"text\":\"<b>bold</b>\",\"right\":\"Sword\",\"color\":\"red;background:url(x)\"}]}}";
 	g_assert_true(venture_series_store_upsert_instrument(store, &variant, now - 3600, NULL, NULL, &error));
 	g_assert_no_error(error);
 	snapshot(store, "3676", "USD", now - 3600, d2, G_N_ELEMENTS(d2));
@@ -2142,6 +2145,14 @@ test_venue_groups_and_find(
 	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770%%3Ab1472", fixture->source_id);
 	page = get_page(fixture, path);
 	g_assert_nonnull(strstr(page, "View on Wowhead"));
+
+	/* The display: drawn in its colours, its text escaped, and a colour
+	 * that is not #rrggbb never reaching a style attribute. */
+	g_assert_nonnull(strstr(page, "<span style=\"color:#a335ee\">Copper Ore</span>"));
+	g_assert_nonnull(strstr(page, "src=\"/blizzard/icons/1.jpg\""));
+	g_assert_nonnull(strstr(page, "item-tip-card is-static"));
+	g_assert_nonnull(strstr(page, "&lt;b&gt;bold&lt;/b&gt;"));
+	g_assert_null(strstr(page, "background:url"));
 	g_assert_nonnull(strstr(page, "rel=\"noopener noreferrer\""));
 	g_assert_null(strstr(page, "javascript:"));
 	g_assert_null(strstr(page, "Nowhere"));
@@ -2159,6 +2170,8 @@ test_venue_groups_and_find(
 	g_assert_nonnull(strstr(page, "name=\"venue_group\""));
 	g_assert_nonnull(strstr(page, "Bank realms"));
 	g_assert_nonnull(strstr(page, "(bonus 1472)"));
+	g_assert_nonnull(strstr(page, "class=\"item-tip\""));
+	g_assert_nonnull(strstr(page, "<span class=\"item-name\" style=\"color:#a335ee\">Copper Ore</span>"));
 	g_clear_pointer(&page, g_free);
 	page = get_page(fixture, "/market/find");
 	g_assert_nonnull(strstr(page, "name=\"search\""));

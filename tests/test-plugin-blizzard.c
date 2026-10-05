@@ -262,6 +262,19 @@ serve_battle_net(Fixture *fixture)
 	api(fixture, "/data/wow/item/2589", "item-2589.json");
 	api(fixture, "/data/wow/item/2840", "item-2840.json");
 	api(fixture, "/data/wow/item/19019", "item-19019.json");
+
+	/* Thunderfury's icon: its media names a file on the CDN (here, this
+	 * server), fetched once into the plugin's cache. */
+	{
+		g_autofree gchar *media = g_strdup_printf(
+			"{\"assets\":[{\"key\":\"icon\",\"value\":\"%s/icons/56/135349.jpg\","
+			"\"file_data_id\":135349}]}", fixture->http.origin);
+		VentureTestRoute *media_route = venture_test_http_route(&fixture->http,
+		                                                        "/data/wow/media/item/19019", 200, media);
+
+		media_route->require_authorization = g_strconcat("Bearer ", access_token, NULL);
+		venture_test_http_route(&fixture->http, "/icons/56/135349.jpg", 200, "\xff\xd8\xff fake jpeg");
+	}
 	api(fixture, "/data/wow/item/82800", "item-82800.json");
 	api(fixture, "/data/wow/profession/index", "profession-index.json");
 	api(fixture, "/data/wow/profession/164", "profession-164.json");
@@ -803,6 +816,24 @@ test_sync(
 		}
 
 		g_assert_true(realm_linked);
+	}
+
+	/* The display: the name's colour by quality, the cached icon, and the
+	 * game's tooltip lines in the game's order and colours. The icon was
+	 * fetched once, into the plugin's own cache directory. */
+	{
+		g_autoptr(VentureSeriesInstrumentRow) blade = NULL;
+		g_autofree gchar *icon = g_build_filename(fixture->state_dir, "plugin-cache", "blizzard-auctions",
+		                                          "icons", "135349.jpg", NULL);
+
+		g_assert_true(venture_series_store_get_instrument(reader, KEY_BLADE, &blade, &error));
+		g_assert_nonnull(strstr(blade->attrs_json, "\"color\":\"#ff8000\""));
+		g_assert_nonnull(strstr(blade->attrs_json, "\"icon\":\"/blizzard/icons/135349.jpg\""));
+		g_assert_nonnull(strstr(blade->attrs_json, "{\"text\":\"Item Level 40\",\"color\":\"#ffd100\"}"));
+		g_assert_nonnull(strstr(blade->attrs_json, "{\"text\":\"One-Hand\",\"right\":\"Sword\"}"));
+		g_assert_nonnull(strstr(blade->attrs_json, "\"color\":\"#1eff00\""));
+		g_assert_true(g_file_test(icon, G_FILE_TEST_IS_REGULAR));
+		g_assert_cmpint(venture_test_http_hits(&fixture->http, "/icons/56/135349.jpg"), ==, 1);
 	}
 
 	/* An hour later: 1002 (LONG) and 1005 (LONG) are gone, so sold; 1004

@@ -34,6 +34,7 @@
 #include "blizzard.h"
 
 #include <string.h>
+#include <glib/gstdio.h>
 
 /* ==========================================================================
  * The `wow_auction` fee model
@@ -412,6 +413,76 @@ venture_plugin_info(void)
 	       "the wow_auction fee model, the tsm export and recipe import";
 }
 
+/* ==========================================================================
+ * Icons
+ * ========================================================================== */
+
+/*
+ * GET /blizzard/icons/<file id>.jpg: an icon from the plugin's cache.
+ *
+ * Only a file id and ".jpg" are accepted, so the name can reach no other
+ * file. An icon never changes for its id, so the browser may keep it a
+ * year without asking again ("immutable"); a page of a hundred items
+ * costs no request for any icon it has drawn before. Signed-in users
+ * only, like the pages that show them.
+ */
+static HtmxResponse *
+blizzard_icon_route(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *server = user_data;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *contents = NULL;
+	const gchar *file;
+	const gchar *p;
+	HtmxResponse *response;
+	gsize length = 0;
+
+	response = venture_web_server_require_page(server, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != response)
+		return response;
+
+	file = (NULL != params) ? g_hash_table_lookup(params, "file") : NULL;
+
+	for (p = file; (NULL != p) && g_ascii_isdigit(*p); p++)
+		;
+
+	if ((NULL == file) || (p == file) || (0 != g_strcmp0(p, ".jpg")) || (strlen(file) > 24) ||
+	    (NULL == blizzard_get_icon_dir()))
+		return htmx_response_not_found();
+
+	path = g_build_filename(blizzard_get_icon_dir(), file, NULL);
+
+	if (!g_file_get_contents(path, &contents, &length, NULL))
+		return htmx_response_not_found();
+
+	response = htmx_response_new();
+	htmx_response_set_bytes(response, g_bytes_new_take(g_steal_pointer(&contents), length));
+	htmx_response_set_content_type(response, "image/jpeg");
+	htmx_response_add_header(response, "Cache-Control", "private, max-age=31536000, immutable");
+
+	return response;
+}
+
+static gboolean
+blizzard_web(
+	VentureWebServer	 *server,
+	gpointer		  user_data,
+	GError			**error
+){
+	(void)user_data;
+	(void)error;
+
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET,
+		BLIZZARD_ICON_ROUTE ":file", VENTURE_DATA_CLASS_REFERENCE,
+		VENTURE_HOSTED_ROUTE_NONE, blizzard_icon_route, server);
+
+	return TRUE;
+}
+
 /**
  * venture_plugin_register:
  * @context: the wiring, giving access to every registry
@@ -452,6 +523,21 @@ venture_plugin_register(
 		return FALSE;
 
 #ifdef VENTURE_HAVE_SQLITE
+	/* Icons are fetched once into the plugin's own cache and served from
+	 * it; without a cache directory the items simply have none. */
+	{
+		g_autoptr(GError) cache_error = NULL;
+		g_autofree gchar *dir = venture_context_get_plugin_cache_dir(context, "blizzard-auctions",
+		                                                             &cache_error);
+		g_autofree gchar *icons = (NULL != dir) ? g_build_filename(dir, "icons", NULL) : NULL;
+
+		if ((NULL != icons) && (0 == g_mkdir_with_parents(icons, 0700)))
+			blizzard_set_icon_dir(icons);
+		else
+			g_message("blizzard-auctions: no icon cache (%s); items are drawn without icons",
+			          (NULL != cache_error) ? cache_error->message : "cannot create it");
+	}
+
 	{
 		g_autoptr(VentureDataSourceProvider) provider = blizzard_provider_new();
 
@@ -465,6 +551,8 @@ venture_plugin_register(
 	 * above is. */
 	if (!blizzard_recipes_register(context, error))
 		return FALSE;
+
+	venture_context_add_web_extension(context, blizzard_web, NULL, NULL);
 #else
 	g_message("blizzard-auctions: this build has no SQLite, so no series store: the "
 	          "blizzard_auctions data source and recipe import are not available");

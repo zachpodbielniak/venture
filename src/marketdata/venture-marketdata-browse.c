@@ -625,6 +625,121 @@ md_links_append(
 	}
 }
 
+/* "#rrggbb" and nothing else: a colour a provider sets reaches a style
+ * attribute, so anything that could close it is refused. */
+static gboolean
+md_is_color(const gchar *text)
+{
+	guint i;
+
+	if ((NULL == text) || ('#' != text[0]) || (7 != strlen(text)))
+		return FALSE;
+
+	for (i = 1; i < 7; i++)
+		if (!g_ascii_isxdigit(text[i]))
+			return FALSE;
+
+	return TRUE;
+}
+
+/* An icon a page may load: this server's own path, or https. */
+static gboolean
+md_is_icon(const gchar *text)
+{
+	return (NULL != text) && (strlen(text) < 512) && (NULL == strpbrk(text, "\"'<> \\\\")) &&
+	       ((('/' == text[0]) && ('/' != text[1])) || g_str_has_prefix(text, "https://"));
+}
+
+/*
+ * The provider's "display" attribute, checked, as @object's "display":
+ * {color, icon, lines: [{text, right, color}]}. How an instrument is drawn
+ * -- its name's colour, its icon, a tooltip -- is the provider's to say
+ * (blizzard-auctions draws an item as the game does); VENTURE only keeps
+ * what is safe to put in a page: colours as #rrggbb, an icon of its own or
+ * over https, at most 40 lines of bounded text. Text is escaped where it
+ * is drawn like any other.
+ */
+static void
+md_set_display(
+	JsonObject	*object,
+	JsonObject	*attrs
+){
+	JsonObject *display;
+	JsonObject *checked;
+	JsonArray *lines;
+	JsonArray *kept;
+	const gchar *text;
+	guint i;
+
+	if ((NULL == attrs) || !json_object_has_member(attrs, "display") ||
+	    !JSON_NODE_HOLDS_OBJECT(json_object_get_member(attrs, "display")))
+		return;
+
+	display = json_object_get_object_member(attrs, "display");
+	checked = json_object_new();
+
+	text = json_object_get_string_member_with_default(display, "color", NULL);
+	if (md_is_color(text))
+		json_object_set_string_member(checked, "color", text);
+
+	text = json_object_get_string_member_with_default(display, "icon", NULL);
+	if (md_is_icon(text))
+		json_object_set_string_member(checked, "icon", text);
+
+	kept = json_array_new();
+	lines = json_object_has_member(display, "lines") &&
+	        JSON_NODE_HOLDS_ARRAY(json_object_get_member(display, "lines"))
+		? json_object_get_array_member(display, "lines") : NULL;
+
+	for (i = 0; (NULL != lines) && (i < json_array_get_length(lines)) && (json_array_get_length(kept) < 40); i++)
+	{
+		JsonNode *element = json_array_get_element(lines, i);
+		JsonObject *line;
+		JsonObject *copy;
+		const gchar *right;
+		const gchar *color;
+
+		if (!JSON_NODE_HOLDS_OBJECT(element))
+			continue;
+
+		line = json_node_get_object(element);
+		text = json_object_get_string_member_with_default(line, "text", NULL);
+		right = json_object_get_string_member_with_default(line, "right", NULL);
+		color = json_object_get_string_member_with_default(line, "color", NULL);
+
+		if (venture_string_is_empty(text) || (strlen(text) > 1024))
+			continue;
+
+		copy = json_object_new();
+		json_object_set_string_member(copy, "text", text);
+		if (!venture_string_is_empty(right) && (strlen(right) <= 256))
+			json_object_set_string_member(copy, "right", right);
+		if (md_is_color(color))
+			json_object_set_string_member(copy, "color", color);
+		json_array_add_object_element(kept, copy);
+	}
+
+	json_object_set_array_member(checked, "lines", kept);
+	json_object_set_object_member(object, "display", checked);
+}
+
+/* The display of @key in @reader's store, onto a row object. */
+static void
+md_row_set_display(
+	JsonObject		*object,
+	VentureSeriesStore	*reader,
+	const gchar		*key
+){
+	g_autoptr(VentureSeriesInstrumentRow) instrument = NULL;
+	g_autoptr(JsonObject) attrs = NULL;
+
+	if (!venture_series_store_get_instrument(reader, key, &instrument, NULL) || (NULL == instrument))
+		return;
+
+	attrs = md_attrs_object(instrument->attrs_json);
+	md_set_display(object, attrs);
+}
+
 /*
  * An instrument's stored attributes as an object, its item level hoisted
  * to "level" (the plain item's level: a variant's bonuses change it, and
@@ -652,6 +767,7 @@ md_set_attrs_and_variant(
 				json_object_set_int_member(object, "level",
 				                           json_object_get_int_member(attrs, "level"));
 
+			md_set_display(object, attrs);
 			json_object_set_object_member(object, "attrs", json_object_ref(attrs));
 		}
 	}
@@ -1286,8 +1402,13 @@ venture_marketdata_browse(
 			json_object_set_boolean_member(root, "available", TRUE);
 
 			for (i = 0; i < found->len; i++)
-				json_array_add_object_element(rows, md_row_object(g_ptr_array_index(found, i),
-				                                                  venture_entity_get_id(chosen)));
+			{
+				VentureSeriesRow *one = g_ptr_array_index(found, i);
+				JsonObject *object = md_row_object(one, venture_entity_get_id(chosen));
+
+				md_row_set_display(object, reader, one->instrument_key);
+				json_array_add_object_element(rows, object);
+			}
 		}
 
 		json_object_set_array_member(root, "venues", md_venues_json(venues, groups));
@@ -2259,6 +2380,7 @@ typedef struct
 	VentureSeriesRow	*row;
 	gint64			 data_source_id;
 	gchar			*source_name;
+	JsonObject		*display;
 } MdDeal;
 
 static void
@@ -2268,6 +2390,8 @@ md_deal_free(gpointer data)
 
 	venture_series_row_free(deal->row);
 	g_free(deal->source_name);
+	if (NULL != deal->display)
+		json_object_unref(deal->display);
 	g_free(deal);
 }
 
@@ -2463,6 +2587,11 @@ venture_marketdata_deals(
 				deal->row = g_ptr_array_steal_index_fast(found, j - 1);
 				deal->data_source_id = venture_entity_get_id(source);
 				deal->source_name = md_source_name(source);
+
+				/* Read while this source's store is open: the merge
+				 * outlives it. */
+				deal->display = json_object_new();
+				md_row_set_display(deal->display, reader, deal->row->instrument_key);
 				g_ptr_array_add(deals, deal);
 			}
 		}
@@ -2482,6 +2611,9 @@ venture_marketdata_deals(
 			gint64 discount;
 
 			object = md_row_object(deal->row, deal->data_source_id);
+			if (json_object_has_member(deal->display, "display"))
+				json_object_set_member(object, "display",
+				                       json_node_copy(json_object_get_member(deal->display, "display")));
 			json_object_set_int_member(object, "data_source_id", deal->data_source_id);
 			json_object_set_string_member(object, "source_name", deal->source_name);
 

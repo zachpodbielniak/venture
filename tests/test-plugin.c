@@ -14,6 +14,7 @@
 #include <venture.h>
 
 #include <glib/gstdio.h>
+#include <sys/stat.h>
 
 #include <string.h>
 
@@ -81,6 +82,51 @@ write_file(
 /* ==========================================================================
  * Declarative venture types
  * ========================================================================== */
+
+/*
+ * A plugin's cache directory: under the state directory, owner-only, made
+ * on first use; and a name that could reach anywhere else is refused.
+ */
+static void
+test_plugin_cache_dir(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *expected = NULL;
+	g_autofree gchar *state = NULL;
+	GStatBuf info;
+	static const gchar *const refused[] = { "", "../escape", "a/b", "Upper", "dot.ted", NULL };
+	guint i;
+
+	(void)data;
+
+	/* A state directory of the test's own, not wherever the default is. */
+	state = g_dir_make_tmp("venture-plugin-cache-XXXXXX", &error);
+	g_assert_no_error(error);
+	g_object_set(fixture->config, "state-dir", state, NULL);
+
+	dir = venture_context_get_plugin_cache_dir(fixture->context, "blizzard-auctions", &error);
+	g_assert_no_error(error);
+	expected = g_build_filename(venture_config_get_state_dir(fixture->config), "plugin-cache",
+	                            "blizzard-auctions", NULL);
+	g_assert_cmpstr(dir, ==, expected);
+	g_assert_cmpint(g_stat(dir, &info), ==, 0);
+	g_assert_true(S_ISDIR(info.st_mode));
+	g_assert_cmpint(info.st_mode & 0777, ==, 0700);
+
+	for (i = 0; NULL != refused[i]; i++)
+	{
+		g_autofree gchar *none = venture_context_get_plugin_cache_dir(fixture->context, refused[i], &error);
+
+		g_assert_null(none);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+		g_clear_error(&error);
+	}
+
+	venture_test_remove_tree(state);
+}
 
 static void
 test_venture_type_parses_yaml(
@@ -2419,6 +2465,7 @@ main(
 #define ADD(path, func) \
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
+	ADD("/plugin/cache-dir", test_plugin_cache_dir);
 	ADD("/venture-type/parses-yaml", test_venture_type_parses_yaml);
 	ADD("/venture-type/shorthand-field", test_venture_type_shorthand_field);
 	ADD("/venture-type/requires-a-name", test_venture_type_requires_a_name);

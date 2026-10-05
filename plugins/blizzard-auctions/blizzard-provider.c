@@ -47,6 +47,8 @@
 
 #include "blizzard.h"
 
+#include <glib/gstdio.h>
+
 #ifdef VENTURE_HAVE_SQLITE
 
 #include <string.h>
@@ -407,6 +409,7 @@ blizzard_item_free(BlizzardItem *item)
 	g_free(item->name);
 	g_free(item->category);
 	g_free(item->quality);
+	g_free(item->display_json);
 	g_free(item);
 }
 
@@ -421,6 +424,8 @@ blizzard_item_copy(const BlizzardItem *item)
 	copy->quality = g_strdup(item->quality);
 	copy->vendor_sell = item->vendor_sell;
 	copy->level = item->level;
+	copy->display_json = g_strdup(item->display_json);
+	copy->stale = item->stale;
 
 	return copy;
 }
@@ -791,6 +796,325 @@ blizzard_get_json(
  * Items and realms: names, fetched lazily and cached
  * ========================================================================== */
 
+/* ==========================================================================
+ * Item display: name colour, icon, tooltip
+ * ========================================================================== */
+
+static gchar *blizzard_icon_dir_path = NULL;
+
+void
+blizzard_set_icon_dir(const gchar *dir)
+{
+	g_free(blizzard_icon_dir_path);
+	blizzard_icon_dir_path = g_strdup(dir);
+}
+
+const gchar *
+blizzard_get_icon_dir(void)
+{
+	return blizzard_icon_dir_path;
+}
+
+/* The game's colours for an item's quality, as its name is drawn. */
+static const gchar *
+blizzard_quality_color(const gchar *quality)
+{
+	static const struct { const gchar *quality; const gchar *color; } colors[] = {
+		{ "POOR", "#9d9d9d" }, { "COMMON", "#ffffff" }, { "UNCOMMON", "#1eff00" },
+		{ "RARE", "#0070dd" }, { "EPIC", "#a335ee" }, { "LEGENDARY", "#ff8000" },
+		{ "ARTIFACT", "#e6cc80" }, { "HEIRLOOM", "#00ccff" }, { "WOW_TOKEN", "#00ccff" },
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(colors); i++)
+		if (0 == g_strcmp0(colors[i].quality, quality))
+			return colors[i].color;
+
+	return "#ffffff";
+}
+
+/* A {r, g, b} colour object as "#rrggbb"; NULL when there is none. */
+static gchar *
+blizzard_color(JsonObject *color)
+{
+	if (NULL == color)
+		return NULL;
+
+	return g_strdup_printf("#%02x%02x%02x",
+	                       (guint)CLAMP(blizzard_int(color, "r", 255), 0, 255),
+	                       (guint)CLAMP(blizzard_int(color, "g", 255), 0, 255),
+	                       (guint)CLAMP(blizzard_int(color, "b", 255), 0, 255));
+}
+
+/* One tooltip line: text, an optional right-hand column, a colour. */
+static void
+blizzard_line(
+	JsonArray	*lines,
+	const gchar	*text,
+	const gchar	*right,
+	const gchar	*color
+){
+	JsonObject *line;
+
+	if (venture_string_is_empty(text))
+		return;
+
+	line = json_object_new();
+	json_object_set_string_member(line, "text", text);
+	if (!venture_string_is_empty(right))
+		json_object_set_string_member(line, "right", right);
+	if (NULL != color)
+		json_object_set_string_member(line, "color", color);
+	json_array_add_object_element(lines, line);
+}
+
+/* A preview member's display_string, or a nested display's. */
+static const gchar *
+blizzard_display_string(JsonObject *object)
+{
+	JsonObject *display;
+
+	if (NULL == object)
+		return NULL;
+
+	if (json_object_has_member(object, "display_string"))
+		return venture_json_object_get_string(object, "display_string", NULL);
+
+	display = blizzard_object(object, "display");
+	return (NULL != display) ? venture_json_object_get_string(display, "display_string", NULL) : NULL;
+}
+
+/*
+ * The icon, cached: Blizzard's file id names the file, so an icon shared
+ * by a thousand items is fetched once, and one already on disk is never
+ * fetched again -- icons do not change. Written to a temporary name and
+ * renamed, so a page never serves half of one. Returns the file id, or 0
+ * when there is no icon (no cache directory, no media, a failed fetch;
+ * the next lookup of the item tries again).
+ */
+static gint64
+blizzard_cache_icon(
+	VentureFeedRequest	*request,
+	BlizzardFrozen		*frozen,
+	gint64			 item_id
+){
+	g_autoptr(JsonNode) media = NULL;
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *name = NULL;
+	JsonArray *assets;
+	const gchar *icon_url = NULL;
+	gint64 file_id = 0;
+	guint status;
+	guint i;
+
+	if (NULL == blizzard_icon_dir_path)
+		return 0;
+
+	url = g_strdup_printf("%s/data/wow/media/item/%" G_GINT64_FORMAT "?namespace=%s",
+	                      frozen->settings->api_base, item_id, frozen->settings->static_namespace);
+	media = blizzard_get_json(request, frozen, url, BLIZZARD_COST_DEFAULT,
+	                          VENTURE_FEED_HTTP_UNCONDITIONAL, NULL, &status, NULL, NULL);
+
+	if ((NULL == media) || !JSON_NODE_HOLDS_OBJECT(media))
+		return 0;
+
+	assets = blizzard_array(json_node_get_object(media), "assets");
+
+	for (i = 0; (NULL != assets) && (i < json_array_get_length(assets)); i++)
+	{
+		JsonNode *element = json_array_get_element(assets, i);
+		JsonObject *asset;
+
+		if (!JSON_NODE_HOLDS_OBJECT(element))
+			continue;
+
+		asset = json_node_get_object(element);
+
+		if (0 == g_strcmp0(venture_json_object_get_string(asset, "key", NULL), "icon"))
+		{
+			icon_url = venture_json_object_get_string(asset, "value", NULL);
+			file_id = blizzard_int(asset, "file_data_id", 0);
+		}
+	}
+
+	/* The address is held to feeds.allowed_origins by the request, like
+	 * every other this source fetches. */
+	if ((NULL == icon_url) || (file_id <= 0))
+		return 0;
+
+	name = g_strdup_printf("%" G_GINT64_FORMAT ".jpg", file_id);
+	path = g_build_filename(blizzard_icon_dir_path, name, NULL);
+
+	if (!g_file_test(path, G_FILE_TEST_EXISTS))
+	{
+		g_autoptr(VentureFeedHttpResponse) response = NULL;
+		g_autofree gchar *partial = g_strconcat(path, ".partial", NULL);
+		gsize size = 0;
+		gconstpointer data;
+
+		response = venture_feed_request_http_get(request, icon_url, NULL, 1, NULL);
+
+		if ((NULL == response) || (200 != response->status) || (NULL == response->body))
+			return 0;
+
+		data = g_bytes_get_data(response->body, &size);
+
+		/* An icon is a few kilobytes; anything else is not one. */
+		if ((0 == size) || (size > 512 * 1024) ||
+		    !g_file_set_contents(partial, data, (gssize)size, NULL) ||
+		    (0 != g_rename(partial, path)))
+		{
+			g_unlink(partial);
+			return 0;
+		}
+	}
+
+	return file_id;
+}
+
+/*
+ * The item as VENTURE draws it, as JSON text: {color, icon, lines}. The
+ * name's colour is its quality's; the icon is this plugin's cached copy;
+ * the lines are the game's tooltip, from the item's preview, in the
+ * game's order and colours. VENTURE knows nothing of any of it -- it
+ * draws whatever display an instrument's attributes carry.
+ */
+static gchar *
+blizzard_item_display(
+	VentureFeedRequest	*request,
+	BlizzardFrozen		*frozen,
+	gint64			 item_id,
+	JsonObject		*item
+){
+	g_autoptr(JsonObject) display = json_object_new();
+	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+	JsonObject *preview = blizzard_object(item, "preview_item");
+	JsonObject *quality = blizzard_object(item, "quality");
+	JsonArray *lines = json_array_new();
+	gint64 file_id;
+
+	json_object_set_string_member(display, "color",
+		blizzard_quality_color(venture_json_object_get_string(quality, "type", NULL)));
+
+	file_id = blizzard_cache_icon(request, frozen, item_id);
+
+	if (file_id > 0)
+	{
+		g_autofree gchar *icon = g_strdup_printf(BLIZZARD_ICON_ROUTE "%" G_GINT64_FORMAT ".jpg", file_id);
+
+		json_object_set_string_member(display, "icon", icon);
+	}
+
+	if (NULL != preview)
+	{
+		JsonObject *weapon = blizzard_object(preview, "weapon");
+		JsonArray *stats = blizzard_array(preview, "stats");
+		JsonArray *spells = blizzard_array(preview, "spells");
+		JsonObject *requirements = blizzard_object(preview, "requirements");
+		JsonObject *sell = blizzard_object(preview, "sell_price");
+		const gchar *level = blizzard_display_string(blizzard_object(preview, "level"));
+		const gchar *description = venture_json_object_get_string(preview, "description", NULL);
+		guint i;
+
+		if (NULL != level)
+			blizzard_line(lines, level, NULL, "#ffd100");
+		else if (blizzard_int(item, "level", 0) > 0)
+		{
+			g_autofree gchar *text = g_strdup_printf("Item Level %" G_GINT64_FORMAT,
+			                                         blizzard_int(item, "level", 0));
+
+			blizzard_line(lines, text, NULL, "#ffd100");
+		}
+
+		blizzard_line(lines, venture_json_object_get_string(blizzard_object(preview, "binding"), "name", NULL),
+		              NULL, NULL);
+		blizzard_line(lines, venture_json_object_get_string(preview, "unique_equipped", NULL), NULL, NULL);
+
+		/* "One-Hand            Sword", as the game draws it. */
+		if (json_object_get_boolean_member_with_default(item, "is_equippable", FALSE) ||
+		    (NULL != weapon) || json_object_has_member(preview, "armor"))
+			blizzard_line(lines,
+			              venture_json_object_get_string(blizzard_object(preview, "inventory_type"), "name", NULL),
+			              json_object_get_boolean_member_with_default(preview, "is_subclass_hidden", FALSE)
+			              ? NULL
+			              : venture_json_object_get_string(blizzard_object(preview, "item_subclass"), "name", NULL),
+			              NULL);
+
+		if (NULL != weapon)
+		{
+			blizzard_line(lines, blizzard_display_string(blizzard_object(weapon, "damage")),
+			              blizzard_display_string(blizzard_object(weapon, "attack_speed")), NULL);
+			blizzard_line(lines, blizzard_display_string(blizzard_object(weapon, "dps")), NULL, NULL);
+		}
+
+		{
+			JsonObject *armor = blizzard_object(preview, "armor");
+			g_autofree gchar *color = blizzard_color(blizzard_object(blizzard_object(armor, "display"), "color"));
+
+			blizzard_line(lines, blizzard_display_string(armor), NULL, color);
+		}
+
+		for (i = 0; (NULL != stats) && (i < json_array_get_length(stats)); i++)
+		{
+			JsonNode *element = json_array_get_element(stats, i);
+			g_autofree gchar *color = NULL;
+
+			if (!JSON_NODE_HOLDS_OBJECT(element))
+				continue;
+
+			color = blizzard_color(blizzard_object(blizzard_object(json_node_get_object(element), "display"),
+			                                       "color"));
+			blizzard_line(lines, blizzard_display_string(json_node_get_object(element)), NULL, color);
+		}
+
+		for (i = 0; (NULL != spells) && (i < json_array_get_length(spells)); i++)
+		{
+			JsonNode *element = json_array_get_element(spells, i);
+
+			if (JSON_NODE_HOLDS_OBJECT(element))
+				blizzard_line(lines, venture_json_object_get_string(json_node_get_object(element),
+				                                                    "description", NULL),
+				              NULL, "#1eff00");
+		}
+
+		blizzard_line(lines, blizzard_display_string(blizzard_object(preview, "durability")), NULL, NULL);
+		blizzard_line(lines, blizzard_display_string(blizzard_object(requirements, "level")), NULL, NULL);
+
+		if (!venture_string_is_empty(description))
+		{
+			g_autofree gchar *quoted = g_strdup_printf("\"%s\"", description);
+
+			blizzard_line(lines, quoted, NULL, "#ffd100");
+		}
+
+		if (NULL != sell)
+		{
+			JsonObject *strings = blizzard_object(sell, "display_strings");
+			g_autoptr(GString) price = g_string_new(NULL);
+			static const gchar *const parts[] = { "gold", "silver", "copper" };
+			static const gchar *const units[] = { "g", "s", "c" };
+			guint p;
+
+			for (p = 0; (NULL != strings) && (p < G_N_ELEMENTS(parts)); p++)
+			{
+				const gchar *amount = venture_json_object_get_string(strings, parts[p], NULL);
+
+				if (!venture_string_is_empty(amount) && (0 != g_strcmp0(amount, "0")))
+					g_string_append_printf(price, "%s%s%s", (price->len > 0) ? " " : "", amount, units[p]);
+			}
+
+			if (price->len > 0)
+				blizzard_line(lines, "Sell Price:", price->str, NULL);
+		}
+	}
+
+	json_object_set_array_member(display, "lines", lines);
+	json_node_set_object(node, display);
+
+	return json_to_string(node, FALSE);
+}
+
 gboolean
 blizzard_fetch_item(
 	VentureFeedRequest	 *request,
@@ -812,7 +1136,7 @@ blizzard_fetch_item(
 
 	g_mutex_lock(&frozen->lock);
 	found = g_hash_table_lookup(frozen->items, &item_id);
-	*out_item = (NULL != found) ? blizzard_item_copy(found) : NULL;
+	*out_item = ((NULL != found) && !found->stale) ? blizzard_item_copy(found) : NULL;
 	g_mutex_unlock(&frozen->lock);
 
 	if (NULL != *out_item)
@@ -865,6 +1189,8 @@ blizzard_fetch_item(
 			item->category = (NULL != inner) ? g_strconcat(outer, "/", inner, NULL)
 			                                 : g_strdup(outer);
 		}
+
+		item->display_json = blizzard_item_display(request, frozen, item_id, object);
 	}
 
 	g_mutex_lock(&frozen->lock);
@@ -1486,8 +1812,24 @@ blizzard_items_from_store(
 				item->vendor_sell = blizzard_int(attrs, "vendor_sell", -1);
 				item->level = blizzard_int(attrs, "level", 0);
 				item->quality = g_strdup(blizzard_text(attrs, "quality", NULL));
+
+				if (json_object_has_member(attrs, "display") &&
+				    JSON_NODE_HOLDS_OBJECT(json_object_get_member(attrs, "display")))
+				{
+					g_autoptr(JsonNode) display = json_node_copy(json_object_get_member(attrs,
+					                                                                     "display"));
+
+					item->display_json = json_to_string(display, FALSE);
+				}
 			}
 		}
+
+		/* Named by an earlier build, which drew no tooltip: its name serves
+		 * now, and it is asked for again to get one. */
+		item->stale = (NULL == item->display_json);
+
+		if (item->stale)
+			g_array_append_val(still, item_id);
 
 		g_mutex_lock(&frozen->lock);
 		g_hash_table_replace(frozen->items, g_memdup2(&item_id, sizeof(item_id)), item);
@@ -1532,9 +1874,13 @@ blizzard_add_instruments(
 
 		g_ptr_array_add(keys, key);
 
-		if (g_hash_table_contains(frozen->items, &entry->item_id) ||
-		    g_hash_table_contains(listed, &entry->item_id))
-			continue;
+		{
+			BlizzardItem *known = g_hash_table_lookup(frozen->items, &entry->item_id);
+
+			if (((NULL != known) && !known->stale) ||
+			    g_hash_table_contains(listed, &entry->item_id))
+				continue;
+		}
 
 		g_hash_table_add(listed, &entry->item_id);
 		g_array_append_val(unknown, entry->item_id);
@@ -1622,6 +1968,16 @@ blizzard_add_instruments(
 
 			if (item->level > 0)
 				json_object_set_int_member(attrs, "level", item->level);
+
+			if (NULL != item->display_json)
+			{
+				g_autoptr(JsonParser) parser = json_parser_new();
+
+				if (json_parser_load_from_data(parser, item->display_json, -1, NULL) &&
+				    JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+					json_object_set_member(attrs, "display",
+					                       json_node_copy(json_parser_get_root(parser)));
+			}
 
 			/* A caged pet is its cage's item; the species says which. */
 			{
