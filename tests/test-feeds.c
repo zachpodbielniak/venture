@@ -2247,6 +2247,27 @@ thread_named(const gchar *name)
 }
 
 /*
+ * Whether no thread named @name is left within a second. A joined thread
+ * has returned, but the kernel can take a moment more to drop its
+ * /proc/self/task entry, and on a loaded machine (the whole suite running)
+ * a single look sometimes still saw it.
+ */
+static gboolean
+thread_gone(const gchar *name)
+{
+	guint i;
+
+	for (i = 0; i < 100; i++)
+	{
+		if (!thread_named(name))
+			return TRUE;
+		g_usleep(10 * G_TIME_SPAN_MILLISECOND);
+	}
+
+	return FALSE;
+}
+
+/*
  * A sync is pending from the moment it is asked for until its run is
  * written: count_pending() never reads zero in between.
  *
@@ -2335,7 +2356,7 @@ test_feeds_worker_lifecycle(
 	/* Switched off: stopped, and nothing to reach. */
 	g_object_set(fixture->config, "feeds-enabled", FALSE, NULL);
 	g_assert_null(venture_context_get_feeds_service(fixture->context));
-	g_assert_false(thread_named("venture-feeds"));
+	g_assert_true(thread_gone("venture-feeds"));
 
 	/* Back on, synced, and the context dropped: joined. */
 	g_object_set(fixture->config, "feeds-enabled", TRUE, NULL);
@@ -2343,7 +2364,7 @@ test_feeds_worker_lifecycle(
 	run = sync_and_wait(fixture, id);
 	g_assert_true(thread_named("venture-feeds"));
 	g_clear_object(&fixture->context);
-	g_assert_false(thread_named("venture-feeds"));
+	g_assert_true(thread_gone("venture-feeds"));
 }
 
 /* --- Actions, automation, history ---------------------------------------------------- */
