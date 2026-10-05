@@ -702,7 +702,7 @@ help:
 	@echo "  docs-site         Render docs/*.org and README.org to build/docs-site"
 	@echo ""
 	@echo "Agent skill:"
-	@echo "  install-skill     Symlink skills/venturectl into each agent's dir"
+	@echo "  install-skill     Symlink skills/venture into each agent's dir (drops an old venturectl link)"
 	@echo "  uninstall-skill   Remove those symlinks"
 
 # ---------------------------------------------------------------------------

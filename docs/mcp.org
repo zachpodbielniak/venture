@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-29]
-#+updated: [2026-09-27]
+#+updated: [2026-10-05]
 #+version: 0.6.0
 
 * venturectl mcp
@@ -191,7 +191,7 @@ A genuine 404 still reads as a missing record; a 403 says the account may not do
 
 =VENTURE_TOKEN= is left out on purpose: put it in the environment the agent is started with, not in a file that gets committed. Confirm with =ps aux= that no token is visible once it is running.
 
-Pair it with [[file:../skills/venturectl/SKILL.md][the venturectl skill]], which covers the same server from the shell.
+Pair it with [[file:../skills/venture/SKILL.md][the venture skill]], which covers the same server from the shell and over raw HTTP, and explains the system as a whole.
 
 ** Telling an agent that something changed
 

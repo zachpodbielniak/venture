@@ -424,19 +424,38 @@ order the data flows.
 as an argument. A record type added today already works, and no subcommand
 should ever be added per type.
 
-**The agent-facing guide is `skills/venturectl/SKILL.md`, and it is
-maintained with the code.** It lives there rather than under `.claude/`
-because three different agents read it and none of them owns it;
-`.claude/skills/venturectl` is a symlink to it so Claude Code still finds it
-with the project open. `make install-skill` links it into
-`~/.claude/skills`, `~/.grok/skills` and `~/.agents/skills` — a symlink, not
-a copy, so editing the working tree is immediately what every agent reads.
-It only ever replaces a symlink; a real directory of the same name is
-reported and left alone. When a command, a flag, an exit code or one of
-its documented traps changes, change it there in the same commit. A skill
-that is confidently wrong is worse than none, because it gets followed. Its
-two ground truths — `venturectl --help` and `venturectl describe <type>` —
-are generated from the source and cannot drift, so check against those.
+**The agent-facing guide is the skill in `skills/venture/`, invoked as
+`/venture`, and it is maintained with the code.** `SKILL.md` orients (what
+VENTURE is, the first probes, critical rules, where things live, the
+command surface, a table of common requests); `references/*.md` hold one
+guide per subsystem, plus `system.md` (the system as a whole),
+`data-model*.md` (every module's record types), `api.md`/`api-routes.md`
+(the raw REST API), `cli.md`/`cli-verbs.md` (venturectl) and
+`troubleshooting.md` (symptom first). It lives there rather than under
+`.claude/` because three different agents read it and none of them owns it;
+`.claude/skills/venture` is a relative symlink to it so Claude Code still
+finds it with the project open. `make install-skill` links the directory
+into `~/.claude/skills`, `~/.grok/skills` and `~/.agents/skills` — a
+symlink, not a copy, so editing the working tree is immediately what every
+agent reads. It only ever replaces a symlink; a real directory of the same
+name is reported and left alone. It was called `venturectl` until it grew
+past the CLI: `SKILL_OLD_NAMES` makes install and uninstall drop a link
+under that name, but only one pointing at this checkout's
+`skills/venturectl`.
+
+When a command, a flag, an exit code, a route, a record type's purpose or
+one of the documented traps changes, change the skill in the same commit:
+the reference under `skills/venture/references/` that covers that
+subsystem (`SKILL.md`'s Topic guides list says which), the route index in
+`api-routes.md` for a new route, `cli-verbs.md` for a new verb, the
+`data-model-*.md` file for a new type or module, and `SKILL.md`'s Common
+requests table when a new kind of request becomes possible. Then move the
+skill's baseline commit (the "Skill baseline" section of `SKILL.md`). A
+skill that is confidently wrong is worse than none, because it gets
+followed. Its ground truths — `venturectl --help`, `venturectl describe
+<type>`, `GET /api/v1/schema`, `GET /api/v1/reports` and `venturectl
+modules` — are generated from the source and cannot drift, so check
+against those.
 
 `describe` is the command that earns its keep: it prints field names in the
 wire spelling, what each reference points at, and what each enum accepts.

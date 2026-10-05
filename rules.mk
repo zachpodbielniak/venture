@@ -445,6 +445,21 @@ endif
 # is left alone and reported: that is somebody's own skill of the same name,
 # and silently replacing it would be the one unrecoverable thing this target
 # could do.
+#
+# Both targets also remove a link left under one of SKILL_OLD_NAMES (the
+# skill was `venturectl` before it became `venture`), but only a symlink
+# whose target is exactly this checkout's skills/<old name> -- the path an
+# earlier `make install-skill` here wrote. A link into another checkout, a
+# link somebody pointed elsewhere, or a real directory is left alone.
+SKILL_PRUNE_OLD = for old in $(SKILL_OLD_NAMES); do \
+		stale="$$dest/$$old"; \
+		if [ -L "$$stale" ] && \
+		   [ "$$(readlink "$$stale")" = "$(CURDIR)/skills/$$old" ]; then \
+			rm -f "$$stale"; \
+			echo "  unlink   $$stale (old name)"; \
+		fi; \
+	done
+
 .PHONY: install-skill
 install-skill:
 	@if [ ! -f "$(SKILL_SRC)/SKILL.md" ]; then \
@@ -452,6 +467,7 @@ install-skill:
 		exit 1; \
 	fi
 	@for dest in $(SKILL_DESTS); do \
+		$(SKILL_PRUNE_OLD); \
 		link="$$dest/$(SKILL_NAME)"; \
 		$(MKDIR_P) "$$dest"; \
 		if [ -L "$$link" ]; then \
@@ -467,6 +483,7 @@ install-skill:
 .PHONY: uninstall-skill
 uninstall-skill:
 	@for dest in $(SKILL_DESTS); do \
+		$(SKILL_PRUNE_OLD); \
 		link="$$dest/$(SKILL_NAME)"; \
 		if [ -L "$$link" ]; then \
 			rm -f "$$link"; \

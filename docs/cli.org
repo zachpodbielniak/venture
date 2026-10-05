@@ -3,16 +3,22 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-04]
+#+updated: [2026-10-05]
 #+version: 0.7.0
 
 
 * For an AI agent
 
-=skills/venturectl/SKILL.md= is a skill file written for an agent
-driving this CLI: setup, the five traps that account for most mistakes, a
-worked forge configuration, and the exit codes to branch on. It is
-maintained alongside the code rather than as documentation about it.
+=skills/venture/= is the agent skill for VENTURE, invoked as =/venture=:
+=SKILL.md= orients an agent (what VENTURE is, the probes to run first,
+critical rules, where things live, the command surface and a table of
+common requests), and =references/= holds one guide per subsystem -- the
+system as a whole, the data model module by module, the raw REST API,
+every =venturectl= verb, reports, dashboards, the books, billing, the CRM,
+the desk, the factory, market data and arbitrage -- plus a symptom-first
+troubleshooting index. It is maintained alongside the code rather than as
+documentation about it. It was called =venturectl= until it grew past the
+command line; =make install-skill= removes a link it left under that name.
 
 Install it for whichever agents you use:
 
