@@ -14,6 +14,11 @@ src/venture-version.h
 
 compose-data/
 .git/
+# A submodule's .git is a file naming ../../.git/modules/..., which the line
+# above leaves out of the context. Shipped alone it is a dangling pointer:
+# git inside the build fails "not a git repository" instead of finding no
+# repository, and tests that skip when there is no checkout run and fail.
+**/.git
 .gitignore
 .containerignore
 *.o

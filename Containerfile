@@ -66,6 +66,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libdex-devel \
         gstreamer1-devel \
         gstreamer1-plugins-base-devel \
+        glibc-gconv-extra \
         jq \
         gnupg2 \
     && dnf clean all \
@@ -220,6 +221,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libdex \
         gstreamer1 \
         gstreamer1-plugins-base \
+        glibc-gconv-extra \
         ca-certificates \
         tzdata \
         git \
