@@ -64,6 +64,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         gmime30-devel \
         gnutls-devel \
         libdex-devel \
+        gstreamer1-devel \
+        gstreamer1-plugins-base-devel \
         jq \
         gnupg2 \
     && dnf clean all \
@@ -216,6 +218,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         gmime30 \
         gnutls \
         libdex \
+        gstreamer1 \
+        gstreamer1-plugins-base \
         ca-certificates \
         tzdata \
         git \
