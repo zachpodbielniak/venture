@@ -2531,6 +2531,50 @@ venture_feeds_service_count_pending(VentureFeedsService *self)
 	       ((NULL != self->worker) ? venture_series_worker_count_live(self->worker) : 0);
 }
 
+/*
+ * A reader on a store, upgrading the store first when its schema is older
+ * than this build's.
+ *
+ * Only a writer migrates, and a reader refuses an older schema. A store
+ * whose writer runs every hour (a scheduled source) upgrades itself within
+ * the hour; a push source's store is written only when someone pushes, so
+ * after an upgrade its pages -- the accounts, the inventory, the ledger --
+ * said "nothing sent yet" until the next push. Opening it as a writer
+ * once applies the pending steps; a newer schema is refused by the writer
+ * as well, so this can only move a store forward.
+ */
+static VentureSeriesStore *
+feeds_open_reader_upgrading(
+	const gchar	 *store_dir,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	g_autoptr(VentureSeriesStore) writer = NULL;
+	VentureSeriesStore *reader;
+
+	reader = venture_series_store_open_reader(store_dir, &local_error);
+
+	if (NULL != reader)
+		return reader;
+
+	if (!g_error_matches(local_error, VENTURE_ERROR, VENTURE_ERROR_MIGRATION))
+	{
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return NULL;
+	}
+
+	writer = venture_series_store_open(store_dir, NULL);
+
+	if (NULL == writer)
+	{
+		g_propagate_error(error, g_steal_pointer(&local_error));
+		return NULL;
+	}
+
+	g_clear_object(&writer);
+	return venture_series_store_open_reader(store_dir, error);
+}
+
 VentureSeriesStore *
 venture_feeds_service_open_reader(
 	VentureFeedsService	 *self,
@@ -2550,7 +2594,7 @@ venture_feeds_service_open_reader(
 	store_dir = venture_feeds_store_dir(venture_context_get_config(self->context),
 	                                    venture_entity_get_uuid(record));
 
-	return venture_series_store_open_reader(store_dir, error);
+	return feeds_open_reader_upgrading(store_dir, error);
 }
 
 static VentureFeedsService *

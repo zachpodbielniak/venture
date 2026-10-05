@@ -1819,7 +1819,7 @@ test_login_upgrade(
 
 	fixture->store = venture_series_store_open(fixture->dir, &error);
 	g_assert_no_error(error);
-	g_assert_cmpuint(venture_series_store_schema_version(), ==, 7);
+	g_assert_cmpuint(venture_series_store_schema_version(), >=, 7);
 
 	g_assert_true(venture_series_store_get_account(fixture->store, "Old-Thorium", T0, &row, &error));
 	g_assert_cmpstr(row->login_key, ==, "");

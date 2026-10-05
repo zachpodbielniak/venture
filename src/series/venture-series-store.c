@@ -396,6 +396,23 @@ static const gchar series_schema_step_7[] =
 	"ALTER TABLE accounts ADD COLUMN login TEXT NOT NULL DEFAULT '';"
 	"CREATE INDEX accounts_login ON accounts (login);";
 
+/*
+ * A variant (an item with bonuses, a pet with a breed) is filed under its
+ * plain item through parent_key, and a provider usually learns the plain
+ * item's name long after it first stored the variants. Until this step a
+ * variant kept a NULL name until a provider happened to name it again, so
+ * pages showed "19019:b1472,6646" for an item whose name was known. From
+ * here the writer copies a parent's name to its unnamed variants; this
+ * backfills the stores written before that.
+ */
+static const gchar series_schema_step_8[] =
+	"UPDATE instruments SET"
+	"  name = (SELECT p.name FROM instruments p WHERE p.key = instruments.parent_key),"
+	"  name_fold = (SELECT p.name_fold FROM instruments p WHERE p.key = instruments.parent_key)"
+	" WHERE name IS NULL AND parent_key IS NOT NULL"
+	"   AND EXISTS (SELECT 1 FROM instruments p"
+	"               WHERE p.key = instruments.parent_key AND p.name IS NOT NULL);";
+
 /* Append only: a store records which of these it has run in user_version. */
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
@@ -404,7 +421,8 @@ static const gchar *const series_schema_steps[] = {
 	series_schema_step_4,
 	series_schema_step_5,
 	series_schema_step_6,
-	series_schema_step_7
+	series_schema_step_7,
+	series_schema_step_8
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -2258,10 +2276,20 @@ series_instrument_lookup(
 	return TRUE;
 }
 
+/* A new variant with no name of its own starts with its parent's. */
 static const gchar series_sql_insert_instrument[] =
 	"INSERT INTO instruments (key, namespace, name, name_fold, kind, category,"
 	"                         parent_key, attrs, first_seen, last_seen)"
-	" VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)";
+	" VALUES (?1, ?2,"
+	"         COALESCE(?3, (SELECT p.name FROM instruments p WHERE p.key = ?7)),"
+	"         COALESCE(?4, (SELECT p.name_fold FROM instruments p WHERE p.key = ?7)),"
+	"         ?5, ?6, ?7, ?8, ?9, ?9)";
+
+/* A plain item that learns its name passes it to its unnamed variants;
+ * a variant a provider names itself keeps that name. */
+static const gchar series_sql_name_variants[] =
+	"UPDATE instruments SET name = ?2, name_fold = ?3"
+	" WHERE parent_key = ?1 AND name IS NULL";
 
 static const gchar series_sql_update_instrument[] =
 	"UPDATE instruments SET"
@@ -2278,6 +2306,33 @@ static const gchar series_sql_update_instrument[] =
 
 static const gchar series_sql_touch_instrument[] =
 	"UPDATE instruments SET last_seen = ?2 WHERE id = ?1 AND last_seen < ?2";
+
+/*
+ * Copies a plain instrument's name to its variants that have none. A no-op
+ * for a variant, an unnamed instrument, or one with no variants (the
+ * partial index on parent_key keeps that last case a single probe).
+ */
+static gboolean
+series_name_variants(
+	VentureSeriesStore		 *self,
+	const VentureSeriesInstrument	 *instrument,
+	const gchar			 *fold,
+	GError				**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+
+	if ((NULL == instrument->name) || (NULL != instrument->parent_key))
+		return TRUE;
+
+	stmt = series_stmt(self, series_sql_name_variants, error);
+	if (NULL == stmt)
+		return FALSE;
+
+	series_bind_text(stmt, 1, instrument->key);
+	series_bind_text(stmt, 2, instrument->name);
+	series_bind_text(stmt, 3, fold);
+	return series_step_done(self, stmt, "naming an instrument's variants", error);
+}
 
 /*
  * Creates or updates an instrument. @allow_new FALSE refuses a new one:
@@ -2345,7 +2400,7 @@ series_write_instrument(
 
 		*out_id = sqlite3_last_insert_rowid(self->db);
 		*out_created = TRUE;
-		return TRUE;
+		return series_name_variants(self, instrument, fold, error);
 	}
 
 	*out_id = id;
@@ -2385,7 +2440,10 @@ series_write_instrument(
 	series_bind_text(stmt, 8, instrument->attrs_json);
 	sqlite3_bind_int64(stmt, 9, seen_at);
 
-	return series_step_done(self, stmt, "updating an instrument", error);
+	if (!series_step_done(self, stmt, "updating an instrument", error))
+		return FALSE;
+
+	return series_name_variants(self, instrument, fold, error);
 }
 
 gboolean

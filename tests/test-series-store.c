@@ -2219,6 +2219,74 @@ test_scale_smoke(
 	                G_GINT64_CONSTANT(60) * G_USEC_PER_SEC);
 }
 
+/* Writes an instrument with only the fields given; NULLs leave stored ones. */
+static void
+put_instrument(
+	VentureSeriesStore	*store,
+	const gchar		*key,
+	const gchar		*name,
+	const gchar		*parent_key
+){
+	g_autoptr(GError) error = NULL;
+	VentureSeriesInstrument instrument;
+
+	memset(&instrument, 0, sizeof(instrument));
+	instrument.key = key;
+	instrument.name = name;
+	instrument.parent_key = parent_key;
+	instrument.kind = "item";
+	g_assert_true(venture_series_store_upsert_instrument(store, &instrument, 1000, NULL, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static gchar *
+stored_name(
+	VentureSeriesStore	*store,
+	const gchar		*key
+){
+	g_autoptr(VentureSeriesInstrumentRow) row = NULL;
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_series_store_get_instrument(store, key, &row, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(row);
+
+	return g_strdup(row->name);
+}
+
+/*
+ * A variant's name follows its plain item's: a variant stored before the
+ * item is named takes the name when it arrives, one stored after starts
+ * with it, and a variant a provider named itself keeps its own.
+ */
+static void
+test_variant_names(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autofree gchar *early = NULL;
+	g_autofree gchar *late = NULL;
+	g_autofree gchar *own = NULL;
+	g_autofree gchar *still = NULL;
+
+	(void)data;
+
+	put_instrument(fixture->store, "19019:b1", NULL, "19019");
+	put_instrument(fixture->store, "19019:b2", "Thunderfury (heroic)", "19019");
+	still = stored_name(fixture->store, "19019:b1");
+	g_assert_null(still);
+
+	put_instrument(fixture->store, "19019", "Thunderfury", NULL);
+	put_instrument(fixture->store, "19019:b3", NULL, "19019");
+
+	early = stored_name(fixture->store, "19019:b1");
+	late = stored_name(fixture->store, "19019:b3");
+	own = stored_name(fixture->store, "19019:b2");
+	g_assert_cmpstr(early, ==, "Thunderfury");
+	g_assert_cmpstr(late, ==, "Thunderfury");
+	g_assert_cmpstr(own, ==, "Thunderfury (heroic)");
+}
+
 #define ADD(path, func) \
 	g_test_add("/series-store/" path, Fixture, NULL, fixture_set_up, func, \
 	           fixture_tear_down)
@@ -2234,6 +2302,7 @@ main(
 	g_test_init(&argc, &argv, NULL);
 
 	ADD("create", test_create);
+	ADD("variant-names", test_variant_names);
 	ADD_BARE("upgrade", test_upgrade);
 	ADD_BARE("future-version-refused", test_future_version_refused);
 	ADD_BARE("corrupt-refused", test_corrupt_refused);
