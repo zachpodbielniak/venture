@@ -1590,6 +1590,435 @@ test_organizations(
 	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_ARBITRAGE_TRADE), ==, 0);
 }
 
+/*
+ * A recorded flip's snapshot is the ledger rows it took, and the next run
+ * subtracts it before matching again. A hand edit that drops or shrinks
+ * it is refused like an edit of its external reference; the same
+ * snapshot posted back re-indented is not a change.
+ *
+ * What breaks if this regresses: editing a flip's Expected box frees the
+ * rows it named, and the next Record flips books the same sale a second
+ * time, with a second set of journals.
+ */
+static void
+test_flip_snapshot_held(
+	Fixture		*f,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) trade = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(JsonObject) first = NULL;
+	g_autoptr(JsonObject) again = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) trades = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) parsed = NULL;
+	g_autofree gchar *snapshot = NULL;
+	g_autofree gchar *pretty = NULL;
+	guint journals;
+
+	(void)user_data;
+
+	source = push_source(f, f->org, "TSM", "GOLD", "books: trades\n");
+	flip_ledger(body);
+	run = push(f, source, body->str);
+
+	first = flips(f, source, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(json_object_get_int_member(first, "recorded"), ==, 3);
+	journals = count_rows(f, VENTURE_TYPE_JOURNAL);
+
+	query = venture_query_new(VENTURE_TYPE_ARBITRAGE_TRADE);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	trades = venture_database_find(f->db, query, NULL);
+	g_assert_cmpuint(trades->len, ==, 3);
+
+	/* The snapshot without its source: refused. */
+	trade = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, ID(g_ptr_array_index(trades, 0)));
+	g_object_get(trade, "expected", &snapshot, NULL);
+	g_object_set(trade, "expected", "{\"profit\":[\"1.0000 GOLD\"]}", NULL);
+	g_assert_false(venture_database_save(f->db, trade, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* Emptied: refused too. */
+	g_clear_object(&trade);
+	trade = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, ID(g_ptr_array_index(trades, 0)));
+	g_object_set(trade, "expected", "", NULL);
+	g_assert_false(venture_database_save(f->db, trade, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* The same snapshot, re-indented, beside an edited note: saved. */
+	g_clear_object(&trade);
+	trade = reread(f, VENTURE_TYPE_ARBITRAGE_TRADE, ID(g_ptr_array_index(trades, 0)));
+	parsed = json_from_string(snapshot, &error);
+	g_assert_no_error(error);
+	pretty = json_to_string(parsed, TRUE);
+	g_assert_cmpstr(pretty, !=, snapshot);
+	g_object_set(trade, "expected", pretty, "notes", "Checked against the ledger", NULL);
+	g_assert_true(venture_database_save(f->db, trade, NULL, &error));
+	g_assert_no_error(error);
+
+	/* Nothing was freed, so nothing is recorded again. */
+	again = flips(f, source, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(json_object_get_int_member(again, "recorded"), ==, 0);
+	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_ARBITRAGE_TRADE), ==, 3);
+	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_JOURNAL), ==, journals);
+}
+
+/* "2026-03-01T12:00:00Z" for @when. */
+static gchar *
+iso(gint64 when)
+{
+	g_autoptr(GDateTime) at = g_date_time_new_from_unix_utc(when);
+
+	return g_date_time_format(at, "%Y-%m-%dT%H:%M:%SZ");
+}
+
+/*
+ * Retention purges balance points by their own time and keeps only an
+ * account's newest before its horizon. An opening posted for the
+ * horizon's own day took its capital from a point the day before, which
+ * the purge removes while the day itself stays inside the horizon. The
+ * opening is kept as posted; nothing is reversed.
+ *
+ * What breaks if this regresses: once, on the day retention reaches each
+ * account's opening, the opening reads as zero, and it and every day the
+ * account ever posted are reversed and posted again.
+ */
+static void
+test_opening_after_purge(
+	Fixture		*f,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(JsonObject) posted = NULL;
+	g_autoptr(JsonObject) kept = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *store_dir = NULL;
+	g_autofree gchar *seen = NULL;
+	g_autofree gchar *bought = NULL;
+	g_autofree gchar *sold = NULL;
+	g_autofree gchar *later = NULL;
+	VentureSeriesPurgeResult purged;
+	JsonArray *days;
+	gint64 now;
+	gint64 opening_day;
+	gboolean found;
+	guint i;
+
+	(void)user_data;
+
+	/* Kept for 11 days, so the horizon is ten days back: the opening's. */
+	now = g_get_real_time() / G_USEC_PER_SEC;
+	opening_day = (now / 86400) * 86400 - 10 * 86400;
+	seen = iso(opening_day - 12 * 3600);
+	bought = iso(opening_day + 10 * 3600);
+	sold = iso(opening_day + 12 * 3600);
+	later = iso(opening_day + 2 * 86400);
+
+	source = push_source(f, f->org, "TSM", "GOLD", "books: daily\n");
+	line_market(body);
+	line_account(body, "Drgold-Thorium", "thorium");
+	line_balance(body, "Drgold-Thorium", "GOLD", "100.0000", seen);
+	line_txn(body, "b1", "Drgold-Thorium", "thorium", "buy", "2447", 3, "30.0000", bought);
+	line_txn(body, "s1", "Drgold-Thorium", "thorium", "sale", "2447", 1, "25.5000", sold);
+	line_balance(body, "Drgold-Thorium", "GOLD", "95.5000", later);
+	run = push(f, source, body->str);
+
+	posted = post_ok(f, source, NULL, NULL);
+	g_assert_cmpint(status_count(posted, "unposted"), ==, 2);
+	g_assert_cmpint(held(f, source, "Drgold-Thorium", "GOLD"), ==, GOLD(95, 5000));
+
+	/* The store's own retention, as the worker runs it. */
+	g_object_set(f->config, "series-daily-days", (gint64)11, NULL);
+	store_dir = venture_feeds_store_dir(f->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(store_dir, &error);
+	g_assert_no_error(error);
+	memset(&purged, 0, sizeof(purged));
+	g_assert_true(venture_series_store_purge(store, now, 0, 11, &purged, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(purged.balances, ==, 1);
+	g_assert_cmpint(purged.txns, ==, 0);
+	g_clear_object(&store);
+
+	kept = post_ok(f, source, NULL, NULL);
+	g_assert_cmpint(json_object_get_int_member(kept, "written"), ==, 0);
+	g_assert_cmpint(status_count(kept, "changed"), ==, 0);
+	g_assert_cmpint(status_count(kept, "follows"), ==, 0);
+	g_assert_cmpuint(count_journals(f, source, TRUE), ==, 0);
+	g_assert_cmpint(held(f, source, "Drgold-Thorium", "GOLD"), ==, GOLD(95, 5000));
+
+	days = json_object_get_array_member(kept, "days");
+	found = FALSE;
+
+	for (i = 0; i < json_array_get_length(days); i++)
+	{
+		JsonObject *row = json_array_get_object_element(days, i);
+
+		if (0 != g_strcmp0(venture_json_object_get_string(row, "kind", NULL), "opening"))
+			continue;
+
+		g_assert_cmpstr(venture_json_object_get_string(row, "status", NULL), ==, "kept");
+		found = TRUE;
+	}
+
+	g_assert_true(found);
+}
+
+/* Refuses every date from 2 March 2026 on: a later period closed while an
+ * earlier one is open. */
+static GError *
+closed_from_march_second(
+	VenturePostingService	*posting,
+	gint64			 org,
+	GDateTime		*when,
+	gpointer		 data
+){
+	g_autoptr(GDateTime) bound = day("2026-03-02");
+
+	(void)posting;
+	(void)org;
+	(void)data;
+
+	if (g_date_time_compare(when, bound) < 0)
+		return NULL;
+
+	return g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Period 'March, later' is closed");
+}
+
+/*
+ * A day that changes makes every posted day after it post again, only so
+ * that the reversals come first; what those days say is unchanged. One in
+ * a closed period is kept as posted: its reversal would be refused.
+ *
+ * What breaks if this regresses: reopening an earlier period to correct
+ * it fails every pass on the later, closed period's reversal, and the
+ * correction can never be posted.
+ */
+static void
+test_follower_in_closed_period(
+	Fixture		*f,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) grown = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(GString) more = g_string_new(NULL);
+	g_autoptr(JsonObject) posted = NULL;
+	g_autoptr(JsonObject) changed = NULL;
+	JsonArray *notes;
+	gboolean noted;
+	gulong handler;
+	guint i;
+
+	(void)user_data;
+
+	source = push_source(f, f->org, "TSM", "GOLD", "books: daily\n");
+	drgold_ledger(body);
+	run = push(f, source, body->str);
+	posted = post_ok(f, source, NULL, "2026-03-10");
+	g_assert_cmpint(status_count(posted, "unposted"), ==, 3);
+
+	/* 1 March's sale grew; 2 March is now in a closed period. */
+	line_txn(more, "s1", "Drgold-Thorium", "thorium", "sale", "2447", 2, "51.0000", "2026-03-01T12:00:00Z");
+	grown = push(f, source, more->str);
+	handler = g_signal_connect(venture_database_get_posting_service(f->db), "date-postable",
+	                           G_CALLBACK(closed_from_march_second), NULL);
+
+	changed = post_ok(f, source, NULL, "2026-03-10");
+	g_signal_handler_disconnect(venture_database_get_posting_service(f->db), handler);
+
+	g_assert_cmpint(status_count(changed, "changed"), ==, 1);
+	g_assert_cmpint(status_count(changed, "follows"), ==, 0);
+	g_assert_cmpint(status_count(changed, "kept"), ==, 1);
+	g_assert_cmpuint(count_journals(f, source, TRUE), ==, 1);
+	g_assert_cmpint(balance_of(f, "trading_sales", "GOLD"), ==, -GOLD(91, 0));
+
+	second = posting_record(f, source, "Drgold-Thorium:2026-03-02");
+	g_assert_cmpint(int_of(second, "revision"), ==, 1);
+
+	notes = json_object_get_array_member(changed, "notes");
+	noted = FALSE;
+
+	for (i = 0; i < json_array_get_length(notes); i++)
+		noted = noted || (NULL != strstr(json_array_get_string_element(notes, i), "closed period"));
+
+	g_assert_true(noted);
+}
+
+/*
+ * The capital a buy needs is what keeps every later moment of the purse at
+ * zero or more once it is spent, because the floor refuses a spend that
+ * ends a moment below zero and lower than it was -- which a spend over a
+ * dip already below zero always does. With a -50 dip after it, a spend of
+ * 30 needs 80, not 30: with 30 the dip would end at -50, deeper than the
+ * -20 the capital left it at.
+ *
+ * What breaks if this regresses: Record flips funds the buy too little,
+ * and the leg is refused by the floor it was funded to pass.
+ */
+static void
+test_shortfall_over_a_dip(
+	Fixture		*f,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) place = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(VentureEntity) movement = NULL;
+	g_autoptr(VentureMoney) spend = NULL;
+	g_autoptr(VentureMoney) shortfall = NULL;
+	g_autoptr(GDateTime) at = day("2026-03-05");
+	g_autoptr(GError) error = NULL;
+	gint64 holding = 0;
+
+	(void)user_data;
+
+	place = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_LOCATION, NULL));
+	venture_entity_set_organization_id(place, f->org);
+	g_object_set(place, "name", "Drgold", NULL);
+	save(f, place);
+	g_assert_true(venture_holdings_account_for_location(f->db, f->org, ID(place), TRUE, NULL,
+	                                                    &holding, &error));
+	g_assert_no_error(error);
+
+	/* A dip left behind while overdrafts were allowed. */
+	account = reread(f, VENTURE_TYPE_ACCOUNT, holding);
+	g_object_set(account, "allow-negative", TRUE, NULL);
+	save(f, account);
+	movement = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_HOLDING_TXN, NULL));
+	venture_entity_set_organization_id(movement, f->org);
+	g_object_set(movement, "account-id", holding, NULL);
+	field(movement, "amount", "-50 TICKET");
+	field(movement, "occurred-at", "2026-03-10");
+	save(f, movement);
+	g_clear_object(&account);
+	account = reread(f, VENTURE_TYPE_ACCOUNT, holding);
+	g_object_set(account, "allow-negative", FALSE, NULL);
+	save(f, account);
+
+	spend = venture_money_new(-30, "TICKET", 0);
+	g_assert_nonnull(spend);
+	g_assert_true(venture_holdings_floor_shortfall(f->db, holding, spend, at, &shortfall, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(shortfall), ==, 80);
+
+	/* One less is not enough; exactly that is. */
+	g_clear_object(&movement);
+	movement = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_HOLDING_TXN, NULL));
+	venture_entity_set_organization_id(movement, f->org);
+	g_object_set(movement, "account-id", holding, NULL);
+	field(movement, "amount", "79 TICKET");
+	field(movement, "occurred-at", "2026-03-05");
+	save(f, movement);
+
+	g_clear_object(&movement);
+	movement = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_HOLDING_TXN, NULL));
+	venture_entity_set_organization_id(movement, f->org);
+	g_object_set(movement, "account-id", holding, NULL);
+	field(movement, "amount", "-30 TICKET");
+	field(movement, "occurred-at", "2026-03-05");
+	g_assert_false(venture_database_save(f->db, movement, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	g_clear_object(&movement);
+	movement = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_HOLDING_TXN, NULL));
+	venture_entity_set_organization_id(movement, f->org);
+	g_object_set(movement, "account-id", holding, NULL);
+	field(movement, "amount", "1 TICKET");
+	field(movement, "occurred-at", "2026-03-05");
+	save(f, movement);
+
+	g_clear_object(&movement);
+	movement = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_HOLDING_TXN, NULL));
+	venture_entity_set_organization_id(movement, f->org);
+	g_object_set(movement, "account-id", holding, NULL);
+	field(movement, "amount", "-30 TICKET");
+	field(movement, "occurred-at", "2026-03-05");
+	save(f, movement);
+}
+
+/*
+ * A sale's cost is the sum of the buys it drew on, and a call's totals the
+ * sum of its sales. Past 64 bits either is refused, before anything is
+ * written, rather than wrapped into a negative cost and a profit nobody
+ * made.
+ *
+ * What breaks if this regresses: two enormous buys record a trade costing
+ * less than nothing, posting a gain of about 18 quintillion coppers.
+ */
+static void
+test_flip_overflow(
+	Fixture		*f,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) one_sale = NULL;
+	g_autoptr(VentureEntity) two_sales = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) other_run = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(GString) other = g_string_new(NULL);
+	g_autoptr(GError) error = NULL;
+	JsonObject *report;
+
+	(void)user_data;
+
+	/* Two buys of just over a quarter of the range each... */
+	one_sale = push_source(f, f->org, "One sale", "GOLD", "books: trades\n");
+	line_market(body);
+	line_account(body, "Drgold-Thorium", "thorium");
+	line_txn(body, "b1", "Drgold-Thorium", "thorium", "buy", "2447", 1, "461168601842739.0000",
+	         "2026-03-01T10:00:00Z");
+	line_txn(body, "b2", "Drgold-Thorium", "thorium", "buy", "2447", 1, "461168601842739.0000",
+	         "2026-03-01T11:00:00Z");
+	line_txn(body, "s1", "Drgold-Thorium", "thorium", "sale", "2447", 2, "1.0000", "2026-03-02T10:00:00Z");
+	run = push(f, one_sale, body->str);
+
+	/* ...drawn on by one sale: its cost does not fit. */
+	report = flips(f, one_sale, TRUE, &error);
+	g_assert_null(report);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	report = flips(f, one_sale, FALSE, &error);
+	g_assert_null(report);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* Drawn on by two sales: each fits, their total does not. */
+	two_sales = push_source(f, f->org, "Two sales", "GOLD", "books: trades\n");
+	line_market(other);
+	line_account(other, "Drgold-Thorium", "thorium");
+	line_txn(other, "b1", "Drgold-Thorium", "thorium", "buy", "2447", 1, "461168601842739.0000",
+	         "2026-03-01T10:00:00Z");
+	line_txn(other, "b2", "Drgold-Thorium", "thorium", "buy", "2447", 1, "461168601842739.0000",
+	         "2026-03-01T11:00:00Z");
+	line_txn(other, "s1", "Drgold-Thorium", "thorium", "sale", "2447", 1, "1.0000", "2026-03-02T10:00:00Z");
+	line_txn(other, "s2", "Drgold-Thorium", "thorium", "sale", "2447", 1, "1.0000", "2026-03-02T11:00:00Z");
+	other_run = push(f, two_sales, other->str);
+
+	report = flips(f, two_sales, TRUE, &error);
+	g_assert_null(report);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	report = flips(f, two_sales, FALSE, &error);
+	g_assert_null(report);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_ARBITRAGE_TRADE), ==, 0);
+	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_JOURNAL), ==, 0);
+}
+
 int
 main(
 	int	 argc,
@@ -1612,6 +2041,11 @@ main(
 	ADD("/external-books/record-flips", test_record_flips);
 	ADD("/external-books/one-booking", test_one_booking);
 	ADD("/external-books/organizations", test_organizations);
+	ADD("/external-books/flip-snapshot-held", test_flip_snapshot_held);
+	ADD("/external-books/opening-after-purge", test_opening_after_purge);
+	ADD("/external-books/follower-in-closed-period", test_follower_in_closed_period);
+	ADD("/external-books/shortfall-over-a-dip", test_shortfall_over_a_dip);
+	ADD("/external-books/flip-overflow", test_flip_overflow);
 
 #undef ADD
 

@@ -1351,7 +1351,9 @@ JSON twin and an `accounts` verb (table above):
   the next `post`; never delete an `external_posting` record (refused).
 - Flips: one closed trade per sale, legs at the buyer's and seller's
   places, `external_ref` `<uuid>:<sale>:<n>`; running it again records
-  only what is new. `report external_books data_source_id=N` shows each
+  only what is new. Never `update` a recorded flip's `expected`,
+  `external_ref` or `data_source_id`: the save is refused (validation),
+  because the next run subtracts what `expected` says it took. `report external_books data_source_id=N` shows each
   day: `posted`, `unposted`, `changed`, `left_out` (flips recorded) ...
 - Both are financial: an organization's finance member may, an editor
   member may not. They are type-level actions:

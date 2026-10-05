@@ -944,6 +944,32 @@ arb_trade_is_over(gint status)
 }
 
 /*
+ * Whether two stored JSON texts say the same thing. Compared as parsed
+ * values, so a form that posts the snapshot back re-indented or with its
+ * members in another order is not a change; text that does not parse is
+ * compared as text.
+ */
+static gboolean
+arb_json_text_same(
+	const gchar	*left,
+	const gchar	*right
+){
+	g_autoptr(JsonNode) left_node = NULL;
+	g_autoptr(JsonNode) right_node = NULL;
+
+	if (venture_string_is_empty(left) || venture_string_is_empty(right))
+		return venture_string_is_empty(left) == venture_string_is_empty(right);
+
+	left_node = venture_json_parse(left, NULL);
+	right_node = venture_json_parse(right, NULL);
+
+	if ((NULL == left_node) || (NULL == right_node))
+		return 0 == g_strcmp0(left, right);
+
+	return json_node_equal(left_node, right_node);
+}
+
+/*
  * A trade's rules:
  *
  *  - closed and abandoned are reached through Close and Abandon, and left
@@ -1004,6 +1030,31 @@ venture_arbitrage_validate_trade(
 				"is set by Record flips, which records each sale of a data source's "
 				"ledger once; it cannot be written by hand");
 			return FALSE;
+		}
+
+		/* A recorded flip's snapshot is the ledger rows it took, which
+		 * the next Record flips subtracts before matching again: edited,
+		 * the rows it no longer names are free, and the same sale is
+		 * recorded a second time beside its journals. The whole snapshot
+		 * is held, not only its source, so its profit stays what the
+		 * ledger said it made. */
+		if ((arb_int(entity, "data-source-id") > 0) || (arb_int(previous, "data-source-id") > 0))
+		{
+			g_autofree gchar *snapshot = NULL;
+			g_autofree gchar *was_snapshot = NULL;
+
+			g_object_get(entity, "expected", &snapshot, NULL);
+
+			if (NULL != previous)
+				g_object_get(previous, "expected", &was_snapshot, NULL);
+
+			if (!arb_json_text_same(snapshot, was_snapshot))
+			{
+				venture_set_error_validation(error, "Expected",
+					"of a recorded flip is the ledger rows it took, set by Record flips; "
+					"it cannot be written by hand, or the next run records the sale again");
+				return FALSE;
+			}
 		}
 
 		if (arb_int(entity, "close-journal-id") != arb_int(previous, "close-journal-id"))

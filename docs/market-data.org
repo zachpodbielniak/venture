@@ -1352,8 +1352,14 @@ Each posted day, and each opening, is an =external_posting= record -- the books'
 | posted, figures changed (a merged sale re-sent larger, a late row) | reverses its journal, dated as the original, and posts it again |
 | posted, after a day that changes | the same: its capital may have moved |
 | posted, its rows purged by retention (=series.daily_days=) | kept as posted |
+| an opening whose balance point retention purged | kept as posted |
 | in a closed period | kept as posted, or not posted; a note says which |
+| posted, after a day that changes, in a closed period | kept as posted, with a note: what it says has not changed |
 | flips of the day recorded as trades | left out |
+
+Retention purges balance points by their own time, not by the day they opened: it keeps an account's newest point and every point from the horizon on, so the point an opening on the horizon's day (or later) was taken from can be gone while the day itself is still stored. A posted opening whose day has not moved and has no stored balance at or before it is therefore kept as posted; had any such point survived, it would be the one the opening used, because a purged point is older than every point kept. Reading the gap as "held nothing" reversed the opening and every day after it once, on the day the horizon reached it.
+
+A day after a changed one is posted again only so that every reversal comes before every posting; its figures, capital included, are unchanged. In a closed period (a later period stays closed when an earlier one is reopened) it is kept as posted instead, since its reversal would be refused and fail the whole pass.
 
 The window (=from=, =until=) chooses only which new days come in; a day already in the books is kept current whatever the window. =until= defaults to today's midnight UTC: a day still going on is not over. =from= defaults to =books_from= and is never earlier than it.
 

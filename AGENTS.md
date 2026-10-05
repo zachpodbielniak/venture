@@ -2338,7 +2338,12 @@ books") and `docs/arbitrage.org` ("Flips from an external ledger").
   treatment changed since must not repost) and never the store's row
   counts (an expiry row is not money). Purged days (before
   `series.daily_days`) and days in a closed period are kept as posted:
-  rows retention removed are not a correction.
+  rows retention removed are not a correction. So is a posted opening
+  with no stored balance at or before its unchanged day: retention
+  purges points by their own time, so an opening on or after the
+  horizon's day can lose its point (judging by `day < horizon` alone
+  reversed every account once). A follower in a closed period is kept
+  too -- its figures are unchanged and its reversal would be refused.
 - **Capital is computed from the source's own chain, not the books'
   state.** The least amount that keeps a day's running balance (the
   opening and every day before) at zero, credited to `trading_capital`.
@@ -2370,6 +2375,9 @@ books") and `docs/arbitrage.org` ("Flips from an external ledger").
   money already given) and walks from what is left, so a sale merged
   larger later is recorded for its new units (`:<n>` in `external_ref`)
   and no lot is costed twice. Deleted trades count: their journals stay.
+  So `expected` is refused as a hand edit on any trade with a
+  `data_source_id` (compared as JSON), like `external_ref`: edited, the
+  rows it stopped naming are matched and the sale recorded again.
   The walk starts at `books_from`; past 100 000 rows an item is skipped
   with a note, never matched in part.
 - **One trade per sale, cash legs only, the money at the character.**

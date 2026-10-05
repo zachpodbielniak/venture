@@ -662,6 +662,33 @@ books_organization(
 }
 
 /*
+ * Whether @organization_id names an organization the caller can see. Read
+ * through the database, so a request's access scope hides another
+ * organization's exactly as it hides its records: the answer is "not
+ * found", never which.
+ */
+static gboolean
+books_organization_visible(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	GError		**error
+){
+	g_autoptr(VentureEntity) organization = NULL;
+
+	organization = venture_database_get(venture_context_get_database(context),
+	                                    VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+
+	if ((NULL == organization) || venture_entity_is_deleted(organization))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "Organization #%" G_GINT64_FORMAT " not found", organization_id);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
  * Opens a run over @data_source_id in @organization_id: the source (the
  * organization's, not deleted), its settings and currency, its store and
  * what the books already hold for it.
@@ -847,17 +874,18 @@ books_record_has_money(VentureEntity *record)
 }
 
 /* Adds what a recorded trade's ledger row gave to the run's totals. */
-static void
+static gboolean
 books_use_add(
-	BooksRun	*run,
-	const gchar	*key,
-	gint64		 units,
-	gint64		 amount
+	BooksRun	 *run,
+	const gchar	 *key,
+	gint64		  units,
+	gint64		  amount,
+	GError		**error
 ){
 	VentureSeriesFlipUse *use;
 
 	if (venture_string_is_empty(key))
-		return;
+		return TRUE;
 
 	use = g_hash_table_lookup(run->used, key);
 
@@ -867,8 +895,10 @@ books_use_add(
 		g_hash_table_replace(run->used, g_strdup(key), use);
 	}
 
-	use->units += MAX((gint64)0, units);
-	use->amount += MAX((gint64)0, amount);
+	/* Many trades can take from one row; their sum is refused rather
+	 * than wrapped into a negative "already taken". */
+	return books_add(&use->units, MAX((gint64)0, units), error) &&
+	       books_add(&use->amount, MAX((gint64)0, amount), error);
 }
 
 /*
@@ -949,8 +979,10 @@ books_load_trades(
 			g_autofree gchar *day = NULL;
 
 			sale_key = venture_json_object_get_string(sale, "key", NULL);
-			books_use_add(run, sale_key, venture_json_object_get_int(sale, "units", 0),
-			              venture_json_object_get_int(sale, "proceeds", 0));
+
+			if (!books_use_add(run, sale_key, venture_json_object_get_int(sale, "units", 0),
+			                   venture_json_object_get_int(sale, "proceeds", 0), error))
+				return FALSE;
 
 			if (NULL != sale_key)
 				g_hash_table_replace(run->sale_trades, g_strdup(sale_key),
@@ -976,9 +1008,12 @@ books_load_trades(
 				continue;
 
 			buy = json_node_get_object(element);
-			books_use_add(run, venture_json_object_get_string(buy, "key", NULL),
-			              venture_json_object_get_int(buy, "units", 0),
-			              venture_json_object_get_int(buy, "cost", 0));
+
+			if (!books_use_add(run, venture_json_object_get_string(buy, "key", NULL),
+			                   venture_json_object_get_int(buy, "units", 0),
+			                   venture_json_object_get_int(buy, "cost", 0), error))
+				return FALSE;
+
 			day = books_day_key(venture_json_object_get_string(buy, "account", ""),
 			                    venture_json_object_get_int(buy, "at", 0));
 			g_hash_table_add(run->flip_days, day);
@@ -1304,18 +1339,21 @@ books_compare_days(
 	return (left < right) ? -1 : ((left > right) ? 1 : 0);
 }
 
-/* What the account held at @when, as the source last saw it before, or 0. */
+/* What the account held at @when, as the source last saw it before, or 0;
+ * @out_found says whether any balance at or before @when is still stored. */
 static gboolean
 books_balance_at(
 	BooksRun	 *run,
 	const gchar	 *account_key,
 	gint64		  when,
 	gint64		 *out,
+	gboolean	 *out_found,
 	GError		**error
 ){
 	g_autoptr(GArray) points = NULL;
 
 	*out = 0;
+	*out_found = FALSE;
 	points = venture_series_store_balance_history(run->store, account_key, run->currency,
 	                                              VENTURE_SERIES_NONE, when + 1, error);
 
@@ -1323,7 +1361,10 @@ books_balance_at(
 		return FALSE;
 
 	if (points->len > 0)
+	{
 		*out = MAX((gint64)0, g_array_index(points, VentureSeriesAmount, points->len - 1).amount);
+		*out_found = TRUE;
+	}
 
 	return TRUE;
 }
@@ -1536,15 +1577,36 @@ books_plan_account(
 		}
 		else
 		{
+			gint64 posted_day = opening->day;
+			gboolean found;
+
 			opening->day = g_array_index(chain, gint64, 0);
 
-			if (!books_balance_at(run, account_key, opening->day, &opening->capital, error))
+			if (!books_balance_at(run, account_key, opening->day, &opening->capital, &found, error))
 			{
 				books_item_free(opening);
 				return FALSE;
 			}
 
-			if ((NULL == record) || !books_record_posted(record))
+			/*
+			 * Retention purges every balance point before its horizon
+			 * except an account's newest, and judges the point, not the
+			 * day it was for: the newest point at or before an opening on
+			 * the horizon's own day, or any later day, can be gone while
+			 * the day is still inside it. No stored point at or before a
+			 * posted opening's unchanged day therefore says nothing about
+			 * what the account held -- had one survived it would be the
+			 * answer, because a purged point is older than every point
+			 * kept -- so the recorded opening stands rather than being
+			 * reversed with every day after it.
+			 */
+			if (!found && (NULL != record) && books_record_posted(record) &&
+			    (BOOKS_NONE != run->horizon) && (posted_day == opening->day))
+			{
+				books_item_from_record(opening, record);
+				opening->status = BOOKS_STATUS_KEPT;
+			}
+			else if ((NULL == record) || !books_record_posted(record))
 				opening->status = (0 != opening->capital) ? BOOKS_STATUS_NEW : BOOKS_STATUS_POSTED;
 			else
 			{
@@ -1698,11 +1760,34 @@ books_plan_account(
 	for (i = 0; i < account->items->len; i++)
 	{
 		BooksItem *item = g_ptr_array_index(account->items, i);
+		gboolean open_period;
 
 		if ((first_change < 0) && books_status_writes(item->status))
 			first_change = (gint)i;
 		else if ((first_change >= 0) && (BOOKS_STATUS_POSTED == item->status))
-			item->status = BOOKS_STATUS_FOLLOWS;
+		{
+			/*
+			 * A follower posts again only so that the reversals all come
+			 * before the postings; what it says is unchanged (its
+			 * fingerprint, capital included, matched). In a period that
+			 * is closed -- a later one stays closed when an earlier one
+			 * is reopened, and a veto may refuse any date -- its reversal
+			 * would be refused and fail the whole pass, so it is kept as
+			 * posted, like a changed day there. The chain after it is
+			 * the one planned either way.
+			 */
+			if (!books_postable(run, item->day, &open_period, error))
+				return FALSE;
+
+			if (open_period)
+				item->status = BOOKS_STATUS_FOLLOWS;
+			else
+			{
+				item->status = BOOKS_STATUS_KEPT;
+				books_note(run, "Days in a closed period after a day that changed are kept as "
+				           "they were posted; what they say has not changed");
+			}
+		}
 	}
 
 	/* What the pass writes for this account: a reversal for each item
@@ -2602,6 +2687,7 @@ typedef struct
 	gint64		 units;
 	gint64		 cost;
 	gint64		 proceeds;
+	gint64		 profit;	/* proceeds - cost, checked when grouped */
 	gboolean	 other_currency;
 	GPtrArray	*buys;		/* VentureSeriesFlipPair, borrowed */
 	const gchar	*skip;
@@ -2811,7 +2897,7 @@ books_flip_expected(
 	JsonObject *sale = json_object_new();
 	JsonArray *profit = json_array_new();
 	JsonArray *buys = json_array_new();
-	g_autofree gchar *made = books_money_text(run, flip->proceeds - flip->cost);
+	g_autofree gchar *made = books_money_text(run, flip->profit);
 	guint i;
 
 	json_array_add_string_element(profit, made);
@@ -2918,9 +3004,7 @@ books_fund_leg(
 	if (NULL == journals)
 		return FALSE;
 
-	flip->capital += venture_money_get_amount(shortfall);
-
-	return TRUE;
+	return books_add(&flip->capital, venture_money_get_amount(shortfall), error);
 }
 
 /*
@@ -3031,13 +3115,16 @@ books_record_flip(
 }
 
 /* Turns one instrument's pairs (in the walk's order: by sale) into flips,
- * one per sale. The pairs stay owned by @pairs. */
-static void
+ * one per sale. The pairs stay owned by @pairs. A sale's totals that do
+ * not fit in 64 bits are refused: wrapped, a cost turns negative and the
+ * trade books a profit nobody made. */
+static gboolean
 books_group_pairs(
-	BooksRun	*run,
-	GPtrArray	*pairs,
-	gint64		 from,
-	GPtrArray	*flips
+	BooksRun	 *run,
+	GPtrArray	 *pairs,
+	gint64		  from,
+	GPtrArray	 *flips,
+	GError		**error
 ){
 	BooksFlip *flip;
 	guint i;
@@ -3072,10 +3159,19 @@ books_group_pairs(
 		}
 
 		g_ptr_array_add(flip->buys, pair);
-		flip->units += pair->units;
-		flip->cost += pair->cost;
-		flip->proceeds += pair->proceeds;
+
+		if (!books_add(&flip->units, pair->units, error) ||
+		    !books_add(&flip->cost, pair->cost, error) ||
+		    !books_add(&flip->proceeds, pair->proceeds, error))
+			return FALSE;
+
+		flip->profit = flip->proceeds;
+
+		if (!books_add(&flip->profit, -flip->cost, error))
+			return FALSE;
 	}
+
+	return TRUE;
 }
 
 static gboolean
@@ -3105,6 +3201,7 @@ books_flips_internal(
 	gint64 units;
 	gint64 cost;
 	gint64 proceeds;
+	gint64 profit;
 	gint64 capital;
 	guint limit;
 	guint more;
@@ -3250,7 +3347,9 @@ books_flips_internal(
 		}
 
 		g_ptr_array_add(pair_sets, pairs);
-		books_group_pairs(&run, pairs, from, flips);
+
+		if (!books_group_pairs(&run, pairs, from, flips, error))
+			goto out;
 	}
 
 	if (skip_rows > 0)
@@ -3295,7 +3394,7 @@ books_flips_internal(
 			skip_posted++;
 		}
 		else if ((NULL != query->min_profit) &&
-		         (flip->proceeds - flip->cost < venture_money_get_amount(query->min_profit)))
+		         (flip->profit < venture_money_get_amount(query->min_profit)))
 		{
 			flip->skip = "below_min_profit";
 			skip_profit++;
@@ -3331,6 +3430,24 @@ books_flips_internal(
 	if (more > 0)
 		books_note(&run, "%u more flip(s) are left for the next call (limit %u)", more, limit);
 
+	/* --- The totals, refused before anything is written when they do
+	 * not fit: wrapped, the answer reports a loss as a profit --- */
+
+	units = 0;
+	cost = 0;
+	proceeds = 0;
+	profit = 0;
+	capital = 0;
+
+	for (i = 0; i < chosen->len; i++)
+	{
+		BooksFlip *flip = g_ptr_array_index(chosen, i);
+
+		if (!books_add(&units, flip->units, error) || !books_add(&cost, flip->cost, error) ||
+		    !books_add(&proceeds, flip->proceeds, error) || !books_add(&profit, flip->profit, error))
+			goto out;
+	}
+
 	/* --- The writing --- */
 
 	if (!query->dry_run && (chosen->len > 0))
@@ -3364,7 +3481,8 @@ books_flips_internal(
 		{
 			BooksFlip *flip = g_ptr_array_index(chosen, i);
 
-			if (!books_record_flip(&run, &ids, flip, actor, error))
+			if (!books_record_flip(&run, &ids, flip, actor, error) ||
+			    !books_add(&capital, flip->capital, error))
 			{
 				g_prefix_error(error, "Sale %s: ", flip->sale_key);
 				venture_database_rollback(run.database);
@@ -3385,24 +3503,12 @@ books_flips_internal(
 
 		root = json_object_new();
 		rows = json_array_new();
-		units = 0;
-		cost = 0;
-		proceeds = 0;
-		capital = 0;
 
-		for (i = 0; i < chosen->len; i++)
+		for (i = 0; (i < chosen->len) && (i < BOOKS_LISTED); i++)
 		{
 			BooksFlip *flip = g_ptr_array_index(chosen, i);
 			g_autofree gchar *when = books_iso(flip->sale_at);
 			JsonObject *row;
-
-			units += flip->units;
-			cost += flip->cost;
-			proceeds += flip->proceeds;
-			capital += flip->capital;
-
-			if (i >= BOOKS_LISTED)
-				continue;
 
 			row = json_object_new();
 			json_object_set_string_member(row, "external_ref", flip->external_ref);
@@ -3424,7 +3530,7 @@ books_flips_internal(
 			json_object_set_int_member(row, "buys", flip->buys->len);
 			json_object_set_member(row, "cost", books_money_json(&run, flip->cost));
 			json_object_set_member(row, "proceeds", books_money_json(&run, flip->proceeds));
-			json_object_set_member(row, "profit", books_money_json(&run, flip->proceeds - flip->cost));
+			json_object_set_member(row, "profit", books_money_json(&run, flip->profit));
 			json_object_set_member(row, "capital", books_money_json(&run, flip->capital));
 			json_array_add_object_element(rows, row);
 		}
@@ -3440,7 +3546,7 @@ books_flips_internal(
 		json_object_set_int_member(root, "units", units);
 		json_object_set_member(root, "cost", books_money_json(&run, cost));
 		json_object_set_member(root, "proceeds", books_money_json(&run, proceeds));
-		json_object_set_member(root, "profit", books_money_json(&run, proceeds - cost));
+		json_object_set_member(root, "profit", books_money_json(&run, profit));
 		json_object_set_member(root, "capital", books_money_json(&run, capital));
 		json_object_set_int_member(root, "more", more);
 		skipped = json_object_new();
@@ -3549,6 +3655,11 @@ venture_arbitrage_books_report(
 
 	if (venture_string_is_empty(query.account_key))
 		query.account_key = NULL;
+
+	/* The organization before the options: another organization's is not
+	 * found however the question is put, as every report answers it. */
+	if (!books_organization_visible(context, books_organization(context, query.organization_id), error))
+		return NULL;
 
 	if (query.data_source_id <= 0)
 	{
