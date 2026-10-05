@@ -1304,7 +1304,7 @@ test_month_end(Fixture *f, gconstpointer data)
 static void
 test_documentation(void)
 {
-	static const gchar *const files[] = { "docs/billing.org", "docs/cli.org", "docs/api.org", "skills/venture/SKILL.md" };
+	static const gchar *const files[] = { "docs/billing.org", "docs/cli.org", "docs/api.org", "skills/venture/references/billing.md" };
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(files); i++)
 	{
