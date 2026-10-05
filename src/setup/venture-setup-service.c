@@ -136,12 +136,14 @@ kind_for(const gchar *classification)
 		g_str_equal(classification, "deferred") || g_str_equal(classification, "loans"))
 		return VENTURE_ACCOUNT_KIND_LIABILITY;
 	if (g_str_equal(classification, "retained_earnings") || g_str_equal(classification, "owner_draws") ||
-		g_str_equal(classification, "currency_clearing"))
+		g_str_equal(classification, "currency_clearing") || g_str_equal(classification, "trading_capital"))
 		return VENTURE_ACCOUNT_KIND_EQUITY;
 	if (g_str_equal(classification, "income") || g_str_equal(classification, "session_income") ||
-		g_str_equal(classification, "arbitrage_gains"))
+		g_str_equal(classification, "arbitrage_gains") || g_str_equal(classification, "trading_sales") ||
+		g_str_equal(classification, "trading_income"))
 		return VENTURE_ACCOUNT_KIND_INCOME;
-	if (g_str_equal(classification, "expense") || g_str_equal(classification, "arbitrage_fees"))
+	if (g_str_equal(classification, "expense") || g_str_equal(classification, "arbitrage_fees") ||
+		g_str_equal(classification, "trading_purchases") || g_str_equal(classification, "trading_expenses"))
 		return VENTURE_ACCOUNT_KIND_EXPENSE;
 	return VENTURE_ACCOUNT_KIND_ASSET;
 }
@@ -173,6 +175,16 @@ label_for(const gchar *classification)
 		return "arbitrage gains";
 	if (g_str_equal(classification, "arbitrage_fees"))
 		return "arbitrage fees";
+	if (g_str_equal(classification, "trading_sales"))
+		return "trading sales";
+	if (g_str_equal(classification, "trading_purchases"))
+		return "trading purchases";
+	if (g_str_equal(classification, "trading_income"))
+		return "trading other income";
+	if (g_str_equal(classification, "trading_expenses"))
+		return "trading expenses";
+	if (g_str_equal(classification, "trading_capital"))
+		return "trading capital";
 	if (g_str_equal(classification, "income"))
 		return "income";
 	if (g_str_equal(classification, "expense"))

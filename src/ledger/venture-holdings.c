@@ -688,6 +688,143 @@ holdings_check_floor(
 	return TRUE;
 }
 
+gboolean
+venture_holdings_floor_shortfall(
+	VentureDatabase		 *database,
+	gint64			  account_id,
+	const VentureMoney	 *delta,
+	GDateTime		 *at,
+	VentureMoney		**out_shortfall,
+	GError			**error
+){
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(GPtrArray) movements = NULL;
+	g_autoptr(GArray) events = NULL;
+	g_autoptr(VentureMoney) running = NULL;
+	g_autoptr(VentureMoney) lowest = NULL;
+	g_autoptr(VentureMoney) after = NULL;
+	gint64 organization_id;
+	gboolean allow;
+	gboolean counted_at;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(NULL != delta, FALSE);
+	g_return_val_if_fail(NULL != at, FALSE);
+	g_return_val_if_fail(NULL != out_shortfall, FALSE);
+
+	*out_shortfall = venture_money_new_zero(delta->currency);
+
+	if (!venture_money_is_negative(delta))
+		return TRUE;
+
+	account = holdings_read(database, VENTURE_TYPE_ACCOUNT, account_id);
+
+	if (NULL == account)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "Account #%" G_GINT64_FORMAT " does not exist", account_id);
+		return FALSE;
+	}
+
+	allow = FALSE;
+	g_object_get(account, "allow-negative", &allow, NULL);
+
+	if (allow || (holdings_int(account, "location-id") <= 0))
+		return TRUE;
+
+	organization_id = venture_entity_get_organization_id(account);
+	movements = g_ptr_array_new_with_free_func(holdings_movement_free);
+
+	if (!holdings_collect_ledger(database, organization_id, account_id, delta->currency,
+	                             movements, error) ||
+	    !holdings_collect_memo(database, organization_id, account_id, delta->currency, 0,
+	                           movements, error))
+		return FALSE;
+
+	events = g_array_sized_new(FALSE, FALSE, sizeof(HoldingsEvent), movements->len);
+
+	for (i = 0; i < movements->len; i++)
+	{
+		HoldingsMovement *movement;
+		HoldingsEvent event;
+
+		movement = g_ptr_array_index(movements, i);
+		event.when = movement->when;
+		event.amount = movement->amount;
+		event.side = HOLDINGS_EVENT_BOTH;
+		g_array_append_val(events, event);
+	}
+
+	g_array_sort(events, holdings_event_compare);
+
+	/*
+	 * The moments the change would count in are @at itself and every
+	 * later instant the holding moved, each the balance after everything
+	 * at or before it -- the same moments holdings_check_floor() judges.
+	 * The least of them, with @delta added, is what must not go below
+	 * zero; what it lacks is the shortfall.
+	 */
+	running = venture_money_new_zero(delta->currency);
+	counted_at = FALSE;
+
+	for (i = 0; i < events->len; i++)
+	{
+		HoldingsEvent *event;
+		gboolean last_of_instant;
+
+		event = &g_array_index(events, HoldingsEvent, i);
+
+		/* The moment at @at: everything strictly before it is in. */
+		if (!counted_at && (g_date_time_compare(event->when, at) > 0))
+		{
+			lowest = venture_money_copy(running);
+			counted_at = TRUE;
+		}
+
+		if (!holdings_money_add(&running, event->amount, error))
+			return FALSE;
+
+		last_of_instant = (i + 1 >= events->len) ||
+		                  (0 != g_date_time_compare(event->when,
+		                                            g_array_index(events, HoldingsEvent, i + 1).when));
+
+		if (!last_of_instant || (g_date_time_compare(event->when, at) < 0))
+			continue;
+
+		if (!counted_at)
+		{
+			/* An instant at @at exactly: its movements count together
+			 * with the change. */
+			lowest = venture_money_copy(running);
+			counted_at = TRUE;
+			continue;
+		}
+
+		if (venture_money_compare(running, lowest) < 0)
+		{
+			venture_money_free(lowest);
+			lowest = venture_money_copy(running);
+		}
+	}
+
+	if (!counted_at)
+		lowest = venture_money_copy(running);
+
+	after = venture_money_add(lowest, delta, error);
+
+	if (NULL == after)
+		return FALSE;
+
+	if (venture_money_is_negative(after))
+	{
+		venture_money_free(*out_shortfall);
+		*out_shortfall = venture_money_negate(after);
+	}
+
+	return TRUE;
+}
+
 /* ==========================================================================
  * The movement record's rules
  * ========================================================================== */

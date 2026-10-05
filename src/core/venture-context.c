@@ -315,6 +315,12 @@ venture_context_new(
 	 * feeds hook that mirrors after every run. After the feeds module. */
 	venture_marketdata_mirror_install(self);
 
+	/* An external ledger in the books: the books settings and posting
+	 * validators, the post_ledger and record_flips actions, and with
+	 * SQLite the hook that posts after a run. After the mirror, whose
+	 * hook makes a run's accounts into places first. */
+	venture_arbitrage_books_install(self);
+
 	return self;
 }
 

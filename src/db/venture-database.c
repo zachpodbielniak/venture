@@ -1327,7 +1327,8 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_oidc_check_write,
 		venture_forge_check_write,
 		venture_sessions_check_write,
-		venture_holdings_check_write
+		venture_holdings_check_write,
+		venture_arbitrage_books_check_write
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(guards); i++)

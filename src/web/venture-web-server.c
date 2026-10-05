@@ -920,6 +920,18 @@ venture_web_type_accepts_writes(
 		return FALSE;
 	}
 
+	/* An external ledger day is the books' memory of what a source
+	 * posted; written by hand it would make a posted day look unposted
+	 * (posted twice) or the other way round (never posted). */
+	if (VENTURE_TYPE_EXTERNAL_POSTING == entity_type)
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "An external ledger day is written by the data "
+		                    "source's Post to books action; it cannot be edited");
+		return FALSE;
+	}
+
 	/* Nor is an alert hit: it is what a rule saw, written by the system
 	 * when it fired. A hit somebody could write would deliver a webhook
 	 * and run an automation for a price nobody saw. */

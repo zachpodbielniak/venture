@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * venture-marketdata-accounts-cli.inc - venturectl accounts list|attention|
- * show|inventory|pnl
+ * show|inventory|pnl|post|record-flips
  *
  * Thin calls on /api/v1/accounts: the account operations pages' JSON
  * twins, asked under the pages' own query names and typed here before
@@ -76,6 +76,57 @@ static const VentureCliOption venture_cli_accounts_pnl_options[] = {
 	{ "top", "top", VENTURE_CLI_OPTION_INT, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
+};
+
+/* The books' two actions (type-level, posted to /api/v1/.../actions/):
+ * each option is typed here and sent as its JSON kind, because the action
+ * framework refuses a string for an integer or a boolean. */
+static const VentureCliOption venture_cli_accounts_post_options[] = {
+	{ "from", "from", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "until", "until", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "account", "account", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "account_key", "account", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "dry_run", "dry_run", VENTURE_CLI_OPTION_BOOL, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
+	{ NULL, NULL, 0, NULL }
+};
+
+static const VentureCliOption venture_cli_accounts_flips_options[] = {
+	{ "from", "from", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "until", "until", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "instrument", "instrument", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "min_profit", "min_profit", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "limit", "limit", VENTURE_CLI_OPTION_INT, NULL },
+	{ "dry_run", "dry_run", VENTURE_CLI_OPTION_BOOL, NULL },
+	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
+	{ NULL, NULL, 0, NULL }
+};
+
+static const VentureCliColumn venture_cli_books_day_columns[] = {
+	{ "account", "Account", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "day", "Day", VENTURE_CLI_CELL_TEXT, TRUE },
+	{ "kind", "Kind", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "status", "In the books", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sales", "Sales", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "purchases", "Purchases", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "income", "Income", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "expenses", "Expenses", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "capital", "Capital", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "journal_id", "Journal", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ NULL, NULL, 0, FALSE }
+};
+
+static const VentureCliColumn venture_cli_books_trade_columns[] = {
+	{ "trade_id", "Trade", VENTURE_CLI_CELL_NUMBER, TRUE },
+	{ "instrument", "Item", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sale_account", "Sold by", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sale_at", "Sold", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "units", "Units", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "cost", "Cost", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "proceeds", "Proceeds", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "profit", "Profit", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "capital", "Capital", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ NULL, NULL, 0, FALSE }
 };
 
 static const VentureCliColumn venture_cli_accounts_columns[] = {
@@ -196,6 +247,13 @@ static const gchar venture_cli_accounts_usage[] =
 	"            [sort=S] [dir=asc|desc] [page=N] [per_page=N]\n"
 	"  pnl [source=N] [period=P] [group_by=G] [account=KEY] [venue=KEY]\n"
 	"      [instrument=KEY] [label=TEXT] [top=N]\n"
+	"  post SOURCE_ID [from=DATE] [until=DATE] [account=KEY] [dry_run=true]\n"
+	"                                   the source's ledger into the books, a journal per\n"
+	"                                   account per day (the source books daily); --stage\n"
+	"  record-flips SOURCE_ID [from=DATE] [until=DATE] [instrument=KEY]\n"
+	"               [min_profit=\"5.0000 GOLD\"] [limit=N] [dry_run=true]\n"
+	"                                   each matched sale as a closed arbitrage trade\n"
+	"                                   (the source books trades); --stage\n"
 	"Every verb takes organization_id=N (default: the active organization).\n"
 	"Bases: conservative (the default: the lower of the region's sale average and\n"
 	"the account's realm market value), market, min, historical, region_market,\n"
@@ -207,7 +265,10 @@ static const gchar venture_cli_accounts_usage[] =
 	"  venturectl accounts inventory place=bank min_value=\"500.00 GOLD\"\n"
 	"  venturectl accounts inventory dead=true dead_days=45 sort=value\n"
 	"  venturectl accounts pnl period=last_90_days group_by=week\n"
-	"  venturectl accounts pnl group_by=instrument account=\"Drgold-Thorium Brotherhood\"";
+	"  venturectl accounts pnl group_by=instrument account=\"Drgold-Thorium Brotherhood\"\n"
+	"  venturectl accounts post 4 dry_run=true\n"
+	"  venturectl accounts post 4 until=2026-10-01\n"
+	"  venturectl accounts record-flips 4 min_profit=\"5.0000 GOLD\"";
 
 /* The places to log in to, each with its reasons, as lines a person reads
  * top to bottom; json and yaml print the whole answer. */
@@ -283,6 +344,150 @@ venture_cli_accounts_flatten_money(JsonObject *summary)
 
 		json_object_set_string_member(summary, members[i], text->str);
 	}
+}
+
+/*
+ * accounts post|record-flips SOURCE_ID ...: the books' type-level actions,
+ * each option sent as its own JSON kind, the source as data_source_id.
+ * The answer is the data source with the pass in its one-time `result`.
+ */
+static gint
+venture_cli_accounts_books(
+	VentureCli	 *cli,
+	gchar		**args,
+	gboolean	  flips,
+	GError		**error
+){
+	g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(JsonNode) response = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *path = NULL;
+	const VentureCliOption *options;
+	const gchar *verb;
+	const gchar *usage;
+	JsonObject *values;
+	JsonNode *text;
+	gint64 source;
+	guint i;
+
+	verb = flips ? "accounts record-flips" : "accounts post";
+	usage = flips ? "usage: venturectl accounts record-flips SOURCE_ID [option=value ...]"
+	              : "usage: venturectl accounts post SOURCE_ID [option=value ...]";
+	options = flips ? venture_cli_accounts_flips_options : venture_cli_accounts_post_options;
+
+	if (!venture_cli_positive_id(args[2], usage, &source, error))
+		return -1;
+
+	values = json_object_new();
+	json_node_take_object(body, values);
+	json_object_set_int_member(values, "data_source_id", source);
+
+	for (i = 3; NULL != args[i]; i++)
+	{
+		g_autofree gchar *value = NULL;
+		const gchar *wire = NULL;
+		guint j;
+
+		if (!venture_cli_option_read(verb, args[i], options, &wire, &value, error))
+			return -1;
+
+		if (NULL == value)
+			continue;
+
+		for (j = 0; NULL != options[j].name; j++)
+			if (0 == g_strcmp0(options[j].wire, wire))
+				break;
+
+		switch (options[j].kind)
+		{
+		case VENTURE_CLI_OPTION_INT:
+			json_object_set_int_member(values, wire, g_ascii_strtoll(value, NULL, 10));
+			break;
+		case VENTURE_CLI_OPTION_BOOL:
+			json_object_set_boolean_member(values, wire, TRUE);
+			break;
+		case VENTURE_CLI_OPTION_TEXT:
+		case VENTURE_CLI_OPTION_NUMBER:
+		default:
+			json_object_set_string_member(values, wire, value);
+			break;
+		}
+	}
+
+	path = venture_cli_write_path(cli, flips ? "/api/v1/arbitrage_trade/0/actions/record_flips"
+	                                         : "/api/v1/external_posting/0/actions/post_ledger");
+	response = venture_cli_request(cli, "POST", path, body, error);
+
+	if (NULL == response)
+		return -1;
+
+	if (venture_cli_report_staged(cli, response))
+		return 0;
+
+	text = JSON_NODE_HOLDS_OBJECT(response)
+		? json_object_get_member(json_node_get_object(response), "result") : NULL;
+
+	if ((NULL != text) && JSON_NODE_HOLDS_VALUE(text) &&
+	    (G_TYPE_STRING == json_node_get_value_type(text)))
+		result = venture_json_parse(json_node_get_string(text), NULL);
+
+	if ((NULL == result) || !JSON_NODE_HOLDS_OBJECT(result))
+	{
+		venture_cli_output(cli, response);
+		return 0;
+	}
+
+	if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+	{
+		venture_cli_output(cli, result);
+		return 0;
+	}
+
+	{
+		JsonObject *root = json_node_get_object(result);
+		gboolean dry = json_object_get_boolean_member_with_default(root, "dry_run", FALSE);
+
+		if (flips)
+		{
+			JsonNode *profit = json_object_get_member(root, "profit");
+
+			if (!cli->quiet)
+				g_print("%s %" G_GINT64_FORMAT " flip(s), %" G_GINT64_FORMAT " unit(s), profit %s; "
+				        "%" G_GINT64_FORMAT " left for the next call\n\n",
+				        dry ? "Would record" : "Recorded",
+				        json_object_get_int_member_with_default(root, "flips", 0),
+				        json_object_get_int_member_with_default(root, "units", 0),
+				        ((NULL != profit) && JSON_NODE_HOLDS_OBJECT(profit))
+				        ? venture_json_object_get_string(json_node_get_object(profit), "formatted", "")
+				        : "",
+				        json_object_get_int_member_with_default(root, "more", 0));
+
+			venture_cli_print_answer(cli, result, "trades", venture_cli_books_trade_columns,
+			                         "No flips to record.");
+			return 0;
+		}
+
+		if (!cli->quiet)
+		{
+			JsonObject *counts = json_object_get_object_member(root, "days_by_status");
+
+			g_print("%s: %" G_GINT64_FORMAT " day(s) to post, %" G_GINT64_FORMAT
+			        " to post again, %" G_GINT64_FORMAT " posted, %" G_GINT64_FORMAT
+			        " left out, %" G_GINT64_FORMAT " for the next pass\n\n",
+			        dry ? "Dry run" : "Posted",
+			        json_object_get_int_member_with_default(counts, "unposted", 0),
+			        json_object_get_int_member_with_default(counts, "changed", 0) +
+			        json_object_get_int_member_with_default(counts, "follows", 0),
+			        json_object_get_int_member_with_default(counts, "posted", 0),
+			        json_object_get_int_member_with_default(counts, "left_out", 0),
+			        json_object_get_int_member_with_default(counts, "later", 0));
+		}
+
+		venture_cli_print_answer(cli, result, "days", venture_cli_books_day_columns,
+		                         "The source's ledger has no days with money.");
+	}
+
+	return 0;
 }
 
 static gint
@@ -465,9 +670,15 @@ venture_cli_command_accounts(
 		return 0;
 	}
 
+	if (0 == g_strcmp0(verb, "post"))
+		return venture_cli_accounts_books(cli, args, FALSE, error);
+
+	if (0 == g_strcmp0(verb, "record-flips"))
+		return venture_cli_accounts_books(cli, args, TRUE, error);
+
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-	            "accounts takes list, attention, show, inventory or pnl, not \"%s\"\n%s", verb,
-	            venture_cli_accounts_usage);
+	            "accounts takes list, attention, show, inventory, pnl, post or record-flips, not "
+	            "\"%s\"\n%s", verb, venture_cli_accounts_usage);
 
 	return -1;
 }

@@ -691,11 +691,14 @@ static GType (*const marketdata_types[]) (void) = {
 static const gchar *const arbitrage_requires[] = { "marketdata", "ledger", NULL };
 static const gchar *const arbitrage_suggests[] = { "production", "goods", NULL };
 static const gchar *const arbitrage_reports[] = {
-	"arbitrage_performance", "arbitrage_scan", "craft_arbitrage", NULL
+	"arbitrage_performance", "arbitrage_scan", "craft_arbitrage", "external_books", NULL
 };
+/* external_posting is here because posting an external ledger to the books
+ * needs exactly what this module requires: market data's accounts and
+ * the ledger's journals. */
 static GType (*const arbitrage_types[]) (void) = {
 	venture_arbitrage_trade_get_type, venture_arbitrage_leg_get_type,
-	venture_arbitrage_strategy_get_type, NULL
+	venture_arbitrage_strategy_get_type, venture_external_posting_get_type, NULL
 };
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };
@@ -1356,8 +1359,9 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Arbitrage trades and their legs -- a flip between realms, a "
 		"drop-shipped order, a surebet across bookmakers -- each leg posted "
 		"through the venue's cash, the position closed to gains per "
-		"currency, and how each strategy performed; and the scan that finds "
-		"them, with its fee models, presets and calculators.",
+		"currency, and how each strategy performed; the scan that finds "
+		"them, with its fee models, presets and calculators; and an "
+		"external ledger's days or flips posted to the books.",
 		arbitrage_requires, arbitrage_suggests, arbitrage_types, arbitrage_reports,
 		NULL, FALSE
 	}

@@ -1267,6 +1267,26 @@ venture_arbitrage_register_reports(VentureReportRegistry *registry)
 	venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
 	venture_report_registry_add(registry, VENTURE_REPORT(report));
 
+	/* Where a source's external ledger stands in the books, day by day:
+	 * a dry run of the post_ledger action over the period. */
+	report = g_object_new(VENTURE_TYPE_ARBITRAGE_REPORT, "name", "external_books",
+	                      "title", "External ledger in the books",
+	                      "description", "Each day of a data source's external ledger, per "
+	                      "account: posted, changed since it was posted, not yet posted, kept, or "
+	                      "left out because its flips are recorded as trades; with its sales, "
+	                      "purchases, other income, expenses and the capital it needed",
+	                      NULL);
+	report->func = venture_arbitrage_books_report;
+	report->schema =
+		"{\"type\":\"object\",\"required\":[\"data_source_id\"],\"properties\":{"
+		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"The data source whose "
+		"ledger to show\"},"
+		"\"account_key\":{\"type\":\"string\",\"description\":\"One account's key\"},"
+		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal entity; "
+		"defaults to the default organization\"}}}";
+	venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
+	venture_report_registry_add(registry, VENTURE_REPORT(report));
+
 	report = g_object_new(VENTURE_TYPE_ARBITRAGE_REPORT, "name", "craft_arbitrage",
 	                      "title", "Craft arbitrage",
 	                      "description", "Each recipe's inputs at their cheapest venue -- a "

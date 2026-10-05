@@ -48,7 +48,15 @@ static const VentureFieldDecl venture_arbitrage_trade_fields[] = {
 	                  "journal", VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD("tags", "Tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("data-source-id", "Data source",
+	                  "Set by Record flips: the data source whose external ledger this trade was matched from",
+	                  "data_source", VENTURE_COLUMN_FLAG_TECHNICAL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("external-ref", "External reference",
+	              "Set by Record flips: the source and sale it was recorded from, so recording again "
+	              "never makes it twice",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureArbitrageTrade, venture_arbitrage_trade,
@@ -82,6 +90,10 @@ static const VentureFieldDecl venture_arbitrage_leg_fields[] = {
 	                  "venue", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("trade-id", "Trade", "The trade it belongs to",
 	                  "arbitrage_trade", VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD_REF("location-id", "Paid from or into",
+	                  "Optional: the place whose holding the money moves through -- the character "
+	                  "who bought or sold -- instead of the venue's",
+	                  "location", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("kind", "Kind",
 	                   "buy, sell, fee, transfer, stake, payout or refund; write_off is set by Abandon",
 	                   venture_arbitrage_leg_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
@@ -179,3 +191,68 @@ static const VentureFieldDecl venture_arbitrage_strategy_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureArbitrageStrategy, venture_arbitrage_strategy,
 	venture_arbitrage_strategy_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Arbitrage preset", NULL);)
+
+/* ==========================================================================
+ * External postings
+ *
+ * One day of one account of a data source's external ledger as it stands
+ * in the books -- or the account's opening balance. The books service
+ * (venture-arbitrage-books.c) writes it beside the journal it posts and
+ * nobody else does: it is how the next pass knows the day is in the books
+ * and with which figures, so a day is posted once, and posted again only
+ * when its rows changed. `fingerprint` is those figures as text; the
+ * money fields are the same figures for reading.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_external_posting_fields[] = {
+	VENTURE_FIELD_REF("data-source-id", "Data source", "The data source whose external ledger this is",
+	                  "data_source", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("account-key", "Account", "The account's key in the data source",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
+	VENTURE_FIELD_REF("location-id", "Holding at", "The place whose holding the money moved through",
+	                  "location", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("kind", "Kind", "day: a day's summary; opening: what the account held before its first day",
+	                   venture_external_posting_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("day", "Day", "The day (midnight UTC) the journal is dated",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_MONEY("sales", "Sales", "What sold, after the source's fees"),
+	VENTURE_FIELD_MONEY("purchases", "Purchases", "What was bought"),
+	VENTURE_FIELD_MONEY("income", "Other income", "Other money in"),
+	VENTURE_FIELD_MONEY("expenses", "Expenses", "Other money out: postage, repairs"),
+	VENTURE_FIELD_MONEY("capital", "Capital",
+	                    "The opening balance, or money the ledger does not show arriving that the day spent"),
+	VENTURE_FIELD_REF("journal-id", "Journal", "The journal standing for it now; empty when it posts none",
+	                  "journal", VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("revision", "Times posted", "How many times it has been posted",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("fingerprint", "Fingerprint", "The figures it was posted with, as text",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("ref", "Reference", "The source, account and day, unique in the organization",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_TECHNICAL)
+};
+
+/* "Drgold-Thorium 2026-03-04", "Drgold-Thorium opening". */
+static gchar *
+venture_external_posting_display_name(VentureEntity *self)
+{
+	g_autoptr(GDateTime) day = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *date = NULL;
+	gint kind;
+
+	kind = 0;
+	g_object_get(self, "account-key", &key, "day", &day, "kind", &kind, NULL);
+
+	if (VENTURE_EXTERNAL_POSTING_KIND_OPENING == kind)
+		return g_strdup_printf("%s opening", (NULL != key) ? key : "account");
+
+	date = (NULL != day) ? g_date_time_format(day, "%Y-%m-%d") : NULL;
+
+	return g_strdup_printf("%s %s", (NULL != key) ? key : "account", (NULL != date) ? date : "");
+}
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExternalPosting, venture_external_posting,
+	venture_external_posting_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_external_posting_display_name;
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "External ledger day", NULL);)

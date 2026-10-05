@@ -29,6 +29,9 @@ VENTURE_DECLARE_ENTITY(VentureArbitrageLeg, venture_arbitrage_leg, ARBITRAGE_LEG
 #define VENTURE_TYPE_ARBITRAGE_STRATEGY (venture_arbitrage_strategy_get_type())
 VENTURE_DECLARE_ENTITY(VentureArbitrageStrategy, venture_arbitrage_strategy, ARBITRAGE_STRATEGY)
 
+#define VENTURE_TYPE_EXTERNAL_POSTING (venture_external_posting_get_type())
+VENTURE_DECLARE_ENTITY(VentureExternalPosting, venture_external_posting, EXTERNAL_POSTING)
+
 G_END_DECLS
 
 #endif /* VENTURE_ARBITRAGE_RECORDS_H */

@@ -147,6 +147,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `accounts show SOURCE_ID KEY [basis=B] [ledger=N] [organization_id=N]` | one account: listings against the market (`undercut`, `vs_market_pct`, `urgency`), mail, holdings by place valued, the newest ledger rows. KEY is the account's key in the store (`"Drgold-Thorium Brotherhood"`); a `/` in it is fine |
 | `accounts inventory [source=N] [account=KEY] [place=P] [category=PATH] [search=T] [min_value="100.00 GOLD"] [dead=true] [dead_days=N] [basis=B] [sort=S] [dir=asc\|desc] [page=N] [per_page=N] [organization_id=N]` | everything held, per item across accounts, valued (`rows`, `totals`, `portfolio_value`) |
 | `accounts pnl [source=N] [period=P] [group_by=G] [account=KEY] [venue=KEY] [instrument=KEY] [label=TEXT] [top=N] [organization_id=N]` | the source's own trading ledger summed (`totals`, `buckets`, `top_items`) and the `flips` (buys matched to later sales, first in first out) |
+| `accounts post SOURCE_ID [from=DATE] [until=DATE] [account=KEY] [dry_run=true] [organization_id=N]` | **writes to the books**: the source's external ledger as one journal per account per day (needs the source's `books: daily`); `--stage` proposes it. Answer: the data source with the pass in `result` (JSON text: `days_by_status`, `days[]`, `capital`, `notes`) |
+| `accounts record-flips SOURCE_ID [from=DATE] [until=DATE] [instrument=KEY] [min_profit="5.0000 GOLD"] [limit=N] [dry_run=true] [organization_id=N]` | **writes to the books**: each sale matched FIFO to earlier buys becomes a closed `arbitrage_trade` (strategy `flip`), once (needs `books: trades`); `--stage` proposes it |
 | `market alerts [count=N] [organization_id=N]` | the alert rules and the recent hits |
 | `market alerts evaluate RULE_ID [--dry-run] [organization_id=N]` | what the rule fires now; **writes the hits** (under the cooldown) unless `--dry-run` |
 | `arbitrage scan [STRATEGY] [option=value ...]` | opportunities now (`rows`; the table numbers them); options are the `arbitrage_scan` report's, plus `organization_id=N` |
@@ -1319,6 +1321,26 @@ JSON twin and an `accounts` verb (table above):
 - Dashboard kinds: `accounts_attention`, `accounts_summary`,
   `holdings_value`, `external_pnl`; the `operations` template puts them
   together (`dashboard create operations`).
+- **Into the books** is opt-in, per source, by its `books` setting:
+  `none` (default), `daily` (`accounts post`, or `post_to_books: true` to
+  post after every push) or `trades` (`accounts record-flips`). A source
+  books one way; the other verb is refused (exit 1) and a dry run works
+  in any mode. Always `dry_run=true` first and read `days_by_status` /
+  `flips`. `books_from: 2026-09-01` starts the books there.
+- Daily journals: sales Cr `trading_sales`, purchases Dr
+  `trading_purchases`, other income / expenses, the net through the
+  character's purse; an opening from the first balance seen, and
+  `trading_capital` (equity) for gold the ledger never showed arriving
+  (mail from an alt). A day that changed is reversed and posted again by
+  the next `post`; never delete an `external_posting` record (refused).
+- Flips: one closed trade per sale, legs at the buyer's and seller's
+  places, `external_ref` `<uuid>:<sale>:<n>`; running it again records
+  only what is new. `report external_books data_source_id=N` shows each
+  day: `posted`, `unposted`, `changed`, `left_out` (flips recorded) ...
+- Both are financial: an organization's finance member may, an editor
+  member may not. They are type-level actions:
+  `act external_posting 0 post_ledger data_source_id=N` and
+  `act arbitrage_trade 0 record_flips data_source_id=N`.
 
 ## Organization sign-in
 
@@ -2056,9 +2078,11 @@ venturectl --stage act arbitrage_trade 0 record organization_id=1 name="Peaceblo
   leg) before closing; `goods=keep` leaves it in stock.
 - `record` (type-level, stageable) creates the trade and its legs in one
   transaction and executes the legs marked `"status":"executed"` in
-  order. A leg naming anything but kind, status, venue_id, instrument_id,
-  inventory_item_id, quantity, unit_price, amount, fees, occurred_at and
-  notes is refused. A member must pass `organization_id`.
+  order. A leg naming anything but kind, status, venue_id, location_id,
+  instrument_id, inventory_item_id, quantity, unit_price, amount, fees,
+  occurred_at and notes is refused. A member must pass `organization_id`.
+  `location_id` moves the leg's money through that place's holding (the
+  character who bought or sold) instead of the venue's.
 - Accounts: control-map classifications `arbitrage_positions`,
   `arbitrage_gains`, `arbitrage_fees`; unmapped they are made as
   `<org>:1460`, `<org>:4960`, `<org>:6960`.

@@ -380,6 +380,39 @@ arb_classification(
 		*out_name = "Arbitrage fees";
 		*out_kind = VENTURE_ACCOUNT_KIND_EXPENSE;
 	}
+	/* The books an external ledger posts to (venture-arbitrage-books.c):
+	 * a day's sales, purchases, other income and expenses, and the
+	 * capital that stands for money the ledger never saw arrive. */
+	else if (0 == g_strcmp0(classification, "trading_sales"))
+	{
+		*out_number = "4970";
+		*out_name = "Trading sales";
+		*out_kind = VENTURE_ACCOUNT_KIND_INCOME;
+	}
+	else if (0 == g_strcmp0(classification, "trading_purchases"))
+	{
+		*out_number = "5970";
+		*out_name = "Trading purchases";
+		*out_kind = VENTURE_ACCOUNT_KIND_EXPENSE;
+	}
+	else if (0 == g_strcmp0(classification, "trading_income"))
+	{
+		*out_number = "4980";
+		*out_name = "Trading other income";
+		*out_kind = VENTURE_ACCOUNT_KIND_INCOME;
+	}
+	else if (0 == g_strcmp0(classification, "trading_expenses"))
+	{
+		*out_number = "6970";
+		*out_name = "Trading expenses";
+		*out_kind = VENTURE_ACCOUNT_KIND_EXPENSE;
+	}
+	else if (0 == g_strcmp0(classification, "trading_capital"))
+	{
+		*out_number = "3970";
+		*out_name = "Trading capital";
+		*out_kind = VENTURE_ACCOUNT_KIND_EQUITY;
+	}
 	else
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
@@ -577,6 +610,35 @@ venture_arbitrage_venue_cash_account(
 	return *out_account_id > 0;
 }
 
+/*
+ * Where one leg's money moves through: the holding at its own location --
+ * the character who actually bought or sold, which a venue shared by
+ * several characters cannot say -- else the venue's cash. Read from the
+ * leg alone, so the posting rule stays pure.
+ */
+static gboolean
+arb_leg_cash_account(
+	VentureDatabase		 *database,
+	gint64			  organization_id,
+	VentureEntity		 *leg,
+	GDateTime		 *when,
+	const VentureActor	 *actor,
+	gint64			 *out_account_id,
+	GError			**error
+){
+	gint64 location_id;
+
+	location_id = arb_int(leg, "location-id");
+
+	if (location_id > 0)
+		return venture_holdings_account_for_location(database, organization_id, location_id,
+		                                             TRUE, actor, out_account_id, error);
+
+	return venture_arbitrage_venue_cash_account(database, organization_id,
+	                                            arb_int(leg, "venue-id"), when, actor,
+	                                            out_account_id, error);
+}
+
 /* ==========================================================================
  * The leg posting rule
  * ========================================================================== */
@@ -758,9 +820,7 @@ venture_arbitrage_leg_posting_rule_lines(
 	if (!principal && ((NULL == fees) || venture_money_is_zero(fees)))
 		return g_steal_pointer(&rows);
 
-	if (!venture_arbitrage_venue_cash_account(database, organization_id,
-	                                          arb_int(leg, "venue-id"), when, NULL, &cash,
-	                                          error))
+	if (!arb_leg_cash_account(database, organization_id, leg, when, NULL, &cash, error))
 		return NULL;
 
 	if (principal)
@@ -926,6 +986,26 @@ venture_arbitrage_validate_trade(
 
 	if (!permitted)
 	{
+		g_autofree gchar *external = NULL;
+		g_autofree gchar *was_external = NULL;
+
+		/* Where a recorded flip came from is how recording again knows
+		 * it is there: changed by hand, the next run records it twice. */
+		g_object_get(entity, "external-ref", &external, NULL);
+
+		if (NULL != previous)
+			g_object_get(previous, "external-ref", &was_external, NULL);
+
+		if ((arb_int(entity, "data-source-id") != arb_int(previous, "data-source-id")) ||
+		    (0 != g_strcmp0(venture_string_is_empty(external) ? NULL : external,
+		                    venture_string_is_empty(was_external) ? NULL : was_external)))
+		{
+			venture_set_error_validation(error, "External reference",
+				"is set by Record flips, which records each sale of a data source's "
+				"ledger once; it cannot be written by hand");
+			return FALSE;
+		}
+
 		if (arb_int(entity, "close-journal-id") != arb_int(previous, "close-journal-id"))
 		{
 			venture_set_error_validation(error, "Closing journal",
@@ -1087,6 +1167,7 @@ arb_leg_financial_change(
 	return (arb_enum(entity, "status") != arb_enum(previous, "status")) ||
 	       (arb_enum(entity, "kind") != arb_enum(previous, "kind")) ||
 	       (arb_int(entity, "venue-id") != arb_int(previous, "venue-id")) ||
+	       (arb_int(entity, "location-id") != arb_int(previous, "location-id")) ||
 	       (arb_int(entity, "trade-id") != arb_int(previous, "trade-id")) ||
 	       (arb_int(entity, "inventory-item-id") != arb_int(previous, "inventory-item-id")) ||
 	       (arb_int(entity, "quantity") != arb_int(previous, "quantity")) ||
@@ -1451,6 +1532,8 @@ venture_arbitrage_validate_leg(
 
 	if (!arb_same_organization(database, entity, previous, "venue-id",
 	                           VENTURE_TYPE_VENUE, "Venue", error) ||
+	    !arb_same_organization(database, entity, previous, "location-id",
+	                           VENTURE_TYPE_LOCATION, "Paid from or into", error) ||
 	    !arb_same_organization(database, entity, previous, "instrument-id",
 	                           VENTURE_TYPE_INSTRUMENT, "Instrument", error))
 		return FALSE;
@@ -2340,9 +2423,7 @@ arb_execute_in_transaction(
 		{
 			gint64 cash;
 
-			if (!venture_arbitrage_venue_cash_account(database, organization_id,
-			                                          arb_int(leg, "venue-id"), when, actor,
-			                                          &cash, error))
+			if (!arb_leg_cash_account(database, organization_id, leg, when, actor, &cash, error))
 				return FALSE;
 
 			/* Dr inventory, Cr the venue's cash, at what was paid; the
@@ -3177,8 +3258,8 @@ venture_arbitrage_abandon(
 /* The leg members a request may carry, in their wire spelling. Stamps,
  * ids and the trade are the record action's to set. */
 static const gchar *const arb_leg_members[] = {
-	"kind", "status", "venue_id", "instrument_id", "inventory_item_id", "quantity",
-	"unit_price", "amount", "fees", "occurred_at", "notes", NULL
+	"kind", "status", "venue_id", "location_id", "instrument_id", "inventory_item_id",
+	"quantity", "unit_price", "amount", "fees", "occurred_at", "notes", NULL
 };
 
 static gboolean
@@ -3186,6 +3267,8 @@ arb_record_in_transaction(
 	VentureDatabase		 *database,
 	gint64			  organization_id,
 	JsonObject		 *request,
+	gint64			  data_source_id,
+	const gchar		 *external_ref,
 	const VentureActor	 *actor,
 	VentureEntity		**out_trade,
 	GError			**error
@@ -3250,7 +3333,16 @@ arb_record_in_transaction(
 	             "expected", expected,
 	             "notes", venture_json_object_get_string(request, "notes", NULL), NULL);
 
-	if (!venture_database_save(database, VENTURE_ENTITY(trade), actor, error))
+	/* A flip recorded from an external ledger says where from, which only
+	 * this module's permit may write. */
+	if (!venture_string_is_empty(external_ref))
+	{
+		g_object_set(trade, "data-source-id", data_source_id, "external-ref", external_ref, NULL);
+
+		if (!arb_save_permitted(database, VENTURE_ENTITY(trade), actor, error))
+			return FALSE;
+	}
+	else if (!venture_database_save(database, VENTURE_ENTITY(trade), actor, error))
 		return FALSE;
 
 	execute = g_array_new(FALSE, FALSE, sizeof(gint64));
@@ -3293,7 +3385,7 @@ arb_record_in_transaction(
 			{
 				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 				            "legs[%u] names %s, which a recorded leg cannot set; a leg "
-				            "takes kind, status, venue_id, instrument_id, "
+				            "takes kind, status, venue_id, location_id, instrument_id, "
 				            "inventory_item_id, quantity, unit_price, amount, fees, "
 				            "occurred_at and notes", i, key);
 				return FALSE;
@@ -3396,7 +3488,7 @@ venture_arbitrage_record(
 	if (!venture_database_begin(database, error))
 		return NULL;
 
-	if (!arb_record_in_transaction(database, organization_id, request, actor, &trade, error))
+	if (!arb_record_in_transaction(database, organization_id, request, 0, NULL, actor, &trade, error))
 	{
 		venture_database_rollback(database);
 		return NULL;
@@ -3407,6 +3499,48 @@ venture_arbitrage_record(
 		return NULL;
 
 	return g_steal_pointer(&trade);
+}
+
+/* --- For the books tie-in (venture-arbitrage-books.c), inside its transaction --- */
+
+gboolean
+venture_arbitrage_record_in_transaction(
+	VentureDatabase		 *database,
+	gint64			  organization_id,
+	JsonObject		 *request,
+	gint64			  data_source_id,
+	const gchar		 *external_ref,
+	const VentureActor	 *actor,
+	VentureEntity		**out_trade,
+	GError			**error
+){
+	return arb_record_in_transaction(database, organization_id, request, data_source_id,
+	                                 external_ref, actor, out_trade, error);
+}
+
+gboolean
+venture_arbitrage_execute_in_transaction(
+	VentureDatabase		 *database,
+	gint64			  leg_id,
+	GDateTime		 *occurred_at,
+	const VentureActor	 *actor,
+	VentureEntity		**out_leg,
+	GError			**error
+){
+	return arb_execute_in_transaction(database, leg_id, occurred_at, actor, out_leg, error);
+}
+
+gboolean
+venture_arbitrage_close_in_transaction(
+	VentureDatabase		 *database,
+	gint64			  trade_id,
+	GDateTime		 *closed_at,
+	const VentureActor	 *actor,
+	VentureEntity		**out_trade,
+	GError			**error
+){
+	return arb_close_in_transaction(database, trade_id, VENTURE_ARBITRAGE_TRADE_STATUS_CLOSED,
+	                                closed_at, actor, out_trade, error);
 }
 
 /* ==========================================================================

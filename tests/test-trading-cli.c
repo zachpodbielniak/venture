@@ -1407,6 +1407,91 @@ test_feeds_push(
 	}
 }
 
+/*
+ * accounts post|record-flips: the books' type-level actions under the
+ * accounts verb, each option typed before it is sent (dry_run a boolean,
+ * limit a number), the pass read back from the source's `result`. A
+ * source books one way, so the other verb is the server's refusal.
+ *
+ * What breaks if this regresses: dry_run=true sent as a string and the
+ * action refusing it (or worse, posting), or a convenience verb that
+ * prints the data source instead of what was posted.
+ */
+static void
+test_accounts_books(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(JsonNode) dry = NULL;
+	g_autoptr(JsonNode) posted = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *id = NULL;
+	g_autofree gchar *out = NULL;
+	g_autofree gchar *again = NULL;
+	JsonObject *counts;
+
+	(void)user_data;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", "Characters", "provider", "push", "currency", "USD",
+	             "settings", "books: daily\n", NULL);
+	save(fixture, source);
+	id = id_text(ID(source));
+
+	path = g_build_filename(fixture->state_dir, "ledger.jsonl", NULL);
+	g_assert_true(g_file_set_contents(path,
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium\",\"kind\":\"character\"}\n"
+		"{\"type\":\"txn\",\"id\":\"k1\",\"account\":\"Drgold-Thorium\",\"kind\":\"sale\","
+		"\"instrument\":\"2770\",\"quantity\":3,\"amount\":\"79.77\","
+		"\"at\":\"2026-03-03T18:53:54Z\"}\n", -1, NULL));
+
+	{
+		const gchar *const push[] = { "feeds", "push", id, path, "--wait", NULL };
+
+		g_free(cli_ok(fixture, "json", push));
+	}
+
+	{
+		const gchar *const preview[] = { "accounts", "post", id, "dry_run=true", "until=2026-03-10", NULL };
+
+		out = cli_ok(fixture, "json", preview);
+		dry = json_of(out);
+		counts = json_object_get_object_member(json_node_get_object(dry), "days_by_status");
+		g_assert_cmpint(json_object_get_int_member(counts, "unposted"), ==, 1);
+		g_assert_true(json_object_get_boolean_member(json_node_get_object(dry), "dry_run"));
+	}
+
+	{
+		const gchar *const post[] = { "accounts", "post", id, "until=2026-03-10", NULL };
+
+		again = cli_ok(fixture, "json", post);
+		posted = json_of(again);
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(posted), "written"), ==, 1);
+	}
+
+	{
+		const gchar *const table[] = { "accounts", "post", id, "until=2026-03-10", NULL };
+		g_autofree gchar *text = cli_ok(fixture, "table", table);
+
+		g_assert_nonnull(strstr(text, "posted"));
+		g_assert_nonnull(strstr(text, "2026-03-03"));
+	}
+
+	{
+		const gchar *const unknown[] = { "accounts", "post", id, "limit=5", NULL };
+		const gchar *const not_bool[] = { "accounts", "post", id, "dry_run=maybe", NULL };
+		const gchar *const no_id[] = { "accounts", "record-flips", NULL };
+		const gchar *const wrong_mode[] = { "accounts", "record-flips", id, NULL };
+
+		cli_refused(fixture, unknown, 2, "does not take");
+		cli_refused(fixture, not_bool, 2, "true or false");
+		cli_refused(fixture, no_id, 2, "record-flips SOURCE_ID");
+		cli_refused(fixture, wrong_mode, 1, "books daily, not trades");
+	}
+}
+
 #define ADD(name, fn) \
 	g_test_add("/trading-cli/" name, Fixture, NULL, fixture_set_up, fn, fixture_tear_down)
 
@@ -1427,6 +1512,7 @@ main(
 	ADD("export-and-registries", test_export_and_registries);
 	ADD("plugins-and-feeds", test_plugins_and_feeds);
 	ADD("feeds-push", test_feeds_push);
+	ADD("accounts-books", test_accounts_books);
 	ADD("second-organization", test_second_organization);
 
 	return g_test_run();

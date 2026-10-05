@@ -90,6 +90,8 @@ One attempt.
 | =expected=         | text      | technical: the scan's snapshot, a JSON object                                              |
 | =close_journal_id= | reference | technical: the first journal Close posted                                                  |
 | =tags=, =notes=    | text      |                                                                                            |
+| =data_source_id=   | reference | technical: set by Record flips, the source whose ledger the trade was matched from          |
+| =external_ref=     | text      | technical: set by Record flips, =<source uuid>:<sale key>:<n>=, unique in the organization |
 
 =planned= and =open= move freely by hand. =closed= and =abandoned= are reached only through the Close and Abandon actions, and left only through Reopen, because each of those posts or reverses; a status typed into a form would do neither, and is refused with the action to use instead. =opened_at= and =closed_at= follow the factory's rule for a derived date: stamped when empty, kept when given, cleared on leaving the state, refused when typed onto a trade never in it. A finished trade's =closed_at= is the action's: a hand edit is put back (a form posts every field back), because the close journals carry that date and the operational P&L counts the trade in its period. Reopen and close again to move it. A trade never closes before it opened.
 
@@ -103,6 +105,7 @@ One movement at one venue.
 |---------------------+-----------+-------------------------------------------------------------------------------------------|
 | =venue_id=          | reference | where it happened; first, so a bare amount reads the venue's currency                     |
 | =trade_id=          | reference | the trade; required, in the leg's own organization                                         |
+| =location_id=       | reference | optional: the place whose holding the money moves through (the character who bought or sold), instead of the venue's |
 | =kind=              | enum      | =buy= (the zero value), =sell=, =fee=, =transfer=, =stake=, =payout=, =refund=, =write_off= |
 | =status=            | enum      | =planned= (the zero value), =executed=, =failed=, =cancelled=; only executed posts         |
 | =instrument_id=     | reference | optional: what was traded                                                                  |
@@ -162,7 +165,7 @@ The rule emits its lines in a fixed order -- principal, then fees -- because the
 
 ** Venue cash
 
-Where a leg's money moves through: the holding at the venue's location (=venture_holdings_account_for_location()=, made on first use) -- a character's purse, a stall's till -- else the venue's own =account_id=, else the organization's cash (the =cash= control map, else the chart's 1000, else one made under =<org>:1000=). A venue with a location is a holding, so every rule of holdings applies: one truth per currency, and the floor.
+Where a leg's money moves through: the holding at the leg's own =location_id= when it names one -- the character who actually bought or sold, which a venue several characters trade at cannot say -- else the holding at the venue's location (=venture_holdings_account_for_location()=, made on first use) -- a character's purse, a stall's till -- else the venue's own =account_id=, else the organization's cash (the =cash= control map, else the chart's 1000, else one made under =<org>:1000=). A venue with a location is a holding, so every rule of holdings applies: one truth per currency, and the floor.
 
 ** Currencies
 
@@ -234,7 +237,7 @@ Deleting a leg or a trade removes nothing from the books (see [[file:ledger.org]
 | =notes=           | text      |                                                                          |
 | =legs=            | json      | required: 1 to 200 leg objects                                           |
 
-Each leg object may carry =kind=, =status=, =venue_id=, =instrument_id=, =inventory_item_id=, =quantity=, =unit_price=, =amount=, =fees=, =occurred_at= and =notes=, in their wire spelling; any other member (a stamp, an id, a trade) is refused by name. Legs are created first, then those asked for as executed are executed in the order given -- a buy before the sell of the same units -- exactly as Execute does, which opens the trade.
+Each leg object may carry =kind=, =status=, =venue_id=, =location_id=, =instrument_id=, =inventory_item_id=, =quantity=, =unit_price=, =amount=, =fees=, =occurred_at= and =notes=, in their wire spelling; any other member (a stamp, an id, a trade) is refused by name. Legs are created first, then those asked for as executed are executed in the order given -- a buy before the sell of the same units -- exactly as Execute does, which opens the trade.
 
 The action is stageable: a staged record holds its parameters, and approval performs it afresh, recounting stock and re-reading purses as they are then. Like every type-level action, it is judged in the organization it names (=venture_action_prepare_target()=, =venture_action_require_organization()=): its finance member records, an editor member is refused, a member who names no organization is told to name one, and a global administrator who names none records in the default organization.
 
@@ -254,6 +257,7 @@ venturectl act arbitrage_trade 0 record organization_id=1 name="Peacebloom flip"
 | =arbitrage_trade= | =reopen=  | --                              | yes       |
 | =arbitrage_trade= | =abandon= | =goods=, =abandoned_at=         | yes       |
 | =arbitrage_trade= | =record=  | see above (type-level)          | yes       |
+| =arbitrage_trade= | =record_flips= | see [[*Flips from an external ledger][Flips from an external ledger]] (type-level) | yes |
 
 The module is in the accounting boundary's list of financial modules, so the action framework wraps each of these in one whole-operation proposal: under a second-actor rule on posting, the first person's execute or close is a proposal and a second person performs it.
 
@@ -311,6 +315,54 @@ The ledger's =income_statement= always had the trades -- the close journals' Arb
 - The lines and the column appear only when the period finished at least one trade, so an organization that never trades reads exactly as it did. With the =arbitrage= module off there are none, and no error.
 
 Fees are dated with the trade's close here, so the three lines of one trade always fall in the same period and agree with its page; the ledger dates each fee when its leg was executed, so a trade spanning a month end can put its fees in one month's income statement and its gains in the next.
+
+* Flips from an external ledger
+
+A data source that pushes the operator's own ledger (see [[file:market-data.org::*Operator accounts][Market data: operator accounts]]) has its flips -- buys matched to the sales that followed them -- on the Accounts pages. With the source's =books: trades= setting, =record_flips= records them as trades: closed =arbitrage_trade= records whose executed legs post through the books like any other. (=books: daily= posts the same ledger a day at a time instead; a source books one way. See [[file:market-data.org::*The external ledger in the books][Market data: the external ledger in the books]].)
+
+** One trade per sale
+
+The matching is the flips report's own walk, one take at a time (=venture_series_store_flip_pairs()=): per item and currency, first in first out, a sale taking units from the oldest buy before it (a buy and a sale in the same second: the buy first), each take's cost a share of the buy and its proceeds a share of the sale, split so the shares add back to exactly the buy and the sale. Each sale with matched units becomes one trade:
+
+- a *buy leg* for every buy the sale drew on: its units, the share of the buy's cost, dated when it was bought, at the buyer's venue and with =location_id= the buyer's place (the character's purse);
+- one *sell leg*: the matched units and their share of what the sale brought (after the venue's cut, as the source records it -- so there is no fee leg), dated when it sold, at the seller's venue and place;
+- strategy =flip=, closed at the sale. Its =expected= profit is what the ledger says it made, so the performance report shows no slippage for it.
+
+One trade per sale, not per lot, because a sale is complete the moment it happens: a lot partly sold would otherwise wait open for units that may never sell, and the trades of a window add up to exactly the flips report's matched cost, proceeds and profit (when the walk and the report's window start at the same place). Units a sale sold with no earlier buy (farmed, crafted, bought before the books) are in no trade.
+
+The legs carry no stock: the units were in a game's bags, not in VENTURE's inventory. Buys debit arbitrage positions from the buyer's purse, the sale credits it into the seller's, and the close moves what is left -- the profit -- to arbitrage gains, in the source's currency's own book.
+
+** Once, and the rest later
+
+What each ledger row gave is kept in the trade's =expected= (=source=: the sale's key, account, time, units and proceeds, and each buy's key, account, time, units and cost), and the trade carries =data_source_id= and =external_ref= =<source uuid>:<sale key>:<n>=. The next run reads every recorded trade of the source -- deleted ones too: a deletion leaves the journals posted, so what it took stays taken -- and walks again from what each row has left. So recording again records nothing, a sale the source later merged larger is recorded for the units it gained under =:2=, and a lot is never costed twice, even when the ledger grows behind what was recorded. The walk starts at the source's =books_from= (the whole ledger without one); =from= narrows which sales are recorded, never earlier than =books_from=, and the earlier sales still take their units from the lots before them.
+
+A flip touching a day already posted a day at a time -- its sale's or any buy's account and day -- is left out and counted (=skipped.posted_days=), and a day whose flips are recorded is left out of the daily posting: whatever the setting says now, nothing is booked twice.
+
+** Purses the ledger did not fund
+
+The buyer's purse is judged by the holding floor at the buy's time, and the ledger rarely shows the gold that paid for it arriving (mail from another character, a balance from before the ledger). Before each buy leg is executed, =venture_holdings_floor_shortfall()= asks what would have to be there; the shortfall is posted first, dated the buy, as Dr the purse / Cr =trading_capital= (rule =external_ledger_capital=), and counted in the answer's =capital=. An account allowed to go negative needs none.
+
+** The action
+
+=record_flips= is a type-level action on =arbitrage_trade=, so the organization role matrix judges it as financial work (an organization's finance member records, an editor member does not); stageable; one transaction inside one whole-operation posting boundary.
+
+| Parameter | Kind | Notes |
+|-----------+------+-------|
+| =organization_id= | integer | the organization; a member must name one |
+| =data_source_id= | reference | required: the source |
+| =from=, =until= | date | which sales: from =books_from=, before now |
+| =instrument= | text | one item's key |
+| =min_profit= | money | only flips that made at least this, with its currency ("10.0000 GOLD") |
+| =limit= | integer | trades a call, 1 to 500 (100) |
+| =dry_run= | boolean | say what would be recorded, write nothing |
+
+#+begin_src sh
+venturectl accounts record-flips 4 dry_run=true
+venturectl accounts record-flips 4 min_profit="5.0000 GOLD" limit=200
+venturectl act arbitrage_trade 0 record_flips data_source_id=4 organization_id=2
+#+end_src
+
+The answer is the data source with a one-time =result=: what was recorded (each trade's reference, id, units, cost, proceeds, profit and the capital its buys needed), what was left out and why, and how many are left for the next call.
 
 * Finding opportunities
 
@@ -919,3 +971,5 @@ gdouble venture_arbitrage_confidence(const VentureArbitrageEvidence *evidence);
 - *Every scan option is a report option.* A new one goes into the option table in =venture-arbitrage-scan.c=, the =arbitrage_scan= schema, and all five doors in the same commit.
 - *A fee model or strategy name is judged when written, never when kept,* and only while the module is on.
 - *Bound every read a strategy makes.* Choose candidates by an indexed query with a limit; never walk a region's rows.
+- *A recorded flip's =expected= is what the next run subtracts.* Never record a flip without it, and never match again from the raw ledger: a sale merged larger later would book its lots a second time.
+- *A source books one way.* =record_flips= leaves out a flip touching a day posted a day at a time, and =post_ledger= a day whose flips are recorded; keep both checks on the data, not only on the =books= setting, which can change.

@@ -1880,6 +1880,26 @@ GType
 venture_arbitrage_leg_status_get_type(void) G_GNUC_CONST;
 
 /**
+ * VentureExternalPostingKind:
+ * @VENTURE_EXTERNAL_POSTING_KIND_DAY: one day of an account's external
+ *   ledger, summarised into one journal; the zero value
+ * @VENTURE_EXTERNAL_POSTING_KIND_OPENING: what the account held before the
+ *   first day posted, as the source observed it
+ *
+ * What an `external_posting` record stands for in the books.
+ */
+typedef enum
+{
+	VENTURE_EXTERNAL_POSTING_KIND_DAY = 0,
+	VENTURE_EXTERNAL_POSTING_KIND_OPENING
+} VentureExternalPostingKind;
+
+#define VENTURE_TYPE_EXTERNAL_POSTING_KIND (venture_external_posting_kind_get_type())
+
+GType
+venture_external_posting_kind_get_type(void) G_GNUC_CONST;
+
+/**
  * VentureDashboardLayout:
  * @VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS: three across, the default
  * @VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS: two across

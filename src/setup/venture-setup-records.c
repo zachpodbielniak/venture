@@ -42,7 +42,8 @@ map_before_save(VentureEntity *entity, GError **error)
 		"cash", "receivables", "payables", "tax", "deferred", "retained_earnings",
 		"owner_draws", "loans", "clearing", "inventory", "income", "expense",
 		"currency_clearing", "session_income", "arbitrage_positions",
-		"arbitrage_gains", "arbitrage_fees", NULL
+		"arbitrage_gains", "arbitrage_fees", "trading_sales", "trading_purchases",
+		"trading_income", "trading_expenses", "trading_capital", NULL
 	};
 	g_autofree gchar *classification = NULL;
 	g_autofree gchar *subject_type = NULL;

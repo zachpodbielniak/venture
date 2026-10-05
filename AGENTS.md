@@ -2261,6 +2261,72 @@ has the posting table, close and abandon.
   module off is no lines and no error. `/arbitrage-ledger/operational-reports`
   pins all three.
 
+## An external ledger in the books
+
+`src/arbitrage/venture-arbitrage-books.c`: a data source's own ledger
+(sales after the venue's cut, purchases, income, expenses) into the
+general journal, by `post_ledger` (`books: daily`) or `record_flips`
+(`books: trades`). `docs/market-data.org` ("The external ledger in the
+books") and `docs/arbitrage.org` ("Flips from an external ledger").
+
+- **A source books one way, and the data enforces it.** The `books`
+  setting picks the door and the other refuses, but the setting can
+  change: `record_flips` leaves out a flip touching a day posted daily,
+  and `post_ledger` a day whose flips are recorded (from the trades'
+  `expected.source`). Keep both data checks; a setting alone books a
+  month twice the day somebody switches it.
+- **"Changed" is the day's own figures, compared with its
+  `external_posting` record's fingerprint** -- never the journals (a
+  treatment changed since must not repost) and never the store's row
+  counts (an expiry row is not money). Purged days (before
+  `series.daily_days`) and days in a closed period are kept as posted:
+  rows retention removed are not a correction.
+- **Capital is computed from the source's own chain, not the books'
+  state.** The least amount that keeps a day's running balance (the
+  opening and every day before) at zero, credited to `trading_capital`.
+  It is part of the fingerprint, so a changed day reposts every posted
+  day after it. Computing it from the holding's actual balance made it
+  depend on other documents and turned "unchanged" into "changed"
+  whenever anything else touched the purse.
+- **Reverse every changed day first, newest first, then post oldest
+  first.** Reversals are never refused by the floor; posting in that
+  order means each posting is judged against a timeline where the purse
+  never goes short. Reposting a day while later days still held their old
+  capital could be refused for a shortfall the next posting fixes.
+- **`external_posting` is the books' memory: only the pass writes it.**
+  A save validator refuses every other writer, the generic routes refuse
+  the type, and `venture_arbitrage_books_check_write()` (in the
+  database's guard list) refuses a delete -- a deleted record makes the
+  next pass post the day again beside its journal.
+- **The actions are type-level on the books' types, not record actions
+  on `data_source`.** `post_ledger` on `external_posting`, `record_flips`
+  on `arbitrage_trade`, each with `data_source_id` and `organization_id`:
+  that is what makes the role matrix judge them as financial (finance
+  member yes, editor member no). A `data_source` action is an
+  administrator's alone (`venture-access-admin-write`), which would refuse
+  the finance member too. They are `service-transaction`: the service
+  begins the posting boundary before its one transaction, with a digest
+  of the plan in its arguments, so an approval is bound to what it writes.
+- **A recorded flip's `expected.source` is what the next run subtracts.**
+  `venture_series_store_flip_pairs()` takes it as `used` (key -> units and
+  money already given) and walks from what is left, so a sale merged
+  larger later is recorded for its new units (`:<n>` in `external_ref`)
+  and no lot is costed twice. Deleted trades count: their journals stay.
+  The walk starts at `books_from`; past 100 000 rows an item is skipped
+  with a note, never matched in part.
+- **One trade per sale, cash legs only, the money at the character.**
+  Legs name `location_id` (the buyer's and seller's places) because a
+  realm venue's location is only its first character. Nothing moves
+  stock -- the units were in the game's bags. Before each buy leg
+  executes, `venture_holdings_floor_shortfall()` says what the purse
+  lacks and it is posted first as `trading_capital`; never execute a buy
+  leg into a purse the ledger did not fund without that, or the first
+  flip of every alt is refused.
+- **The automatic pass never files proposals.** With a second-actor rule
+  on posting it does not post and notes why on the run; it posts only
+  days that are over (until today's midnight UTC), whole accounts at a
+  time, bounded by `books_max_writes`.
+
 ## The reference plugins: Blizzard, the-odds-api, supplier-csv
 
 Three plugins are both connectors and the worked examples of a provider

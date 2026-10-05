@@ -927,6 +927,16 @@ VENTURE_DEFINE_ENUM_TYPE(venture_arbitrage_leg_status_get_type,
                          "VentureArbitrageLegStatus",
                          venture_arbitrage_leg_status_values)
 
+static const GEnumValue venture_external_posting_kind_values[] = {
+	VE(VENTURE_EXTERNAL_POSTING_KIND_DAY,     "day"),
+	VE(VENTURE_EXTERNAL_POSTING_KIND_OPENING, "opening"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_external_posting_kind_get_type,
+                         "VentureExternalPostingKind",
+                         venture_external_posting_kind_values)
+
 static const GEnumValue venture_dashboard_layout_values[] = {
 	VE(VENTURE_DASHBOARD_LAYOUT_THREE_COLUMNS, "three_columns"),
 	VE(VENTURE_DASHBOARD_LAYOUT_TWO_COLUMNS,   "two_columns"),

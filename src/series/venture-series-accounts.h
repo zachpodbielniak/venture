@@ -1528,6 +1528,98 @@ venture_series_store_flips(
 	GError				**error
 );
 
+/**
+ * VentureSeriesFlipUse:
+ * @units: units of a ledger row already taken by something recorded
+ * @amount: the money that went with them, in minor units
+ *
+ * What a buy or a sale has already given to a recorded flip, so matching
+ * again starts from what is left of it. The money is the recorded share,
+ * not a fresh proportion: what is left is then exactly what the row did
+ * not give, and the shares of one row still add back up to it.
+ */
+typedef struct
+{
+	gint64	units;
+	gint64	amount;
+} VentureSeriesFlipUse;
+
+/**
+ * VentureSeriesFlipPair:
+ * @instrument_key: what was bought and sold
+ * @instrument_name: (nullable): its name
+ * @currency: the money's currency
+ * @buy_key: the buy row's key (its stable id)
+ * @buy_account: the account that bought
+ * @buy_venue: (nullable): where it bought
+ * @buy_at: when
+ * @sale_key: the sale row's key
+ * @sale_account: the account that sold
+ * @sale_venue: (nullable): where it sold
+ * @sale_at: when
+ * @units: units taken from the buy by the sale
+ * @cost: what those units cost, a share of the buy
+ * @proceeds: what they sold for, a share of the sale, after the source's fees
+ *
+ * One take of venture_series_store_flips(): some units of one buy matched
+ * to one later sale.
+ */
+typedef struct
+{
+	gchar	*instrument_key;
+	gchar	*instrument_name;
+	gchar	 currency[VENTURE_MONEY_CURRENCY_LEN];
+	gchar	*buy_key;
+	gchar	*buy_account;
+	gchar	*buy_venue;
+	gint64	 buy_at;
+	gchar	*sale_key;
+	gchar	*sale_account;
+	gchar	*sale_venue;
+	gint64	 sale_at;
+	gint64	 units;
+	gint64	 cost;
+	gint64	 proceeds;
+} VentureSeriesFlipPair;
+
+/**
+ * venture_series_flip_pair_free:
+ * @pair: (transfer full) (nullable): a pair
+ */
+void
+venture_series_flip_pair_free(VentureSeriesFlipPair *pair);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesFlipPair, venture_series_flip_pair_free)
+
+/**
+ * venture_series_store_flip_pairs:
+ * @self: a store
+ * @filter: (nullable): which ledger rows count, as for
+ *   venture_series_store_flips(); the kind and paging are not read
+ * @used: (nullable) (element-type utf8 VentureSeriesFlipUse): what each
+ *   ledger row (by key) has already given to recorded flips; the walk
+ *   starts every row from what is left of it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The takes behind venture_series_store_flips(), one by one: the same
+ * walk in the same order with the same arithmetic, so with @used %NULL
+ * the pairs of an instrument add up to exactly its flip's matched units,
+ * cost and proceeds. Pairs come out in the walk's order: by instrument
+ * and currency, then by sale, then by the buys it drew on, oldest first.
+ * More than %VENTURE_SERIES_MAX_ACCOUNT_ROWS buys and sales is refused
+ * (INVALID_ARGUMENT) rather than matched in part.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesFlipPair) (nullable):
+ *   the pairs; %NULL on error
+ */
+GPtrArray *
+venture_series_store_flip_pairs(
+	VentureSeriesStore		 *self,
+	const VentureSeriesTxnFilter	 *filter,
+	GHashTable			 *used,
+	GError				**error
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_SERIES_ACCOUNTS_H */

@@ -1282,3 +1282,94 @@ The operator's own kinds -- =position_expiring=, =inbound_expiring=, =account_st
 ** What it costs
 
 The overview reads, per source, every account (at most 10 000), every position and mail row (at most 100 000 each), one grouped statement for the sparklines' closing balances (=venture_series_store_balance_days()=: a point per account and day, whatever the store kept), one valuation total and one ledger total. The inventory reads one page of a grouped statement and its breakdown. The account page reads one account's rows and one indexed =current= row per listing. The P&L reads three grouped statements and, for the flips, one ordered pass over the window's buys and sales.
+
+* The external ledger in the books
+
+A source that pushes the operator's own ledger (see [[*Operator accounts][Operator accounts]]) keeps it as history in its store, and the Accounts pages read it as the source reports it. Nothing of it is in the general journal until somebody asks: the =books= setting of the data source says which of two doors takes it there, and the other door refuses, so a sale is never booked once as a day's sales and again as a trade.
+
+| =books= | Door | What reaches the journal |
+|---------+------+--------------------------|
+| =none= (default) | -- | nothing; the pages still read the ledger |
+| =daily= | =post_ledger= (this chapter) | one summary journal per account per day |
+| =trades= | =record_flips= (see [[file:arbitrage.org::*Flips from an external ledger][Arbitrage: flips from an external ledger]]) | one closed arbitrage trade per matched sale |
+
+Both are in =src/arbitrage/venture-arbitrage-books.c=, in the =arbitrage= module, because posting an external ledger needs exactly what that module requires: market data's accounts and the ledger's journals.
+
+** Settings
+
+| Setting | Values | Default |
+|---------+--------+---------|
+| =books= | =none=, =daily=, =trades= | =none= |
+| =post_to_books= | =true=: post after every run (daily only) | =false= |
+| =books_from= | a date: nothing before it is the books' | the whole ledger |
+| =books_max_writes= | journals one pass writes, 1 to 5000 | 200 |
+
+They are judged when the source's settings are written: an unknown mode, =post_to_books= outside =daily=, a =books_from= that is no date and a bound out of range are refused.
+
+** One journal per account per day
+
+=post_ledger= sums each account's ledger rows per UTC day (=venture_series_store_txn_totals()=, integers) and posts the day as one journal dated its midnight UTC, through =venture_posting_service_post_by_currency_full()=, in the source's currency. The lines, always in this order:
+
+| Line | Side | Amount |
+|------+------+--------|
+| the account's holding | Dr when the day brought money in, Cr when it took money out | the net |
+| =trading_sales= | Cr | sales, after the venue's cut, as the source records them |
+| =trading_purchases= | Dr | purchases |
+| =trading_income= | Cr | other money in |
+| =trading_expenses= | Dr | other money out: postage, repairs |
+| =trading_capital= | Cr | money the day spent that the ledger never showed arriving (below) |
+
+The holding is the account's place's purse: the =location= the mirror promoted the account to (see [[*Accounts and positions in the books][Accounts and positions in the books]]), made by an explicit promotion when it is missing, and its holding account (=venture_holdings_account_for_location()=), made on first use. A place a person deleted stays deleted: that account's days are not posted, and the answer says so. The five accounts are control-map classifications, made on first use under scoped codes when unmapped (see [[file:setup.org][Accounting setup]]).
+
+Expired and cancelled rows carry no money and post nothing; a day with only those has no journal. A deposit lost on an expired auction is money only if the source recorded it as an expense. Purchases are expensed as they are made: these books follow the source's own cash view of profit (periodic purchases), and stock bought and still held is not an asset in them. The trades door is the one that matches cost to sales.
+
+Every currency rule applies unchanged: a separate-book currency (gold, typically) posts journals of its own, a valued currency with a rate on the day is converted into the book journal with each line keeping its own amount, and a memo currency posts no journal at all -- its holding line becomes a holding movement and the rest are dropped. See [[file:ledger.org][the general journal]].
+
+** The opening balance and trading capital
+
+A ledger of sales and purchases is not a ledger of the purse. The books do not know what a character held before its ledger began, and gold mailed between the operator's own characters is left out of the ledger (tsmctl's default, and the right one: two of one's own characters are not a sale). A character that spends gold an alt mailed it would take its purse below zero, which the holding floor refuses (see [[file:ledger.org::*The floor: never below zero, unless allowed][the floor]]). Two things keep the books honest about that without inventing anything:
+
+- *An opening balance*, once per account, dated its first posted day: Dr holding, Cr =trading_capital=, for the newest balance the source reported at or before that day's midnight. With no balance seen that early there is no opening. When an earlier day is brought into the books the opening moves to it.
+- *Capital, on the day it is needed*: a day whose net would take the purse below zero carries the least amount that keeps it at zero, credited to =trading_capital=. It is computed from this source's own days alone -- the opening and every day before -- so it is the same figure every time it is asked; a day earlier in the chain that changes moves it, and the days after are posted again with it.
+
+=trading_capital= is equity: money brought into the trading purses from outside what the ledger shows. Its balance is the sum of the openings and the capital days needed; a large one says the ledger is missing money movements (transfers between characters, most often). An account whose holding allows overdrafts (=allow_negative=) gets no capital, and its purse shows the shortfall as it is. Refusing instead was considered and rejected: the first purchase of every alt would refuse the whole pass, on data that is right.
+
+** Posting once, and again when a day changes
+
+Each posted day, and each opening, is an =external_posting= record -- the books' memory of what they posted -- keyed =<source uuid>:<account key>:<YYYY-MM-DD>= (=:opening=) in =ref=, unique in the organization, with the figures it was posted with as =fingerprint= and in money fields for reading, the journal (=journal_id=) and how many times it was posted (=revision=). A pass plans every day the books already hold plus the window's new days, compares each with its record, and writes only what differs:
+
+| Day | What the pass does |
+|-----+--------------------|
+| not posted, money in the window | posts it |
+| posted, figures unchanged | nothing |
+| posted, figures changed (a merged sale re-sent larger, a late row) | reverses its journal, dated as the original, and posts it again |
+| posted, after a day that changes | the same: its capital may have moved |
+| posted, its rows purged by retention (=series.daily_days=) | kept as posted |
+| in a closed period | kept as posted, or not posted; a note says which |
+| flips of the day recorded as trades | left out |
+
+The window (=from=, =until=) chooses only which new days come in; a day already in the books is kept current whatever the window. =until= defaults to today's midnight UTC: a day still going on is not over. =from= defaults to =books_from= and is never earlier than it.
+
+Every journal names the data source (=source_type= =data_source=), carries the rule name =external_ledger:<record id>= and the posting key =extledger:<source uuid>:<record id>:<revision>=; the record id stands in for the account and day, so the key stays short and unique however long an account key is. A pass reverses every changed day first, newest first, then posts oldest first: a reversal is never refused by the floor, and every posting is then judged against a timeline in which the purse never goes short. Days are written whole accounts at a time, at most =books_max_writes= journals a pass (at least one account), and a note says what is left for the next.
+
+The records are written only by the pass: the generic routes refuse them, a save validator refuses every other writer, and the database's guard refuses a delete -- without its record a day would be posted again beside its journal.
+
+** Who may post, and approval
+
+=post_ledger= is a type-level action on =external_posting= naming the source (=data_source_id=) and the organization (=organization_id=): the organization role matrix judges it as financial work, so an organization's finance member posts and an editor member -- who may sync the source -- does not. Everything a pass writes is one transaction inside one whole-operation posting boundary, begun before the transaction: under a second-actor rule the first person's pass is a proposal bound to what it would write, and a second person performs it. A refusal anywhere (the floor, a closed period on a reversal) leaves nothing written.
+
+#+begin_src sh
+venturectl accounts post 4 until=2026-10-01 dry_run=true   # what would post
+venturectl accounts post 4                                  # post every day that is over
+venturectl act external_posting 0 post_ledger data_source_id=4 organization_id=2 account="Drgold-Thorium"
+#+end_src
+
+The answer is the data source with a one-time =result=: the pass as JSON -- days by status, the days themselves (the first 200) with their figures and journals, the capital, and notes.
+
+** After every run: =post_to_books=
+
+With =post_to_books: true= the feeds run hook (=books=, installed after the mirror's so a run's new accounts are places first) posts after every run that stored something, on the main thread, outside any transaction, as the system (=books=): every day from =books_from= up to today's midnight, bounded by =books_max_writes=. It appends one line to the run record ("books: 3 day(s) posted, 1 posted again, 0 left for the next run"), or why it did not post. Under a second-actor rule on posting it does not post at all and says so: a proposal nobody asked for, every few minutes, would be noise.
+
+** The =external_books= report
+
+Each day of the period with money in a source's ledger, per account, and where it stands: =posted=, =unposted=, =changed=, =follows= (posted, to be posted again behind an earlier change), =kept=, =left_out=, =closed=, =no_place= or =later=, with its sales, purchases, other income, expenses, capital, net and journal. It is a dry run of =post_ledger= over the period, so the report and the action cannot disagree. Options: =data_source_id= (required), =account_key=, =organization_id= -- names every door already forwards.

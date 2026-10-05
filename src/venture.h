@@ -361,6 +361,7 @@
 /* After the series store: the engine's scan API names its handle. */
 #include "arbitrage/venture-arbitrage-math.h"
 #include "arbitrage/venture-arbitrage-engine.h"
+#include "arbitrage/venture-arbitrage-books.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

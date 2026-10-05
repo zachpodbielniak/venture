@@ -3733,3 +3733,233 @@ venture_series_store_flips(
 
 	return g_steal_pointer(&flips);
 }
+
+/* --- Flip pairs ----------------------------------------------------------------- */
+
+void
+venture_series_flip_pair_free(VentureSeriesFlipPair *pair)
+{
+	if (NULL == pair)
+		return;
+
+	g_free(pair->instrument_key);
+	g_free(pair->instrument_name);
+	g_free(pair->buy_key);
+	g_free(pair->buy_account);
+	g_free(pair->buy_venue);
+	g_free(pair->sale_key);
+	g_free(pair->sale_account);
+	g_free(pair->sale_venue);
+	g_free(pair);
+}
+
+/* One buy still holding units, with what identifies it. */
+typedef struct
+{
+	gchar	*key;
+	gchar	*account;
+	gchar	*venue;
+	gint64	 at;
+	gint64	 units;
+	gint64	 amount;
+} AccountsPairLot;
+
+static void
+accounts_pair_lot_clear(gpointer data)
+{
+	AccountsPairLot *lot = data;
+
+	g_free(lot->key);
+	g_free(lot->account);
+	g_free(lot->venue);
+}
+
+/*
+ * What is left of a row once its recorded share is taken off: never below
+ * zero, and the money that goes with the units still unused is exactly
+ * what the recorded shares did not take.
+ */
+static void
+accounts_pair_unused(
+	GHashTable	*used,
+	const gchar	*key,
+	gint64		*units,
+	gint64		*amount
+){
+	const VentureSeriesFlipUse *use;
+
+	use = ((NULL != used) && (NULL != key)) ? g_hash_table_lookup(used, key) : NULL;
+
+	if (NULL == use)
+		return;
+
+	*units = MAX((gint64)0, *units - MAX((gint64)0, use->units));
+	*amount = MAX((gint64)0, *amount - MAX((gint64)0, use->amount));
+
+	if (0 == *units)
+		*amount = 0;
+}
+
+GPtrArray *
+venture_series_store_flip_pairs(
+	VentureSeriesStore		 *self,
+	const VentureSeriesTxnFilter	 *filter,
+	GHashTable			 *used,
+	GError				**error
+){
+	VentureSeriesTxnFilter rows_filter;
+	g_autoptr(GString) sql = NULL;
+	g_autoptr(GArray) bindings = NULL;
+	g_autoptr(SeriesOwnedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) pairs = NULL;
+	g_autoptr(GArray) lots = NULL;
+	g_autofree gchar *instrument = NULL;
+	g_autofree gchar *instrument_name = NULL;
+	gchar currency[VENTURE_MONEY_CURRENCY_LEN];
+	gint64 read = 0;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if (NULL != filter)
+		rows_filter = *filter;
+	else
+		venture_series_txn_filter_init(&rows_filter);
+
+	rows_filter.kind = NULL;
+	currency[0] = '\0';
+
+	/* The statement of venture_series_store_flips(), with the keys that
+	 * name each row: the same rows in the same order is what makes the
+	 * pairs add up to its figures. */
+	sql = g_string_new("SELECT t.instrument_key, i.name, COALESCE(t.currency, ''), t.kind,"
+	                   "  t.quantity, t.amount, t.at, t.key, a.key, t.venue_key"
+	                   " FROM external_txns t LEFT JOIN instruments i ON i.key = t.instrument_key"
+	                   " LEFT JOIN accounts a ON a.id = t.account_id");
+	bindings = accounts_bindings_new();
+
+	if (!accounts_txn_where(&rows_filter, sql, bindings, error))
+		return NULL;
+
+	g_string_append(sql, " AND t.kind IN ('buy', 'sale') AND t.instrument_key IS NOT NULL"
+	                     " AND t.quantity > 0 AND t.amount IS NOT NULL"
+	                     " ORDER BY t.instrument_key, t.currency, t.at, t.kind = 'sale', t.key"
+	                     " LIMIT ?");
+	accounts_bind_add_int(bindings, (gint64)VENTURE_SERIES_MAX_ACCOUNT_ROWS + 1);
+
+	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
+	if (NULL == stmt)
+		return NULL;
+
+	pairs = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_flip_pair_free);
+	lots = g_array_new(FALSE, FALSE, sizeof(AccountsPairLot));
+	g_array_set_clear_func(lots, accounts_pair_lot_clear);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		const gchar *key = (const gchar *)sqlite3_column_text(stmt, 0);
+		const gchar *row_currency = (const gchar *)sqlite3_column_text(stmt, 2);
+		const gchar *kind = (const gchar *)sqlite3_column_text(stmt, 3);
+		const gchar *row_key = (const gchar *)sqlite3_column_text(stmt, 7);
+		gint64 quantity = sqlite3_column_int64(stmt, 4);
+		gint64 amount = sqlite3_column_int64(stmt, 5);
+		gint64 at = sqlite3_column_int64(stmt, 6);
+
+		if (NULL == row_currency)
+			row_currency = "";
+
+		if (++read > VENTURE_SERIES_MAX_ACCOUNT_ROWS)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "More than %d buys and sales in that window; narrow it to match flips",
+			            VENTURE_SERIES_MAX_ACCOUNT_ROWS);
+			return NULL;
+		}
+
+		/* A new instrument (or currency) closes the one before: its
+		 * unsold lots are not this one's. */
+		if ((NULL == instrument) || (0 != g_strcmp0(instrument, key)) ||
+		    (0 != g_ascii_strcasecmp(currency, row_currency)))
+		{
+			g_array_set_size(lots, 0);
+			g_free(instrument);
+			g_free(instrument_name);
+			instrument = g_strdup(key);
+			instrument_name = series_column_strdup(stmt, 1);
+			g_strlcpy(currency, row_currency, sizeof(currency));
+		}
+
+		if (amount < 0)
+			continue;
+
+		accounts_pair_unused(used, row_key, &quantity, &amount);
+
+		if (0 == g_strcmp0(kind, "buy"))
+		{
+			AccountsPairLot lot;
+
+			/* A buy recorded flips used up is no lot any more; a lot
+			 * of no units would be taken from forever. */
+			if (quantity <= 0)
+				continue;
+
+			lot.key = g_strdup(row_key);
+			lot.account = series_column_strdup(stmt, 8);
+			lot.venue = series_column_strdup(stmt, 9);
+			lot.at = at;
+			lot.units = quantity;
+			lot.amount = amount;
+			g_array_append_val(lots, lot);
+			continue;
+		}
+
+		/* A sale: take units from the oldest buys before it, exactly as
+		 * venture_series_store_flips() does, one pair per take. */
+		{
+			gint64 units_left = quantity;
+			gint64 amount_left = amount;
+
+			while ((units_left > 0) && (lots->len > 0))
+			{
+				AccountsPairLot *lot = &g_array_index(lots, AccountsPairLot, 0);
+				VentureSeriesFlipPair *pair;
+				gint64 take = MIN(units_left, lot->units);
+				gint64 cost = accounts_share(lot->amount, take, lot->units);
+				gint64 proceeds = accounts_share(amount_left, take, units_left);
+
+				lot->amount -= cost;
+				lot->units -= take;
+				amount_left -= proceeds;
+				units_left -= take;
+
+				pair = g_new0(VentureSeriesFlipPair, 1);
+				pair->instrument_key = g_strdup(instrument);
+				pair->instrument_name = g_strdup(instrument_name);
+				g_strlcpy(pair->currency, currency, sizeof(pair->currency));
+				pair->buy_key = g_strdup(lot->key);
+				pair->buy_account = g_strdup(lot->account);
+				pair->buy_venue = g_strdup(lot->venue);
+				pair->buy_at = lot->at;
+				pair->sale_key = g_strdup(row_key);
+				pair->sale_account = series_column_strdup(stmt, 8);
+				pair->sale_venue = series_column_strdup(stmt, 9);
+				pair->sale_at = at;
+				pair->units = take;
+				pair->cost = cost;
+				pair->proceeds = proceeds;
+				g_ptr_array_add(pairs, pair);
+
+				if (0 == lot->units)
+					g_array_remove_index(lots, 0);
+			}
+		}
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "matching flips", error);
+		return NULL;
+	}
+
+	return g_steal_pointer(&pairs);
+}

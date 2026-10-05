@@ -741,9 +741,14 @@ venturectl accounts inventory place=bank min_value="500.00 GOLD" sort=value
 venturectl accounts inventory dead=true dead_days=45  # nothing sold for 45 days
 venturectl accounts pnl period=last_90_days group_by=week
 venturectl accounts pnl group_by=instrument account="Drgold-Thorium Brotherhood"
+venturectl accounts post 4 dry_run=true                # what the books would take, a day at a time
+venturectl accounts post 4 until=2026-10-01           # post every day before 1 October
+venturectl accounts record-flips 4 min_profit="5.0000 GOLD" limit=200
 #+end_src
 
 =list= and =attention= take =source=, =group= (a realm), =basis= (=conservative=, =market=, =min=, =historical=, =region_market=, =region_sale_avg=), =expiring_hours=, =mail_days=, =stale_days=, =sort= and =dir=; =show SOURCE_ID KEY= takes the account's key in the store, sent as one path segment whatever it holds, and =basis=, =expiring_hours= and =ledger=; =inventory= takes =source=, =account= (or =account_key=), =place=, =category= (or =category_path=), =search=, =min_value= (with its currency), =dead= (=true=/=false=), =dead_days=, =basis=, =sort=, =dir=, =page= and =per_page=; =pnl= takes =source=, =period=, =group_by=, =account=, =venue=, =instrument=, =label= (the source's own label, =Auction=) and =top=. Every verb takes =organization_id=N=. A table prints on a terminal; =-f json= prints the whole answer, notes and all. See [[file:market-data.org][Market data]], "The Accounts pages".
+
+=accounts post SOURCE_ID= and =accounts record-flips SOURCE_ID= are the books' two type-level actions (=act external_posting 0 post_ledger= and =act arbitrage_trade 0 record_flips=) under friendlier names: the source becomes =data_source_id=, and each option is typed before it is sent -- =limit= and =organization_id= as whole numbers, =dry_run= as a boolean -- because the action framework refuses a string where it declared a number. =post= takes =from=, =until=, =account= (or =account_key=) and =dry_run=; =record-flips= takes =from=, =until=, =instrument=, =min_profit= (with its currency) =limit= and =dry_run=. Both honour =--stage=. The answer is the data source with the pass in its =result=: the table prints what the pass did and the days (or trades), =-f json= prints the pass whole. A source books one way (its =books= setting: =daily= for =post=, =trades= for =record-flips=); the other is refused (exit 1, CONFIG), a dry run is answered in any mode. See [[file:market-data.org][Market data]], "The external ledger in the books", and [[file:arbitrage.org][Arbitrage]], "Flips from an external ledger".
 
 ** Arbitrage
 

@@ -135,6 +135,37 @@ venture_holdings_balance(
 );
 
 /**
+ * venture_holdings_floor_shortfall:
+ * @database: the database
+ * @account_id: a holding account
+ * @delta: what a change would add to it (negative: a spend), in one currency
+ * @at: when the change would be dated
+ * @out_shortfall: (out) (transfer full): what would have to come in, at
+ *   @at, for the floor to accept the change; zero when nothing would
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The floor's own arithmetic (see the posting guard), asked in advance:
+ * the least amount that, added to the holding at @at, keeps every moment
+ * from @at onward at or above zero once @delta is counted. Zero for an
+ * account that allows overdrafts, has no location (it is no holding) or
+ * when @delta is not a spend. For a caller that knows money arrived that
+ * its evidence does not show -- an external ledger that leaves out
+ * transfers between the operator's own accounts -- and records it before
+ * the spend rather than be refused.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_holdings_floor_shortfall(
+	VentureDatabase		 *database,
+	gint64			  account_id,
+	const VentureMoney	 *delta,
+	GDateTime		 *at,
+	VentureMoney		**out_shortfall,
+	GError			**error
+);
+
+/**
  * venture_holdings_record_memo:
  * @database: the database, inside the caller's transaction
  * @header: the journal header the lines belong to: organization, date,

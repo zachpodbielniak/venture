@@ -90,17 +90,22 @@ venture_arbitrage_leg_direction(
  * venture_arbitrage_account:
  * @database: the database
  * @organization_id: the organization
- * @classification: `arbitrage_positions`, `arbitrage_gains` or
- *   `arbitrage_fees`
+ * @classification: `arbitrage_positions`, `arbitrage_gains`,
+ *   `arbitrage_fees`, or one of the external ledger's: `trading_sales`,
+ *   `trading_purchases`, `trading_income`, `trading_expenses`,
+ *   `trading_capital`
  * @when: (nullable): the date a dated control map is read at
  * @actor: (nullable): audit actor for an account made on first use
  * @error: (out) (optional): return location for a #GError
  *
- * The organization's account for one of the module's three roles: the
- * control map's when one is set, else one made on first use under a
- * scoped code (`<org>:1460` positions, `<org>:4960` gains, `<org>:6960`
- * fees) so it can never take a number a chart already uses. For writers
- * only: a read uses venture_arbitrage_find_account().
+ * The organization's account for one of the module's roles: the control
+ * map's when one is set, else one made on first use under a scoped code
+ * (`<org>:1460` positions, `<org>:4960` gains, `<org>:6960` fees,
+ * `<org>:4970` trading sales, `<org>:5970` trading purchases,
+ * `<org>:4980` trading other income, `<org>:6970` trading expenses,
+ * `<org>:3970` trading capital) so it can never take a number a chart
+ * already uses. For writers only: a read uses
+ * venture_arbitrage_find_account().
  *
  * Returns: the account id, or 0 with @error set
  */
@@ -118,8 +123,7 @@ venture_arbitrage_account(
  * venture_arbitrage_find_account:
  * @database: the database
  * @organization_id: the organization
- * @classification: `arbitrage_positions`, `arbitrage_gains` or
- *   `arbitrage_fees`
+ * @classification: any classification venture_arbitrage_account() takes
  * @when: (nullable): the date a dated control map is read at
  * @out_account_id: (out): the account, or 0 when there is none yet
  * @error: (out) (optional): return location for a #GError

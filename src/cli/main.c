@@ -4112,7 +4112,8 @@ main(
 		  "mcp only: let write tools apply instead of staging", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
 		  "create/update/delete/act/dunning sweep/dedupe/journal post/sequence enroll/"
-		  "lead convert/billing/arbitrage record|close|reopen|abandon|execute: propose the "
+		  "lead convert/billing/arbitrage record|close|reopen|abandon|execute/"
+		  "accounts post|record-flips: propose the "
 		  "change for approval instead of making it", NULL },
 		{ "version", 'V', 0, G_OPTION_ARG_NONE, &show_version,
 		  "Print the version and exit", NULL },
@@ -4280,6 +4281,10 @@ main(
 		"                               everything held, valued; dead=true for dead stock\n"
 		"  accounts pnl [period=P] [group_by=G]\n"
 		"                               the source's own ledger summed, and the flips\n"
+		"  accounts post SOURCE_ID [from= until= account= dry_run=true]\n"
+		"                               the source's ledger into the books, a day at a time\n"
+		"  accounts record-flips SOURCE_ID [min_profit= limit= dry_run=true]\n"
+		"                               its matched sales as closed arbitrage trades\n"
 		"  accounts help                every accounts verb, its options and examples\n"
 		"  arbitrage scan [STRATEGY] [option=value ...]\n"
 		"                               opportunities now: spread, deal, transform,\n"
