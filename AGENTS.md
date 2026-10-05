@@ -976,6 +976,16 @@ than one that fails.
   authoritative, and the API still scopes by `?organization_id=` alone.
   File a business's dashboard under that business's organization rather
   than telling people to switch the sidebar first.
+- **Import and from-template file under the organization named.**
+  `POST /api/v1/dashboards/import?organization_id=N` and
+  `/from-template` (`"organization_id"` in its body, or the query) go
+  through `venture_web_request_organization()` like the Trading routes --
+  a stranger is told the organization does not exist, a viewer member is
+  refused by the record policy -- then `venture_dashboard_import_in()`.
+  With none named it is the default organization, as it always was: a
+  definition is never read for one, and a session's sidebar pick is not
+  consulted, so the CLI and an old script keep their meaning.
+  `venturectl dashboard create|import ... organization_id=N`.
 - **A report widget gets the scope as report options.**
   `venture_widget_run_report()` hands the report `organization_id` (the
   scope's first entity) and `venture_id`; a new kind that runs a report
@@ -1234,6 +1244,31 @@ than one that fails.
 - **`(( x = 0 ))` is a failing command under `set -e`.** The generator
   assigns with `x=$(( ... ))`; a hash or an age of zero ended the run
   silently after the first realm's header.
+- **Evermoor's accounts go in through the push door, as tsmctl's would.**
+  `tools/venture-demo-accounts.sh` writes one push body from the anchor
+  (it sources the market generator for the realms, items and hash) and
+  `seed_evermoor_accounts` sends it with `feeds push ... --wait
+  organization_id=N` to a `push` source whose namespaces are the market
+  source's (`realm`, `item`): otherwise its positions name venues and
+  instruments nobody promoted and no listing finds a product. Brisk,
+  Tallow and the guild bank are *adopted* (`update location ...
+  external_ref="evermoor:<account key>" data_source_id=...`) before the
+  push, so the mirror reuses them and the books post into the purses the
+  economy already has. Books mode is `daily` (`accounts post`, before
+  `seed_periods` closes anything); trades mode is documented, not seeded.
+  The mirror runs a moment after the push's run is written:
+  `wait_for_mirror` polls the run's notes for "mirror:".
+- **Every balance in the accounts body is the ledger replayed.** The
+  generator moves each account's gold by its own rows and skips a buy the
+  purse cannot pay; an opening is dated before the first row (or at the
+  account's sighting, for an alt seen before the ledger starts -- a balance
+  after the snapshot that restates it was the bug `--days 7` found).
+  `tests/demo-accounts.sh` re-reads the body independently at awkward
+  anchors: contract members, places, decimals, zoned times, snapshot
+  before rows, ledger oldest first, every balance equal to the replay,
+  never below zero, and the story the docs tell (auctions waiting for a
+  login, some running out within twelve hours, a mail about to be lost, a
+  stale alt, moonsteel flips).
 
 ## The assistant panel
 
@@ -2327,13 +2362,14 @@ books") and `docs/arbitrage.org` ("Flips from an external ledger").
   days that are over (until today's midnight UTC), whole accounts at a
   time, bounded by `books_max_writes`.
 
-## The reference plugins: Blizzard, the-odds-api, supplier-csv
+## The reference plugins: Blizzard, the-odds-api, supplier-csv, tsmctl
 
-Three plugins are both connectors and the worked examples of a provider
+Four plugins are both connectors and the worked examples of a provider
 as a GObject (`plugins/blizzard-auctions/`, native), as one function
 (`plugins/scripts/odds-api.c`, crispy) and as a program
-(`plugins/exec/supplier-csv/`, exec). `docs/plugins.org` "The reference
-plugins" and `docs/examples/*-feed.org` have the rest.
+(`plugins/exec/supplier-csv/` and `plugins/exec/tsmctl/`, exec).
+`docs/plugins.org` "The reference plugins", `docs/examples/*-feed.org`
+and `docs/examples/wow-operations.org` have the rest.
 
 - **The Blizzard plugin lives in `plugins-optional` and must never load in
   a fixture.** `PLUGIN_OPTIONAL_DIRS` keeps it out of `$(OUTDIR)/plugins`,
@@ -2376,3 +2412,14 @@ plugins" and `docs/examples/*-feed.org` have the rest.
 - **An exec program holds its own paths.** supplier-csv's `file` setting
   is an editor's to write, so the script itself refuses anything but a
   plain name and compares the realpath against its directory plus `/`.
+- **The tsmctl wrapper prints an export whole or not at all.** The
+  account-operations lines replace state -- a snapshot removes what it
+  does not restate -- so `export.sh` has tsmctl write to a private
+  `--file` and copies it out only after exit 0; streaming tsmctl's stdout
+  would hand over half an export when ssh drops, and every auction of the
+  half-written account would read as gone. Settings reach tsmctl as
+  `--option=value` after a pattern check, tsmctl comes from `PATH` (never
+  a setting), and where the WoW install is stays tsmctl's own config.
+  `test-plugin-examples` drives it with a fake `tsmctl` on `PATH`; `PATH`
+  is captured when the plugin loads, so the test sets it before loading
+  and puts it back straight after.

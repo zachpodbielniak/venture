@@ -1,0 +1,28 @@
+{"type":"venue","key":"thorium-brotherhood","name":"Thorium Brotherhood","kind":"realm","group":"us"}
+{"type":"venue","key":"region-us","name":"US region","kind":"region","group":"us"}
+{"type":"instrument","key":"2770","name":"Copper Ore","kind":"item","category":"Tradeskill","attrs":{"item_id":2770,"vendor_sell":5,"quality":"COMMON"}}
+{"type":"instrument","key":"9944","name":"Abjurer's Hood","kind":"item","category":"Armor","attrs":{"item_id":9944,"vendor_sell":1210,"quality":"UNCOMMON"}}
+{"type":"instrument","key":"9944:b1692,6655","name":"Abjurer's Hood","kind":"item","category":"Armor","parent":"9944","attrs":{"item_id":9944,"vendor_sell":1210,"quality":"UNCOMMON","item_level":42}}
+{"type":"instrument","key":"currency:2815","name":"Resonance Crystals","kind":"other","attrs":{"currency_id":2815}}
+{"type":"account","key":"Drgold-Thorium Brotherhood","name":"Drgold","kind":"character","group":"Thorium Brotherhood","venue":"thorium-brotherhood","last_seen":"2026-09-30T18:53:54Z","attrs":{"class":"WARRIOR","level":80,"race":"Human","faction":"Alliance","login_account":"ZAKMANN","played_seconds":3233982}}
+{"type":"account","key":"warbank:ZAKMANN","name":"Warband bank","kind":"shared","attrs":{"login_account":"ZAKMANN"}}
+{"type":"account_snapshot","account":"Drgold-Thorium Brotherhood","at":"2026-09-30T18:54:10Z","covers":["holdings","positions","inbound","balances"]}
+{"type":"balance","account":"Drgold-Thorium Brotherhood","currency":"GOLD","amount":"27249.5018","at":"2026-09-30T18:54:10Z"}
+{"type":"holding","account":"Drgold-Thorium Brotherhood","place":"bag","instrument":"2770","quantity":40,"at":"2026-09-30T18:54:10Z"}
+{"type":"holding","account":"Drgold-Thorium Brotherhood","place":"bank","instrument":"9944:b1692,6655","quantity":1,"at":"2026-09-30T18:54:10Z"}
+{"type":"holding","account":"Drgold-Thorium Brotherhood","place":"auction","instrument":"2770","quantity":20,"at":"2026-09-30T18:54:10Z"}
+{"type":"holding","account":"Drgold-Thorium Brotherhood","place":"currency","instrument":"currency:2815","quantity":350,"at":"2026-09-30T18:54:10Z"}
+{"type":"position","account":"Drgold-Thorium Brotherhood","venue":"thorium-brotherhood","id":"1637378752","instrument":"2770","quantity":20,"price":"0.8198","bid":"0.75","expires_at":"2026-10-01T06:54:10Z","posted_at":"2026-09-30T18:54:10Z"}
+{"type":"inbound","account":"Drgold-Thorium Brotherhood","id":"mail-7f3a","sender":"Auction House","subject":"Auction successful: Copper Ore (20)","money":"15.58","expires_at":"2026-10-29T18:54:10Z","returned":false}
+{"type":"account_snapshot","account":"warbank:ZAKMANN","at":"2026-09-30T18:54:10Z","covers":["holdings","balances"]}
+{"type":"balance","account":"warbank:ZAKMANN","currency":"GOLD","amount":"1200","at":"2026-09-30T18:54:10Z"}
+{"type":"holding","account":"warbank:ZAKMANN","place":"warbank","instrument":"2770","quantity":200,"at":"2026-09-30T18:54:10Z"}
+{"type":"txn","id":"tsm-0b6e2f1c9d8a7b6c5d4e3f2a1b0c9d8e","account":"Drgold-Thorium Brotherhood","venue":"thorium-brotherhood","kind":"buy","instrument":"2770","quantity":60,"unit_price":"0.5","amount":"30","counterparty":"Seller","source":"Auction","at":"2026-09-28T12:00:00Z"}
+{"type":"txn","id":"tsm-1c7f3a2d0e9b8c7d6e5f4a3b2c1d0e9f","account":"Drgold-Thorium Brotherhood","venue":"thorium-brotherhood","kind":"sale","instrument":"2770","quantity":20,"unit_price":"0.779","amount":"15.58","counterparty":"Buyer","source":"Auction","at":"2026-09-29T20:15:00Z"}
+{"type":"txn","id":"tsm-2d8a4b3e1f0c9d8e7f6a5b4c3d2e1f0a","account":"Drgold-Thorium Brotherhood","venue":"thorium-brotherhood","kind":"expired","instrument":"9944:b1692,6655","quantity":1,"at":"2026-09-29T21:00:00Z"}
+{"type":"txn","id":"tsm-3e9b5c4f2a1d0e9f8a7b6c5d4e3f2a1b","account":"Drgold-Thorium Brotherhood","kind":"expense","amount":"0.3","source":"Postage","at":"2026-09-29T21:05:00Z"}
+{"type":"snapshot","venue":"thorium-brotherhood","taken_at":"2026-09-30T17:00:00Z","complete":false}
+{"type":"stat","venue":"thorium-brotherhood","instrument":"2770","min":"0.81","market":"0.85","historical":"0.9","listings":42}
+{"type":"stat","venue":"thorium-brotherhood","instrument":"9944","min":"45","market":"52.5","historical":"60","listings":3}
+{"type":"snapshot","venue":"region-us","taken_at":"2026-09-30T06:00:00Z","complete":false}
+{"type":"stat","venue":"region-us","instrument":"2770","market":"0.88","historical":"0.92","sale_avg":"0.8","sale_rate":"0.31","sold_per_day":"1840.5"}

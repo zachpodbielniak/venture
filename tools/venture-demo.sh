@@ -2611,6 +2611,125 @@ mithril-ore Mithril_ore -"
         options='{"tiles": false}' span=full position=6
 }
 
+# ──────────────────────────────────────────────────────────────────────────
+# Operator accounts: what tsmctl would push about Evermoor's characters
+#
+# tools/venture-demo-accounts.sh writes, from the economy's clock, the
+# JSON lines `tsmctl export --format venture` would: Brisk, Tallow, an old
+# alt, the warband bank and the guild bank, with their gold over sixty
+# days, their bags and banks, forty posted auctions, their mail, the
+# ledger and the realms' AuctionDB figures. It goes in through
+# `venturectl feeds push` to a `push` data source -- the door tsmctl uses
+# -- so the mirror, the alerts and the books all run as they would from
+# the real thing. docs/examples/wow-operations.org is the walk-through.
+#
+# The source shares the market source's namespaces (venues realm,
+# instruments item), so its realms and items are the venue and
+# instrument records the arbitrage seed already made: the potions it
+# lists are the products the economy sells. Brisk, Tallow and the guild
+# bank are the locations the economy made, adopted by their external
+# reference, so their purses are the holdings the books post into.
+#
+# Books mode is `daily`: one journal per character per day with money,
+# into that character's purse, by `venturectl accounts post`. The other
+# mode, `trades` (`accounts record-flips`), would record the moonsteel
+# flips as arbitrage trades instead; one source is one mode, and the
+# arbitrage seed above already shows trades.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Waits until the mirror has run after the newest push of a source: the
+# feeds hook appends "mirror:" to the run's notes on the main loop, a
+# moment after the run itself is written.
+wait_for_mirror () {
+    local source="$1"
+    local org="$2"
+    local waited=0
+
+    while (( waited < 100 ))
+    do
+        if ctl --format json feeds runs "${source}" "organization_id=${org}" 2>/dev/null | python3 -c \
+            'import json, sys
+runs = json.load(sys.stdin)
+runs = runs.get("runs", runs) if isinstance(runs, dict) else runs
+sys.exit(0 if runs and "mirror:" in (runs[0].get("notes") or "") else 1)' 2>/dev/null
+        then
+            return 0
+        fi
+
+        sleep 0.1
+        waited=$(( waited + 1 ))
+    done
+
+    die "the mirror did not run after the push to data source ${source}"
+}
+
+seed_evermoor_accounts () {
+    step "Evermoor's accounts: characters, banks, auctions and mail, pushed as tsmctl would"
+
+    local org="${economy[org]}"
+    local venture="${economy[venture]}"
+    local body="${state}/market/evermoor-accounts.jsonl"
+    local source
+    local output
+    local status
+    local rule
+
+    "${root}/tools/venture-demo-accounts.sh" --out "${body}" --anchor "${economy_anchor}" \
+        || die "could not generate Evermoor's accounts"
+
+    source="$(make_record data_source organization_id="${org}" \
+        name="Evermoor accounts (tsmctl)" provider=push schedule=manual enabled=true \
+        currency=GOLD venue_namespace=realm instrument_namespace=item \
+        settings="account_namespace: evermoor"$'\nmirror_positions: true\ncreate_products: true\n'"products_venture_id: ${venture}"$'\nbooks: daily\nbooks_max_writes: 500' \
+        notes="What tsmctl pushes from the WoW machine: characters, banks, auctions, mail and TSM's ledger. Written by tools/venture-demo-accounts.sh.")"
+
+    # The places the economy already keeps, claimed by the accounts that
+    # are them: "<account_namespace>:<account key>". The mirror then
+    # promotes only the alt and the warband bank.
+    ctl update location "${economy[brisk]}" external_ref="evermoor:Brisk-Thornmere" \
+        data_source_id="${source}" > /dev/null || die "could not adopt Brisk's location"
+    ctl update location "${economy[tallow]}" external_ref="evermoor:Tallow-Silverfen" \
+        data_source_id="${source}" > /dev/null || die "could not adopt Tallow's location"
+    ctl update location "${economy[bank]}" external_ref="evermoor:guild:Tidewardens-Silverfen" \
+        data_source_id="${source}" > /dev/null || die "could not adopt the guild bank's location"
+
+    output="$(ctl --format json feeds push "${source}" "${body}" --wait "organization_id=${org}" 2>&1)" \
+        || die "could not push Evermoor's accounts: ${output}"
+    status="$(printf '%s' "${output}" | python3 -c \
+        'import json, sys
+run = json.load(sys.stdin)
+print(run.get("status", ""), run.get("refused", "?"), run.get("error") or "")' 2>/dev/null || true)"
+    [[ "${status}" == "ok 0 " ]] || die "the push of Evermoor's accounts did not go through cleanly: ${status}"
+
+    wait_for_mirror "${source}" "${org}"
+
+    # Sixty days of the ledger into the books, a journal per character per
+    # day. Every day before today is the books'; today's rows wait for
+    # tomorrow's run.
+    output="$(ctl --format json accounts post "${source}" "organization_id=${org}" 2>&1)" \
+        || die "could not post Evermoor's ledger to the books: ${output}"
+
+    # Three rules on the operator's own side: one fires now (auctions
+    # running out within twelve hours), one is about mail about to be
+    # lost, and one stays quiet (nobody has been away thirty days).
+    rule="$(make_record alert_rule organization_id="${org}" name="Auctions running out" \
+        kind=position_expiring data_source_id="${source}" threshold_number=12 cooldown_minutes=720 \
+        notes="Twelve hours' warning: time to log in and repost.")"
+    evaluate_rule "${rule}"
+    rule="$(make_record alert_rule organization_id="${org}" name="Mail about to be lost" \
+        kind=inbound_expiring data_source_id="${source}" threshold_number=72 cooldown_minutes=4320 \
+        notes="Returned stacks and gold left in a mailbox are deleted when the mail expires.")"
+    evaluate_rule "${rule}"
+    rule="$(make_record alert_rule organization_id="${org}" name="Characters away a month" \
+        kind=account_stale data_source_id="${source}" threshold_number=30 cooldown_minutes=60 \
+        notes="An alt nobody visits loses its auctions and mail.")"
+    evaluate_rule "${rule}"
+
+    # The Operations page, filed under Evermoor so it opens there.
+    output="$(ctl --format json dashboard create operations "organization_id=${org}" 2>&1)" \
+        || die "could not create the Operations dashboard: ${output}"
+}
+
 seed_trading_desk () {
     step "Dropshipping and a surebet: three USD sources"
 
@@ -2967,6 +3086,8 @@ except Exception:
     say "  Reports           ${base_url}/reports"
     say "  The gold trade    ${base_url}/dashboards/evermoor"
     say "  Realm arbitrage   ${base_url}/dashboards/evermoor-arbitrage"
+    say "  Game accounts     ${base_url}/accounts                ${DIM}(pick Evermoor Trading in the sidebar)${OFF}"
+    say "  Operations        ${base_url}/dashboards/operations"
     say "  Trading desk      ${base_url}/dashboards/trading    ${DIM}(dropshipping and surebets)${OFF}"
     say "  Opportunities     ${base_url}/arbitrage"
     say "  Every record type ${base_url}/entities        ${DIM}(leads, quotes, bills, journals…)${OFF}"
@@ -3067,6 +3188,7 @@ do_start () {
     # the gold trades spend its purses and craft its recipes.
     generate_market
     seed_evermoor_market
+    seed_evermoor_accounts
     seed_trading_desk
 
     relations="$(seed_relations "${press}" "${studio}")"

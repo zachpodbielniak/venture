@@ -615,6 +615,32 @@ venture_dashboard_import(
 );
 
 /**
+ * venture_dashboard_import_in:
+ * @context: the wiring
+ * @definition: a definition as venture_dashboard_export() writes it
+ * @organization_id: the organization to file the dashboard and its
+ *   widgets under, or 0 for the default one
+ * @owner_user_id: who will own it, or 0
+ * @actor: (nullable): who is responsible
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_dashboard_import() into a named organization. Whether the caller
+ * may write there is the caller's to judge; the widgets then answer about
+ * that organization's records before anybody picks one in the sidebar.
+ *
+ * Returns: (transfer full) (nullable): the new dashboard, or %NULL
+ */
+VentureDashboard *
+venture_dashboard_import_in(
+	VentureContext		 *context,
+	JsonNode		 *definition,
+	gint64			  organization_id,
+	gint64			  owner_user_id,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
  * VentureDashboardTemplate:
  * @name: the template's machine name
  * @label: the human name
@@ -661,6 +687,31 @@ VentureDashboard *
 venture_dashboard_create_from_template(
 	VentureContext		 *context,
 	const gchar		 *template_name,
+	gint64			  owner_user_id,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_dashboard_create_from_template_in:
+ * @context: the wiring
+ * @template_name: which template
+ * @organization_id: the organization to file it under, or 0 for the
+ *   default one
+ * @owner_user_id: who will own it, or 0
+ * @actor: (nullable): who is responsible
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_dashboard_create_from_template() into a named organization,
+ * through venture_dashboard_import_in().
+ *
+ * Returns: (transfer full) (nullable): the new dashboard, or %NULL
+ */
+VentureDashboard *
+venture_dashboard_create_from_template_in(
+	VentureContext		 *context,
+	const gchar		 *template_name,
+	gint64			  organization_id,
 	gint64			  owner_user_id,
 	const VentureActor	 *actor,
 	GError			**error

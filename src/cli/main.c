@@ -1909,10 +1909,48 @@ venture_cli_command_dashboards(
 }
 
 /*
+ * The optional trailing organization_id=N of `dashboard create` and
+ * `dashboard import`: anything else after the template or file is a
+ * mistake worth refusing rather than ignoring.
+ */
+static gboolean
+venture_cli_dashboard_organization(
+	gchar		**args,
+	guint		  first,
+	const gchar	 *usage,
+	gint64		 *out,
+	GError		**error
+){
+	guint i;
+
+	*out = 0;
+
+	for (i = first; NULL != args[i]; i++)
+	{
+		if (!g_str_has_prefix(args[i], "organization_id=") || (0 != *out))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "%s (\"%s\" is not organization_id=N, or repeats it)", usage, args[i]);
+			return FALSE;
+		}
+
+		if (!g_ascii_string_to_signed(args[i] + strlen("organization_id="), 10, 1, G_MAXINT64, out, NULL))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "organization_id is a positive whole number, not \"%s\"",
+			            args[i] + strlen("organization_id="));
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+/*
  * venturectl dashboard SLUG            every widget, with what it shows
  * venturectl dashboard export SLUG     the definition, for a file
- * venturectl dashboard import FILE     a definition from a file (- for stdin)
- * venturectl dashboard create TEMPLATE one of the shipped templates
+ * venturectl dashboard import FILE [organization_id=N]     a definition from a file (- for stdin)
+ * venturectl dashboard create TEMPLATE [organization_id=N] one of the shipped templates
  * venturectl dashboard templates       what create accepts
  * venturectl dashboard kinds           the widget kinds
  */
@@ -1964,12 +2002,17 @@ venture_cli_command_dashboard(
 	{
 		g_autoptr(JsonBuilder) builder = NULL;
 		g_autoptr(JsonNode) body = NULL;
+		gint64 organization_id = 0;
 
-		if (NULL == args[2])
+		if ((NULL == args[2]) ||
+		    !venture_cli_dashboard_organization(args, 3,
+		                                        "usage: venturectl dashboard create TEMPLATE [organization_id=N]",
+		                                        &organization_id, error))
 		{
-			g_set_error_literal(error, VENTURE_ERROR,
-			                    VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "usage: venturectl dashboard create TEMPLATE");
+			if ((NULL != error) && (NULL == *error))
+				g_set_error_literal(error, VENTURE_ERROR,
+				                    VENTURE_ERROR_INVALID_ARGUMENT,
+				                    "usage: venturectl dashboard create TEMPLATE [organization_id=N]");
 			return -1;
 		}
 
@@ -1977,6 +2020,13 @@ venture_cli_command_dashboard(
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "template");
 		json_builder_add_string_value(builder, args[2]);
+
+		if (organization_id > 0)
+		{
+			json_builder_set_member_name(builder, "organization_id");
+			json_builder_add_int_value(builder, organization_id);
+		}
+
 		json_builder_end_object(builder);
 		body = json_builder_get_root(builder);
 		node = venture_cli_request(cli, "POST",
@@ -1987,12 +2037,18 @@ venture_cli_command_dashboard(
 	{
 		g_autoptr(JsonNode) body = NULL;
 		g_autofree gchar *text = NULL;
+		g_autofree gchar *import_path = NULL;
+		gint64 organization_id = 0;
 
-		if (NULL == args[2])
+		if ((NULL == args[2]) ||
+		    !venture_cli_dashboard_organization(args, 3,
+		                                        "usage: venturectl dashboard import FILE [organization_id=N]",
+		                                        &organization_id, error))
 		{
-			g_set_error_literal(error, VENTURE_ERROR,
-			                    VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "usage: venturectl dashboard import FILE");
+			if ((NULL != error) && (NULL == *error))
+				g_set_error_literal(error, VENTURE_ERROR,
+				                    VENTURE_ERROR_INVALID_ARGUMENT,
+				                    "usage: venturectl dashboard import FILE [organization_id=N]");
 			return -1;
 		}
 
@@ -2017,8 +2073,13 @@ venture_cli_command_dashboard(
 		if (NULL == body)
 			return -1;
 
-		node = venture_cli_request(cli, "POST", "/api/v1/dashboards/import",
-		                           body, error);
+		/* The definition is the file's, whole: the organization travels in
+		 * the query rather than being written into somebody's export. */
+		import_path = (organization_id > 0)
+			? g_strdup_printf("/api/v1/dashboards/import?organization_id=%" G_GINT64_FORMAT,
+			                  organization_id)
+			: g_strdup("/api/v1/dashboards/import");
+		node = venture_cli_request(cli, "POST", import_path, body, error);
 	}
 	else
 	{
@@ -4309,7 +4370,8 @@ main(
 		"  dashboard SLUG               a dashboard, every widget evaluated\n"
 		"  dashboard export SLUG        its definition, as JSON\n"
 		"  dashboard import FILE        a definition from a file, or -\n"
-		"  dashboard create TEMPLATE    factory, reporting, work, overview\n"
+		"  dashboard create TEMPLATE    factory, reporting, work, operations, overview\n"
+		"                               (both take organization_id=N to file it there)\n"
 		"  dashboard templates|kinds    what create and widgets accept\n"
 		"  comments list TYPE ID        a record's discussion, threaded\n"
 		"  comments add TYPE ID BODY    say something on any record; -\n"

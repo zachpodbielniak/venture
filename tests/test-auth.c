@@ -6153,6 +6153,71 @@ test_auth_trading_organization(
 	g_assert_nonnull(strstr(body, "There is no organization"));
 	g_clear_pointer(&body, g_free);
 
+	/* --- Dashboards: a template or a definition filed under the
+	 * organization named, judged like the rest. The Operations page is
+	 * about a trading organization's accounts, and filed under the
+	 * default one it would open there and show nothing. --- */
+	{
+		g_autoptr(VentureEntity) made = NULL;
+		g_autoptr(JsonNode) parsed = NULL;
+		gint64 made_id;
+
+		json = g_strdup_printf("{\"template\":\"operations\",\"organization_id\":%" G_GINT64_FORMAT "}",
+		                       other);
+		g_assert_cmpuint(trading_call(fixture, "POST", both, json, &body, "/api/v1/dashboards/from-template"),
+		                 ==, SOUP_STATUS_CREATED);
+		parsed = json_from_string(body, &error);
+		g_assert_no_error(error);
+		made_id = json_object_get_int_member(json_node_get_object(parsed), "id");
+		made = venture_database_get(fixture->database, VENTURE_TYPE_DASHBOARD, made_id, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_entity_get_organization_id(made), ==, other);
+		g_clear_pointer(&body, g_free);
+
+		/* A stranger to it is told it does not exist; a bad id is a 400. */
+		g_assert_cmpuint(trading_call(fixture, "POST", home, json, &body, "/api/v1/dashboards/from-template"),
+		                 ==, SOUP_STATUS_NOT_FOUND);
+		g_assert_nonnull(strstr(body, "There is no organization"));
+		g_clear_pointer(&body, g_free);
+		/* A viewer member reads the organization but may not build in it. */
+		g_assert_cmpuint(trading_call(fixture, "POST", reader, json, NULL, "/api/v1/dashboards/from-template"),
+		                 ==, SOUP_STATUS_FORBIDDEN);
+		g_assert_cmpuint(trading_call(fixture, "POST", both, "{\"template\":\"operations\",\"organization_id\":\"two\"}",
+		                              NULL, "/api/v1/dashboards/from-template"), ==, SOUP_STATUS_BAD_REQUEST);
+
+		/* An import takes the organization in the query; the definition
+		 * is the file's, whole. */
+		g_assert_cmpuint(trading_call(fixture, "POST", both, "{\"name\":\"Evermoor desk\",\"widgets\":[]}", &body,
+		                              "/api/v1/dashboards/import?organization_id=%" G_GINT64_FORMAT, other),
+		                 ==, SOUP_STATUS_CREATED);
+		g_clear_pointer(&parsed, json_node_unref);
+		g_clear_object(&made);
+		parsed = json_from_string(body, &error);
+		g_assert_no_error(error);
+		made = venture_database_get(fixture->database, VENTURE_TYPE_DASHBOARD,
+		                            json_object_get_int_member(json_node_get_object(parsed), "id"), &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_entity_get_organization_id(made), ==, other);
+		g_clear_pointer(&body, g_free);
+		g_assert_cmpuint(trading_call(fixture, "POST", home, "{\"name\":\"Nope\",\"widgets\":[]}", NULL,
+		                              "/api/v1/dashboards/import?organization_id=%" G_GINT64_FORMAT, other),
+		                 ==, SOUP_STATUS_NOT_FOUND);
+
+		/* None named: the default organization, as before. */
+		g_assert_cmpuint(trading_call(fixture, "POST", both, "{\"template\":\"work\"}", &body,
+		                              "/api/v1/dashboards/from-template"), ==, SOUP_STATUS_CREATED);
+		g_clear_pointer(&parsed, json_node_unref);
+		g_clear_object(&made);
+		parsed = json_from_string(body, &error);
+		g_assert_no_error(error);
+		made = venture_database_get(fixture->database, VENTURE_TYPE_DASHBOARD,
+		                            json_object_get_int_member(json_node_get_object(parsed), "id"), &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_entity_get_organization_id(made), ==, home_org);
+		g_clear_pointer(&body, g_free);
+		g_clear_pointer(&json, g_free);
+	}
+
 	g_object_set(fixture->config, "feeds-enabled", FALSE, NULL);
 }
 #endif

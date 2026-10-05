@@ -6914,6 +6914,18 @@ venture_dashboard_import(
 	const VentureActor	 *actor,
 	GError			**error
 ){
+	return venture_dashboard_import_in(context, definition, 0, owner_user_id, actor, error);
+}
+
+VentureDashboard *
+venture_dashboard_import_in(
+	VentureContext		 *context,
+	JsonNode		 *definition,
+	gint64			  organization_id,
+	gint64			  owner_user_id,
+	const VentureActor	 *actor,
+	GError			**error
+){
 	static const gchar *const skip_dashboard[] = {
 		"id", "widgets", "path", "owner_user_id", "slug", NULL
 	};
@@ -6941,6 +6953,13 @@ venture_dashboard_import(
 	database = venture_context_get_database(context);
 	object = json_node_get_object(definition);
 	dashboard = venture_dashboard_new();
+
+	/* The organization the caller chose -- whose access the web layer has
+	 * already judged -- else the default one. A dashboard filed under the
+	 * business it is about opens in that business before any sidebar
+	 * pick (venture_web_dashboard_unpicked_organization()). */
+	if (organization_id <= 0)
+		organization_id = venture_context_get_default_organization_id(context);
 
 	if (!venture_dashboard_apply_definition(VENTURE_ENTITY(dashboard), object,
 	                                        skip_dashboard, error))
@@ -6972,8 +6991,7 @@ venture_dashboard_import(
 	if (0 != owner_user_id)
 		g_object_set(dashboard, "owner-user-id", owner_user_id, NULL);
 
-	venture_entity_set_organization_id(VENTURE_ENTITY(dashboard),
-		venture_context_get_default_organization_id(context));
+	venture_entity_set_organization_id(VENTURE_ENTITY(dashboard), organization_id);
 
 	/* The widgets are built and checked before anything is written, so
 	 * a bad one leaves no dashboard behind. */
@@ -7013,8 +7031,7 @@ venture_dashboard_import(
 		if (0 == position)
 			g_object_set(widget, "position", (gint64)((i + 1) * 10), NULL);
 
-		venture_entity_set_organization_id(VENTURE_ENTITY(widget),
-			venture_context_get_default_organization_id(context));
+		venture_entity_set_organization_id(VENTURE_ENTITY(widget), organization_id);
 		g_ptr_array_add(widgets, g_steal_pointer(&widget));
 	}
 
@@ -7400,6 +7417,19 @@ venture_dashboard_create_from_template(
 	const VentureActor	 *actor,
 	GError			**error
 ){
+	return venture_dashboard_create_from_template_in(context, template_name, 0, owner_user_id, actor,
+	                                                 error);
+}
+
+VentureDashboard *
+venture_dashboard_create_from_template_in(
+	VentureContext		 *context,
+	const gchar		 *template_name,
+	gint64			  organization_id,
+	gint64			  owner_user_id,
+	const VentureActor	 *actor,
+	GError			**error
+){
 	g_autoptr(JsonNode) definition = NULL;
 	gsize i;
 
@@ -7415,8 +7445,8 @@ venture_dashboard_create_from_template(
 			if (NULL == definition)
 				return NULL;
 
-			return venture_dashboard_import(context, definition,
-			                                owner_user_id, actor, error);
+			return venture_dashboard_import_in(context, definition, organization_id,
+			                                   owner_user_id, actor, error);
 		}
 	}
 

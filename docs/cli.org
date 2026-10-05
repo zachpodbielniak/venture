@@ -107,8 +107,8 @@ venturectl budgets                       # the agent budgets and spend
 venturectl dashboards                    # the dashboards
 venturectl dashboard SLUG                # one, every widget evaluated
 venturectl dashboard export SLUG         # its definition, as JSON
-venturectl dashboard import FILE         # a definition (- for stdin)
-venturectl dashboard create TEMPLATE     # factory, reporting, work, overview
+venturectl dashboard import FILE         # a definition (- for stdin); organization_id=N files it there
+venturectl dashboard create TEMPLATE     # factory, reporting, work, operations, overview; organization_id=N too
 venturectl dashboard templates|kinds     # what create and widgets accept
 venturectl health                        # is the server up
 venturectl mcp [--apply-writes]          # serve the API to an agent over stdio

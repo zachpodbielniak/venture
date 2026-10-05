@@ -462,13 +462,14 @@ What the loader promises, and what it does not:
 
 * The reference plugins
 
-Three plugins in the tree are both real connectors and the worked examples of the three ways to write a data source provider. Each is a complete, commented file to copy from; each has its own walk-through under =docs/examples/=.
+Four plugins in the tree are both real connectors and the worked examples of the three ways to write a data source provider. Each is a complete, commented file to copy from; each has its own walk-through under =docs/examples/=.
 
 | Plugin                         | Runtime          | Provides                                                                                     | Built                                   | Walk-through |
 |--------------------------------+------------------+----------------------------------------------------------------------------------------------+-----------------------------------------+--------------|
 | =plugins/blizzard-auctions/=   | native =.so=     | provider =blizzard_auctions=, fee model =wow_auction=, export =tsm=, action =import_recipes= | into =$(OUTDIR)/plugins-optional/=      | [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses]] |
 | =plugins/scripts/odds-api.c=   | crispy (=.c=)    | provider =odds_api=                                                                          | never: compiled on demand by the server | [[file:examples/odds-api-feed.org][Bookmakers' odds]] |
 | =plugins/exec/supplier-csv/=   | exec (bash)      | provider =supplier_csv=                                                                      | never: a manifest and a script          | [[file:examples/dropship-supplier-feed.org][A dropshipping supplier]] |
+| =plugins/exec/tsmctl/=         | exec (bash)      | provider =tsmctl=: runs =tsmctl export --format venture= (optional; push is the other way in) | never: a manifest and a script          | [[file:examples/wow-operations.org][A World of Warcraft gold business]] |
 
 ** Blizzard: a provider as a GObject, and four registries from one plugin
 
@@ -490,6 +491,16 @@ The script is one =fetch= function handed to =venture_func_data_source_provider_
 ** supplier-csv: a provider as a program
 
 A manifest with =kind: data_source_provider= and a bash script that reads one request line and writes JSON lines. It shows the exec rules from the program's side: settings arrive in =params.source=, the working directory is the plugin's own, and a path a setting names is held to that directory by the program itself (a plain relative name, =realpath= and a comparison with the directory plus a separator), because an editor writes the setting and the program runs as the server's user. Money is added as decimal strings, never as floats. It is ShellCheck-clean and answers =--help= and =--license=.
+
+** tsmctl: a provider that runs somebody else's program
+
+The smallest useful exec provider wraps a command that already speaks the protocol. =plugins/exec/tsmctl/export.sh= runs =tsmctl export --format venture= -- the dotfiles' TradeSkillMaster CLI, found on the server's =PATH=, never at a path a setting names -- and copies its output back. Three things in it are worth copying:
+
+- *Settings become options, never words.* Each setting (=accounts=, =sources=, =market=, =since=, =currency=, =include_internal=, =offline=) is held to a pattern and passed as =--option=value=, so a value that begins with a dash is a value, not an option, and where the program reads its data (=host=, =wow_dir=) stays the program's own configuration.
+- *Complete or nothing.* The export is written to a private temporary file and printed only once the command exits 0. The account-operations messages replace state -- a snapshot removes what it does not restate -- so half an export would say a character's auctions are gone; a failed export prints one =error= line and the run stores nothing.
+- *The environment it needs, declared.* The manifest's =env= names =PATH=, =HOME= and =SSH_AUTH_SOCK= (and tsmctl's =XDG_CONFIG_HOME=, =XDG_CACHE_HOME=, =TSMCTL_CONFIG=), because tsmctl reads its config under =HOME= and reaches a remote WoW install over ssh with the operator's agent; nothing else of the server's environment reaches it. Its =attribution= names TradeSkillMaster's AuctionDB and the addons the data comes from and disclaims any endorsement.
+
+It is optional twice over: the World of Warcraft pages work from the Blizzard plugin alone for market data, and an operator who runs =tsmctl venture push= on the game machine needs no plugin at all -- a =push= source takes the same lines. =tests/test-plugin-examples.c= runs it around a fake =tsmctl= that records its arguments and environment.
 
 ** The optional plugins directory
 
@@ -1036,8 +1047,9 @@ Once a source has synced, its venues and instruments are in the store and on =/m
 | =plugins/blizzard-auctions/=                 | The Blizzard auction house plugin (native, optional)                  |
 | =plugins/scripts/odds-api.c=                 | The-odds-api provider (crispy)                                        |
 | =plugins/exec/supplier-csv/=                 | The supplier price list provider (exec)                               |
+| =plugins/exec/tsmctl/=                       | The tsmctl export provider (exec, optional)                           |
 | =tests/test-plugin-blizzard.c=               | The Blizzard plugin against a scripted Battle.net                     |
-| =tests/test-plugin-examples.c=               | odds-api compiled and run, supplier-csv run, a cover scan over the odds |
+| =tests/test-plugin-examples.c=               | odds-api compiled and run, supplier-csv and tsmctl (around a fake) run, a cover scan over the odds |
 | =tests/venture-test-http.h=                  | The scripted HTTP server those two use                                |
 
 In the source tree, =plugins/exec/= holds exec plugins and is not compiled; =plugins/blizzard-auctions/= is a native plugin built into =$(OUTDIR)/plugins-optional/= rather than =$(OUTDIR)/plugins/=, so that it does not load into every test fixture through =VENTURE_PLUGIN_PATH=. The Makefile keeps both out of the generic one-directory-one-=.so= rule; =PLUGIN_OPTIONAL_DIRS= lists the optional ones, which =make plugins= (and so =make test=) builds, and =make install= installs into =PLUGINOPTDIR=.

@@ -78,6 +78,7 @@ Two rules hold the whole path together. Nothing on the worker thread reads or wr
 - [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses as a feed]] -- the =blizzard-auctions= native plugin: a provider with a freeze step, the =wow_auction= fee model, the =tsm= export and recipe import.
 - [[file:examples/odds-api-feed.org][Bookmakers' odds from the-odds-api]] -- the =odds-api.c= crispy plugin: a provider as one function, quotes, a remote quota.
 - [[file:examples/dropship-supplier-feed.org][A dropshipping supplier's price list]] -- the =supplier-csv= exec plugin: a provider as a bash program.
+- [[file:examples/wow-operations.org][A World of Warcraft gold business]] -- tsmctl's accounts, auctions, mail and ledger pushed (or pulled through the =tsmctl= exec plugin) into a source, the Accounts pages, alerts, the Operations dashboard and the books.
 - [[file:arbitrage.org][Arbitrage]] -- the scan, its fee models and presets, trades, legs and how they reach the books.
 - [[file:market.org][Market]] -- price observations (the oracle's fallback and the records sink's target), listings and sale rate.
 - [[file:backup.org][Backups]] -- how installation backups copy every store, and restoring one by hand.
@@ -487,6 +488,7 @@ Three plugins in the tree show the three ways to add a provider, each with a wor
 | =blizzard_auctions= | =plugins/blizzard-auctions/= (native =.so=, optional) | the GObject: a freeze step, units of its own, side requests, also a fee model, an export format and a record action | [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses]] |
 | =odds_api=          | =plugins/scripts/odds-api.c= (crispy)        | =venture_func_data_source_provider_new()=: one blocking function     | [[file:examples/odds-api-feed.org][Bookmakers' odds from the-odds-api]]              |
 | =supplier_csv=      | =plugins/exec/supplier-csv/= (exec)          | a bash program speaking the JSON-lines protocol                      | [[file:examples/dropship-supplier-feed.org][A dropshipping supplier's price list]]   |
+| =tsmctl=            | =plugins/exec/tsmctl/= (exec, optional)      | a bash wrapper running =tsmctl export --format venture=              | [[file:examples/wow-operations.org][A World of Warcraft gold business]]      |
 
 None of them is loaded by default: the Blizzard plugin builds into =plugins-optional/=, which nothing scans unless =plugins.paths= names it; the other two are copied into a plugin directory. [[file:plugins.org::*The reference plugins][Plugins: the reference plugins]] walks through their code.
 
@@ -601,7 +603,7 @@ A hook added while the worker runs refreezes every source. A module whose frozen
 
 * Operator accounts
 
-A market is two things: what everybody offers, which the rest of this page is about, and what the operator owns in it. The second half of a series store keeps that: the operator's *accounts* (a character, a seller account, a shared warband bank, a guild bank), their *balances* over time, their *holdings* by place, their own open listings (*positions*), what waits for them to collect (*inbound*: mail), and the source's *external ledger* of what they bought, sold, earned and spent. It is game-agnostic: a place is =bag= or =warbank= or =other=, an account kind is =character= or =shared=, and nothing here knows what a realm is. World of Warcraft is the first user (tsmctl's export, see [[file:plugins.org::*Messages][Plugins: the protocol]]); a marketplace seller with three shops is the same model.
+A market is two things: what everybody offers, which the rest of this page is about, and what the operator owns in it. The second half of a series store keeps that: the operator's *accounts* (a character, a seller account, a shared warband bank, a guild bank), their *balances* over time, their *holdings* by place, their own open listings (*positions*), what waits for them to collect (*inbound*: mail), and the source's *external ledger* of what they bought, sold, earned and spent. It is game-agnostic: a place is =bag= or =warbank= or =other=, an account kind is =character= or =shared=, and nothing here knows what a realm is. World of Warcraft is the first user (tsmctl's export, see [[file:plugins.org::*Messages][Plugins: the protocol]], and [[file:examples/wow-operations.org][A World of Warcraft gold business]] for the setup end to end); a marketplace seller with three shops is the same model.
 
 The rows live in the source's store, not in VentureDatabase, for the reasons the market figures do: a first sync of a busy operator is tens of thousands of ledger rows and a snapshot of every bag every few minutes, derived, never edited by a person. What a person acts on crosses into the main database through the marketdata module: an account becomes a =location= and a position a =listing= (see [[*Accounts and positions in the books][Accounts and positions in the books]]). The store never writes back.
 

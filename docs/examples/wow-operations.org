@@ -1,0 +1,330 @@
+#+title: Worked example: running a World of Warcraft gold business from VENTURE
+#+description: tsmctl's characters, banks, auctions, mail and TSM ledger in VENTURE: the currency and the push data source, tsmctl's config and token, a push by hand and from systemd on the WoW machine, the optional tsmctl exec plugin, the Accounts pages, alerts, the Operations dashboard, the books, the Blizzard plugin alongside, attribution and troubleshooting
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-04]
+#+updated: [2026-10-04]
+#+version: 0.1.0
+
+* What this is
+
+TradeSkillMaster, Altoholic's DataStore and Syndicator already know everything about a gold-making operation: every character's gold, bags and banks, every auction posted and when it runs out, every mail waiting with its expiry, and TSM's ledger of what sold, what was bought, what expired. They keep it in SavedVariables files on the machine WoW runs on. =tsmctl= (in the dotfiles, =bin/scripts/tsmctl=, documented in =~/.dotfiles/docs/tsmctl.org=) reads those files, read-only, and writes them as VENTURE's JSON lines. This page is the whole path from there to logging in to VENTURE and seeing:
+
+- *where to log in next*: which realm, which character, and why -- auctions that ran out and wait to be collected, auctions running out within hours, gold and items waiting in the mail, mail about to be lost, alts nobody has visited;
+- *how the business is doing*: a profit and loss from TSM's ledger by day, week, month, character, realm or item, and the flips -- what was bought, what it sold for, what is still held;
+- *what you hold*: every bag, bank, reagent bank, warband bank and guild bank, valued on TSM's AuctionDB figures, with how many days each stack takes to sell;
+- *your auctions as listings and your characters as places*, so undercut alerts, sale rates and the books work on them like any other listing and location;
+- optionally, *the books*: TSM's ledger posted to the general journal a day at a time, or the flips recorded as arbitrage trades.
+
+None of it is about World of Warcraft inside VENTURE. An account, a balance, a holding by place, a position, an inbound mail and an external ledger row are generic ([[file:../market-data.org::*Operator accounts][Market data: operator accounts]]); tsmctl is what knows a realm and a SavedVariables file.
+
+* Three ways to run it
+
+Every piece is optional, and they combine:
+
+| Setup | What you get | What it needs |
+|-------+--------------+---------------|
+| The Blizzard plugin alone | every realm's auction house and the commodity market, hourly: browsing, deals, alerts, the arbitrage scan ([[file:wow-auction-house-feed.org][World of Warcraft auction houses as a feed]]) | a Battle.net API client; no game install |
+| tsmctl *pushes* from the WoW machine | everything on this page: accounts, gold, holdings, auctions, mail, the ledger, TSM's AuctionDB figures | tsmctl on the WoW machine, a =push= data source, an API token |
+| VENTURE *pulls* through the =tsmctl= exec plugin | the same data, on VENTURE's schedule | tsmctl on the VENTURE host, able to ssh to the WoW machine; =plugins.allow_exec= |
+
+Push is the recommended shape: WoW writes its SavedVariables on logout, a systemd path unit on the WoW machine notices, and the push happens a few seconds after you log out. Pull suits a VENTURE that already runs where it can ssh to the game machine and should decide when to read it. Both feed the same pages; pick one per set of characters.
+
+The Blizzard plugin is independent of both. It adds the market as Blizzard sees it -- every listing on every connected realm -- where tsmctl adds what TSM's app downloaded and what you own. See [[*With the Blizzard plugin alongside][With the Blizzard plugin alongside]].
+
+* In VENTURE first
+
+** The currency
+
+Gold is a currency of its own, with four places: a hundred copper to the silver, a hundred silver to the gold, so every amount tsmctl writes ("2724950.1812") is exact. Register it once (owner or administrator):
+
+#+begin_src sh
+venturectl create currency code=GOLD name=Gold kind=virtual exponent=4 symbol_position=suffix \
+    denominations='[{"suffix":"g","units":10000},{"suffix":"s","units":100},{"suffix":"c","units":1}]'
+#+end_src
+
+A gold business usually lives in an organization of its own whose book currency is GOLD (=default_currency=GOLD=), so its journals are in gold and its reports start there. Everything below takes =organization_id=N= for that; leave it out to work in the default organization.
+
+** The data source
+
+One =push= source holds one operator's accounts. Its currency is the operator's money -- every price, balance and ledger amount in the stream is read in it -- and its namespaces say what its keys mean:
+
+#+begin_src sh
+venturectl create data_source organization_id=2 name="WoW (tsmctl)" provider=push enabled=true \
+    currency=GOLD venue_namespace=wow-realm instrument_namespace=wow-item \
+    settings=$'account_namespace: wow\nmirror_positions: true\ncreate_products: true\nproducts_venture_id: 5\nbooks: none'
+#+end_src
+
+| Setting | Meaning |
+|---------+---------|
+| =account_namespace= | the prefix of the locations your characters become (="wow:Drgold-Thorium Brotherhood"=). Set it: without it the source's uuid is used, and a second source for the same characters (a pull beside a push) would make a second set of places |
+| =mirror_positions= | keep a =listing= per posted auction (default true); see [[*Characters as places, auctions as listings][Characters as places, auctions as listings]] |
+| =auto_promote_accounts= | make a location for every account the mirror meets (default true) |
+| =create_products=, =products_venture_id= | make a product for an item you post that no product stands for yet, under that venture; without it such an auction is "not mirrored" and named in the run's notes |
+| =mirror_max_writes=, =mirror_grace_hours= | how much one pass writes (500) and how long a vanished auction may wait for its ledger row (48 h) |
+| =books=, =post_to_books=, =books_from=, =books_max_writes= | whether and how the ledger reaches the general journal; see [[*The books][The books]] |
+
+A push source fetches nothing and is never scheduled. Its id is what tsmctl needs (=venture_source=).
+
+** An API token
+
+tsmctl pushes as an *editor* of the source's organization: create a token for a user who is one, at =/account/tokens=, and keep it for the next step. Pushing is all it is used for. A token acts as "API token #<id>" in the audit log and on every record it writes, never under its name.
+
+* On the WoW machine: tsmctl
+
+** Install and configure
+
+tsmctl is one Python file (3.12+, standard library only) in the dotfiles; stowing them puts it on =PATH= as =~/bin/scripts/tsmctl=. Its settings are =~/.config/tsmctl/config.yaml= (=tsmctl config sample= prints a commented copy; =tsmctl config= shows each effective value and where it came from):
+
+#+begin_src yaml
+# where WoW is: on the WoW machine itself, no host
+wow_dir: ~/.local/share/Steam/steamapps/compatdata/.../World of Warcraft
+region: us
+# VENTURE
+venture_url: https://venture.example.org
+venture_source: 7              # the push data source's id
+venture_organization: 2        # leave out for the token's default organization
+venture_currency: GOLD         # the source's currency, exponent 4
+venture_market: scope          # AuctionDB figures: scope, all or none
+venture_token_file: ~/.config/tsmctl/venture-token
+#+end_src
+
+The token goes in a file only you can read. tsmctl refuses a token file with any group or other permission, never takes the token on its command line (argv is readable by every user through =/proc=), sends it only in the =Authorization= header, refuses plain =http://= to anything but this machine, and refuses redirects rather than follow one with the header attached:
+
+#+begin_src sh
+install -m 600 /dev/null ~/.config/tsmctl/venture-token
+$EDITOR ~/.config/tsmctl/venture-token      # paste the token, one line
+tsmctl venture status                        # the settings, the server's health, the source's runs
+#+end_src
+
+** A push by hand
+
+#+begin_src sh
+tsmctl export --check            # what a push would carry, checked against the contract; sends nothing
+tsmctl venture push --wait       # push, and wait for VENTURE to write the run
+#+end_src
+
+=--wait= prints the run: =ok= with the rows written, or =partial= with what was refused and why, or =failed= with the line that broke the protocol (nothing of a failed push is stored). The first push of an operation with a few years of TSM history is tens of thousands of ledger rows and takes a second or two; every later one is mostly rows VENTURE already has, which it recognises by their ids and does not write again.
+
+| Exit | Meaning |
+|------+---------|
+| 0 | pushed (or nothing changed, with =--if-changed=) |
+| 1 | a local error: settings, the token file, unreadable SavedVariables, an export that breaks the contract |
+| 3 | VENTURE could not be reached |
+| 4 | VENTURE refused the push: 401, 403, 404, 409, 413, 415, or a redirect |
+| 5 | =--wait=: the run failed |
+| 6 | =--wait=: the run was partial, or not finished within VENTURE's 120 seconds |
+
+The same command works on any machine tsmctl can read the install from: with =host: mob-zach= in the config it reads the WoW machine's files over ssh, read-only, and mirrors them locally first.
+
+** Pushing on logout: the systemd units
+
+WoW writes SavedVariables only on logout (or =/reload=), so that is when there is something new. Three user units push then:
+
+| Unit | What it does |
+|------+--------------|
+| =tsmctl-venture-push.path= | watches every SavedVariables file tsmctl reads, by absolute path; generated for this machine's WoW accounts and addons |
+| =tsmctl-venture-push.service= | a oneshot: =tsmctl -q venture push --settle 20s --if-changed --wait= -- it waits for WoW to finish writing every addon's file, and sends nothing when the export is byte for byte the last one VENTURE took |
+| =tsmctl-venture-push.timer= | every 30 minutes, and 5 minutes after boot: a push missed while VENTURE was down goes in at the next tick |
+
+#+begin_src sh
+tsmctl venture install-units            # print all three, and the commands to run, without writing anything
+tsmctl venture install-units --write    # write them to ~/.config/systemd/user (a stowed unit is never written through)
+systemctl --user daemon-reload
+systemctl --user enable --now tsmctl-venture-push.path tsmctl-venture-push.timer
+systemctl --user start tsmctl-venture-push.service      # one push now
+journalctl --user -u tsmctl-venture-push.service -n 50  # what the last pushes said
+#+end_src
+
+Re-run =install-units --write= after adding a WoW account or an addon: the =.path= unit lists files by name, because path units do not expand globs. Nothing in a unit is secret; the service reads the URL, the source and the token file from the config.
+
+* Pulling instead: the tsmctl exec plugin
+
+=plugins/exec/tsmctl/= is an exec plugin providing a data source provider =tsmctl=: on each sync it runs =tsmctl export --format venture= on the VENTURE host and reads the export as the run's data. It is the same contract and the same rows; only who decides when differs.
+
+** Turning it on
+
+Copy the plugin into a plugin directory and allow exec plugins -- off by default, and safe only where nobody but the operator can write the plugin directories ([[file:../plugins.org::*Exec plugins][Plugins: exec plugins]]):
+
+#+begin_src sh
+cp -r plugins/exec/tsmctl /var/lib/venture/plugins/
+#+end_src
+
+#+begin_src yaml
+plugins:
+  allow_exec: true
+  paths: [/var/lib/venture/plugins]
+feeds:
+  enabled: true
+#+end_src
+
+The program gets a cleared environment: =PATH=, =HOME= and =LANG=, plus what its manifest names -- =SSH_AUTH_SOCK= (so tsmctl's ssh can use the agent for a remote install) and =XDG_CONFIG_HOME=, =XDG_CACHE_HOME= and =TSMCTL_CONFIG= (so tsmctl finds the config and cache it would find in your shell). Values are captured when the plugin loads. Nothing else of the server's environment reaches it, and VENTURE's token never does: an export needs none.
+
+tsmctl must be on the *server's* =PATH=, and the server's user must be able to ssh to the WoW machine non-interactively (tsmctl uses =BatchMode=): a server run as a systemd user service needs the agent's socket in its environment, or a key with no passphrase. Where the WoW install is (=host=, =wow_dir=) is tsmctl's configuration, never a data source setting: a data source says what to read, not where to ssh.
+
+** The data source
+
+#+begin_src sh
+venturectl create data_source organization_id=2 name="WoW (pulled)" provider=tsmctl enabled=true \
+    schedule=hourly currency=GOLD venue_namespace=wow-realm instrument_namespace=wow-item \
+    settings=$'account_namespace: wow\naccounts: [ZAKMANN]\nsources: tsm,datastore,syndicator\nmarket: scope\nsince: 400d'
+venturectl feeds sync 8 --wait organization_id=2
+#+end_src
+
+| Setting | Becomes | Default |
+|---------+---------+---------|
+| =accounts= | =--account= per WoW account folder: a list, or comma-separated | every account |
+| =sources= | =--sources=: =tsm=, =datastore=, =syndicator=, =all= | every one present |
+| =market= | =--market=: =scope= (items you hold, post, mail or traded, and TSM group items), =all=, =none= | =scope= |
+| =since= | =--since=: how far back the ledger goes (=90d=, =ytd=, =2026-01-01=) | everything |
+| =currency= | =--currency=: the source's currency | tsmctl's =venture_currency= |
+| =include_internal= | =--include-internal=: keep trades and mail between your own characters | false |
+| =offline= | =--offline=: tsmctl's cache only, no ssh | false |
+
+Each value is held to a pattern and passed as =--option=value=, so no setting can become an option of its own. The export goes to a private file and is handed to VENTURE only when tsmctl exits 0: an ssh failure half way through an export fails the run with nothing stored, rather than handing over a snapshot that says a character's auctions are gone. The run may take up to 15 minutes (a first remote read mirrors about 18 MB) and print up to 128 MiB; =market: all= is tens of megabytes of figures and is better left to =scope=.
+
+Push the same =sources= every time: switching DataStore off makes the next export restate holdings without the places only DataStore knew.
+
+* What you see
+
+Pick the organization in the sidebar, then *Trading -> Your accounts*.
+
+** Overview: =/accounts=
+
+The top of the page is the attention list, one entry per realm, sorted by what is most overdue:
+
+| Reason | When |
+|--------+------|
+| listings expired | an auction's expiry has passed and the store still holds it: it ran out after your last logout and waits in the mail -- "collect and relist" |
+| listings expiring | an auction runs out within =expiring_hours= (12) |
+| mail expiring | a mail is lost within =mail_days= (3), with what is in it |
+| waiting in the mail | gold or items to collect |
+| not seen | a character not seen in use for =stale_days= (14); banks are never stale, they are opened through a character |
+
+Below it: gold on hand, inventory value, what is listed at buyout, what waits in the mail and the last thirty days' net, then every account with its gold, a thirty-day trend, listings, mail and when it was last seen. =by_realm=1= groups them by realm.
+
+** One account: =/accounts/<source>/<key>=
+
+Its gold over ninety days, its holdings by place (bags, bank, reagent bank, mail, on the auction house) with their value, every posted auction with its price against the realm's market and minimum and how long it has left, its mail, and its recent ledger. When the mirror has made its place, the page links to the location and to its listings.
+
+** Inventory: =/accounts/inventory=
+
+Every item across every account and place, summed, valued, and sorted by value. The default basis, =conservative=, is the lower of the region's sale average and the realm's market value -- what the stack would really fetch, not what the most hopeful listing asks -- and =market=, =min=, =historical=, =region_market= and =region_sale_avg= are the others. Days of supply divide what you hold by what the region sells a day (TSM's =sold_per_day= where the store has none of its own); =dead=1= shows what has not sold in =dead_days= (30).
+
+** Profit and loss: =/accounts/pnl=
+
+TSM's ledger as a P&L for a period, by day, week, month, account, realm, item or source (Auction, Vendor, Postage...): sales after the house's cut, purchases, other income and expenses, units expired and cancelled, and the net; the top items by profit; and the flips -- buys matched to later sales first in first out, per item, with cost, proceeds, profit and return, and what was bought and is still held. It answers what =tsmctl pnl= and =tsmctl flips= answer, over everything every push has sent.
+
+** From the command line
+
+#+begin_src sh
+venturectl accounts attention organization_id=2              # where to log in next
+venturectl accounts show 7 "Drgold-Thorium Brotherhood" organization_id=2
+venturectl accounts inventory sort=value per_page=20 organization_id=2
+venturectl accounts pnl period=last_90_days group_by=instrument organization_id=2
+venturectl report accounts organization_id=2 data_source_id=7  # the same figures as a report
+#+end_src
+
+* Characters as places, auctions as listings
+
+After every run the mirror ([[file:../market-data.org::*Accounts and positions in the books][Market data: accounts and positions in the books]]) brings two things into the main database:
+
+- every account becomes a =location= -- a character inside a location for its realm, the warband bank and guild banks beside them -- referenced ="<account_namespace>:<key>"=. A location you already keep for a character is adopted by giving it that =external_ref= (and the source as =data_source_id=): =venturectl update location 12 external_ref="wow:Drgold-Thorium Brotherhood" data_source_id=7=. Its holding account is then the purse the books post into;
+- every posted auction becomes an open =listing= at its realm, posted by its character, for the item's product. When it disappears from a later push it is closed from the ledger: =sold= or =partial= when sale rows account for it, =expired= or =cancelled= when expired or cancelled rows do, judged from the expiry when the ledger is silent. A listing you edit by hand is never touched again by the mirror.
+
+Undercut alerts, the =listing_performance= report's sale rate (=group_by=location= is per character) and the =upcoming= widget then work on your real auctions.
+
+* Alerts
+
+Four kinds watch the operator's own side, evaluated after every push like every other kind ([[file:../market-data.org::*Alerts][Market data: alerts]]):
+
+#+begin_src sh
+venturectl create alert_rule organization_id=2 name="Auctions running out" kind=position_expiring \
+    data_source_id=7 threshold_number=12 cooldown_minutes=720
+venturectl create alert_rule organization_id=2 name="Mail about to be lost" kind=inbound_expiring \
+    data_source_id=7 threshold_number=72 cooldown_minutes=4320
+venturectl create alert_rule organization_id=2 name="Alts away a month" kind=account_stale \
+    data_source_id=7 threshold_number=30
+venturectl create alert_rule organization_id=2 name="Something to collect" kind=collect_ready data_source_id=7
+#+end_src
+
+A hit reaches the rule owner's inbox, any webhook and any automation, like every other alert hit; =market alerts evaluate RULE --dry-run= says what a rule would find now.
+
+* The Operations dashboard
+
+#+begin_src sh
+venturectl dashboard create operations organization_id=2
+#+end_src
+
+The =operations= template: where to log in next, the trading profit, the accounts at a glance, the listings running out within two days, alert hits, the most valuable holdings, the trading report by week and links to the Accounts pages. Filed under the gold organization, it opens there before anybody picks one in the sidebar.
+
+* The books
+
+TSM's ledger is the operator's own record of a cash business. Nothing of it is in the general journal until the source's =books= setting says how it gets there ([[file:../market-data.org::*The external ledger in the books][Market data: the external ledger in the books]]):
+
+| =books= | What reaches the journal | How |
+|---------+--------------------------+-----|
+| =none= | nothing; the pages still read the ledger | -- |
+| =daily= | one journal per character per day: the purse's net against trading sales, purchases, other income and expenses, plus an opening balance and any trading capital the purse needed | =venturectl accounts post 7 organization_id=2= (=dry_run=true= first), or =post_to_books: true= after every push |
+| =trades= | each sale matched to the buys before it, recorded as a closed arbitrage trade with its legs | =venturectl accounts record-flips 7 organization_id=2= |
+
+One source is one mode, so a sale is never booked twice. =daily= is the cash view TSM itself takes; =trades= matches cost to each sale and shows up in arbitrage performance. Days already posted are posted again (reversed and reposted) when a later push changes them -- a stack TSM merged into an earlier sale, a late row -- and a day in a closed period is kept as it was. Posting is financial work: an organization's finance member may, an editor member may not, and under a second-actor rule the pass is proposed and someone else performs it.
+
+The purses never go below zero. A character spending gold an alt mailed it -- transfers between your own characters are not in the ledger -- would take its purse short, so that day carries the least *trading capital* that keeps it at zero; a large =trading_capital= balance says the ledger is missing transfers.
+
+* With the Blizzard plugin alongside
+
+The two sources describe the same world from two sides and are meant to run together. What joins and what does not:
+
+- *Items join.* tsmctl writes instrument keys in the Blizzard plugin's own format -- =<item id>=, =<item id>:b<bonus ids, sorted>=, =82800:p<species>= for a caged pet -- and both sources use the =wow-item= instrument namespace, so an item promoted from either is one =instrument= record, linked to one product. A price check, a watchlist entry, a recipe and an alert about an item mean the same item whichever source saw it. Two caveats from tsmctl's side: a pet's breed is in neither TSM's strings nor a battle-pet link, so a tsmctl pet key has no =.<breed>=; and TSM keeps only the bonus ids it considers relevant, so a ledger row can name fewer bonuses than Blizzard's key for the same auction.
+- *Venues do not.* tsmctl's venues are *realms*, keyed by the realm's slug (=thorium-brotherhood=, namespace =wow-realm=), because that is what a character and its auctions live on and what TSM's AuctionDB scans. Blizzard's API serves auction houses by *connected realm*, keyed by the connected realm's id (=3678=; [[file:wow-auction-house-feed.org][its example]] uses the namespace =us-realm=): several realms share one connected realm's auction house, and the id says nothing about which. Giving both the same namespace would not make =thorium-brotherhood= equal =3678=; it would only invite a collision. Keep them apart, and read each for what it is good at: tsmctl's source values your holdings and judges your auctions against its own AuctionDB figures for your realm and region; the Blizzard source browses every listing on every connected realm, live, and feeds the cross-realm arbitrage scan.
+- *Regions are the same group.* Both put a realm's venue in its region's group (=us=), so region figures and group filters line up.
+
+* Attribution
+
+Data shown in VENTURE says where it came from. Each provider declares one line, shown under the data it supplied ([[file:../market-data.org][Market data]]):
+
+- the =tsmctl= exec plugin: "Market data from TradeSkillMaster's AuctionDB via the TSM desktop app; character data from TradeSkillMaster, DataStore and Syndicator saved variables, read by tsmctl. Not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment or the addons' authors.";
+- the Blizzard plugin names Blizzard as the source and disclaims affiliation, as its API terms require;
+- a =push= source declares no line: the built-in provider cannot know who is pushing. A push from tsmctl carries the same TSM-derived data, so when you show its pages to anyone, say so -- the source's =notes= are a good place to keep the sentence.
+
+VENTURE, tsmctl and this page are not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment, or the authors of DataStore, Altoholic, Syndicator or Baganator.
+
+* The demo
+
+=make demo= builds this for its game organization, Evermoor Trading: =tools/venture-demo-accounts.sh= writes what tsmctl would push about Brisk (a gatherer on Thornmere), Tallow (a crafter on Silverfen), an alt on Duskwatch nobody has visited for three weeks, the warband bank and the guild bank -- sixty days of gold and ledger, forty auctions, mail and AuctionDB figures -- and the demo pushes it with =venturectl feeds push= to "Evermoor accounts (tsmctl)", a push source sharing the market source's namespaces. Brisk's and Tallow's existing locations are adopted by their external references, so their purses take the books, which post daily (=books: daily=, =venturectl accounts post=). Three alert rules (auctions running out, which fires; mail about to be lost; alts away a month, which does not) and the Operations dashboard complete it. =tests/demo-accounts.sh= replays the generated body at awkward clock times and fails if any purse would be spent before it was funded.
+
+#+begin_src sh
+tools/venture-demo-accounts.sh --out - --anchor "$(( $(date +%s) / 3600 * 3600 ))" | head -20
+#+end_src
+
+* Troubleshooting
+
+| Symptom | Cause | What to do |
+|---------+-------+------------|
+| push exits 4, HTTP 401 | no token, or the token file is empty | =tsmctl venture status= says where the token came from |
+| HTTP 403 | the token's user is not an editor of the organization | an editor (or owner) membership in the source's organization |
+| HTTP 404 | the source is in another organization than the one asked for, or feeds are off | =venture_organization= in tsmctl's config; =feeds.enabled: true= |
+| HTTP 409 | the source's provider is not =push=, or it is switched off | =venturectl update data_source 7 enabled=true=; a pull source cannot be pushed to |
+| HTTP 413 | the export is larger than =feeds.max_push_mb= (32 MiB) | =venture_market: scope= or =none=, or raise =feeds.max_push_mb= |
+| run =partial=, lines refused for their places | the source's currency is not GOLD with exponent 4 | the currency's exponent; every amount has up to four places |
+| run notes say a snapshot was stale | an older export arrived after a newer one (a mirror on another machine that synced late) | nothing: VENTURE kept the newer state; push from one place |
+| a character has gold and bags but no auctions or mail | the export read TSM only for it, which keeps no auction ids or mailbox | install DataStore or Syndicator, log the character in once |
+| an auction shows as expired for days | the character has not logged in since; it waits in the mail | log in and collect: that is what the attention list is for |
+| a listing stays open after the auction sold | its sale row has not arrived in a push yet | it closes from the ledger at a later push, or is judged after =mirror_grace_hours= |
+| "N changes left for the next run" | the mirror's =mirror_max_writes= bound | nothing; or raise it for a first push |
+| exec run fails "tsmctl is not on the server's PATH" | the server's =PATH= (as it was when the plugin loaded) has no tsmctl | install it where the server's user finds it and restart, or push instead |
+| exec run fails "tsmctl export exited with status N" | tsmctl failed: usually ssh (no agent socket, a host key prompt) | run the same =tsmctl export --check= as the server's user; read the run's error, which quotes tsmctl's standard error |
+| =accounts post= reports days "no place" | the character's location was deleted | restore it, or leave that character out of the books |
+| the Operations dashboard is empty | it is filed under another organization than the source | =venturectl dashboard create operations organization_id=N= in the source's organization |
+
+* Files
+
+| File | What |
+|------+------|
+| =~/.dotfiles/bin/scripts/tsmctl=, =~/.dotfiles/docs/tsmctl.org= | the producer: export, push, status, systemd units |
+| =plugins/exec/tsmctl/tsmctl.plugin.yaml=, =export.sh= | the exec plugin (bash, ShellCheck-clean) |
+| =tests/test-plugin-examples.c= | the exec plugin run around a fake tsmctl: arguments, environment, a failed export stores nothing |
+| =tools/venture-demo-accounts.sh=, =tests/demo-accounts.sh= | the demo's generated push body, and its replay |
+| [[file:../market-data.org::*Operator accounts][Market data: operator accounts]] | the store, the push route, the mirror, the pages, the books |
+| [[file:../plugins.org::*The account-operations messages][Plugins: the account-operations messages]] | the contract, line by line |

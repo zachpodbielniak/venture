@@ -27406,6 +27406,7 @@ venture_web_api_dashboard_import(
 	VentureActor actor;
 	HtmxResponse *gate;
 	gboolean from_template;
+	gint64 organization_id = 0;
 
 	gate = venture_web_require_module_api(self, "dashboards");
 
@@ -27431,6 +27432,22 @@ venture_web_api_dashboard_import(
 	from_template = (0 == g_strcmp0(g_hash_table_lookup(params, "action"),
 	                                "from-template"));
 
+	/*
+	 * Filed under the organization the request names -- ?organization_id=,
+	 * or a template request's own member -- judged like every Trading
+	 * route: a stranger to it is told it does not exist. With none named
+	 * the default one, as before: a token's active organization is the
+	 * default anyway, and a definition is never read for one.
+	 */
+	if (!venture_string_is_empty(htmx_request_get_query_param(request, "organization_id")) ||
+	    (from_template && json_object_has_member(json_node_get_object(body), "organization_id")))
+	{
+		if (!venture_web_request_organization(self, request,
+		                                      from_template ? json_node_get_object(body) : NULL,
+		                                      &organization_id, &error))
+			return venture_web_error_response(error);
+	}
+
 	if (!from_template &&
 	    (0 != g_strcmp0(g_hash_table_lookup(params, "action"), "import")))
 	{
@@ -27442,16 +27459,15 @@ venture_web_api_dashboard_import(
 
 	if (from_template)
 	{
-		dashboard = venture_dashboard_create_from_template(self->context,
+		dashboard = venture_dashboard_create_from_template_in(self->context,
 			venture_json_object_get_string(json_node_get_object(body),
 			                               "template", NULL),
-			principal->user_id, &actor, &error);
+			organization_id, principal->user_id, &actor, &error);
 	}
 	else
 	{
-		dashboard = venture_dashboard_import(self->context, body,
-		                                     principal->user_id, &actor,
-		                                     &error);
+		dashboard = venture_dashboard_import_in(self->context, body, organization_id,
+		                                        principal->user_id, &actor, &error);
 	}
 
 	if (NULL == dashboard)

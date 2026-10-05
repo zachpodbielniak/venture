@@ -123,8 +123,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `release publish ID [--prerelease]` | cut the release on the forge; creates the tag, cannot be undone here |
 | `dashboards` | the dashboards the token may see |
 | `dashboard SLUG` | one dashboard, every widget evaluated; `-f json` for the whole answer |
-| `dashboard export SLUG` | its definition as JSON; `dashboard import FILE` (or `-`) creates one from it |
-| `dashboard create TEMPLATE` | `today`, `factory`, `reporting`, `progress`, `work` or `overview`; `dashboard templates` and `dashboard kinds` list what is accepted |
+| `dashboard export SLUG` | its definition as JSON; `dashboard import FILE` (or `-`) creates one from it; a trailing `organization_id=N` files it under that organization (default: the default one) |
+| `dashboard create TEMPLATE` | `today`, `factory`, `reporting`, `progress`, `work`, `operations` or `overview`; `organization_id=N` as for import; `dashboard templates` and `dashboard kinds` list what is accepted |
 | `inbox [--all]` | what the token's user has been told: mentions, assignments, watched changes, service levels, budgets, runs; `inbox read ID\|all` marks read |
 | `watch TYPE ID` / `unwatch TYPE ID` | follow a record, so changes land in the inbox |
 | `activity TYPE ID` | a record's timeline: every change with who and what moved, plus a ticket's comments and worklogs, and any other record's discussion comments (each with a `url` to the comment) |
@@ -1320,7 +1320,16 @@ JSON twin and an `accounts` verb (table above):
   character (each mirrored account is a location).
 - Dashboard kinds: `accounts_attention`, `accounts_summary`,
   `holdings_value`, `external_pnl`; the `operations` template puts them
-  together (`dashboard create operations`).
+  together (`dashboard create operations organization_id=N` -- file it
+  under the organization whose accounts it shows, or it opens in the
+  default one and shows nothing).
+- **Getting accounts in.** A `push` source takes what tsmctl sends
+  (`feeds push ID FILE --wait organization_id=N`); the optional `tsmctl`
+  exec provider (plugins/exec/tsmctl, needs `plugins.allow_exec`) pulls
+  the same lines by running `tsmctl export --format venture`, with
+  settings `accounts`, `sources`, `market`, `since`, `currency`,
+  `include_internal`, `offline`. docs/examples/wow-operations.org is the
+  whole setup.
 - **Into the books** is opt-in, per source, by its `books` setting:
   `none` (default), `daily` (`accounts post`, or `post_to_books: true` to
   post after every push) or `trades` (`accounts record-flips`). A source

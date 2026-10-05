@@ -35,7 +35,7 @@ A dashboard's slug is its address, made from the name when you leave it blank an
 
 Three ways, all on =/dashboards=.
 
-*From a template.* Seven ship: =today= (the daily questions -- money in and out this month, invoices and bills past due, your tickets, the triage queue, promises missed and bills to approve, then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next; the demo's home page), =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =progress= (totals and targets: sales gross, units sold and expenses this month as =sum= widgets, and running campaigns' spend against their budget as a =progress= widget), =work= (your tickets, what is due, what is waiting for a decision),, =operations= (your characters and seller accounts: where to log in next, the trading profit, the accounts at a glance, the listings running out within two days (an =upcoming= card over =listing.expires_at=), the alert hits, the most valuable holdings, the trading report by week and the links to the /accounts pages; it needs =marketdata=) and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
+*From a template.* Seven ship: =today= (the daily questions -- money in and out this month, invoices and bills past due, your tickets, the triage queue, promises missed and bills to approve, then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next; the demo's home page), =factory= (the software factory at a glance — what is planned, building, shipping and running, the incidents open, the coding runs in flight, the knowledge and the actions beside them), =reporting= (month end: the P&L figures, revenue by venture, receivables, the pipeline, profit by month), =progress= (totals and targets: sales gross, units sold and expenses this month as =sum= widgets, and running campaigns' spend against their budget as a =progress= widget), =work= (your tickets, what is due, what is waiting for a decision), =operations= (your characters and seller accounts: where to log in next, the trading profit, the accounts at a glance, the listings running out within two days (an =upcoming= card over =listing.expires_at=), the alert hits, the most valuable holdings, the trading report by week and the links to the /accounts pages; it needs =marketdata=) and =overview= (the built-in home page as widgets you can rearrange). A template is a definition in the export format, so what you get is exactly what an export of it would be, and you can change every widget afterwards.
 
 *Empty*, with a name and a purpose, then add widgets.
 
@@ -149,8 +149,8 @@ Definitions are plain JSON, so they belong in git. A team's factory dashboard ca
 | =GET=  | =/api/v1/dashboards=                   | every dashboard the caller may see, widgets unevaluated |
 | =GET=  | =/api/v1/dashboards/:slug=             | one, every widget evaluated; =?data=0= to skip that; =?organization_id=N= to scope |
 | =GET=  | =/api/v1/dashboards/:slug/export=      | the definition                                       |
-| =POST= | =/api/v1/dashboards/import=            | a definition in the body                             |
-| =POST= | =/api/v1/dashboards/from-template=     | ={"template": "factory"}=                            |
+| =POST= | =/api/v1/dashboards/import=            | a definition in the body; =?organization_id=N= files it there |
+| =POST= | =/api/v1/dashboards/from-template=     | ={"template": "factory"}=, or with ="organization_id": N= |
 | =GET=  | =/api/v1/widget-kinds=                 | the catalogue: name, label, what it reads, whether its module is on |
 | =GET=  | =/api/v1/dashboard-templates=          | the templates, definitions included                  |
 | =*=    | =/api/v1/dashboard=, =/api/v1/dashboard_widget= | the generic record routes, like any type   |
@@ -164,6 +164,7 @@ venturectl -f json dashboard factory     # the whole answer
 venturectl dashboard export factory > factory.json
 venturectl dashboard import factory.json
 venturectl dashboard create work         # from a template
+venturectl dashboard create operations organization_id=2   # filed under another organization
 venturectl dashboard templates
 venturectl dashboard kinds
 #+end_src

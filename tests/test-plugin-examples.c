@@ -1,7 +1,7 @@
 /*
  * test-plugin-examples.c - The reference data source plugins that need no
  *                          build step: odds-api.c (crispy) and supplier-csv
- *                          (exec)
+ *                          (exec), and tsmctl (exec, around a fake tsmctl)
  *
  * Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -867,6 +867,412 @@ test_supplier_csv_needs_allow_exec(
 		venture_context_get_data_source_providers(fixture->context), "supplier_csv"));
 }
 
+/* ==========================================================================
+ * tsmctl, run as an exec plugin around a fake tsmctl
+ * ========================================================================== */
+
+/*
+ * A stand-in for the dotfiles' tsmctl: it writes its argv and the two
+ * environment variables the test cares about beside itself, then copies
+ * the fixture export to the --file it was given. With --account=BROKEN it
+ * writes half an export -- a snapshot that would empty an account's
+ * positions -- and fails the way an ssh outage does.
+ */
+static const gchar fake_tsmctl[] =
+	"#!/usr/bin/env bash\n"
+	"set -euo pipefail\n"
+	"here=\"$(CDPATH='' cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"\n"
+	"printf '%%s\\n' \"$@\" > \"${here}/args\"\n"
+	"printf 'SSH_AUTH_SOCK=%%s\\nSECRET=%%s\\n' \"${SSH_AUTH_SOCK:-}\" "
+	"\"${VENTURE_TEST_SERVER_SECRET:-}\" > \"${here}/env\"\n"
+	"file=''\n"
+	"broken=0\n"
+	"for arg in \"$@\"\n"
+	"do\n"
+	"    case \"${arg}\" in\n"
+	"        --file=*) file=\"${arg#--file=}\" ;;\n"
+	"        --account=BROKEN) broken=1 ;;\n"
+	"    esac\n"
+	"done\n"
+	"if (( broken ))\n"
+	"then\n"
+	"    printf '%%s\\n' '{\"type\":\"account_snapshot\",\"account\":\"Drgold-Thorium Brotherhood\","
+	"\"at\":\"2026-10-01T00:00:00Z\",\"covers\":[\"positions\"]}' > \"${file}\"\n"
+	"    echo 'tsmctl: ssh: connect to host mob-zach port 22: Connection refused' >&2\n"
+	"    exit 3\n"
+	"fi\n"
+	"cp -- '%s' \"${file}\"\n";
+
+typedef struct
+{
+	gchar	*bin;		/* the directory holding the fake */
+	gchar	*saved_path;	/* the test's own PATH, put back after load */
+} FakeTsmctl;
+
+/*
+ * Loads plugins/exec/tsmctl with PATH pointing at a directory that holds
+ * the fake (or, with @with_fake FALSE, at one that does not). The exec
+ * runtime captures PATH when the plugin loads, so PATH is the test's own
+ * again straight after.
+ */
+static void
+load_tsmctl(
+	Fixture		*fixture,
+	FakeTsmctl	*fake,
+	gboolean	 with_fake
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *manifest = NULL;
+	g_autofree gchar *script = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *fixture_file = NULL;
+	g_autofree gchar *search = NULL;
+
+	fake->bin = g_build_filename(fixture->state_dir, "bin", NULL);
+	g_assert_cmpint(g_mkdir_with_parents(fake->bin, 0700), ==, 0);
+
+	if (with_fake)
+	{
+		fixture_file = g_build_filename(VENTURE_TEST_FIXTURES, "tsmctl", "export.jsonl", NULL);
+		script = g_strdup_printf(fake_tsmctl, fixture_file);
+		path = g_build_filename(fake->bin, "tsmctl", NULL);
+		g_assert_true(g_file_set_contents(path, script, -1, &error));
+		g_assert_no_error(error);
+		g_assert_cmpint(g_chmod(path, 0755), ==, 0);
+	}
+
+	fake->saved_path = g_strdup(g_getenv("PATH"));
+	search = g_strdup_printf("%s:/usr/bin:/bin", fake->bin);
+	g_setenv("PATH", search, TRUE);
+	g_setenv("SSH_AUTH_SOCK", "/run/user/test/ssh-agent.socket", TRUE);
+	g_setenv("VENTURE_TEST_SERVER_SECRET", "server-only-secret-value", TRUE);
+
+	g_object_set(fixture->config, "plugins-allow-exec", TRUE, NULL);
+	manifest = g_build_filename(VENTURE_TEST_PLUGIN_SOURCES, "exec", "tsmctl", "tsmctl.plugin.yaml", NULL);
+
+	if (!venture_plugin_manager_load_file(fixture->manager, manifest, &error))
+		g_error("tsmctl did not load: %s", error->message);
+
+	if (NULL != fake->saved_path)
+		g_setenv("PATH", fake->saved_path, TRUE);
+	else
+		g_unsetenv("PATH");
+
+	g_unsetenv("SSH_AUTH_SOCK");
+	g_unsetenv("VENTURE_TEST_SERVER_SECRET");
+
+	g_assert_nonnull(venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(fixture->context), "tsmctl"));
+}
+
+static void
+fake_tsmctl_clear(FakeTsmctl *fake)
+{
+	g_clear_pointer(&fake->bin, g_free);
+	g_clear_pointer(&fake->saved_path, g_free);
+}
+
+/* GOLD as tsmctl writes it: four places, a copper a ten-thousandth. */
+static void
+register_gold(Fixture *fixture)
+{
+	g_autoptr(VentureEntity) gold = NULL;
+	g_autoptr(GError) error = NULL;
+
+	gold = VENTURE_ENTITY(g_object_new(VENTURE_TYPE_CURRENCY, NULL));
+	g_object_set(gold, "code", "GOLD", "name", "Gold", "exponent", (gint64)4, NULL);
+	g_assert_true(venture_database_save(fixture->database, gold, NULL, &error));
+	g_assert_no_error(error);
+}
+
+static gint64
+create_gold_source(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*settings
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(GError) error = NULL;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", name, "provider", "tsmctl", "settings", settings, "schedule", "manual",
+	             "currency", "GOLD", NULL);
+
+	if (!venture_database_save(fixture->database, VENTURE_ENTITY(source), NULL, &error))
+		g_error("%s: %s", name, error->message);
+
+	return venture_entity_get_id(VENTURE_ENTITY(source));
+}
+
+static gchar *
+fake_file(
+	FakeTsmctl	*fake,
+	const gchar	*name
+){
+	g_autofree gchar *path = g_build_filename(fake->bin, name, NULL);
+	gchar *contents = NULL;
+
+	if (!g_file_get_contents(path, &contents, NULL, NULL))
+		return NULL;
+
+	return contents;
+}
+
+/*
+ * tsmctl: the provider runs `tsmctl export --format venture` from the
+ * server's PATH with the source's settings as --option=value arguments,
+ * and the export lands in the store whole: two accounts (a character and
+ * the warband bank), a balance in copper-exact gold, holdings, a position,
+ * mail, four ledger rows and the AuctionDB figures -- the source's own
+ * region sale rate among them. The program gets the ssh agent's socket
+ * and never the server's other environment, and the provider names TSM
+ * as the source without claiming an endorsement.
+ *
+ * What breaks if this regresses: a pulled source stores nothing (or a
+ * different account set than a push of the same export), a setting
+ * stops reaching tsmctl, a remote WoW install cannot be read because ssh
+ * has no agent, or the server's secrets reach a program it runs.
+ */
+static void
+test_tsmctl_sync(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	FakeTsmctl fake = { NULL, NULL };
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(VentureSeriesAccountRow) drgold = NULL;
+	g_autoptr(VentureSeriesAccountRow) warbank = NULL;
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GPtrArray) positions = NULL;
+	g_autoptr(GPtrArray) inbound = NULL;
+	g_autoptr(VentureSeriesRow) copper = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *args = NULL;
+	g_autofree gchar *env = NULL;
+	g_auto(GStrv) argv = NULL;
+	const gchar *attribution;
+	gint64 txns = 0;
+	gint64 id;
+
+	(void)user_data;
+
+	register_gold(fixture);
+	load_tsmctl(fixture, &fake, TRUE);
+
+	/* Accurate about where the data came from, and disclaiming the rest. */
+	attribution = venture_data_source_provider_get_attribution(venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(fixture->context), "tsmctl"));
+	g_assert_nonnull(attribution);
+	g_assert_nonnull(strstr(attribution, "TradeSkillMaster's AuctionDB"));
+	g_assert_nonnull(strstr(attribution, "DataStore and Syndicator"));
+	g_assert_nonnull(strstr(attribution, "Not affiliated with or endorsed by"));
+
+	id = create_gold_source(fixture, "WoW (tsmctl)",
+	                        "accounts: [ZAKMANN, \"123456789#1\"]\nsources: tsm,datastore\nmarket: scope\n"
+	                        "since: 90d\ncurrency: gold\ninclude_internal: true\n");
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 0);
+
+	/* What tsmctl was asked, exactly, and in what environment. */
+	args = fake_file(&fake, "args");
+	g_assert_nonnull(args);
+	argv = g_strsplit(args, "\n", -1);
+	g_assert_cmpstr(argv[0], ==, "export");
+	g_assert_cmpstr(argv[1], ==, "--format");
+	g_assert_cmpstr(argv[2], ==, "venture");
+	g_assert_cmpstr(argv[3], ==, "--account=ZAKMANN");
+	g_assert_cmpstr(argv[4], ==, "--account=123456789#1");
+	g_assert_cmpstr(argv[5], ==, "--sources=tsm,datastore");
+	g_assert_cmpstr(argv[6], ==, "--market=scope");
+	g_assert_cmpstr(argv[7], ==, "--since=90d");
+	g_assert_cmpstr(argv[8], ==, "--currency=GOLD");
+	g_assert_cmpstr(argv[9], ==, "--include-internal");
+	g_assert_true(g_str_has_prefix(argv[10], "--file="));
+	g_assert_cmpstr(argv[11], ==, "");
+
+	env = fake_file(&fake, "env");
+	g_assert_nonnull(strstr(env, "SSH_AUTH_SOCK=/run/user/test/ssh-agent.socket\n"));
+	g_assert_nonnull(strstr(env, "SECRET=\n"));
+
+	/* The private export file is gone with the run. */
+	{
+		const gchar *file = argv[10] + strlen("--file=");
+		g_autofree gchar *directory = g_path_get_dirname(file);
+
+		g_assert_false(g_file_test(directory, G_FILE_TEST_EXISTS));
+	}
+
+	reader = reader_of(fixture, id);
+	accounts = venture_series_store_list_accounts(reader, NULL, NULL, 1790000000, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(accounts->len, ==, 2);
+
+	g_assert_true(venture_series_store_get_account(reader, "Drgold-Thorium Brotherhood", 1790000000,
+	                                               &drgold, &error));
+	g_assert_nonnull(drgold);
+	g_assert_cmpstr(drgold->kind, ==, "character");
+	g_assert_cmpstr(drgold->venue_key, ==, "thorium-brotherhood");
+	g_assert_cmpint(drgold->holdings, ==, 4);
+	g_assert_cmpint(drgold->positions, ==, 1);
+	g_assert_cmpint(drgold->inbound, ==, 1);
+	g_assert_cmpuint(drgold->balances->len, ==, 1);
+	g_assert_cmpstr(g_array_index(drgold->balances, VentureSeriesAmount, 0).currency, ==, "GOLD");
+	g_assert_cmpint(g_array_index(drgold->balances, VentureSeriesAmount, 0).amount, ==, 272495018);
+
+	g_assert_true(venture_series_store_get_account(reader, "warbank:ZAKMANN", 1790000000, &warbank, &error));
+	g_assert_nonnull(warbank);
+	g_assert_cmpstr(warbank->kind, ==, "shared");
+	g_assert_cmpint(warbank->holdings, ==, 1);
+
+	positions = venture_series_store_list_positions(reader, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(positions->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesPositionRow *)g_ptr_array_index(positions, 0))->key, ==, "1637378752");
+	g_assert_cmpint(((VentureSeriesPositionRow *)g_ptr_array_index(positions, 0))->unit_price, ==, 8198);
+	g_assert_cmpint(((VentureSeriesPositionRow *)g_ptr_array_index(positions, 0))->bid, ==, 7500);
+
+	inbound = venture_series_store_list_inbound(reader, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(inbound->len, ==, 1);
+	g_assert_cmpint(((VentureSeriesInboundRow *)g_ptr_array_index(inbound, 0))->money, ==, 155800);
+
+	g_assert_true(venture_series_store_count_txns(reader, NULL, &txns, &error));
+	g_assert_cmpint(txns, ==, 4);
+
+	/* AuctionDB: the realm's market value, and TSM's region figures. */
+	g_assert_true(venture_series_store_get_current(reader, "thorium-brotherhood", "2770", &copper, &error));
+	g_assert_nonnull(copper);
+	g_assert_cmpint(copper->market_value, ==, 8500);
+	g_clear_pointer(&copper, venture_series_row_free);
+	g_assert_true(venture_series_store_get_current(reader, "region-us", "2770", &copper, &error));
+	g_assert_nonnull(copper);
+	g_assert_cmpfloat_with_epsilon(copper->source_sale_rate, 0.31, 1e-9);
+	g_assert_cmpfloat_with_epsilon(copper->source_sold_per_day, 1840.5, 1e-9);
+
+	fake_tsmctl_clear(&fake);
+	venture_currency_clear_registered();
+}
+
+/*
+ * A failed export stores nothing. The fake writes half an export -- a
+ * positions snapshot for a character with no position after it, which
+ * applied would empty that character's auctions -- and exits 3; the run
+ * fails naming the status, and the position the earlier sync stored is
+ * still there. Settings that are not what they claim to be (an option
+ * dressed as an account, an unknown market scope) are refused before
+ * tsmctl runs at all.
+ *
+ * What breaks if this regresses: an ssh outage half way through an export
+ * reads as "every auction sold", or a data source's settings inject an
+ * option -- --host, say -- into the program VENTURE runs.
+ */
+static void
+test_tsmctl_failure_stores_nothing(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	FakeTsmctl fake = { NULL, NULL };
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) broken_run = NULL;
+	g_autoptr(VentureEntity) injected_run = NULL;
+	g_autoptr(VentureEntity) market_run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GPtrArray) positions = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autofree gchar *message = NULL;
+	g_autofree gchar *args_path = NULL;
+	gint64 id;
+	gint64 injected;
+	gint64 market;
+
+	(void)user_data;
+
+	register_gold(fixture);
+	load_tsmctl(fixture, &fake, TRUE);
+
+	id = create_gold_source(fixture, "WoW (tsmctl)", "market: none\n");
+	first = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(first), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+
+	/* The same source, now pointed at the account the fake fails on. */
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, id, &error);
+	g_assert_no_error(error);
+	g_object_set(source, "settings", "accounts: BROKEN\n", NULL);
+	g_assert_true(venture_database_save(fixture->database, source, NULL, &error));
+	g_assert_no_error(error);
+
+	broken_run = sync_and_wait(fixture, id);
+	message = run_text(broken_run, "error");
+	g_assert_cmpint(run_status(broken_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "tsmctl export exited with status 3"));
+
+	reader = reader_of(fixture, id);
+	positions = venture_series_store_list_positions(reader, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(positions->len, ==, 1);
+
+	/* Refused before tsmctl runs: no args file is written. */
+	args_path = g_build_filename(fake.bin, "args", NULL);
+	g_assert_cmpint(g_unlink(args_path), ==, 0);
+
+	injected = create_gold_source(fixture, "Injected", "accounts: [\"--host=evil.example\"]\n");
+	injected_run = sync_and_wait(fixture, injected);
+	g_clear_pointer(&message, g_free);
+	message = run_text(injected_run, "error");
+	g_assert_cmpint(run_status(injected_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "is not a WoW account folder name"));
+
+	market = create_gold_source(fixture, "Bad market", "market: everything\n");
+	market_run = sync_and_wait(fixture, market);
+	g_clear_pointer(&message, g_free);
+	message = run_text(market_run, "error");
+	g_assert_cmpint(run_status(market_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "market must be scope, all or none"));
+
+	g_assert_false(g_file_test(args_path, G_FILE_TEST_EXISTS));
+
+	fake_tsmctl_clear(&fake);
+	venture_currency_clear_registered();
+}
+
+/*
+ * With no tsmctl on the server's PATH the plugin still loads -- nothing
+ * runs at load -- and a sync fails saying so, with the PATH it searched
+ * and the push alternative.
+ *
+ * What breaks if this regresses: an install without the dotfiles gets a
+ * bare "exit 127" instead of what to do about it.
+ */
+static void
+test_tsmctl_missing(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	FakeTsmctl fake = { NULL, NULL };
+	g_autoptr(VentureEntity) run = NULL;
+	g_autofree gchar *message = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	register_gold(fixture);
+	load_tsmctl(fixture, &fake, FALSE);
+
+	id = create_gold_source(fixture, "WoW (tsmctl)", "");
+	run = sync_and_wait(fixture, id);
+	message = run_text(run, "error");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_FAILED);
+	g_assert_nonnull(strstr(message, "tsmctl is not on the server's PATH"));
+	g_assert_nonnull(strstr(message, "tsmctl venture push"));
+
+	fake_tsmctl_clear(&fake);
+	venture_currency_clear_registered();
+}
+
 #endif /* VENTURE_HAVE_SQLITE */
 
 /*
@@ -955,6 +1361,9 @@ main(
 	ADD("odds-api/override-needs-the-switch", test_odds_api_override_needs_the_switch);
 	ADD("supplier-csv/sync", test_supplier_csv);
 	ADD("supplier-csv/needs-allow-exec", test_supplier_csv_needs_allow_exec);
+	ADD("tsmctl/sync", test_tsmctl_sync);
+	ADD("tsmctl/failure-stores-nothing", test_tsmctl_failure_stores_nothing);
+	ADD("tsmctl/missing", test_tsmctl_missing);
 #undef ADD
 #endif
 

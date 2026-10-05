@@ -1,0 +1,52 @@
+# tsmctl.plugin.yaml - World of Warcraft accounts and markets through tsmctl
+#
+# Copyright (C) 2026 Zach Podbielniak
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# An exec plugin that makes VENTURE pull what a push source is otherwise
+# pushed: it runs `tsmctl export --format venture` (tsmctl is the
+# read-only TradeSkillMaster CLI in the operator's dotfiles) and hands its
+# JSON lines back on standard output. Characters, the warband bank and
+# guild banks become accounts; their gold, bags, auctions and mail become
+# balances, holdings, positions and inbound; TSM's ledger becomes the
+# external ledger; and TSM's AuctionDB figures become realm and region
+# stats.
+#
+# It is optional. The WoW pages work from the Blizzard auctions plugin
+# alone (market data, no accounts), and an operator who runs
+# `tsmctl venture push` on the WoW machine needs no plugin at all: a
+# `push` data source takes the same lines. This is for the other shape,
+# where VENTURE runs on a machine that can ssh to the WoW install and
+# should decide when to read it.
+#
+# tsmctl reads its own ~/.config/tsmctl/config.yaml (host, wow_dir,
+# region) and reaches a remote WoW install over ssh with the operator's
+# keys, so the program gets HOME, PATH and the ssh agent's socket.
+# Nothing here is a credential: VENTURE's token never goes to tsmctl,
+# which only exports, and tsmctl never writes to the WoW side.
+#
+# Nothing runs unless plugins.allow_exec is on. See
+# docs/examples/wow-operations.org for the walk-through.
+name: tsmctl
+runtime: exec
+protocol: 1
+description: World of Warcraft characters, banks, auctions, mail, ledger and AuctionDB prices, read by tsmctl
+entry: export.sh
+exec:
+  # PATH and HOME are passed to every exec program; they are named here
+  # because this one cannot work without them -- tsmctl is found on PATH
+  # and reads its config and cache under HOME. SSH_AUTH_SOCK lets its ssh
+  # use the operator's agent for a remote install; the XDG directories and
+  # TSMCTL_CONFIG move the config and cache the way tsmctl itself honours.
+  env: [PATH, HOME, SSH_AUTH_SOCK, XDG_CONFIG_HOME, XDG_CACHE_HOME, TSMCTL_CONFIG]
+  # A first remote read mirrors about 18 MB over ssh before exporting.
+  timeout: 900
+  # An export with market: all is tens of megabytes of stat lines.
+  max_output: 134217728
+provides:
+  - kind: data_source_provider
+    name: tsmctl
+    label: World of Warcraft via tsmctl
+    command: fetch
+    description: Runs tsmctl export --format venture and reads its accounts, holdings, auctions, mail, ledger and AuctionDB stats
+    attribution: "Market data from TradeSkillMaster's AuctionDB via the TSM desktop app; character data from TradeSkillMaster, DataStore and Syndicator saved variables, read by tsmctl. Not affiliated with or endorsed by TradeSkillMaster, Blizzard Entertainment or the addons' authors."
