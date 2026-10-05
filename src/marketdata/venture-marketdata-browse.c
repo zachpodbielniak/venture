@@ -736,6 +736,76 @@ md_venues_json(
 	return array;
 }
 
+/* --- Categories ------------------------------------------------------------ */
+
+/* Adds @reader's categories to @counts (path -> plain instruments). */
+static void
+md_categories_add(
+	GHashTable		*counts,
+	VentureSeriesStore	*reader
+){
+	g_autoptr(GPtrArray) categories = NULL;
+	guint i;
+
+	categories = venture_series_store_list_categories(reader, NULL);
+
+	for (i = 0; (NULL != categories) && (i < categories->len); i++)
+	{
+		VentureSeriesCategoryRow *row = g_ptr_array_index(categories, i);
+		gint64 *count = g_hash_table_lookup(counts, row->path);
+
+		if (NULL == count)
+		{
+			count = g_new0(gint64, 1);
+			g_hash_table_insert(counts, g_strdup(row->path), count);
+		}
+
+		*count += row->instruments;
+	}
+}
+
+static gint
+md_compare_strings(gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0(*(const gchar *const *)a, *(const gchar *const *)b);
+}
+
+/* @counts as the answer's "categories": [{path, instruments}], by path. */
+static JsonArray *
+md_categories_json(GHashTable *counts)
+{
+	g_autoptr(GPtrArray) paths = g_ptr_array_new();
+	GHashTableIter iter;
+	gpointer key;
+	JsonArray *array;
+	guint i;
+
+	g_hash_table_iter_init(&iter, counts);
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		g_ptr_array_add(paths, key);
+
+	g_ptr_array_sort(paths, md_compare_strings);
+	array = json_array_new();
+
+	for (i = 0; i < paths->len; i++)
+	{
+		JsonObject *object = json_object_new();
+		const gchar *path = g_ptr_array_index(paths, i);
+
+		json_object_set_string_member(object, "path", path);
+		json_object_set_int_member(object, "instruments", *(gint64 *)g_hash_table_lookup(counts, path));
+		json_array_add_object_element(array, object);
+	}
+
+	return array;
+}
+
+static GHashTable *
+md_categories_new(void)
+{
+	return g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+}
+
 /* --- Venue groups ---------------------------------------------------------- */
 
 /* The pseudo-group of the realms the operator's characters are on. */
@@ -1152,6 +1222,13 @@ venture_marketdata_browse(
 			g_autofree gchar *group_label = NULL;
 
 			venues = venture_series_store_list_venues(reader, &local_error);
+
+			{
+				g_autoptr(GHashTable) counts = md_categories_new();
+
+				md_categories_add(counts, reader);
+				json_object_set_array_member(root, "categories", md_categories_json(counts));
+			}
 
 			venture_series_filter_init(&filter);
 
@@ -1892,9 +1969,10 @@ fail:
 /* --- Venue group choices ----------------------------------------------------- */
 
 JsonNode *
-venture_marketdata_venue_groups(
+venture_marketdata_picker_choices(
 	VentureContext	*context,
-	gint64		 organization_id
+	gint64		 organization_id,
+	gint64		 data_source_id
 ){
 	JsonObject *root;
 
@@ -1902,10 +1980,39 @@ venture_marketdata_venue_groups(
 
 	root = json_object_new();
 #ifdef VENTURE_HAVE_SQLITE
-	json_object_set_array_member(root, "venue_groups", md_venue_groups_json(context, organization_id));
+	{
+		g_autoptr(GHashTable) counts = md_categories_new();
+		g_autoptr(VentureEntity) source = NULL;
+		g_autoptr(JsonArray) scratch = json_array_new();
+
+		json_object_set_array_member(root, "venue_groups",
+		                             md_venue_groups_json(context, organization_id));
+
+		if (data_source_id > 0)
+			source = md_source(context, organization_id, data_source_id, NULL);
+		else
+		{
+			g_autoptr(GPtrArray) sources = md_sources(context, organization_id, NULL);
+
+			if ((NULL != sources) && (sources->len > 0))
+				source = g_object_ref(g_ptr_array_index(sources, 0));
+		}
+
+		if ((NULL != source) && md_series_ready(context, scratch))
+		{
+			g_autoptr(VentureSeriesStore) reader = md_reader(context, source, NULL, NULL);
+
+			if (NULL != reader)
+				md_categories_add(counts, reader);
+		}
+
+		json_object_set_array_member(root, "categories", md_categories_json(counts));
+	}
 #else
 	(void)organization_id;
+	(void)data_source_id;
 	json_object_set_array_member(root, "venue_groups", json_array_new());
+	json_object_set_array_member(root, "categories", json_array_new());
 #endif
 	return md_node(root);
 }
@@ -1940,10 +2047,10 @@ venture_marketdata_find(
 	if (!md_require_module(context, error))
 		return NULL;
 
-	if (venture_string_is_empty(query->search))
+	if (venture_string_is_empty(query->search) && venture_string_is_empty(query->category))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "Say what to look for: part of an item's name or key");
+		                    "Say what to look for: part of an item's name or key, or a category");
 		return NULL;
 	}
 
@@ -1953,6 +2060,7 @@ venture_marketdata_find(
 	echo = json_object_new();
 	md_set_text(echo, "search", query->search);
 	md_set_text(echo, "venue_group", query->venue_group);
+	md_set_text(echo, "category", query->category);
 	json_object_set_int_member(echo, "data_source_id", query->data_source_id);
 	json_object_set_object_member(root, "query", echo);
 	json_object_set_boolean_member(root, "available", FALSE);
@@ -2010,8 +2118,16 @@ venture_marketdata_find(
 
 			md_set_text(root, "venue_group_name", group_label);
 
+			{
+				g_autoptr(GHashTable) counts = md_categories_new();
+
+				md_categories_add(counts, reader);
+				json_object_set_array_member(root, "categories", md_categories_json(counts));
+			}
+
 			venture_series_filter_init(&filter);
-			filter.search = query->search;
+			filter.search = venture_string_is_empty(query->search) ? NULL : query->search;
+			filter.category_prefix = venture_string_is_empty(query->category) ? NULL : query->category;
 			filter.venue_keys = (const gchar **)group_keys;
 			filter.in_stock_only = TRUE;
 			filter.sort = VENTURE_SERIES_SORT_NAME;
@@ -2111,6 +2227,8 @@ venture_marketdata_find(
 		json_object_set_array_member(root, "sources", json_array_new());
 	if (!json_object_has_member(root, "venue_groups"))
 		json_object_set_array_member(root, "venue_groups", json_array_new());
+	if (!json_object_has_member(root, "categories"))
+		json_object_set_array_member(root, "categories", json_array_new());
 
 	json_object_set_array_member(root, "items", items);
 	json_object_set_array_member(root, "notes", notes);
@@ -2225,6 +2343,7 @@ venture_marketdata_deals(
 #ifdef VENTURE_HAVE_SQLITE
 		g_autoptr(GPtrArray) sources = NULL;
 		g_autoptr(GPtrArray) deals = NULL;
+		g_autoptr(GHashTable) category_counts = NULL;
 		const gchar *venue_keys[2];
 		gboolean truncated;
 		guint i;
@@ -2257,6 +2376,7 @@ venture_marketdata_deals(
 		                             md_venue_groups_json(context, query->organization_id));
 		deals = g_ptr_array_new_with_free_func(md_deal_free);
 		truncated = FALSE;
+		category_counts = md_categories_new();
 
 		/*
 		 * Each source answers its own best count+1 deals from the deal
@@ -2279,6 +2399,7 @@ venture_marketdata_deals(
 				continue;
 
 			json_object_set_boolean_member(root, "available", TRUE);
+			md_categories_add(category_counts, reader);
 			venture_series_filter_init(&filter);
 
 			/* Each source's venues answer for themselves: a group of
@@ -2375,11 +2496,14 @@ venture_marketdata_deals(
 		}
 
 		json_object_set_boolean_member(root, "truncated", truncated);
+		json_object_set_array_member(root, "categories", md_categories_json(category_counts));
 #endif
 	}
 
 	if (!json_object_has_member(root, "sources"))
 		json_object_set_array_member(root, "sources", json_array_new());
+	if (!json_object_has_member(root, "categories"))
+		json_object_set_array_member(root, "categories", json_array_new());
 
 	json_object_set_array_member(root, "rows", rows);
 	json_object_set_array_member(root, "notes", notes);

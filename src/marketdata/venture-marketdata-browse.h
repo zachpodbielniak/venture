@@ -191,20 +191,25 @@ venture_marketdata_instrument(
 );
 
 /**
- * venture_marketdata_venue_groups:
+ * venture_marketdata_picker_choices:
  * @context: a #VentureContext
- * @organization_id: whose groups
+ * @organization_id: whose groups and sources
+ * @data_source_id: the source whose categories to list, 0 for the
+ *   organization's first by name
  *
- * The venue group choices the market pages offer, as {venue_groups: [{value,
- * name}]}: "characters" when the organization has a push source, then its
- * saved venue groups by name.
+ * What the market pages' pickers offer before any question is asked:
+ * {venue_groups: [{value, name}], categories: [{path, instruments}]}.
+ * The venue groups are "characters" when the organization has a push
+ * source, then its saved groups by name; the categories are the source's
+ * store's (see venture_series_store_list_categories()).
  *
- * Returns: (transfer full): the choices; empty without SQLite
+ * Returns: (transfer full): the choices; empty lists without SQLite
  */
 JsonNode *
-venture_marketdata_venue_groups(
+venture_marketdata_picker_choices(
 	VentureContext	*context,
-	gint64		 organization_id
+	gint64		 organization_id,
+	gint64		 data_source_id
 );
 
 /**
@@ -219,8 +224,10 @@ venture_marketdata_venue_groups(
  * VentureMarketdataFindQuery:
  * @organization_id: whose sources
  * @data_source_id: the source, 0 for the organization's first by name
- * @search: the name (or key) to look for; required
+ * @search: (nullable): the name (or key) to look for; required unless
+ *   @category is given
  * @venue_group: (nullable): only these venues, as on browse
+ * @category: (nullable): only this category path and the ones beneath it
  *
  * What the item finder asks: every instrument whose name contains
  * @search, each with where it is cheapest and dearest.
@@ -231,6 +238,7 @@ typedef struct
 	gint64		 data_source_id;
 	const gchar	*search;
 	const gchar	*venue_group;
+	const gchar	*category;
 } VentureMarketdataFindQuery;
 
 /**

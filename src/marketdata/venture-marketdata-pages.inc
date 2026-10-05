@@ -403,6 +403,87 @@ mdw_venue_group_picker(
 }
 
 /*
+ * The category picker: the answer's "categories" (the store's paths, as
+ * the provider files instruments -- an auction house's item classes and
+ * subclasses), grouped by their first part the way an auction house lists
+ * them: "All Armor", then each kind of armor. A category matches itself
+ * and everything beneath it, so "All Armor" is the path "Armor". A
+ * category asked for that is not listed (typed into the address) is kept
+ * selected rather than silently dropped.
+ */
+static void
+mdw_category_picker(
+	GString		*html,
+	JsonObject	*root,
+	const gchar	*selected
+){
+	JsonArray *list;
+	g_autofree gchar *open_group = NULL;
+	gboolean found = FALSE;
+	guint i;
+
+	list = (NULL != root) && json_object_has_member(root, "categories")
+		? json_object_get_array_member(root, "categories") : NULL;
+
+	g_string_append(html, "<div class=\"field\"><label>Category<select name=\"category\">"
+	                      "<option value=\"\">every category</option>");
+
+	for (i = 0; (NULL != list) && (i < json_array_get_length(list)); i++)
+	{
+		const gchar *path = mdw_text(json_array_get_object_element(list, i), "path");
+		const gchar *slash;
+		g_autofree gchar *top = NULL;
+
+		if (NULL == path)
+			continue;
+
+		slash = strchr(path, '/');
+		top = (NULL != slash) ? g_strndup(path, slash - path) : g_strdup(path);
+
+		if (0 != g_strcmp0(top, open_group))
+		{
+			if (NULL != open_group)
+				g_string_append(html, "</optgroup>");
+
+			g_string_append(html, "<optgroup label=\"");
+			venture_html_escape_append(html, top);
+			g_string_append(html, "\"><option value=\"");
+			venture_html_escape_append(html, top);
+			g_string_append_printf(html, "\"%s>All ", (0 == g_strcmp0(top, selected)) ? " selected" : "");
+			venture_html_escape_append(html, top);
+			g_string_append(html, "</option>");
+			found = found || (0 == g_strcmp0(top, selected));
+			g_free(open_group);
+			open_group = g_strdup(top);
+		}
+
+		if (NULL == slash)
+			continue;
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, path);
+		g_string_append_printf(html, "\"%s>", (0 == g_strcmp0(path, selected)) ? " selected" : "");
+		venture_html_escape_append(html, slash + 1);
+		g_string_append(html, "</option>");
+		found = found || (0 == g_strcmp0(path, selected));
+	}
+
+	if (NULL != open_group)
+		g_string_append(html, "</optgroup>");
+
+	if (!found && !venture_string_is_empty(selected))
+	{
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, selected);
+		g_string_append(html, "\" selected>");
+		venture_html_escape_append(html, selected);
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/*
  * Links to other sites (an answer's "links": {label, url}), opened in a
  * new tab and sending no referrer: they leave VENTURE, and the page they
  * leave from names an organization's data.
@@ -738,7 +819,7 @@ venture_marketdata_web_browse(
 	                      "class=\"form-grid market-filters\" role=\"search\" aria-label=\"Browse filters\">");
 	mdw_source_picker(html, root, source_id, FALSE);
 	mdw_input(html, request, "Search", "search", "name or key");
-	mdw_input(html, request, "Category", "category", "path, e.g. Trade Goods/Herb");
+	mdw_category_picker(html, root, mdw_param(request, "category"));
 
 	g_string_append(html, "<div class=\"field\"><label>Venue<select name=\"venue\">"
 	                      "<option value=\"\">every venue</option>");
@@ -1795,7 +1876,7 @@ venture_marketdata_web_deals(
 	mdw_venue_group_picker(html, root, query.venue_group);
 	mdw_input(html, request, "Venue", "venue", "a venue's key");
 	mdw_input(html, request, "Group", "group", "a group, e.g. eu");
-	mdw_input(html, request, "Category", "category", "path, e.g. Trade Goods/Herb");
+	mdw_category_picker(html, root, mdw_param(request, "category"));
 	mdw_input(html, request, "Worth at least", "min_value", "e.g. 10.00 GOLD");
 	mdw_input(html, request, "At most % of region", "max_pct", "e.g. 80");
 	mdw_input(html, request, "How many", "top", "50");
@@ -2705,10 +2786,11 @@ venture_marketdata_web_find(
 
 	query.search = mdw_param(request, "search");
 	query.venue_group = mdw_param(request, "venue_group");
+	query.category = mdw_param(request, "category");
 
 	/* No search yet is a form to fill in, not an error -- except for the
 	 * API, where a question without its subject is a bad request. */
-	if ((NULL != query.search) || api)
+	if ((NULL != query.search) || (NULL != query.category) || api)
 	{
 		answer = venture_marketdata_find(self->context, &query, &error);
 
@@ -2736,15 +2818,20 @@ venture_marketdata_web_find(
 	mdw_input(html, request, "Item", "search", "part of a name, e.g. Sunfire Silk");
 
 	if (NULL != root)
+	{
+		mdw_category_picker(html, root, query.category);
 		mdw_venue_group_picker(html, root, query.venue_group);
+	}
 	else
 	{
 		/* Before the first search there is no answer to list the
-		 * groups from, so they are asked for on their own. */
-		g_autoptr(JsonNode) groups = venture_marketdata_venue_groups(self->context,
-		                                                            query.organization_id);
+		 * choices from, so they are asked for on their own. */
+		g_autoptr(JsonNode) choices = venture_marketdata_picker_choices(self->context,
+		                                                              query.organization_id,
+		                                                              query.data_source_id);
 
-		mdw_venue_group_picker(html, json_node_get_object(groups), query.venue_group);
+		mdw_category_picker(html, json_node_get_object(choices), query.category);
+		mdw_venue_group_picker(html, json_node_get_object(choices), query.venue_group);
 	}
 
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Find</button></form></div>");
@@ -2799,7 +2886,7 @@ venture_marketdata_web_find(
 	}
 
 	if ((NULL == items) || (0 == json_array_get_length(items)))
-		g_string_append(html, "<tr><td colspan=\"7\" class=\"muted\">Nothing in stock by that name.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"7\" class=\"muted\">Nothing in stock matches.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
 

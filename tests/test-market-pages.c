@@ -2165,6 +2165,82 @@ test_venue_groups_and_find(
 }
 
 /*
+ * Categories: the store lists the paths its instruments are filed under,
+ * browse, deals and find answer them, and the pages draw them as an
+ * auction house does -- a group per first part with an "All" entry -- in
+ * place of a text box. Find takes a category with no search.
+ */
+static void
+test_categories(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *page = NULL;
+	JsonArray *list;
+	guint i;
+	gboolean ore = FALSE;
+	gboolean herbs = FALSE;
+
+	(void)data;
+	seed_store(fixture);
+
+	node = get_json(fixture, "/api/v1/market/browse", 200);
+	list = json_object_get_array_member(json_node_get_object(node), "categories");
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		JsonObject *category = json_array_get_object_element(list, i);
+		const gchar *path = json_object_get_string_member(category, "path");
+
+		if (0 == g_strcmp0(path, "Materials/Ore"))
+		{
+			ore = TRUE;
+			g_assert_cmpint(json_object_get_int_member(category, "instruments"), ==, 1);
+		}
+
+		herbs = herbs || (0 == g_strcmp0(path, "Herbs"));
+	}
+
+	g_assert_true(ore);
+	g_assert_true(herbs);
+	g_clear_pointer(&node, json_node_unref);
+
+	node = get_json(fixture, "/api/v1/market/deals", 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(node),
+	                                                                    "categories")), >, 0);
+	g_clear_pointer(&node, json_node_unref);
+
+	/* Find by category alone: everything under Materials, nothing else. */
+	node = get_json(fixture, "/api/v1/market/find?category=Materials", 200);
+	list = json_object_get_array_member(json_node_get_object(node), "items");
+	g_assert_cmpuint(json_array_get_length(list), >, 0);
+
+	for (i = 0; i < json_array_get_length(list); i++)
+		g_assert_true(g_str_has_prefix(json_object_get_string_member(json_array_get_object_element(list, i),
+		                                                             "category"), "Materials/"));
+	g_clear_pointer(&node, json_node_unref);
+
+	/* The picker: grouped, "All" first, the subclass by its last part,
+	 * the asked-for one selected, and escaped like everything else. */
+	page = get_page(fixture, "/market/browse?category=Materials%2FOre");
+	g_assert_nonnull(strstr(page, "<select name=\"category\">"));
+	g_assert_nonnull(strstr(page, "<optgroup label=\"Materials\"><option value=\"Materials\">All Materials</option>"));
+	g_assert_nonnull(strstr(page, "<option value=\"Materials/Ore\" selected>Ore</option>"));
+	g_assert_nonnull(strstr(page, "<option value=\"Herbs\">All Herbs</option>"));
+	g_assert_null(strstr(page, "Materials/<b>"));
+	g_clear_pointer(&page, g_free);
+
+	page = get_page(fixture, "/market/find");
+	g_assert_nonnull(strstr(page, "All Materials"));
+	g_clear_pointer(&page, g_free);
+
+	/* A category not in the list stays selected rather than vanishing. */
+	page = get_page(fixture, "/market/deals?category=Nowhere%2FElse");
+	g_assert_nonnull(strstr(page, "<option value=\"Nowhere/Else\" selected>"));
+}
+
+/*
  * A store an older build wrote is upgraded when a page reads it. Only a
  * writer migrates; a push source's store is written only when somebody
  * pushes, so without this every page over it said "nothing sent yet" from
@@ -2233,6 +2309,7 @@ main(
 	ADD("doors-and-looks", test_doors_and_looks);
 	ADD("venue-groups-and-find", test_venue_groups_and_find);
 	ADD("reader-upgrades-store", test_reader_upgrades_store);
+	ADD("categories", test_categories);
 
 	return g_test_run();
 }

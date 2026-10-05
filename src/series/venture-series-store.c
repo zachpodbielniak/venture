@@ -6677,6 +6677,51 @@ venture_series_store_list_venues(
 	                      "listing venues", error);
 }
 
+static const gchar series_sql_list_categories[] =
+	"SELECT category, count(*) FROM instruments"
+	" WHERE category IS NOT NULL AND category <> '' AND parent_key IS NULL"
+	" GROUP BY category ORDER BY category";
+
+void
+venture_series_category_row_free(VentureSeriesCategoryRow *row)
+{
+	if (NULL == row)
+		return;
+
+	g_free(row->path);
+	g_free(row);
+}
+
+static gpointer
+series_category_row_from(sqlite3_stmt *stmt)
+{
+	VentureSeriesCategoryRow *row;
+
+	row = g_new0(VentureSeriesCategoryRow, 1);
+	row->path = series_column_strdup(stmt, 0);
+	row->instruments = sqlite3_column_int64(stmt, 1);
+
+	return row;
+}
+
+GPtrArray *
+venture_series_store_list_categories(
+	VentureSeriesStore	 *self,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	stmt = series_stmt(self, series_sql_list_categories, error);
+	if (NULL == stmt)
+		return NULL;
+
+	return series_collect(self, stmt, series_category_row_from,
+	                      (GDestroyNotify)venture_series_category_row_free,
+	                      "listing categories", error);
+}
+
 static const gchar series_sql_get_instrument[] =
 	"SELECT key, namespace, name, kind, category, parent_key, attrs,"
 	"       first_seen, last_seen"

@@ -1800,6 +1800,47 @@ venture_series_store_list_venues(
 );
 
 /**
+ * VentureSeriesCategoryRow:
+ * @path: a category path as the provider wrote it ("Trade Goods/Herb")
+ * @instruments: plain instruments (not variants) filed under exactly it
+ *
+ * One category the store's instruments are filed under.
+ */
+typedef struct
+{
+	gchar	*path;
+	gint64	 instruments;
+} VentureSeriesCategoryRow;
+
+/**
+ * venture_series_category_row_free:
+ * @row: (transfer full) (nullable): a category row
+ */
+void
+venture_series_category_row_free(VentureSeriesCategoryRow *row);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesCategoryRow, venture_series_category_row_free)
+
+/**
+ * venture_series_store_list_categories:
+ * @self: a #VentureSeriesStore
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every category path an instrument is filed under, by path, with how
+ * many plain instruments are. A provider's categories are its catalogue's
+ * own (an auction house's item classes), so this is the store's menu of
+ * them -- what a category picker offers.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesCategoryRow)
+ *   (nullable): the categories, or %NULL on error
+ */
+GPtrArray *
+venture_series_store_list_categories(
+	VentureSeriesStore	 *self,
+	GError			**error
+);
+
+/**
  * venture_series_store_get_instrument:
  * @self: a #VentureSeriesStore
  * @instrument_key: the instrument
