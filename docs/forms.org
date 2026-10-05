@@ -858,9 +858,9 @@ Migration =000741_form_marketing_consent= leaves existing questions without
 marketing permission; it never converts historical acknowledgements into
 marketing consent.
 
-Migration =000711_forms= pins the schema the module relies on --- the
+Migration =000721_forms= pins the schema the module relies on --- the
 per-form key index and the columns the door reads --- on SQLite and
-PostgreSQL. =000720_form_versions= pins the version table and the columns
+PostgreSQL. =000722_form_versions= pins the version table and the columns
 that tie a form and a response to a version. With forms switched off the
 tables are absent and both pass; switched on later, reconciliation makes
 them. Forms and versions ship in one release, so no released install

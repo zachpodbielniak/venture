@@ -1252,7 +1252,7 @@ applied(VentureDatabase *database, gint64 version)
 }
 
 /*
- * 000711 and 000720 pin what the forms module relies on: a question's key unique per
+ * 000721 and 000722 pin what the forms module relies on: a question's key unique per
  * form, deleted questions included, and the columns the public door reads.
  * With forms switched off the tables are absent and the script passes and
  * is recorded; switched on later, reconciliation makes the tables with the
@@ -1291,8 +1291,8 @@ test_forms_schema(void)
 	g_assert_false(table_exists(database, "form_prices"));
 	g_assert_false(table_exists(database, "form_payments"));
 	g_assert_false(table_exists(database, "form_uploads"));
-	g_assert_cmpint(applied(database, 711), ==, 1);
-	g_assert_cmpint(applied(database, 720), ==, 1);
+	g_assert_cmpint(applied(database, 721), ==, 1);
+	g_assert_cmpint(applied(database, 722), ==, 1);
 	g_assert_cmpint(applied(database, 730), ==, 1);
 	g_assert_cmpint(applied(database, 740), ==, 1);
 	g_assert_cmpint(applied(database, 741), ==, 1);
@@ -1337,8 +1337,8 @@ test_forms_schema(void)
 		g_assert_true(table_exists(database, "form_prices"));
 		g_assert_true(table_exists(database, "form_payments"));
 		g_assert_true(table_exists(database, "form_uploads"));
-		g_assert_cmpint(applied(database, 711), ==, 1);
-		g_assert_cmpint(applied(database, 720), ==, 1);
+		g_assert_cmpint(applied(database, 721), ==, 1);
+		g_assert_cmpint(applied(database, 722), ==, 1);
 		g_assert_cmpint(applied(database, 730), ==, 1);
 		g_assert_cmpint(applied(database, 740), ==, 1);
 		g_assert_cmpint(applied(database, 741), ==, 1);
@@ -1371,7 +1371,7 @@ test_forms_schema(void)
 	}
 
 	/* The script itself refuses a schema without the index. */
-	g_assert_true(g_file_get_contents("migrations/sqlite/000711_forms.sql", &script, NULL, &error));
+	g_assert_true(g_file_get_contents("migrations/sqlite/000721_forms.sql", &script, NULL, &error));
 	g_assert_no_error(error);
 	database = venture_database_new(uri, &error);
 	g_assert_no_error(error);
@@ -1385,8 +1385,8 @@ test_forms_schema(void)
 	g_clear_error(&error);
 	g_clear_pointer(&script, g_free);
 
-	/* 000720 likewise refuses responses that cannot say their version. */
-	g_assert_true(g_file_get_contents("migrations/sqlite/000720_form_versions.sql", &script, NULL, &error));
+	/* 000722 likewise refuses responses that cannot say their version. */
+	g_assert_true(g_file_get_contents("migrations/sqlite/000722_form_versions.sql", &script, NULL, &error));
 	g_assert_no_error(error);
 	g_assert_true(venture_database_execute(database, script, NULL, &error));
 	g_assert_no_error(error);

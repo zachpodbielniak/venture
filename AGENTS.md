@@ -2652,10 +2652,11 @@ and `docs/examples/wow-operations.org` have the rest.
   required or invalid answer, a summary that cannot take focus, a positive
   tabindex or a style attribute. A new question kind must pass it: add the
   kind and the test renders it automatically.
-- **The forms baseline migration is 000711.** Master used 000710 for
-  account holdings while the forms epic was in draft. Later forms children
-  retain 000720 onward in delivery order (the table is on the epic PR).
-  Databases made with the unreleased 000710_forms branch are not release
+- **The forms baseline migration is 000721, its versions 000722.** Master
+  took 000710, 000715 and 000720 while the forms epic was in draft, so the
+  forms baseline moved above them; later forms children keep 000730 onward
+  in delivery order. Databases made with an unreleased forms branch
+  (000710_forms, 000711_forms or 000720_form_versions) are not release
   upgrade sources; rebuild those disposable fixtures.
 
 - **Unfinished forms are working copies, not business events.** `form_draft`
