@@ -346,6 +346,24 @@ venture_cli_accounts_flatten_money(JsonObject *summary)
 	}
 }
 
+/**
+ * venture_cli_accounts_stages:
+ * @verb: (nullable): the word after `accounts`
+ *
+ * Whether `accounts @verb` writes through a route that honours `stage`.
+ * post and record-flips go through the generic action route, which stages
+ * any stageable action; main() refuses --stage on every other verb, because
+ * a read route would ignore it and a write route that does not read it
+ * would apply the change it was asked to hold back.
+ *
+ * Returns: %TRUE for post and record-flips
+ */
+static gboolean
+venture_cli_accounts_stages(const gchar *verb)
+{
+	return (0 == g_strcmp0(verb, "post")) || (0 == g_strcmp0(verb, "record-flips"));
+}
+
 /*
  * accounts post|record-flips SOURCE_ID ...: the books' type-level actions,
  * each option sent as its own JSON kind, the source as data_source_id.

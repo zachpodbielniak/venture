@@ -7806,12 +7806,34 @@ venture_dashboard_validate_account_options(
 			continue;
 		}
 
-		if (!JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_INT64 != json_node_get_value_type(node)) ||
-		    (json_node_get_int(node) < 1) || (json_node_get_int(node) > 3650))
+		/*
+		 * Each number to its own range: a source's id has no upper bound,
+		 * and a threshold stops where the core's does. One shared ceiling
+		 * refused a source past id 3650 and let a card save a threshold
+		 * the core then refused at every render.
+		 */
 		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			            "options.%s is a whole number, at least 1", name);
-			return FALSE;
+			gint64 max = G_MAXINT64;
+
+			if (0 == g_strcmp0(name, "expiring_hours"))
+				max = VENTURE_MARKETDATA_ACCOUNTS_MAX_EXPIRING_HOURS;
+			else if (0 == g_strcmp0(name, "mail_days"))
+				max = VENTURE_MARKETDATA_ACCOUNTS_MAX_MAIL_DAYS;
+			else if (0 == g_strcmp0(name, "stale_days"))
+				max = VENTURE_MARKETDATA_ACCOUNTS_MAX_STALE_DAYS;
+
+			if (!JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_INT64 != json_node_get_value_type(node)) ||
+			    (json_node_get_int(node) < 1) || (json_node_get_int(node) > max))
+			{
+				if (G_MAXINT64 == max)
+					g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+					            "options.%s is a whole number, at least 1", name);
+				else
+					g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+					            "options.%s is a whole number from 1 to %" G_GINT64_FORMAT,
+					            name, max);
+				return FALSE;
+			}
 		}
 	}
 

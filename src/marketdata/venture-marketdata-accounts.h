@@ -61,6 +61,31 @@ G_BEGIN_DECLS
 #define VENTURE_MARKETDATA_ACCOUNTS_STALE_DAYS (14)
 
 /**
+ * VENTURE_MARKETDATA_ACCOUNTS_MAX_EXPIRING_HOURS:
+ *
+ * The largest "expiring soon" window for listings a question may ask, in
+ * hours. Every door that takes the threshold (the pages, the dashboard
+ * cards, the report) holds it to this, so none accepts what the core
+ * would then refuse.
+ */
+#define VENTURE_MARKETDATA_ACCOUNTS_MAX_EXPIRING_HOURS (720)
+
+/**
+ * VENTURE_MARKETDATA_ACCOUNTS_MAX_MAIL_DAYS:
+ *
+ * The largest "expiring soon" window for mail, in days.
+ */
+#define VENTURE_MARKETDATA_ACCOUNTS_MAX_MAIL_DAYS (60)
+
+/**
+ * VENTURE_MARKETDATA_ACCOUNTS_MAX_STALE_DAYS:
+ *
+ * The longest an account may go unseen before a question calls it
+ * stale, in days.
+ */
+#define VENTURE_MARKETDATA_ACCOUNTS_MAX_STALE_DAYS (3650)
+
+/**
  * VENTURE_MARKETDATA_ACCOUNTS_TREND_DAYS:
  *
  * The days of closing balances behind each account's sparkline.
@@ -112,6 +137,8 @@ venture_marketdata_accounts_bases(void);
  *   venture_marketdata_accounts_sorts(); %NULL for "attention"
  * @descending: largest first
  * @now: the moment everything is judged at; 0 for the clock
+ * @realm_first: order by realm before @sort, for a table grouped by realm
+ *   (a realm's rows must be contiguous); @sort orders within each realm
  *
  * What the overview asks.
  */
@@ -127,6 +154,7 @@ typedef struct
 	const gchar	*sort;
 	gboolean	 descending;
 	gint64		 now;
+	gboolean	 realm_first;
 } VentureMarketdataAccountsQuery;
 
 /**
@@ -309,9 +337,11 @@ venture_marketdata_inventory(
  *   that has accounts
  * @group_by: (nullable): day, week, month, account, venue, instrument or
  *   source; %NULL for day
- * @since: the window's start, inclusive, Unix seconds; 0 for thirty days
- *   before @now, negative for no start
- * @until: its end, exclusive; 0 for just after @now, negative for no end
+ * @since: the window's start, inclusive, Unix seconds; 0 for the start of
+ *   the thirty whole days ending on @now's day (midnight UTC, the window
+ *   period=last_30_days names), negative for no start
+ * @until: its end, exclusive; 0 for the end of @now's day (midnight UTC),
+ *   negative for no end
  * @account: (nullable): one account's rows
  * @venue: (nullable): one venue's
  * @instrument: (nullable): one instrument's

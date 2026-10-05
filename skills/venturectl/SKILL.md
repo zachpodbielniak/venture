@@ -426,7 +426,7 @@ venturectl --stage create expense description="Cover art" amount=250.00
 #   approve: POST /api/v1/confirmations/a3f9c118/approve
 ```
 
-It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `dedupe`, `journal post`, `sequence enroll`, `lead convert` and `billing`,
+It is refused on any command other than `create`, `update`, `delete`, `act`, `dunning sweep`, `dedupe`, `journal post`, `sequence enroll`, `lead convert`, `billing`, `arbitrage record|close|reopen|abandon|execute` and `accounts post|record-flips`,
 because those are the only routes that read it -- and an unknown query
 parameter on a write route is ignored, so a quietly accepted `--stage` would
 apply the change it was asked to hold back.

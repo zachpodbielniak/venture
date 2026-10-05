@@ -4610,11 +4610,13 @@ main(
 	    (0 != g_strcmp0(args[0], "dunning")) &&
 	    (0 != g_strcmp0(args[0], "dedupe")) &&
 	    !((0 == g_strcmp0(args[0], "arbitrage")) && venture_cli_arbitrage_stages(args[1])) &&
+	    !((0 == g_strcmp0(args[0], "accounts")) && venture_cli_accounts_stages(args[1])) &&
 	    !((0 == g_strcmp0(args[0], "sequence")) && (0 == g_strcmp0(args[1], "enroll"))))
 	{
 		g_printerr("venturectl: --stage only means something to create, "
 		           "update, delete, act, dunning sweep, dedupe, journal post, sequence enroll, lead convert, billing "
-		           "and arbitrage record|close|reopen|abandon|execute. \"%s\" would ignore it.\n", args[0]);
+		           "arbitrage record|close|reopen|abandon|execute and accounts post|record-flips. "
+		           "\"%s\" would ignore it.\n", args[0]);
 		g_free(cli.base_url);
 		g_free(cli.token);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);

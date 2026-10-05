@@ -5586,7 +5586,7 @@ input:not([type="hidden"]):focus-visible {
 .reason-positions_expired, .reason-inbound_expiring { color: var(--text); }
 .accounts-clear { margin: 0; font-size: 13.5px; color: var(--text-muted); }
 
-.accounts-table tr.needs-login > th a { font-weight: 650; }
+.accounts-table tr.needs-login > td.row-head a { font-weight: 650; }
 .accounts-group-row th {
 	padding-top: var(--space-3);
 	background: var(--surface-sunken);
@@ -5653,7 +5653,8 @@ input:not([type="hidden"]):focus-visible {
 	margin-right: var(--space-1);
 	vertical-align: middle;
 	background: var(--surface-sunken);
-	box-shadow: inset 0 0 0 1px var(--border);
+	box-sizing: border-box;
+	border: 1px solid var(--border);
 }
 .share-bar .bar-fill { display: block; height: 100%; background: var(--text-muted); }
 .accounts-breakdown > summary { cursor: pointer; white-space: nowrap; }

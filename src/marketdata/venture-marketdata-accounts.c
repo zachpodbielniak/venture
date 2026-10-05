@@ -34,9 +34,9 @@
 #define MA_PNL_DAYS (30)
 #define MA_TOP_DEFAULT (10)
 #define MA_MAX_PAGE_NUMBER (1000000)
-#define MA_MAX_HOURS (720)
-#define MA_MAX_MAIL_DAYS (60)
-#define MA_MAX_STALE_DAYS (3650)
+#define MA_MAX_HOURS VENTURE_MARKETDATA_ACCOUNTS_MAX_EXPIRING_HOURS
+#define MA_MAX_MAIL_DAYS VENTURE_MARKETDATA_ACCOUNTS_MAX_MAIL_DAYS
+#define MA_MAX_STALE_DAYS VENTURE_MARKETDATA_ACCOUNTS_MAX_STALE_DAYS
 #define MA_MAX_DEAD_DAYS (3650)
 
 static const gchar *const ma_bases[] = {
@@ -138,6 +138,35 @@ static gint64
 ma_now(gint64 now)
 {
 	return (now > 0) ? now : g_get_real_time() / G_USEC_PER_SEC;
+}
+
+/*
+ * The thirty days that end with @now's day: whole days, the way
+ * venture_date_range_parse() reads "last_30_days" -- which day it is is
+ * read in the configured zone, every boundary is a midnight UTC. A window
+ * of now minus thirty times a day left the P&L's default and the same
+ * page's "last 30 days" disagreeing about a sale at half past midnight
+ * thirty days back, and moved with every second.
+ */
+static void
+ma_thirty_days(
+	VentureContext	*context,
+	gint64		 now,
+	gint64		*since,
+	gint64		*until
+){
+	g_autoptr(GDateTime) moment = NULL;
+	g_autoptr(GDateTime) local = NULL;
+	g_autoptr(GDateTime) today = NULL;
+	GTimeZone *zone;
+
+	zone = venture_context_get_timezone(context);
+	moment = g_date_time_new_from_unix_utc(now);
+	local = (NULL != zone) ? g_date_time_to_timezone(moment, zone) : g_date_time_ref(moment);
+	today = g_date_time_new_utc(g_date_time_get_year(local), g_date_time_get_month(local),
+	                            g_date_time_get_day_of_month(local), 0, 0, 0.0);
+	*until = g_date_time_to_unix(today) + MA_DAY;
+	*since = *until - MA_PNL_DAYS * MA_DAY;
 }
 
 static JsonNode *
@@ -1442,7 +1471,6 @@ ma_overview_source(
 	g_autoptr(GPtrArray) positions = NULL;
 	g_autoptr(GPtrArray) inbound = NULL;
 	g_autoptr(GPtrArray) days = NULL;
-	g_autoptr(GPtrArray) totals = NULL;
 	g_autoptr(GHashTable) venues = NULL;
 	g_autoptr(GHashTable) ops = NULL;
 	g_autoptr(GHashTable) listed = NULL;
@@ -1615,56 +1643,92 @@ ma_overview_source(
 			return FALSE;
 	}
 
-	/* What the bags are worth, on the basis asked for. */
+	/*
+	 * What the bags are worth, on the basis asked for. The value read
+	 * narrows by one account at most, so a group (a realm) is valued an
+	 * account at a time: valuing the whole source put every realm's bags
+	 * under the one asked about. Each line's value is its own quantity at
+	 * its own venue's price, so the accounts' totals add up exactly.
+	 */
 	if (NULL != currency)
 	{
-		VentureSeriesValueFilter filter;
-		VentureSeriesValueTotals worth;
-		g_autoptr(GPtrArray) page = NULL;
+		guint shown = (NULL != view->query->group_key) ? accounts->len : 1;
+		guint k;
 
-		venture_series_value_filter_init(&filter);
-		filter.currency = currency;
-		filter.basis = view->basis;
-		filter.default_group = default_group;
-		filter.now = view->now;
-		filter.exclude_place = "currency";
-		filter.count = 1;
-		page = venture_series_store_value_instruments(store, &filter, &worth, error);
+		for (k = 0; k < shown; k++)
+		{
+			VentureSeriesValueFilter filter;
+			VentureSeriesValueTotals worth;
+			g_autoptr(GPtrArray) page = NULL;
 
-		if (NULL == page)
-			return FALSE;
+			venture_series_value_filter_init(&filter);
+			filter.currency = currency;
+			filter.basis = view->basis;
+			filter.default_group = default_group;
+			filter.now = view->now;
+			filter.exclude_place = "currency";
+			filter.count = 1;
 
-		if (!ma_amounts_add(view->inventory, currency, worth.value, error))
-			return FALSE;
+			if (NULL != view->query->group_key)
+				filter.account_key = ((VentureSeriesAccountRow *)g_ptr_array_index(accounts, k))->key;
 
-		view->inventory_lines += worth.lines;
-		view->inventory_priced += worth.priced_lines;
-		view->inventory_units += worth.quantity;
+			page = venture_series_store_value_instruments(store, &filter, &worth, error);
+
+			if (NULL == page)
+				return FALSE;
+
+			if (!ma_amounts_add(view->inventory, currency, worth.value, error))
+				return FALSE;
+
+			view->inventory_lines += worth.lines;
+			view->inventory_priced += worth.priced_lines;
+			view->inventory_units += worth.quantity;
+		}
 	}
 
-	/* The last thirty days of the ledger. */
-	venture_series_txn_filter_init(&txns);
-	txns.since = view->now - MA_PNL_DAYS * MA_DAY;
-	txns.until = view->now + 1;
-	totals = venture_series_store_txn_totals(store, &txns, VENTURE_SERIES_TXN_GROUP_MONTH, error);
-
-	if (NULL == totals)
-		return FALSE;
-
-	for (i = 0; i < totals->len; i++)
+	/*
+	 * The last thirty days of the ledger. A group reads it an account at a
+	 * time, like the bags, so the net beside a realm's gold is that
+	 * realm's; a row naming no account belongs to no realm. (Bucketing the
+	 * whole source by account would do it in one read, but buckets are
+	 * capped and refused past the cap, and a source may hold as many
+	 * accounts as the cap.)
+	 */
 	{
-		VentureSeriesTxnTotal *bucket = g_ptr_array_index(totals, i);
-		gint64 purchases;
+		guint shown = (NULL != view->query->group_key) ? accounts->len : 1;
+		guint k;
 
-		if (!venture_series_math_add(bucket->buys_amount, bucket->expense, &purchases) ||
-		    !ma_amounts_add(view->sales, bucket->currency, bucket->sales_amount, error) ||
-		    !ma_amounts_add(view->purchases, bucket->currency, purchases, error) ||
-		    !ma_amounts_add(view->net, bucket->currency, bucket->net, error))
+		for (k = 0; k < shown; k++)
 		{
-			if ((NULL != error) && (NULL == *error))
-				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-				                    "The ledger's thirty days do not fit in a 64-bit integer");
-			return FALSE;
+			g_autoptr(GPtrArray) totals = NULL;
+
+			venture_series_txn_filter_init(&txns);
+			ma_thirty_days(context, view->now, &txns.since, &txns.until);
+
+			if (NULL != view->query->group_key)
+				txns.account_key = ((VentureSeriesAccountRow *)g_ptr_array_index(accounts, k))->key;
+
+			totals = venture_series_store_txn_totals(store, &txns, VENTURE_SERIES_TXN_GROUP_MONTH, error);
+
+			if (NULL == totals)
+				return FALSE;
+
+			for (i = 0; i < totals->len; i++)
+			{
+				VentureSeriesTxnTotal *bucket = g_ptr_array_index(totals, i);
+				gint64 purchases;
+
+				if (!venture_series_math_add(bucket->buys_amount, bucket->expense, &purchases) ||
+				    !ma_amounts_add(view->sales, bucket->currency, bucket->sales_amount, error) ||
+				    !ma_amounts_add(view->purchases, bucket->currency, purchases, error) ||
+				    !ma_amounts_add(view->net, bucket->currency, bucket->net, error))
+				{
+					if ((NULL != error) && (NULL == *error))
+						g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+						                    "The ledger's thirty days do not fit in a 64-bit integer");
+					return FALSE;
+				}
+			}
 		}
 	}
 
@@ -1738,7 +1802,25 @@ typedef struct
 {
 	const gchar	*name;
 	gboolean	 descending;
+	gboolean	 realm_first;
 } MaOrder;
+
+/*
+ * A string comparison as -1, 0 or 1. g_strcmp0() answers a byte
+ * difference ("Zulu" against "Alpha" is 25), and ma_compare_accounts()
+ * keeps +/-2 to mean "unknown, last either way" -- so an unclamped
+ * difference was read as unknown and never turned round by a descending
+ * order.
+ */
+static gint
+ma_compare_text(
+	const gchar	*a,
+	const gchar	*b
+){
+	gint by = g_strcmp0(a, b);
+
+	return (by < 0) ? -1 : ((by > 0) ? 1 : 0);
+}
 
 /* NONE sorts last whichever way: compare known values only. */
 static gint
@@ -1770,10 +1852,21 @@ ma_compare_accounts(
 	const gchar *ma_sort_name = order->name;
 	gint by = 0;
 
+	/* Grouped by realm, the realm leads whatever else sorts, or a realm's
+	 * rows interleave with another's and its header is drawn twice. The
+	 * realm sort itself goes the way it was asked, below. */
+	if (order->realm_first && (0 != g_strcmp0(ma_sort_name, "realm")))
+	{
+		by = ma_compare_text(one->realm_fold, two->realm_fold);
+
+		if (0 != by)
+			return by;
+	}
+
 	if (0 == g_strcmp0(ma_sort_name, "name"))
-		by = g_strcmp0(one->name_fold, two->name_fold);
+		by = ma_compare_text(one->name_fold, two->name_fold);
 	else if (0 == g_strcmp0(ma_sort_name, "realm"))
-		by = g_strcmp0(one->realm_fold, two->realm_fold);
+		by = ma_compare_text(one->realm_fold, two->realm_fold);
 	else if (0 == g_strcmp0(ma_sort_name, "gold"))
 		by = ma_compare_figure(one->gold, two->gold);
 	else if (0 == g_strcmp0(ma_sort_name, "positions"))
@@ -2014,6 +2107,7 @@ venture_marketdata_accounts(
 
 		order.name = (NULL != query->sort) ? query->sort : "attention";
 		order.descending = query->descending;
+		order.realm_first = query->realm_first;
 		g_ptr_array_sort_with_data(view.rows, ma_compare_accounts, &order);
 		rows = json_array_new();
 
@@ -2678,8 +2772,7 @@ venture_marketdata_account(
 
 		venture_series_txn_filter_init(&txn_filter);
 		txn_filter.account_key = query->key;
-		txn_filter.since = now - MA_PNL_DAYS * MA_DAY;
-		txn_filter.until = now + 1;
+		ma_thirty_days(context, now, &txn_filter.since, &txn_filter.until);
 		totals = venture_series_store_txn_totals(store, &txn_filter, VENTURE_SERIES_TXN_GROUP_MONTH, error);
 
 		if (NULL == totals)
@@ -3331,9 +3424,9 @@ venture_marketdata_external_pnl(
 
 	top = (0 == query->top) ? MA_TOP_DEFAULT : query->top;
 	now = ma_now(query->now);
-	since = (0 == query->since) ? now - MA_PNL_DAYS * MA_DAY
-	      : ((query->since < 0) ? G_MININT64 : query->since);
-	until = (0 == query->until) ? now + 1 : ((query->until < 0) ? G_MININT64 : query->until);
+	ma_thirty_days(context, now, &since, &until);
+	since = (0 == query->since) ? since : ((query->since < 0) ? G_MININT64 : query->since);
+	until = (0 == query->until) ? until : ((query->until < 0) ? G_MININT64 : query->until);
 
 	if ((G_MININT64 != since) && (G_MININT64 != until) && (until <= since))
 	{

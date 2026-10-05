@@ -644,7 +644,8 @@ fixture_set_up(
 	fixture->config = venture_config_new();
 	g_object_set(fixture->config, "state-dir", fixture->state_dir, "feeds-enabled", TRUE,
 	             "feeds-run-window-minutes", (gint64)0, "server-bind-address", "127.0.0.1",
-	             "server-port", (gint64)0, "security-require-auth", FALSE, NULL);
+	             "server-port", (gint64)0, "security-require-auth", FALSE,
+	             "locale-timezone", "UTC", NULL);
 
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
@@ -1370,6 +1371,23 @@ test_pages(
 		g_assert_nonnull(strstr(page, "chart-bar"));
 	}
 
+	/* A span typed into the address stays the chosen period: without its
+	 * own option the select showed the first preset and the next Show
+	 * asked about a different window. */
+	{
+		g_autofree gchar *page = get_page(fixture, "/accounts/pnl?period=2026-01-01..2026-03-31");
+
+		g_assert_nonnull(strstr(page, "<option value=\"2026-01-01..2026-03-31\" selected>"));
+		g_assert_null(strstr(page, "\" selected>last 30 days<"));
+	}
+
+	{
+		g_autofree gchar *page = get_page(fixture, "/accounts/pnl");
+
+		g_assert_nonnull(strstr(page, "<option value=\"last_30_days\" selected>"));
+		g_assert_null(strstr(page, "<option value=\"\""));
+	}
+
 	/* A bad question is a 400 page, not a crash. */
 	g_assert_cmpuint(http_get(fixture, "/accounts?basis=cheapest", NULL), ==, 400);
 	g_assert_cmpuint(http_get(fixture, "/api/v1/accounts/pnl?group_by=hour", NULL), ==, 400);
@@ -1384,6 +1402,262 @@ test_pages(
 		if ((NULL == strstr(industrial, classes[i])) || (NULL == strstr(classic, classes[i])))
 			g_error("%s is not styled in both looks", classes[i]);
 	}
+
+	/*
+	 * The rule that bolds a character who needs a login names the cell
+	 * the page draws (a td.row-head, not a th: a rule naming a th matched
+	 * nothing), in both looks; and the share bar draws its line as a
+	 * border, not a shadow, which neither look uses.
+	 */
+	g_assert_nonnull(strstr(industrial, "<tr class=\"needs-login\"><td class=\"row-head\">"));
+
+	{
+		const gchar *const looks[] = { industrial, classic, NULL };
+
+		for (i = 0; NULL != looks[i]; i++)
+		{
+			const gchar *rule;
+			g_autofree gchar *block = NULL;
+
+			g_assert_nonnull(strstr(looks[i], ".accounts-table tr.needs-login > td.row-head a"));
+			rule = strstr(looks[i], ".share-bar {");
+			g_assert_nonnull(rule);
+			block = g_strndup(rule, (gsize)(strchr(rule, '}') - rule));
+			g_assert_null(strstr(block, "box-shadow"));
+			g_assert_nonnull(strstr(block, "border: 1px solid var(--border)"));
+		}
+	}
+}
+
+/*
+ * A second source with three characters on two realms, valued at market:
+ *
+ *   venues v-east (group East, ore 10.0), v-west (group West, ore 20.0);
+ *   Alpha (East, 30 gold, 2 ore), Delta (West, 20 gold, 5 ore),
+ *   Zulu (East, 10 gold, 1 ore);
+ *   the last day's ledger: Alpha sells for 7.0, Delta for 50.0, Zulu
+ *   buys for 2.0.
+ *
+ * Every figure differs between the realms, so a figure summed over the
+ * whole source cannot pass for one realm's.
+ */
+static gint64
+seed_realms(Fixture *fixture)
+{
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autofree gchar *taken = iso(fixture->now - HOUR);
+	g_autofree gchar *snap = iso(fixture->now - 10 * 60);
+	g_autofree gchar *seen = iso(fixture->now - DAY);
+	g_autofree gchar *d1 = iso(fixture->now - DAY);
+	gint64 source;
+
+	source = push_source(fixture, fixture->org, "Realms");
+	line(body, "{\"type\":\"venue\",\"key\":\"v-east\",\"name\":\"East\",\"group\":\"East\"}");
+	line(body, "{\"type\":\"venue\",\"key\":\"v-west\",\"name\":\"West\",\"group\":\"West\"}");
+	line(body, "{\"type\":\"instrument\",\"key\":\"ore\",\"name\":\"Copper Ore\",\"kind\":\"item\"}");
+	line(body, "{\"type\":\"snapshot\",\"venue\":\"v-east\",\"taken_at\":\"%s\"}", taken);
+	line(body, "{\"type\":\"stat\",\"venue\":\"v-east\",\"instrument\":\"ore\",\"market\":\"10.0000\","
+	           "\"quantity\":100}");
+	line(body, "{\"type\":\"snapshot\",\"venue\":\"v-west\",\"taken_at\":\"%s\"}", taken);
+	line(body, "{\"type\":\"stat\",\"venue\":\"v-west\",\"instrument\":\"ore\",\"market\":\"20.0000\","
+	           "\"quantity\":100}");
+
+	line(body, "{\"type\":\"account\",\"key\":\"Alpha-E\",\"name\":\"Alpha\",\"kind\":\"character\","
+	           "\"group\":\"East\",\"venue\":\"v-east\",\"last_seen\":\"%s\"}", seen);
+	line(body, "{\"type\":\"account\",\"key\":\"Delta-W\",\"name\":\"Delta\",\"kind\":\"character\","
+	           "\"group\":\"West\",\"venue\":\"v-west\",\"last_seen\":\"%s\"}", seen);
+	line(body, "{\"type\":\"account\",\"key\":\"Zulu-E\",\"name\":\"Zulu\",\"kind\":\"character\","
+	           "\"group\":\"East\",\"venue\":\"v-east\",\"last_seen\":\"%s\"}", seen);
+	line(body, "{\"type\":\"balance\",\"account\":\"Alpha-E\",\"currency\":\"GOLD\",\"amount\":\"30.0000\","
+	           "\"at\":\"%s\"}", d1);
+	line(body, "{\"type\":\"balance\",\"account\":\"Delta-W\",\"currency\":\"GOLD\",\"amount\":\"20.0000\","
+	           "\"at\":\"%s\"}", d1);
+	line(body, "{\"type\":\"balance\",\"account\":\"Zulu-E\",\"currency\":\"GOLD\",\"amount\":\"10.0000\","
+	           "\"at\":\"%s\"}", d1);
+	line(body, "{\"type\":\"account_snapshot\",\"account\":\"Alpha-E\",\"at\":\"%s\",\"covers\":[\"holdings\"]}",
+	     snap);
+	line(body, "{\"type\":\"holding\",\"account\":\"Alpha-E\",\"place\":\"bag\",\"instrument\":\"ore\",\"quantity\":2}");
+	line(body, "{\"type\":\"account_snapshot\",\"account\":\"Delta-W\",\"at\":\"%s\",\"covers\":[\"holdings\"]}",
+	     snap);
+	line(body, "{\"type\":\"holding\",\"account\":\"Delta-W\",\"place\":\"bag\",\"instrument\":\"ore\",\"quantity\":5}");
+	line(body, "{\"type\":\"account_snapshot\",\"account\":\"Zulu-E\",\"at\":\"%s\",\"covers\":[\"holdings\"]}",
+	     snap);
+	line(body, "{\"type\":\"holding\",\"account\":\"Zulu-E\",\"place\":\"bag\",\"instrument\":\"ore\",\"quantity\":1}");
+	line(body, "{\"type\":\"txn\",\"id\":\"r1\",\"account\":\"Alpha-E\",\"venue\":\"v-east\",\"kind\":\"sale\","
+	           "\"instrument\":\"ore\",\"quantity\":1,\"amount\":\"7.0000\",\"at\":\"%s\"}", d1);
+	line(body, "{\"type\":\"txn\",\"id\":\"r2\",\"account\":\"Delta-W\",\"venue\":\"v-west\",\"kind\":\"sale\","
+	           "\"instrument\":\"ore\",\"quantity\":1,\"amount\":\"50.0000\",\"at\":\"%s\"}", d1);
+	line(body, "{\"type\":\"txn\",\"id\":\"r3\",\"account\":\"Zulu-E\",\"venue\":\"v-east\",\"kind\":\"buy\","
+	           "\"instrument\":\"ore\",\"quantity\":1,\"amount\":\"2.0000\",\"at\":\"%s\"}", d1);
+	push(fixture, source, body->str);
+
+	return source;
+}
+
+/* Every occurrence of @needle in @haystack. */
+static guint
+count_of(
+	const gchar	*haystack,
+	const gchar	*needle
+){
+	const gchar *at = haystack;
+	guint count = 0;
+
+	while (NULL != (at = strstr(at, needle)))
+	{
+		count++;
+		at += strlen(needle);
+	}
+
+	return count;
+}
+
+/*
+ * The account table's orders and the realm narrowing, over two realms
+ * whose figures all differ. What breaks if this regresses:
+ *
+ *   - a descending name or realm sort leaving most pairs ascending,
+ *     because the string comparison's byte difference (25 for Zulu
+ *     against Alpha) was read as "unknown, last either way" and never
+ *     turned round;
+ *   - grouping by realm under another sort interleaving the realms, so
+ *     one realm's header is drawn twice with another's rows between;
+ *   - a realm's summary showing the whole source's inventory value and
+ *     thirty days' net beside that realm's gold.
+ */
+static void
+test_realms(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	JsonArray *rows;
+	JsonObject *summary;
+	gint64 source;
+
+	(void)user_data;
+
+	source = seed_realms(fixture);
+
+	/* Name, descending: Zulu, Delta, Alpha. */
+	path = g_strdup_printf("/api/v1/accounts?source=%" G_GINT64_FORMAT "&sort=name&dir=desc", source);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "key"), ==, "Zulu-E");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 1), "key"), ==, "Delta-W");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 2), "key"), ==, "Alpha-E");
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Realm, descending: West before East. */
+	path = g_strdup_printf("/api/v1/accounts?source=%" G_GINT64_FORMAT "&sort=realm&dir=desc", source);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "key"), ==, "Delta-W");
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Gold, descending, grouped: Alpha (30) and Zulu (10) under East,
+	 * Delta (20) under West, one header each. */
+	path = g_strdup_printf("/api/v1/accounts?source=%" G_GINT64_FORMAT "&by_realm=1&sort=gold&dir=desc",
+	                       source);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "key"), ==, "Alpha-E");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 1), "key"), ==, "Zulu-E");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 2), "key"), ==, "Delta-W");
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/accounts?source=%" G_GINT64_FORMAT "&by_realm=1&sort=gold&dir=desc", source);
+	page = get_page(fixture, path);
+	g_assert_cmpuint(count_of(page, "class=\"accounts-group-row\""), ==, 2);
+	g_assert_cmpuint(count_of(page, ">East</th>"), ==, 1);
+	g_assert_cmpuint(count_of(page, ">West</th>"), ==, 1);
+	g_clear_pointer(&path, g_free);
+
+	/* East alone: its gold, its bags at market (3 ore at 10.0) and its
+	 * thirty days (7.0 sold less 2.0 bought), never the source's. */
+	path = g_strdup_printf("/api/v1/accounts?source=%" G_GINT64_FORMAT "&group=East&basis=market", source);
+	answer = get_json(fixture, path, 200);
+	summary = json_object_get_object_member(root_of(answer), "summary");
+	g_assert_cmpint(json_object_get_int_member(summary, "accounts"), ==, 2);
+	g_assert_cmpint(first_amount(summary, "balances"), ==, 400000);
+	g_assert_cmpint(first_amount(summary, "inventory_value"), ==, 300000);
+	g_assert_cmpint(json_object_get_int_member(summary, "inventory_units"), ==, 3);
+	g_assert_cmpint(first_amount(summary, "net_30d"), ==, 50000);
+	g_assert_cmpint(first_amount(summary, "sales_30d"), ==, 70000);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* The whole source still counts everything: 3 x 10.0 + 5 x 20.0 and
+	 * 7.0 + 50.0 - 2.0. */
+	path = g_strdup_printf("/api/v1/accounts?source=%" G_GINT64_FORMAT "&basis=market", source);
+	answer = get_json(fixture, path, 200);
+	summary = json_object_get_object_member(root_of(answer), "summary");
+	g_assert_cmpint(first_amount(summary, "inventory_value"), ==, 1300000);
+	g_assert_cmpint(first_amount(summary, "net_30d"), ==, 550000);
+}
+
+/*
+ * The P&L's default window is the window "last_30_days" names: thirty
+ * whole days ending with today, every boundary a midnight UTC. A sale at
+ * half past midnight on the window's first day counts; one a second
+ * before that day does not, under either spelling. What breaks if this
+ * regresses: the page labelling its default "last 30 days" while counting
+ * now minus thirty times a day, so the same page totals differently with
+ * and without ?period=last_30_days, and moves every second.
+ */
+static void
+test_pnl_window(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(JsonNode) plain = NULL;
+	g_autoptr(JsonNode) named = NULL;
+	g_autofree gchar *inside = NULL;
+	g_autofree gchar *before = NULL;
+	g_autofree gchar *seen = NULL;
+	g_autofree gchar *path = NULL;
+	JsonObject *total;
+	gint64 start;
+	gint64 source;
+
+	(void)user_data;
+
+	/* The fixture's zone is UTC, so today is the UTC day. */
+	start = (fixture->now / DAY) * DAY + DAY - 30 * DAY;
+	inside = iso(start + 30 * 60);
+	before = iso(start - 1);
+	seen = iso(fixture->now - DAY);
+
+	source = push_source(fixture, fixture->org, "Window");
+	line(body, "{\"type\":\"account\",\"key\":\"Edge\",\"name\":\"Edge\",\"kind\":\"character\","
+	           "\"last_seen\":\"%s\"}", seen);
+	line(body, "{\"type\":\"txn\",\"id\":\"w1\",\"account\":\"Edge\",\"kind\":\"income\","
+	           "\"amount\":\"3.0000\",\"at\":\"%s\"}", inside);
+	line(body, "{\"type\":\"txn\",\"id\":\"w2\",\"account\":\"Edge\",\"kind\":\"income\","
+	           "\"amount\":\"100.0000\",\"at\":\"%s\"}", before);
+	push(fixture, source, body->str);
+
+	path = g_strdup_printf("/api/v1/accounts/pnl?source=%" G_GINT64_FORMAT, source);
+	plain = get_json(fixture, path, 200);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/accounts/pnl?source=%" G_GINT64_FORMAT "&period=last_30_days", source);
+	named = get_json(fixture, path, 200);
+
+	total = json_array_get_object_element(json_object_get_array_member(root_of(named), "totals"), 0);
+	g_assert_cmpint(money_amount(total, "net"), ==, 30000);
+	total = json_array_get_object_element(json_object_get_array_member(root_of(plain), "totals"), 0);
+	g_assert_cmpint(money_amount(total, "net"), ==, 30000);
+	g_assert_cmpstr(json_object_get_string_member(root_of(plain), "since"), ==,
+	                json_object_get_string_member(root_of(named), "since"));
+	g_assert_cmpstr(json_object_get_string_member(root_of(plain), "until"), ==,
+	                json_object_get_string_member(root_of(named), "until"));
 }
 
 /* The widget scope of the default organization. */
@@ -1502,6 +1776,41 @@ test_widgets(
 	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(bad), NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
+
+	/*
+	 * Each number to its own range. A source's id has no ceiling; each
+	 * threshold stops where the core's does. What breaks: one shared
+	 * 1..3650 refusing a card for source 5000, and saving an
+	 * expiring_hours of 721 or a mail_days of 61 that every render then
+	 * answers with an error.
+	 */
+	{
+		static const gchar *const refused[] = {
+			"{\"data_source_id\": 0}", "{\"expiring_hours\": 721}", "{\"mail_days\": 61}",
+			"{\"stale_days\": 3651}", "{\"expiring_hours\": 0}", NULL
+		};
+		g_autoptr(VentureDashboardWidget) far = NULL;
+		g_autoptr(VentureDashboardWidget) edge = NULL;
+		guint i;
+
+		far = widget_of(fixture, ID(dashboard), "accounts_summary", "{\"data_source_id\": 5000}");
+		edge = widget_of(fixture, ID(dashboard), "accounts_attention",
+		                 "{\"expiring_hours\": 720, \"mail_days\": 60, \"stale_days\": 3650}");
+		g_clear_pointer(&result, venture_widget_result_free);
+		result = venture_dashboard_render_widget(fixture->context, edge, &scope);
+		g_assert_null(result->error);
+		g_clear_pointer(&result, venture_widget_result_free);
+
+		g_object_set(bad, "kind", "accounts_attention", NULL);
+
+		for (i = 0; NULL != refused[i]; i++)
+		{
+			g_object_set(bad, "options", refused[i], NULL);
+			g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(bad), NULL, &error));
+			g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+			g_clear_error(&error);
+		}
+	}
 
 	/* The Operations template imports, and its cards answer. */
 	{
@@ -1759,6 +2068,8 @@ main(
 	ADD("inventory", test_inventory);
 	ADD("pnl", test_pnl);
 	ADD("pages", test_pages);
+	ADD("realms", test_realms);
+	ADD("pnl-window", test_pnl_window);
 	ADD("widgets", test_widgets);
 	ADD("reports", test_reports);
 	ADD("listing-performance-location", test_listing_performance_location);

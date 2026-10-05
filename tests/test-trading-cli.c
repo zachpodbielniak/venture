@@ -1463,6 +1463,36 @@ test_accounts_books(
 		g_assert_true(json_object_get_boolean_member(json_node_get_object(dry), "dry_run"));
 	}
 
+	/*
+	 * --stage holds the post back: a confirmation and no posting row.
+	 * What breaks if this regresses: main()'s --stage gate refusing both
+	 * verbs (it once listed them in --help and refused them all the same),
+	 * or a staged post writing to the books before anyone approved it.
+	 */
+	{
+		const gchar *const staged[] = { "--stage", "accounts", "post", id, "until=2026-03-10", NULL };
+		const gchar *const staged_flips[] = { "--stage", "accounts", "record-flips", id, NULL };
+		const gchar *const staged_read[] = { "--stage", "accounts", "list", NULL };
+		g_autofree gchar *held = NULL;
+		g_autofree gchar *held_flips = NULL;
+		guint confirmations;
+		guint postings;
+
+		confirmations = pending(fixture);
+		postings = count_of(fixture, VENTURE_TYPE_EXTERNAL_POSTING);
+		held = cli_ok(fixture, "json", staged);
+		g_assert_nonnull(strstr(held, "waiting for approval"));
+		g_assert_cmpuint(pending(fixture), ==, confirmations + 1);
+		g_assert_cmpuint(count_of(fixture, VENTURE_TYPE_EXTERNAL_POSTING), ==, postings);
+
+		/* record-flips passes the gate too; whether it may be staged on a
+		 * daily source is the server's question, not the gate's. */
+		held_flips = cli_ok(fixture, "json", staged_flips);
+		g_assert_cmpuint(pending(fixture), ==, confirmations + 2);
+
+		cli_refused(fixture, staged_read, 2, "accounts post|record-flips");
+	}
+
 	{
 		const gchar *const post[] = { "accounts", "post", id, "until=2026-03-10", NULL };
 

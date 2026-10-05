@@ -565,9 +565,12 @@ acw_overview_query(
 
 	if (!venture_web_request_organization(self, request, NULL, &query->organization_id, error) ||
 	    !mdw_number(request, "source", 0, G_MAXINT64, &query->data_source_id, error) ||
-	    !acw_threshold(request, "expiring_hours", 720, &query->expiring_hours, error) ||
-	    !acw_threshold(request, "mail_days", 60, &query->mail_days, error) ||
-	    !acw_threshold(request, "stale_days", 3650, &query->stale_days, error))
+	    !acw_threshold(request, "expiring_hours", VENTURE_MARKETDATA_ACCOUNTS_MAX_EXPIRING_HOURS,
+	                   &query->expiring_hours, error) ||
+	    !acw_threshold(request, "mail_days", VENTURE_MARKETDATA_ACCOUNTS_MAX_MAIL_DAYS,
+	                   &query->mail_days, error) ||
+	    !acw_threshold(request, "stale_days", VENTURE_MARKETDATA_ACCOUNTS_MAX_STALE_DAYS,
+	                   &query->stale_days, error))
 		return FALSE;
 
 	query->basis = mdw_param(request, "basis");
@@ -688,7 +691,10 @@ venture_marketdata_web_accounts(
 
 	by_realm = mdw_flag(request, "by_realm");
 
-	/* Grouped by realm, the realm is the first key whatever else sorts. */
+	/* Grouped by realm, the realm is the first key whatever else sorts;
+	 * with no sort asked, the realms' accounts go by name. */
+	query.realm_first = by_realm;
+
 	if (by_realm && (NULL == query.sort))
 		query.sort = "realm";
 
@@ -973,7 +979,8 @@ venture_marketdata_web_account(
 
 	if (!venture_web_request_organization(self, request, NULL, &query.organization_id, &error) ||
 	    !mdw_path_id(params, "source", &query.data_source_id, &error) ||
-	    !acw_threshold(request, "expiring_hours", 720, &query.expiring_hours, &error) ||
+	    !acw_threshold(request, "expiring_hours", VENTURE_MARKETDATA_ACCOUNTS_MAX_EXPIRING_HOURS,
+	                   &query.expiring_hours, &error) ||
 	    !mdw_number(request, "ledger", 0, VENTURE_MARKETDATA_ACCOUNTS_MAX_PAGE, &value, &error))
 		return venture_web_error_response(error);
 
@@ -1929,6 +1936,18 @@ venture_marketdata_web_pnl(
 	}
 	mdw_source_picker(html, root, json_object_get_int_member(root, "data_source_id"), FALSE);
 	g_string_append(html, "<div class=\"field\"><label>Period<select name=\"period\">");
+
+	/* A period typed into the address (a span, a month) stays chosen:
+	 * without its own option the select fell back to the first preset and
+	 * the next Show answered a different window. */
+	if (!g_strv_contains(periods, period))
+	{
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, period);
+		g_string_append(html, "\" selected>");
+		venture_html_escape_append(html, period);
+		g_string_append(html, "</option>");
+	}
 
 	for (i = 0; NULL != periods[i]; i++)
 	{
