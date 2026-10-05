@@ -63,6 +63,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libarchive-devel \
         gmime30-devel \
         gnutls-devel \
+        libdex-devel \
         jq \
         gnupg2 \
     && dnf clean all \
@@ -121,8 +122,12 @@ COPY modules/ modules/
 COPY tests/ tests/
 COPY venture.pc.in ./
 COPY docs/ docs/
+COPY skills/ skills/
 COPY migrations/ migrations/
-COPY README.org ./
+COPY README.org Containerfile LICENSE ./
+# The two generators `make all` itself runs (rules.mk); the rest of tools/
+# is the test suite's and is copied below.
+COPY tools/venture-models.sh tools/venture-migrations.sh tools/
 
 RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
     make DEBUG=${DEBUG} PREFIX=${PREFIX} all plugins
@@ -210,6 +215,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         jansson \
         gmime30 \
         gnutls \
+        libdex \
         ca-certificates \
         tzdata \
         git \
