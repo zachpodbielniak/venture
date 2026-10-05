@@ -1392,6 +1392,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"external ledger's days or flips posted to the books.",
 		arbitrage_requires, arbitrage_suggests, arbitrage_types, arbitrage_reports,
 		NULL, FALSE
+	},
+	{
 		"forms", "Forms",
 		"Contact forms, surveys, signups and intake, built here and embedded "
 		"on any site in that site's own styles, with every response a "
