@@ -305,7 +305,8 @@ tools/venture-demo-accounts.sh --out - --anchor "$(( $(date +%s) / 3600 * 3600 )
 | push exits 4, HTTP 401 | no token, or the token file is empty | =tsmctl venture status= says where the token came from |
 | HTTP 403 | the token's user is not an editor of the organization | an editor (or owner) membership in the source's organization |
 | HTTP 404 | the source is in another organization than the one asked for, or feeds are off | =venture_organization= in tsmctl's config; =feeds.enabled: true= |
-| HTTP 409 | the source's provider is not =push=, or it is switched off | =venturectl update data_source 7 enabled=true=; a pull source cannot be pushed to |
+| HTTP 409 | the source's provider is not =push=, or it is switched off, or four pushes to it are not yet stored | =venturectl update data_source 7 enabled=true=; a pull source cannot be pushed to; otherwise wait for the earlier runs and push again |
+| =--wait= answers "queued" with a note that it was not waited for | two other pushes are already being waited on (VENTURE waits on at most two at once) | nothing: the push is stored as usual; its run is among the source's runs |
 | HTTP 413 | the export is larger than =feeds.max_push_mb= (32 MiB) | =venture_market: scope= or =none=, or raise =feeds.max_push_mb= |
 | run =partial=, lines refused for their places | the source's currency is not GOLD with exponent 4 | the currency's exponent; every amount has up to four places |
 | run notes say a snapshot was stale | an older export arrived after a newer one (a mirror on another machine that synced late) | nothing: VENTURE kept the newer state; push from one place |
@@ -313,6 +314,7 @@ tools/venture-demo-accounts.sh --out - --anchor "$(( $(date +%s) / 3600 * 3600 )
 | an auction shows as expired for days | the character has not logged in since; it waits in the mail | log in and collect: that is what the attention list is for |
 | a listing stays open after the auction sold | its sale row has not arrived in a push yet | it closes from the ledger at a later push, or is judged after =mirror_grace_hours= |
 | "N changes left for the next run" | the mirror's =mirror_max_writes= bound | nothing; or raise it for a first push |
+| run notes say the store "would not read every account", or that listings "were not judged gone" | the store holds more accounts (10 000) or positions (100 000) than one read returns | nothing is closed by mistake: the listings stay open until a read can see them all; split the operation over two sources |
 | exec run fails "tsmctl is not on the server's PATH" | the server's =PATH= (as it was when the plugin loaded) has no tsmctl | install it where the server's user finds it and restart, or push instead |
 | exec run fails "tsmctl export exited with status N" | tsmctl failed: usually ssh (no agent socket, a host key prompt) | run the same =tsmctl export --check= as the server's user; read the run's error, which quotes tsmctl's standard error |
 | =accounts post= reports days "no place" | the character's location was deleted | restore it, or leave that character out of the books |

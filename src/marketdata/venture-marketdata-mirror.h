@@ -94,7 +94,11 @@ G_BEGIN_DECLS
  * The most store rows one mirror pass reads at once: the positions, and
  * one account's ledger rows for one item. A read that comes back this
  * long may have left rows out, so the pass judges nothing gone from it.
- * The series store's own bound unless a test lowered it.
+ * The series store's bound as it is now
+ * (venture_series_accounts_get_max_rows()), or lower when a test lowered
+ * this one: never above the store's, which would ask for more than the
+ * store answers -- a positions read past it is refused and a ledger page
+ * past it is cut in silence.
  *
  * Returns: the bound
  */

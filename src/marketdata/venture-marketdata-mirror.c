@@ -304,12 +304,23 @@ venture_marketdata_source_promotes_accounts(VentureEntity *data_source)
 /* 0: the store's own bound. Process-wide, for tests (see the header). */
 static guint mirror_max_rows = 0;
 
+/*
+ * Never past the store's bound as it is now, not the macro: the store
+ * reads its bound at every call (a test lowers it), clamps a ledger page
+ * to it in silence and refuses a positions read past it. A mirror bound
+ * above the store's would take a cut ledger for a whole one and judge on
+ * it, and ask for more positions than the store answers -- a refusal
+ * that failed the pass. At the store's bound a read is a page, and a
+ * page that comes back full is what the pass already treats as short.
+ */
 guint
 venture_marketdata_mirror_get_max_rows(void)
 {
 #ifdef VENTURE_HAVE_SQLITE
-	if ((0 == mirror_max_rows) || (mirror_max_rows > VENTURE_SERIES_MAX_ACCOUNT_ROWS))
-		return VENTURE_SERIES_MAX_ACCOUNT_ROWS;
+	guint store_bound = (guint)venture_series_accounts_get_max_rows();
+
+	if ((0 == mirror_max_rows) || (mirror_max_rows > store_bound))
+		return store_bound;
 #endif
 
 	return mirror_max_rows;
@@ -3126,6 +3137,27 @@ mirror_open(
 	return mirror_settings_read(source, &m->settings, error);
 }
 
+/*
+ * TRUE when @read_error is the store refusing a read of everything past
+ * its bound ("narrow the read"), noted on the run: the pass then stops
+ * with nothing judged gone, because what the read would have returned is
+ * exactly what tells a gone listing from an unread one. Any other error
+ * is the caller's to propagate.
+ */
+static gboolean
+mirror_read_refused(
+	MirrorRun	*m,
+	const GError	*read_error,
+	const gchar	*what
+){
+	if (!g_error_matches(read_error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT))
+		return FALSE;
+
+	mirror_note(m, "mirror: the store would not read every %s (%s); no listing was written or "
+	            "judged gone this pass", what, read_error->message);
+	return TRUE;
+}
+
 /* The whole pass after the source is open: steps 1 to 3. */
 static gboolean
 mirror_pass(
@@ -3153,10 +3185,23 @@ mirror_pass(
 		return FALSE;
 	}
 
-	accounts = venture_series_store_list_accounts(m->store, NULL, NULL, m->now, error);
+	accounts = venture_series_store_list_accounts(m->store, NULL, NULL, m->now, &store_error);
+
+	/*
+	 * A store with more accounts than one read answers refuses the read
+	 * rather than cutting it (INVALID_ARGUMENT). That is the size of the
+	 * store, not a fault in the run: the pass writes nothing, judges
+	 * nothing and says so, and the listings stay as they are. Failing it
+	 * would only lose the note, and every later pass would fail alike.
+	 */
+	if ((NULL == accounts) && mirror_read_refused(m, store_error, "account"))
+		return TRUE;
 
 	if (NULL == accounts)
+	{
+		g_propagate_error(error, g_steal_pointer(&store_error));
 		return FALSE;
+	}
 
 	m->n_accounts = accounts->len;
 
@@ -3174,10 +3219,19 @@ mirror_pass(
 	 * as far as the read goes, and nothing is judged gone this pass. */
 	venture_series_position_filter_init(&position_filter);
 	position_filter.count = venture_marketdata_mirror_get_max_rows();
-	positions = venture_series_store_list_positions(m->store, &position_filter, error);
+	positions = venture_series_store_list_positions(m->store, &position_filter, &store_error);
+
+	/* A refusal past the store's bound (the mirror's bound is clamped to
+	 * it, so only a bound lowered between the two reads gets here): no
+	 * position was read, so none is mirrored and none is judged gone. */
+	if ((NULL == positions) && mirror_read_refused(m, store_error, "position"))
+		return TRUE;
 
 	if (NULL == positions)
+	{
+		g_propagate_error(error, g_steal_pointer(&store_error));
 		return FALSE;
+	}
 
 	m->n_positions = positions->len;
 	m->positions_truncated = positions->len >= position_filter.count;

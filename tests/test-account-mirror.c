@@ -1997,6 +1997,132 @@ test_mirror_read_bound(
 }
 
 /*
+ * The series store reads its own bound at every call, and refuses a read
+ * of everything past it rather than cutting it (the feeds fix); the
+ * mirror's bound is the store's as it is now. Lowering the *store's*
+ * bound (not the mirror's) must leave the pass judging nothing gone, with
+ * a note: a positions read at the bound is short, an item's ledger at the
+ * bound is short, and a store with more accounts than a read answers is
+ * refused -- a pass that writes nothing and says so, never a failed run.
+ *
+ * What breaks if this regresses: with the mirror asking for more than the
+ * store answers, the positions read is refused and the whole pass fails
+ * with nothing on the run, and an item's ledger comes back cut in silence
+ * and a listing is closed on a ledger missing its own sale.
+ */
+static void
+test_mirror_store_bound(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autofree gchar *settings = products_settings(fixture, "mirror_grace_hours: 0\n");
+	gint64 posted = fixture->now - 10 * HOUR;
+	gint64 later = fixture->now + 30 * HOUR;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", settings);
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 9 * HOUR);
+	line_position(body, "Drgold-Thorium", "p1", "2770", 1, "5.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p3", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p4", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p5", "2447", 1, "3.00", NULL, posted, later);
+	run = push(fixture, source, body->str);
+	g_assert_true(run_says(run, "listings 5 created"));
+
+	/* --- Positions: four in the store, a store bound of three --- */
+	venture_series_accounts_set_max_rows(3);
+	g_assert_cmpuint(venture_marketdata_mirror_get_max_rows(), ==, 3);
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 8 * HOUR);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p3", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p4", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p5", "2447", 1, "3.00", NULL, posted, later);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	assert_closed(fixture, source, "p1", VENTURE_LISTING_OUTCOME_OPEN, 0, 0);
+	g_assert_true(run_says(run, "listings whose positions were not read are not judged gone"));
+	venture_series_accounts_set_max_rows(0);
+
+	/* p1 went without a ledger row: with the bound back it is judged. */
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		(void)report;
+	}
+	{
+		g_autoptr(VentureEntity) listing = listing_of(fixture, source, "p1");
+
+		g_assert_nonnull(listing);
+		g_assert_cmpint(outcome_of(listing), !=, VENTURE_LISTING_OUTCOME_OPEN);
+	}
+
+	/* --- Ledger: an item's ledger longer than the store's bound --- */
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 7 * HOUR);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p6", "2770", 1, "5.00", NULL, fixture->now - 7 * HOUR,
+	              later);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	g_assert_nonnull(listing_of(fixture, source, "p6"));
+
+	/* Three buys and then p6's sale: a ledger cut at three would hold the
+	 * buys alone and close p6 on a guess. */
+	venture_series_accounts_set_max_rows(3);
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - HOUR);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_txn(body, "b1", "Drgold-Thorium", "buy", "2770", 1, "4.00", fixture->now - 6 * HOUR);
+	line_txn(body, "b2", "Drgold-Thorium", "buy", "2770", 1, "4.00", fixture->now - 5 * HOUR);
+	line_txn(body, "b3", "Drgold-Thorium", "buy", "2770", 1, "4.00", fixture->now - 4 * HOUR);
+	line_txn(body, "s6", "Drgold-Thorium", "sale", "2770", 1, "4.75", fixture->now - 2 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	assert_closed(fixture, source, "p6", VENTURE_LISTING_OUTCOME_OPEN, 0, 0);
+	g_assert_true(run_says(run, "items' gone listings were not judged"));
+	venture_series_accounts_set_max_rows(0);
+
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		(void)report;
+	}
+	assert_closed(fixture, source, "p6", VENTURE_LISTING_OUTCOME_SOLD, 1, fixture->now - 2 * HOUR);
+
+	/* --- Accounts: more of them than the store answers --- */
+	g_string_truncate(body, 0);
+	line_account(body, "Alt-Thorium", "character", "Thorium Brotherhood", "thorium");
+	line_snapshot(body, "Drgold-Thorium", fixture->now - HOUR / 2);
+	g_clear_object(&run);
+	venture_series_accounts_set_max_accounts(1);
+	run = push(fixture, source, body->str);
+	venture_series_accounts_set_max_accounts(0);
+	g_assert_true(run_says(run, "the store would not read every account"));
+	g_assert_true(run_says(run, "no listing was written or judged gone this pass"));
+	assert_closed(fixture, source, "p2", VENTURE_LISTING_OUTCOME_OPEN, 0, 0);
+
+	/* The snapshot left p2 out; with the bound back the pass judges it. */
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		(void)report;
+	}
+	{
+		g_autoptr(VentureEntity) listing = listing_of(fixture, source, "p2");
+
+		g_assert_nonnull(listing);
+		g_assert_cmpint(outcome_of(listing), !=, VENTURE_LISTING_OUTCOME_OPEN);
+	}
+}
+
+/*
  * A product a person deleted is no product: the item's new positions are
  * not mirrored and the run names the item, and with create_products on
  * no second product is made for it. Nothing is refused, so nothing fails.
@@ -2088,6 +2214,7 @@ main(
 	ADD("/account-mirror/cap-promotions", test_mirror_cap_promotions);
 	ADD("/account-mirror/database-error", test_mirror_database_error);
 	ADD("/account-mirror/read-bound", test_mirror_read_bound);
+	ADD("/account-mirror/store-bound", test_mirror_store_bound);
 	ADD("/account-mirror/deleted-product", test_mirror_deleted_product);
 
 #undef ADD

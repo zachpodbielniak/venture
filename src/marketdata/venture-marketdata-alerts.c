@@ -2170,7 +2170,6 @@ alerts_accounts_load(
 	VentureSeriesStore	 *store,
 	AlertsAccounts		 *accounts,
 	gint64			  now,
-	AlertsSink		 *sink,
 	GError			**error
 ){
 	guint i;
@@ -2180,16 +2179,11 @@ alerts_accounts_load(
 
 	accounts->rows = venture_series_store_list_accounts(store, NULL, NULL, now, error);
 
+	/* The store answers every account or refuses (past
+	 * venture_series_accounts_get_max_accounts()): never the first part,
+	 * so there is no "only some were judged" to say here. */
 	if (NULL == accounts->rows)
 		return FALSE;
-
-	if (accounts->rows->len >= VENTURE_SERIES_MAX_ACCOUNTS)
-	{
-		g_autofree gchar *note = g_strdup_printf("only the first %d accounts were judged",
-		                                         VENTURE_SERIES_MAX_ACCOUNTS);
-
-		alerts_sink_note(sink, note);
-	}
 
 	accounts->by_key = g_hash_table_new(g_str_hash, g_str_equal);
 
@@ -2745,7 +2739,7 @@ alerts_evaluate_account_rule(
 	AlertsSink		 *sink,
 	GError			**error
 ){
-	if (!alerts_accounts_load(store, accounts, now, sink, error))
+	if (!alerts_accounts_load(store, accounts, now, error))
 		return FALSE;
 
 	switch (rule->kind)

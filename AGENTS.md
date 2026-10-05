@@ -2060,7 +2060,12 @@ and positions in the books") has every rule, the matching table included.
   (`venture_marketdata_mirror_get_max_rows()`; tests lower it with
   `_set_max_rows()`) has left rows out, and an unread position is not a
   gone one. Treat a failed ledger read the same way: skip the group, say
-  so, never judge on what came back.
+  so, never judge on what came back. The mirror's bound is clamped to the
+  store's *current* one (`venture_series_accounts_get_max_rows()`, which
+  a test lowers too): above it the store refuses a positions read and
+  cuts a ledger page in silence. A store read refused past its bound
+  (`INVALID_ARGUMENT`, "narrow the read") stops the pass with a note --
+  never a failed run, never a closed listing (`/account-mirror/store-bound`).
 - **A position is judged gone only after a complete positions snapshot.**
   Positions leave the store only through an `account_snapshot` covering
   them; an account with no `positions_at` keeps its listings open. The time
