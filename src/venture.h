@@ -268,6 +268,7 @@
 #include "billing/venture-billing-service.h"
 #include "billing/venture-billing-usage.h"
 #include "billing/venture-billing-reports.h"
+#include "billing/venture-lightsite-billing.h"
 #include "projects/venture-project-service.h"
 #include "activities/venture-activity-service.h"
 #include "activities/venture-activity-reports.h"

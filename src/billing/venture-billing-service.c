@@ -2108,10 +2108,13 @@ venture_billing_save_hook(VentureDatabase *database, VentureEntity *record,
 	if (type != VENTURE_TYPE_CUSTOMER_SUBSCRIPTION && type != VENTURE_TYPE_SUBSCRIPTION_EVENT &&
 		type != VENTURE_TYPE_BILLING_NOTICE && type != VENTURE_TYPE_BILLING_REQUEST &&
 		type != VENTURE_TYPE_PLAN_PRICE && type != VENTURE_TYPE_PLAN && type != VENTURE_TYPE_DUNNING_STEP &&
-		type != VENTURE_TYPE_USAGE_RECORD && type != VENTURE_TYPE_PLAN_DISCOUNT)
+		type != VENTURE_TYPE_USAGE_RECORD && type != VENTURE_TYPE_PLAN_DISCOUNT &&
+		type != VENTURE_TYPE_LIGHTSITE_BILLING_RECEIPT)
 		return TRUE;
 	if (type == VENTURE_TYPE_USAGE_RECORD)
 		return venture_billing_usage_check_save(database, record, error);
+	if (type == VENTURE_TYPE_LIGHTSITE_BILLING_RECEIPT)
+		return venture_lightsite_billing_check_save(database, record, error);
 	self = venture_billing_service_get(database);
 	if (self->writing == record)
 	{
@@ -2194,7 +2197,8 @@ venture_billing_check_removal(VentureDatabase *database, VentureEntity *record, 
 			return refuse(error, VENTURE_ERROR_VALIDATION, "referenced prices cannot be removed");
 	}
 	if (type == VENTURE_TYPE_CUSTOMER_SUBSCRIPTION || type == VENTURE_TYPE_SUBSCRIPTION_EVENT ||
-		type == VENTURE_TYPE_BILLING_NOTICE || type == VENTURE_TYPE_BILLING_REQUEST)
+		type == VENTURE_TYPE_BILLING_NOTICE || type == VENTURE_TYPE_BILLING_REQUEST ||
+		type == VENTURE_TYPE_LIGHTSITE_BILLING_RECEIPT)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "billing history cannot be deleted, restored or purged");
 	return TRUE;
 }

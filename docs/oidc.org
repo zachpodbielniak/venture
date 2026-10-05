@@ -91,7 +91,8 @@ binding and PKCE verifier. Its lifetime is five minutes, its state is spent even
 on a refused callback, and a restart discards it. Linking must finish in the same
 local account/browser; a local user-version or provider-version change during
 the flow refuses it. Credentials are decrypted only at the selected connection
-version. No email auto-linking, self-registration, access-token authentication,
+version. No email auto-linking, self-registration, access-token authentication
+(except a hosted workspace's one trusted provider, see [[file:lightsite-accounts.org][Lightsite accounts]]),
 refresh-token storage or provider-role synchronization is implemented.
 
 The library accepts only RS256/ES256 and validates signature, exact issuer,

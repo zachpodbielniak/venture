@@ -135,3 +135,10 @@ order's currency), `goods_receipt`/`goods_receipt_line`,
 - commerce (requires invoicing, receivables, integrations):
   `commerce_import_link` -- immutable identity of an imported order or
   customer per connected shop account.
+
+## Lightsite billing receipts
+
+`lightsite_billing_receipt` retains an idempotent service request and its
+subscription result. It is service-managed evidence, not a second billing
+engine or a generic CRUD instruction. Plans, invoices and payments remain
+the ordinary Venture billing records. See `docs/lightsite-billing.org`.

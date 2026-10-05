@@ -344,6 +344,8 @@ static GType (*const venture_module_core_types[]) (void) = {
 	venture_tenant_invitation_get_type,
 	venture_tenant_support_grant_get_type,
 	venture_tenant_event_get_type,
+	venture_tenant_signup_get_type,
+	venture_tenant_identity_get_type,
 	venture_organization_get_type,
 	venture_venture_get_type,
 	venture_document_get_type,
@@ -599,6 +601,7 @@ static GType (*const billing_types[]) (void) = {
 	venture_billing_request_get_type,
 	venture_customer_payment_method_get_type,
 	venture_usage_record_get_type,
+	venture_lightsite_billing_receipt_get_type,
 	NULL
 };
 static GType (*const venture_module_mail_types[]) (void) = {

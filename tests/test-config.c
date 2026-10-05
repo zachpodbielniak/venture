@@ -606,6 +606,45 @@ test_config_to_yaml_round_trips(void)
 }
 
 static void
+test_config_hosted_and_billing_round_trip(void)
+{
+	guint include_defaults;
+
+	for (include_defaults = 0; include_defaults < 2; include_defaults++)
+	{
+		g_autoptr(VentureConfig) original = venture_config_new();
+		g_autoptr(VentureConfig) restored = venture_config_new();
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *yaml = NULL, *origin = NULL;
+		gint64 billing, rate, burst, concurrency;
+		gboolean hosted;
+
+		/* Export must preserve a refused admission setting, not silently
+		 * replace it with a permissive default when billing is configured. */
+		g_object_set(original, "hosted-enabled", TRUE,
+		             "hosted-origin", "https://roundtrip.example.test",
+		             "lightsite-billing-organization-id", (gint64)42,
+		             "hosted-http-requests-per-minute", (gint64)0,
+		             "hosted-http-burst", (gint64)7,
+		             "hosted-http-concurrency", (gint64)3, NULL);
+		yaml = venture_config_to_yaml(original, include_defaults);
+		g_assert_true(venture_config_apply_yaml_string(restored, yaml, &error));
+		g_assert_no_error(error);
+		g_object_get(restored, "hosted-enabled", &hosted, "hosted-origin", &origin,
+		             "lightsite-billing-organization-id", &billing,
+		             "hosted-http-requests-per-minute", &rate,
+		             "hosted-http-burst", &burst,
+		             "hosted-http-concurrency", &concurrency, NULL);
+		g_assert_true(hosted);
+		g_assert_cmpstr(origin, ==, "https://roundtrip.example.test");
+		g_assert_cmpint(billing, ==, 42);
+		g_assert_cmpint(rate, ==, 0);
+		g_assert_cmpint(burst, ==, 7);
+		g_assert_cmpint(concurrency, ==, 3);
+	}
+}
+
+static void
 test_config_to_yaml_omits_defaults(void)
 {
 	g_autoptr(VentureConfig) config = NULL;
@@ -842,6 +881,7 @@ main(
 	g_test_add_func("/config/auto-approved-tools", test_config_auto_approved_tools);
 	g_test_add_func("/config/resolve-path", test_config_resolve_path);
 	g_test_add_func("/config/to-yaml-round-trips", test_config_to_yaml_round_trips);
+	g_test_add_func("/config/hosted-and-billing-round-trip", test_config_hosted_and_billing_round_trip);
 	g_test_add_func("/config/to-yaml-omits-defaults", test_config_to_yaml_omits_defaults);
 
 	g_test_add_func("/config/redacts-a-uri-password",

@@ -106,3 +106,13 @@ read-only evidence.
   `{input}`, `enabled`; a record's trigger shadows a built-in's).
 - `automation` has no types: rules live in `automations.pod` under the
   state directory, edited at `/automations` (owner saves).
+
+## Hosted provisioning receipts
+
+`tenant_signup` retains the trusted sign-up request identity and its owner /
+organization result for replay. It is service-managed evidence; do not create
+or edit receipts through generic CRUD. See `docs/lightsite-accounts.org`.
+
+`tenant_identity` binds a verified issuer/subject to a local workspace member.
+Trusted sign-up or authenticated account linking writes it; an email claim
+never grants membership. Revocation follows the local member lifecycle.

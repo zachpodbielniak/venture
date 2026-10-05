@@ -61,3 +61,22 @@ gchar *venture_oidc_verifier_subject(GObject *verifier, const gchar *issuer, con
 	json_decref(claims); oidc_principal_unref(principal);
 	return result;
 }
+/* An access token: the library checks signature, issuer, audience and times;
+ * this keeps the subject and when it was issued. No nonce: nothing was asked. */
+gchar *venture_oidc_verifier_access_subject(GObject *verifier, const gchar *issuer, const gchar *token,
+	gint64 *issued_at, GError **error)
+{
+	OidcPrincipal *principal = verify_bounded(verifier, issuer, token, error);
+	json_t *claims;
+	const gchar *subject;
+	gchar *result = NULL;
+	if (principal == NULL) return NULL;
+	claims = oidc_principal_dup_claims(principal);
+	subject = oidc_principal_get_subject(principal);
+	if (subject != NULL && *subject && strlen(subject) <= 255 && json_is_integer(json_object_get(claims, "iat"))) {
+		result = g_strdup(subject);
+		if (issued_at) *issued_at = (gint64)json_integer_value(json_object_get(claims, "iat"));
+	} else g_set_error_literal(error, OIDC_ERROR, OIDC_ERROR_CLAIMS, "access token subject or issue time is invalid");
+	json_decref(claims); oidc_principal_unref(principal);
+	return result;
+}

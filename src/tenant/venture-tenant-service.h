@@ -53,6 +53,19 @@ const gchar *venture_tenant_service_get_workspace_id(VentureTenantService *self)
  */
 const gchar *venture_tenant_service_get_origin(VentureTenantService *self);
 /**
+ * venture_tenant_service_account_authority:
+ * @self: initialized hosted tenant service
+ * @error: (out) (optional): lifecycle, authority or storage refusal
+ *
+ * Lists the current principal's explicit active memberships, bounded to twenty.
+ * The management decision intersects current roles with token snapshots.
+ * No arbitrary user lookup or workspace-administrator membership inference.
+ *
+ * Returns: (transfer full) (nullable): current account authority document
+ */
+JsonNode *venture_tenant_service_account_authority(VentureTenantService *self, GError **error);
+
+/**
  * venture_tenant_service_account_identity:
  * @self: initialized hosted service
  * @organization_id: owning organization, greater than zero
@@ -67,6 +80,76 @@ const gchar *venture_tenant_service_get_origin(VentureTenantService *self);
  */
 JsonNode *venture_tenant_service_account_identity(VentureTenantService *self,
 	gint64 organization_id, GError **error);
+/**
+ * venture_tenant_service_lightsite_signup:
+ * @self: the hosted tenant service
+ * @idempotency_key: caller's key, 1-128 of `[A-Za-z0-9._:-]`
+ * @email: address the caller has verified
+ * @issuer: https URL of the caller's identity realm, kept as evidence
+ * @subject: provider subject, kept as evidence; never a sign-in link
+ * @business_name: name of the organization to create
+ * @created: (out) (optional): %TRUE when this call wrote the sign-up
+ * @error: return location for a #GError
+ *
+ * Finishes a self sign-up for a workspace administrator's service token:
+ * links the active member holding @email (ASCII case-insensitive) or makes
+ * a passwordless one, creates the organization and its owner membership,
+ * and stores a receipt, in one transaction. A receipt for the same key and
+ * request is replayed without writing; a different request is a conflict.
+ *
+ * Returns: (transfer full) (nullable): the account reference, or %NULL
+ */
+JsonNode *venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar *idempotency_key,
+	const gchar *email, const gchar *issuer, const gchar *subject, const gchar *business_name,
+	gboolean *created, GError **error);
+/**
+ * venture_tenant_service_trusts_identity:
+ * @issuer: (nullable): an issuer to compare, or %NULL for any
+ *
+ * Returns: whether this hosted workspace trusts an identity provider
+ * (hosted.identity_issuer), and that it is @issuer when one is given
+ */
+gboolean venture_tenant_service_trusts_identity(VentureTenantService *self, const gchar *issuer);
+/**
+ * venture_tenant_service_identity_principal:
+ * @token: a bearer value that may be the provider's access token
+ *
+ * Verifies @token against the trusted provider (signature, issuer, audience,
+ * times) and resolves its subject through an active link to an active user
+ * who has not signed out everywhere since it was issued.
+ *
+ * Returns: (transfer full) (nullable): that user as a principal, marked
+ *   provider_token, or %NULL
+ */
+VentureAuthPrincipal *venture_tenant_service_identity_principal(VentureTenantService *self, const gchar *token);
+/**
+ * venture_tenant_service_link_identity:
+ * @token: the person's own provider access token
+ *
+ * Links the subject of @token to the current actor, who must be signed in to
+ * Venture itself (a session or their own API token, never a provider token).
+ * The same link again is accepted; a subject linked to someone else is a
+ * conflict.
+ *
+ * Returns: (transfer full) (nullable): {linked, issuer}, or %NULL with @error
+ */
+JsonNode *venture_tenant_service_link_identity(VentureTenantService *self, const gchar *token, GError **error);
+/**
+ * venture_tenant_service_check_trusted_service:
+ * @self: the hosted tenant service
+ * @actor_user_id: (out) (optional): the administrator the token belongs to
+ * @error: return location for a #GError
+ *
+ * The authority of a trusted-service operation such as the Lightsite
+ * sign-up or Lightsite billing: the current principal, read from the
+ * database access scope, must be a write-capable bearer token of an active
+ * member who is a workspace administrator both now and as the token
+ * captured it when minted, in an initialized hosted workspace whose
+ * lifecycle allows writes. Platform roles are not tenant authority.
+ *
+ * Returns: %TRUE when the operation may proceed
+ */
+gboolean venture_tenant_service_check_trusted_service(VentureTenantService *self, gint64 *actor_user_id, GError **error);
 /**
  * venture_tenant_service_check_operation:
  * @self: service

@@ -1038,6 +1038,15 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 			json_builder_set_member_name(builder, key);
 			json_builder_add_int_value(builder, role);
 		}
+		/* Workspace administration is captured too, so an operation that
+		 * needs it can require it both now and when the token was minted.
+		 * The key cannot collide with an organization ID. */
+		if (venture_tenant_service_is_enabled(venture_tenant_service_get(database)) &&
+			venture_tenant_service_is_member(venture_tenant_service_get(database), reference(entity, "user-id"), TRUE))
+		{
+			json_builder_set_member_name(builder, "workspace_role");
+			json_builder_add_string_value(builder, "admin");
+		}
 		json_builder_end_object(builder);
 		node = json_builder_get_root(builder);
 		snapshot = venture_json_to_string(node, FALSE);

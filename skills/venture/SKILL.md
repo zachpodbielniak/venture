@@ -296,6 +296,9 @@ ids, notes) in words.
 
 | Request | Answer | Guide |
 |---|---|---|
+| "Provision a Lightsite owner" | trusted idempotent sign-up service | [operations.md](references/operations.md) |
+| "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
+| "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |
 | "What fields does X have?" | `describe X`; actions from `/api/v1/schema/X` | [records.md](references/records.md) |
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |

@@ -144,3 +144,12 @@ incomplete TLS/header or a saturated listener
 Rejected partial bodies never reach a handler. Do not blindly retry a write
 whose response was lost after dispatch: read its retained identity first.
 Changes need a restart; HTTP/2 must terminate at the gateway.
+
+## Trusted Lightsite self-sign-up
+
+`POST /api/v1/lightsite/signups` accepts a trusted workspace administrator's
+write token, not a browser session or an anonymous caller. It creates or
+links the owner and their business atomically. Preserve the idempotency key
+and request body on retry; a conflicting replay refuses rather than making
+another business. The new owner has no local password. See
+`docs/lightsite-accounts.org` for the exact request and authority contract.

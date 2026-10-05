@@ -77,5 +77,19 @@ G_DECLARE_FINAL_TYPE(VentureTenantEvent, venture_tenant_event, VENTURE, TENANT_E
  * Returns: (transfer full): a new service-managed hosted workspace record
  */
 VentureTenantEvent *venture_tenant_event_new(void);
+#define VENTURE_TYPE_TENANT_SIGNUP (venture_tenant_signup_get_type())
+G_DECLARE_FINAL_TYPE(VentureTenantSignup, venture_tenant_signup, VENTURE, TENANT_SIGNUP, VentureEntity)
+/**
+ * venture_tenant_signup_new:
+ * Returns: (transfer full): a new trusted-service sign-up receipt
+ */
+VentureTenantSignup *venture_tenant_signup_new(void);
+#define VENTURE_TYPE_TENANT_IDENTITY (venture_tenant_identity_get_type())
+G_DECLARE_FINAL_TYPE(VentureTenantIdentity, venture_tenant_identity, VENTURE, TENANT_IDENTITY, VentureEntity)
+/**
+ * venture_tenant_identity_new:
+ * Returns: (transfer full): a new provider identity link
+ */
+VentureTenantIdentity *venture_tenant_identity_new(void);
 G_END_DECLS
 #endif

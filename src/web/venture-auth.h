@@ -48,6 +48,9 @@ typedef struct
 	VentureUserRole	 role;
 	gchar		*name;
 	gboolean	 authenticated;
+	/* The bearer was the trusted identity provider's access token
+	 * (hosted.identity_issuer), acting as the user linked to its subject. */
+	gboolean	 provider_token;
 } VentureAuthPrincipal;
 
 /**

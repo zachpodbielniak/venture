@@ -2335,6 +2335,7 @@ test_feeds_worker_lifecycle(
 ){
 	g_autoptr(VentureEntity) run = NULL;
 	VentureFeedsService *service;
+	gpointer released_context;
 	gint64 id;
 
 	(void)user_data;
@@ -2363,7 +2364,10 @@ test_feeds_worker_lifecycle(
 	g_clear_object(&run);
 	run = sync_and_wait(fixture, id);
 	g_assert_true(thread_named("venture-feeds"));
+	released_context = fixture->context;
+	g_object_add_weak_pointer(G_OBJECT(fixture->context), &released_context);
 	g_clear_object(&fixture->context);
+	g_assert_null(released_context);
 	g_assert_true(thread_gone("venture-feeds"));
 }
 

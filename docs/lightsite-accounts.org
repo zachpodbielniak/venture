@@ -92,3 +92,242 @@ make DEBUG=1 test-one T=test-auth
 The end-to-end Lightsite demonstration is linked from the prerequisite PR
 and Lightsite PR #23. It uses the actual provisioning command and this built
 server; fixture responses alone do not establish interoperability.
+
+Refusals produced by the account-identity handler emit one server diagnostic
+with the stable error category and domain/code. Credentials, token names,
+organization input and response bodies are excluded. HTTP responses remain
+uncacheable; this diagnostic does not grant or weaken provisioning authority.
+
+* Signed-in account authority for site management
+
+=GET /api/v1/account-authority= authenticates the requesting Venture user
+(session or that user's normal bearer token). It accepts no target user and
+never infers identity from email, a domain, a site or a shared provisioning
+token. Lightsite must forward/use a credential belonging to the signed-in
+principal; this endpoint does not turn a Lightsite cookie into Venture identity.
+
+#+begin_src json
+{"origin":"https://venture.example","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","state":"active","user_id":7,"organizations":[{"organization_id":42,"role":"admin","can_manage_sites":true,"can_edit_sites":true,"can_view_sites":true}]}
+#+end_src
+
+Match the complete configured origin/workspace and the account's organization.
+The =user_id= is local to that workspace. =role= describes current membership;
+**authorize site management only when =can_manage_sites= is true**. That decision
+requires a write-capable credential and owner/admin membership both now and in the bearer token's captured
+snapshot. A viewer token promoted later can report the new current role but
+still has =can_manage_sites: false=. A later demotion immediately removes
+management authority. Tokens omit organizations absent from their snapshot.
+=can_edit_sites= follows the same two-sided rule for owner, admin or editor:
+an editor may change a business's sites without managing them. A token minted
+while its user was a viewer keeps =can_edit_sites: false= after a promotion, and
+a global viewer credential never edits. =can_view_sites= is true for every
+listed organization: any active membership the credential carries may read its
+business's sites. Other roles receive no site-management permission from this API. What each flag allows is Lightsite's to decide.
+
+Only explicit active memberships in active, non-deleted organizations appear.
+Workspace/platform administration does not fabricate organization membership.
+Inactive users, revoked/expired credentials, non-active workspace lifecycle,
+identity mismatch and support sessions fail closed. Storage failure returns an
+error, never a successful empty authority list. There is no permission cache:
+responses use =Cache-Control: no-store=. Lightsite must validate current authority
+on management operations, refuse redirects and bound the complete request and
+body as described in its =docs/venture-accounts.org= (five seconds, 4096 bytes).
+
+The response is bounded to twenty explicit memberships; more refuses the whole
+request rather than returning a partial permission list. This is a management
+authority endpoint, not a membership directory or an arbitrary-user lookup.
+Public hosting remains independent of authority-service availability.
+Provisioning still uses the unchanged =/api/v1/account-identity/:id= contract.
+
+* Trusted-service self sign-up
+
+=POST /api/v1/lightsite/signups= finishes a Lightsite self sign-up
+(Lightsite daemon #60). Lightsite has already created the person's
+identity-provider account and confirmed their email; Venture links or
+creates the matching local user, creates a business they own and returns its
+account reference. It is the only API path that creates a hosted identity or
+organization, and it is a narrow, separately authorized operation in the
+tenant service. Generic user and organization creation rules are unchanged:
+the generic API still refuses to create users in a hosted workspace and only
+an interactive workspace administrator creates organizations.
+
+** Authority
+
+Only =Authorization: Bearer <token>= is accepted. A browser session (cookie)
+is not a service credential and gets 401, as do a missing, invalid or expired
+token. The token must belong to an active member who is a workspace
+administrator (tenant role =admin=) both now and as captured in the token when
+it was minted: tokens record =workspace_role= in their membership snapshot,
+so tokens minted before this release, or before the member became an
+administrator, are refused and must be re-minted. The token must also be
+write-capable (not minted with the viewer role). Platform owner/admin roles
+are not tenant authority in hosted mode and are refused, so there is no
+"higher" role. The ordinary hosted Host/Origin boundary and lifecycle gate
+apply: wrong Host, a read-only, suspended or changed workspace all get 403.
+
+Venture trusts the caller's assertion that the address is verified only
+because of that authority. =issuer= and =subject= are stored on the receipt.
+When =issuer= is the workspace's trusted identity provider
+(=hosted.identity_issuer=, see "The owner's own sign-in" below), the same
+transaction also links that subject to the user, so the person's provider
+access token acts as them from then on; a subject already linked to someone
+else is 409 and nothing is written. Otherwise nothing is linked. Neither
+path, nor [[file:oidc.org][OIDC sign-in]], ever finds or links a user by email.
+
+** Request
+
+A closed JSON object of exactly five strings, at most 4096 bytes (413 above
+that). A missing, extra or non-string member, a
+non-object body, malformed JSON or an escaped NUL is refused with 422.
+A member name repeated in the body keeps its last value (JSON-GLib's
+parsing); send each member once.
+
+| Member | Rule |
+|--------+------|
+| =idempotency_key= | 1-128 of =[A-Za-z0-9._:-]= |
+| =email= | Plain ASCII address: one =@=, local part up to 64 bytes without spaces, quotes, brackets, =%= or =\=, and a dotted domain of letters, digits and hyphens |
+| =issuer= | =https= URL of the identity realm; no credentials, query or fragment; up to 1024 bytes |
+| =subject= | 1-255 characters of UTF-8, no control characters, not only white space |
+| =business_name= | 1-200 characters of UTF-8, no control characters, not only white space |
+
+** Behaviour
+
+Everything happens in one database transaction, serialized by the workspace
+administration lock:
+
+1. A receipt for =idempotency_key= is looked up. If its stored request hash
+   (SHA-256 of the five members, length-prefixed in that fixed order) matches,
+   the stored result is returned with 200 and nothing is written. A different
+   request under the same key is 409.
+2. Users are matched by =email= ignoring ASCII case, deleted ones included.
+   One active, non-deleted ordinary workspace member is linked
+   (=linked: true=); their password, roles, workspace membership and other
+   businesses are left alone. An inactive or deleted user, a platform
+   identity, a user with no active workspace membership (a support operator,
+   say) or more than one match is 409: nobody is revived or promoted by an
+   email address. With no match a user is created: the email, a username from
+   the local part (lowercase letters, digits, =.=, =_= and =-=, trimmed to
+   start and end on a letter or digit, at most 48 characters, =user= if
+   nothing remains, then =-2=, =-3= ... until unused), a friendly display
+   name (the first word of the local part, =sam= from
+   =sam.plumbing@example.com=), global role editor, active, no password, and
+   the new business as its organization.
+3. The organization named =business_name= is created, and the user receives
+   an active workspace =member= membership (an existing administrator stays
+   one) and the organization =owner= membership through the same writer that
+   invitation acceptance uses.
+4. The receipt (key, request hash, user, business, =linked=, issuer, subject,
+   administrator) is stored and a =tenant.lightsite_signup= (or
+   =tenant.lightsite_signup_link=) workspace event recorded. The ordinary
+   audit entries name the writer as =API token #<id>=. A new user with an
+   email gets Venture's ordinary welcome message queued in the new
+   business's outbox, which sends only once that business has mail settings.
+
+Any failure rolls all of it back, and the same request can simply be sent
+again. A first success is 201, a replay 200, both with =Cache-Control:
+no-store=:
+
+#+begin_src json
+{"origin":"https://venture.example","workspace_id":"8f062b79-1d2b-4d7f-99e5-bd3bf588e05a","organization_id":42,"user_id":7,"linked":false,"state":"active"}
+#+end_src
+
+| Result | Meaning |
+|--------+---------|
+| 201 | Signed up now |
+| 200 | Identical replay of an earlier sign-up |
+| 401 | No bearer token, an invalid/expired token, or a session instead of a token |
+| 403 | Not a workspace administrator now and in the token, viewer token, wrong Host, workspace lifecycle |
+| 409 | Key reused for another request; address belongs to an unavailable identity |
+| 413 | Body larger than 4096 bytes |
+| 422 | Body is not the documented closed object, or a member breaks its rule |
+| 500 | Storage failure; nothing was written |
+
+** The account reference afterwards
+
+={origin, workspace_id, organization_id}= is an ordinary account reference.
+=GET /api/v1/account-identity/<organization_id>= validates it with a
+credential that has owner/admin authority over the business in both its
+current membership and its snapshot, exactly as for any other business: the
+owner's own token does. The administrator's service token used for the
+sign-up does *not*: its snapshot predates the new organization, and a later
+grant never enlarges an existing token. Lightsite should treat the sign-up
+response itself, matched against its configured origin and workspace, as the
+validated reference for the binding it makes at sign-up time.
+
+** The owner's own sign-in
+
+A hosted workspace may trust one identity provider, Lightsite's Keycloak
+realm:
+
+#+begin_src yaml
+hosted:
+  identity_issuer: https://identity.example.test/realms/example
+  identity_audience: venture-api
+  identity_jwks_uri: https://identity.example.test/realms/example/protocol/openid-connect/certs
+#+end_src
+
+All three are required together (the issuer and keys over HTTPS; keys may be
+HTTP only on a literal loopback address); half a configuration refuses to
+start. Unset, nothing changes.
+
+Then =Authorization: Bearer <access token>= from that provider is the person
+on any API route, with no Venture key. The token must be signed by the
+provider's published key, name exactly the issuer, carry the audience among
+its =aud= values, and be current (30 seconds of clock skew). Its =sub= must
+be linked to an active, non-deleted user who has not signed out everywhere
+since the token's =iat=. Every other claim (email, roles, groups) is ignored:
+it never picks a user or grants anything. The request then runs as that user
+under every ordinary check (hosted workspace membership, organization
+membership and role, lifecycle, MFA policy), exactly as their own signed-in
+session would, so =account-authority= reports their current memberships.
+Anything that does not verify, or is not linked, is a plain 401; the token is
+never stored or logged. In Keycloak, add an audience mapper for =venture-api=
+to the client Lightsite signs people in with.
+
+A link is made only two ways:
+- the trusted sign-up above, for the person it creates or links;
+- the person themselves: =POST /api/v1/account/identity-link= with
+  ={"access_token": "<their own provider token>"}=, signed in to Venture with
+  their own session or API token (never a provider token). The same link
+  again is 200; a sign-in already linked to someone else is 409; a token that
+  does not verify is 422. The answer is ={"linked": true, "issuer": ...}=.
+
+Links are =tenant_identity= records (subject and key sensitive), written only
+by these two paths. Deactivating the user, ending their workspace or
+organization membership, or "sign out everywhere" ends provider-token access
+on the next request.
+
+** What a passwordless owner can and cannot do
+
+A created user has no password. With a trusted identity provider, their
+provider sign-in is enough for the API (above). Without one they cannot sign
+in to Venture: password sign-in fails, they cannot link OIDC (that needs the
+current local password) and they cannot mint API tokens (that needs a
+signed-in session). There is no passkey or email-link login to Venture's own
+pages. They nevertheless exist
+fully as the business's owner: the owner membership and the workspace
+membership are active, and they appear normally in organization membership
+and, once they hold a credential, in =account-authority= as =owner= with
+=can_manage_sites= true. Their business is usable by Lightsite through the
+reference above.
+
+To give them a Venture password today, a workspace administrator uses the
+existing targeted recovery: deactivate the membership
+(=set_membership= with =active= false), issue a recovery invitation for that
+user, and have the person accept it with their exact username and a new
+password. Ownership is kept throughout. Reactivating the membership without a
+password stays refused by the quarantine rule, unchanged.
+
+** Verification
+
+Billing the business afterwards -- binding it to a plan in the operator's billing
+organization and reading what it owes -- uses this same authority; see
+[[file:lightsite-billing.org][Lightsite billing]].
+
+=tests/test-lightsite-signup.c= runs a real hosted server with real bearer
+tokens: creation, case-insensitive linking, replay and conflicting reuse with
+row counts, inactive/deleted/non-member addresses, every authority refusal
+including a session cookie and a token without the captured workspace role,
+body shape and bounds, rollback after a failed membership write followed by a
+successful retry, username derivation and the recovery path above. See
+[[file:evidence/lightsite-signup.org][the evidence]].

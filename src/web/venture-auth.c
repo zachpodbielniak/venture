@@ -589,6 +589,12 @@ venture_auth_authenticate(
 
 		from_token = venture_auth_from_token(self, token);
 
+		/* Not a Venture token: perhaps the trusted identity provider's
+		 * access token, acting as the user its subject is linked to. */
+		if (NULL == from_token && !g_str_has_prefix(token, "vk_"))
+			from_token = venture_tenant_service_identity_principal(
+				venture_tenant_service_get(venture_context_get_database(self->context)), token);
+
 		if (NULL != from_token)
 		{
 			venture_auth_principal_free(principal);

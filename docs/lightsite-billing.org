@@ -1,0 +1,264 @@
+#+TITLE: Lightsite billing
+
+* Two organizations, two Stripe connections
+
+the operator bills each Lightsite customer from *the operator's own* Venture
+organization, the /billing organization/: its plans and monthly prices,
+its invoices, its dunning and its Stripe connection (=/organizations/<id>/settings/stripe=
+on that organization, see [[file:stripe.org][Stripe payments]]). There is no second billing
+system; everything below is [[file:billing.org][SaaS billing]] driven through
+=VentureBillingService=.
+
+Each customer *business* is an organization of its own, made by
+=POST /api/v1/lightsite/signups= ([[file:lightsite-accounts.org][Lightsite account validation]]). It keeps its
+own books and connects *its own* Stripe through its own
+=/organizations/<id>/settings/stripe=. In the billing organization the
+business appears as an ordinary customer company:
+
+| Company field | Value |
+|---------------+-------|
+| =name= | the business organization's name, when the company is first made |
+| =external_id= | =lightsite:organization:<organization_id>= -- the stable reference back to the business |
+| =source= | =lightsite= |
+| =kind= | =customer= |
+
+Nothing is written to the business's own organization. No key, secret or
+account ID of either Stripe connection is ever returned: Lightsite only
+learns whether the business has connected its own.
+
+Plans for now, all monthly, managed AI included (no usage lines):
+
+| Code | Name | Price |
+|------+------+-------|
+| =team= | Plan A | $10/month |
+| =growth= | Plan B | $20/month |
+| =starter= | Plan C | $30/month (example) |
+
+* The setting
+
+| YAML | Environment | Default |
+|------+-------------+---------|
+| =lightsite.billing_organization_id= | =VENTURE_LIGHTSITE_BILLING_ORGANIZATION_ID= | =0= |
+
+The ID of the billing organization. =0= (unset) turns the three routes off:
+an authorized caller gets 404. A configured ID that is not a live
+organization is also 404. Nothing ever falls back to the default
+organization -- billing from whichever organization happens to be first is
+the failure this setting exists to rule out. The value is read on every
+request, like the other settings, and needs the billing module on.
+
+* Authority
+
+Exactly the [[file:lightsite-accounts.org][trusted-service sign-up]]'s, through the same check
+(=venture_tenant_service_check_trusted_service()=), for all three routes,
+reads included:
+
+- Only =Authorization: Bearer <token>=. No credential, an invalid or expired
+  token, or a browser session cookie: 401.
+- The token's user must be an active workspace administrator (tenant role
+  =admin=) *now and* as captured in the token's =workspace_role= snapshot,
+  and the token must be write-capable (not minted with the viewer role):
+  otherwise 403. Platform roles are not tenant authority.
+- The hosted Host/Origin boundary and lifecycle gate apply: wrong Host, a
+  read-only, suspended or changed workspace: 403.
+
+Authentication is judged before the setting, so an unauthenticated caller
+learns nothing about whether billing is configured. Every answer, refusals
+included, carries =Cache-Control: no-store=.
+
+* =POST /api/v1/lightsite/billing/subscriptions=
+
+Binds a business to a plan.
+
+#+begin_src json
+{"organization_id":42,"plan_code":"team","idempotency_key":"bind:42:2026-10-04"}
+#+end_src
+
+A closed JSON object of exactly these three members, at most 4096 bytes
+(413 above that). A missing, extra or mistyped member, a non-object body,
+malformed JSON or an escaped NUL is 422.
+
+| Member | Rule |
+|--------+------|
+| =organization_id= | JSON integer, positive; a live organization other than the billing organization |
+| =plan_code= | =team=, =growth= or =starter=, exactly |
+| =idempotency_key= | 1-128 of =[A-Za-z0-9._:-]= |
+
+** What happens
+
+In the billing organization:
+
+1. A receipt for =idempotency_key= is looked up. If its request hash
+   (SHA-256 of the three members, length-prefixed in a fixed order) matches,
+   the *answer first given* is returned again with 200 and nothing is
+   written. A different request under the same key is 409. GET the view
+   for the current state.
+2. The plan with that code and its one active monthly price are found; a
+   plan that is not offered, or has no active monthly price, is 404, and
+   more than one active monthly price is 409 (retire all but one).
+3. The customer company for the business is found by its external ID, or
+   made.
+4. With no live subscription (none, or only cancelled or expired ones) the
+   monthly price is *started* through =VentureBillingService= with one
+   seat: per the [[file:billing.org][billing rules]] a price with no trial issues its first
+   month's invoice immediately, through settlement. With a live one
+   (trialing, active or past due) it is *changed at the end of the period*:
+   today's price stands until renewal, nothing is invoiced now, and the
+   change notice is the service's own. Asking for the price the
+   subscription is already on, or already switching to, changes nothing.
+   A paused subscription cannot change terms (422, the service's refusal).
+5. The receipt (key, hash, business, plan code, outcome, company,
+   subscription, the answer, administrator) is stored.
+
+A first invoice posts money, so whole-operation accounting approval is
+taken before the transaction, as a quote's subscription start does. Steps
+3-5 are one transaction: a failure leaves no company, subscription,
+invoice or receipt, and the same request can simply be sent again.
+
+A first success is *201* (a start, a change or nothing to change), a replay
+*200*; both answer the billing view below.
+
+| Result | Meaning |
+|--------+---------|
+| 201 | Instruction given now |
+| 200 | Identical replay of an earlier instruction |
+| 401 | No bearer token, an invalid/expired token, or a session instead of a token |
+| 403 | Not a workspace administrator now and in the token, viewer token, wrong Host, workspace lifecycle |
+| 404 | Billing organization not configured or unavailable; no such business; plan or monthly price not offered |
+| 409 | Key reused for another request; ambiguous monthly price |
+| 413 | Body larger than 4096 bytes |
+| 422 | Body is not the documented closed object, a member breaks its rule, the business is the billing organization, or the billing service refuses the change |
+| 500 | Storage failure; nothing was written |
+
+* =GET /api/v1/lightsite/billing/<organization_id>=
+
+The business's billing view. =<organization_id>= must be a positive 64-bit
+integer (422 otherwise) naming a live organization (404 otherwise) other
+than the billing organization (422).
+
+#+begin_src json
+{"organization_id":42,
+ "plan":{"code":"team","name":"Plan A","amount":"10.00","currency":"USD","interval":"month"},
+ "state":"active",
+ "current_period_end":"2026-11-04T23:34:34.537657Z",
+ "owed":{"amount":"10.00","currency":"USD"},
+ "overdue":false,
+ "failed_payment":false,
+ "last_invoice":{"number":"BILL-b991e07f-f3fe-4523-90cd-0156f438212d-2026-10-04","status":"sent",
+                 "total":"10.00","due_date":"2026-10-04T23:34:34.537657Z","paid_at":null},
+ "stripe_connected":false}
+#+end_src
+
+| Member | Meaning |
+|--------+---------|
+| =organization_id= | The business |
+| =plan= | The plan and price the subscription is on *now* (a change at renewal shows after renewal); =null= with no subscription |
+| =state= | The subscription's status: =trialing=, =active=, =past_due=, =paused=, =cancelled=, =expired=; =none= with no subscription |
+| =current_period_end= | When the period being served ends (it renews then); =null= with no subscription |
+| =owed= | The customer's balance in the billing organization -- receivables less unused credit -- in the plan's currency (the billing organization's book currency with no subscription). Negative means credit on account |
+| =overdue= | An issued invoice is open and at least one whole day past due -- the receivables aging's rule. Subscription invoices are due on receipt |
+| =failed_payment= | A failed payment is on record: the subscription is =past_due= or carries an overdue-since date (=mark-payment-failed=, by an operator or the verified Stripe adapter, until =recover= or =resume=) |
+| =last_invoice= | The customer's latest invoice: its number, status (=draft=, =sent=, =partially_paid=, =paid=, =void=), issued total, due and paid times; =null= with none |
+| =stripe_connected= | Whether the *business's own organization* has exactly one active Stripe connection. Never a key or an account ID; the operator's own connection on the billing organization does not count |
+
+Amounts are exact decimal strings in the currency's own exponent, never
+floating point; times are ISO 8601 UTC, the canonical transmitted form.
+A business with no customer company yet is answered, not refused: no
+plan, =state= =none=, nothing owed.
+
+Nothing here suspends, pauses or cancels anything. An overdue invoice and a
+failed payment are reported so a person can act; dunning steps configured
+in the billing organization run as they always do.
+
+* =GET /api/v1/lightsite/billing=
+
+The staff overview: the same view for every Lightsite business with a
+subscription (any state) in the billing organization, ordered by
+=organization_id=. Companies of the billing organization that are not
+Lightsite businesses are not listed.
+
+#+begin_src json
+{"customers":[{"organization_id":3,"plan":{"code":"starter",...},...},
+              {"organization_id":4,"plan":{"code":"growth",...},...}]}
+#+end_src
+
+Above 2,000 customers the request is refused (422) rather than answering a
+list that silently stops.
+
+* Staging recipe
+
+Run against the local disposable instance with an administrator's =venturectl=
+credentials. =$BILLING= is the operator's own organization ID; use the IDs each
+=create= returns for the plans.
+
+#+begin_src sh
+venturectl list organization
+BILLING=1   # the operator's organization, from the list above
+
+# Settlement accounts, if the organization does not invoice already
+# (1000 cash, 1100 receivables, 4000 income; see docs/receivables.org).
+venturectl create account organization_id=$BILLING code=1000 name=Cash kind=asset active=true
+venturectl create account organization_id=$BILLING code=1100 name="Accounts receivable" kind=asset active=true
+venturectl create account organization_id=$BILLING code=4000 name=Sales kind=income active=true
+
+# The three plans and their monthly prices. Managed AI is included.
+venturectl create plan organization_id=$BILLING name="Plan A" code=team description="Lightsite Plan A, managed AI included" active=true
+venturectl create plan organization_id=$BILLING name="Plan B" code=growth description="Lightsite Plan B, managed AI included" active=true
+venturectl create plan organization_id=$BILLING name="Plan C" code=starter description="Lightsite Plan C, managed AI included" active=true
+venturectl create plan_price organization_id=$BILLING plan_id=PLAN_A_ID currency=USD interval=month amount='10 USD' per_seat=false trial_days=0 active=true
+venturectl create plan_price organization_id=$BILLING plan_id=PLAN_B_ID currency=USD interval=month amount='20 USD' per_seat=false trial_days=0 active=true
+venturectl create plan_price organization_id=$BILLING plan_id=PLAN_C_ID currency=USD interval=month amount='30 USD' per_seat=false trial_days=0 active=true
+
+# Check: one active monthly price per plan.
+venturectl list plan_price active=true
+#+end_src
+
+Then set =lightsite.billing_organization_id: <BILLING>= in the
+configuration (or =VENTURE_LIGHTSITE_BILLING_ORGANIZATION_ID=<BILLING>= in
+the environment) and restart. Connect the operator's Stripe on the billing
+organization through its settings page as for any organization. A price is
+immutable once a customer is on it: to change what a plan costs, add a new
+price and retire the old one, then move its customers ([[file:billing.org][SaaS billing]],
+"In the web interface").
+
+* Verification
+
+=tests/test-lightsite-billing.c= runs a real hosted server with real bearer
+tokens, makes each business through the sign-up route and creates the three
+plans in the billing organization:
+
+- a new business on Plan A: its customer company (name, external ID, source),
+  one active subscription, its first $10.00 invoice issued and owed, and
+  the read answering exactly what the write answered;
+- an identical replay (200, same answer, no rows) and a reused key with
+  another plan or business (409, no rows);
+- a plan change at renewal: no new invoice, the switch pending, the plan
+  shown unchanged until renewal; asking again changes nothing; the
+  down-sell is a change like any other;
+- an invoice ten days past due reads =overdue=, and a payment marked failed
+  through the billing service reads =failed_payment= and =past_due=, with
+  the subscription untouched;
+- =stripe_connected= false, still false after the operator connects Stripe on the
+  billing organization, true once the business's own organization has its
+  binding, with no key or account ID in the answer;
+- the staff list: Lightsite businesses only, ordered, each entry the
+  business's own view; a business with no subscription answered as =none=;
+- every authority refusal on all three routes, including a session cookie
+  and a token without the captured workspace role, with no rows written;
+- unconfigured and unknown billing organizations (404), body shape and
+  bounds, an unknown business, the billing organization itself, a retired
+  price;
+- rollback after the receipt write fails (no company, subscription or
+  invoice left) followed by a successful retry, and receipts refused to
+  every generic writer and to deletion.
+
+The suite was written before the implementation and failed in its first
+fixture, on the missing setting. The receipt-guard case was confirmed to fail
+with the guard disabled. =tests/test-auth.c= includes the three routes in its
+anonymous checks.
+
+#+begin_src sh
+make DEBUG=1 test-one T=test-lightsite-billing
+make DEBUG=1 test-one T=test-lightsite-signup
+make DEBUG=1 test-one T=test-auth
+#+end_src

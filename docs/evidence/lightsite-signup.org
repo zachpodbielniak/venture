@@ -1,0 +1,127 @@
+#+title: Lightsite trusted-service sign-up evidence
+
+* Scope
+
+Lightsite daemon #60: =POST /api/v1/lightsite/signups=, documented in
+[[file:../lightsite-accounts.org][Lightsite account validation]] under "Trusted-service self sign-up". Based on
+=epic/forms= at =27d93277=. Only the new worktree branch was touched.
+
+* Failing first
+
+=tests/test-lightsite-signup.c= was written before any implementation and
+built against the unchanged =27d93277= library. Each of its nine cases was run
+on its own; every one failed at its first sign-up request because the route
+did not exist (the hosted boundary answers an unknown route with 403):
+
+#+begin_example
+not ok /lightsite-signup/creates-owner - assertion failed (status == expected): (403 == 201)
+not ok /lightsite-signup/links-existing - assertion failed (status == expected): (403 == 201)
+not ok /lightsite-signup/replay - assertion failed (status == expected): (403 == 201)
+not ok /lightsite-signup/refuses-unavailable-identity - assertion failed (status == expected): (403 == 409)
+not ok /lightsite-signup/authority - assertion failed (status == expected): (403 == 401)
+not ok /lightsite-signup/body - assertion failed (status == expected): (403 == 422)
+not ok /lightsite-signup/rollback - assertion failed (status == expected): (403 == 500)
+not ok /lightsite-signup/usernames - assertion failed (status == expected): (403 == 201)
+not ok /lightsite-signup/passwordless-recovery - assertion failed (status == expected): (403 == 201)
+#+end_example
+
+Writing the fixture also showed that Venture refuses to save a user with an
+email but no organization ("mail: An exact organization is required"), because
+user creation queues the ordinary welcome message in an organization's
+outbox. The implementation therefore creates the business first and places
+the new user in it.
+
+The display-name assertion (=new= from =new.owner@...=) and the
+=sam.plumbing@...= username case were added after that red run, when the
+friendly display name was requested; both sit behind the first sign-up
+request, which was refused in the red run.
+
+* Green
+
+#+begin_example
+ok 1 /lightsite-signup/creates-owner
+ok 2 /lightsite-signup/links-existing
+ok 3 /lightsite-signup/replay
+ok 4 /lightsite-signup/refuses-unavailable-identity
+ok 5 /lightsite-signup/authority
+ok 6 /lightsite-signup/body
+ok 7 /lightsite-signup/rollback
+ok 8 /lightsite-signup/usernames
+ok 9 /lightsite-signup/passwordless-recovery
+#+end_example
+
+What each case proves, against a real hosted server and real bearer tokens:
+
+- creates-owner: 201 with exactly the six documented members; one user, one
+  organization, one workspace membership, one owner membership and one
+  receipt more; the user is active, an editor, a workspace member but not an
+  administrator, has no password and the display name =new=; password sign-in
+  fails; the owner's own token gets 200 from =account-identity= with the same
+  origin, workspace and organization; the active owner membership is checked
+  directly above that request. The administrator's service token gets 403 from
+  =account-identity= for the new business (its snapshot predates it).
+- links-existing: =olive.owner@example.test= links the member stored as
+  =Olive.Owner@Example.Test=; no user or workspace membership is added, her
+  password and existing viewer role are unchanged, and she owns the new
+  business.
+- replay: the identical request returns 200 with byte-identical JSON and no
+  new users, organizations, memberships or receipts; the same key with a
+  different business name, email or subject is 409 and writes nothing, and
+  the receipt still replays afterwards.
+- refuses-unavailable-identity: inactive, deleted and non-member (support
+  operator style) addresses are 409, nothing is written and the inactive user
+  stays inactive.
+- authority: no token and an invalid token 401; a signed-in administrator's
+  session cookie 401; an ordinary member's token, the administrator's viewer
+  token, a wrong Host, a token whose snapshot lacks =workspace_role=, a
+  read-only workspace and a demoted current membership 403; nothing written;
+  then the proper token succeeds.
+- body: 28 malformed, non-object, missing, extra, wrongly typed and
+  out-of-rule bodies plus over-long key, subject and name are 422; a
+  4200-character name is 413; nothing written; the exact bounds (128-character
+  key, 255-character subject, 200-character two-byte name) are accepted.
+- rollback: with =organization_memberships= renamed away the request fails
+  with 500 after the organization and user were inserted, and no user,
+  organization, workspace membership or receipt remains; after restoring the
+  table the same request succeeds with 201.
+- usernames: =sam.plumbing=, =sam=, =sam-2= (for =SAM@two...=), =user= (for
+  =!!!@...=) and =joshop= (for =Jo+Shop@...=).
+- passwordless-recovery: reactivation without a password is still refused;
+  deactivate, targeted recovery invitation and acceptance set the first
+  password, the user signs in (302) and still owns the business.
+
+Neighbouring suites after the change: =test-tenant= 15/15 (it now also lists
+=tenant_signup=), =test-account-identity= 4/4, =test-auth= 108/108 (anonymous
+POST to the route is 401), =test-migrations= 21/21.
+
+* Full suite
+
+See the master-based validation below for the completed full-suite result.
+
+* Limits of the initial evidence
+
+The initial feature check above used the DEBUG build over SQLite. The later
+master-based validation below adds PostgreSQL coverage. These tests exercise the built server directly with disposable local fixtures.
+
+* Master-based validation, 5 October 2026
+
+The focused branch was rebuilt on master =8acfc74e= without the forms or
+referrals history. Its regression test failed there before the feature was
+applied: the first sign-up returned 403 instead of 201. All nine sign-up
+cases pass after application. Owner membership and the existing
+=account-identity= route remain covered; the separate account-authority
+endpoint belongs to the identity-token change.
+
+All 173 test executables enumerated by the Makefile were run in DEBUG mode,
+with =G_DEBUG=fatal-warnings= and =G_MESSAGES_DEBUG= unset, using a private
+fixture directory and bounded parallel execution. The original run exposed
+an intermittent feeds lifecycle test failure, also reproduced on unchanged
+master. The test-only repair waits for a joined thread's task entry to leave
+=/proc= without dispatching application callbacks, and verifies context
+finalization separately. Its complete 42-case feeds program passed on rerun;
+the other 172 programs passed in the original run. Original failure evidence
+was retained. The final fixture-litter check, version check and all four demo
+checks passed.
+
+The opt-in PostgreSQL migration test passed against a separate disposable
+PostgreSQL 18 database. No production database or service was used.

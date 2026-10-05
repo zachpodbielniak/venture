@@ -135,3 +135,14 @@ docs-site` does the same in a build tree.
 - Printing is not a record write and cannot use `--stage`. A send failure
   may have delivered part of the receipt: inspect the paper before retrying
   (failed writes are never retried automatically).
+
+### Hosted identity tokens
+
+When the workspace trusts an identity provider (`hosted.identity_issuer`,
+`hosted.identity_audience`, `hosted.identity_jwks_uri`), its signed access
+token acts as the linked local user. Existing people link once through
+`POST /api/v1/account/identity-link` while signed in to Venture itself.
+`GET /api/v1/account-authority` lists only that principal's explicit active
+memberships. Site management requires `can_manage_sites`; editing and viewing
+use `can_edit_sites` and `can_view_sites`. A displayed role never expands an
+old token's captured authority. See `docs/lightsite-accounts.org`.

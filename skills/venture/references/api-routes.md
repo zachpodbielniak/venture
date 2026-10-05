@@ -122,3 +122,14 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 `/federation/v1/identity|request` (signed), `/docs`. The web UI's own pages
 (`/e/TYPE`, `/e/TYPE/ID`, `/e/TYPE/import`, `/e/TYPE/export`, `/tickets`,
 `/books`, `/market/...`) need a session and are not an API.
+
+## Lightsite provisioning
+
+| Route | Purpose | venturectl |
+|---|---|---|
+| `POST /lightsite/signups` | trusted workspace service creates or links a business owner idempotently | -- |
+| `POST /account/identity-link` | signed-in local member links provider identity | -- |
+| `GET /account-authority` | explicit active memberships and bounded site permissions | -- |
+| `POST /lightsite/billing/subscriptions` | trusted idempotent business-to-plan binding | -- |
+| `GET /lightsite/billing/:organization_id` | business plan, balance and own Stripe status | -- |
+| `GET /lightsite/billing` | staff billing overview | -- |

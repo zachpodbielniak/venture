@@ -120,5 +120,11 @@ VENTURE_DECLARE_ENTITY(VentureUsageRecord, venture_usage_record, USAGE_RECORD)
  * venture_usage_record_new:
  * Returns: (transfer full): one report of a metered subscription's use
  */
+#define VENTURE_TYPE_LIGHTSITE_BILLING_RECEIPT (venture_lightsite_billing_receipt_get_type())
+VENTURE_DECLARE_ENTITY(VentureLightsiteBillingReceipt, venture_lightsite_billing_receipt, LIGHTSITE_BILLING_RECEIPT)
+/**
+ * venture_lightsite_billing_receipt_new:
+ * Returns: (transfer full): the receipt of one Lightsite billing instruction
+ */
 G_END_DECLS
 #endif

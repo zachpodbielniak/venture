@@ -12,7 +12,7 @@ test_tenant_records(void)
 {
 	static const gchar *const names[] = {
 		"tenant_workspace", "tenant_membership", "tenant_invitation",
-		"tenant_support_grant", "tenant_event"
+		"tenant_support_grant", "tenant_event", "tenant_signup"
 	};
 	guint i;
 

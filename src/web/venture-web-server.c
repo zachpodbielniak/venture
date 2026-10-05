@@ -9862,6 +9862,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 #include "billing/venture-plan-web.inc"
 #include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
+#include "billing/venture-lightsite-billing-web.inc"
 #include "documents/venture-financial-documents-web.inc"
 #include "printing/venture-printing-web.inc"
 
@@ -32475,6 +32476,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/accounting", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, accounting_ui_home, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/accounting/home", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, accounting_api_home, self);
 	venture_budget_web_register(router, self);
+	venture_lightsite_billing_web_register(router, self);
 	venture_equity_web_register(router, self);
 	venture_group_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/invoices/:id/print", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_print, self);
@@ -32630,7 +32632,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/builds/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_build_ticket, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/post/backfill", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_autojournal_backfill, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/inbox", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-authority", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_authority, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-identity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_identity, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/signups", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_signup, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/account/identity-link", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_identity_link, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox_read, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watch, self);
 	/* The discussion on every record. Ahead of /api/v1/:type, which would

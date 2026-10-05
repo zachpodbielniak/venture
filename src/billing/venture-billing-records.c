@@ -402,3 +402,32 @@ static const VentureFieldDecl usage_record_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureUsageRecord, venture_usage_record, usage_record_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = usage_record_display_name;
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Usage", "Usage");)
+
+/*
+ * One row per Lightsite billing instruction, keyed by the caller's
+ * idempotency key in the billing organization. The unique key is what turns
+ * a retry into a replay of the answer it was given, instead of a second
+ * subscription or a second first invoice; the request hash is what makes a
+ * reused key for another request a conflict. Written only by
+ * venture_lightsite_billing_subscribe(); the billing save hook refuses
+ * every other writer and every removal.
+ */
+static const VentureFieldDecl lightsite_billing_receipt_fields[] = {
+	VENTURE_FIELD("idempotency-key", "Idempotency key", "The caller's key for one instruction",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("request-hash", "Request hash", "SHA-256 of the canonical request",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	/* Another legal entity, not a record of this organization: a number,
+	 * never a reference the same-organization check would refuse. */
+	VENTURE_FIELD("business-id", "Business", "The customer business's own organization",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("plan-code", "Plan code", "The plan asked for", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("outcome", "Outcome", "start, change or unchanged", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("result", "Answer", "The billing view answered, replayed verbatim for the same request"),
+	VENTURE_FIELD("actor-user-id", "Administrator", "Workspace administrator whose token gave the instruction",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureLightsiteBillingReceipt, venture_lightsite_billing_receipt, lightsite_billing_receipt_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Lightsite billing receipt", "Lightsite billing receipts");)

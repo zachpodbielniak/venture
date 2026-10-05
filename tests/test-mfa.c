@@ -877,10 +877,10 @@ static void
 test_policy_requires_admins(Fixture *fixture, gconstpointer user_data)
 {
 	g_autoptr(VentureEntity) policy = NULL;
-	VentureAuthPrincipal admin = { 0, 0, VENTURE_USER_ROLE_EDITOR, (gchar *)"admin", TRUE };
-	VentureAuthPrincipal editor = { 0, 0, VENTURE_USER_ROLE_EDITOR, (gchar *)"editor", TRUE };
-	VentureAuthPrincipal global = { 0, 0, VENTURE_USER_ROLE_OWNER, (gchar *)"root", TRUE };
-	VentureAuthPrincipal nobody = { 0, 0, VENTURE_USER_ROLE_VIEWER, NULL, FALSE };
+	VentureAuthPrincipal admin = { 0, 0, VENTURE_USER_ROLE_EDITOR, (gchar *)"admin", TRUE, FALSE };
+	VentureAuthPrincipal editor = { 0, 0, VENTURE_USER_ROLE_EDITOR, (gchar *)"editor", TRUE, FALSE };
+	VentureAuthPrincipal global = { 0, 0, VENTURE_USER_ROLE_OWNER, (gchar *)"root", TRUE, FALSE };
+	VentureAuthPrincipal nobody = { 0, 0, VENTURE_USER_ROLE_VIEWER, NULL, FALSE, FALSE };
 	(void)user_data;
 	admin.user_id = create_user(fixture, "admin", VENTURE_USER_ROLE_EDITOR, VENTURE_ORGANIZATION_ROLE_ADMIN);
 	editor.user_id = create_user(fixture, "editor", VENTURE_USER_ROLE_EDITOR, VENTURE_ORGANIZATION_ROLE_EDITOR);

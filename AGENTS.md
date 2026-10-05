@@ -181,6 +181,25 @@ order the data flows.
   missing guard looks exactly like nothing. `tests/test-auth.c` starts a real
   server and asserts every page redirects and every endpoint 401s when
   anonymous, so add new routes there.
+- **A hosted identity is made only by a dedicated tenant operation.**
+  Operator bootstrap, invitation acceptance and the trusted Lightsite
+  sign-up (`venture_tenant_service_lightsite_signup()`) are the only
+  writers; the last two grant membership through `grant_membership()` in
+  `venture-tenant-service.c`. Do not loosen `check_write` or the
+  organization-creation policy to make another path work -- add an
+  explicitly authorized service operation, and add its receipt or control
+  type to the `check_write` refusal list so the generic API cannot write it.
+- **Lightsite billing happens in the billing organization, never the
+  business's.** `lightsite.billing_organization_id` names the operator's own
+  organization; a business is a customer company there whose
+  `external-id` is `lightsite:organization:<id>`, and every subscription
+  change goes through `venture_billing_service_execute()`. Unset is off
+  (404), never "the default organization". `stripe_connected` asks the
+  *business's* organization for its binding and is only a boolean. The
+  `lightsite_billing_receipt` is written only by
+  `venture_lightsite_billing_subscribe()` (the billing save hook refuses
+  every other writer and every removal): a forged one would answer a
+  request that never ran, a deleted one would let a retry bill twice.
 - **User and API-token records are owner-only everywhere**, via
   `venture_web_require_for_type()`. Creating a user is access management, not
   data entry.

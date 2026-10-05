@@ -624,6 +624,13 @@ backup:
 #   # Maximum nested dynamic HTTP handlers, 1 through 256.
 #   http_concurrency: 8
 
+# Lightsite billing (see docs/lightsite-billing.org). The organization whose
+# plans, prices and Stripe connection bill each Lightsite customer business;
+# 0 leaves the /api/v1/lightsite/billing routes off (404). Also
+# VENTURE_LIGHTSITE_BILLING_ORGANIZATION_ID.
+# lightsite:
+#   billing_organization_id: 0
+
 # The rendered documentation site served at /docs. The default is the
 # docs-site directory under the install prefix's data directory, so it
 # depends on the build: the value below is the /usr/local prefix's

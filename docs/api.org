@@ -14,7 +14,10 @@ registers — there is no routing to add.
 
 * Authentication
 
-Either a bearer token or a browser session cookie.
+Either a bearer token or a browser session cookie. In a hosted workspace that
+trusts an identity provider (=hosted.identity_issuer=), that provider's access
+token is also a bearer: it acts as the user its subject is linked to, like
+their own session. See [[file:lightsite-accounts.org][Lightsite accounts]], "The owner's own sign-in".
 
 #+begin_src sh
 curl -H "Authorization: Bearer $VENTURE_TOKEN" localhost:8747/api/v1/sale
@@ -646,6 +649,14 @@ organization owner/admin authority. Returns canonical origin, workspace UUID,
 organization ID and active lifecycle state; never grants token access to
 workspace administration. See [[file:lightsite-accounts.org][Lightsite account validation]] for refusals and
 consumer requirements.
+
+=POST /api/v1/lightsite/billing/subscriptions= binds a Lightsite business to a
+plan in the configured billing organization (=lightsite.billing_organization_id=),
+idempotently; =GET /api/v1/lightsite/billing/:organization_id= and
+=GET /api/v1/lightsite/billing= read what a business, or every Lightsite
+customer, is on and owes. All three take the trusted-service authority of the
+sign-up and answer 404 while no billing organization is configured. See
+[[file:lightsite-billing.org][Lightsite billing]].
 * Receipt printing
 
 =GET /api/v1/printers= returns configured names, default flags and unknown
@@ -658,3 +669,11 @@ Readers of a payment or invoice may =POST /api/v1/print/:type/:id= with JSON
 refused; the response never exposes a host or port. A successful exchange
 returns ={"state":"sent"}=. Printing is immediate and cannot be staged.
 See [[file:printing.org][receipt printers]] for deadlines and partial-delivery semantics.
+
+=GET /api/v1/account-authority= returns the authenticated principal's hosted
+origin, workspace, user ID and explicit organization memberships. Consumers
+must use =can_manage_sites=, =can_edit_sites= and =can_view_sites=, not the
+current role alone: each decision also
+limits bearer tokens to their captured authority. Responses are uncached and
+bounded; arbitrary-user lookup is not supported. See
+[[file:lightsite-accounts.org][Lightsite account validation]] for the full contract.

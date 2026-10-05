@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "../oidc/venture-oidc-verifier-private.h"
 
 struct _VentureTenantService {
 	GObject parent_instance;
@@ -11,6 +12,9 @@ struct _VentureTenantService {
 	gboolean initialized;
 	guint maintenance_depth;
 	VentureTenantSupportScope *support;
+	/* The one identity provider whose access tokens act as their linked user. */
+	gchar *identity_issuer, *identity_audience, *identity_jwks;
+	GObject *identity_verifier;
 };
 struct _VentureTenantSupportScope {
 	GObject parent_instance;
@@ -22,6 +26,8 @@ struct _VentureTenantSupportScope {
 	gboolean control;
 	guint previous_maintenance_depth;
 };
+static gboolean identity_link_locked(VentureTenantService *self, gint64 user_id, const gchar *subject,
+	const VentureActor *audit, GError **error);
 static VentureEntity *support_grant_read(VentureTenantService *self,
 	const VentureAuthPrincipal *actor, GError **error);
 G_DEFINE_FINAL_TYPE(VentureTenantService, venture_tenant_service, G_TYPE_OBJECT)
@@ -58,6 +64,8 @@ tenant_finalize(GObject *object)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	g_free(self->workspace_id);
 	g_free(self->origin);
+	g_free(self->identity_issuer); g_free(self->identity_audience); g_free(self->identity_jwks);
+	g_clear_object(&self->identity_verifier);
 	G_OBJECT_CLASS(venture_tenant_service_parent_class)->finalize(object);
 }
 
@@ -106,15 +114,52 @@ origin_valid(const gchar *origin)
 		 (g_strcmp0(host, "127.0.0.1") == 0 || g_strcmp0(host, "::1") == 0));
 }
 
+/* An identity issuer is an https URL without credentials, query or fragment. */
+static gboolean
+identity_issuer_valid(const gchar *issuer)
+{
+	g_autoptr(GUri) uri = issuer ? g_uri_parse(issuer, G_URI_FLAGS_NONE, NULL) : NULL;
+	return uri && g_strcmp0(g_uri_get_scheme(uri), "https") == 0 && g_uri_get_host(uri) && *g_uri_get_host(uri) &&
+		!g_uri_get_userinfo(uri) && !g_uri_get_query(uri) && !g_uri_get_fragment(uri) && strlen(issuer) <= 1024;
+}
+
+/* Match only the canonical development loopback addresses, without DNS. */
+static gboolean
+identity_host_is_loopback(const gchar *host)
+{
+	g_autoptr(GInetAddress) ipv4 = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+	g_autoptr(GInetAddress) ipv6 = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV6);
+	g_autofree gchar *ipv4_text = g_inet_address_to_string(ipv4);
+	g_autofree gchar *ipv6_text = g_inet_address_to_string(ipv6);
+	return !g_strcmp0(host, ipv4_text) || !g_strcmp0(host, ipv6_text);
+}
+
+/* Signing keys come over HTTPS, or HTTP only on a literal loopback address. */
+static gboolean
+identity_keys_valid(const gchar *jwks)
+{
+	g_autoptr(GUri) uri = jwks ? g_uri_parse(jwks, G_URI_FLAGS_NONE, NULL) : NULL;
+	const gchar *host = uri ? g_uri_get_host(uri) : NULL;
+	return uri && host && *host && !g_uri_get_userinfo(uri) && !g_uri_get_fragment(uri) &&
+		(g_strcmp0(g_uri_get_scheme(uri), "https") == 0 ||
+		 (g_strcmp0(g_uri_get_scheme(uri), "http") == 0 && identity_host_is_loopback(host)));
+}
+
 gboolean
 venture_tenant_service_configure(VentureTenantService *self, VentureConfig *config, GError **error)
 {
 	g_autofree gchar *workspace = NULL, *origin = NULL;
+	g_autofree gchar *issuer = NULL, *audience = NULL, *jwks = NULL;
 	gboolean enabled, require_auth;
 	g_object_get(config, "hosted-enabled", &enabled, "hosted-workspace-id", &workspace,
 	             "hosted-origin", &origin, "security-require-auth", &require_auth, NULL);
 	if (enabled && (!require_auth || !g_uuid_string_is_valid(workspace) || !origin_valid(origin)))
 		return tenant_fail(error, "authentication, a workspace UUID and a canonical HTTPS origin are required");
+	g_object_get(config, "hosted-identity-issuer", &issuer, "hosted-identity-audience", &audience,
+	             "hosted-identity-jwks-uri", &jwks, NULL);
+	if (enabled && issuer && *issuer && (!identity_issuer_valid(issuer) || !audience || !*audience ||
+	    strlen(audience) > 255 || !identity_keys_valid(jwks)))
+		return tenant_fail(error, "a trusted identity provider needs an https issuer, an audience and its signing-key address");
 	if (self->configured) {
 		if (self->enabled != enabled || (enabled &&
 		    (g_strcmp0(self->workspace_id, workspace) || g_strcmp0(self->origin, origin))))
@@ -125,6 +170,11 @@ venture_tenant_service_configure(VentureTenantService *self, VentureConfig *conf
 	self->enabled = enabled;
 	self->workspace_id = g_steal_pointer(&workspace);
 	self->origin = g_steal_pointer(&origin);
+	if (enabled && issuer && *issuer) {
+		self->identity_issuer = g_steal_pointer(&issuer);
+		self->identity_audience = g_steal_pointer(&audience);
+		self->identity_jwks = g_steal_pointer(&jwks);
+	}
 	return TRUE;
 }
 
@@ -265,7 +315,7 @@ venture_tenant_service_check_write(VentureTenantService *self, VentureEntity *en
 		return tenant_fail(error, "platform records require operator maintenance");
 	if (VENTURE_IS_TENANT_WORKSPACE(entity) || VENTURE_IS_TENANT_MEMBERSHIP(entity) ||
 	    VENTURE_IS_TENANT_INVITATION(entity) || VENTURE_IS_TENANT_SUPPORT_GRANT(entity) ||
-	    VENTURE_IS_TENANT_EVENT(entity))
+	    VENTURE_IS_TENANT_EVENT(entity) || VENTURE_IS_TENANT_SIGNUP(entity) || VENTURE_IS_TENANT_IDENTITY(entity))
 		return tenant_fail(error, "hosted control records require a dedicated administrative operation");
 	{
 		g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(entity);
@@ -713,6 +763,104 @@ venture_tenant_service_status(VentureTenantService *self, GError **error)
 }
 
 JsonNode *
+venture_tenant_service_account_authority(VentureTenantService *self, GError **error)
+{
+	VentureAccessPolicy *policy;
+	const VentureAuthPrincipal *actor;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GPtrArray) members = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autoptr(JsonNode) snapshot = NULL, result = json_node_new(JSON_NODE_OBJECT);
+	g_autoptr(JsonObject) object = json_object_new();
+	g_autoptr(JsonArray) organizations = json_array_new();
+	g_autofree gchar *snapshot_text = NULL;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
+	policy = venture_database_get_access_policy(self->database);
+	actor = venture_access_policy_get_actor(policy);
+	if (!self->enabled || !self->initialized || actor == NULL || actor->user_id <= 0 ||
+	    venture_tenant_service_get_support_organization(self) > 0) {
+		tenant_fail(error, "account authority requires a signed-in hosted member"); return NULL;
+	}
+	if (!venture_tenant_service_check_principal(self, actor, error) ||
+	    !venture_tenant_service_check_operation(self, TRUE, error)) return NULL;
+	/* Enumerate only this principal's explicit memberships. Workspace/platform
+	 * administration is not evidence of membership in somebody else's account. */
+	internal = venture_access_policy_enter(policy, NULL);
+	if (!venture_database_begin(self->database, error)) return NULL;
+	if (actor->token_id > 0) {
+		token = venture_database_get(self->database, VENTURE_TYPE_API_TOKEN, actor->token_id, error);
+		if (token == NULL) goto fail;
+		g_object_get(token, "membership-snapshot", &snapshot_text, NULL);
+		snapshot = venture_json_parse(snapshot_text, error);
+		if (snapshot == NULL) goto fail;
+		if (!JSON_NODE_HOLDS_OBJECT(snapshot)) { tenant_fail(error, "token authority is unavailable"); goto fail; }
+	}
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, actor->user_id, NULL);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
+	venture_query_set_limit(query, 21);
+	members = venture_database_find(self->database, query, error);
+	if (members == NULL) goto fail;
+	if (members->len > 20) { tenant_fail(error, "account authority exceeds the bounded membership limit"); goto fail; }
+	for (i = 0; i < members->len; i++) {
+		VentureEntity *member = g_ptr_array_index(members, i);
+		gint64 org = venture_entity_get_organization_id(member);
+		g_autoptr(VentureEntity) organization = NULL;
+		g_autoptr(JsonObject) entry = json_object_new();
+		g_autoptr(GError) local = NULL;
+		g_autofree gchar *role_name = record_enum_nick(member, "role");
+		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, org);
+		gint role, captured;
+		gboolean active = FALSE, can_manage, can_edit;
+		g_object_get(member, "role", &role, NULL);
+		captured = role;
+		if (snapshot != NULL) {
+			JsonNode *value = json_object_get_member(json_node_get_object(snapshot), key);
+			if (value == NULL) continue;
+			if (json_node_get_value_type(value) != G_TYPE_INT64) { tenant_fail(error, "token authority is unavailable"); goto fail; }
+			if (json_node_get_int(value) < VENTURE_ORGANIZATION_ROLE_VIEWER ||
+			    json_node_get_int(value) > VENTURE_ORGANIZATION_ROLE_ACCOUNTANT) {
+				tenant_fail(error, "token authority is unavailable"); goto fail;
+			}
+			captured = json_node_get_int(value);
+		}
+		organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, org, &local);
+		if (organization == NULL) {
+			if (g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) continue;
+			g_propagate_error(error, g_steal_pointer(&local)); goto fail;
+		}
+		g_object_get(organization, "active", &active, NULL);
+		if (!active || venture_entity_is_deleted(organization)) continue;
+		can_manage = actor->role != VENTURE_USER_ROLE_VIEWER &&
+			(role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN) &&
+			(captured == VENTURE_ORGANIZATION_ROLE_OWNER || captured == VENTURE_ORGANIZATION_ROLE_ADMIN);
+		/* Editing a site goes with editing ordinary records, on the same two sides. */
+		can_edit = actor->role != VENTURE_USER_ROLE_VIEWER &&
+			(role == VENTURE_ORGANIZATION_ROLE_OWNER || role == VENTURE_ORGANIZATION_ROLE_ADMIN || role == VENTURE_ORGANIZATION_ROLE_EDITOR) &&
+			(captured == VENTURE_ORGANIZATION_ROLE_OWNER || captured == VENTURE_ORGANIZATION_ROLE_ADMIN || captured == VENTURE_ORGANIZATION_ROLE_EDITOR);
+		json_object_set_int_member(entry, "organization_id", org);
+		json_object_set_string_member(entry, "role", role_name);
+		json_object_set_boolean_member(entry, "can_manage_sites", can_manage);
+		json_object_set_boolean_member(entry, "can_edit_sites", can_edit);
+		/* Every active membership the credential carries may read its business's sites. */
+		json_object_set_boolean_member(entry, "can_view_sites", TRUE);
+		json_array_add_object_element(organizations, g_steal_pointer(&entry));
+	}
+	json_object_set_string_member(object, "origin", self->origin);
+	json_object_set_string_member(object, "workspace_id", self->workspace_id);
+	json_object_set_string_member(object, "state", "active");
+	json_object_set_int_member(object, "user_id", actor->user_id);
+	json_object_set_array_member(object, "organizations", g_steal_pointer(&organizations));
+	json_node_take_object(result, g_steal_pointer(&object));
+	if (!venture_database_commit(self->database, error)) return NULL;
+	return g_steal_pointer(&result);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+JsonNode *
 venture_tenant_service_account_identity(VentureTenantService *self,
 	gint64 organization_id, GError **error)
 {
@@ -900,6 +1048,43 @@ venture_tenant_service_invite_recovery(VentureTenantService *self, gint64 user_i
 		lifetime_seconds, reason, user_id, error);
 }
 
+/* The one writer of a hosted identity's own workspace and organization
+ * membership: invitation acceptance and trusted sign-up both come here. An
+ * existing workspace administrator stays one, and an existing organization
+ * role is never downgraded. @member may be a row the caller already read
+ * and checked; @organization_id 0 writes the workspace membership only. */
+static gboolean
+grant_membership(VentureTenantService *self, gint64 user_id, const gchar *username, VentureEntity *member,
+	gint tenant_role, gint64 organization_id, gint organization_role, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) found = NULL, org_member = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) local = NULL;
+	g_autofree gchar *old_role = NULL;
+	if (!member) {
+		found = find_number(self, VENTURE_TYPE_TENANT_MEMBERSHIP, "user-id", user_id, &local);
+		if (local) { g_propagate_error(error, g_steal_pointer(&local)); return FALSE; }
+		if (!found) found = g_object_new(VENTURE_TYPE_TENANT_MEMBERSHIP, "user-id", user_id, NULL);
+		member = found;
+	}
+	if (venture_entity_is_persisted(member)) old_role = record_enum_nick(member, "role");
+	g_object_set(member, "name", username, "role", g_strcmp0(old_role, "admin") == 0 ?
+		VENTURE_TENANT_ROLE_ADMIN : tenant_role, "active", TRUE, NULL);
+	if (!venture_database_save(self->database, member, actor, error)) return FALSE;
+	if (organization_id <= 0) return TRUE;
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, user_id, NULL);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) return FALSE;
+	org_member = rows->len ? g_object_ref(g_ptr_array_index(rows, 0)) :
+		g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user_id, "organization-id", organization_id,
+			"role", organization_role, NULL);
+	g_object_set(org_member, "active", TRUE, NULL);
+	return venture_database_save(self->database, org_member, actor, error);
+}
+
 static VentureEntity *
 invitation_for_capability(VentureTenantService *self, const gchar *capability, GError **error)
 {
@@ -920,13 +1105,13 @@ venture_tenant_service_accept_invitation(VentureTenantService *self, VentureConf
 {
 	const VentureAuthPrincipal *actor = venture_access_policy_get_actor(venture_database_get_access_policy(self->database));
 	g_autoptr(VentureAccessScope) internal = NULL;
-	g_autoptr(VentureEntity) invitation = NULL, issuer = NULL, issuer_member = NULL, member = NULL, organization = NULL, org_member = NULL;
+	g_autoptr(VentureEntity) invitation = NULL, issuer = NULL, issuer_member = NULL, member = NULL, organization = NULL;
 	g_autoptr(VentureUser) user = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GDateTime) now = g_date_time_new_now_utc(), expires = NULL, consumed = NULL;
 	g_autoptr(GDateTime) issuer_generation = NULL, current_generation = NULL;
-	g_autofree gchar *role = NULL, *old_role = NULL, *accepted_username = NULL;
+	g_autofree gchar *role = NULL, *accepted_username = NULL;
 	gint64 issuer_id = 0, authority_version = 0, org_id = 0, user_id = 0, minimum = 0, iterations = 0;
 	gint64 recovery_user_id = 0, recovery_version = 0;
 	gint org_role = 0, user_role = VENTURE_USER_ROLE_EDITOR;
@@ -1007,32 +1192,14 @@ venture_tenant_service_accept_invitation(VentureTenantService *self, VentureConf
 		    !venture_database_save(self->database, VENTURE_ENTITY(user), NULL, error)) goto rollback;
 		user_id = venture_entity_get_id(VENTURE_ENTITY(user));
 	}
-	if (!member) member = find_number(self, VENTURE_TYPE_TENANT_MEMBERSHIP, "user-id", user_id, error);
-	if (error && *error) goto rollback;
-	if (member) old_role = record_enum_nick(member, "role");
-	else member = g_object_new(VENTURE_TYPE_TENANT_MEMBERSHIP, "user-id", user_id, NULL);
 	g_object_get(user, "username", &accepted_username, NULL);
-	g_object_set(member, "name", accepted_username, "role", g_strcmp0(old_role, "admin") == 0 ? VENTURE_TENANT_ROLE_ADMIN : role_value(role), "active", TRUE, NULL);
-	if (recovery_user_id == 0) {
-		g_clear_object(&query); g_clear_pointer(&rows, g_ptr_array_unref);
-		query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
-		venture_query_set_organization(query, org_id);
-		venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, user_id, NULL);
-		rows = venture_database_find(self->database, query, error);
-		if (!rows) goto rollback;
-		org_member = rows->len ? g_object_ref(g_ptr_array_index(rows, 0)) :
-			g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user_id, "organization-id", org_id, NULL);
-		/* Accepting an invitation never downgrades an existing organization role. */
-		if (!rows->len) g_object_set(org_member, "role", org_role, NULL);
-		g_object_set(org_member, "active", TRUE, NULL);
-	}
 	g_object_set(invitation, "consumed-at", now, "consumed-user-id", user_id, NULL);
 	if (existing) {
 		if (g_strcmp0(role, "admin") == 0) g_object_set(user, "role", VENTURE_USER_ROLE_EDITOR, NULL);
 		if (!revoke_credentials(self, VENTURE_ENTITY(user), error)) goto rollback;
 	}
-	if (!venture_database_save(self->database, member, NULL, error) ||
-	    (org_member && !venture_database_save(self->database, org_member, NULL, error)) ||
+	if (!grant_membership(self, user_id, accepted_username, member, role_value(role),
+	        recovery_user_id == 0 ? org_id : 0, org_role, NULL, error) ||
 	    !venture_database_save(self->database, invitation, NULL, error) ||
 	    !record_event(self, recovery_user_id > 0 ? "tenant.accept_recovery" : "tenant.accept_invitation", user_id, 0, "membership", "Explicit capability acceptance", error)) goto rollback;
 	committed = venture_database_commit(self->database, error);
@@ -1328,4 +1495,509 @@ venture_tenant_service_revoke_credentials(VentureTenantService *self, const gcha
 rollback:
 	venture_database_rollback(self->database);
 	return FALSE;
+}
+
+/* --- Trusted-service sign-up ------------------------------------------- */
+
+static gboolean
+signup_refuse(GError **error, const gchar *message)
+{
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Lightsite sign-up: %s", message);
+	return FALSE;
+}
+
+static gboolean
+signup_conflict(GError **error, const gchar *message)
+{
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Lightsite sign-up: %s", message);
+	return FALSE;
+}
+
+/* Bounded UTF-8 with no control character and not only white space: a
+ * business name or provider subject a person or a log line can show. */
+static gboolean
+signup_text_valid(const gchar *text, glong max_chars)
+{
+	const gchar *cursor;
+	gboolean visible = FALSE;
+	glong length;
+	if (!text || !*text || !g_utf8_validate(text, -1, NULL)) return FALSE;
+	length = g_utf8_strlen(text, -1);
+	if (length > max_chars) return FALSE;
+	for (cursor = text; *cursor; cursor = g_utf8_next_char(cursor)) {
+		gunichar c = g_utf8_get_char(cursor);
+		if (g_unichar_iscntrl(c)) return FALSE;
+		if (!g_unichar_isspace(c)) visible = TRUE;
+	}
+	return visible;
+}
+
+static gboolean
+signup_key_valid(const gchar *key)
+{
+	gsize i, length = key ? strlen(key) : 0;
+	if (length < 1 || length > 128) return FALSE;
+	for (i = 0; i < length; i++)
+		if (!g_ascii_isalnum(key[i]) && !strchr("._:-", key[i])) return FALSE;
+	return TRUE;
+}
+
+/* A deliberately plain address: ASCII, one @, a dotted DNS-style domain.
+ * ASCII only because the case-insensitive match below is ASCII folding on
+ * both database backends; an address it cannot fold is refused, not guessed. */
+static gboolean
+signup_email_valid(const gchar *email)
+{
+	const gchar *at, *cursor, *label;
+	gsize length = email ? strlen(email) : 0;
+	if (length < 3 || length > 254) return FALSE;
+	at = strchr(email, '@');
+	if (!at || at == email || strchr(at + 1, '@') || (gsize)(at - email) > 64) return FALSE;
+	for (cursor = email; cursor < at; cursor++)
+		if (*cursor <= ' ' || *cursor >= 127 || strchr("\"(),:;<>[\\]%", *cursor)) return FALSE;
+	if (!strchr(at + 1, '.')) return FALSE;
+	for (label = cursor = at + 1;; cursor++) {
+		if (*cursor == '.' || *cursor == '\0') {
+			if (cursor == label || *label == '-' || cursor[-1] == '-' || cursor - label > 63) return FALSE;
+			if (*cursor == '\0') break;
+			label = cursor + 1;
+		} else if (!g_ascii_isalnum(*cursor) && *cursor != '-') return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+signup_issuer_valid(const gchar *issuer)
+{
+	g_autoptr(GUri) uri = NULL;
+	if (!issuer || strlen(issuer) > 1024) return FALSE;
+	uri = g_uri_parse(issuer, G_URI_FLAGS_NONE, NULL);
+	return uri && g_strcmp0(g_uri_get_scheme(uri), "https") == 0 && g_uri_get_host(uri) &&
+		*g_uri_get_host(uri) && !g_uri_get_userinfo(uri) && !g_uri_get_query(uri) && !g_uri_get_fragment(uri);
+}
+
+/* Length-prefixed fields in a fixed order, so no two different requests
+ * share a canonical form however their members were written. */
+static gchar *
+signup_request_hash(const gchar *const *fields, guint n_fields)
+{
+	g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+	guint i;
+	g_checksum_update(checksum, (const guchar *)"lightsite-signup/v1\n", -1);
+	for (i = 0; i < n_fields; i++) {
+		g_autofree gchar *prefix = g_strdup_printf("%" G_GSIZE_FORMAT ":", strlen(fields[i]));
+		g_checksum_update(checksum, (const guchar *)prefix, -1);
+		g_checksum_update(checksum, (const guchar *)fields[i], -1);
+		g_checksum_update(checksum, (const guchar *)"\n", 1);
+	}
+	return g_strdup(g_checksum_get_string(checksum));
+}
+
+/* The local part made into a username: lowercase letters, digits and the
+ * separators a mention accepts, starting and ending on a letter or digit,
+ * then -2, -3... until no user (deleted ones included) holds it. */
+static gchar *
+signup_username(VentureTenantService *self, const gchar *email, GError **error)
+{
+	g_autoptr(GString) base = g_string_new(NULL);
+	const gchar *cursor;
+	guint n;
+	for (cursor = email; *cursor && *cursor != '@'; cursor++)
+		if (g_ascii_isalnum(*cursor) || strchr("._-", *cursor)) g_string_append_c(base, g_ascii_tolower(*cursor));
+	while (base->len && !g_ascii_isalnum(base->str[0])) g_string_erase(base, 0, 1);
+	if (base->len > 48) g_string_truncate(base, 48);
+	while (base->len && !g_ascii_isalnum(base->str[base->len - 1])) g_string_truncate(base, base->len - 1);
+	if (!base->len) g_string_assign(base, "user");
+	for (n = 1; n <= 1000; n++) {
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+		g_autoptr(GPtrArray) rows = NULL;
+		g_autofree gchar *candidate = n == 1 ? g_strdup(base->str) : g_strdup_printf("%s-%u", base->str, n);
+		venture_query_set_include_deleted(query, TRUE);
+		venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, candidate, NULL);
+		venture_query_set_limit(query, 1);
+		rows = venture_database_find(self->database, query, error);
+		if (!rows) return NULL;
+		if (!rows->len) return g_steal_pointer(&candidate);
+	}
+	signup_conflict(error, "no free username for this address");
+	return NULL;
+}
+
+/* A friendly name for screens and mail: the first word of the local part
+ * ("sam" from sam.plumbing@...), never an ID. Falls back to the username. */
+static gchar *
+signup_display_name(const gchar *email, const gchar *username)
+{
+	g_autoptr(GString) name = g_string_new(NULL);
+	const gchar *cursor;
+	for (cursor = email; *cursor && *cursor != '@'; cursor++) {
+		if (g_ascii_isalnum(*cursor)) g_string_append_c(name, g_ascii_tolower(*cursor));
+		else if (name->len && strchr("._-+", *cursor)) break;
+	}
+	return name->len ? g_string_free(g_steal_pointer(&name), FALSE) : g_strdup(username);
+}
+
+/* Users whose address equals @email ignoring ASCII case, deleted included:
+ * the LIKE match is a superset, and the exact comparison decides. */
+static GPtrArray *
+signup_users_by_email(VentureTenantService *self, const gchar *email, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+	g_autoptr(GPtrArray) rows = NULL;
+	GPtrArray *matched;
+	guint i;
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_add_filter_string(query, "email", VENTURE_FILTER_OP_ILIKE, email, NULL);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) return NULL;
+	matched = g_ptr_array_new_with_free_func(g_object_unref);
+	for (i = 0; i < rows->len; i++) {
+		g_autofree gchar *stored = NULL;
+		g_object_get(g_ptr_array_index(rows, i), "email", &stored, NULL);
+		if (stored && g_ascii_strcasecmp(stored, email) == 0) g_ptr_array_add(matched, g_object_ref(g_ptr_array_index(rows, i)));
+	}
+	return matched;
+}
+
+/* Workspace administration as the token captured it when minted. */
+static gboolean
+signup_token_is_administrator(VentureTenantService *self, gint64 token_id)
+{
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+	g_autoptr(VentureEntity) token = venture_database_get(self->database, VENTURE_TYPE_API_TOKEN, token_id, NULL);
+	g_autoptr(JsonNode) snapshot = NULL;
+	g_autofree gchar *text = NULL;
+	JsonNode *role;
+	if (!token) return FALSE;
+	g_object_get(token, "membership-snapshot", &text, NULL);
+	snapshot = text ? venture_json_parse(text, NULL) : NULL;
+	if (!snapshot || !JSON_NODE_HOLDS_OBJECT(snapshot)) return FALSE;
+	role = json_object_get_member(json_node_get_object(snapshot), "workspace_role");
+	return role && JSON_NODE_HOLDS_VALUE(role) && json_node_get_value_type(role) == G_TYPE_STRING &&
+		g_strcmp0(json_node_get_string(role), "admin") == 0;
+}
+
+/* One authority for every trusted-service operation: a workspace
+ * administrator's own write-capable service token, judged on its current
+ * membership and on what the token captured when it was minted. */
+gboolean
+venture_tenant_service_check_trusted_service(VentureTenantService *self, gint64 *actor_user_id, GError **error)
+{
+	const VentureAuthPrincipal *actor;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), FALSE);
+	if (actor_user_id) *actor_user_id = 0;
+	if (!self->database || !self->enabled || !self->initialized || venture_tenant_service_get_support_organization(self) > 0)
+		return tenant_fail(error, "a trusted-service operation requires an initialized hosted workspace");
+	actor = venture_access_policy_get_actor(venture_database_get_access_policy(self->database));
+	if (!actor || !actor->authenticated || actor->token_id <= 0 || actor->user_id <= 0 || actor->role == VENTURE_USER_ROLE_VIEWER)
+		return tenant_fail(error, "a workspace administrator's write-capable service token is required");
+	if (!venture_tenant_service_check_principal(self, actor, error) ||
+	    !venture_tenant_service_check_operation(self, TRUE, error)) return FALSE;
+	if (!venture_tenant_service_is_member(self, actor->user_id, TRUE) || !signup_token_is_administrator(self, actor->token_id))
+		return tenant_fail(error, "workspace administrator authority is required now and in the token");
+	if (actor_user_id) *actor_user_id = actor->user_id;
+	return TRUE;
+}
+
+static JsonNode *
+signup_result(VentureTenantService *self, gint64 organization_id, gint64 user_id, gboolean linked)
+{
+	JsonObject *object = json_object_new();
+	JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+	json_object_set_string_member(object, "origin", self->origin);
+	json_object_set_string_member(object, "workspace_id", self->workspace_id);
+	json_object_set_int_member(object, "organization_id", organization_id);
+	json_object_set_int_member(object, "user_id", user_id);
+	json_object_set_boolean_member(object, "linked", linked);
+	json_object_set_string_member(object, "state", "active");
+	json_node_take_object(node, object);
+	return node;
+}
+
+JsonNode *
+venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar *idempotency_key,
+	const gchar *email, const gchar *issuer, const gchar *subject, const gchar *business_name,
+	gboolean *created, GError **error)
+{
+	const gchar *fields[5];
+	const VentureAuthPrincipal *actor;
+	VentureAccessPolicy *policy;
+	VentureActor audit;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureEntity) receipt = NULL, user = NULL, member = NULL, organization = NULL;
+	g_autofree gchar *hash = NULL, *username = NULL, *display = NULL;
+	gint64 actor_id, user_id = 0, organization_id = 0;
+	gboolean linked = FALSE, committed = FALSE, replay = FALSE;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
+	if (created) *created = FALSE;
+	if (!signup_key_valid(idempotency_key)) { signup_refuse(error, "idempotency_key must be 1-128 of A-Z a-z 0-9 . _ : -"); return NULL; }
+	if (!signup_email_valid(email)) { signup_refuse(error, "email must be a plain ASCII address"); return NULL; }
+	if (!signup_issuer_valid(issuer)) { signup_refuse(error, "issuer must be an https URL without credentials, query or fragment"); return NULL; }
+	if (!signup_text_valid(subject, 255)) { signup_refuse(error, "subject must be 1-255 characters without control characters"); return NULL; }
+	if (!signup_text_valid(business_name, 200)) { signup_refuse(error, "business_name must be 1-200 characters without control characters"); return NULL; }
+	/* The caller's word that the address is verified is trusted only from
+	 * a workspace administrator's own write-capable service token. */
+	if (!venture_tenant_service_check_trusted_service(self, &actor_id, error)) return NULL;
+	policy = venture_database_get_access_policy(self->database);
+	actor = venture_access_policy_get_actor(policy);
+	audit.kind = VENTURE_ACTOR_KIND_IMPORT;
+	audit.name = actor->name;
+	audit.prompt = NULL;
+	audit.request_id = NULL;
+	audit.approved_by = NULL;
+	fields[0] = idempotency_key; fields[1] = email; fields[2] = issuer; fields[3] = subject; fields[4] = business_name;
+	hash = signup_request_hash(fields, G_N_ELEMENTS(fields));
+	internal = venture_access_policy_enter(policy, NULL);
+	self->maintenance_depth++;
+	if (!venture_database_begin(self->database, error)) goto done;
+	if (!lock_administration(self, error)) goto rollback;
+	if (!venture_tenant_service_is_member(self, actor_id, TRUE)) { tenant_fail(error, "administrator membership changed"); goto rollback; }
+	query = venture_query_new(VENTURE_TYPE_TENANT_SIGNUP);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_add_filter_string(query, "idempotency-key", VENTURE_FILTER_OP_EQ, idempotency_key, NULL);
+	venture_query_set_limit(query, 1);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) goto rollback;
+	if (rows->len) {
+		g_autofree gchar *stored = NULL;
+		receipt = g_object_ref(g_ptr_array_index(rows, 0));
+		g_object_get(receipt, "request-hash", &stored, "user-id", &user_id, "business-id", &organization_id, "linked", &linked, NULL);
+		if (g_strcmp0(stored, hash)) { signup_conflict(error, "idempotency_key was already used for a different request"); goto rollback; }
+		/* A replay writes nothing; the administration lock is released. */
+		replay = TRUE;
+		goto rollback;
+	}
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	rows = signup_users_by_email(self, email, error);
+	if (!rows) goto rollback;
+	if (rows->len > 1) { signup_conflict(error, "more than one user holds this address"); goto rollback; }
+	if (rows->len) {
+		gboolean active = FALSE;
+		gint role = VENTURE_USER_ROLE_OWNER;
+		user = g_object_ref(g_ptr_array_index(rows, 0));
+		user_id = venture_entity_get_id(user);
+		g_object_get(user, "active", &active, "role", &role, "username", &username, NULL);
+		/* Never revive, never promote: an inactive, deleted, platform or
+		 * non-member identity is refused rather than reshaped. */
+		if (venture_entity_is_deleted(user) || !active) { signup_conflict(error, "the user with this address is inactive or deleted"); goto rollback; }
+		if (role == VENTURE_USER_ROLE_OWNER || role == VENTURE_USER_ROLE_ADMIN || !venture_tenant_service_is_member(self, user_id, FALSE)) {
+			signup_conflict(error, "the user with this address is not an ordinary workspace member"); goto rollback;
+		}
+		member = find_number(self, VENTURE_TYPE_TENANT_MEMBERSHIP, "user-id", user_id, error);
+		if (!member) goto rollback;
+		linked = TRUE;
+	}
+	organization = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", business_name, "active", TRUE, NULL);
+	if (!venture_database_save(self->database, organization, &audit, error)) goto rollback;
+	organization_id = venture_entity_get_id(organization);
+	if (!linked) {
+		username = signup_username(self, email, error);
+		if (!username) goto rollback;
+		display = signup_display_name(email, username);
+		/* No password: password sign-in stays impossible until one is set
+		 * through targeted recovery. The user belongs to the business it owns. */
+		user = g_object_new(VENTURE_TYPE_USER, "username", username, "email", email, "display-name", display,
+			"role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, "organization-id", organization_id, NULL);
+		if (!venture_database_save(self->database, user, &audit, error)) goto rollback;
+		user_id = venture_entity_get_id(user);
+	}
+	receipt = g_object_new(VENTURE_TYPE_TENANT_SIGNUP, "idempotency-key", idempotency_key, "request-hash", hash,
+		"user-id", user_id, "business-id", organization_id, "linked", linked, "issuer", issuer, "subject", subject,
+		"actor-user-id", actor_id, NULL);
+	if (!grant_membership(self, user_id, username, member, VENTURE_TENANT_ROLE_MEMBER, organization_id,
+	        VENTURE_ORGANIZATION_ROLE_OWNER, &audit, error) ||
+	    !venture_database_save(self->database, receipt, &audit, error) ||
+	    /* The person Lightsite signed in through the trusted provider is this user. */
+	    (venture_tenant_service_trusts_identity(self, issuer) && !identity_link_locked(self, user_id, subject, &audit, error)) ||
+	    !record_event(self, linked ? "tenant.lightsite_signup_link" : "tenant.lightsite_signup", actor_id, 0, "organization",
+		linked ? "Trusted sign-up linked a verified address to a new business" :
+		         "Trusted sign-up created a passwordless owner for a new business", error)) goto rollback;
+	committed = venture_database_commit(self->database, error);
+	goto done;
+rollback:
+	venture_database_rollback(self->database);
+done:
+	self->maintenance_depth--;
+	if (replay) return signup_result(self, organization_id, user_id, linked);
+	if (!committed) return NULL;
+	if (created) *created = TRUE;
+	return signup_result(self, organization_id, user_id, linked);
+}
+
+/* --- The trusted identity provider ------------------------------------- */
+
+static gchar *
+identity_key(const gchar *issuer, const gchar *subject)
+{
+	g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+	g_checksum_update(checksum, (const guchar *)"tenant-identity/v1\n", -1);
+	g_checksum_update(checksum, (const guchar *)issuer, -1);
+	g_checksum_update(checksum, (const guchar *)"\n", 1);
+	g_checksum_update(checksum, (const guchar *)subject, -1);
+	return g_strdup(g_checksum_get_string(checksum));
+}
+
+gboolean
+venture_tenant_service_trusts_identity(VentureTenantService *self, const gchar *issuer)
+{
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), FALSE);
+	return self->enabled && self->identity_issuer && (!issuer || g_strcmp0(issuer, self->identity_issuer) == 0);
+}
+
+/* The verified subject of the provider's access token, and when it was issued. */
+static gchar *
+identity_subject(VentureTenantService *self, const gchar *token, gint64 *issued_at, GError **error)
+{
+	if (!venture_tenant_service_trusts_identity(self, NULL)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "no identity provider is trusted");
+		return NULL;
+	}
+	if (!token || !*token || strlen(token) > 16384) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "the provider token is missing or too long");
+		return NULL;
+	}
+	if (!self->identity_verifier) {
+		self->identity_verifier = venture_oidc_verifier_new(self->identity_issuer, self->identity_audience, self->identity_jwks, error);
+		if (!self->identity_verifier) return NULL;
+	}
+	return venture_oidc_verifier_access_subject(self->identity_verifier, self->identity_issuer, token, issued_at, error);
+}
+
+/* The link of key, deleted ones included, or NULL (error set only on failure). */
+static VentureEntity *
+identity_find(VentureTenantService *self, const gchar *key, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_TENANT_IDENTITY);
+	g_autoptr(GPtrArray) rows = NULL;
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_add_filter_string(query, "identity-key", VENTURE_FILTER_OP_EQ, key, NULL);
+	venture_query_set_limit(query, 1);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows || !rows->len) return NULL;
+	return g_object_ref(g_ptr_array_index(rows, 0));
+}
+
+/* Link subject to user_id inside the caller's transaction, under maintenance
+ * and the internal scope. The same link again is a no-op; a subject linked to
+ * somebody else is a conflict: one identity is one person's. */
+static gboolean
+identity_link_locked(VentureTenantService *self, gint64 user_id, const gchar *subject, const VentureActor *audit, GError **error)
+{
+	g_autofree gchar *key = identity_key(self->identity_issuer, subject);
+	g_autoptr(GError) local = NULL;
+	g_autoptr(VentureEntity) link = identity_find(self, key, &local);
+	gint64 owner = 0;
+	gboolean active = FALSE;
+	if (local) { g_propagate_error(error, g_steal_pointer(&local)); return FALSE; }
+	if (link) {
+		g_object_get(link, "user-id", &owner, "active", &active, NULL);
+		if (owner != user_id || venture_entity_is_deleted(link)) {
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "this sign-in already belongs to another person");
+			return FALSE;
+		}
+		if (active) return TRUE;
+		g_object_set(link, "active", TRUE, NULL);
+		return venture_database_save(self->database, link, audit, error);
+	}
+	link = g_object_new(VENTURE_TYPE_TENANT_IDENTITY, "user-id", user_id, "issuer", self->identity_issuer,
+		"subject", subject, "identity-key", key, "active", TRUE, NULL);
+	return venture_database_save(self->database, link, audit, error);
+}
+
+VentureAuthPrincipal *
+venture_tenant_service_identity_principal(VentureTenantService *self, const gchar *token)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureEntity) link = NULL, user = NULL;
+	g_autoptr(GDateTime) invalidated = NULL;
+	g_autofree gchar *subject = NULL, *key = NULL, *username = NULL;
+	VentureAuthPrincipal *principal;
+	gint64 issued = 0, user_id = 0;
+	gboolean active = FALSE;
+	VentureUserRole role = VENTURE_USER_ROLE_VIEWER;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
+	if (!venture_tenant_service_trusts_identity(self, NULL) || !self->database) return NULL;
+	subject = identity_subject(self, token, &issued, &error);
+	if (!subject) {
+		g_message("Provider token refused: %s", error ? error->message : "unverified");
+		return NULL;
+	}
+	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+	key = identity_key(self->identity_issuer, subject);
+	link = identity_find(self, key, NULL);
+	if (!link || venture_entity_is_deleted(link)) return NULL;
+	g_object_get(link, "user-id", &user_id, "active", &active, NULL);
+	if (!active || user_id <= 0) return NULL;
+	user = venture_database_get(self->database, VENTURE_TYPE_USER, user_id, NULL);
+	if (!user || venture_entity_is_deleted(user)) return NULL;
+	g_object_get(user, "active", &active, "sessions-invalidated-at", &invalidated, "username", &username, "role", &role, NULL);
+	/* Deactivation, and signing out everywhere after the token was issued, end it. */
+	if (!active || (invalidated && issued < g_date_time_to_unix(invalidated) + (g_date_time_get_microsecond(invalidated) > 0)))
+		return NULL;
+	principal = g_new0(VentureAuthPrincipal, 1);
+	principal->authenticated = TRUE;
+	principal->provider_token = TRUE;
+	principal->user_id = user_id;
+	principal->role = role;
+	principal->name = g_steal_pointer(&username);
+	return principal;
+}
+
+JsonNode *
+venture_tenant_service_link_identity(VentureTenantService *self, const gchar *token, GError **error)
+{
+	const VentureAuthPrincipal *actor;
+	VentureAccessPolicy *policy;
+	VentureActor audit;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(GError) local = NULL;
+	g_autofree gchar *subject = NULL;
+	gint64 issued = 0;
+	gboolean committed = FALSE;
+	JsonNode *result;
+	JsonObject *object;
+	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
+	if (!self->database || !venture_tenant_service_trusts_identity(self, NULL)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "no identity provider is trusted here");
+		return NULL;
+	}
+	policy = venture_database_get_access_policy(self->database);
+	actor = venture_access_policy_get_actor(policy);
+	/* Only the person, signed in to Venture itself, vouches for the link. */
+	if (!actor || !actor->authenticated || actor->user_id <= 0 || actor->provider_token) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "sign in to Venture to link your sign-in");
+		return NULL;
+	}
+	if (!venture_tenant_service_check_principal(self, actor, error) ||
+	    !venture_tenant_service_check_operation(self, TRUE, error)) return NULL;
+	subject = identity_subject(self, token, &issued, &local);
+	if (!subject) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "the provider token did not verify");
+		return NULL;
+	}
+	audit.kind = VENTURE_ACTOR_KIND_USER;
+	audit.name = actor->name;
+	audit.prompt = NULL;
+	audit.request_id = NULL;
+	audit.approved_by = NULL;
+	internal = venture_access_policy_enter(policy, NULL);
+	self->maintenance_depth++;
+	if (venture_database_begin(self->database, error)) {
+		if (identity_link_locked(self, actor->user_id, subject, &audit, error) &&
+		    record_event(self, "tenant.identity_link", actor->user_id, 0, "user",
+		        "A person linked their identity provider sign-in", error))
+			committed = venture_database_commit(self->database, error);
+		else venture_database_rollback(self->database);
+	}
+	self->maintenance_depth--;
+	if (!committed) return NULL;
+	result = json_node_new(JSON_NODE_OBJECT);
+	object = json_object_new();
+	json_object_set_boolean_member(object, "linked", TRUE);
+	json_object_set_string_member(object, "issuer", self->identity_issuer);
+	json_node_take_object(result, object);
+	return result;
 }

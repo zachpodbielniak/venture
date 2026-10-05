@@ -257,6 +257,9 @@ venture --generate-c-config > ~/.config/venture/config.c
   [[file:connectors.org][Connectors]]
 - *hosted* — the workspace binding and HTTP admission limits a hosted
   tenant process runs with; see [[file:hosted-workspaces.org][Hosted workspaces]]
+- *lightsite* — =billing_organization_id=, the organization that bills
+  Lightsite customers; 0 leaves the Lightsite billing routes off. See
+  [[file:lightsite-billing.org][Lightsite billing]]
 - *docs* — where the rendered documentation site is read from; see below
 
 Every setting is documented inline in the generated file; sections that

@@ -182,3 +182,18 @@ many documents all-or-nothing. A non-admin must name the organization.
   approval apply. Inbound `/webhooks/stripe/:connection_id` verifies
   `Stripe-Signature` (400 invalid, 200 processed/duplicate, 503 provider
   unavailable).
+
+### Lightsite billing
+
+Lightsite customers are billed from the operator's own organization, named by
+`lightsite.billing_organization_id` (0 disables the billing routes).
+Staging needs plans coded `team`, `growth` and `starter`, each with exactly
+one active monthly `plan_price`, created with ordinary `venturectl create`
+commands in that organization. See `docs/lightsite-billing.org` for the recipe.
+A business appears there as a `company` with
+`external_id=lightsite:organization:<id>`; change its subscription through
+`billing change`, never by editing the subscription record directly.
+
+the operator's billing organization and each customer business keep separate Stripe
+connections. These routes expose connection status, never keys. A successful
+page load is not payment evidence.

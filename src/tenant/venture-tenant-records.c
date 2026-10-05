@@ -92,3 +92,31 @@ static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD("reason", "Reason", "Administrative justification", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureTenantEvent, venture_tenant_event, event_fields)
+
+/* One row per trusted-service sign-up, keyed by the caller's idempotency
+ * key. The unique key is what turns a retry into a replay of this result
+ * instead of a second user or business. */
+static const VentureFieldDecl signup_fields[] = {
+	VENTURE_FIELD("idempotency-key", "Idempotency key", "Caller's key for one sign-up", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE | VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("request-hash", "Request hash", "SHA-256 of the canonical request", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("user-id", "User", "Created or linked owner", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("business-id", "Business", "Organization created for the owner", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("linked", "Linked", "An existing user was linked, not created", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("issuer", "Issuer", "Identity provider realm asserted by the caller", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("subject", "Subject", "Provider subject asserted by the caller; not a sign-in link", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("actor-user-id", "Administrator", "Workspace administrator whose token asserted it", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY(VentureTenantSignup, venture_tenant_signup, signup_fields)
+
+/* A provider identity linked to one local user, so that provider's access
+ * token acts as that user (src/tenant/venture-tenant-identity.c). Written only
+ * by the trusted sign-up and by the person's own signed-in link; never by a
+ * claim, an email or generic CRUD. */
+static const VentureFieldDecl identity_fields[] = {
+	VENTURE_FIELD("user-id", "User", "Local user the provider identity acts as", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("issuer", "Issuer", "Exact trusted provider issuer", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("subject", "Subject", "Verified opaque provider subject", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("identity-key", "Identity key", "Issuer and subject uniqueness", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE | VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("active", "Active", "An inactive link authenticates nobody", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY(VentureTenantIdentity, venture_tenant_identity, identity_fields)
