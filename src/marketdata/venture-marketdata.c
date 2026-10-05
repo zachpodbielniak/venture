@@ -721,11 +721,33 @@ marketdata_category_for_path(
 }
 
 /*
+ * Takes one record's write from @budget (NULL: no bound); FALSE, with
+ * the budget marked cut, when it has none left.
+ */
+static gboolean
+marketdata_spend(VentureMarketdataBudget *budget)
+{
+	if (NULL == budget)
+		return TRUE;
+
+	if (0 == budget->left)
+	{
+		budget->cut = TRUE;
+		return FALSE;
+	}
+
+	budget->left--;
+
+	return TRUE;
+}
+
+/*
  * The record with @ref, brought back if deleted and @restore, re-read so
  * the caller holds the version the restore wrote. *@out is NULL when
  * there is none, and a deleted record when @restore is FALSE: the
  * position mirror promotes on its own, and bringing back something a
- * person deleted every few minutes would be fighting them.
+ * person deleted every few minutes would be fighting them. A restore the
+ * @budget has no room for leaves *@out NULL and the budget cut.
  */
 static gboolean
 marketdata_existing(
@@ -734,6 +756,7 @@ marketdata_existing(
 	gint64			  organization_id,
 	const gchar		 *ref,
 	gboolean		  restore,
+	VentureMarketdataBudget	 *budget,
 	const VentureActor	 *actor,
 	VentureEntity		**out,
 	GError			**error
@@ -756,6 +779,9 @@ marketdata_existing(
 	if (restore && venture_entity_is_deleted(existing))
 	{
 		gint64 id = venture_entity_get_id(existing);
+
+		if (!marketdata_spend(budget))
+			return TRUE;
 
 		if (!venture_database_restore(database, existing, actor, error))
 			return FALSE;
@@ -781,6 +807,7 @@ marketdata_promote_instrument_at(
 	const VentureActor	 *actor,
 	guint			  depth,
 	gboolean		  restore,
+	VentureMarketdataBudget	 *budget,
 	VentureEntity		**out,
 	GError			**error
 ){
@@ -813,7 +840,7 @@ marketdata_promote_instrument_at(
 	ref = venture_marketdata_external_ref(namespace_, key);
 
 	if (!marketdata_existing(database, VENTURE_TYPE_INSTRUMENT, organization_id, ref, restore,
-	                         actor, &existing, error))
+	                         budget, actor, &existing, error))
 		return FALSE;
 
 	if (NULL != existing)
@@ -821,6 +848,9 @@ marketdata_promote_instrument_at(
 		*out = g_steal_pointer(&existing);
 		return TRUE;
 	}
+
+	if ((NULL != budget) && budget->cut)
+		return TRUE;
 
 	/* The parent first, so the child can name it. A parent the store
 	 * does not know is left out rather than failing the child; the depth
@@ -835,8 +865,13 @@ marketdata_promote_instrument_at(
 		g_autoptr(GError) parent_error = NULL;
 
 		if (marketdata_promote_instrument_at(context, store, source, row->parent_key, actor,
-		                                     depth + 1, restore, &parent, &parent_error))
+		                                     depth + 1, restore, budget, &parent, &parent_error))
 		{
+			/* Cut by the budget: the child waits for its parent rather
+			 * than being made without it, which nothing would mend. */
+			if (NULL == parent)
+				return TRUE;
+
 			/* A parent somebody deleted is left out, not named. */
 			if (!venture_entity_is_deleted(parent))
 				parent_id = venture_entity_get_id(parent);
@@ -847,6 +882,9 @@ marketdata_promote_instrument_at(
 			return FALSE;
 		}
 	}
+
+	if (!marketdata_spend(budget))
+		return TRUE;
 
 	instrument = venture_instrument_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(instrument), organization_id);
@@ -876,6 +914,7 @@ venture_marketdata_promote_instrument_in(
 	VentureEntity		 *source,
 	const gchar		 *key,
 	gboolean		  restore,
+	VentureMarketdataBudget	 *budget,
 	const VentureActor	 *actor,
 	VentureEntity		**out,
 	GError			**error
@@ -883,7 +922,7 @@ venture_marketdata_promote_instrument_in(
 	*out = NULL;
 
 	return marketdata_promote_instrument_at(context, store, source, key, actor, 0, restore,
-	                                        out, error);
+	                                        budget, out, error);
 }
 
 gboolean
@@ -892,6 +931,7 @@ venture_marketdata_promote_venue_in(
 	VentureEntity			 *source,
 	const VentureSeriesVenueRow	 *row,
 	gboolean			  restore,
+	VentureMarketdataBudget		 *budget,
 	const VentureActor		 *actor,
 	VentureEntity			**out,
 	GError				**error
@@ -912,8 +952,8 @@ venture_marketdata_promote_venue_in(
 	namespace_ = !venture_string_is_empty(row->namespace_) ? row->namespace_ : source_namespace;
 	ref = venture_marketdata_external_ref(namespace_, row->key);
 
-	if (!marketdata_existing(database, VENTURE_TYPE_VENUE, organization_id, ref, restore, actor,
-	                         &existing, error))
+	if (!marketdata_existing(database, VENTURE_TYPE_VENUE, organization_id, ref, restore, budget,
+	                         actor, &existing, error))
 		return FALSE;
 
 	if (NULL != existing)
@@ -921,6 +961,9 @@ venture_marketdata_promote_venue_in(
 		*out = g_steal_pointer(&existing);
 		return TRUE;
 	}
+
+	if (!marketdata_spend(budget))
+		return TRUE;
 
 	venue = venture_venue_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(venue), organization_id);
@@ -1008,7 +1051,7 @@ venture_marketdata_promote_instrument(
 		if (NULL == store)
 			return FALSE;
 
-		if (!marketdata_promote_instrument_at(context, store, source, key, actor, 0, TRUE,
+		if (!marketdata_promote_instrument_at(context, store, source, key, actor, 0, TRUE, NULL,
 		                                      &instrument, error))
 			return FALSE;
 
@@ -1085,7 +1128,8 @@ venture_marketdata_promote_venue(
 			return FALSE;
 		}
 
-		if (!venture_marketdata_promote_venue_in(context, source, row, TRUE, actor, &venue, error))
+		if (!venture_marketdata_promote_venue_in(context, source, row, TRUE, NULL, actor, &venue,
+		                                         error))
 			return FALSE;
 
 		if (NULL != out_venue)

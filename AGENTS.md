@@ -2041,6 +2041,26 @@ and positions in the books") has every rule, the matching table included.
   Unchanged positions cost a lookup, not a write. Do not add a "since last
   run" filter: a pass that stopped at its bound would then never come back
   for the rest.
+- **Every record a pass writes counts, promotions included.** Instruments
+  (parents too) and venues go through a `VentureMarketdataBudget`
+  (`venture-marketdata-private.h`) and land in the pass's batch; leaving
+  them out let a first push save ten thousand instruments in one
+  transaction. A unit cut at the bound must be resumable -- a listing is
+  not made before its venue, a child instrument not before its parent --
+  and the two pairs nothing would finish later (a new location and its
+  venue link, a product and its instrument link) need room for both.
+- **A database error rolls the batch back by hand.** A save inside the
+  mirror's transaction did not open it and rolls nothing back: SQLite then
+  commits the rest of the batch around the failure, and PostgreSQL turns
+  the aborted transaction's commit into a silent rollback.
+  `mirror_database_failed()` calls `venture_database_rollback()`, restores
+  the report's counts and stops the pass.
+- **A read that may be short judges nothing gone.** A positions read or a
+  group's ledger read that comes back at the bound
+  (`venture_marketdata_mirror_get_max_rows()`; tests lower it with
+  `_set_max_rows()`) has left rows out, and an unread position is not a
+  gone one. Treat a failed ledger read the same way: skip the group, say
+  so, never judge on what came back.
 - **A position is judged gone only after a complete positions snapshot.**
   Positions leave the store only through an `account_snapshot` covering
   them; an account with no `positions_at` keeps its listings open. The time
@@ -2054,11 +2074,24 @@ and positions in the books") has every rule, the matching table included.
   one-unit cancellation to the oldest five-unit listing and called the
   cancelled one cancelled by inference, at the wrong time. A row's units
   used by a closed listing are in its `mirror-state.txns` and are taken
-  off before matching, so no row closes two listings.
+  off before matching -- deleted closed listings included -- so no row
+  closes two listings.
+- **A listing's own sales come before first in, first out.** Each listing
+  taking part, oldest first, first claims sale rows for its
+  `quantity-sold` (units it lost while listed), and the group's listings
+  still on the market take part for exactly that and are never judged.
+  Without it an older stack that expired took the sale of a newer one
+  still listed, closed as partial, and the newer one never found its sale.
 - **Automatic promotion never restores.** A location, instrument or venue a
   person deleted stays deleted through every push; only an explicit
   promotion brings one back. Restoring on every pass would be fighting a
-  person every few minutes.
+  person every few minutes. The books promote an account too: they call
+  `venture_marketdata_promote_account_full(..., restore FALSE, ...)` and
+  first ask `venture_marketdata_source_promotes_accounts()`, so
+  `auto_promote_accounts: false` holds for every door.
+- **A deleted product is no product.** The mirror does not file a listing
+  under it (the reference check would refuse it every pass) and does not
+  make another with `create_products`; the run names the items.
 - **A venue's location is set only when empty.** The first character on a
   realm becomes the place its money moves through; a later one, or a link
   a person made, is never replaced.

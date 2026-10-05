@@ -1116,12 +1116,14 @@ calls.
   say what it did, including positions "not mirrored: their items have no
   product" -- link the instrument (`update instrument ID product_id=N`) or
   set `create_products: true` and `products_venture_id: N` in the source's
-  settings. Never `update listing ID data_source_id=` or `mirror_state=`:
+  settings -- and "their items' products are deleted" (restore the product
+  or link another; the mirror never makes a replacement). Never `update listing ID data_source_id=` or `mirror_state=`:
   refused. Editing a mirrored listing's price or outcome is fine and
   sticks; an outcome you set makes the listing yours. Source settings:
   `mirror_positions`, `auto_promote_accounts` (both default true),
   `account_namespace` (share places between two sources of the same
-  characters), `mirror_max_writes` (500), `mirror_grace_hours`.
+  characters), `mirror_max_writes` (500; every record a pass writes,
+  the instruments and venues it promotes included), `mirror_grace_hours`.
 - The data lands in a series store per source, not in records, so `list`
   cannot read it: the `market` verbs and the market reports do.
 - `backup run SCHEDULE_ID` on an installation schedule also copies every

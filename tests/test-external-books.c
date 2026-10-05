@@ -2019,6 +2019,118 @@ test_flip_overflow(
 	g_assert_cmpuint(count_rows(f, VENTURE_TYPE_JOURNAL), ==, 0);
 }
 
+/* The location @account_key of @source stands for, deleted ones too. */
+static VentureEntity *
+place_of(
+	Fixture		*f,
+	VentureEntity	*source,
+	const gchar	*account_key
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *ref = venture_marketdata_account_ref(source, account_key);
+	VentureEntity *location;
+
+	location = venture_marketdata_find_by_ref(f->db, VENTURE_TYPE_LOCATION,
+	                                          venture_entity_get_organization_id(source), ref, &error);
+	g_assert_no_error(error);
+
+	return location;
+}
+
+/*
+ * The books make an account's place when the mirror did not (here it is
+ * switched off), and that promotion is one nobody asked for: a group and
+ * a venue a person deleted stay deleted -- the new place has no parent
+ * and links no venue -- and a source that does not promote its accounts
+ * gets no place from the books either.
+ *
+ * What breaks if this regresses: every push brings back a realm and an
+ * auction house a person removed, or makes characters for a source told
+ * not to.
+ */
+static void
+test_books_place_not_restored(
+	Fixture		*f,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) drgold = NULL;
+	g_autoptr(VentureEntity) group = NULL;
+	g_autoptr(VentureEntity) venue = NULL;
+	g_autoptr(VentureEntity) alt = NULL;
+	g_autoptr(VentureEntity) third = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *notes = NULL;
+
+	(void)user_data;
+
+	source = push_source(f, f->org, "TSM", "GOLD",
+	                     "books: daily\npost_to_books: true\nmirror_positions: false\n");
+	line_market(body);
+	line_account(body, "Drgold-Thorium", "thorium");
+	line_txn(body, "s1", "Drgold-Thorium", "thorium", "sale", "2447", 1, "25.5000",
+	         "2026-03-01T12:00:00Z");
+	run = push(f, source, body->str);
+	g_object_get(run, "notes", &notes, NULL);
+	g_assert_nonnull(strstr(notes, "books: 1 day(s) posted"));
+
+	/* The books made Drgold's place, in its realm's, linked to the venue. */
+	drgold = place_of(f, source, "Drgold-Thorium");
+	g_assert_nonnull(drgold);
+	group = reread(f, VENTURE_TYPE_LOCATION, int_of(drgold, "parent-id"));
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_VENUE);
+
+		g_assert_true(venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, "thorium",
+		                                              NULL));
+		venue = venture_database_find_one(f->db, query, NULL);
+		g_assert_nonnull(venue);
+		g_assert_cmpint(int_of(venue, "location-id"), ==, ID(drgold));
+	}
+
+	g_assert_true(venture_database_delete(f->db, group, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_delete(f->db, venue, NULL, &error));
+	g_assert_no_error(error);
+
+	/* A second character on the realm: a place of its own, nothing back. */
+	g_string_truncate(body, 0);
+	line_account(body, "Alt-Thorium", "thorium");
+	line_txn(body, "s2", "Alt-Thorium", "thorium", "sale", "2447", 1, "20.0000",
+	         "2026-03-02T12:00:00Z");
+	g_clear_object(&run);
+	run = push(f, source, body->str);
+
+	alt = place_of(f, source, "Alt-Thorium");
+	g_assert_nonnull(alt);
+	g_assert_false(venture_entity_is_deleted(alt));
+	g_assert_cmpint(int_of(alt, "parent-id"), ==, 0);
+	{
+		g_autoptr(VentureEntity) still_group = reread(f, VENTURE_TYPE_LOCATION, ID(group));
+		g_autoptr(VentureEntity) still_venue = reread(f, VENTURE_TYPE_VENUE, ID(venue));
+
+		g_assert_true(venture_entity_is_deleted(still_group));
+		g_assert_true(venture_entity_is_deleted(still_venue));
+	}
+
+	/* Told not to promote: the books make no place, and say so. */
+	set_settings(f, source, "books: daily\npost_to_books: true\nmirror_positions: false\n"
+	             "auto_promote_accounts: false\n");
+	g_string_truncate(body, 0);
+	line_account(body, "Third-Thorium", "thorium");
+	line_txn(body, "s3", "Third-Thorium", "thorium", "sale", "2447", 1, "10.0000",
+	         "2026-03-03T12:00:00Z");
+	g_clear_object(&run);
+	g_clear_pointer(&notes, g_free);
+	run = push(f, source, body->str);
+	third = place_of(f, source, "Third-Thorium");
+	g_assert_null(third);
+	g_object_get(run, "notes", &notes, NULL);
+	g_assert_nonnull(strstr(notes, "books: not posted"));
+}
+
 int
 main(
 	int	 argc,
@@ -2046,6 +2158,7 @@ main(
 	ADD("/external-books/follower-in-closed-period", test_follower_in_closed_period);
 	ADD("/external-books/shortfall-over-a-dip", test_shortfall_over_a_dip);
 	ADD("/external-books/flip-overflow", test_flip_overflow);
+	ADD("/external-books/place-not-restored", test_books_place_not_restored);
 
 #undef ADD
 

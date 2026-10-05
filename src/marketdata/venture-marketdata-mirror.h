@@ -46,11 +46,15 @@ G_BEGIN_DECLS
 /**
  * VENTURE_MARKETDATA_MIRROR_MAX_WRITES:
  *
- * How many records one mirror pass writes by default -- listings,
- * locations and the venues, instruments and products it promotes on the
- * way -- before it stops and leaves the rest to the next run. A source's
- * `mirror_max_writes` setting changes it, up to
- * %VENTURE_MARKETDATA_MIRROR_WRITES_LIMIT.
+ * How many records one mirror pass writes by default -- every record it
+ * creates, updates or restores: listings, locations, venue links,
+ * products and instrument links, and the instruments (parents included)
+ * and venues it promotes on the way -- before it stops and leaves the
+ * rest to the next run. A source's `mirror_max_writes` setting changes
+ * it, up to %VENTURE_MARKETDATA_MIRROR_WRITES_LIMIT. Two pairs are
+ * written together or not at all (a new location and its venue's link, a
+ * product and its instrument's link), so a pass that has written nothing
+ * may go one past a bound of 1.
  */
 #define VENTURE_MARKETDATA_MIRROR_MAX_WRITES (500)
 
@@ -83,6 +87,31 @@ G_BEGIN_DECLS
  * How many records the mirror writes in one transaction.
  */
 #define VENTURE_MARKETDATA_MIRROR_BATCH (50)
+
+/**
+ * venture_marketdata_mirror_get_max_rows:
+ *
+ * The most store rows one mirror pass reads at once: the positions, and
+ * one account's ledger rows for one item. A read that comes back this
+ * long may have left rows out, so the pass judges nothing gone from it.
+ * The series store's own bound unless a test lowered it.
+ *
+ * Returns: the bound
+ */
+guint
+venture_marketdata_mirror_get_max_rows(void);
+
+/**
+ * venture_marketdata_mirror_set_max_rows:
+ * @max_rows: the new bound, or 0 for the series store's own
+ *
+ * Lowers the bound for a test, so that what the mirror does past it can
+ * be tested without a hundred thousand positions. Process-wide, like the
+ * registries: a test that lowers it restores it before it returns.
+ * Nothing outside the test suite calls this.
+ */
+void
+venture_marketdata_mirror_set_max_rows(guint max_rows);
 
 /**
  * VENTURE_MARKETDATA_MIRROR_MAX_LISTINGS:
@@ -132,6 +161,21 @@ venture_marketdata_account_ref(
 );
 
 /**
+ * venture_marketdata_source_promotes_accounts:
+ * @data_source: the data_source record
+ *
+ * Whether the source promotes its accounts on its own: its
+ * `auto_promote_accounts` setting, true unless it says otherwise. A
+ * caller that promotes an account nobody asked for -- the books after a
+ * run -- asks this first, so that "do not make places" holds for every
+ * door, not only the mirror's.
+ *
+ * Returns: %TRUE when it does; %FALSE for settings that do not parse
+ */
+gboolean
+venture_marketdata_source_promotes_accounts(VentureEntity *data_source);
+
+/**
  * venture_marketdata_promote_account:
  * @context: the wiring
  * @organization_id: whose source it is
@@ -168,6 +212,43 @@ venture_marketdata_promote_account(
 );
 
 /**
+ * venture_marketdata_promote_account_full:
+ * @context: the wiring
+ * @organization_id: whose source it is
+ * @data_source_id: the source whose store knows the account
+ * @key: the account's key in that store
+ * @restore: %TRUE for a promotion a person asked for, which brings back
+ *   what was deleted; %FALSE for one nobody asked for
+ * @actor: (nullable): who promotes it
+ * @out_location: (out) (optional) (transfer full) (nullable): the
+ *   location, %NULL when there is none to give
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_marketdata_promote_account() with the choice it makes for a
+ * person. With @restore %FALSE nothing a person deleted comes back --
+ * not the account's location (then %TRUE and *@out_location %NULL), not
+ * its group's, which leaves a new location without a parent, and not its
+ * venue, which is then not linked -- and an existing location's venue is
+ * not linked again. Automatic promotion fights nobody: deleting a place
+ * is how a person says it is not wanted. It does not read
+ * `auto_promote_accounts`; ask
+ * venture_marketdata_source_promotes_accounts() first.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_marketdata_promote_account_full(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  data_source_id,
+	const gchar		 *key,
+	gboolean		  restore,
+	const VentureActor	 *actor,
+	VentureEntity		**out_location,
+	GError			**error
+);
+
+/**
  * venture_marketdata_mirror_positions:
  * @context: the wiring
  * @organization_id: whose source it is
@@ -185,7 +266,7 @@ venture_marketdata_promote_account(
  * The report: {data_source_id, accounts, positions, promoted, venues_linked,
  * products_created, created, updated, reopened, closed{sold, partial,
  * expired, cancelled}, waiting, left_alone, not_mirrored, failed,
- * over_cap, notes[]}.
+ * over_cap, writes, notes[]}.
  *
  * Errors: CONFLICT inside an automation handler or a transaction; CONFIG
  * with the market, marketdata or feeds module off or without SQLite;

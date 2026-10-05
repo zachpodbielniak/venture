@@ -1132,10 +1132,12 @@ books_find_location(
 }
 
 /*
- * The place an account's money moves through, made when it is missing
- * (an explicit promotion, which never has anything to restore here: a
- * deleted one is refused before). 0 with no error when the sales module,
- * which owns locations, is off.
+ * The place an account's money moves through, made when it is missing.
+ * Nobody asked for this promotion, so it is the mirror's automatic kind:
+ * it restores nothing a person deleted (the account's group, its venue),
+ * and a source with `auto_promote_accounts: false` gets no place at all.
+ * 0 with no error then, and when the sales module, which owns locations,
+ * is off.
  */
 static gboolean
 books_ensure_location(
@@ -1162,11 +1164,14 @@ books_ensure_location(
 	                                                      "location")))
 		return TRUE;
 
-	if (!venture_marketdata_promote_account(run->context, run->org, run->source_id, account_key,
-	                                        actor, &location, error))
+	if (!venture_marketdata_source_promotes_accounts(run->source))
+		return TRUE;
+
+	if (!venture_marketdata_promote_account_full(run->context, run->org, run->source_id,
+	                                             account_key, FALSE, actor, &location, error))
 		return FALSE;
 
-	*out_id = venture_entity_get_id(location);
+	*out_id = (NULL != location) ? venture_entity_get_id(location) : 0;
 
 	return TRUE;
 }

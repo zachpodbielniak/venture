@@ -73,22 +73,41 @@ venture_marketdata_reader(
 );
 
 /*
+ * VentureMarketdataBudget:
+ * How many records a promotion may still write -- create or restore --
+ * for a caller that writes under a bound (the position mirror). Every
+ * record written takes one from @left; a record that would be written
+ * with nothing left is not, @cut is set, and the call answers TRUE with
+ * *out NULL. An instrument's parents count one each, so a chain cut half
+ * way leaves its parents made and the next pass, finding them, goes on
+ * from there.
+ */
+typedef struct
+{
+	guint		 left;
+	gboolean	 cut;
+} VentureMarketdataBudget;
+
+/*
  * venture_marketdata_promote_instrument_in:
  * Promotion of one instrument the store @store knows, as the public call
  * does, except that with @restore FALSE a deleted record is handed back
  * deleted rather than restored -- what the position mirror asks for, so
- * it never brings back what a person removed. *@out is set on success.
+ * it never brings back what a person removed -- and that with a @budget
+ * (nullable: no bound) it writes no more records than the budget has.
+ * *@out is set on success, and is NULL when the budget cut it.
  */
 gboolean
 venture_marketdata_promote_instrument_in(
-	VentureContext		 *context,
-	VentureSeriesStore	 *store,
-	VentureEntity		 *source,
-	const gchar		 *key,
-	gboolean		  restore,
-	const VentureActor	 *actor,
-	VentureEntity		**out,
-	GError			**error
+	VentureContext			 *context,
+	VentureSeriesStore		 *store,
+	VentureEntity			 *source,
+	const gchar			 *key,
+	gboolean			  restore,
+	VentureMarketdataBudget		 *budget,
+	const VentureActor		 *actor,
+	VentureEntity			**out,
+	GError				**error
 );
 
 /*
@@ -101,6 +120,7 @@ venture_marketdata_promote_venue_in(
 	VentureEntity			 *source,
 	const VentureSeriesVenueRow	 *row,
 	gboolean			  restore,
+	VentureMarketdataBudget		 *budget,
 	const VentureActor		 *actor,
 	VentureEntity			**out,
 	GError				**error

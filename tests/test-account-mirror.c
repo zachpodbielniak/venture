@@ -1349,6 +1349,7 @@ test_mirror_cap(
 	g_autoptr(VentureEntity) source = NULL;
 	g_autoptr(VentureEntity) run = NULL;
 	g_autoptr(VentureEntity) instrument = NULL;
+	g_autoptr(VentureEntity) venue = NULL;
 	g_autoptr(VentureEntity) product = NULL;
 	g_autoptr(GString) body = g_string_new(NULL);
 	g_autoptr(GError) error = NULL;
@@ -1356,11 +1357,15 @@ test_mirror_cap(
 
 	(void)user_data;
 
-	/* No places and products to make: only listings count here. */
+	/* No places, products, instruments or venues to make: only listings
+	 * count here (test_mirror_cap_promotions counts the rest). */
 	source = push_source(fixture, fixture->org, "Push",
 	                     "auto_promote_accounts: false\nmirror_max_writes: 2\n");
 	line_market(body);
 	run = push(fixture, source, body->str);
+	g_assert_true(venture_marketdata_promote_venue(fixture->context, fixture->org, ID(source),
+	                                               "thorium", NULL, &venue, &error));
+	g_assert_no_error(error);
 	g_assert_true(venture_marketdata_promote_instrument(fixture->context, fixture->org, ID(source),
 	                                                    "2770", NULL, &instrument, &error));
 	product = VENTURE_ENTITY(venture_product_new());
@@ -1609,6 +1614,452 @@ test_mirror_organizations(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 }
 
+/* A whole-number member of a listing's mirror_state; -1 when absent. */
+static gint64
+state_int(
+	VentureEntity	*listing,
+	const gchar	*member
+){
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autofree gchar *text = NULL;
+	JsonObject *state;
+
+	g_object_get(listing, "mirror-state", &text, NULL);
+	g_assert_nonnull(text);
+	g_assert_true(json_parser_load_from_data(parser, text, -1, NULL));
+	state = json_node_get_object(json_parser_get_root(parser));
+
+	if (!json_object_has_member(state, member) || json_object_get_null_member(state, member))
+		return -1;
+
+	return json_object_get_int_member(state, member);
+}
+
+/*
+ * Two stacks of one item on one character: the newer sells two units and
+ * stays on the market, the older expires untouched. The sale is the
+ * newer stack's -- it lost those units while listed -- so the older one
+ * expired with nothing sold; when the newer sells out, it is sold, all
+ * five.
+ *
+ * What breaks if this regresses: the oldest listing takes a sale that
+ * belongs to one still listed by first in, first out, and is called
+ * partly sold when it expired, while the stack that really sold ends
+ * waiting, cancelled or partial by inference.
+ */
+static void
+test_mirror_present_keeps_its_sales(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) newer = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autofree gchar *settings = products_settings(fixture, NULL);
+	gint64 older_posted = fixture->now - 10 * HOUR;
+	gint64 newer_posted = fixture->now - 9 * HOUR;
+	gint64 later = fixture->now + 30 * HOUR;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", settings);
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 8 * HOUR);
+	line_position(body, "Drgold-Thorium", "A", "2770", 5, "5.00", NULL, older_posted,
+	              fixture->now - 4 * HOUR);
+	line_position(body, "Drgold-Thorium", "B", "2770", 5, "5.00", NULL, newer_posted, later);
+	run = push(fixture, source, body->str);
+	g_assert_true(run_says(run, "listings 2 created"));
+
+	/* B is down to three: two bought. A is gone, and the ledger says it
+	 * expired, whole. */
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 3 * HOUR);
+	line_position(body, "Drgold-Thorium", "B", "2770", 3, "5.00", NULL, newer_posted, later);
+	line_txn(body, "R", "Drgold-Thorium", "sale", "2770", 2, "9.50", fixture->now - 5 * HOUR);
+	line_txn(body, "E", "Drgold-Thorium", "expired", "2770", 5, NULL, fixture->now - 4 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+
+	assert_closed(fixture, source, "A", VENTURE_LISTING_OUTCOME_EXPIRED, 0, fixture->now - 4 * HOUR);
+	newer = listing_of(fixture, source, "B");
+	g_assert_cmpint(outcome_of(newer), ==, VENTURE_LISTING_OUTCOME_OPEN);
+	g_assert_cmpint(int_of(newer, "quantity-sold"), ==, 2);
+
+	/* B sells the rest and is gone: R is still B's to have. */
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - HOUR);
+	line_txn(body, "R2", "Drgold-Thorium", "sale", "2770", 3, "14.25", fixture->now - 2 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+
+	assert_closed(fixture, source, "B", VENTURE_LISTING_OUTCOME_SOLD, 5, fixture->now - 2 * HOUR);
+	assert_closed(fixture, source, "A", VENTURE_LISTING_OUTCOME_EXPIRED, 0, fixture->now - 4 * HOUR);
+}
+
+/*
+ * A listing the mirror closed on a sale and a person then deleted still
+ * used that sale: the next listing of the item that goes is not handed it.
+ *
+ * What breaks if this regresses: deleting a closed auction frees its
+ * ledger rows, and the next one of the same item is called sold on a sale
+ * that was not its own.
+ */
+static void
+test_mirror_deleted_keeps_its_rows(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *settings = products_settings(fixture, NULL);
+	gint64 later = fixture->now + 30 * HOUR;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", settings);
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 8 * HOUR);
+	line_position(body, "Drgold-Thorium", "A", "2770", 1, "5.00", NULL, fixture->now - 10 * HOUR,
+	              later);
+	line_position(body, "Drgold-Thorium", "B", "2770", 1, "5.00", NULL, fixture->now - 9 * HOUR,
+	              later);
+	run = push(fixture, source, body->str);
+
+	/* A sells (the oldest takes the sale) and is closed on it. */
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 3 * HOUR);
+	line_position(body, "Drgold-Thorium", "B", "2770", 1, "5.00", NULL, fixture->now - 9 * HOUR,
+	              later);
+	line_txn(body, "S", "Drgold-Thorium", "sale", "2770", 1, "4.75", fixture->now - 4 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	assert_closed(fixture, source, "A", VENTURE_LISTING_OUTCOME_SOLD, 1, fixture->now - 4 * HOUR);
+
+	first = listing_of(fixture, source, "A");
+	g_assert_true(venture_database_delete(fixture->database, first, NULL, &error));
+	g_assert_no_error(error);
+
+	/* B goes with nothing in the ledger: it waits for its own row. */
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 2 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+
+	second = listing_of(fixture, source, "B");
+	g_assert_cmpint(outcome_of(second), ==, VENTURE_LISTING_OUTCOME_OPEN);
+	g_assert_cmpint(int_of(second, "quantity-sold"), ==, 0);
+	g_assert_cmpint(state_int(second, "vanished_at"), ==, fixture->now - 2 * HOUR);
+	g_assert_true(run_says(run, "1 waiting for the ledger"));
+}
+
+/*
+ * Instruments a pass promotes on its way count toward its bound like
+ * every other record: ten positions of items with no record, a bound of
+ * three, three instruments a pass.
+ *
+ * What breaks if this regresses: a first push of ten thousand items saves
+ * ten thousand instruments in one pass and one transaction, holding the
+ * server for minutes, while the run says it wrote nothing.
+ */
+static void
+test_mirror_cap_promotions(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	gint64 made;
+	guint passes;
+	guint i;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push",
+	                     "auto_promote_accounts: false\nmirror_max_writes: 3\n");
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 9 * HOUR);
+
+	for (i = 0; i < 10; i++)
+	{
+		g_autofree gchar *id = g_strdup_printf("p%u", i);
+		g_autofree gchar *key = g_strdup_printf("90%02u", i);
+
+		g_string_append_printf(body, "{\"type\":\"instrument\",\"key\":\"%s\",\"name\":\"Item %u\","
+		                       "\"kind\":\"item\"}\n", key, i);
+		line_position(body, "Drgold-Thorium", id, key, 1, "5.00", NULL, fixture->now - 10 * HOUR,
+		              fixture->now + (gint64)(10 + i) * HOUR);
+	}
+
+	run = push(fixture, source, body->str);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_INSTRUMENT), ==, 3);
+	g_assert_true(run_says(run, "changes left for the next run"));
+
+	/* Each pass by hand makes three more and says so, until all ten. */
+	made = 3;
+
+	for (passes = 0; made < 10; passes++)
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+		gint64 now_made = count_of(fixture, VENTURE_TYPE_INSTRUMENT);
+
+		g_assert_cmpint(passes, <, 10);
+		g_assert_cmpint(now_made - made, ==, MIN(3, 10 - made));
+		g_assert_cmpint(json_object_get_int_member(report, "writes"), ==, now_made - made);
+		made = now_made;
+	}
+
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		g_assert_cmpint(json_object_get_int_member(report, "writes"), ==, 0);
+		g_assert_cmpint(json_object_get_int_member(report, "over_cap"), ==, 0);
+	}
+}
+
+/* Refuses the listing of position "p2" as the database would, while set. */
+static gboolean
+refuse_p2(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autofree gchar *external_id = NULL;
+
+	(void)database;
+	(void)previous;
+
+	g_object_get(entity, "external-id", &external_id, NULL);
+
+	if (*(gboolean *)user_data && (NULL != external_id) && g_str_has_suffix(external_id, ":p2"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "disk I/O error");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * A database error in the middle of a batch undoes the whole batch: what
+ * the batch wrote before it is not committed around it, the report does
+ * not count it, and the pass stops. The next pass writes it all.
+ *
+ * What breaks if this regresses: on SQLite half a batch commits around a
+ * failed write, and on PostgreSQL the aborted transaction "commits" as a
+ * silent rollback while the run reports listings that do not exist.
+ */
+static void
+test_mirror_database_error(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autofree gchar *settings = products_settings(fixture, NULL);
+	gboolean refusing = TRUE;
+	guint i;
+
+	(void)user_data;
+
+	venture_database_add_save_validator(fixture->database, VENTURE_TYPE_LISTING, refuse_p2,
+	                                    &refusing, NULL);
+	source = push_source(fixture, fixture->org, "Push", settings);
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 9 * HOUR);
+
+	for (i = 0; i < 5; i++)
+	{
+		g_autofree gchar *id = g_strdup_printf("p%u", i);
+
+		line_position(body, "Drgold-Thorium", id, "2770", 1, "5.00", NULL, fixture->now - 10 * HOUR,
+		              fixture->now + (gint64)(10 + i) * HOUR);
+	}
+
+	run = push(fixture, source, body->str);
+
+	/* p0 and p1 were written before p2 failed, in the same batch. */
+	g_assert_true(run_says(run, "a batch of writes was undone (disk I/O error)"));
+	g_assert_false(run_says(run, "listings 2 created"));
+	g_assert_null(listing_of(fixture, source, "p0"));
+	g_assert_null(listing_of(fixture, source, "p1"));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_LISTING), ==, 0);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_LOCATION), ==, 0);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_PRODUCT), ==, 0);
+	g_assert_false(venture_database_has_transaction(fixture->database));
+
+	refusing = FALSE;
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		g_assert_cmpint(json_object_get_int_member(report, "created"), ==, 5);
+	}
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_LISTING), ==, 5);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_PRODUCT), ==, 1);
+}
+
+/*
+ * A read that comes back as long as the pass reads judges nothing gone:
+ * positions past the bound are unread, not gone, and an item's ledger cut
+ * at the bound is missing its newest rows. With the bound back, the same
+ * listings are judged.
+ *
+ * What breaks if this regresses: an operator with more positions than a
+ * read returns sees open auctions closed as cancelled every run, or a
+ * listing judged on a ledger missing the sale that closed it.
+ */
+static void
+test_mirror_read_bound(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autofree gchar *settings = products_settings(fixture, "mirror_grace_hours: 0\n");
+	gint64 posted = fixture->now - 10 * HOUR;
+	gint64 later = fixture->now + 30 * HOUR;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", settings);
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 9 * HOUR);
+	line_position(body, "Drgold-Thorium", "p1", "2770", 1, "5.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p3", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p4", "2447", 1, "3.00", NULL, posted, later);
+	run = push(fixture, source, body->str);
+	g_assert_true(run_says(run, "listings 4 created"));
+
+	/* Three positions read with a bound of three: p1 is not read, and
+	 * not gone either, for all the pass can tell. */
+	venture_marketdata_mirror_set_max_rows(3);
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 4 * HOUR);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p3", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p4", "2447", 1, "3.00", NULL, posted, later);
+	line_txn(body, "s1", "Drgold-Thorium", "sale", "2770", 1, "4.75", fixture->now - 5 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	assert_closed(fixture, source, "p1", VENTURE_LISTING_OUTCOME_OPEN, 0, 0);
+	g_assert_true(run_says(run, "listings whose positions were not read are not judged gone"));
+
+	venture_marketdata_mirror_set_max_rows(0);
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(report, "closed"),
+		                                           "sold"), ==, 1);
+	}
+	assert_closed(fixture, source, "p1", VENTURE_LISTING_OUTCOME_SOLD, 1, fixture->now - 5 * HOUR);
+
+	/* A new stack of the item, then three ledger rows for it: with a
+	 * bound of three the item's ledger is cut, and nothing is judged. */
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 3 * HOUR);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_position(body, "Drgold-Thorium", "p5", "2770", 1, "5.00", NULL, fixture->now - 3 * HOUR,
+	              later);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	g_assert_nonnull(listing_of(fixture, source, "p5"));
+
+	venture_marketdata_mirror_set_max_rows(3);
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - HOUR);
+	line_position(body, "Drgold-Thorium", "p2", "2447", 1, "3.00", NULL, posted, later);
+	line_txn(body, "b1", "Drgold-Thorium", "buy", "2770", 1, "4.00", fixture->now - 150 * 60);
+	line_txn(body, "b2", "Drgold-Thorium", "buy", "2770", 1, "4.00", fixture->now - 140 * 60);
+	line_txn(body, "s2", "Drgold-Thorium", "sale", "2770", 1, "4.75", fixture->now - 2 * HOUR);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	assert_closed(fixture, source, "p5", VENTURE_LISTING_OUTCOME_OPEN, 0, 0);
+	g_assert_true(run_says(run, "items' gone listings were not judged"));
+
+	venture_marketdata_mirror_set_max_rows(0);
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+
+		(void)report;
+	}
+	assert_closed(fixture, source, "p5", VENTURE_LISTING_OUTCOME_SOLD, 1, fixture->now - 2 * HOUR);
+}
+
+/*
+ * A product a person deleted is no product: the item's new positions are
+ * not mirrored and the run names the item, and with create_products on
+ * no second product is made for it. Nothing is refused, so nothing fails.
+ *
+ * What breaks if this regresses: every run tries to file a listing under
+ * a deleted product, the reference check refuses it, and the run reports
+ * a failure for every position of the item, for ever.
+ */
+static void
+test_mirror_deleted_product(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) listing = NULL;
+	g_autoptr(VentureEntity) product = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *settings = products_settings(fixture, NULL);
+	gint64 later = fixture->now + 30 * HOUR;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", settings);
+	line_market(body);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 9 * HOUR);
+	line_position(body, "Drgold-Thorium", "p1", "2770", 1, "5.00", NULL, fixture->now - 10 * HOUR,
+	              later);
+	run = push(fixture, source, body->str);
+	listing = listing_of(fixture, source, "p1");
+	g_assert_nonnull(listing);
+
+	product = reread(fixture, VENTURE_TYPE_PRODUCT, int_of(listing, "product-id"));
+	g_assert_true(venture_database_delete(fixture->database, product, NULL, &error));
+	g_assert_no_error(error);
+
+	g_string_truncate(body, 0);
+	line_snapshot(body, "Drgold-Thorium", fixture->now - 8 * HOUR);
+	line_position(body, "Drgold-Thorium", "p1", "2770", 1, "5.00", NULL, fixture->now - 10 * HOUR,
+	              later);
+	line_position(body, "Drgold-Thorium", "p2", "2770", 1, "5.00", NULL, fixture->now - 8 * HOUR,
+	              later);
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+
+	g_assert_null(listing_of(fixture, source, "p2"));
+	g_assert_true(run_says(run, "1 positions not mirrored: their items' products are deleted"));
+	g_assert_true(run_says(run, "e.g. 2770"));
+	g_assert_false(run_says(run, "not written"));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_PRODUCT), ==, 0);
+
+	{
+		g_autoptr(JsonObject) report = mirror(fixture, source);
+		g_autoptr(VentureEntity) still = reread(fixture, VENTURE_TYPE_PRODUCT, ID(product));
+
+		g_assert_cmpint(json_object_get_int_member(report, "failed"), ==, 0);
+		g_assert_cmpint(json_object_get_int_member(report, "not_mirrored"), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(report, "products_created"), ==, 0);
+		g_assert_true(venture_entity_is_deleted(still));
+	}
+}
+
 int
 main(
 	int	 argc,
@@ -1632,6 +2083,12 @@ main(
 	ADD("/account-mirror/undercut", test_mirror_undercut);
 	ADD("/account-mirror/modules-off", test_mirror_modules_off);
 	ADD("/account-mirror/organizations", test_mirror_organizations);
+	ADD("/account-mirror/present-keeps-its-sales", test_mirror_present_keeps_its_sales);
+	ADD("/account-mirror/deleted-keeps-its-rows", test_mirror_deleted_keeps_its_rows);
+	ADD("/account-mirror/cap-promotions", test_mirror_cap_promotions);
+	ADD("/account-mirror/database-error", test_mirror_database_error);
+	ADD("/account-mirror/read-bound", test_mirror_read_bound);
+	ADD("/account-mirror/deleted-product", test_mirror_deleted_product);
 
 #undef ADD
 
