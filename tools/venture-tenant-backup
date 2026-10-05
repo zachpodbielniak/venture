@@ -37,7 +37,7 @@ Exit: 0 success; 2 invalid input/unsafe state; other nonzero operational failure
 HELP
 }
 fail () { printf 'venture-tenant-backup: %s\n' "$*" >&2; exit 2; }
-root='' tenant='' key_file='' work='' pending=''
+root='' tenant='' key_file='' work='' pending='' gnupg_home=''
 cleanup () {
 	local result=$?
 	trap - EXIT
@@ -47,6 +47,18 @@ cleanup () {
 		if [[ $result == 0 ]]
 		then
 			result=1
+		fi
+	fi
+	if [[ -n $gnupg_home ]]
+	then
+		gpgconf --homedir "$gnupg_home" --kill gpg-agent > /dev/null 2>&1 || true
+		if ! rm -rf -- "$gnupg_home"
+		then
+			printf '%s\n' 'venture-tenant-backup: private GnuPG home needs operator cleanup' >&2
+			if [[ $result == 0 ]]
+			then
+				result=1
+			fi
 		fi
 	fi
 	if [[ -n $work ]] && ! rm -rf -- "$work"
@@ -133,8 +145,13 @@ work=$(mktemp -d "$tenant_dir/control/recovery.XXXXXX")
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-export GNUPGHOME=$work/gnupg
-mkdir -m 700 "$GNUPGHOME"
+# Not under $work: gpg-agent puts its sockets in GNUPGHOME, a Unix socket
+# path is capped at 108 bytes, and under a deep tenant root $work is past
+# that. gpg then fails with exit 2 and no message -- unless /run/user/UID
+# exists for its fallback, which it does on a desktop and not in a
+# container or a system service. A short private directory avoids it.
+gnupg_home=$(mktemp -d /tmp/venture-gpg.XXXXXX)
+export GNUPGHOME=$gnupg_home
 host_id=$(jq -er 'select(.schema == 1) | .host_id | select(type == "string" and test("^[a-f0-9-]{36}$"))' "$root/host.json")
 jq -e --arg tenant "$tenant" --arg host "$host_id" '
  .schema == 1 and .tenant_id == $tenant and .host_id == $host and
