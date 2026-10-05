@@ -1765,6 +1765,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/accounts/inventory", "Inventory", VENTURE_ICON("<path d=\"M3 7l9-4 9 4v10l-9 4-9-4z\"/><path d=\"M3 7l9 4 9-4M12 11v10\"/>"), NULL, "marketdata" },
 	{ "/accounts/pnl", "Profit and loss", VENTURE_ICON("<path d=\"M3 20h18\"/><path d=\"M6 20v-6\"/><path d=\"M12 20V5\"/><path d=\"M18 20v-9\"/>"), NULL, "marketdata" },
 	{ "/market/browse", "Browse", VENTURE_ICON("<circle cx=\"11\" cy=\"11\" r=\"6\"/><path d=\"M20 20l-4.5-4.5\"/>"), NULL, "marketdata" },
+	{ "/market/find", "Find item", VENTURE_ICON("<circle cx=\"10\" cy=\"10\" r=\"6\"/><path d=\"M19 19l-4.5-4.5\"/><path d=\"M8 10h4\"/>"), NULL, "marketdata" },
+	{ "/e/venue_group", "Venue groups", VENTURE_ICON("<path d=\"M4 20V10l5-4 5 4v10\"/><path d=\"M14 20v-7l3-2 3 2v7\"/>"), NULL, "marketdata" },
 	{ "/market/deals", "Deals", VENTURE_ICON("<path d=\"M3 12l9-9h8v8l-9 9z\"/><circle cx=\"15.5\" cy=\"8.5\" r=\"1.2\"/>"), NULL, "marketdata" },
 	{ "/market/venues", "Venues", VENTURE_ICON("<path d=\"M4 20V9l8-5 8 5v11\"/><path d=\"M9 20v-6h6v6\"/>"), NULL, "marketdata" },
 	{ "/market/watchlists", "Watchlists", VENTURE_ICON("<path d=\"M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>"), NULL, "marketdata" },
@@ -1880,8 +1882,8 @@ static const gchar *const venture_web_nav_trading_accounts[] = {
  * heading is drawn whenever it is on; with feeds off they say there are
  * no data sources rather than vanish. */
 static const gchar *const venture_web_nav_trading[] = {
-	"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
-	"/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds",
+	"/market/browse", "/market/find", "/market/deals", "/market/venues", "/e/venue_group",
+	"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds",
 	NULL
 };
 

@@ -113,6 +113,10 @@ Listing realms in =connected_realm_ids= is better for a whole region than leavin
 - *Listings*: one per auction, with its id, so the store can tell what sold between two snapshots. Each snapshot is complete -- an item that vanished is out of stock -- and dated by Blizzard's =Last-Modified=.
 - *Names and details*, lazily: up to =item_names_per_fetch= items a fetch has not named yet are looked up at =/data/wow/item/{id}=, lowest id first; the name, a category =Item class/Subclass= and attributes (=vendor_sell= in copper, =quality=, =level=) are stored once known and kept after.
 
+** Links to Wowhead and Undermine Exchange
+
+Each item's attributes carry =links= -- its Wowhead page, =https://www.wowhead.com/item=ID=, with a variant's bonus ids as =?bonus=1472:6646= (Wowhead shows that variant's item level and stats), or =/battle-pet/SPECIES= for a caged pet -- and =undermine_item=, the item as Undermine Exchange names it (the id, or =82800-SPECIES= for a pet). Each realm's venue carries its first realm's =slug= and a link template, =https://undermine.exchange/#us-SLUG/{undermine_item}=; the commodity market's uses any realm of the region, since commodities are region-wide. The instrument page shows them as /View on Wowhead/ and /View on Undermine Exchange/, and the venue table links each realm. They appear on an item as the source next fetches it, and on a realm once its name has been looked up in this process.
+
 ** The instrument key
 
 #+begin_example

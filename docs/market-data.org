@@ -1100,7 +1100,7 @@ With feeds off, or in a build without SQLite, every page is still a page: the an
 
 ** Browse
 
-=/market/browse?source=&search=&category=&venue=&group=&stock=1&sort=&dir=&page=&per_page== lists one source's current rows (the organization's first source by name when none is chosen), a row per venue and instrument. The columns:
+=/market/browse?source=&search=&category=&venue=&group=&venue_group=&stock=1&sort=&dir=&page=&per_page== lists one source's current rows (the organization's first source by name when none is chosen), a row per venue and instrument. The columns:
 
 | Column | Meaning |
 |--------+---------|
@@ -1114,11 +1114,25 @@ With feeds off, or in a build without SQLite, every page is still a page: the an
 | Sale rate | sold ÷ (sold + expired) over 14 days, from the last recompute |
 | Updated | when the row's snapshot was taken |
 
-Every heading is a link that sorts by that column (=aria-sort= marks the active one; a second click turns it round), keeping the rest of the question; the sorts are =venture_marketdata_browse_sorts()= -- =min_price=, =quantity=, =market_value=, =region_median=, =pct_vs_region=, =sale_rate=, =sold_per_day=, =deal_price=, =listings=, =name=, =updated=, =venue= -- and anything else is refused with a 400, never ignored or passed on. Unknown values sort last either way. Search matches the name or key, case-folded; category matches the path and everything beneath it.
+Every heading is a link that sorts by that column (=aria-sort= marks the active one; a second click turns it round), keeping the rest of the question; the sorts are =venture_marketdata_browse_sorts()= -- =min_price=, =quantity=, =market_value=, =region_median=, =pct_vs_region=, =sale_rate=, =sold_per_day=, =deal_price=, =listings=, =name=, =updated=, =venue= -- and anything else is refused with a 400, never ignored or passed on. Unknown values sort last either way. Search matches the name or key, case-folded; category matches the path and everything beneath it. =venue_group= limits the rows to a venue group's venues (see /Venue groups/); a single =venue= wins over it.
+
+A variant -- an item with bonuses, a pet with a breed -- shares its plain item's name, so the Instrument column follows the name with the variant's own part in brackets: =(bonus 1472)=, =(bonuses 1472, 6646 · modifier 9=70)=, =(pet species 39, breed 5)=. Every row of the JSON carries it as =variant=. The store gives an unnamed variant its plain item's name when either is written (a variant named by its provider keeps its own), and a store written before that learned the names of its existing variants when it was upgraded.
+
+** Venue groups
+
+A /venue group/ (=/e/venue_group=, record type =venue_group=) is a named set of venues to look at together -- the realms someone keeps characters and banks on. Its =venues= are venue keys or venue names, comma separated, and a name also matches one comma-separated part of a venue's name: =Thrall= finds the connected realm "Thrall, Area 52", since a connected realm is named for all its realms. Browse, Deals, the instrument page's venue table and Find take =venue_group=ID= and offer the organization's groups in a picker.
+
+=venue_group=characters= is a group nobody maintains: the venues whose realm a character of any of the organization's =push= sources is on (an account of kind =character=, by its group -- the realm's name -- or its realm slug), offered as /My characters/ when there is a push source. It follows the characters: a character on a new realm adds that realm at the next push.
+
+A group that matches nothing shows nothing, never everything; /My characters/ with no characters says why in the notes. An id that is not one of the organization's groups is a 404, and anything that is neither a number nor =characters= a 400.
+
+** Find an item
+
+=/market/find?source=&search=&venue_group== (API =/api/v1/market/find=) answers "where is this cheapest and dearest right now": every instrument in stock whose name or key contains the search, each variant on its own row, with its base item level (=level=, the plain item's: a variant's bonuses move it by an amount the Game Data API does not publish), how many venues offer it, and its cheapest and dearest venue rows by lowest listing. It reads at most 5,000 venue rows (=VENTURE_MARKETDATA_FIND_MAX_ROWS=) and says to use more of the name when there are more. Each row links to the instrument page in the same venue group, dearest first. The API refuses an empty search; the page shows its form.
 
 ** An instrument
 
-=/market/i/SOURCE/KEY?venue=&units== is Undermine's item page. =KEY= is the store's key, escaped as one path segment in every link (=venture_marketdata_instrument_path()=); the server hands handlers the path already unescaped, so a key holding a slash arrives as two segments, and the route takes the whole rest of the path as the key. With no =?venue= it opens at the cheapest venue that has it in stock, else the first.
+=/market/i/SOURCE/KEY?venue=&units=&venue_group=&venues_dir== is Undermine's item page. =KEY= is the store's key, escaped as one path segment in every link (=venture_marketdata_instrument_path()=); the server hands handlers the path already unescaped, so a key holding a slash arrives as two segments, and the route takes the whole rest of the path as the key. With no =?venue= it opens at the cheapest venue that has it in stock, else the first.
 
 - *Now* (base stats): the venue's lowest price, quantity, last seen, the median of each day's lowest price over 14 days at this venue, the region median, the region's deal price, "of region" and the market value. The region figures are the group's =region= row in the venue's currency.
 - *Sales*: units sold a day, the sale rate and what units sold for on average over 14 days, the 14-day weighted market value and the 60-day historical one -- =venture_series_store_reference()= for the venue.
@@ -1126,12 +1140,13 @@ Every heading is a link that sorts by that column (=aria-sort= marks the active 
 - *Heat map*: two weekday-by-hour maps of the last seven days, lowest price (cheapest darkest) and quantity (most darkest), in the configured =locale.timezone= at its offset now (a daylight-saving change inside the week shifts the hours before it by one). Only points in the newest point's currency count. Each cell is the mean of the hourly figures that fell in it.
 - *Daily history*: per day for 60 days, the most units on offer in any one snapshot and the lowest price in that snapshot (the fullest market of the day, which is the one Undermine keeps), the day's lowest, and the units estimated sold and expired; as a chart, and as a table newest first.
 - *Bulk pricing*: =?units=N= walks the venue's book from its cheapest tier (=venture_series_store_bulk_cost()=): units filled, total cost, average and the price of the last unit, and says when the book runs out first. The 20 cheapest tiers are listed under it.
-- *Every venue*: the instrument's current row at every venue, cheapest first -- Undermine's "other realms" -- each linking to the page at that venue.
+- *Elsewhere*: links to other sites, under the title and in a column of the venue table, opened in a new tab with no referrer. VENTURE knows no site: a provider puts them in attributes. An instrument's =attrs.links= ({=label=, =url=}) are its own; a venue's =attrs.links= are templates whose =\{name\}= parts are filled from the instrument's attribute of that name, URI-escaped -- the charted venue's under the title, each venue's in its row. A link naming a value the instrument lacks, or whose url is not http(s), is left out. The blizzard-auctions plugin gives every item its Wowhead page (with a variant's bonuses as =?bonus==, or the battle pet's page) and every realm its Undermine Exchange page for the item.
+- *Every venue*: the instrument's current row at every venue, cheapest first -- Undermine's "other realms" -- each linking to the page at that venue. =venue_group= limits it to a group's venues (the charted venue is still chosen from all of them) and =venues_dir=desc= puts it dearest first; venues with nothing on offer stay last either way. The heading says which.
 - *Act*: view at another venue; *Promote to a record* (or a link to the record once there is one); *Add to watchlist* with a list to choose; *Create an alert*. These are forms that POST to the page's own address with =action=promote=, =watch= or =alert= (editors). Each promotes the instrument (=venture_marketdata_promote_instrument()=, idempotent), then goes back to the page, or to the generic =/e/watchlist_entry/new= form with =instrument_id= and =watchlist_id= filled in, or to =/e/alert_rule/new= with =instrument_id=, =data_source_id=, =kind=below= and the venue's =group_key=. The action is a form field rather than a path segment because the key is the rest of the path.
 
 ** Deals
 
-=/market/deals?source=&venue=&group=&category=&min_value=&max_pct=&top== lists every instrument in stock at a venue whose lowest price is at or under its group's deal price -- the median of the group's lowest prices, or their 33rd percentile when 15 or more venues offer it (=venture_series_math_deal_price()=), withheld when the median is under the source's =min_value=. Every source of the organization is read unless one is named; each answers its best =top= + 1 from the deal index and the merge keeps the best =top=, cheapest against the region first, and says when it cut some.
+=/market/deals?source=&search=&venue_group=&venue=&group=&category=&min_value=&max_pct=&top== lists every instrument in stock at a venue whose lowest price is at or under its group's deal price -- the median of the group's lowest prices, or their 33rd percentile when 15 or more venues offer it (=venture_series_math_deal_price()=), withheld when the median is under the source's =min_value=. Every source of the organization is read unless one is named; each answers its best =top= + 1 from the deal index and the merge keeps the best =top=, cheapest against the region first, and says when it cut some. =search= and =venue_group= work as on Browse; a group is resolved against each source's own venues.
 
 | Column | Meaning |
 |--------+---------|

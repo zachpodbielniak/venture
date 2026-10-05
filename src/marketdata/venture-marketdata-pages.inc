@@ -344,7 +344,8 @@ mdw_when(
 	g_string_append(html, "</time>");
 }
 
-/* A name, or the key when the store gave none. */
+/* A name, or the key when the store gave none; an instrument's variant
+ * (its bonuses, a pet's breed) after it, since variants share a name. */
 static void
 mdw_name(
 	GString		*html,
@@ -353,9 +354,86 @@ mdw_name(
 	const gchar	*key_member
 ){
 	const gchar *name;
+	const gchar *variant;
 
 	name = mdw_text(object, name_member);
 	venture_html_escape_append(html, (NULL != name) ? name : mdw_text(object, key_member));
+
+	variant = mdw_text(object, "variant");
+
+	if ((NULL != name) && (NULL != variant))
+	{
+		g_string_append(html, " <span class=\"muted\">(");
+		venture_html_escape_append(html, variant);
+		g_string_append(html, ")</span>");
+	}
+}
+
+/*
+ * The venue group picker: every venue, "My characters" when a push source
+ * exists, and the organization's saved groups (the answer's venue_groups).
+ */
+static void
+mdw_venue_group_picker(
+	GString		*html,
+	JsonObject	*root,
+	const gchar	*selected
+){
+	JsonArray *list;
+	guint i;
+
+	g_string_append(html, "<div class=\"field\"><label>Venue group<select name=\"venue_group\">"
+	                      "<option value=\"\">every venue</option>");
+	list = json_object_has_member(root, "venue_groups")
+		? json_object_get_array_member(root, "venue_groups") : NULL;
+
+	for (i = 0; (NULL != list) && (i < json_array_get_length(list)); i++)
+	{
+		JsonObject *group = json_array_get_object_element(list, i);
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, mdw_text(group, "value"));
+		g_string_append_printf(html, "\"%s>",
+		                       (0 == g_strcmp0(mdw_text(group, "value"), selected)) ? " selected" : "");
+		venture_html_escape_append(html, mdw_text(group, "name"));
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label> <a class=\"muted\" href=\"/e/venue_group\">edit groups</a></div>");
+}
+
+/*
+ * Links to other sites (an answer's "links": {label, url}), opened in a
+ * new tab and sending no referrer: they leave VENTURE, and the page they
+ * leave from names an organization's data.
+ */
+static void
+mdw_links(
+	GString		*html,
+	JsonObject	*object,
+	gboolean	 buttons
+){
+	JsonArray *links;
+	guint i;
+
+	if ((NULL == object) || !json_object_has_member(object, "links"))
+		return;
+
+	links = json_object_get_array_member(object, "links");
+
+	for (i = 0; (NULL != links) && (i < json_array_get_length(links)); i++)
+	{
+		JsonObject *link = json_array_get_object_element(links, i);
+
+		g_string_append_printf(html, "%s<a %shref=\"", (i > 0) ? " " : "",
+		                       buttons ? "class=\"btn\" " : "");
+		venture_html_escape_append(html, mdw_text(link, "url"));
+		g_string_append(html, "\" target=\"_blank\" rel=\"noopener noreferrer\">");
+		if (buttons)
+			g_string_append(html, "View on ");
+		venture_html_escape_append(html, mdw_text(link, "label"));
+		g_string_append(html, " \xe2\x86\x97</a>");
+	}
 }
 
 static void
@@ -522,6 +600,7 @@ mdw_browse_query(
 	query->category = mdw_param(request, "category");
 	query->venue = mdw_param(request, "venue");
 	query->group_key = mdw_param(request, "group");
+	query->venue_group = mdw_param(request, "venue_group");
 	query->sort = mdw_param(request, "sort");
 	query->descending = (0 == g_strcmp0(mdw_param(request, "dir"), "desc"));
 	query->in_stock_only = mdw_flag(request, "stock");
@@ -542,7 +621,7 @@ mdw_browse_link(
 	gint64		 page
 ){
 	static const gchar *const kept[] = {
-		"source", "search", "category", "venue", "group", "stock", "per_page", NULL
+		"source", "search", "category", "venue", "group", "venue_group", "stock", "per_page", NULL
 	};
 	g_autoptr(GString) link = NULL;
 	guint i;
@@ -692,8 +771,9 @@ venture_marketdata_web_browse(
 		g_string_append(html, "</option>");
 	}
 
-	g_string_append_printf(html, "</select></label></div>"
-	                       "<div class=\"field\"><label><input type=\"checkbox\" name=\"stock\" value=\"1\"%s>"
+	g_string_append(html, "</select></label></div>");
+	mdw_venue_group_picker(html, root, query.venue_group);
+	g_string_append_printf(html, "<div class=\"field\"><label><input type=\"checkbox\" name=\"stock\" value=\"1\"%s>"
 	                       " In stock only</label></div>",
 	                       query.in_stock_only ? " checked" : "");
 
@@ -1076,6 +1156,8 @@ mdw_instrument_query(
 
 	query->key = *out_key;
 	query->venue = mdw_param(request, "venue");
+	query->venue_group = mdw_param(request, "venue_group");
+	query->venues_descending = (0 == g_strcmp0(mdw_param(request, "venues_dir"), "desc"));
 
 	return mdw_number(request, "units", 0, VENTURE_MARKETDATA_BULK_MAX_UNITS, &query->units, error);
 }
@@ -1152,6 +1234,18 @@ venture_marketdata_web_instrument(
 	g_string_append(html, "</h1><p class=\"muted\">");
 	venture_html_escape_append(html, key);
 
+	if (NULL != mdw_text(instrument, "variant"))
+	{
+		g_string_append(html, " \xc2\xb7 ");
+		venture_html_escape_append(html, mdw_text(instrument, "variant"));
+	}
+
+	/* The plain item's level: a variant's bonuses move it by an amount the
+	 * API does not publish, so it is labelled as the base. */
+	if (json_object_has_member(instrument, "level"))
+		g_string_append_printf(html, " \xc2\xb7 base item level %" G_GINT64_FORMAT,
+		                       json_object_get_int_member(instrument, "level"));
+
 	if (NULL != mdw_text(instrument, "category"))
 	{
 		g_string_append(html, " \xc2\xb7 ");
@@ -1164,7 +1258,17 @@ venture_marketdata_web_instrument(
 		mdw_name(html, root, "venue_name", "venue");
 	}
 
-	g_string_append(html, "</p></div></div>");
+	g_string_append(html, "</p>");
+
+	if (json_object_has_member(root, "links") &&
+	    (json_array_get_length(json_object_get_array_member(root, "links")) > 0))
+	{
+		g_string_append(html, "<p class=\"external-links\">");
+		mdw_links(html, root, TRUE);
+		g_string_append(html, "</p>");
+	}
+
+	g_string_append(html, "</div></div>");
 
 	/* At the top: the whole page is the source's data, and a line at the
 	 * foot of the charts would be anything but conspicuous. */
@@ -1407,12 +1511,37 @@ venture_marketdata_web_instrument(
 	{
 		JsonArray *venues = json_object_get_array_member(root, "venues");
 
-		g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Every venue</h2></div>"
-		                      "<div class=\"table-wrap\"><table class=\"data market-table\"><thead><tr>"
+		const gchar *group_name = mdw_text(root, "venue_group_name");
+		gboolean dearest = json_object_has_member(root, "venues_descending") &&
+		                   json_object_get_boolean_member(root, "venues_descending");
+
+		g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>");
+		venture_html_escape_append(html, (NULL != group_name) ? group_name : "Every venue");
+		g_string_append(html, dearest ? ", dearest first" : ", cheapest first");
+		g_string_append(html, "</h2></div><form method=\"get\" action=\"");
+		venture_html_escape_append(html, self_path);
+		g_string_append(html, "\" class=\"form-grid market-filters\" role=\"search\" "
+		                      "aria-label=\"Venue filters\">");
+
+		if (NULL != query.venue)
+		{
+			g_string_append(html, "<input type=\"hidden\" name=\"venue\" value=\"");
+			venture_html_escape_append(html, query.venue);
+			g_string_append(html, "\">");
+		}
+
+		mdw_venue_group_picker(html, root, query.venue_group);
+		g_string_append_printf(html, "<div class=\"field\"><label>Order<select name=\"venues_dir\">"
+		                       "<option value=\"\"%s>cheapest first</option>"
+		                       "<option value=\"desc\"%s>dearest first</option></select></label></div>"
+		                       "<button class=\"btn\" type=\"submit\">Show</button></form>",
+		                       dearest ? "" : " selected", dearest ? " selected" : "");
+		g_string_append(html, "<div class=\"table-wrap\"><table class=\"data market-table\"><thead><tr>"
 		                      "<th scope=\"col\">Venue</th><th scope=\"col\">Group</th>"
 		                      "<th scope=\"col\" class=\"num\">Lowest</th><th scope=\"col\" class=\"num\">Quantity</th>"
 		                      "<th scope=\"col\" class=\"num\">Market value</th>"
 		                      "<th scope=\"col\" class=\"num\">Of region</th><th scope=\"col\">Updated</th>"
+		                      "<th scope=\"col\">Elsewhere</th>"
 		                      "</tr></thead><tbody>");
 
 		for (i = 0; (NULL != venues) && (i < json_array_get_length(venues)); i++)
@@ -1436,6 +1565,8 @@ venture_marketdata_web_instrument(
 			mdw_percent(html, row, "pct_vs_region", 1.0);
 			g_string_append(html, "</td><td>");
 			mdw_when(html, row, "taken_at");
+			g_string_append(html, "</td><td>");
+			mdw_links(html, row, FALSE);
 			g_string_append(html, "</td></tr>");
 		}
 
@@ -1611,6 +1742,8 @@ venture_marketdata_web_deals(
 	query.count = (guint)value;
 	query.venue = mdw_param(request, "venue");
 	query.group_key = mdw_param(request, "group");
+	query.venue_group = mdw_param(request, "venue_group");
+	query.search = mdw_param(request, "search");
 	query.category = mdw_param(request, "category");
 	text = mdw_param(request, "min_value");
 
@@ -1658,6 +1791,8 @@ venture_marketdata_web_deals(
 	g_string_append(html, "<div class=\"card\"><form method=\"get\" action=\"/market/deals\" "
 	                      "class=\"form-grid market-filters\" role=\"search\" aria-label=\"Deal filters\">");
 	mdw_source_picker(html, root, query.data_source_id, TRUE);
+	mdw_input(html, request, "Search", "search", "name or key");
+	mdw_venue_group_picker(html, root, query.venue_group);
 	mdw_input(html, request, "Venue", "venue", "a venue's key");
 	mdw_input(html, request, "Group", "group", "a group, e.g. eu");
 	mdw_input(html, request, "Category", "category", "path, e.g. Trade Goods/Herb");
@@ -2528,6 +2663,150 @@ venture_marketdata_web_report_controls(
 
 /* --- Routes ---------------------------------------------------------------- */
 
+/* --- /market/find ---------------------------------------------------------- */
+
+/*
+ * The item finder: every item whose name contains the search, each variant
+ * on its own row, with where it is cheapest and dearest to buy -- which is
+ * where it is cheapest and dearest to sell against -- in every venue or a
+ * venue group. Each row links to the instrument page, whose venue table
+ * lists every venue in either order.
+ */
+static HtmxResponse *
+venture_marketdata_web_find(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GString) html = NULL;
+	VentureMarketdataFindQuery query;
+	JsonObject *root = NULL;
+	JsonArray *items;
+	gboolean api;
+	HtmxResponse *gate;
+	guint i;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = mdw_gate(self, request, api, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_DATA_SOURCE);
+
+	if (NULL != gate)
+		return gate;
+
+	memset(&query, 0, sizeof(query));
+
+	if (!venture_web_request_organization(self, request, NULL, &query.organization_id, &error) ||
+	    !mdw_number(request, "source", 0, G_MAXINT64, &query.data_source_id, &error))
+		return venture_web_error_response(error);
+
+	query.search = mdw_param(request, "search");
+	query.venue_group = mdw_param(request, "venue_group");
+
+	/* No search yet is a form to fill in, not an error -- except for the
+	 * API, where a question without its subject is a bad request. */
+	if ((NULL != query.search) || api)
+	{
+		answer = venture_marketdata_find(self->context, &query, &error);
+
+		if (NULL == answer)
+			return venture_web_error_response(error);
+
+		if (api)
+			return venture_web_json_response(answer, 200);
+
+		root = json_node_get_object(answer);
+	}
+
+	html = g_string_new(NULL);
+	mdw_head(html, "Trading", "Find an item",
+	         "Every item whose name contains what you type, each variant on its own row, with the "
+	         "venue where it is cheapest and the one where it is dearest right now. Open one for "
+	         "every venue in order.");
+
+	g_string_append(html, "<div class=\"card\"><form method=\"get\" action=\"/market/find\" "
+	                      "class=\"form-grid market-filters\" role=\"search\" aria-label=\"Find an item\">");
+
+	if (NULL != root)
+		mdw_source_picker(html, root, json_object_get_int_member(root, "data_source_id"), FALSE);
+
+	mdw_input(html, request, "Item", "search", "part of a name, e.g. Sunfire Silk");
+
+	if (NULL != root)
+		mdw_venue_group_picker(html, root, query.venue_group);
+	else
+	{
+		/* Before the first search there is no answer to list the
+		 * groups from, so they are asked for on their own. */
+		g_autoptr(JsonNode) groups = venture_marketdata_venue_groups(self->context,
+		                                                            query.organization_id);
+
+		mdw_venue_group_picker(html, json_node_get_object(groups), query.venue_group);
+	}
+
+	g_string_append(html, "<button class=\"btn\" type=\"submit\">Find</button></form></div>");
+
+	if (NULL == root)
+		return venture_web_html_response(venture_web_page(self, request, "/market/find",
+		                                                  "Find an item", html->str), 200);
+
+	mdw_notes(html, root);
+	items = json_object_get_array_member(root, "items");
+
+	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table\">"
+	                      "<thead><tr><th scope=\"col\">Item</th><th scope=\"col\" class=\"num\">Base ilvl</th>"
+	                      "<th scope=\"col\" class=\"num\">Venues</th>"
+	                      "<th scope=\"col\">Cheapest at</th><th scope=\"col\" class=\"num\">Lowest</th>"
+	                      "<th scope=\"col\">Dearest at</th><th scope=\"col\" class=\"num\">Lowest</th>"
+	                      "</tr></thead><tbody>");
+
+	for (i = 0; (NULL != items) && (i < json_array_get_length(items)); i++)
+	{
+		JsonObject *item = json_array_get_object_element(items, i);
+		JsonObject *cheapest = json_object_get_object_member(item, "cheapest");
+		JsonObject *dearest = json_object_get_object_member(item, "dearest");
+		g_autofree gchar *link = NULL;
+
+		/* The instrument page in the same venue group, dearest first --
+		 * the order a seller wants. */
+		link = g_strdup_printf("%s?venues_dir=desc%s%s", mdw_text(item, "url"),
+		                       (NULL != query.venue_group) ? "&venue_group=" : "",
+		                       (NULL != query.venue_group) ? query.venue_group : "");
+
+		g_string_append(html, "<tr><td><a href=\"");
+		venture_html_escape_append(html, link);
+		g_string_append(html, "\">");
+		mdw_name(html, item, "name", "key");
+		g_string_append(html, "</a></td><td class=\"num\">");
+
+		if (json_object_has_member(item, "level"))
+			g_string_append_printf(html, "%" G_GINT64_FORMAT, json_object_get_int_member(item, "level"));
+
+		g_string_append(html, "</td><td class=\"num\">");
+		mdw_int(html, item, "venues");
+		g_string_append(html, "</td><td>");
+		mdw_name(html, cheapest, "venue_name", "venue_key");
+		g_string_append(html, "</td><td class=\"num\">");
+		mdw_money(html, cheapest, "min_price");
+		g_string_append(html, "</td><td>");
+		mdw_name(html, dearest, "venue_name", "venue_key");
+		g_string_append(html, "</td><td class=\"num\">");
+		mdw_money(html, dearest, "min_price");
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL == items) || (0 == json_array_get_length(items)))
+		g_string_append(html, "<tr><td colspan=\"7\" class=\"muted\">Nothing in stock by that name.</td></tr>");
+
+	g_string_append(html, "</tbody></table></div></div>");
+
+	return venture_web_html_response(venture_web_page(self, request, "/market/find", "Find an item",
+	                                                  html->str), 200);
+}
+
 static void
 venture_marketdata_pages_register(VentureWebServer *self)
 {
@@ -2539,6 +2818,7 @@ venture_marketdata_pages_register(VentureWebServer *self)
 	} routes[] = {
 		{ HTMX_METHOD_GET, "/market/browse", venture_marketdata_web_browse },
 		{ HTMX_METHOD_GET, "/market/deals", venture_marketdata_web_deals },
+		{ HTMX_METHOD_GET, "/market/find", venture_marketdata_web_find },
 		{ HTMX_METHOD_GET, "/market/venues", venture_marketdata_web_venues },
 		{ HTMX_METHOD_GET, "/market/watchlists", venture_marketdata_web_watchlists },
 		{ HTMX_METHOD_GET, "/market/watchlists/:id", venture_marketdata_web_watchlist },
@@ -2550,6 +2830,7 @@ venture_marketdata_pages_register(VentureWebServer *self)
 		/* The twins: the same handlers, answering JSON for /api/. */
 		{ HTMX_METHOD_GET, "/api/v1/market/browse", venture_marketdata_web_browse },
 		{ HTMX_METHOD_GET, "/api/v1/market/deals", venture_marketdata_web_deals },
+		{ HTMX_METHOD_GET, "/api/v1/market/find", venture_marketdata_web_find },
 		{ HTMX_METHOD_GET, "/api/v1/market/venues", venture_marketdata_web_venues },
 		{ HTMX_METHOD_GET, "/api/v1/market/watchlists", venture_marketdata_web_watchlists },
 		{ HTMX_METHOD_GET, "/api/v1/market/watchlists/:id", venture_marketdata_web_watchlist },

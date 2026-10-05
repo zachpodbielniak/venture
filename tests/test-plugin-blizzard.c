@@ -768,6 +768,41 @@ test_sync(
 		g_assert_true(venture_series_store_get_instrument(reader, KEY_ORE, &ore, &error));
 		g_assert_cmpstr(ore->category, ==, "Trade Goods/Metal & Stone");
 		g_assert_nonnull(strstr(ore->attrs_json, "\"vendor_sell\":5"));
+
+		/* Links elsewhere: Wowhead with the variant's bonuses, and the
+		 * token a venue's Undermine Exchange template fills in. */
+		g_assert_nonnull(strstr(blade->attrs_json,
+		                        "\"url\":\"https://www.wowhead.com/item=19019?bonus=1472:6646\""));
+		g_assert_nonnull(strstr(blade->attrs_json, "\"undermine_item\":\"19019\""));
+		g_assert_nonnull(strstr(ore->attrs_json, "\"url\":\"https://www.wowhead.com/item=2770\""));
+	}
+
+	{
+		g_autoptr(VentureSeriesInstrumentRow) pet = NULL;
+		g_autoptr(GPtrArray) venues = NULL;
+		guint v;
+		gboolean realm_linked = FALSE;
+
+		g_assert_true(venture_series_store_get_instrument(reader, KEY_PET, &pet, &error));
+		g_assert_nonnull(strstr(pet->attrs_json, "https://www.wowhead.com/battle-pet/39"));
+		g_assert_nonnull(strstr(pet->attrs_json, "\"undermine_item\":\"82800-39\""));
+
+		/* The realm's venue links to its page on Undermine Exchange by
+		 * one of its realms' slugs. */
+		venues = venture_series_store_list_venues(reader, &error);
+		g_assert_no_error(error);
+
+		for (v = 0; v < venues->len; v++)
+		{
+			VentureSeriesVenueRow *venue = g_ptr_array_index(venues, v);
+
+			if ((0 == g_strcmp0(venue->key, "11")) && (NULL != venue->attrs_json) &&
+			    (NULL != strstr(venue->attrs_json, "https://undermine.exchange/#us-")) &&
+			    (NULL != strstr(venue->attrs_json, "/{undermine_item}")))
+				realm_linked = TRUE;
+		}
+
+		g_assert_true(realm_linked);
 	}
 
 	/* An hour later: 1002 (LONG) and 1005 (LONG) are gone, so sold; 1004

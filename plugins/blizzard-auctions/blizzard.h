@@ -169,6 +169,8 @@ typedef struct
  * @token_expires: when it stops working, Unix seconds
  * @last_request_us: monotonic time of the last request, for spacing
  * @realm_names: connected realm id (text) -> name
+ * @realm_slugs: connected realm id (text) -> its first realm's slug, for
+ *   links to sites that name a realm by slug
  * @items: item id (gint64 key) -> #BlizzardItem; an entry with a %NULL
  *   name is "asked, and Blizzard did not know"
  *
@@ -187,6 +189,7 @@ typedef struct
 	gint64			 token_expires;
 	gint64			 last_request_us;
 	GHashTable		*realm_names;
+	GHashTable		*realm_slugs;
 	GHashTable		*items;
 } BlizzardFrozen;
 

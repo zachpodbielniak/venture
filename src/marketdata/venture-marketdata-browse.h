@@ -71,6 +71,9 @@ G_BEGIN_DECLS
  * @category: (nullable): this category path and the ones beneath it
  * @venue: (nullable): only this venue's rows
  * @group_key: (nullable): only venues in this group
+ * @venue_group: (nullable): only the venues of this venue group: "characters"
+ *   or a venue group record's id (see venture_marketdata_venue_group_*);
+ *   ignored when @venue is given
  * @sort: (nullable): a sort name (see venture_marketdata_browse_sorts());
  *   %NULL for min_price. Anything else is refused.
  * @descending: largest first
@@ -89,6 +92,7 @@ typedef struct
 	const gchar	*category;
 	const gchar	*venue;
 	const gchar	*group_key;
+	const gchar	*venue_group;
 	const gchar	*sort;
 	gboolean	 descending;
 	gboolean	 in_stock_only;
@@ -145,6 +149,9 @@ venture_marketdata_browse(
  *   with it in stock, else the first
  * @units: units for the bulk calculator; 0 for none
  * @now: the time "now" is, 0 for the wall clock
+ * @venue_group: (nullable): only these venues in the venues table, as on
+ *   browse; the charted venue is still chosen from every venue
+ * @venues_descending: the venues table dearest first rather than cheapest
  *
  * What an instrument page asks.
  */
@@ -156,6 +163,8 @@ typedef struct
 	const gchar	*venue;
 	gint64		 units;
 	gint64		 now;
+	const gchar	*venue_group;
+	gboolean	 venues_descending;
 } VentureMarketdataInstrumentQuery;
 
 /**
@@ -182,11 +191,79 @@ venture_marketdata_instrument(
 );
 
 /**
+ * venture_marketdata_venue_groups:
+ * @context: a #VentureContext
+ * @organization_id: whose groups
+ *
+ * The venue group choices the market pages offer, as {venue_groups: [{value,
+ * name}]}: "characters" when the organization has a push source, then its
+ * saved venue groups by name.
+ *
+ * Returns: (transfer full): the choices; empty without SQLite
+ */
+JsonNode *
+venture_marketdata_venue_groups(
+	VentureContext	*context,
+	gint64		 organization_id
+);
+
+/**
+ * VENTURE_MARKETDATA_FIND_MAX_ROWS:
+ *
+ * The most venue rows one item search reads before it says to narrow the
+ * search: every venue an instrument is in stock at is a row.
+ */
+#define VENTURE_MARKETDATA_FIND_MAX_ROWS (5000)
+
+/**
+ * VentureMarketdataFindQuery:
+ * @organization_id: whose sources
+ * @data_source_id: the source, 0 for the organization's first by name
+ * @search: the name (or key) to look for; required
+ * @venue_group: (nullable): only these venues, as on browse
+ *
+ * What the item finder asks: every instrument whose name contains
+ * @search, each with where it is cheapest and dearest.
+ */
+typedef struct
+{
+	gint64		 organization_id;
+	gint64		 data_source_id;
+	const gchar	*search;
+	const gchar	*venue_group;
+} VentureMarketdataFindQuery;
+
+/**
+ * venture_marketdata_find:
+ * @context: a #VentureContext
+ * @query: what to look for
+ * @error: (out) (optional): return location for a #GError
+ *
+ * {available, notes, sources, data_source_id, venue_groups,
+ * venue_group_name, query, truncated, items}: one entry per instrument in
+ * stock somewhere, by name then key, with its variant label, item level,
+ * how many venues offer it, and its cheapest and dearest venue rows
+ * (lowest listing at each).
+ *
+ * Returns: (transfer full) (nullable): the answer; %NULL on error
+ *   (INVALID_ARGUMENT for an empty search)
+ */
+JsonNode *
+venture_marketdata_find(
+	VentureContext				 *context,
+	const VentureMarketdataFindQuery	 *query,
+	GError					**error
+);
+
+/**
  * VentureMarketdataDealsQuery:
  * @organization_id: whose sources
  * @data_source_id: one source, or 0 for every source of the organization
  * @venue: (nullable): only this venue
  * @group_key: (nullable): only venues in this group
+ * @venue_group: (nullable): only the venues of this venue group, as on
+ *   browse; ignored when @venue is given
+ * @search: (nullable): only instruments whose name or key contains this
  * @category: (nullable): this category path and beneath
  * @min_value: (nullable): only rows worth at least this (market value, or
  *   the minimum where there is none), compared in its own currency only
@@ -205,6 +282,8 @@ typedef struct
 	gint64			 data_source_id;
 	const gchar		*venue;
 	const gchar		*group_key;
+	const gchar		*venue_group;
+	const gchar		*search;
 	const gchar		*category;
 	const VentureMoney	*min_value;
 	gdouble			 max_pct;

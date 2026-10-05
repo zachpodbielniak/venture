@@ -445,6 +445,221 @@ md_reader(
 }
 
 /* One current row as JSON: what browse, deals and the venue table show. */
+/*
+ * A variant's distinguishing part, readably: the instrument key past its
+ * plain item ("19019:b1472,6646:m9=70" -> "bonuses 1472, 6646 · modifiers
+ * 9=70"). NULL for a key with no variant part. Only the shape the
+ * blizzard-auctions plugin writes is spelled out; any other suffix is
+ * shown as it is rather than guessed at.
+ */
+static gchar *
+md_variant_label(const gchar *key)
+{
+	g_autoptr(GString) label = NULL;
+	g_auto(GStrv) parts = NULL;
+	const gchar *colon;
+	guint i;
+
+	colon = (NULL != key) ? strchr(key, ':') : NULL;
+	if (NULL == colon)
+		return NULL;
+
+	label = g_string_new(NULL);
+	parts = g_strsplit(colon + 1, ":", -1);
+
+	for (i = 0; NULL != parts[i]; i++)
+	{
+		g_auto(GStrv) items = NULL;
+		const gchar *body = parts[i] + 1;
+
+		if ('\0' == parts[i][0])
+			continue;
+
+		if (label->len > 0)
+			g_string_append(label, " · ");
+
+		if ('b' == parts[i][0])
+		{
+			g_autofree gchar *joined = NULL;
+
+			items = g_strsplit(body, ",", -1);
+			joined = g_strjoinv(", ", items);
+			g_string_append_printf(label, "%s %s",
+			                       (g_strv_length(items) > 1) ? "bonuses" : "bonus", joined);
+		}
+		else if ('m' == parts[i][0])
+		{
+			g_autofree gchar *joined = NULL;
+
+			items = g_strsplit(body, ",", -1);
+			joined = g_strjoinv(", ", items);
+			g_string_append_printf(label, "%s %s",
+			                       (g_strv_length(items) > 1) ? "modifiers" : "modifier", joined);
+		}
+		else if ('p' == parts[i][0])
+		{
+			const gchar *dot = strchr(body, '.');
+
+			if (NULL != dot)
+				g_string_append_printf(label, "pet species %.*s, breed %s",
+				                       (gint)(dot - body), body, dot + 1);
+			else
+				g_string_append_printf(label, "pet species %s", body);
+		}
+		else
+			g_string_append(label, parts[i]);
+	}
+
+	return (label->len > 0) ? g_string_free(g_steal_pointer(&label), FALSE) : NULL;
+}
+
+/* Parses an attrs JSON text; NULL for none or anything but an object. */
+static JsonObject *
+md_attrs_object(const gchar *attrs_json)
+{
+	g_autoptr(JsonParser) parser = NULL;
+
+	if (NULL == attrs_json)
+		return NULL;
+
+	parser = json_parser_new();
+
+	if (!json_parser_load_from_data(parser, attrs_json, -1, NULL) ||
+	    !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+		return NULL;
+
+	return json_object_ref(json_node_get_object(json_parser_get_root(parser)));
+}
+
+/*
+ * Appends to @out the links an attrs object declares (attrs.links, each
+ * {label, url}), with every "{name}" in a url replaced by @values' scalar
+ * member of that name, URI-escaped. A link whose url names a value @values
+ * lacks is left out rather than shown broken; only http(s) urls are kept.
+ * This is how a provider says "this item on that site" without VENTURE
+ * knowing any site: the item carries its own links, and a venue carries
+ * templates the item fills in.
+ */
+static void
+md_links_append(
+	JsonArray	*out,
+	JsonObject	*declaring,
+	JsonObject	*values
+){
+	JsonArray *links;
+	guint i;
+
+	if ((NULL == declaring) || !json_object_has_member(declaring, "links") ||
+	    !JSON_NODE_HOLDS_ARRAY(json_object_get_member(declaring, "links")))
+		return;
+
+	links = json_object_get_array_member(declaring, "links");
+
+	for (i = 0; i < json_array_get_length(links); i++)
+	{
+		JsonNode *element = json_array_get_element(links, i);
+		g_autoptr(GString) url = NULL;
+		const gchar *label;
+		const gchar *template;
+		const gchar *p;
+		gboolean complete = TRUE;
+		JsonObject *link;
+
+		if (!JSON_NODE_HOLDS_OBJECT(element))
+			continue;
+
+		label = json_object_get_string_member_with_default(json_node_get_object(element), "label", NULL);
+		template = json_object_get_string_member_with_default(json_node_get_object(element), "url", NULL);
+
+		if (venture_string_is_empty(label) || (NULL == template) ||
+		    !(g_str_has_prefix(template, "https://") || g_str_has_prefix(template, "http://")))
+			continue;
+
+		url = g_string_new(NULL);
+
+		for (p = template; complete && ('\0' != *p); p++)
+		{
+			const gchar *close;
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *value = NULL;
+			JsonNode *member;
+
+			if ('{' != *p)
+			{
+				g_string_append_c(url, *p);
+				continue;
+			}
+
+			close = strchr(p, '}');
+			if (NULL == close)
+			{
+				complete = FALSE;
+				break;
+			}
+
+			name = g_strndup(p + 1, close - p - 1);
+			member = (NULL != values) ? json_object_get_member(values, name) : NULL;
+
+			if ((NULL == member) || !JSON_NODE_HOLDS_VALUE(member))
+				complete = FALSE;
+			else if (G_TYPE_STRING == json_node_get_value_type(member))
+				value = g_strdup(json_node_get_string(member));
+			else if (G_TYPE_INT64 == json_node_get_value_type(member))
+				value = g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(member));
+			else
+				complete = FALSE;
+
+			if (complete)
+				g_string_append_uri_escaped(url, value, NULL, FALSE);
+
+			p = close;
+		}
+
+		if (!complete)
+			continue;
+
+		link = json_object_new();
+		json_object_set_string_member(link, "label", label);
+		json_object_set_string_member(link, "url", url->str);
+		json_array_add_object_element(out, link);
+	}
+}
+
+/*
+ * An instrument's stored attributes as an object, its item level hoisted
+ * to "level" (the plain item's level: a variant's bonuses change it, and
+ * the Game Data API does not say by how much), and its variant label.
+ */
+static void
+md_set_attrs_and_variant(
+	JsonObject	*object,
+	const gchar	*key,
+	const gchar	*parent_key,
+	const gchar	*attrs_json
+){
+	g_autofree gchar *variant = NULL;
+
+	if (NULL != attrs_json)
+	{
+		g_autoptr(JsonParser) parser = json_parser_new();
+
+		if (json_parser_load_from_data(parser, attrs_json, -1, NULL) &&
+		    JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+		{
+			JsonObject *attrs = json_node_get_object(json_parser_get_root(parser));
+
+			if (json_object_has_member(attrs, "level"))
+				json_object_set_int_member(object, "level",
+				                           json_object_get_int_member(attrs, "level"));
+
+			json_object_set_object_member(object, "attrs", json_object_ref(attrs));
+		}
+	}
+
+	variant = (NULL != parent_key) ? md_variant_label(key) : NULL;
+	md_set_text(object, "variant", variant);
+}
+
 static JsonObject *
 md_row_object(
 	const VentureSeriesRow	*row,
@@ -459,6 +674,11 @@ md_row_object(
 	json_object_set_string_member(object, "group_key", (NULL != row->group_key) ? row->group_key : "");
 	json_object_set_string_member(object, "instrument_key", row->instrument_key);
 	md_set_text(object, "instrument_name", row->instrument_name);
+	{
+		g_autofree gchar *variant = md_variant_label(row->instrument_key);
+
+		md_set_text(object, "variant", variant);
+	}
 	md_set_text(object, "category", row->category);
 	md_set_text(object, "kind", row->kind);
 	json_object_set_string_member(object, "currency", row->currency);
@@ -516,6 +736,267 @@ md_venues_json(
 	return array;
 }
 
+/* --- Venue groups ---------------------------------------------------------- */
+
+/* The pseudo-group of the realms the operator's characters are on. */
+#define MD_GROUP_CHARACTERS "characters"
+
+/* Lower-cased, trimmed text, for comparing a person's spelling of a name
+ * with a store's. */
+static gchar *
+md_fold(const gchar *text)
+{
+	g_autofree gchar *trimmed = g_strstrip(g_strdup((NULL != text) ? text : ""));
+
+	return g_utf8_casefold(trimmed, -1);
+}
+
+/*
+ * Adds every venue of @venues that @wanted (folded keys and names) names
+ * to @keys, once. A venue matches by its key, its whole name, or one
+ * comma-separated part of its name: a connected realm is named for all of
+ * its realms ("Silver Hand, Thorium Brotherhood, Farstriders"), and a
+ * person means it when they say any one of them.
+ */
+static void
+md_match_venues(
+	GPtrArray	*venues,
+	GHashTable	*wanted,
+	GPtrArray	*keys
+){
+	guint i;
+
+	for (i = 0; (NULL != venues) && (i < venues->len); i++)
+	{
+		VentureSeriesVenueRow *venue = g_ptr_array_index(venues, i);
+		g_autofree gchar *key = md_fold(venue->key);
+		g_autofree gchar *whole = md_fold(venue->name);
+		g_auto(GStrv) parts = g_strsplit((NULL != venue->name) ? venue->name : "", ",", -1);
+		gboolean hit;
+		guint j;
+
+		hit = g_hash_table_contains(wanted, key) || g_hash_table_contains(wanted, whole);
+
+		for (j = 0; !hit && (NULL != parts[j]); j++)
+		{
+			g_autofree gchar *part = md_fold(parts[j]);
+
+			hit = ('\0' != part[0]) && g_hash_table_contains(wanted, part);
+		}
+
+		if (hit)
+			g_ptr_array_add(keys, g_strdup(venue->key));
+	}
+}
+
+/*
+ * The folded realm names (and realm slugs) the organization's characters
+ * are on, from every push source's accounts. A source that cannot be read
+ * is skipped: a missing realm in a convenience filter is not worth failing
+ * a page for.
+ */
+static GHashTable *
+md_character_realms(
+	VentureContext	*context,
+	gint64		 organization_id,
+	guint		*out_characters
+){
+	g_autoptr(GPtrArray) sources = NULL;
+	GHashTable *realms;
+	guint i;
+
+	realms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	*out_characters = 0;
+	sources = md_sources(context, organization_id, NULL);
+
+	for (i = 0; (NULL != sources) && (i < sources->len); i++)
+	{
+		VentureEntity *source = g_ptr_array_index(sources, i);
+		g_autofree gchar *provider = NULL;
+		g_autoptr(VentureSeriesStore) reader = NULL;
+		g_autoptr(GPtrArray) accounts = NULL;
+		guint j;
+
+		g_object_get(source, "provider", &provider, NULL);
+
+		if (0 != g_strcmp0(provider, "push"))
+			continue;
+
+		reader = md_reader(context, source, NULL, NULL);
+		if (NULL == reader)
+			continue;
+
+		accounts = venture_series_store_list_accounts(reader, "character", NULL, NULL, 0, NULL);
+
+		for (j = 0; (NULL != accounts) && (j < accounts->len); j++)
+		{
+			VentureSeriesAccountRow *account = g_ptr_array_index(accounts, j);
+
+			if (!venture_string_is_empty(account->group_key))
+				g_hash_table_add(realms, md_fold(account->group_key));
+			if (!venture_string_is_empty(account->venue_key))
+				g_hash_table_add(realms, md_fold(account->venue_key));
+			(*out_characters)++;
+		}
+	}
+
+	return realms;
+}
+
+/*
+ * The venue keys of @venues a venue group stands for, as a
+ * NULL-terminated array; NULL when @spec asks for no group (every venue).
+ * @spec is "" or NULL (none), "characters" (the realms the organization's
+ * characters are on), or a venue group record's id. A group that matches
+ * nothing is an empty array, which filters to nothing: an empty group
+ * shows nothing rather than everything. *out_label names it for a page.
+ */
+static gboolean
+md_venue_group_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	GPtrArray	 *venues,
+	const gchar	 *spec,
+	JsonArray	 *notes,
+	gchar		***out_keys,
+	gchar		**out_label,
+	GError		**error
+){
+	g_autoptr(GHashTable) wanted = NULL;
+	g_autoptr(GPtrArray) keys = NULL;
+
+	*out_keys = NULL;
+	if (NULL != out_label)
+		*out_label = NULL;
+
+	if (venture_string_is_empty(spec))
+		return TRUE;
+
+	keys = g_ptr_array_new_with_free_func(g_free);
+
+	if (0 == g_strcmp0(spec, MD_GROUP_CHARACTERS))
+	{
+		guint characters = 0;
+
+		wanted = md_character_realms(context, organization_id, &characters);
+
+		if ((0 == characters) && (NULL != notes))
+			md_note(notes, "No characters yet: \"My characters\" is the realms a push source's "
+			               "characters are on, and none has pushed any.");
+
+		if (NULL != out_label)
+			*out_label = g_strdup("My characters");
+	}
+	else
+	{
+		g_autoptr(VentureEntity) group = NULL;
+		g_autofree gchar *list = NULL;
+		g_auto(GStrv) entries = NULL;
+		gint64 id = 0;
+		guint i;
+
+		if (!g_ascii_string_to_signed(spec, 10, 1, G_MAXINT64, &id, NULL))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "A venue group is \"%s\" or a venue group's id, not \"%s\"",
+			            MD_GROUP_CHARACTERS, spec);
+			return FALSE;
+		}
+
+		group = venture_database_get(venture_context_get_database(context),
+		                             VENTURE_TYPE_VENUE_GROUP, id, NULL);
+
+		if ((NULL == group) || venture_entity_is_deleted(group) ||
+		    (venture_entity_get_organization_id(group) != organization_id))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No venue group #%" G_GINT64_FORMAT " in this organization", id);
+			return FALSE;
+		}
+
+		g_object_get(group, "venues", &list, NULL);
+
+		if (NULL != out_label)
+			g_object_get(group, "name", out_label, NULL);
+
+		wanted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		entries = g_strsplit((NULL != list) ? list : "", ",", -1);
+
+		for (i = 0; NULL != entries[i]; i++)
+		{
+			gchar *folded = md_fold(entries[i]);
+
+			if ('\0' != folded[0])
+				g_hash_table_add(wanted, folded);
+			else
+				g_free(folded);
+		}
+	}
+
+	md_match_venues(venues, wanted, keys);
+	g_ptr_array_add(keys, NULL);
+	*out_keys = (gchar **)g_ptr_array_free(g_steal_pointer(&keys), FALSE);
+	return TRUE;
+}
+
+/*
+ * The choices a venue group picker offers: none, "My characters" when a
+ * push source exists, then the organization's saved groups by name.
+ */
+static JsonArray *
+md_venue_groups_json(
+	VentureContext	*context,
+	gint64		 organization_id
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) groups = NULL;
+	g_autoptr(GPtrArray) sources = NULL;
+	JsonArray *array;
+	JsonObject *object;
+	gboolean pushed = FALSE;
+	guint i;
+
+	array = json_array_new();
+	sources = md_sources(context, organization_id, NULL);
+
+	for (i = 0; (NULL != sources) && (i < sources->len) && !pushed; i++)
+	{
+		g_autofree gchar *provider = NULL;
+
+		g_object_get(g_ptr_array_index(sources, i), "provider", &provider, NULL);
+		pushed = (0 == g_strcmp0(provider, "push"));
+	}
+
+	if (pushed)
+	{
+		object = json_object_new();
+		json_object_set_string_member(object, "value", MD_GROUP_CHARACTERS);
+		json_object_set_string_member(object, "name", "My characters");
+		json_array_add_object_element(array, object);
+	}
+
+	query = venture_query_new(VENTURE_TYPE_VENUE_GROUP);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, MD_MAX_SOURCES);
+	groups = venture_database_find(venture_context_get_database(context), query, NULL);
+
+	for (i = 0; (NULL != groups) && (i < groups->len); i++)
+	{
+		VentureEntity *group = g_ptr_array_index(groups, i);
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *value = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(group));
+
+		g_object_get(group, "name", &name, NULL);
+		object = json_object_new();
+		json_object_set_string_member(object, "value", value);
+		json_object_set_string_member(object, "name", venture_string_is_empty(name) ? value : name);
+		json_array_add_object_element(array, object);
+	}
+
+	return array;
+}
+
 #endif /* VENTURE_HAVE_SQLITE */
 
 /* --- Browse ---------------------------------------------------------------- */
@@ -546,6 +1027,7 @@ md_browse_echo(const VentureMarketdataBrowseQuery *query)
 	md_set_text(object, "category", query->category);
 	md_set_text(object, "venue", query->venue);
 	md_set_text(object, "group_key", query->group_key);
+	md_set_text(object, "venue_group", query->venue_group);
 	json_object_set_string_member(object, "sort", (NULL != query->sort) ? query->sort : "min_price");
 	json_object_set_boolean_member(object, "descending", query->descending);
 	json_object_set_boolean_member(object, "in_stock_only", query->in_stock_only);
@@ -661,8 +1143,14 @@ venture_marketdata_browse(
 
 		groups = json_array_new();
 
+		json_object_set_array_member(root, "venue_groups",
+		                             md_venue_groups_json(context, query->organization_id));
+
 		if (NULL != reader)
 		{
+			g_auto(GStrv) group_keys = NULL;
+			g_autofree gchar *group_label = NULL;
+
 			venues = venture_series_store_list_venues(reader, &local_error);
 
 			venture_series_filter_init(&filter);
@@ -672,6 +1160,22 @@ venture_marketdata_browse(
 				venue_keys[0] = query->venue;
 				venue_keys[1] = NULL;
 				filter.venue_keys = venue_keys;
+			}
+			else if (!md_venue_group_keys(context, query->organization_id, venues,
+			                              query->venue_group, notes, &group_keys,
+			                              &group_label, error))
+			{
+				json_object_unref(root);
+				json_array_unref(notes);
+				json_array_unref(rows);
+				json_array_unref(groups);
+				return NULL;
+			}
+			else if (NULL != group_keys)
+			{
+				filter.venue_keys = (const gchar **)group_keys;
+				md_set_text(root, "venue_group_name", group_label);
+				json_object_set_int_member(root, "venue_group_venues", g_strv_length(group_keys));
 			}
 
 			filter.group_key = venture_string_is_empty(query->group_key) ? NULL : query->group_key;
@@ -1067,6 +1571,8 @@ venture_marketdata_instrument(
 		md_set_text(object, "namespace", instrument->namespace_);
 		md_set_time(object, "first_seen", instrument->first_seen);
 		md_set_time(object, "last_seen", instrument->last_seen);
+		md_set_attrs_and_variant(object, instrument->key, instrument->parent_key,
+		                         instrument->attrs_json);
 		json_object_set_object_member(root, "instrument", object);
 		json_object_set_int_member(root, "record_id",
 			md_promoted_id(context, VENTURE_TYPE_INSTRUMENT, query->organization_id,
@@ -1107,9 +1613,98 @@ venture_marketdata_instrument(
 
 		array = json_array_new();
 
-		for (i = 0; i < venues->len; i++)
-			json_array_add_object_element(array, md_row_object(g_ptr_array_index(venues, i),
-			                                                   query->data_source_id));
+		/* The table: optionally one venue group's venues, and dearest
+		 * first on request. Venues with nothing offered stay last either
+		 * way -- "most expensive" means among what can be bought. */
+		{
+			g_auto(GStrv) group_keys = NULL;
+			g_autofree gchar *group_label = NULL;
+			g_autoptr(GPtrArray) store_venues = NULL;
+			g_autoptr(GPtrArray) shown = NULL;
+			guint priced = 0;
+
+			store_venues = venture_series_store_list_venues(reader, NULL);
+
+			if (!md_venue_group_keys(context, query->organization_id, store_venues,
+			                         query->venue_group, notes, &group_keys, &group_label,
+			                         error))
+				goto fail;
+
+			json_object_set_array_member(root, "venue_groups",
+			                             md_venue_groups_json(context, query->organization_id));
+			md_set_text(root, "venue_group_name", group_label);
+
+			shown = g_ptr_array_new();
+
+			for (i = 0; i < venues->len; i++)
+			{
+				VentureSeriesRow *candidate = g_ptr_array_index(venues, i);
+
+				if ((NULL != group_keys) &&
+				    !g_strv_contains((const gchar *const *)group_keys, candidate->venue_key))
+					continue;
+
+				g_ptr_array_add(shown, candidate);
+				if (VENTURE_SERIES_NONE != candidate->min_price)
+					priced++;
+			}
+
+			/* The store answers cheapest first with unpriced venues
+			 * last, so dearest first is the priced run reversed. */
+			if (query->venues_descending)
+			{
+				guint a = 0;
+				guint b = priced;
+
+				while ((b > 0) && (a < b - 1))
+				{
+					gpointer swap = shown->pdata[a];
+
+					shown->pdata[a] = shown->pdata[b - 1];
+					shown->pdata[b - 1] = swap;
+					a++;
+					b--;
+				}
+			}
+
+			{
+				g_autoptr(JsonObject) instrument_attrs = md_attrs_object(instrument->attrs_json);
+				g_autoptr(GHashTable) venue_attrs = g_hash_table_new_full(g_str_hash, g_str_equal,
+				                                                          NULL, (GDestroyNotify)json_object_unref);
+				JsonArray *links = json_array_new();
+				guint v;
+
+				for (v = 0; (NULL != store_venues) && (v < store_venues->len); v++)
+				{
+					VentureSeriesVenueRow *one = g_ptr_array_index(store_venues, v);
+					JsonObject *parsed = md_attrs_object(one->attrs_json);
+
+					if (NULL != parsed)
+						g_hash_table_insert(venue_attrs, one->key, parsed);
+				}
+
+				/* The item's own links, then the charted venue's. */
+				md_links_append(links, instrument_attrs, instrument_attrs);
+				if (NULL != row)
+					md_links_append(links, g_hash_table_lookup(venue_attrs, row->venue_key),
+					                instrument_attrs);
+				json_object_set_array_member(root, "links", links);
+
+				for (i = 0; i < shown->len; i++)
+				{
+					VentureSeriesRow *one = g_ptr_array_index(shown, i);
+					JsonObject *venue_row = md_row_object(one, query->data_source_id);
+					JsonArray *row_links = json_array_new();
+
+					md_links_append(row_links, g_hash_table_lookup(venue_attrs, one->venue_key),
+					                instrument_attrs);
+					json_object_set_array_member(venue_row, "links", row_links);
+					json_array_add_object_element(array, venue_row);
+				}
+			}
+
+			json_object_set_boolean_member(root, "venues_descending", query->venues_descending);
+		}
 
 		json_object_set_array_member(root, "venues", array);
 
@@ -1294,6 +1889,242 @@ fail:
 
 /* --- Deals ----------------------------------------------------------------- */
 
+/* --- Venue group choices ----------------------------------------------------- */
+
+JsonNode *
+venture_marketdata_venue_groups(
+	VentureContext	*context,
+	gint64		 organization_id
+){
+	JsonObject *root;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	root = json_object_new();
+#ifdef VENTURE_HAVE_SQLITE
+	json_object_set_array_member(root, "venue_groups", md_venue_groups_json(context, organization_id));
+#else
+	(void)organization_id;
+	json_object_set_array_member(root, "venue_groups", json_array_new());
+#endif
+	return md_node(root);
+}
+
+/* --- Find ---------------------------------------------------------------- */
+
+#ifdef VENTURE_HAVE_SQLITE
+
+typedef struct
+{
+	VentureSeriesRow	*cheapest;
+	VentureSeriesRow	*dearest;
+	guint			 venues;
+} MdFound;
+
+#endif
+
+JsonNode *
+venture_marketdata_find(
+	VentureContext				 *context,
+	const VentureMarketdataFindQuery	 *query,
+	GError					**error
+){
+	JsonObject *root;
+	JsonArray *notes;
+	JsonArray *items;
+	JsonObject *echo;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(NULL != query, NULL);
+
+	if (!md_require_module(context, error))
+		return NULL;
+
+	if (venture_string_is_empty(query->search))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Say what to look for: part of an item's name or key");
+		return NULL;
+	}
+
+	root = json_object_new();
+	notes = json_array_new();
+	items = json_array_new();
+	echo = json_object_new();
+	md_set_text(echo, "search", query->search);
+	md_set_text(echo, "venue_group", query->venue_group);
+	json_object_set_int_member(echo, "data_source_id", query->data_source_id);
+	json_object_set_object_member(root, "query", echo);
+	json_object_set_boolean_member(root, "available", FALSE);
+	json_object_set_boolean_member(root, "truncated", FALSE);
+	json_object_set_int_member(root, "data_source_id", 0);
+
+	if (md_series_ready(context, notes))
+	{
+#ifdef VENTURE_HAVE_SQLITE
+		g_autoptr(GPtrArray) sources = NULL;
+		g_autoptr(VentureEntity) chosen = NULL;
+		g_autoptr(VentureSeriesStore) reader = NULL;
+
+		sources = md_sources(context, query->organization_id, error);
+		if (NULL == sources)
+			goto fail;
+
+		json_object_set_array_member(root, "sources", md_sources_json(sources));
+		json_object_set_array_member(root, "venue_groups",
+		                             md_venue_groups_json(context, query->organization_id));
+
+		if (query->data_source_id > 0)
+		{
+			chosen = md_source(context, query->organization_id, query->data_source_id, error);
+			if (NULL == chosen)
+				goto fail;
+		}
+		else if (sources->len > 0)
+			chosen = g_object_ref(g_ptr_array_index(sources, 0));
+		else
+			md_note(notes, "No data sources yet: add one under Market data feeds.");
+
+		if (NULL != chosen)
+		{
+			json_object_set_int_member(root, "data_source_id", venture_entity_get_id(chosen));
+			reader = md_reader(context, chosen, notes, NULL);
+		}
+
+		if (NULL != reader)
+		{
+			g_autoptr(GPtrArray) venues = NULL;
+			g_autoptr(GPtrArray) found = NULL;
+			g_autoptr(GHashTable) by_key = NULL;
+			g_autoptr(GPtrArray) order = NULL;
+			g_auto(GStrv) group_keys = NULL;
+			g_autofree gchar *group_label = NULL;
+			VentureSeriesFilter filter;
+			guint i;
+
+			venues = venture_series_store_list_venues(reader, NULL);
+
+			if (!md_venue_group_keys(context, query->organization_id, venues, query->venue_group,
+			                         notes, &group_keys, &group_label, error))
+				goto fail;
+
+			md_set_text(root, "venue_group_name", group_label);
+
+			venture_series_filter_init(&filter);
+			filter.search = query->search;
+			filter.venue_keys = (const gchar **)group_keys;
+			filter.in_stock_only = TRUE;
+			filter.sort = VENTURE_SERIES_SORT_NAME;
+
+			/* The store answers a page at a time; read pages until the
+			 * search is exhausted or one row past the bound says there
+			 * are more than one search reads. */
+			found = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_row_free);
+
+			while (found->len <= VENTURE_MARKETDATA_FIND_MAX_ROWS)
+			{
+				g_autoptr(GPtrArray) page = NULL;
+
+				filter.offset = found->len;
+				filter.count = MIN(VENTURE_SERIES_MAX_PAGE, VENTURE_MARKETDATA_FIND_MAX_ROWS + 1 - found->len);
+				page = venture_series_store_list_current(reader, &filter, error);
+
+				if (NULL == page)
+					goto fail;
+
+				g_ptr_array_extend_and_steal(found, g_steal_pointer(&page));
+
+				if (filter.count > (guint)(found->len - filter.offset))
+					break;
+			}
+
+			json_object_set_boolean_member(root, "available", TRUE);
+
+			if (found->len > VENTURE_MARKETDATA_FIND_MAX_ROWS)
+			{
+				json_object_set_boolean_member(root, "truncated", TRUE);
+				g_ptr_array_set_size(found, VENTURE_MARKETDATA_FIND_MAX_ROWS);
+				md_note(notes, "More matches than one search reads: use more of the name.");
+			}
+
+			/* Group the venue rows by instrument, keeping the store's
+			 * name order for the instruments' order. */
+			by_key = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
+			order = g_ptr_array_new();
+
+			for (i = 0; i < found->len; i++)
+			{
+				VentureSeriesRow *row = g_ptr_array_index(found, i);
+				MdFound *entry;
+
+				if (VENTURE_SERIES_NONE == row->min_price)
+					continue;
+
+				entry = g_hash_table_lookup(by_key, row->instrument_key);
+
+				if (NULL == entry)
+				{
+					entry = g_new0(MdFound, 1);
+					entry->cheapest = row;
+					entry->dearest = row;
+					g_hash_table_insert(by_key, row->instrument_key, entry);
+					g_ptr_array_add(order, row->instrument_key);
+				}
+
+				if (row->min_price < entry->cheapest->min_price)
+					entry->cheapest = row;
+				if (row->min_price > entry->dearest->min_price)
+					entry->dearest = row;
+				entry->venues++;
+			}
+
+			for (i = 0; i < order->len; i++)
+			{
+				const gchar *key = g_ptr_array_index(order, i);
+				MdFound *entry = g_hash_table_lookup(by_key, key);
+				g_autoptr(VentureSeriesInstrumentRow) instrument = NULL;
+				g_autofree gchar *url = NULL;
+				JsonObject *object = json_object_new();
+
+				venture_series_store_get_instrument(reader, key, &instrument, NULL);
+
+				json_object_set_string_member(object, "key", key);
+				md_set_text(object, "name", entry->cheapest->instrument_name);
+				md_set_text(object, "category", entry->cheapest->category);
+				md_set_attrs_and_variant(object, key,
+				                         (NULL != instrument) ? instrument->parent_key : NULL,
+				                         (NULL != instrument) ? instrument->attrs_json : NULL);
+				json_object_set_int_member(object, "venues", entry->venues);
+				json_object_set_object_member(object, "cheapest",
+					md_row_object(entry->cheapest, venture_entity_get_id(chosen)));
+				json_object_set_object_member(object, "dearest",
+					md_row_object(entry->dearest, venture_entity_get_id(chosen)));
+				url = venture_marketdata_instrument_path(venture_entity_get_id(chosen), key, NULL);
+				json_object_set_string_member(object, "url", url);
+				json_array_add_object_element(items, object);
+			}
+		}
+#endif
+	}
+
+	if (!json_object_has_member(root, "sources"))
+		json_object_set_array_member(root, "sources", json_array_new());
+	if (!json_object_has_member(root, "venue_groups"))
+		json_object_set_array_member(root, "venue_groups", json_array_new());
+
+	json_object_set_array_member(root, "items", items);
+	json_object_set_array_member(root, "notes", notes);
+	return md_node(root);
+
+#ifdef VENTURE_HAVE_SQLITE
+fail:
+	json_object_unref(root);
+	json_array_unref(notes);
+	json_array_unref(items);
+	return NULL;
+#endif
+}
+
 void
 venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query)
 {
@@ -1422,6 +2253,8 @@ venture_marketdata_deals(
 		}
 
 		json_object_set_array_member(root, "sources", md_sources_json(sources));
+		json_object_set_array_member(root, "venue_groups",
+		                             md_venue_groups_json(context, query->organization_id));
 		deals = g_ptr_array_new_with_free_func(md_deal_free);
 		truncated = FALSE;
 
@@ -1436,6 +2269,7 @@ venture_marketdata_deals(
 			g_autoptr(VentureSeriesStore) reader = NULL;
 			g_autoptr(GPtrArray) found = NULL;
 			g_autoptr(GError) local_error = NULL;
+			g_auto(GStrv) group_keys = NULL;
 			VentureSeriesFilter filter;
 			guint j;
 
@@ -1446,6 +2280,27 @@ venture_marketdata_deals(
 
 			json_object_set_boolean_member(root, "available", TRUE);
 			venture_series_filter_init(&filter);
+
+			/* Each source's venues answer for themselves: a group of
+			 * realms is a set of venue keys in this store, not another. */
+			if (venture_string_is_empty(query->venue) &&
+			    !venture_string_is_empty(query->venue_group))
+			{
+				g_autoptr(GPtrArray) venues = NULL;
+				g_autofree gchar *label = NULL;
+
+				venues = venture_series_store_list_venues(reader, NULL);
+
+				if (!md_venue_group_keys(context, query->organization_id, venues,
+				                         query->venue_group, (0 == i) ? notes : NULL,
+				                         &group_keys, &label, error))
+					goto fail;
+
+				md_set_text(root, "venue_group_name", label);
+				filter.venue_keys = (const gchar **)group_keys;
+			}
+
+			filter.search = venture_string_is_empty(query->search) ? NULL : query->search;
 			filter.deals_only = TRUE;
 			filter.max_pct_vs_region = query->max_pct;
 			filter.sort = VENTURE_SERIES_SORT_PCT_VS_REGION;

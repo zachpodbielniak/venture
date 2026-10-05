@@ -1151,7 +1151,7 @@ test_web_navigation_links_all_resolve(
 		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation", "/deals",
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
 		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
-		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/deals",
+		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc",
 		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
@@ -1309,8 +1309,9 @@ test_web_navigation_groups_by_question(
 		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
 	static const gchar *const trading[] = {
-		"/market/browse", "/market/deals", "/market/venues", "/market/watchlists",
-		"/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds", NULL
+		"/market/browse", "/market/find", "/market/deals", "/market/venues", "/e/venue_group",
+		"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade",
+		"/feeds", NULL
 	};
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };
 	static const gchar *const code[] = {

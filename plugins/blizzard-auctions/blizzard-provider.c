@@ -434,6 +434,7 @@ blizzard_frozen_new(BlizzardSettings *settings)
 	frozen->settings = settings;
 	g_mutex_init(&frozen->lock);
 	frozen->realm_names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	frozen->realm_slugs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	frozen->items = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
 	                                      (GDestroyNotify)blizzard_item_free);
 
@@ -457,6 +458,7 @@ blizzard_frozen_free(gpointer data)
 
 	g_mutex_clear(&frozen->lock);
 	g_hash_table_unref(frozen->realm_names);
+	g_hash_table_unref(frozen->realm_slugs);
 	g_hash_table_unref(frozen->items);
 	blizzard_settings_free(frozen->settings);
 	g_free(frozen);
@@ -924,9 +926,22 @@ blizzard_realm_name(
 	{
 		JsonNode *element = json_array_get_element(realms, i);
 		const gchar *one;
+		const gchar *slug;
 
 		if (!JSON_NODE_HOLDS_OBJECT(element))
 			continue;
+
+		/* Any one realm's slug names the connected realm on sites that
+		 * list realms rather than connected realms. */
+		slug = blizzard_text(json_node_get_object(element), "slug", NULL);
+
+		if (!venture_string_is_empty(slug))
+		{
+			g_mutex_lock(&frozen->lock);
+			if (!g_hash_table_contains(frozen->realm_slugs, realm_id))
+				g_hash_table_replace(frozen->realm_slugs, g_strdup(realm_id), g_strdup(slug));
+			g_mutex_unlock(&frozen->lock);
+		}
 
 		one = blizzard_text(json_node_get_object(element), "name", frozen->settings->locale);
 
@@ -1354,6 +1369,135 @@ blizzard_compare_keys(
  * details are known: a NULL leaves what the store holds alone, so a
  * restart that has not re-fetched a name yet does not blank it.
  */
+/*
+ * An item's links to other sites: Wowhead's page for the item (with the
+ * variant's bonuses, which Wowhead reads to show the right item level and
+ * stats) or the battle pet, as attrs.links; and the item as Undermine
+ * Exchange names it in a link -- the item id, or the pet cage and species
+ * -- as attrs.undermine_item, for a venue's link template to fill in.
+ */
+static void
+blizzard_item_links(
+	JsonObject	*attrs,
+	const gchar	*key,
+	gint64		 item_id,
+	gint64		 species
+){
+	g_autoptr(GString) wowhead = g_string_new(NULL);
+	g_autofree gchar *undermine = NULL;
+	JsonArray *links = json_array_new();
+	JsonObject *link = json_object_new();
+	const gchar *bonuses;
+
+	if (species > 0)
+	{
+		g_string_append_printf(wowhead, "https://www.wowhead.com/battle-pet/%" G_GINT64_FORMAT, species);
+		undermine = g_strdup_printf("%" G_GINT64_FORMAT "-%" G_GINT64_FORMAT, item_id, species);
+	}
+	else
+	{
+		g_string_append_printf(wowhead, "https://www.wowhead.com/item=%" G_GINT64_FORMAT, item_id);
+		undermine = g_strdup_printf("%" G_GINT64_FORMAT, item_id);
+
+		/* The key's ":b1472,6646" part is Wowhead's "?bonus=1472:6646". */
+		bonuses = strstr(key, ":b");
+
+		if (NULL != bonuses)
+		{
+			const gchar *end = strchr(bonuses + 2, ':');
+			g_autofree gchar *list = g_strndup(bonuses + 2, (NULL != end) ? (gsize)(end - bonuses - 2)
+			                                                              : strlen(bonuses + 2));
+
+			g_strdelimit(list, ",", ':');
+			g_string_append_printf(wowhead, "?bonus=%s", list);
+		}
+	}
+
+	json_object_set_string_member(link, "label", "Wowhead");
+	json_object_set_string_member(link, "url", wowhead->str);
+	json_array_add_object_element(links, link);
+	json_object_set_array_member(attrs, "links", links);
+	json_object_set_string_member(attrs, "undermine_item", undermine);
+}
+
+/*
+ * Fills the item cache from the source's own store for every @unknown item
+ * the store already has a name for, and removes those from @unknown.
+ *
+ * The cache lives only as long as the process. Without this, every restart
+ * forgot every name it had learned and spent the next fetches -- and the
+ * hourly request budget -- asking Blizzard for items the store already
+ * named, lowest id first, while the items still nameless waited behind
+ * them. A missing or unreadable store (the source's first fetch) leaves
+ * @unknown as it was.
+ */
+static void
+blizzard_items_from_store(
+	VentureFeedRequest	*request,
+	BlizzardFrozen		*frozen,
+	GArray			*unknown
+){
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GArray) still = NULL;
+	VentureFeedSource *source;
+	guint i;
+
+	if (0 == unknown->len)
+		return;
+
+	source = venture_feed_request_get_source(request);
+	if (NULL == source)
+		return;
+
+	reader = venture_series_store_open_reader(venture_feed_source_get_store_dir(source), NULL);
+	if (NULL == reader)
+		return;
+
+	still = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; i < unknown->len; i++)
+	{
+		gint64 item_id = g_array_index(unknown, gint64, i);
+		g_autoptr(VentureSeriesInstrumentRow) row = NULL;
+		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, item_id);
+		BlizzardItem *item;
+
+		if (!venture_series_store_get_instrument(reader, key, &row, NULL) ||
+		    (NULL == row) || (NULL == row->name) || ('\0' == *row->name))
+		{
+			g_array_append_val(still, item_id);
+			continue;
+		}
+
+		item = g_new0(BlizzardItem, 1);
+		item->name = g_strdup(row->name);
+		item->category = g_strdup(row->category);
+		item->vendor_sell = -1;
+
+		if (NULL != row->attrs_json)
+		{
+			g_autoptr(JsonParser) parser = json_parser_new();
+
+			if (json_parser_load_from_data(parser, row->attrs_json, -1, NULL) &&
+			    JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+			{
+				JsonObject *attrs = json_node_get_object(json_parser_get_root(parser));
+
+				item->vendor_sell = blizzard_int(attrs, "vendor_sell", -1);
+				item->level = blizzard_int(attrs, "level", 0);
+				item->quality = g_strdup(blizzard_text(attrs, "quality", NULL));
+			}
+		}
+
+		g_mutex_lock(&frozen->lock);
+		g_hash_table_replace(frozen->items, g_memdup2(&item_id, sizeof(item_id)), item);
+		g_mutex_unlock(&frozen->lock);
+	}
+
+	g_array_set_size(unknown, 0);
+	g_array_append_vals(unknown, still->data, still->len);
+}
+
 static void
 blizzard_add_instruments(
 	VentureFeedRequest	*request,
@@ -1363,6 +1507,7 @@ blizzard_add_instruments(
 ){
 	g_autoptr(GPtrArray) keys = NULL;
 	g_autoptr(GArray) unknown = NULL;
+	g_autoptr(GHashTable) listed = NULL;
 	g_autoptr(GHashTable) plain = NULL;
 	GHashTableIter iter;
 	gpointer key;
@@ -1372,30 +1517,32 @@ blizzard_add_instruments(
 
 	keys = g_ptr_array_new();
 	unknown = g_array_new(FALSE, FALSE, sizeof(gint64));
+	listed = g_hash_table_new(g_int64_hash, g_int64_equal);
 	plain = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	g_hash_table_iter_init(&iter, seen);
 
 	g_mutex_lock(&frozen->lock);
 
+	/* A set, not a scan of the list so far: a realm's snapshot names tens
+	 * of thousands of items, and a linear "already listed?" made this
+	 * quadratic in exactly the case -- a cold cache -- where it is big. */
 	while (g_hash_table_iter_next(&iter, &key, &value))
 	{
 		BlizzardSeen *entry = value;
-		guint j;
-		gboolean listed = FALSE;
 
 		g_ptr_array_add(keys, key);
 
-		if (g_hash_table_contains(frozen->items, &entry->item_id))
+		if (g_hash_table_contains(frozen->items, &entry->item_id) ||
+		    g_hash_table_contains(listed, &entry->item_id))
 			continue;
 
-		for (j = 0; j < unknown->len; j++)
-			listed = listed || (g_array_index(unknown, gint64, j) == entry->item_id);
-
-		if (!listed)
-			g_array_append_val(unknown, entry->item_id);
+		g_hash_table_add(listed, &entry->item_id);
+		g_array_append_val(unknown, entry->item_id);
 	}
 
 	g_mutex_unlock(&frozen->lock);
+
+	blizzard_items_from_store(request, frozen, unknown);
 
 	g_ptr_array_sort(keys, blizzard_compare_keys);
 	g_array_sort(unknown, blizzard_compare_int64);
@@ -1476,10 +1623,6 @@ blizzard_add_instruments(
 			if (item->level > 0)
 				json_object_set_int_member(attrs, "level", item->level);
 
-			node = json_node_new(JSON_NODE_OBJECT);
-			json_node_set_object(node, attrs);
-			attrs_json = json_to_string(node, FALSE);
-
 			/* A caged pet is its cage's item; the species says which. */
 			{
 				gint64 item_id;
@@ -1487,6 +1630,12 @@ blizzard_add_instruments(
 				if (!blizzard_item_key_parse(instrument, &item_id, &species))
 					species = 0;
 			}
+
+			blizzard_item_links(attrs, instrument, entry->item_id, species);
+
+			node = json_node_new(JSON_NODE_OBJECT);
+			json_node_set_object(node, attrs);
+			attrs_json = json_to_string(node, FALSE);
 			name = (species > 0)
 				? g_strdup_printf("%s (pet %" G_GINT64_FORMAT ")", item->name, species)
 				: g_strdup(item->name);
@@ -1521,12 +1670,55 @@ blizzard_add_venue(
 	const gchar		 *name,
 	GError			**error
 ){
+	g_autoptr(JsonObject) object = json_object_new();
+	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 	g_autofree gchar *attrs = NULL;
+	g_autofree gchar *slug = NULL;
+	gboolean commodities = (0 == g_strcmp0(key, BLIZZARD_UNIT_COMMODITIES));
 
-	attrs = (0 == g_strcmp0(key, BLIZZARD_UNIT_COMMODITIES))
-		? g_strdup_printf("{\"region\":\"%s\",\"commodities\":true}", frozen->settings->region)
-		: g_strdup_printf("{\"region\":\"%s\",\"connected_realm_id\":%s}", frozen->settings->region,
-		                  key);
+	json_object_set_string_member(object, "region", frozen->settings->region);
+
+	if (commodities)
+		json_object_set_boolean_member(object, "commodities", TRUE);
+	else
+		json_object_set_int_member(object, "connected_realm_id", g_ascii_strtoll(key, NULL, 10));
+
+	/* The realm's slug, and the venue's page on Undermine Exchange for an
+	 * item ("{undermine_item}" is filled from the instrument's attributes).
+	 * The commodity market is the same on every realm of a region, so any
+	 * realm's page shows it. */
+	g_mutex_lock(&frozen->lock);
+	if (!commodities)
+		slug = g_strdup(g_hash_table_lookup(frozen->realm_slugs, key));
+	else
+	{
+		GHashTableIter iter;
+		gpointer value;
+
+		g_hash_table_iter_init(&iter, frozen->realm_slugs);
+		if (g_hash_table_iter_next(&iter, NULL, &value))
+			slug = g_strdup(value);
+	}
+	g_mutex_unlock(&frozen->lock);
+
+	if (NULL != slug)
+	{
+		JsonArray *links = json_array_new();
+		JsonObject *link = json_object_new();
+		g_autofree gchar *url = g_strdup_printf("https://undermine.exchange/#%s-%s/{undermine_item}",
+		                                        frozen->settings->region, slug);
+
+		if (!commodities)
+			json_object_set_string_member(object, "slug", slug);
+
+		json_object_set_string_member(link, "label", "Undermine Exchange");
+		json_object_set_string_member(link, "url", url);
+		json_array_add_object_element(links, link);
+		json_object_set_array_member(object, "links", links);
+	}
+
+	json_node_set_object(node, object);
+	attrs = json_to_string(node, FALSE);
 
 	return venture_feed_batch_add_venue(batch, key, name, "auction_house", frozen->settings->region,
 	                                    frozen->settings->currency, attrs, error);

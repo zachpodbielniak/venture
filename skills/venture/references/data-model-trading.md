@@ -82,6 +82,11 @@ usage is in [market-production.md](market-production.md),
   `parent_id` (an outcome's event), `category_id`, `attrs`.
 - `watchlist` (`group_key`), `watchlist_entry` (`instrument_id`,
   `target_buy`, `target_sell`).
+- `venue_group` -- **name**, `venues` (venue keys or names, comma
+  separated; a name matches one part of a connected realm's name),
+  `notes`. Picked as `venue_group=ID` on browse, find, deals and the
+  instrument page; `venue_group=characters` is the realms the push
+  sources' characters are on, with no record.
 - `alert_rule` -- **name**, `kind` (below, above, pct_vs_reference,
   spread, out_of_stock, back_in_stock, shortage, spike, undercut,
   entry_match, position_expiring, inbound_expiring, account_stale,

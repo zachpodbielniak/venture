@@ -22,6 +22,9 @@
 #include <string.h>
 
 #include "venture-test-util.h"
+#ifdef VENTURE_HAVE_SQLITE
+#include <sqlite3.h>
+#endif
 
 #ifdef VENTURE_HAVE_SQLITE
 
@@ -151,7 +154,16 @@ get_json(
 	g_autoptr(GError) error = NULL;
 	JsonNode *node;
 
-	g_assert_cmpuint(http(fixture, "GET", path, NULL, &body, NULL), ==, status);
+	guint answered;
+
+	answered = http(fixture, "GET", path, NULL, &body, NULL);
+
+	/* Say which question and what came back: "400 == 200" alone names
+	 * neither. */
+	if (answered != status)
+		g_test_message("GET %s answered %u: %s", path, answered, body);
+
+	g_assert_cmpuint(answered, ==, status);
 	node = json_from_string(body, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(node);
@@ -1915,6 +1927,287 @@ test_doors_and_looks(
 	(void)err;
 }
 
+/*
+ * Venue groups, the item finder, variants. A fourth venue named for two
+ * realms holds a variant of copper ore whose name the store learns from
+ * its plain item; a saved group names one venue by key and one by a part
+ * of its name.
+ */
+static void
+test_venue_groups_and_find(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(VentureEntity) group = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	VentureSeriesInstrument variant;
+	VentureSeriesVenue venue;
+	JsonObject *root;
+	JsonArray *list;
+	JsonObject *item;
+	gint64 now;
+	guint i;
+	gboolean seen_variant = FALSE;
+	static const Offer d2[] = { { "2770:b1472", 30, 150, 1 } };
+
+	(void)data;
+	seed_store(fixture);
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	now = g_get_real_time() / G_USEC_PER_SEC;
+
+	memset(&venue, 0, sizeof(venue));
+	venue.key = "3676";
+	venue.namespace_ = "realm";
+	venue.name = "Thrall, Area 52";
+	venue.kind = "auction_house";
+	venue.group_key = "eu";
+	venue.currency = "USD";
+	/* A provider's link template, one naming a value no instrument has,
+	 * and one that is not a web address: only the first is ever shown. */
+	venue.attrs_json = "{\"links\":["
+		"{\"label\":\"Undermine Exchange\",\"url\":\"https://undermine.exchange/#us-thrall/{undermine_item}\"},"
+		"{\"label\":\"Nowhere\",\"url\":\"https://example.org/{missing}\"},"
+		"{\"label\":\"Script\",\"url\":\"javascript:alert(1)\"}]}";
+	g_assert_true(venture_series_store_upsert_venue(store, &venue, now - 3600, &error));
+	g_assert_no_error(error);
+
+	/* A variant stored with no name of its own takes its plain item's. */
+	memset(&variant, 0, sizeof(variant));
+	variant.key = "2770:b1472";
+	variant.namespace_ = "wow-item";
+	variant.kind = "item";
+	variant.parent_key = "2770";
+	variant.attrs_json = "{\"undermine_item\":\"2770 x\",\"links\":[{\"label\":\"Wowhead\","
+		"\"url\":\"https://www.wowhead.com/item=2770?bonus=1472\"}]}";
+	g_assert_true(venture_series_store_upsert_instrument(store, &variant, now - 3600, NULL, NULL, &error));
+	g_assert_no_error(error);
+	snapshot(store, "3676", "USD", now - 3600, d2, G_N_ELEMENTS(d2));
+	g_clear_object(&store);
+
+	group = VENTURE_ENTITY(venture_venue_group_new());
+	venture_entity_set_organization_id(group, fixture->org);
+	g_object_set(group, "name", "Bank realms", "venues", " realm-a ,area 52,", NULL);
+	save(fixture, group);
+
+	/* Browse in the group: realm-a's and the "Area 52" venue's rows only. */
+	path = g_strdup_printf("/api/v1/market/browse?search=copper%%20ore&venue_group=%" G_GINT64_FORMAT,
+	                       ID(group));
+	node = get_json(fixture, path, 200);
+	root = json_node_get_object(node);
+	g_assert_cmpstr(json_object_get_string_member(root, "venue_group_name"), ==, "Bank realms");
+	list = json_object_get_array_member(root, "rows");
+	g_assert_cmpuint(json_array_get_length(list), ==, 2);
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		JsonObject *row = json_array_get_object_element(list, i);
+		const gchar *venue_key = json_object_get_string_member(row, "venue_key");
+
+		g_assert_true(0 == g_strcmp0(venue_key, "realm-a") || 0 == g_strcmp0(venue_key, "3676"));
+		g_assert_cmpstr(json_object_get_string_member(row, "instrument_name"), ==, "Copper Ore");
+
+		if (0 == g_strcmp0(venue_key, "3676"))
+		{
+			g_assert_cmpstr(json_object_get_string_member(row, "variant"), ==, "bonus 1472");
+			seen_variant = TRUE;
+		}
+	}
+
+	g_assert_true(seen_variant);
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* The picker offers the saved group; "My characters" needs a push
+	 * source, which this organization has not got. */
+	node = get_json(fixture, "/api/v1/market/browse", 200);
+	list = json_object_get_array_member(json_node_get_object(node), "venue_groups");
+	g_assert_cmpuint(json_array_get_length(list), ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(list, 0), "name"), ==,
+	                "Bank realms");
+	g_clear_pointer(&node, json_node_unref);
+
+	/* "My characters" with no characters is an empty group: nothing, and
+	 * a note saying why -- never every venue. */
+	node = get_json(fixture, "/api/v1/market/browse?venue_group=characters", 200);
+	root = json_node_get_object(node);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "rows")), ==, 0);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "notes")), >, 0);
+	g_clear_pointer(&node, json_node_unref);
+
+	/* Find: the plain item and its variant on their own rows. Everywhere,
+	 * copper ore is cheapest at realm-c (100) and dearest at realm-a (120). */
+	node = get_json(fixture, "/api/v1/market/find?search=COPPER%20ore", 200);
+	list = json_object_get_array_member(json_node_get_object(node), "items");
+	g_assert_cmpuint(json_array_get_length(list), ==, 2);
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		item = json_array_get_object_element(list, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(item, "key"), "2770"))
+		{
+			g_assert_cmpint(json_object_get_int_member(item, "venues"), ==, 3);
+			g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(item, "cheapest"),
+			                                              "venue_key"), ==, "realm-c");
+			g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(item, "dearest"),
+			                                              "venue_key"), ==, "realm-a");
+		}
+		else
+		{
+			g_assert_cmpstr(json_object_get_string_member(item, "key"), ==, "2770:b1472");
+			g_assert_cmpstr(json_object_get_string_member(item, "variant"), ==, "bonus 1472");
+		}
+	}
+
+	g_clear_pointer(&node, json_node_unref);
+
+	/* In the group the plain item is offered at realm-a alone. */
+	path = g_strdup_printf("/api/v1/market/find?search=copper%%20ore&venue_group=%" G_GINT64_FORMAT,
+	                       ID(group));
+	node = get_json(fixture, path, 200);
+	list = json_object_get_array_member(json_node_get_object(node), "items");
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		item = json_array_get_object_element(list, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(item, "key"), "2770"))
+			g_assert_cmpint(json_object_get_int_member(item, "venues"), ==, 1);
+	}
+
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* The instrument's venue table, dearest first, unpriced last. */
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770?venues_dir=desc", fixture->source_id);
+	node = get_json(fixture, path, 200);
+	list = json_object_get_array_member(json_node_get_object(node), "venues");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(list, 0), "venue_key"), ==,
+	                "realm-a");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(list, 2), "venue_key"), ==,
+	                "realm-c");
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Deals take the group and a search like browse does. */
+	path = g_strdup_printf("/api/v1/market/deals?search=peacebloom&venue_group=%" G_GINT64_FORMAT, ID(group));
+	node = get_json(fixture, path, 200);
+	list = json_object_get_array_member(json_node_get_object(node), "rows");
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		JsonObject *row = json_array_get_object_element(list, i);
+
+		g_assert_cmpstr(json_object_get_string_member(row, "instrument_key"), ==, "2447");
+		g_assert_cmpstr(json_object_get_string_member(row, "venue_key"), !=, "realm-b");
+	}
+
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Links: the item's own, then the charted venue's template filled in
+	 * from the item's attributes (escaped); the incomplete and the
+	 * non-web links are left out, on the page and in each venue row. */
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770%%3Ab1472", fixture->source_id);
+	node = get_json(fixture, path, 200);
+	root = json_node_get_object(node);
+	list = json_object_get_array_member(root, "links");
+	g_assert_cmpuint(json_array_get_length(list), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(list, 0), "url"), ==,
+	                "https://www.wowhead.com/item=2770?bonus=1472");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(list, 1), "url"), ==,
+	                "https://undermine.exchange/#us-thrall/2770%20x");
+	list = json_object_get_array_member(root, "venues");
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		JsonObject *row = json_array_get_object_element(list, i);
+		guint expected = (0 == g_strcmp0(json_object_get_string_member(row, "venue_key"), "3676")) ? 1 : 0;
+
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(row, "links")), ==, expected);
+	}
+	g_clear_pointer(&node, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770%%3Ab1472", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "View on Wowhead"));
+	g_assert_nonnull(strstr(page, "rel=\"noopener noreferrer\""));
+	g_assert_null(strstr(page, "javascript:"));
+	g_assert_null(strstr(page, "Nowhere"));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+
+	/* Refusals: an empty search, a group spec that is neither, another
+	 * organization's group (or none at all). */
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/find", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/browse?venue_group=nope", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/browse?venue_group=999999", NULL, NULL, NULL), ==, 404);
+
+	/* The pages draw: the picker, the finder's table, the variant label. */
+	page = get_page(fixture, "/market/find?search=copper");
+	g_assert_nonnull(strstr(page, "name=\"venue_group\""));
+	g_assert_nonnull(strstr(page, "Bank realms"));
+	g_assert_nonnull(strstr(page, "(bonus 1472)"));
+	g_clear_pointer(&page, g_free);
+	page = get_page(fixture, "/market/find");
+	g_assert_nonnull(strstr(page, "name=\"search\""));
+}
+
+/*
+ * A store an older build wrote is upgraded when a page reads it. Only a
+ * writer migrates; a push source's store is written only when somebody
+ * pushes, so without this every page over it said "nothing sent yet" from
+ * the upgrade until the next push.
+ */
+static void
+test_reader_upgrades_store(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *path = NULL;
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	gint version;
+
+	(void)data;
+	seed_store(fixture);
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	path = g_build_filename(dir, "store.db", NULL);
+
+	/* Step 8 only backfills names, so a store at 7 is exactly what the
+	 * build before it left. */
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(db, "PRAGMA user_version = 7;", NULL, NULL, NULL), ==, SQLITE_OK);
+	sqlite3_close(db);
+
+	node = get_json(fixture, "/api/v1/market/browse", 200);
+	g_assert_true(json_object_get_boolean_member(json_node_get_object(node), "available"));
+
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+	version = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+	g_assert_cmpint(version, ==, (gint)venture_series_store_schema_version());
+}
+
 #define ADD(path, func) \
 	g_test_add("/market-pages/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -1938,6 +2231,8 @@ main(
 	ADD("widgets", test_widgets);
 	ADD("attribution", test_attribution);
 	ADD("doors-and-looks", test_doors_and_looks);
+	ADD("venue-groups-and-find", test_venue_groups_and_find);
+	ADD("reader-upgrades-store", test_reader_upgrades_store);
 
 	return g_test_run();
 }

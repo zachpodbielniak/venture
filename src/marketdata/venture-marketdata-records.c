@@ -148,6 +148,29 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureWatchlist, venture_watchlist, venture_wat
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Watchlist", NULL);)
 
 /* ==========================================================================
+ * Venue groups
+ *
+ * A named set of venues to look at together -- the realms a person keeps
+ * characters and banks on, say -- picked on the browse, deals and
+ * instrument pages in place of one venue or a whole region. Entries are
+ * venue keys or venue names, and a name also matches one part of a venue
+ * named by several ("Thrall" in "Thrall, Area 52"), so a group can be
+ * written the way a person says it. Like a watchlist it is shared in the
+ * organization rather than owned.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_venue_group_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What the venues have in common: bank realms, flip targets"),
+	VENTURE_FIELD("venues", "Venues",
+	              "Venue keys or names, comma separated: 3676, Thrall, Moon Guard",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVenueGroup, venture_venue_group, venture_venue_group_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Venue group", NULL);)
+
+/* ==========================================================================
  * Watchlist entries
  *
  * One instrument on a watchlist, with the prices that would make it worth
