@@ -1315,8 +1315,7 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "login"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login");
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, form_id, language");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login, form_id, language");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -4253,10 +4252,8 @@ main(
 		"                               total_stake, min_profit, min_roi, min_sale_rate, max_capital,\n"
 		"                               max_buy_pct, min_confidence, max_age_hours, share, sort, top;\n"
 		"                               craft_arbitrage takes recipe_id, units, data_source_id,\n"
-		"                               buy_venues, sell_venues, group_key, sell_basis, max_age_hours\n"
-		"                               goal_materials takes goal_id, price_source, include_on_hand, venture_id\n"
+		"                               buy_venues, sell_venues, group_key, sell_basis, max_age_hours;\n"
 		"                               form_summary takes form_id and optional language\n"
-		"                               goal_materials takes goal_id, price_source, currency, include_on_hand, venture_id\n"
 		"  kb search QUERY              search the knowledge bases by\n"
 		"                               meaning; --kb SLUG, --limit N\n"
 		"  kb sync KB_ID                bring a base into line with its\n"
