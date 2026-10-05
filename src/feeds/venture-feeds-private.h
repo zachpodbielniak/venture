@@ -144,6 +144,7 @@ struct _VentureFeedBatch
 	GArray		*positions;		/* VentureSeriesPosition */
 	GArray		*inbound;		/* VentureSeriesInbound */
 	GArray		*txns;			/* VentureSeriesTxn */
+	GArray		*logins;		/* VentureSeriesLogin */
 	GHashTable	*holding_index;		/* "account\x1fplace\x1finstrument" -> index + 1 */
 	GHashTable	*account_state;		/* account key -> FeedAccountState */
 

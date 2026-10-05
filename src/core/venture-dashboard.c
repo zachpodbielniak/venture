@@ -4391,6 +4391,7 @@ venture_widget_kind_accounts_attention(
 	g_autoptr(JsonNode) options = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(GString) html = NULL;
+	g_autofree gchar *login = NULL;
 	VentureMarketdataAccountsQuery query;
 	JsonArray *rows;
 	guint limit;
@@ -4403,9 +4404,13 @@ venture_widget_kind_accounts_attention(
 	if ((NULL == options) && (NULL != error) && (NULL != *error))
 		return NULL;
 
+	if (NULL != options)
+		login = g_strdup(venture_json_object_get_string(json_node_get_object(options), "login", NULL));
+
 	venture_marketdata_accounts_query_init(&query);
 	query.organization_id = venture_widget_primary_organization(context, scope);
 	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
+	query.login = login;
 	query.expiring_hours = venture_widget_option_int(options, "expiring_hours", 0);
 	query.mail_days = venture_widget_option_int(options, "mail_days", 0);
 	query.stale_days = venture_widget_option_int(options, "stale_days", 0);
@@ -4539,6 +4544,7 @@ venture_widget_kind_accounts_summary(
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autofree gchar *basis = NULL;
+	g_autofree gchar *login = NULL;
 	VentureMarketdataAccountsQuery query;
 	JsonObject *summary;
 	gsize i;
@@ -4553,10 +4559,14 @@ venture_widget_kind_accounts_summary(
 	if ((NULL != options) && json_object_has_member(json_node_get_object(options), "basis"))
 		basis = g_strdup(venture_json_object_get_string(json_node_get_object(options), "basis", NULL));
 
+	if (NULL != options)
+		login = g_strdup(venture_json_object_get_string(json_node_get_object(options), "login", NULL));
+
 	venture_marketdata_accounts_query_init(&query);
 	query.organization_id = venture_widget_primary_organization(context, scope);
 	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
 	query.basis = basis;
+	query.login = login;
 	answer = venture_marketdata_accounts(context, &query, error);
 
 	if (NULL == answer)
@@ -4625,6 +4635,7 @@ venture_widget_kind_holdings_value(
 	g_autoptr(GString) html = NULL;
 	g_autofree gchar *basis = NULL;
 	g_autofree gchar *place = NULL;
+	g_autofree gchar *login = NULL;
 	VentureMarketdataInventoryQuery query;
 	JsonObject *root;
 	JsonArray *rows;
@@ -4641,6 +4652,7 @@ venture_widget_kind_holdings_value(
 	{
 		basis = g_strdup(venture_json_object_get_string(json_node_get_object(options), "basis", NULL));
 		place = g_strdup(venture_json_object_get_string(json_node_get_object(options), "place", NULL));
+		login = g_strdup(venture_json_object_get_string(json_node_get_object(options), "login", NULL));
 	}
 
 	venture_marketdata_inventory_query_init(&query);
@@ -4648,6 +4660,7 @@ venture_widget_kind_holdings_value(
 	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
 	query.basis = basis;
 	query.place = place;
+	query.login = login;
 	query.per_page = venture_widget_get_limit(widget, 8);
 	answer = venture_marketdata_inventory(context, &query, error);
 
@@ -4731,6 +4744,7 @@ venture_widget_kind_external_pnl(
 	g_autoptr(GArray) values = NULL;
 	g_autofree gchar *period_text = NULL;
 	g_autofree gchar *account = NULL;
+	g_autofree gchar *login = NULL;
 	g_autofree gchar *net = NULL;
 	g_autofree gchar *sales = NULL;
 	g_autofree gchar *purchases = NULL;
@@ -4752,7 +4766,10 @@ venture_widget_kind_external_pnl(
 		return NULL;
 
 	if (NULL != options)
+	{
 		account = g_strdup(venture_json_object_get_string(json_node_get_object(options), "account_key", NULL));
+		login = g_strdup(venture_json_object_get_string(json_node_get_object(options), "login", NULL));
+	}
 
 	/* The thirty days a trader means by "lately", unless the card says. */
 	period_text = venture_widget_get_string(widget, "period");
@@ -4768,6 +4785,7 @@ venture_widget_kind_external_pnl(
 	query.organization_id = venture_widget_primary_organization(context, scope);
 	query.data_source_id = venture_widget_option_int(options, "data_source_id", 0);
 	query.account = account;
+	query.login = login;
 	query.since = (NULL != start) ? MAX(g_date_time_to_unix(start), 1) : -1;
 	query.until = (NULL != end) ? MAX(g_date_time_to_unix(end), 1) : -1;
 	span = ((NULL != start) && (NULL != end)) ? g_date_time_to_unix(end) - g_date_time_to_unix(start) : G_MAXINT64;
@@ -7748,7 +7766,7 @@ venture_dashboard_validate_report_options(
 /*
  * The options an account card reads, by kind, and nothing else: a
  * data_source_id that is a positive number, a basis the store knows,
- * thresholds in range and a place or account as text.
+ * thresholds in range and a place, an account or a login as text.
  */
 static gboolean
 venture_dashboard_validate_account_options(
@@ -7756,10 +7774,11 @@ venture_dashboard_validate_account_options(
 	JsonObject	 *options,
 	GError		**error
 ){
-	static const gchar *const attention[] = { "data_source_id", "expiring_hours", "mail_days", "stale_days", NULL };
-	static const gchar *const summary[] = { "data_source_id", "basis", NULL };
-	static const gchar *const holdings[] = { "data_source_id", "basis", "place", NULL };
-	static const gchar *const pnl[] = { "data_source_id", "account_key", NULL };
+	static const gchar *const attention[] = { "data_source_id", "expiring_hours", "mail_days", "stale_days",
+	                                          "login", NULL };
+	static const gchar *const summary[] = { "data_source_id", "basis", "login", NULL };
+	static const gchar *const holdings[] = { "data_source_id", "basis", "place", "login", NULL };
+	static const gchar *const pnl[] = { "data_source_id", "account_key", "login", NULL };
 	const gchar *const *allowed;
 	g_autoptr(GList) members = NULL;
 	GList *l;
@@ -7784,7 +7803,7 @@ venture_dashboard_validate_account_options(
 		}
 
 		if ((0 == g_strcmp0(name, "basis")) || (0 == g_strcmp0(name, "place")) ||
-		    (0 == g_strcmp0(name, "account_key")))
+		    (0 == g_strcmp0(name, "account_key")) || (0 == g_strcmp0(name, "login")))
 		{
 			if (!JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_STRING != json_node_get_value_type(node)))
 			{

@@ -139,6 +139,9 @@ venture_marketdata_accounts_bases(void);
  * @now: the moment everything is judged at; 0 for the clock
  * @realm_first: order by realm before @sort, for a table grouped by realm
  *   (a realm's rows must be contiguous); @sort orders within each realm
+ * @login: (nullable): only accounts reached through this login, by key
+ * @login_first: order by login before the realm and @sort, for a table
+ *   grouped by login then realm; implies @realm_first within a login
  *
  * What the overview asks.
  */
@@ -155,6 +158,8 @@ typedef struct
 	gboolean	 descending;
 	gint64		 now;
 	gboolean	 realm_first;
+	const gchar	*login;
+	gboolean	 login_first;
 } VentureMarketdataAccountsQuery;
 
 /**
@@ -268,6 +273,10 @@ venture_marketdata_account(
  * @per_page: rows a page, 0 for 50, at most
  *   %VENTURE_MARKETDATA_ACCOUNTS_MAX_PAGE
  * @now: the moment; 0 for the clock
+ * @login: (nullable): the holdings of the accounts reached through one
+ *   login, by key
+ * @group_by: (nullable): "login" for the holdings' value login by login
+ *   beside the page; %NULL for none
  *
  * What the inventory page asks.
  */
@@ -288,6 +297,8 @@ typedef struct
 	guint		 page;
 	guint		 per_page;
 	gint64		 now;
+	const gchar	*login;
+	const gchar	*group_by;
 } VentureMarketdataInventoryQuery;
 
 /**
@@ -335,8 +346,8 @@ venture_marketdata_inventory(
  * @organization_id: whose sources
  * @data_source_id: the source, or 0 for the organization's first source
  *   that has accounts
- * @group_by: (nullable): day, week, month, account, venue, instrument or
- *   source; %NULL for day
+ * @group_by: (nullable): day, week, month, account, venue, instrument,
+ *   source or login; %NULL for day
  * @since: the window's start, inclusive, Unix seconds; 0 for the start of
  *   the thirty whole days ending on @now's day (midnight UTC, the window
  *   period=last_30_days names), negative for no start
@@ -350,6 +361,8 @@ venture_marketdata_inventory(
  * @top: how many top items and flips to list; 0 for 20, at most
  *   %VENTURE_MARKETDATA_ACCOUNTS_MAX_PAGE
  * @now: the moment; 0 for the clock
+ * @login: (nullable): the rows of the accounts reached through one login,
+ *   by key
  *
  * What the profit and loss page asks.
  */
@@ -366,6 +379,7 @@ typedef struct
 	const gchar	*source;
 	guint		 top;
 	gint64		 now;
+	const gchar	*login;
 } VentureMarketdataPnlQuery;
 
 /**

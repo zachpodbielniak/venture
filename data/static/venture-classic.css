@@ -5373,8 +5373,53 @@ input:not([type="hidden"]):focus-visible {
 }
 .accounts-charts { margin-bottom: var(--space-4); }
 
+/*
+ * Logins: the credential a character is reached through. A card per login
+ * above the attention list, a heading per login inside it -- signing out
+ * of one and into another is the costly switch, so the page says which
+ * login first. Compartments share their rules, like every grid here.
+ */
+.accounts-logins { margin-bottom: var(--space-4); }
+.login-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+	gap: 1px;
+}
+.login-cards > .login-card { margin: 0; outline: 1px solid var(--border); border-radius: var(--radius-sm); }
+.login-card .card-head { gap: var(--space-2); }
+.login-card .card-head h3 { margin: 0; font-size: 15px; }
+.login-sub { margin: 0 0 var(--space-2); font-size: 13px; color: var(--text-muted); }
+.login-figures {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--space-2) var(--space-3);
+	margin: 0;
+}
+.login-figures dt { font-size: 12px; color: var(--text-muted); }
+.login-figures dd { margin: 2px 0 0; font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.accounts-attention > .attention-login {
+	margin-top: var(--space-2);
+	padding: 0 0 var(--space-1);
+	border-bottom: 1px solid var(--border);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-muted);
+}
+.accounts-attention > .attention-login:first-child { margin-top: 0; }
+.accounts-login-row th {
+	padding-top: var(--space-4);
+	border-top: 2px solid var(--border);
+	font-size: 11.5px;
+	font-weight: 650;
+	color: var(--text);
+}
+.account-login { white-space: nowrap; }
+
 @media (max-width: 640px) {
 	.attention-head { flex-direction: column; align-items: flex-start; }
+	.login-cards { grid-template-columns: 1fr; }
 	.accounts-table, .accounts-inventory, .accounts-flips { display: block; overflow-x: auto; }
 	.accounts-stats .stat-value { font-size: 18px; }
 	.accounts-attrs { grid-template-columns: 1fr; }

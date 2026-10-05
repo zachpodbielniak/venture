@@ -473,6 +473,9 @@ jsonl_check_odds(
 static const gchar *const jsonl_account_kinds[] = {
 	"character", "shared", "guild", "other", NULL
 };
+static const gchar *const jsonl_login_kinds[] = {
+	"game_account", "platform_account", "other", NULL
+};
 static const gchar *const jsonl_covers[] = {
 	"holdings", "positions", "inbound", "balances", NULL
 };
@@ -779,9 +782,13 @@ jsonl_validate_account_kind(
 	case VENTURE_JSONL_MESSAGE_ACCOUNT:
 	{
 		static const gchar *const members[] = {
-			"key", "name", "kind", "group", "venue", "last_seen", "attrs", NULL
+			"key", "name", "kind", "group", "venue", "last_seen", "attrs", "login", NULL
 		};
 
+		/* `login` names the credential the account is reached through;
+		 * an empty one says it is reached through none (a guild bank, a
+		 * warband several licences share), which is how a producer
+		 * takes a login back off an account. */
 		return jsonl_check_members(object, type, members, line, error) &&
 		       jsonl_check_string(object, type, "key", TRUE,
 		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
@@ -794,6 +801,27 @@ jsonl_validate_account_kind(
 		       jsonl_check_string(object, type, "venue", FALSE,
 		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
 		       jsonl_check_time(object, type, "last_seen", FALSE, line, error) &&
+		       jsonl_check_attrs(object, type, line, error) &&
+		       jsonl_check_string(object, type, "login", FALSE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_LOGIN:
+	{
+		static const gchar *const members[] = {
+			"key", "name", "kind", "group", "attrs", NULL
+		};
+
+		/* Only the key is required: a login is often nothing more than
+		 * the folder a game keeps an account's settings in. */
+		return jsonl_check_members(object, type, members, line, error) &&
+		       jsonl_check_string(object, type, "key", TRUE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_string(object, type, "name", FALSE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
+		       jsonl_check_choice(object, type, "kind", jsonl_login_kinds, line, error) &&
+		       jsonl_check_string(object, type, "group", FALSE,
+		                          VENTURE_JSONL_MAX_KEY_LENGTH, line, error) &&
 		       jsonl_check_attrs(object, type, line, error);
 	}
 
@@ -1250,6 +1278,7 @@ jsonl_validate(
 	case VENTURE_JSONL_MESSAGE_POSITION:
 	case VENTURE_JSONL_MESSAGE_INBOUND:
 	case VENTURE_JSONL_MESSAGE_TXN:
+	case VENTURE_JSONL_MESSAGE_LOGIN:
 		return jsonl_validate_account_kind(kind, type, object, line, error);
 
 	default:
@@ -1272,7 +1301,7 @@ static const gchar *const jsonl_kind_names[] = {
 	"venue", "instrument", "snapshot", "listing", "stat", "quote",
 	"entry", "record", "cursor", "not_modified", "log", "error", "result",
 	"account", "account_snapshot", "balance", "holding", "position",
-	"inbound", "txn",
+	"inbound", "txn", "login",
 	NULL
 };
 

@@ -15,11 +15,16 @@
 #
 # What is in it:
 #
-# - five accounts: Brisk on Thornmere (the gatherer), Tallow on Silverfen
-#   (the crafter), Quill on Duskwatch (an alt nobody has logged in for
-#   three weeks), the warband bank and the guild bank;
+# - two logins, the way a player with two game licences has them: "Main"
+#   (EVERMOOR1) and "Alt account" (EVERMOOR2), both under one platform
+#   account, so the attention list has a login to switch to;
+# - six accounts: on Main, Brisk on Thornmere (the gatherer), Tallow on
+#   Silverfen (the crafter), Quill on Duskwatch (an alt nobody has logged
+#   in for three weeks) and Main's own warband bank; on the Alt account,
+#   Wren on Moonwell, with an auction that ran out after the logout and
+#   one about to; and the guild bank, which any login reaches;
 # - each account's snapshot, its gold as history (one point a day that
-#   changed), its holdings by place, its posted auctions -- forty, some
+#   changed), its holdings by place, its posted auctions -- forty-two, some
 #   expired and waiting for a login, some running out within twelve
 #   hours -- and its mail, one of which is about to be lost;
 # - sixty days of the ledger: sales after the house's cut, buys, vendor
@@ -87,8 +92,8 @@ Options:
 What it writes: one JSON-lines body for a `push` data source whose
 currency is GOLD (exponent 4) and whose namespaces are the market
 source's (venues realm, instruments item): realms and the region as
-venues, the items, five accounts with their snapshots, balances,
-holdings, positions and mail, the ledger oldest first, and AuctionDB
+venues, the items, two logins and six accounts with their snapshots,
+balances, holdings, positions and mail, the ledger oldest first, and AuctionDB
 stats for each realm and the region.
 
 Examples:
@@ -205,6 +210,27 @@ readonly ACCOUNTS=(
     'Quill-Duskwatch|Quill|character|Duskwatch|duskwatch|5|480|150000|{"class":"SCRIBE","level":34,"race":"Gnome","faction":"Tidewardens","login_account":"EVERMOOR1","played_seconds":201600}'
     'warbank:EVERMOOR1|Warband bank|shared|||-1|2|3000000|{"login_account":"EVERMOOR1"}'
     'guild:Tidewardens-Silverfen|Tidewardens guild bank|guild|Silverfen||-1|2|9000000|{"guild":"Tidewardens","realm":"Silverfen"}'
+    'Wren-Moonwell|Wren|character|Moonwell|moonwell|2|30|250000|{"class":"TAILOR","level":48,"race":"Human","faction":"Tidewardens","login_account":"EVERMOOR2","played_seconds":402400}'
+)
+
+# The logins, as tsmctl names them: the game's account folder is the key,
+# account_labels in its config the name. key|name. Both licences sit
+# under one platform account (the group), but each keeps its own warband
+# bank, tsmctl's default.
+readonly LOGINS=(
+    'EVERMOOR1|Main'
+    'EVERMOOR2|Alt account'
+)
+readonly LOGIN_GROUP="evermoor-platform"
+
+# Which login reaches each account; the guild bank is reached from any,
+# so it names none.
+declare -A ACCOUNT_LOGIN=(
+    [Brisk-Thornmere]=EVERMOOR1
+    [Tallow-Silverfen]=EVERMOOR1
+    [Quill-Duskwatch]=EVERMOOR1
+    [warbank:EVERMOOR1]=EVERMOOR1
+    [Wren-Moonwell]=EVERMOOR2
 )
 
 # The item index of a key, and every key's base price in copper.
@@ -575,7 +601,7 @@ position () {
     auction_units["${account}|${key}"]=$(( ${auction_units["${account}|${key}"]:-0} + quantity ))
 }
 
-# Forty posted auctions. A stack posted H hours ago for D hours expires at
+# Forty-two posted auctions. A stack posted H hours ago for D hours expires at
 # D - H from the anchor: Brisk's and Tallow's include a few that ran out
 # after they logged out and wait for a login to be collected, a few that
 # run out within twelve hours, and the rest later; Quill's ran out weeks
@@ -634,6 +660,13 @@ write_positions () {
         read -r key quantity <<< "${quill[i]}"
         position Quill-Duskwatch 5 "${key}" "${quantity}" $(( 482 + i )) 48 $(( 200 + i ))
     done
+
+    # Wren, on the alt login, logged out thirty hours ago: one stack
+    # posted seventy hours ago for 48 ran out after that logout and waits
+    # to be collected, the other runs out eight hours from now -- the
+    # reasons the attention list names the Alt account.
+    position Wren-Moonwell 2 runecloth 20 70 48 300
+    position Wren-Moonwell 2 runecloth 20 40 48 301
 }
 
 # inbound ACCOUNT ID SENDER SUBJECT MONEY_COPPER KEY QUANTITY EXPIRES_HOURS RETURNED
@@ -673,6 +706,7 @@ write_inbound () {
     inbound Brisk-Thornmere evm-mail-b1 "Auction House" "Auction successful: Duskroot (20)" 63840 "" 0 690 false
     inbound Brisk-Thornmere evm-mail-b2 "Tallow" "Vials for the next batch" 0 crystal-vial 20 600 false
     inbound Quill-Duskwatch evm-mail-q1 "Auction House" "Auction expired: Ember staff" 0 ember-staff 1 230 true
+    inbound Wren-Moonwell evm-mail-w1 "Tallow" "Cloth money" 50000 "" 0 640 false
 }
 
 # holding ACCOUNT PLACE KEY QUANTITY
@@ -712,6 +746,9 @@ write_holdings () {
     holding guild:Tidewardens-Silverfen guild flask-of-wisdom 6
     holding guild:Tidewardens-Silverfen guild elixir-of-giants 20
     holding guild:Tidewardens-Silverfen guild tidewarden-blade 1
+
+    holding Wren-Moonwell bag runecloth 60
+    holding Wren-Moonwell bank arcane-dust 40
 
     # What is on the auction house is held there too, as tsmctl reports
     # it: the posted stacks summed per item.
@@ -813,6 +850,14 @@ write_body () {
             "${item_key[i]}" "${json_text}" "${item_category[i]}" "$(( item_base[i] / 20 ))"
     done
 
+    # The logins before the accounts that name them.
+    for entry in "${LOGINS[@]}"
+    do
+        IFS='|' read -r key name <<< "${entry}"
+        printf '{"type":"login","key":"%s","name":"%s","kind":"game_account","group":"%s"}\n' \
+            "${key}" "${name}" "${LOGIN_GROUP}"
+    done
+
     for entry in "${ACCOUNTS[@]}"
     do
         IFS='|' read -r key name kind group venue _ unseen opening attrs <<< "${entry}"
@@ -824,6 +869,10 @@ write_body () {
         if [[ "${kind}" == character ]]
         then
             line+=",\"last_seen\":\"${stamp}\""
+        fi
+        if [[ -n "${ACCOUNT_LOGIN[${key}]:-}" ]]
+        then
+            line+=",\"login\":\"${ACCOUNT_LOGIN[${key}]}\""
         fi
         line+=",\"attrs\":${attrs}}"
         printf '%s\n' "${line}"

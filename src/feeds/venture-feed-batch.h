@@ -284,6 +284,27 @@ venture_feed_batch_add_account(
 );
 
 /**
+ * venture_feed_batch_add_login:
+ * @self: a batch
+ * @login: a login the operator reaches accounts through; its strings are
+ *   copied
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A credential the operator signs in with: a game account or licence, a
+ * platform account, a seller login. An account may name a login the
+ * batch does not describe; the store creates it bare. At most
+ * %VENTURE_FEED_BATCH_MAX_ACCOUNTS a batch.
+ *
+ * Returns: %TRUE when it was added
+ */
+gboolean
+venture_feed_batch_add_login(
+	VentureFeedBatch		 *self,
+	const VentureSeriesLogin	 *login,
+	GError				**error
+);
+
+/**
  * venture_feed_batch_add_account_snapshot:
  * @self: a batch
  * @account_key: whose state the batch restates

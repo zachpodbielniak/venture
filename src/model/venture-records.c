@@ -247,7 +247,13 @@ static const VentureFieldDecl venture_location_fields[] = {
 	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_TECHNICAL),
 	VENTURE_FIELD_REF("data-source-id", "Data source",
 	                  "Optional: the market data source whose account this place is",
-	                  "data_source", VENTURE_COLUMN_FLAG_TECHNICAL)
+	                  "data_source", VENTURE_COLUMN_FLAG_TECHNICAL),
+	/* Where the account mirror last put this place, so a place a person
+	 * moved since reads differently and is never moved back: the same
+	 * rule a mirrored listing's state keeps. Never a person's to write. */
+	VENTURE_FIELD("mirror-state", "Mirror state",
+	              "Set by the account mirror: where it last put this place, as JSON",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 VENTURE_DEFINE_ENTITY(VentureLocation, venture_location, venture_location_fields)

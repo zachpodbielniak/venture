@@ -21,6 +21,8 @@
 #include <math.h>
 #include <string.h>
 
+#include <sqlite3.h>
+
 #include "venture-test-util.h"
 
 /* Monday 2026-09-28 00:00:00 UTC. */
@@ -387,12 +389,12 @@ test_apply_and_read(
 	g_assert_true(venture_series_store_get_account(fixture->store, "nobody", T0, &row, &error));
 	g_assert_null(row);
 
-	all = venture_series_store_list_accounts(fixture->store, NULL, NULL, T0, &error);
+	all = venture_series_store_list_accounts(fixture->store, NULL, NULL, NULL, T0, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(all->len, ==, 2);
 	g_clear_pointer(&all, g_ptr_array_unref);
 
-	all = venture_series_store_list_accounts(fixture->store, "shared", NULL, T0, &error);
+	all = venture_series_store_list_accounts(fixture->store, "shared", NULL, NULL, T0, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(all->len, ==, 1);
 	g_assert_cmpstr(((VentureSeriesAccountRow *)g_ptr_array_index(all, 0))->key, ==, "warbank:ZAK");
@@ -1367,12 +1369,12 @@ test_reads_refuse_past_the_bound(
 	g_clear_pointer(&rows, g_ptr_array_unref);
 
 	/* Three accounts past a bound of two; the ungrouped two are not. */
-	rows = venture_series_store_list_accounts(fixture->store, NULL, NULL, T0, &error);
+	rows = venture_series_store_list_accounts(fixture->store, NULL, NULL, NULL, T0, &error);
 	g_assert_null(rows);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 	g_assert_nonnull(strstr(error->message, "accounts"));
 	g_clear_error(&error);
-	rows = venture_series_store_list_accounts(fixture->store, NULL, "", T0, &error);
+	rows = venture_series_store_list_accounts(fixture->store, NULL, "", NULL, T0, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(rows->len, ==, 2);
 	g_clear_pointer(&rows, g_ptr_array_unref);
@@ -1385,6 +1387,459 @@ test_reads_refuse_past_the_bound(
 	rows = venture_series_store_list_positions(fixture->store, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(rows->len, ==, 3);
+}
+
+/* --- Logins ------------------------------------------------------------------------ */
+
+static VentureSeriesLogin
+login(
+	const gchar	*key,
+	const gchar	*name,
+	const gchar	*kind
+){
+	VentureSeriesLogin row;
+
+	memset(&row, 0, sizeof(row));
+	row.key = key;
+	row.name = name;
+	row.kind = kind;
+
+	return row;
+}
+
+/* The login row with @key, or NULL. */
+static VentureSeriesLoginRow *
+find_login(
+	GPtrArray	*rows,
+	const gchar	*key
+){
+	guint i;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureSeriesLoginRow *row = g_ptr_array_index(rows, i);
+
+		if (0 == g_strcmp0(row->key, key))
+			return row;
+	}
+
+	return NULL;
+}
+
+/*
+ * Logins are described by their own lines or named bare by an account,
+ * an account keeps its login when a later line leaves it out and loses it
+ * on an empty one, and a malformed login fails the whole batch.
+ *
+ * What breaks if this regresses: a second WoW licence's characters read
+ * as the first's, a re-export that omits `login` (an older tsmctl)
+ * strands every character outside its login, or a shared warband that
+ * moved to `warbank:<group>` keeps pointing at the licence it left.
+ */
+static void
+test_logins(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	VentureSeriesLogin logins[2];
+	VentureSeriesAccount accounts[4];
+	VentureSeriesAccountBatch batch;
+	VentureSeriesAccountResult result;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureSeriesAccountRow) row = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesLoginRow *found;
+
+	(void)data;
+
+	logins[0] = login("ZAKMANN", "Main", "game_account");
+	logins[0].group_key = "bnet-1";
+	logins[0].attrs_json = "{\"region\":\"us\"}";
+	accounts[0] = account("Drgold-Thorium", "Drgold", "character");
+	accounts[0].login_key = "ZAKMANN";
+	accounts[1] = account("Alt-Thorium", "Alt", "character");
+	accounts[1].login_key = "53141745#1";
+	accounts[2] = account("warbank:bnet-1", "Warband bank", "shared");
+	accounts[3] = account("guild:Treasury", "Guild bank", "guild");
+	accounts[3].login_key = "";
+
+	batch = batch_new();
+	batch.logins = logins;
+	batch.n_logins = 1;
+	batch.accounts = accounts;
+	batch.n_accounts = 4;
+	result = apply(fixture, &batch, T0);
+	g_assert_cmpint(result.accounts, ==, 4);
+	g_assert_cmpint(result.logins, ==, 2);
+	g_assert_cmpint(result.logins_new, ==, 2);
+
+	rows = venture_series_store_list_logins(fixture->store, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	/* By name, else key: "53141745#1" sorts before "Main". */
+	g_assert_cmpstr(((VentureSeriesLoginRow *)g_ptr_array_index(rows, 0))->key, ==, "53141745#1");
+	found = find_login(rows, "ZAKMANN");
+	g_assert_cmpstr(found->name, ==, "Main");
+	g_assert_cmpstr(found->kind, ==, "game_account");
+	g_assert_cmpstr(found->group_key, ==, "bnet-1");
+	g_assert_cmpstr(found->attrs_json, ==, "{\"region\":\"us\"}");
+	g_assert_cmpint(found->accounts, ==, 1);
+	g_assert_cmpint(found->characters, ==, 1);
+	g_assert_cmpint(found->first_seen, ==, T0);
+
+	/* Named only by an account: bare, as a row's unknown account is. */
+	found = find_login(rows, "53141745#1");
+	g_assert_null(found->name);
+	g_assert_cmpstr(found->kind, ==, "other");
+	g_assert_cmpstr(found->group_key, ==, "");
+	g_assert_cmpint(found->accounts, ==, 1);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	g_assert_true(venture_series_store_get_account(fixture->store, "Drgold-Thorium", T0, &row, &error));
+	g_assert_cmpstr(row->login_key, ==, "ZAKMANN");
+	g_assert_cmpstr(row->login_name, ==, "Main");
+	g_clear_pointer(&row, venture_series_account_row_free);
+	g_assert_true(venture_series_store_get_account(fixture->store, "warbank:bnet-1", T0, &row, &error));
+	g_assert_cmpstr(row->login_key, ==, "");
+	g_assert_null(row->login_name);
+	g_clear_pointer(&row, venture_series_account_row_free);
+
+	/* A later export: the bare login described, Drgold sent without a
+	 * login (an older exporter) and the alt sent with an empty one. */
+	logins[0] = login("53141745#1", "Alt licence", NULL);
+	accounts[0] = account("Drgold-Thorium", NULL, "character");
+	accounts[1] = account("Alt-Thorium", NULL, "character");
+	accounts[1].login_key = "";
+	batch = batch_new();
+	batch.logins = logins;
+	batch.n_logins = 1;
+	batch.accounts = accounts;
+	batch.n_accounts = 2;
+	result = apply(fixture, &batch, T0 + HOUR);
+	g_assert_cmpint(result.logins, ==, 1);
+	g_assert_cmpint(result.logins_new, ==, 0);
+
+	g_assert_true(venture_series_store_get_account(fixture->store, "Drgold-Thorium", T0, &row, &error));
+	g_assert_cmpstr(row->login_key, ==, "ZAKMANN");
+	g_clear_pointer(&row, venture_series_account_row_free);
+	g_assert_true(venture_series_store_get_account(fixture->store, "Alt-Thorium", T0, &row, &error));
+	g_assert_cmpstr(row->login_key, ==, "");
+	g_clear_pointer(&row, venture_series_account_row_free);
+
+	rows = venture_series_store_list_logins(fixture->store, &error);
+	found = find_login(rows, "53141745#1");
+	g_assert_cmpstr(found->name, ==, "Alt licence");
+	g_assert_cmpint(found->accounts, ==, 0);
+	g_assert_cmpint(found->first_seen, ==, T0);
+	g_assert_cmpint(found->last_seen, ==, T0 + HOUR);
+	/* Not named this time: its sighting does not move. */
+	g_assert_cmpint(find_login(rows, "ZAKMANN")->last_seen, ==, T0);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	rows = venture_series_store_list_accounts(fixture->store, NULL, NULL, "ZAKMANN", T0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	rows = venture_series_store_list_accounts(fixture->store, NULL, NULL, "", T0, &error);
+	g_assert_cmpuint(rows->len, ==, 3);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	/* A kind outside the contract fails the batch: nothing of it lands. */
+	logins[0] = login("Other", "Other", "character");
+	accounts[0] = account("New-Thorium", "New", "character");
+	accounts[0].login_key = "Other";
+	batch = batch_new();
+	batch.logins = logins;
+	batch.n_logins = 1;
+	batch.accounts = accounts;
+	batch.n_accounts = 1;
+	g_assert_false(venture_series_store_apply_accounts(fixture->store, &batch, T0 + DAY, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_true(venture_series_store_get_account(fixture->store, "New-Thorium", T0, &row, &error));
+	g_assert_null(row);
+	rows = venture_series_store_list_logins(fixture->store, &error);
+	g_assert_null(find_login(rows, "Other"));
+}
+
+/* Two instruments' market figures at a venue, in GOLD, as one snapshot
+ * sets them. */
+static void
+market_values(
+	Fixture		*fixture,
+	const gchar	*venue,
+	const gchar	*first,
+	gint64		 first_value,
+	const gchar	*second,
+	gint64		 second_value
+){
+	VentureSeriesSnapshot *snapshot;
+	VentureSeriesStats stats;
+	g_autoptr(GError) error = NULL;
+
+	snapshot = venture_series_store_begin_snapshot(fixture->store, venue, "gold", T0, T0 + 60, FALSE,
+	                                               &error);
+	g_assert_no_error(error);
+	venture_series_stats_init(&stats);
+	stats.instrument_key = first;
+	stats.market_value = first_value;
+	g_assert_true(venture_series_snapshot_add_stats(snapshot, &stats, &error));
+	venture_series_stats_init(&stats);
+	stats.instrument_key = second;
+	stats.market_value = second_value;
+	g_assert_true(venture_series_snapshot_add_stats(snapshot, &stats, &error));
+	g_assert_true(venture_series_store_commit_snapshot(fixture->store, snapshot, NULL, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * Every reader narrows to a login, and the ledger and the valued holdings
+ * group by it: the logins' sums are exact and add up to the whole, the
+ * accounts reached through no login (a shared warband) are one group of
+ * their own, counted once.
+ *
+ * What breaks if this regresses: the per-login cards on /accounts add up
+ * to more or less than the headline, or the warband several licences
+ * share is counted under each of them.
+ */
+static void
+test_login_filters(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	VentureSeriesLogin logins[2];
+	VentureSeriesAccount accounts[4];
+	VentureSeriesHolding holdings[4];
+	VentureSeriesPosition positions[2];
+	VentureSeriesInbound mail[2];
+	VentureSeriesTxn txns[4];
+	VentureSeriesAccountBatch batch;
+	VentureSeriesHoldingFilter holding_filter;
+	VentureSeriesPositionFilter position_filter;
+	VentureSeriesInboundFilter inbound_filter;
+	VentureSeriesTxnFilter txn_filter;
+	VentureSeriesValueFilter value_filter;
+	VentureSeriesValueTotals totals;
+	VentureSeriesTxnGroup group_by;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 sum;
+	gint64 count;
+	guint i;
+
+	(void)data;
+
+	market_values(fixture, "realm-a", "ore", 100, "herb", 250);
+
+	logins[0] = login("L1", "Main", "game_account");
+	logins[1] = login("L2", "Alt", "game_account");
+	accounts[0] = account("A", "Anna", "character");
+	accounts[0].login_key = "L1";
+	accounts[1] = account("B", "Bert", "character");
+	accounts[1].login_key = "L1";
+	accounts[2] = account("C", "Cora", "character");
+	accounts[2].login_key = "L2";
+	accounts[3] = account("warbank:bnet", "Warband bank", "shared");
+
+	for (i = 0; i < G_N_ELEMENTS(accounts); i++)
+		accounts[i].venue_key = "realm-a";
+
+	holdings[0] = holding("A", "bag", "ore", 10);
+	holdings[1] = holding("B", "bag", "herb", 2);
+	holdings[2] = holding("C", "bank", "ore", 3);
+	holdings[3] = holding("warbank:bnet", "warbank", "herb", 4);
+	positions[0] = position("p1", "A", "ore", 120, T0 + DAY);
+	positions[1] = position("p2", "C", "ore", 130, T0 + DAY);
+	mail[0] = inbound("m1", "B", 500, T0 + DAY);
+	mail[1] = inbound("m2", "C", 700, T0 + DAY);
+	txns[0] = txn("t1", "A", "sale", "ore", 5, 1000, T0);
+	txns[1] = txn("t2", "C", "sale", "ore", 2, 500, T0 + 1);
+	txns[2] = txn("t3", "C", "buy", "ore", 1, 200, T0 + 2);
+	txns[3] = txn("t4", "warbank:bnet", "income", NULL, VENTURE_SERIES_NONE, 50, T0 + 3);
+
+	batch = batch_new();
+	batch.logins = logins;
+	batch.n_logins = 2;
+	batch.accounts = accounts;
+	batch.n_accounts = 4;
+	batch.holdings = holdings;
+	batch.n_holdings = 4;
+	batch.positions = positions;
+	batch.n_positions = 2;
+	batch.inbound = mail;
+	batch.n_inbound = 2;
+	batch.txns = txns;
+	batch.n_txns = 4;
+	apply(fixture, &batch, T0);
+
+	venture_series_holding_filter_init(&holding_filter);
+	holding_filter.login_key = "L1";
+	rows = venture_series_store_list_holdings(fixture->store, &holding_filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	holding_filter.login_key = "";
+	rows = venture_series_store_list_holdings(fixture->store, &holding_filter, &error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesHoldingRow *)g_ptr_array_index(rows, 0))->account_key, ==,
+	                "warbank:bnet");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	venture_series_position_filter_init(&position_filter);
+	position_filter.login_key = "L2";
+	rows = venture_series_store_list_positions(fixture->store, &position_filter, &error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesPositionRow *)g_ptr_array_index(rows, 0))->key, ==, "p2");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	venture_series_inbound_filter_init(&inbound_filter);
+	inbound_filter.login_key = "L1";
+	rows = venture_series_store_list_inbound(fixture->store, &inbound_filter, &error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesInboundRow *)g_ptr_array_index(rows, 0))->key, ==, "m1");
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	venture_series_txn_filter_init(&txn_filter);
+	txn_filter.login_key = "L2";
+	g_assert_true(venture_series_store_count_txns(fixture->store, &txn_filter, &count, &error));
+	g_assert_cmpint(count, ==, 2);
+
+	/* The ledger by login: net per login, the shared bank's on its own. */
+	g_assert_true(venture_series_txn_group_from_string("login", &group_by));
+	g_assert_cmpint(group_by, ==, VENTURE_SERIES_TXN_GROUP_LOGIN);
+	venture_series_txn_filter_init(&txn_filter);
+	rows = venture_series_store_txn_totals(fixture->store, &txn_filter, group_by, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 3);
+	g_assert_cmpstr(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 0))->key, ==, "");
+	g_assert_cmpint(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 0))->net, ==, 50);
+	g_assert_cmpstr(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 1))->key, ==, "L1");
+	g_assert_cmpstr(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 1))->label, ==, "Main");
+	g_assert_cmpint(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 1))->net, ==, 1000);
+	g_assert_cmpstr(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 2))->key, ==, "L2");
+	g_assert_cmpint(((VentureSeriesTxnTotal *)g_ptr_array_index(rows, 2))->net, ==, 300);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	/* The holdings valued per login add up to the instruments' total. */
+	venture_series_value_filter_init(&value_filter);
+	value_filter.currency = "GOLD";
+	value_filter.basis = VENTURE_SERIES_VALUE_MARKET;
+	value_filter.now = T0 + HOUR;
+	rows = venture_series_store_value_instruments(fixture->store, &value_filter, &totals, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(totals.value, ==, 10 * 100 + 2 * 250 + 3 * 100 + 4 * 250);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	rows = venture_series_store_value_totals(fixture->store, &value_filter, VENTURE_SERIES_VALUE_GROUP_LOGIN,
+	                                         &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 3);
+	sum = 0;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureSeriesValueGroupTotal *group = g_ptr_array_index(rows, i);
+
+		sum += group->value;
+
+		if (0 == g_strcmp0(group->key, ""))
+		{
+			g_assert_cmpint(group->value, ==, 4 * 250);
+			g_assert_cmpint(group->lines, ==, 1);
+			g_assert_null(group->label);
+		}
+		else if (0 == g_strcmp0(group->key, "L1"))
+		{
+			g_assert_cmpint(group->value, ==, 10 * 100 + 2 * 250);
+			g_assert_cmpstr(group->label, ==, "Main");
+		}
+		else
+		{
+			g_assert_cmpstr(group->key, ==, "L2");
+			g_assert_cmpint(group->value, ==, 3 * 100);
+			g_assert_cmpint(group->quantity, ==, 3);
+		}
+	}
+
+	g_assert_cmpint(sum, ==, totals.value);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	rows = venture_series_store_value_totals(fixture->store, &value_filter,
+	                                         VENTURE_SERIES_VALUE_GROUP_ACCOUNT, &error);
+	g_assert_cmpuint(rows->len, ==, 4);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	/* One login's holdings, valued alone, are its group's sum. */
+	value_filter.login_key = "L1";
+	rows = venture_series_store_value_instruments(fixture->store, &value_filter, &totals, &error);
+	g_assert_cmpint(totals.value, ==, 10 * 100 + 2 * 250);
+	g_assert_cmpint(totals.lines, ==, 2);
+}
+
+/*
+ * A store from before logins (schema 6) upgrades to one where every
+ * account it held reads as reached through no login, and the next batch
+ * can name logins at once.
+ *
+ * What breaks if this regresses: the first push after the upgrade fails
+ * on a missing column, or old accounts read a NULL login and vanish from
+ * the "no login" group.
+ */
+static void
+test_login_upgrade(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	VentureSeriesAccount accounts[1];
+	VentureSeriesAccountBatch batch;
+	g_autoptr(VentureSeriesAccountRow) row = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	sqlite3 *db;
+
+	(void)data;
+
+	accounts[0] = account("Old-Thorium", "Old", "character");
+	batch = batch_new();
+	batch.accounts = accounts;
+	batch.n_accounts = 1;
+	apply(fixture, &batch, T0);
+	g_clear_object(&fixture->store);
+
+	/* As the build before logins left it. */
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(db,
+	                             "DROP INDEX accounts_login; DROP TABLE logins;"
+	                             "ALTER TABLE accounts DROP COLUMN login;"
+	                             "PRAGMA user_version = 6;",
+	                             NULL, NULL, NULL), ==, SQLITE_OK);
+	sqlite3_close(db);
+
+	fixture->store = venture_series_store_open(fixture->dir, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_series_store_schema_version(), ==, 7);
+
+	g_assert_true(venture_series_store_get_account(fixture->store, "Old-Thorium", T0, &row, &error));
+	g_assert_cmpstr(row->login_key, ==, "");
+	g_assert_null(row->login_name);
+	g_clear_pointer(&row, venture_series_account_row_free);
+
+	rows = venture_series_store_list_accounts(fixture->store, NULL, NULL, "", T0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	accounts[0] = account("Old-Thorium", NULL, "character");
+	accounts[0].login_key = "ZAKMANN";
+	batch = batch_new();
+	batch.accounts = accounts;
+	batch.n_accounts = 1;
+	apply(fixture, &batch, T0 + HOUR);
+	g_assert_true(venture_series_store_get_account(fixture->store, "Old-Thorium", T0, &row, &error));
+	g_assert_cmpstr(row->login_key, ==, "ZAKMANN");
+	g_assert_null(row->login_name);
 }
 
 #define ADD(path, func) \
@@ -1412,6 +1867,9 @@ main(
 	ADD("scale-smoke", test_scale_smoke);
 	ADD("balance-takes-snapshot-time", test_balance_takes_snapshot_time);
 	ADD("reads-refuse-past-the-bound", test_reads_refuse_past_the_bound);
+	ADD("logins", test_logins);
+	ADD("login-filters", test_login_filters);
+	ADD("login-upgrade", test_login_upgrade);
 
 	return g_test_run();
 }

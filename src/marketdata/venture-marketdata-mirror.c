@@ -46,6 +46,8 @@
 #define MIRROR_INSTALLED_KEY	"venture-marketdata-mirror-installed"
 #define MIRROR_RETRY_MS		(50)
 #define MIRROR_GROUP_MARK	"/group:"
+#define MIRROR_LOGIN_MARK	"/login:"
+#define MIRROR_LOCATION_PERMIT_KEY "venture-marketdata-location-permit"
 #define MIRROR_NOTE_KEYS	(5)
 #define MIRROR_MAX_FAILURE_NOTES (10)
 #define MIRROR_IN_BATCH		(200)
@@ -425,6 +427,31 @@ mirror_validate_location(
 
 	(void)user_data;
 
+	/* Where the mirror last put a place is its own record, as a mirrored
+	 * listing's state is: a person writing it would tell the mirror it
+	 * had put the place where the person did, and the place would be
+	 * moved back on the next pass. Judged on a change, so a form posting
+	 * the stored value back is no write. */
+	if (g_object_get_data(G_OBJECT(database), MIRROR_LOCATION_PERMIT_KEY) != (gpointer)entity)
+	{
+		g_autofree gchar *state = NULL;
+		g_autofree gchar *was_state = NULL;
+
+		g_object_get(entity, "mirror-state", &state, NULL);
+
+		if (NULL != previous)
+			g_object_get(previous, "mirror-state", &was_state, NULL);
+
+		if (0 != g_strcmp0(venture_string_is_empty(state) ? "" : state,
+		                   venture_string_is_empty(was_state) ? "" : was_state))
+		{
+			venture_set_error_validation(error, "Mirror state",
+				"is where the account mirror last put this place, and only the mirror "
+				"writes it");
+			return FALSE;
+		}
+	}
+
 	g_object_get(entity, "external-ref", &ref, NULL);
 
 	if (NULL != previous)
@@ -501,10 +528,19 @@ mirror_can_run(
  * A pass
  * ========================================================================== */
 
+/*
+ * A location the pass knows by reference: whether it is deleted, and for
+ * an account's place where it is and where the mirror last put it
+ * (@placed, -1 when it holds no record of that) -- what the hand-edit
+ * rule compares.
+ */
 typedef struct
 {
 	gint64		 id;
 	gboolean	 deleted;
+	gint64		 parent_id;
+	gint64		 placed;
+	gint64		 data_source_id;
 } MirrorKnown;
 
 typedef struct
@@ -536,6 +572,7 @@ typedef struct
 {
 	guint			 writes;
 	gint64			 promoted;
+	gint64			 reparented;
 	gint64			 venues_linked;
 	gint64			 products_created;
 	gint64			 created;
@@ -590,6 +627,7 @@ typedef struct
 	gint64			 failed;
 	gint64			 over_cap;
 	gint64			 no_snapshot;
+	gint64			 locations_kept;	/* places a person moved, left there */
 	GPtrArray		*notes;
 } MirrorRun;
 
@@ -830,9 +868,21 @@ mirror_write(
 	if (!mirror_batch_open(m, error))
 		return FALSE;
 
-	ok = VENTURE_IS_LISTING(entity)
-		? venture_market_save_mirrored_listing(m->database, entity, &m->actor, &local_error)
-		: venture_database_save(m->database, entity, &m->actor, &local_error);
+	if (VENTURE_IS_LISTING(entity))
+		ok = venture_market_save_mirrored_listing(m->database, entity, &m->actor, &local_error);
+	else if (VENTURE_IS_LOCATION(entity))
+	{
+		gpointer previous;
+
+		/* The permit names this object for this one save, as the
+		 * listing's does: a nested save of another place is not it. */
+		previous = g_object_get_data(G_OBJECT(m->database), MIRROR_LOCATION_PERMIT_KEY);
+		g_object_set_data(G_OBJECT(m->database), MIRROR_LOCATION_PERMIT_KEY, entity);
+		ok = venture_database_save(m->database, entity, &m->actor, &local_error);
+		g_object_set_data(G_OBJECT(m->database), MIRROR_LOCATION_PERMIT_KEY, previous);
+	}
+	else
+		ok = venture_database_save(m->database, entity, &m->actor, &local_error);
 
 	if (!ok && mirror_database_failed(m, local_error))
 	{
@@ -1120,6 +1170,53 @@ mirror_account_ref(
 }
 
 /*
+ * Where the mirror last put a place, from its `mirror-state`: the parent
+ * it gave it, or -1 when the place holds no such record (made before the
+ * mirror kept one, or adopted by hand).
+ */
+static gint64
+mirror_placed_parent(VentureEntity *location)
+{
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonNode *member;
+
+	g_object_get(location, "mirror-state", &text, NULL);
+
+	if (venture_string_is_empty(text))
+		return -1;
+
+	node = venture_json_parse(text, NULL);
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+		return -1;
+
+	member = json_object_get_member(json_node_get_object(node), "parent_id");
+
+	if ((NULL == member) || !JSON_NODE_HOLDS_VALUE(member) ||
+	    (G_TYPE_INT64 != json_node_get_value_type(member)))
+		return -1;
+
+	return json_node_get_int(member);
+}
+
+/* What the pass needs to know of a location found by its reference. */
+static MirrorKnown *
+mirror_known_new(VentureEntity *location)
+{
+	MirrorKnown *known;
+
+	known = g_new0(MirrorKnown, 1);
+	known->id = venture_entity_get_id(location);
+	known->deleted = venture_entity_is_deleted(location);
+	known->parent_id = mirror_int(location, "parent-id");
+	known->placed = mirror_placed_parent(location);
+	known->data_source_id = mirror_int(location, "data-source-id");
+
+	return known;
+}
+
+/*
  * Reads the organization's locations whose reference starts with this
  * source's namespace, deleted ones too, once per pass: one query rather
  * than one per account. Past the bound, a reference not in the table is
@@ -1164,9 +1261,7 @@ mirror_load_location_refs(
 		if (venture_string_is_empty(ref))
 			continue;
 
-		known = g_new0(MirrorKnown, 1);
-		known->id = venture_entity_get_id(location);
-		known->deleted = venture_entity_is_deleted(location);
+		known = mirror_known_new(location);
 		g_hash_table_replace(m->location_refs, g_steal_pointer(&ref), known);
 	}
 
@@ -1211,10 +1306,13 @@ mirror_find_location(
 		return FALSE;
 	}
 
+	/* Kept, so the placement the hand-edit rule reads is at hand and a
+	 * second question about the same place asks the database once. */
 	if (NULL != found)
 	{
 		*out_id = venture_entity_get_id(found);
 		*out_deleted = venture_entity_is_deleted(found);
+		g_hash_table_replace(m->location_refs, g_strdup(ref), mirror_known_new(found));
 	}
 
 	return TRUE;
@@ -1230,6 +1328,8 @@ mirror_remember_location(
 
 	known = g_new0(MirrorKnown, 1);
 	known->id = id;
+	known->placed = -1;
+	known->data_source_id = m->source_id;
 	g_hash_table_replace(m->location_refs, g_strdup(ref), known);
 }
 
@@ -1409,28 +1509,27 @@ mirror_link_venue(
 }
 
 /*
- * The location for an account's group, made when missing; 0 for none.
- * Short of room, m->cut and 0: the account waits for its group rather
- * than being made without a parent nothing would give it later.
+ * A place an account's place sits inside -- a login, a group, a login's
+ * group -- found by @ref, made when missing (@kind, @name, inside
+ * @parent_id), restored only with @restore; 0 for a deleted one without
+ * it. Short of room, m->cut and 0: the account waits for its parent
+ * rather than being made without one nothing would give it later.
  */
 static gboolean
-mirror_group_location(
+mirror_parent_place(
 	MirrorRun	 *m,
-	const gchar	 *group,
+	const gchar	 *ref,
+	const gchar	 *kind,
+	const gchar	 *name,
+	gint64		  parent_id,
 	gboolean	  restore,
 	gint64		 *out_id,
 	GError		**error
 ){
 	g_autoptr(VentureLocation) location = NULL;
-	g_autofree gchar *ref = NULL;
 	gboolean deleted;
 
 	*out_id = 0;
-
-	if (venture_string_is_empty(group))
-		return TRUE;
-
-	ref = g_strdup_printf("%s" MIRROR_GROUP_MARK "%s", m->settings.namespace_, group);
 
 	if (!mirror_find_location(m, ref, out_id, &deleted, error))
 		return FALSE;
@@ -1466,7 +1565,7 @@ mirror_group_location(
 
 	location = venture_location_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(location), m->organization_id);
-	g_object_set(location, "name", group, "kind", "group", "active", TRUE,
+	g_object_set(location, "name", name, "kind", kind, "parent-id", parent_id, "active", TRUE,
 	             "external-ref", ref, "data-source-id", m->source_id, NULL);
 
 	if (!mirror_write(m, VENTURE_ENTITY(location), error))
@@ -1478,14 +1577,199 @@ mirror_group_location(
 	return TRUE;
 }
 
+/* The location for an account's group, made when missing; 0 for none. */
+static gboolean
+mirror_group_location(
+	MirrorRun	 *m,
+	const gchar	 *group,
+	gboolean	  restore,
+	gint64		 *out_id,
+	GError		**error
+){
+	g_autofree gchar *ref = NULL;
+
+	*out_id = 0;
+
+	if (venture_string_is_empty(group))
+		return TRUE;
+
+	ref = g_strdup_printf("%s" MIRROR_GROUP_MARK "%s", m->settings.namespace_, group);
+
+	return mirror_parent_place(m, ref, "group", group, 0, restore, out_id, error);
+}
+
+/*
+ * The place an account's place belongs inside, made when missing. An
+ * account reached through a login sits in that login's group (a realm
+ * per login, "<ns>/login:<L>/group:<G>"), inside the login's own place
+ * ("<ns>/login:<L>"), or straight inside the login's place when it has no
+ * group: the login is the first thing to know about where a character
+ * is, since reaching it means signing in with it. An account reached
+ * through none keeps the chain it always had: its group, else nothing.
+ * Under a bound, the login comes first and its group after it, each a
+ * unit a later pass finds made.
+ */
+static gboolean
+mirror_account_parent(
+	MirrorRun			 *m,
+	const VentureSeriesAccountRow	 *row,
+	gboolean			  restore,
+	gint64				 *out_id,
+	GError				**error
+){
+	g_autofree gchar *login_ref = NULL;
+	g_autofree gchar *group_ref = NULL;
+	gint64 login_id;
+
+	*out_id = 0;
+
+	if (venture_string_is_empty(row->login_key))
+		return mirror_group_location(m, row->group_key, restore, out_id, error);
+
+	login_ref = g_strdup_printf("%s" MIRROR_LOGIN_MARK "%s", m->settings.namespace_, row->login_key);
+
+	if (!mirror_parent_place(m, login_ref, "login",
+	                         !venture_string_is_empty(row->login_name) ? row->login_name : row->login_key,
+	                         0, restore, &login_id, error))
+		return FALSE;
+
+	/* A login's place a person deleted stays deleted, and nothing is made
+	 * inside it: no realm place at the top standing for a login nobody
+	 * wants filed. The account then has no parent, as with a deleted
+	 * realm place. */
+	if (m->cut || (0 == login_id) || venture_string_is_empty(row->group_key))
+	{
+		*out_id = login_id;
+		return TRUE;
+	}
+
+	group_ref = g_strdup_printf("%s" MIRROR_GROUP_MARK "%s", login_ref, row->group_key);
+
+	return mirror_parent_place(m, group_ref, "group", row->group_key, login_id, restore, out_id, error);
+}
+
+/*
+ * Whether an account's place is where the mirror put it -- the only kind
+ * of place the mirror ever moves. Its `mirror-state` says where that was;
+ * a parent that differs is a person's move and stands for good. A place
+ * with no such record (made before the mirror kept one, or adopted by a
+ * person) counts as the mirror's only when it is filed under this source
+ * and sits exactly where the earlier rule left every place it made: in
+ * its group's place, or at the top when its account has no group or that
+ * group's place was deleted. Anywhere else -- including the top, for an
+ * account whose group's place never existed -- somebody put it there.
+ */
+static gboolean
+mirror_placed_by_mirror(
+	MirrorRun			*m,
+	const VentureSeriesAccountRow	*row,
+	const MirrorKnown		*known
+){
+	g_autofree gchar *group_ref = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean deleted;
+	gint64 group_id;
+
+	if (known->placed >= 0)
+		return known->parent_id == known->placed;
+
+	if (known->data_source_id != m->source_id)
+		return FALSE;
+
+	if (venture_string_is_empty(row->group_key))
+		return 0 == known->parent_id;
+
+	group_ref = g_strdup_printf("%s" MIRROR_GROUP_MARK "%s", m->settings.namespace_, row->group_key);
+
+	if (!mirror_find_location(m, group_ref, &group_id, &deleted, &error))
+		return FALSE;
+
+	if (0 == group_id)
+		return FALSE;
+
+	return known->parent_id == (deleted ? 0 : group_id);
+}
+
+/* The JSON an account's place records where the mirror put it with. */
+static gchar *
+mirror_placement_text(gint64 parent_id)
+{
+	return g_strdup_printf("{\"parent_id\":%" G_GINT64_FORMAT "}", parent_id);
+}
+
+/*
+ * Moves an existing account's place to where the chain now puts it --
+ * a login that appeared, a group that changed -- when the mirror put it
+ * where it is and nobody moved it since (mirror_placed_by_mirror()). A
+ * deleted place, or a parent that comes to no live place (deleted, or
+ * waiting for room), leaves it where it is.
+ */
+static gboolean
+mirror_place_account(
+	MirrorRun			 *m,
+	const VentureSeriesAccountRow	 *row,
+	const gchar			 *ref,
+	gboolean			  restore,
+	GError				**error
+){
+	g_autoptr(VentureEntity) location = NULL;
+	g_autofree gchar *state = NULL;
+	MirrorKnown *known;
+	gint64 target;
+
+	known = g_hash_table_lookup(m->location_refs, ref);
+
+	if ((NULL == known) || known->deleted || (known->id <= 0))
+		return TRUE;
+
+	/* A person's placement is counted, never computed against: working
+	 * out where the chain would put it could make places for nothing. */
+	if (!mirror_placed_by_mirror(m, row, known))
+	{
+		m->locations_kept++;
+		return TRUE;
+	}
+
+	if (!mirror_account_parent(m, row, restore, &target, error))
+		return FALSE;
+
+	if (m->cut || (target <= 0) || (target == known->parent_id))
+		return TRUE;
+
+	if (!mirror_has_room(m))
+	{
+		m->cut = TRUE;
+		return TRUE;
+	}
+
+	location = venture_database_get(m->database, VENTURE_TYPE_LOCATION, known->id, error);
+
+	if (NULL == location)
+		return FALSE;
+
+	state = mirror_placement_text(target);
+	g_object_set(location, "parent-id", target, "mirror-state", state, NULL);
+
+	if (!mirror_write(m, location, error))
+		return FALSE;
+
+	known->parent_id = target;
+	known->placed = target;
+	m->counts.reparented++;
+
+	return TRUE;
+}
+
 /*
  * The location of one account: found, or (with @restore) restored, or
- * made inside its group's. With @restore FALSE a deleted one -- or a
- * deleted group or venue -- stays deleted, and a deleted location's
- * answer is 0. The account's venue is linked to it when the location is
- * made, and on every explicit (@restore) promotion.
+ * made inside its login's and group's (mirror_account_parent()). With
+ * @restore FALSE a deleted one -- or a deleted parent or venue -- stays
+ * deleted, and a deleted location's answer is 0. The account's venue is
+ * linked to it when the location is made, and on every explicit
+ * (@restore) promotion. A place that exists is moved to where the chain
+ * now puts it, under the hand-edit rule (mirror_place_account()).
  *
- * Under a bound, the group and the venue come first, each a unit of its
+ * Under a bound, the parents and the venue come first, each a unit of its
  * own that a later pass finds made; the location and its venue's link
  * are written together or not at all, since nothing links a venue to a
  * place that already exists. Short of room: m->cut and 0.
@@ -1500,6 +1784,7 @@ mirror_promote_account(
 ){
 	g_autoptr(VentureLocation) location = NULL;
 	g_autofree gchar *ref = NULL;
+	g_autofree gchar *state = NULL;
 	MirrorVenue *venue;
 	gboolean deleted;
 	gint64 parent_id;
@@ -1529,8 +1814,19 @@ mirror_promote_account(
 				return TRUE;
 			}
 
-			mirror_remember_location(m, ref, *out_id);
+			/* Restored where it was, its placement with it. */
+			{
+				MirrorKnown *known = g_hash_table_lookup(m->location_refs, ref);
+
+				if (NULL != known)
+					known->deleted = FALSE;
+				else
+					mirror_remember_location(m, ref, *out_id);
+			}
 		}
+
+		if (!mirror_place_account(m, row, ref, restore, error))
+			return FALSE;
 
 		if (restore)
 		{
@@ -1541,7 +1837,7 @@ mirror_promote_account(
 		return TRUE;
 	}
 
-	if (!mirror_group_location(m, row->group_key, restore, &parent_id, error))
+	if (!mirror_account_parent(m, row, restore, &parent_id, error))
 		return FALSE;
 
 	if (m->cut)
@@ -1558,6 +1854,7 @@ mirror_promote_account(
 		return TRUE;
 	}
 
+	state = mirror_placement_text(parent_id);
 	location = venture_location_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(location), m->organization_id);
 	g_object_set(location,
@@ -1567,6 +1864,7 @@ mirror_promote_account(
 	             "active", TRUE,
 	             "external-ref", ref,
 	             "data-source-id", m->source_id,
+	             "mirror-state", state,
 	             NULL);
 
 	if (!mirror_write(m, VENTURE_ENTITY(location), error))
@@ -1574,6 +1872,14 @@ mirror_promote_account(
 
 	*out_id = venture_entity_get_id(VENTURE_ENTITY(location));
 	mirror_remember_location(m, ref, *out_id);
+
+	{
+		MirrorKnown *known = g_hash_table_lookup(m->location_refs, ref);
+
+		known->parent_id = parent_id;
+		known->placed = parent_id;
+	}
+
 	m->counts.promoted++;
 	mirror_link_venue(m, venue, *out_id);
 
@@ -1631,6 +1937,20 @@ mirror_accounts(
 		}
 		else if (deleted)
 			id = 0;
+		else if ((id > 0) && m->settings.auto_promote && !m->broken && mirror_has_room(m))
+		{
+			/* A place that exists follows its account's login and group
+			 * where the mirror put it; a cut here waits for the next
+			 * pass and changes nothing else. */
+			m->cut = FALSE;
+
+			if (!mirror_place_account(m, row, ref, FALSE, &error))
+				mirror_failed(m, "an account's location", error);
+			else if (m->cut)
+				m->over_cap++;
+
+			m->cut = FALSE;
+		}
 
 		g_hash_table_insert(m->account_locations, g_strdup(row->key), g_memdup2(&id, sizeof(id)));
 	}
@@ -3081,6 +3401,8 @@ mirror_report(MirrorRun *m)
 	MIRROR_MEMBER("accounts", m->n_accounts);
 	MIRROR_MEMBER("positions", m->n_positions);
 	MIRROR_MEMBER("promoted", m->counts.promoted);
+	MIRROR_MEMBER("reparented", m->counts.reparented);
+	MIRROR_MEMBER("locations_kept", m->locations_kept);
 	MIRROR_MEMBER("venues_linked", m->counts.venues_linked);
 	MIRROR_MEMBER("products_created", m->counts.products_created);
 	MIRROR_MEMBER("created", m->counts.created);
@@ -3185,7 +3507,7 @@ mirror_pass(
 		return FALSE;
 	}
 
-	accounts = venture_series_store_list_accounts(m->store, NULL, NULL, m->now, &store_error);
+	accounts = venture_series_store_list_accounts(m->store, NULL, NULL, NULL, m->now, &store_error);
 
 	/*
 	 * A store with more accounts than one read answers refuses the read

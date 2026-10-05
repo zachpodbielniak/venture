@@ -594,6 +594,7 @@ mdr_accounts(
 	JsonArray *rows;
 	JsonArray *attention;
 	const gchar *sort;
+	const gchar *group_by;
 	guint i;
 
 	venture_marketdata_accounts_query_init(&query);
@@ -607,8 +608,18 @@ mdr_accounts(
 
 	query.basis = mdr_string(options, "basis");
 	query.group_key = mdr_string(options, "group_key");
+	query.login = mdr_string(options, "login");
+	group_by = mdr_string(options, "group_by");
 	sort = mdr_string(options, "sort");
 	query.sort = sort;
+
+	/* One way to group: a row per login instead of per account. */
+	if ((NULL != group_by) && (0 != g_strcmp0(group_by, "login")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "group_by for accounts is login, or nothing for a row per account");
+		return NULL;
+	}
 
 	/* A figure is asked for largest first; a name or a deadline in its
 	 * natural order. */
@@ -636,55 +647,109 @@ mdr_accounts(
 		json_object_get_int_member_with_default(summary, "positions", 0)));
 	venture_report_result_add_metric(result, venture_metric_new_count("listings_expired", "Listings expired",
 		json_object_get_int_member_with_default(summary, "positions_expired", 0)));
+	venture_report_result_add_metric(result, venture_metric_new_count("logins", "Logins",
+		json_object_get_int_member_with_default(summary, "logins", 0)));
 
-	venture_report_result_add_column(result, "account", "Account", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "realm", "Realm", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "kind", "Kind", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "level", "Level", VENTURE_REPORT_COLUMN_NUMBER);
-	venture_report_result_add_column(result, "class", "Class", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "gold", "Money", VENTURE_REPORT_COLUMN_MONEY);
-	venture_report_result_add_column(result, "listings", "Listings", VENTURE_REPORT_COLUMN_NUMBER);
-	venture_report_result_add_column(result, "expired", "Expired", VENTURE_REPORT_COLUMN_NUMBER);
-	venture_report_result_add_column(result, "expiring", "Expiring soon", VENTURE_REPORT_COLUMN_NUMBER);
-	venture_report_result_add_column(result, "soonest_expiry", "Soonest expiry", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "mail", "Mail", VENTURE_REPORT_COLUMN_NUMBER);
-	venture_report_result_add_column(result, "mail_money", "In the mail", VENTURE_REPORT_COLUMN_MONEY);
-	venture_report_result_add_column(result, "last_seen", "Last seen", VENTURE_REPORT_COLUMN_TEXT);
-	venture_report_result_add_column(result, "why", "Log in for", VENTURE_REPORT_COLUMN_TEXT);
-
-	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	/* A row per login: each one's sums, the cards the overview draws. */
+	if (NULL != group_by)
 	{
-		JsonObject *row = json_array_get_object_element(rows, i);
-		JsonArray *reasons = json_object_get_array_member(row, "reasons");
-		g_autoptr(GString) why = g_string_new(NULL);
-		guint j;
+		JsonArray *logins = json_object_get_array_member(root, "logins");
 
-		for (j = 0; (NULL != reasons) && (j < json_array_get_length(reasons)); j++)
+		venture_report_result_add_column(result, "login", "Login", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "characters", "Characters", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "realms", "Realms", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "gold", "Money", VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "inventory_value", "Inventory", VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "listings", "Listings", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "expired", "Expired", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "listed_value", "Listed, at buyout",
+		                                 VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "net_30d", "Net, 30 days", VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "needs_login", "To visit", VENTURE_REPORT_COLUMN_NUMBER);
+
+		for (i = 0; (NULL != logins) && (i < json_array_get_length(logins)); i++)
 		{
-			if (j > 0)
-				g_string_append(why, "; ");
+			JsonObject *row = json_array_get_object_element(logins, i);
 
-			g_string_append(why, json_array_get_string_element(reasons, j));
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "login", mdr_text(row, "name"));
+			mdr_set_number(result, "characters", row, "characters", 1.0);
+			mdr_set_number(result, "realms", row, "realms", 1.0);
+			mdr_set_first_money(result, "gold", row, "balances");
+			mdr_set_first_money(result, "inventory_value", row, "inventory_value");
+			mdr_set_number(result, "listings", row, "positions", 1.0);
+			mdr_set_number(result, "expired", row, "positions_expired", 1.0);
+			mdr_set_first_money(result, "listed_value", row, "positions_value");
+			mdr_set_first_money(result, "net_30d", row, "net_30d");
+			mdr_set_number(result, "needs_login", row, "needs_login", 1.0);
 		}
 
-		venture_report_result_begin_row(result);
-		venture_report_result_set_text(result, "account", mdr_text(row, "display_name"));
-		venture_report_result_set_text(result, "realm", mdr_text(row, "realm"));
-		venture_report_result_set_text(result, "kind", mdr_text(row, "kind"));
-		mdr_set_number(result, "level", row, "level", 1.0);
-		venture_report_result_set_text(result, "class", mdr_text(row, "class"));
-		mdr_set_money(result, "gold", row, "gold");
-		mdr_set_number(result, "listings", row, "positions", 1.0);
-		mdr_set_number(result, "expired", row, "positions_expired", 1.0);
-		mdr_set_number(result, "expiring", row, "positions_expiring", 1.0);
-		venture_report_result_set_text(result, "soonest_expiry", mdr_text(row, "soonest_expiry"));
-		mdr_set_number(result, "mail", row, "inbound", 1.0);
-		mdr_set_first_money(result, "mail_money", row, "inbound_money");
-		venture_report_result_set_text(result, "last_seen", mdr_text(row, "last_seen"));
-		venture_report_result_set_text(result, "why", (why->len > 0) ? why->str : NULL);
+		if ((NULL == logins) || (0 == json_array_get_length(logins)))
+			venture_report_result_append_note(result, "No account names a login: the source sends none.");
+	}
+	else
+	{
+		gboolean has_logins = (json_object_get_int_member_with_default(summary, "logins", 0) > 0);
+
+		/* The login column only where there is a login to show: a
+		 * source that sends none reads as it always did. */
+		venture_report_result_add_column(result, "account", "Account", VENTURE_REPORT_COLUMN_TEXT);
+
+		if (has_logins)
+			venture_report_result_add_column(result, "login", "Login", VENTURE_REPORT_COLUMN_TEXT);
+
+		venture_report_result_add_column(result, "realm", "Realm", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "kind", "Kind", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "level", "Level", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "class", "Class", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "gold", "Money", VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "listings", "Listings", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "expired", "Expired", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "expiring", "Expiring soon", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "soonest_expiry", "Soonest expiry", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "mail", "Mail", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "mail_money", "In the mail", VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "last_seen", "Last seen", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "why", "Log in for", VENTURE_REPORT_COLUMN_TEXT);
+
+		for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, i);
+			JsonArray *reasons = json_object_get_array_member(row, "reasons");
+			g_autoptr(GString) why = g_string_new(NULL);
+			guint j;
+
+			for (j = 0; (NULL != reasons) && (j < json_array_get_length(reasons)); j++)
+			{
+				if (j > 0)
+					g_string_append(why, "; ");
+
+				g_string_append(why, json_array_get_string_element(reasons, j));
+			}
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "account", mdr_text(row, "display_name"));
+			if (has_logins)
+				venture_report_result_set_text(result, "login", mdr_text(row, "login_name"));
+
+			venture_report_result_set_text(result, "realm", mdr_text(row, "realm"));
+			venture_report_result_set_text(result, "kind", mdr_text(row, "kind"));
+			mdr_set_number(result, "level", row, "level", 1.0);
+			venture_report_result_set_text(result, "class", mdr_text(row, "class"));
+			mdr_set_money(result, "gold", row, "gold");
+			mdr_set_number(result, "listings", row, "positions", 1.0);
+			mdr_set_number(result, "expired", row, "positions_expired", 1.0);
+			mdr_set_number(result, "expiring", row, "positions_expiring", 1.0);
+			venture_report_result_set_text(result, "soonest_expiry", mdr_text(row, "soonest_expiry"));
+			mdr_set_number(result, "mail", row, "inbound", 1.0);
+			mdr_set_first_money(result, "mail_money", row, "inbound_money");
+			venture_report_result_set_text(result, "last_seen", mdr_text(row, "last_seen"));
+			venture_report_result_set_text(result, "why", (why->len > 0) ? why->str : NULL);
+		}
 	}
 
-	/* Where to log in, most urgent first, as the overview lists it. */
+	/* Where to log in, a login at a time, most urgent first, as the
+	 * overview lists it. */
 	for (i = 0; (NULL != attention) && (i < json_array_get_length(attention)); i++)
 	{
 		JsonObject *row = json_array_get_object_element(attention, i);
@@ -734,6 +799,8 @@ mdr_holdings(
 	query.dead = (query.dead_days > 0);
 	query.basis = mdr_string(options, "basis");
 	query.account = mdr_string(options, "account_key");
+	query.login = mdr_string(options, "login");
+	query.group_by = mdr_string(options, "group_by");
 	query.place = mdr_string(options, "place");
 	query.category = mdr_string(options, "category_path");
 	query.min_value = mdr_string(options, "min_value");
@@ -755,6 +822,35 @@ mdr_holdings(
 		json_object_get_int_member_with_default(totals, "instruments", 0)));
 	venture_report_result_add_metric(result, venture_metric_new_count("units", "Units",
 		json_object_get_int_member_with_default(totals, "units", 0)));
+
+	/* By login: a row per login of the same holdings, instead of a row
+	 * per item. The core refused any other grouping. */
+	if (NULL != query.group_by)
+	{
+		JsonArray *groups = json_object_get_array_member(root, "by_login");
+
+		venture_report_result_add_column(result, "login", "Login", VENTURE_REPORT_COLUMN_TEXT);
+		venture_report_result_add_column(result, "lines", "Lines", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "units", "Units", VENTURE_REPORT_COLUMN_NUMBER);
+		venture_report_result_add_column(result, "value", "Value", VENTURE_REPORT_COLUMN_MONEY);
+		venture_report_result_add_column(result, "share", "Of these", VENTURE_REPORT_COLUMN_PERCENT);
+
+		for (i = 0; (NULL != groups) && (i < json_array_get_length(groups)); i++)
+		{
+			JsonObject *row = json_array_get_object_element(groups, i);
+
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "login", mdr_text(row, "name"));
+			mdr_set_number(result, "lines", row, "lines", 1.0);
+			mdr_set_number(result, "units", row, "units", 1.0);
+			mdr_set_money(result, "value", row, "value");
+			mdr_set_number(result, "share", row, "share", 1.0);
+		}
+
+		mdr_notes(result, root);
+
+		return g_steal_pointer(&result);
+	}
 
 	venture_report_result_add_column(result, "item", "Item", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "key", "Key", VENTURE_REPORT_COLUMN_TEXT);
@@ -833,6 +929,7 @@ mdr_external_pnl(
 	query.until = (NULL != end) ? MAX(g_date_time_to_unix(end), 1) : -1;
 	query.group_by = mdr_string(options, "group_by");
 	query.account = mdr_string(options, "account_key");
+	query.login = mdr_string(options, "login");
 	query.venue = mdr_string(options, "venue");
 	query.instrument = mdr_string(options, "instrument");
 	query.source = mdr_string(options, "source");
@@ -1055,8 +1152,13 @@ venture_marketdata_register_reports(VentureReportRegistry *registry)
 		"\"stale_days\":{\"type\":\"integer\",\"description\":\"An account unseen this "
 		"many days needs a visit; 14 by default\"},"
 		"\"sort\":{\"type\":\"string\",\"enum\":[\"attention\",\"name\",\"realm\",\"gold\","
-		"\"positions\",\"expiry\",\"inbound\",\"last_seen\",\"freshness\"],"
+		"\"positions\",\"expiry\",\"inbound\",\"last_seen\",\"freshness\",\"login\"],"
 		"\"description\":\"The table's order; attention by default\"},"
+		"\"login\":{\"type\":\"string\",\"description\":\"Only the accounts reached "
+		"through this login, by its key in the source\"},"
+		"\"group_by\":{\"type\":\"string\",\"enum\":[\"login\"],\"description\":\"login "
+		"for a row per login (its characters, money, inventory, listings, net and places "
+		"to visit) instead of a row per account\"},"
 		MDR_ORGANIZATION "}}");
 
 	mdr_add(registry, "account_holdings", "Account holdings",
@@ -1085,19 +1187,26 @@ venture_marketdata_register_reports(VentureReportRegistry *registry)
 		"value, largest first, by default\"},"
 		"\"top\":{\"type\":\"integer\",\"description\":\"How many items, 1 to 500; 50 "
 		"by default\"},"
+		"\"login\":{\"type\":\"string\",\"description\":\"Only the holdings of the "
+		"accounts reached through this login, by its key in the source\"},"
+		"\"group_by\":{\"type\":\"string\",\"enum\":[\"login\"],\"description\":\"login "
+		"for a row per login of the same holdings, valued line by line, instead of a "
+		"row per item\"},"
 		MDR_ORGANIZATION "}}");
 
 	mdr_add(registry, "external_pnl", "Trading profit and loss",
 		"A data source's own ledger of the operator's trades summed for the period: sales "
 		"after the venue's cut, purchases, other income and expenses, net, by day, week, "
-		"month, account, venue, item or the source's own label",
+		"month, account, venue, item, login or the source's own label",
 		mdr_external_pnl,
 		"{\"type\":\"object\",\"properties\":{"
 		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"The data source; "
 		"the organization's first with accounts by default\"},"
 		"\"group_by\":{\"type\":\"string\",\"enum\":[\"day\",\"week\",\"month\",\"account\","
-		"\"venue\",\"instrument\",\"source\"],\"description\":\"What a row is; day by "
-		"default\"},"
+		"\"venue\",\"instrument\",\"source\",\"login\"],\"description\":\"What a row is; "
+		"day by default\"},"
+		"\"login\":{\"type\":\"string\",\"description\":\"Only the rows of the "
+		"accounts reached through this login, by its key in the source\"},"
 		"\"account_key\":{\"type\":\"string\",\"description\":\"Only this account's "
 		"rows, by its key\"},"
 		"\"venue\":{\"type\":\"string\",\"description\":\"Only this venue's rows\"},"

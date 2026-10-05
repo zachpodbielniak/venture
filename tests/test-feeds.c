@@ -3111,7 +3111,7 @@ test_feeds_push_refusals(
 		/* Nothing was ever written: no store, or an empty one. */
 		if (NULL != reader)
 		{
-			accounts = venture_series_store_list_accounts(reader, NULL, NULL, 0, &error);
+			accounts = venture_series_store_list_accounts(reader, NULL, NULL, NULL, 0, &error);
 			g_assert_cmpuint(accounts->len, ==, 0);
 		}
 	}
@@ -3484,10 +3484,65 @@ test_feeds_file_jsonl_carries_accounts(
 
 	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
 	g_assert_no_error(error);
-	accounts = venture_series_store_list_accounts(reader, NULL, NULL, 0, &error);
+	accounts = venture_series_store_list_accounts(reader, NULL, NULL, NULL, 0, &error);
 	g_assert_cmpuint(accounts->len, ==, 1);
 	g_assert_true(venture_series_store_count_txns(reader, NULL, &count, &error));
 	g_assert_cmpint(count, ==, 2);
+}
+
+/*
+ * Login lines and an account's `login` member travel the JSON-lines path
+ * into the store: the logins described and the one only named, each
+ * account's login, and a run note that counts them -- said apart, so a
+ * source that sends none keeps its accounts line word for word.
+ *
+ * What breaks if this regresses: tsmctl's exporter sends the new lines
+ * and every push is refused, or the logins are parsed and never stored.
+ */
+static void
+test_feeds_jsonl_carries_logins(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar body[] =
+		"{\"type\":\"login\",\"key\":\"ZAKMANN\",\"name\":\"Main\",\"kind\":\"game_account\","
+		"\"group\":\"bnet-1\"}\n"
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium\",\"kind\":\"character\","
+		"\"login\":\"ZAKMANN\"}\n"
+		"{\"type\":\"account\",\"key\":\"Alt-Thorium\",\"kind\":\"character\","
+		"\"login\":\"53141745#1\"}\n"
+		"{\"type\":\"account\",\"key\":\"warbank:bnet-1\",\"kind\":\"shared\",\"login\":null,"
+		"\"attrs\":{\"login_group\":\"bnet-1\"}}\n";
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GPtrArray) logins = NULL;
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *notes = NULL;
+	gint64 source_id;
+
+	(void)user_data;
+
+	path = write_root_file(fixture, "logins.jsonl", body);
+	source_id = create_source(fixture, "Logins file", "file_jsonl", "file: logins.jsonl\n", "manual");
+	run = sync_and_wait(fixture, source_id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 0);
+	notes = run_text(run, "notes");
+	g_assert_nonnull(strstr(notes, "logins 2 (2 new)"));
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_no_error(error);
+	logins = venture_series_store_list_logins(reader, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(logins->len, ==, 2);
+	accounts = venture_series_store_list_accounts(reader, NULL, NULL, "ZAKMANN", 0, &error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	g_clear_pointer(&accounts, g_ptr_array_unref);
+	accounts = venture_series_store_list_accounts(reader, NULL, NULL, "", 0, &error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesAccountRow *)g_ptr_array_index(accounts, 0))->key, ==, "warbank:bnet-1");
 }
 
 /*
@@ -3593,6 +3648,8 @@ main(
 	           test_feeds_push_waiters_are_bounded, fixture_tear_down);
 	g_test_add("/feeds/file-jsonl-carries-accounts", Fixture, NULL, fixture_set_up,
 	           test_feeds_file_jsonl_carries_accounts, fixture_tear_down);
+	g_test_add("/feeds/jsonl-carries-logins", Fixture, NULL, fixture_set_up,
+	           test_feeds_jsonl_carries_logins, fixture_tear_down);
 	g_test_add("/feeds/push-first-sync-smoke", Fixture, NULL, fixture_set_up,
 	           test_feeds_push_first_sync_smoke, fixture_tear_down);
 	g_test_add("/feeds/settings-are-validated", Fixture, NULL, fixture_set_up,

@@ -1309,10 +1309,11 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "expiring_hours")) &&
 				 (0 != g_strcmp0(parts[0], "mail_days")) &&
 				 (0 != g_strcmp0(parts[0], "stale_days")) &&
-				 (0 != g_strcmp0(parts[0], "dead_days"))))
+				 (0 != g_strcmp0(parts[0], "dead_days")) &&
+				 (0 != g_strcmp0(parts[0], "login"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login");
 				return -1;
 			}
 			g_string_append_c(path, '&');

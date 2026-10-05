@@ -2186,6 +2186,265 @@ test_mirror_deleted_product(
 	}
 }
 
+/* --- Logins in the location chain ---------------------------------------------------- */
+
+/* An account line naming a login ("" for none, NULL for no member). */
+static void
+line_login_account(
+	GString		*body,
+	const gchar	*key,
+	const gchar	*kind,
+	const gchar	*group,
+	const gchar	*login
+){
+	g_string_append_printf(body, "{\"type\":\"account\",\"key\":\"%s\",\"kind\":\"%s\"", key, kind);
+
+	if (NULL != group)
+		g_string_append_printf(body, ",\"group\":\"%s\"", group);
+
+	if (NULL != login)
+		g_string_append_printf(body, ",\"login\":\"%s\"", login);
+
+	g_string_append(body, "}\n");
+}
+
+/* The parent of the location whose reference is @ref. */
+static gint64
+parent_of(
+	Fixture		*fixture,
+	const gchar	*ref
+){
+	g_autoptr(VentureEntity) location = location_by_ref(fixture, fixture->org, ref);
+
+	g_assert_nonnull(location);
+
+	return int_of(location, "parent-id");
+}
+
+static gint64
+id_of_ref(
+	Fixture		*fixture,
+	const gchar	*ref
+){
+	g_autoptr(VentureEntity) location = location_by_ref(fixture, fixture->org, ref);
+
+	g_assert_nonnull(location);
+
+	return ID(location);
+}
+
+/*
+ * A login becomes a place: an account reached through one sits in its
+ * login's realm group (a group per login), inside the login's own place;
+ * a login's bank with no realm sits straight inside the login; accounts
+ * reached through none keep the chain they always had. Each place the
+ * mirror makes for an account records where it put it, and only the
+ * mirror may write that record.
+ *
+ * What breaks if this regresses: two licences' characters on one realm
+ * share a realm place and the books cannot tell which login holds what,
+ * or a person's edit of the record makes the mirror move a place back.
+ */
+static void
+test_mirror_login_chain(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) login = NULL;
+	g_autoptr(VentureEntity) drgold = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autofree gchar *state = NULL;
+	g_autofree gchar *expected = NULL;
+	gint64 login_id;
+	gint64 group_id;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", "account_namespace: ns\n");
+	g_string_append(body, "{\"type\":\"login\",\"key\":\"ZAKMANN\",\"name\":\"Main\"}\n");
+	line_login_account(body, "Drgold-Thorium", "character", "Thorium", "ZAKMANN");
+	line_login_account(body, "warbank:ZAKMANN", "shared", NULL, "ZAKMANN");
+	line_login_account(body, "Alt-Thorium", "character", "Thorium", NULL);
+	line_login_account(body, "warbank:bnet-1", "shared", NULL, "");
+	run = push(fixture, source, body->str);
+	g_assert_true(run_says(run, "4 accounts promoted"));
+
+	login = location_by_ref(fixture, fixture->org, "ns/login:ZAKMANN");
+	g_assert_nonnull(login);
+	login_id = ID(login);
+	{
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *name = NULL;
+
+		g_object_get(login, "kind", &kind, "name", &name, NULL);
+		g_assert_cmpstr(kind, ==, "login");
+		g_assert_cmpstr(name, ==, "Main");
+		g_assert_cmpint(int_of(login, "parent-id"), ==, 0);
+	}
+
+	group_id = id_of_ref(fixture, "ns/login:ZAKMANN/group:Thorium");
+	g_assert_cmpint(parent_of(fixture, "ns/login:ZAKMANN/group:Thorium"), ==, login_id);
+	g_assert_cmpint(parent_of(fixture, "ns:Drgold-Thorium"), ==, group_id);
+	g_assert_cmpint(parent_of(fixture, "ns:warbank:ZAKMANN"), ==, login_id);
+
+	/* No login: the realm's own group, and the top for a bank. */
+	g_assert_cmpint(parent_of(fixture, "ns:Alt-Thorium"), ==, id_of_ref(fixture, "ns/group:Thorium"));
+	g_assert_cmpint(parent_of(fixture, "ns:warbank:bnet-1"), ==, 0);
+
+	/* The record of where the mirror put it. */
+	drgold = location_by_ref(fixture, fixture->org, "ns:Drgold-Thorium");
+	g_object_get(drgold, "mirror-state", &state, NULL);
+	expected = g_strdup_printf("{\"parent_id\":%" G_GINT64_FORMAT "}", group_id);
+	g_assert_cmpstr(state, ==, expected);
+
+	/* Only the mirror writes it; a form posting it back unchanged is
+	 * no write. */
+	g_object_set(drgold, "mirror-state", "{\"parent_id\":1}", NULL);
+	save_refused(fixture, drgold, "only the mirror writes it");
+	g_object_set(drgold, "mirror-state", state, "description", "My gatherer", NULL);
+	save(fixture, drgold);
+
+	/* A person deletes the login's place: it stays deleted, nothing is
+	 * made inside it, and a new character of that login sits at the
+	 * top, as one in a deleted realm place does. */
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) still = NULL;
+		g_autoptr(VentureEntity) group = NULL;
+
+		g_assert_true(venture_database_delete(fixture->database, login, NULL, &error));
+		g_string_truncate(body, 0);
+		line_login_account(body, "Brisk-Silverfen", "character", "Silverfen", "ZAKMANN");
+		g_clear_object(&run);
+		run = push(fixture, source, body->str);
+		still = location_by_ref(fixture, fixture->org, "ns/login:ZAKMANN");
+		g_assert_true(venture_entity_is_deleted(still));
+		group = location_by_ref(fixture, fixture->org, "ns/login:ZAKMANN/group:Silverfen");
+		g_assert_null(group);
+		g_assert_cmpint(parent_of(fixture, "ns:Brisk-Silverfen"), ==, 0);
+	}
+}
+
+/*
+ * A place the mirror put is moved when its account's login or realm
+ * changes, and the move is recorded; a place a person moved since stays
+ * where the person put it, whatever the account does next. A place made
+ * before the mirror kept a record moves only from where the earlier rule
+ * left it; one a person adopted at the top of a realm that has a place
+ * stays.
+ *
+ * What breaks if this regresses: a second licence's characters stay
+ * filed under the first's realm places forever, or a person who moved a
+ * character into "Retired" sees it put back after every push.
+ */
+static void
+test_mirror_login_reparent(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) drgold = NULL;
+	g_autoptr(VentureLocation) retired = NULL;
+	g_autoptr(VentureLocation) old = NULL;
+	g_autoptr(VentureLocation) adopted = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(JsonObject) report = NULL;
+	gint64 realm_group;
+
+	(void)user_data;
+
+	source = push_source(fixture, fixture->org, "Push", "account_namespace: ns\n");
+	line_login_account(body, "Drgold-Thorium", "character", "Thorium", NULL);
+	line_login_account(body, "Herbz-Thorium", "character", "Thorium", NULL);
+	run = push(fixture, source, body->str);
+	realm_group = id_of_ref(fixture, "ns/group:Thorium");
+	g_assert_cmpint(parent_of(fixture, "ns:Drgold-Thorium"), ==, realm_group);
+
+	/* A place from before the record (made by the earlier rule: in its
+	 * realm's place, filed under the source, no state), and one a person
+	 * adopted at the top though its realm has a place. */
+	old = venture_location_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(old), fixture->org);
+	g_object_set(old, "name", "Old", "kind", "character", "parent-id", realm_group, "external-ref",
+	             "ns:Old-Thorium", "data-source-id", ID(source), NULL);
+	save(fixture, old);
+	adopted = venture_location_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(adopted), fixture->org);
+	g_object_set(adopted, "name", "Mine", "kind", "character", "external-ref", "ns:Mine-Thorium",
+	             "data-source-id", ID(source), NULL);
+	save(fixture, adopted);
+
+	/* A person moves Herbz into a place of their own. */
+	retired = venture_location_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(retired), fixture->org);
+	g_object_set(retired, "name", "Retired", NULL);
+	save(fixture, retired);
+	{
+		g_autoptr(VentureEntity) herbz = location_by_ref(fixture, fixture->org, "ns:Herbz-Thorium");
+
+		g_object_set(herbz, "parent-id", ID(retired), NULL);
+		save(fixture, herbz);
+	}
+
+	/* The licences arrive: every account now names one. */
+	g_string_truncate(body, 0);
+	g_string_append(body, "{\"type\":\"login\",\"key\":\"53141745#1\",\"name\":\"Alt\"}\n");
+	line_login_account(body, "Drgold-Thorium", "character", "Thorium", "53141745#1");
+	line_login_account(body, "Herbz-Thorium", "character", "Thorium", "53141745#1");
+	line_login_account(body, "Old-Thorium", "character", "Thorium", "53141745#1");
+	line_login_account(body, "Mine-Thorium", "character", "Thorium", "53141745#1");
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	report = mirror(fixture, source);
+
+	/* The mirror's place moved, and its record with it. */
+	g_assert_cmpint(parent_of(fixture, "ns:Drgold-Thorium"), ==,
+	                id_of_ref(fixture, "ns/login:53141745#1/group:Thorium"));
+	drgold = location_by_ref(fixture, fixture->org, "ns:Drgold-Thorium");
+	{
+		g_autofree gchar *state = NULL;
+		g_autofree gchar *expected = NULL;
+
+		g_object_get(drgold, "mirror-state", &state, NULL);
+		expected = g_strdup_printf("{\"parent_id\":%" G_GINT64_FORMAT "}",
+		                           id_of_ref(fixture, "ns/login:53141745#1/group:Thorium"));
+		g_assert_cmpstr(state, ==, expected);
+	}
+
+	/* From before the record, where the earlier rule left it: moved. */
+	g_assert_cmpint(parent_of(fixture, "ns:Old-Thorium"), ==,
+	                id_of_ref(fixture, "ns/login:53141745#1/group:Thorium"));
+
+	/* The person's: left where they put them, the second pass too. */
+	g_assert_cmpint(parent_of(fixture, "ns:Herbz-Thorium"), ==, ID(retired));
+	g_assert_cmpint(parent_of(fixture, "ns:Mine-Thorium"), ==, 0);
+	g_assert_cmpint(json_object_get_int_member(report, "reparented"), ==, 0);
+	g_assert_cmpint(json_object_get_int_member(report, "locations_kept"), ==, 2);
+
+	/* The login changes again: the mirror's place follows; nothing else. */
+	g_string_truncate(body, 0);
+	line_login_account(body, "Drgold-Thorium", "character", "Thorium", "ZAKMANN");
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	g_assert_cmpint(parent_of(fixture, "ns:Drgold-Thorium"), ==,
+	                id_of_ref(fixture, "ns/login:ZAKMANN/group:Thorium"));
+	g_assert_cmpint(parent_of(fixture, "ns:Herbz-Thorium"), ==, ID(retired));
+
+	/* A person moves the mirror's place: from now on it is theirs. */
+	g_clear_object(&drgold);
+	drgold = location_by_ref(fixture, fixture->org, "ns:Drgold-Thorium");
+	g_object_set(drgold, "parent-id", ID(retired), NULL);
+	save(fixture, drgold);
+	g_string_truncate(body, 0);
+	line_login_account(body, "Drgold-Thorium", "character", "Thorium", "53141745#1");
+	g_clear_object(&run);
+	run = push(fixture, source, body->str);
+	g_assert_cmpint(parent_of(fixture, "ns:Drgold-Thorium"), ==, ID(retired));
+}
+
 int
 main(
 	int	 argc,
@@ -2216,6 +2475,8 @@ main(
 	ADD("/account-mirror/read-bound", test_mirror_read_bound);
 	ADD("/account-mirror/store-bound", test_mirror_store_bound);
 	ADD("/account-mirror/deleted-product", test_mirror_deleted_product);
+	ADD("/account-mirror/login-chain", test_mirror_login_chain);
+	ADD("/account-mirror/login-reparent", test_mirror_login_reparent);
 
 #undef ADD
 

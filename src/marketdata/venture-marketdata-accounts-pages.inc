@@ -453,6 +453,8 @@ acw_attention_list(
 	JsonArray	*rows,
 	guint		 limit
 ){
+	g_autofree gchar *last_group = NULL;
+	gboolean by_login = FALSE;
 	guint i;
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
@@ -463,6 +465,17 @@ acw_attention_list(
 		return;
 	}
 
+	/* Rows arrive grouped by login; with any login named, each group gets
+	 * a heading, since which login to sign in with is the first thing to
+	 * know. Rows with none are reachable from any login. */
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonNode *login = json_object_get_member(json_array_get_object_element(rows, i), "login");
+
+		if ((NULL != login) && JSON_NODE_HOLDS_OBJECT(login))
+			by_login = TRUE;
+	}
+
 	g_string_append(html, "<ol class=\"accounts-attention\">");
 
 	for (i = 0; (i < json_array_get_length(rows)) && ((0 == limit) || (i < limit)); i++)
@@ -470,8 +483,32 @@ acw_attention_list(
 		JsonObject *row = json_array_get_object_element(rows, i);
 		JsonArray *accounts = json_object_get_array_member(row, "accounts");
 		JsonArray *reasons = json_object_get_array_member(row, "reasons");
+		JsonNode *login = json_object_get_member(row, "login");
 		const gchar *severity = mdw_text(row, "severity");
+		g_autofree gchar *group = NULL;
 		guint j;
+
+		if (by_login)
+		{
+			const gchar *name = ((NULL != login) && JSON_NODE_HOLDS_OBJECT(login))
+				? mdw_text(json_node_get_object(login), "name") : NULL;
+			const gchar *key = ((NULL != login) && JSON_NODE_HOLDS_OBJECT(login))
+				? mdw_text(json_node_get_object(login), "key") : NULL;
+
+			/* By key: two logins may share a name. */
+			group = g_strdup_printf("%" G_GINT64_FORMAT "\x1f%s",
+			                        json_object_get_int_member(row, "data_source_id"),
+			                        (NULL != key) ? key : "");
+
+			if ((NULL == last_group) || (0 != g_strcmp0(last_group, group)))
+			{
+				g_string_append(html, "<li class=\"attention-login\" role=\"presentation\">");
+				venture_html_escape_append(html, (NULL != name) ? name : "Any login");
+				g_string_append(html, "</li>");
+				g_free(last_group);
+				last_group = g_strdup(group);
+			}
+		}
 
 		g_string_append_printf(html, "<li class=\"attention-row is-%s\"><div class=\"attention-head\">"
 		                             "<span class=\"badge %s\">%s</span> <span class=\"attention-title\">",
@@ -575,6 +612,7 @@ acw_overview_query(
 
 	query->basis = mdw_param(request, "basis");
 	query->group_key = mdw_param(request, "group");
+	query->login = mdw_param(request, "login");
 	query->sort = mdw_param(request, "sort");
 	query->descending = (0 == g_strcmp0(mdw_param(request, "dir"), "desc"));
 
@@ -651,6 +689,133 @@ acw_stat_money_list(
 	g_string_append(html, "</div>");
 }
 
+/*
+ * A <select> of the logins an answer offers ({key, name} objects), the
+ * chosen one selected; nothing at all for a source that sends no logins,
+ * so a one-login operator's form is as it was.
+ */
+static void
+acw_login_picker(
+	GString		*html,
+	JsonArray	*choices,
+	const gchar	*chosen
+){
+	guint i;
+
+	if ((NULL == choices) || (0 == json_array_get_length(choices)))
+		return;
+
+	g_string_append(html, "<div class=\"field\"><label>Login<select name=\"login\">"
+	                      "<option value=\"\">every login</option>");
+
+	for (i = 0; i < json_array_get_length(choices); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+		const gchar *key = mdw_text(choice, "key");
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, key);
+		g_string_append_printf(html, "\"%s>", (0 == g_strcmp0(key, chosen)) ? " selected" : "");
+		venture_html_escape_append(html, mdw_text(choice, "name"));
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/*
+ * The per-login cards: each login's characters, money, stock, listings
+ * and thirty days, with how many of its places want a visit. Drawn only
+ * when an account has a login; the figures are the answer's sums.
+ */
+static void
+acw_login_cards(
+	GString		*html,
+	JsonArray	*logins,
+	const gchar	*currency
+){
+	g_autofree gchar *gold_label = acw_money_label(currency, "on hand");
+	guint i;
+
+	if ((NULL == logins) || (0 == json_array_get_length(logins)))
+		return;
+
+	g_string_append(html, "<section class=\"accounts-logins\" aria-labelledby=\"logins-h\">"
+	                      "<h2 class=\"section-title\" id=\"logins-h\">By login</h2>"
+	                      "<div class=\"login-cards\">");
+
+	for (i = 0; i < json_array_get_length(logins); i++)
+	{
+		JsonObject *login = json_array_get_object_element(logins, i);
+		const gchar *url = mdw_text(login, "url");
+		gint64 needs = json_object_get_int_member(login, "needs_login");
+		gint64 expired = json_object_get_int_member(login, "positions_expired");
+
+		g_string_append(html, "<article class=\"card login-card\"><div class=\"card-head\"><h3>");
+
+		if (NULL != url)
+		{
+			g_string_append(html, "<a href=\"");
+			venture_html_escape_append(html, url);
+			g_string_append(html, "\">");
+			venture_html_escape_append(html, mdw_text(login, "name"));
+			g_string_append(html, "</a>");
+		}
+		else
+			venture_html_escape_append(html, mdw_text(login, "name"));
+
+		g_string_append(html, "</h3>");
+
+		if (needs > 0)
+			g_string_append_printf(html, "<span class=\"badge warning\">%" G_GINT64_FORMAT
+			                             " to visit</span>", needs);
+
+		/* Characters on realms, then the banks; a card with no
+		 * character (the shared banks) says only what it holds. */
+		{
+			gint64 characters = json_object_get_int_member(login, "characters");
+			gint64 banks = json_object_get_int_member(login, "accounts") - characters;
+			gint64 realms = json_object_get_int_member(login, "realms");
+
+			g_string_append(html, "</div><div class=\"card-body\"><p class=\"login-sub\">");
+
+			if (characters > 0)
+				g_string_append_printf(html, "%" G_GINT64_FORMAT " character%s on %" G_GINT64_FORMAT
+				                             " realm%s", characters, (1 == characters) ? "" : "s",
+				                       realms, (1 == realms) ? "" : "s");
+
+			if (banks > 0)
+				g_string_append_printf(html, "%s%" G_GINT64_FORMAT " bank%s",
+				                       (characters > 0) ? ", " : "", banks, (1 == banks) ? "" : "s");
+		}
+
+		if (NULL != mdw_text(login, "group_key"))
+		{
+			g_string_append(html, " \xc2\xb7 under ");
+			venture_html_escape_append(html, mdw_text(login, "group_key"));
+		}
+
+		g_string_append(html, "</p><dl class=\"login-figures\"><div><dt>");
+		venture_html_escape_append(html, gold_label);
+		g_string_append(html, "</dt><dd class=\"market-figure\">");
+		acw_money_list(html, login, "balances");
+		g_string_append(html, "</dd></div><div><dt>Inventory</dt><dd class=\"market-figure\">");
+		acw_money_list(html, login, "inventory_value");
+		g_string_append_printf(html, "</dd></div><div><dt>Listed</dt><dd>%" G_GINT64_FORMAT,
+		                       json_object_get_int_member(login, "positions"));
+
+		if (expired > 0)
+			g_string_append_printf(html, " <span class=\"badge negative\">%" G_GINT64_FORMAT
+			                             " expired</span>", expired);
+
+		g_string_append(html, "</dd></div><div><dt>Net, 30 days</dt><dd class=\"market-figure\">");
+		acw_money_list(html, login, "net_30d");
+		g_string_append(html, "</dd></div></dl></div></article>");
+	}
+
+	g_string_append(html, "</div></section>");
+}
+
 static HtmxResponse *
 venture_marketdata_web_accounts(
 	HtmxRequest	*request,
@@ -658,7 +823,8 @@ venture_marketdata_web_accounts(
 	gpointer	 data
 ){
 	static const gchar *const kept[] = {
-		"source", "basis", "group", "expiring_hours", "mail_days", "stale_days", "by_realm", NULL
+		"source", "basis", "group", "expiring_hours", "mail_days", "stale_days", "by_realm",
+		"login", "by_login", NULL
 	};
 	VentureWebServer *self = data;
 	g_autoptr(GError) error = NULL;
@@ -672,8 +838,13 @@ venture_marketdata_web_accounts(
 	const gchar *currency;
 	const gchar *sort;
 	const gchar *last_realm = NULL;
+	const gchar *last_login = NULL;
+	JsonArray *logins;
 	gboolean api;
 	gboolean by_realm;
+	gboolean by_login;
+	gboolean has_logins;
+	guint columns;
 	gboolean descending;
 	HtmxResponse *gate;
 	guint i;
@@ -690,12 +861,15 @@ venture_marketdata_web_accounts(
 		return venture_web_error_response(error);
 
 	by_realm = mdw_flag(request, "by_realm");
+	by_login = mdw_flag(request, "by_login");
 
 	/* Grouped by realm, the realm is the first key whatever else sorts;
-	 * with no sort asked, the realms' accounts go by name. */
-	query.realm_first = by_realm;
+	 * with no sort asked, the realms' accounts go by name. Grouped by
+	 * login, the login comes before the realm. */
+	query.realm_first = by_realm || by_login;
+	query.login_first = by_login;
 
-	if (by_realm && (NULL == query.sort))
+	if ((by_realm || by_login) && (NULL == query.sort))
 		query.sort = "realm";
 
 	answer = venture_marketdata_accounts(self->context, &query, &error);
@@ -710,6 +884,10 @@ venture_marketdata_web_accounts(
 	summary = json_object_get_object_member(root, "summary");
 	echo = json_object_get_object_member(root, "query");
 	rows = json_object_get_array_member(root, "accounts");
+	logins = json_object_get_array_member(root, "logins");
+	has_logins = (json_array_get_length(json_object_get_array_member(root, "login_choices")) > 0);
+	by_login = by_login && has_logins;
+	columns = has_logins ? 9 : 8;
 	currency = mdw_text(summary, "currency");
 	sort = mdw_text(echo, "sort");
 	descending = json_object_get_boolean_member(echo, "descending");
@@ -724,6 +902,7 @@ venture_marketdata_web_accounts(
 	                      "market-filters\" aria-label=\"Account filters\">");
 	mdw_source_picker(html, root, json_object_get_int_member(root, "data_source_id"), TRUE);
 	mdw_input(html, request, "Realm", "group", "every realm");
+	acw_login_picker(html, json_object_get_array_member(root, "login_choices"), mdw_text(echo, "login"));
 	acw_select(html, "Value holdings at", "basis", json_object_get_array_member(root, "bases"),
 	           mdw_text(echo, "basis"));
 	mdw_input(html, request, "Listings expiring within (hours)", "expiring_hours", "12");
@@ -732,6 +911,13 @@ venture_marketdata_web_accounts(
 	g_string_append_printf(html, "<div class=\"field\"><label><input type=\"checkbox\" name=\"by_realm\" "
 	                             "value=\"1\"%s> Group the table by realm</label></div>",
 	                       by_realm ? " checked" : "");
+
+	if (has_logins)
+		g_string_append_printf(html, "<div class=\"field\"><label><input type=\"checkbox\" "
+		                             "name=\"by_login\" value=\"1\"%s> Group the table by login, "
+		                             "then realm</label></div>",
+		                       by_login ? " checked" : "");
+
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></details>");
 	mdw_notes(html, root);
 
@@ -770,6 +956,8 @@ venture_marketdata_web_accounts(
 		g_string_append(html, "</div>");
 	}
 
+	acw_login_cards(html, logins, currency);
+
 	/* What to do next, first. */
 	g_string_append(html, "<section class=\"card accounts-attention-card\" aria-labelledby=\"attention-h\">"
 	                      "<div class=\"card-head\"><h2 id=\"attention-h\">Needs attention</h2>"
@@ -786,6 +974,10 @@ venture_marketdata_web_accounts(
 	                      "<div class=\"table-wrap\"><table class=\"data market-table accounts-table\">"
 	                      "<thead><tr>");
 	acw_sort_header(html, request, "/accounts", kept, sort, descending, "name", "Character", FALSE, FALSE);
+
+	if (has_logins)
+		acw_sort_header(html, request, "/accounts", kept, sort, descending, "login", "Login", FALSE, FALSE);
+
 	acw_sort_header(html, request, "/accounts", kept, sort, descending, "realm", "Realm", FALSE, FALSE);
 	acw_sort_header(html, request, "/accounts", kept, sort, descending, "gold",
 	                (0 == g_strcmp0(currency, "GOLD")) ? "Gold" : "Money", TRUE, FALSE);
@@ -808,9 +1000,27 @@ venture_marketdata_web_accounts(
 		gint64 expired = json_object_get_int_member(row, "positions_expired");
 		gint64 expiring = json_object_get_int_member(row, "positions_expiring");
 
-		if (by_realm && ((NULL == last_realm) || (0 != g_strcmp0(last_realm, realm))))
+		/* A login's heading, then each realm's inside it: a new login
+		 * starts its realms over, even one the last login also had. */
+		if (by_login)
 		{
-			g_string_append(html, "<tr class=\"accounts-group-row\"><th scope=\"rowgroup\" colspan=\"8\">");
+			const gchar *login = mdw_text(row, "login_name");
+
+			if ((0 == i) || (0 != g_strcmp0(last_login, (NULL != login) ? login : "")))
+			{
+				g_string_append_printf(html, "<tr class=\"accounts-group-row accounts-login-row\">"
+				                             "<th scope=\"rowgroup\" colspan=\"%u\">", columns);
+				venture_html_escape_append(html, (NULL != login) ? login : "No login");
+				g_string_append(html, "</th></tr>");
+				last_login = (NULL != login) ? login : "";
+				last_realm = NULL;
+			}
+		}
+
+		if ((by_realm || by_login) && ((NULL == last_realm) || (0 != g_strcmp0(last_realm, realm))))
+		{
+			g_string_append_printf(html, "<tr class=\"accounts-group-row\"><th scope=\"rowgroup\" "
+			                             "colspan=\"%u\">", columns);
 			venture_html_escape_append(html, venture_string_is_empty(realm) ? "No realm" : realm);
 			g_string_append(html, "</th></tr>");
 			last_realm = realm;
@@ -838,7 +1048,23 @@ venture_marketdata_web_accounts(
 			g_string_append(html, "</div>");
 		}
 
-		g_string_append(html, "</td><td class=\"nowrap\">");
+		g_string_append(html, "</td>");
+
+		if (has_logins)
+		{
+			const gchar *login = mdw_text(row, "login_name");
+
+			g_string_append(html, "<td class=\"nowrap\">");
+
+			if (NULL != login)
+				venture_html_escape_append(html, login);
+			else
+				g_string_append(html, "<span class=\"muted\">any</span>");
+
+			g_string_append(html, "</td>");
+		}
+
+		g_string_append(html, "<td class=\"nowrap\">");
 		venture_html_escape_append(html, venture_string_is_empty(realm) ? "\xe2\x80\x94" : realm);
 		g_string_append(html, "</td><td class=\"num account-gold\"><span class=\"market-figure\">");
 		acw_money(html, row, "gold");
@@ -879,10 +1105,10 @@ venture_marketdata_web_accounts(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"8\"><div class=\"empty\"><h3>No accounts yet</h3><p>"
-		                      "Accounts arrive with a data source that reports them: push them with "
-		                      "<code>venturectl feeds push</code>, or sync a source whose plugin "
-		                      "exports characters.</p></div></td></tr>");
+		g_string_append_printf(html, "<tr><td colspan=\"%u\"><div class=\"empty\"><h3>No accounts yet</h3><p>"
+		                       "Accounts arrive with a data source that reports them: push them with "
+		                       "<code>venturectl feeds push</code>, or sync a source whose plugin "
+		                       "exports characters.</p></div></td></tr>", columns);
 
 	g_string_append(html, "</tbody></table></div></section>");
 	mdw_attribution(html, root);
@@ -1034,6 +1260,21 @@ venture_marketdata_web_account(
 	{
 		venture_html_escape_append(html, realm);
 		g_string_append(html, " \xc2\xb7 ");
+	}
+
+	/* The login first among the facts that say how to reach it. */
+	if (NULL != mdw_text(account, "login_name"))
+	{
+		g_autoptr(GString) link = g_string_new("/accounts?login=");
+
+		g_string_append_uri_escaped(link, mdw_text(account, "login"), NULL, FALSE);
+		g_string_append_printf(link, "&source=%" G_GINT64_FORMAT,
+		                       json_object_get_int_member(root, "data_source_id"));
+		g_string_append(html, "login <a class=\"account-login\" href=\"");
+		venture_html_escape_append(html, link->str);
+		g_string_append(html, "\">");
+		venture_html_escape_append(html, mdw_text(account, "login_name"));
+		g_string_append(html, "</a> \xc2\xb7 ");
 	}
 
 	venture_html_escape_append(html, mdw_text(account, "kind"));
@@ -1415,7 +1656,7 @@ venture_marketdata_web_inventory(
 ){
 	static const gchar *const kept[] = {
 		"source", "basis", "account", "place", "category", "search", "min_value", "dead", "dead_days",
-		"per_page", NULL
+		"per_page", "login", "group_by", NULL
 	};
 	VentureWebServer *self = data;
 	g_autoptr(GError) error = NULL;
@@ -1460,6 +1701,8 @@ venture_marketdata_web_inventory(
 	query.per_page = (guint)value;
 	query.basis = mdw_param(request, "basis");
 	query.account = mdw_param(request, "account");
+	query.login = mdw_param(request, "login");
+	query.group_by = mdw_param(request, "group_by");
 	query.place = mdw_param(request, "place");
 	query.category = mdw_param(request, "category");
 	query.search = mdw_param(request, "search");
@@ -1491,7 +1734,7 @@ venture_marketdata_web_inventory(
 	{
 		gboolean filtered = (NULL != query.account) || (NULL != query.place) || (NULL != query.category) ||
 		                    (NULL != query.search) || (NULL != query.min_value) || query.dead ||
-		                    (NULL != query.basis);
+		                    (NULL != query.basis) || (NULL != query.login) || (NULL != query.group_by);
 
 		g_string_append_printf(html, "<details class=\"card accounts-controls\"%s><summary>Filter and value"
 		                             "</summary><form method=\"get\" action=\"/accounts/inventory\" "
@@ -1525,7 +1768,15 @@ venture_marketdata_web_inventory(
 		g_string_append(html, "</option>");
 	}
 
-	g_string_append(html, "</select></label></div><div class=\"field\"><label>Place<select name=\"place\">"
+	g_string_append(html, "</select></label></div>");
+	acw_login_picker(html, json_object_get_array_member(root, "logins"), query.login);
+
+	if (json_array_get_length(json_object_get_array_member(root, "logins")) > 0)
+		g_string_append_printf(html, "<div class=\"field\"><label><input type=\"checkbox\" "
+		                             "name=\"group_by\" value=\"login\"%s> Value by login</label></div>",
+		                       (0 == g_strcmp0(query.group_by, "login")) ? " checked" : "");
+
+	g_string_append(html, "<div class=\"field\"><label>Place<select name=\"place\">"
 	                      "<option value=\"\">everywhere but currencies</option>");
 	list = json_object_get_array_member(root, "places");
 
@@ -1572,6 +1823,39 @@ venture_marketdata_web_inventory(
 		mdw_stat_of(html, "Whole inventory", acw_money, root, "portfolio_value");
 		mdw_stat(html, "Held", units);
 		g_string_append(html, "</div>");
+	}
+
+	/* The same holdings login by login, when asked: what each login's
+	 * characters and banks hold, valued line by line as the rows are. */
+	list = json_object_get_array_member(root, "by_login");
+
+	if ((NULL != list) && (json_array_get_length(list) > 0))
+	{
+		g_string_append(html, "<section class=\"card\" aria-labelledby=\"by-login-h\"><div class=\"card-head\">"
+		                      "<h2 id=\"by-login-h\">By login</h2></div><div class=\"table-wrap\">"
+		                      "<table class=\"data market-table\"><thead><tr><th scope=\"col\">Login</th>"
+		                      "<th scope=\"col\" class=\"num\">Lines</th><th scope=\"col\" class=\"num\">"
+		                      "Units</th><th scope=\"col\" class=\"num\">Value</th><th scope=\"col\" "
+		                      "class=\"num\">Of these</th></tr></thead><tbody>");
+
+		for (i = 0; i < json_array_get_length(list); i++)
+		{
+			JsonObject *group = json_array_get_object_element(list, i);
+
+			g_string_append(html, "<tr><td class=\"row-head\">");
+			venture_html_escape_append(html, mdw_text(group, "name"));
+			g_string_append(html, "</td><td class=\"num\">");
+			mdw_int(html, group, "lines");
+			g_string_append(html, "</td><td class=\"num\">");
+			mdw_int(html, group, "units");
+			g_string_append(html, "</td><td class=\"num\">");
+			acw_money(html, group, "value");
+			g_string_append(html, "</td><td class=\"num\">");
+			mdw_percent(html, group, "share", 100.0);
+			g_string_append(html, "</td></tr>");
+		}
+
+		g_string_append(html, "</tbody></table></div></section>");
 	}
 
 	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table "
@@ -1634,6 +1918,14 @@ venture_marketdata_web_inventory(
 
 			g_string_append(html, "<li>");
 			venture_html_escape_append(html, mdw_text(part, "account_name"));
+
+			if (NULL != mdw_text(part, "login_name"))
+			{
+				g_string_append(html, " <span class=\"muted\">(");
+				venture_html_escape_append(html, mdw_text(part, "login_name"));
+				g_string_append(html, ")</span>");
+			}
+
 			g_string_append(html, " <span class=\"muted\">");
 			venture_html_escape_append(html, mdw_text(part, "place_label"));
 			g_string_append(html, "</span> ");
@@ -1906,6 +2198,7 @@ venture_marketdata_web_pnl(
 	query.top = (guint)value;
 	query.group_by = mdw_param(request, "group_by");
 	query.account = mdw_param(request, "account");
+	query.login = mdw_param(request, "login");
 	query.venue = mdw_param(request, "venue");
 	query.instrument = mdw_param(request, "instrument");
 	query.source = mdw_param(request, "label");
@@ -1961,6 +2254,7 @@ venture_marketdata_web_pnl(
 	g_string_append(html, "</select></label></div>");
 	acw_select(html, "Group by", "group_by", json_object_get_array_member(root, "groups"),
 	           mdw_text(root, "group_by"));
+	acw_login_picker(html, json_object_get_array_member(root, "logins"), query.login);
 	mdw_input(html, request, "Account", "account", "an account's key");
 	mdw_input(html, request, "Venue", "venue", "a venue's key");
 	mdw_input(html, request, "Item", "instrument", "an item's key");

@@ -374,6 +374,28 @@ static const gchar series_schema_step_6[] =
 	"CREATE INDEX external_txns_instrument ON external_txns (instrument_key, at);"
 	"CREATE INDEX external_txns_account ON external_txns (account_id, at);";
 
+/*
+ * The logins an operator reaches accounts through. A login is referenced
+ * by key, like a venue or an instrument, and an account names its own:
+ * '' is "reached through none" (a guild bank, a bank several logins
+ * share), so every account stored before this step reads as one with no
+ * login and nothing needs backfilling. The index serves the per-login
+ * filters, which read accounts by login before anything else.
+ */
+static const gchar series_schema_step_7[] =
+	"CREATE TABLE logins ("
+	"  id INTEGER PRIMARY KEY,"
+	"  key TEXT NOT NULL UNIQUE,"
+	"  name TEXT,"
+	"  kind TEXT NOT NULL DEFAULT 'other',"
+	"  group_key TEXT NOT NULL DEFAULT '',"
+	"  attrs TEXT,"
+	"  first_seen INTEGER NOT NULL,"
+	"  last_seen INTEGER NOT NULL"
+	");"
+	"ALTER TABLE accounts ADD COLUMN login TEXT NOT NULL DEFAULT '';"
+	"CREATE INDEX accounts_login ON accounts (login);";
+
 /* Append only: a store records which of these it has run in user_version. */
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
@@ -381,7 +403,8 @@ static const gchar *const series_schema_steps[] = {
 	series_schema_step_3,
 	series_schema_step_4,
 	series_schema_step_5,
-	series_schema_step_6
+	series_schema_step_6,
+	series_schema_step_7
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))

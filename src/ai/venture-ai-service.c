@@ -2743,7 +2743,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"listing_performance, product, category, channel or location; for "
 		"session_performance, activity, category, location or venture; for "
 		"arbitrage_performance, strategy, venue_pair, instrument or month; for "
-		"external_pnl, day, week, month, account, venue, instrument or source", FALSE);
+		"external_pnl, day, week, month, account, venue, instrument, source or login; for "
+		"accounts and account_holdings, login for a row per login", FALSE);
 	/* The aggregate report answers "how much / how many, grouped by
 	 * what" for any type, so it is the report to reach for before
 	 * totalling query results; its options are declared here because a
@@ -2840,7 +2841,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "share", "string",
 		"arbitrage_scan: the percent of a market's sales a lot can expect, 100 by default", FALSE);
 	ai_tool_add_parameter(report, "sort", "string",
-		"arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence; profit by default. accounts: attention, name, realm, gold, positions, expiry, inbound, last_seen or freshness. account_holdings: value, quantity, name, unit_value, accounts or days_of_supply", FALSE);
+		"arbitrage_scan: profit, roi, roi_per_day, annualized, ev or confidence; profit by default. accounts: attention, name, realm, gold, positions, expiry, inbound, last_seen, freshness or login. account_holdings: value, quantity, name, unit_value, accounts or days_of_supply", FALSE);
 	/* The account operations reports (accounts, account_holdings,
 	 * external_pnl): the operator's own characters and banks. */
 	ai_tool_add_parameter(report, "basis", "string",
@@ -2857,6 +2858,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"accounts: an account unseen this many days needs a visit; 14 by default", FALSE);
 	ai_tool_add_parameter(report, "dead_days", "integer",
 		"account_holdings: dead stock only, items with no sale in the ledger for this many days", FALSE);
+	ai_tool_add_parameter(report, "login", "string",
+		"accounts, account_holdings and external_pnl: only the accounts reached through this login (a game account or licence the operator signs in with), by its key in the data source", FALSE);
 	ai_tool_add_parameter(report, "customer_id", "integer", "Customer for a statement", FALSE);
 	ai_tool_add_parameter(report, "vendor_id", "integer", "Supplier for a vendor statement", FALSE);
 	ai_tool_add_parameter(report, "currency", "string", "Book currency to report; for recipe_margin, session_performance and goal_materials, only prices observed in this currency count (the book currency is preferred when omitted)", FALSE);

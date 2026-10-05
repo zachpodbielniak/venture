@@ -230,7 +230,9 @@ belongs.
 ** Nothing is written until it is approved
 
 =GET /api/v1/health= reports =staged_writes: true= on a build that has this
-route. It says what the build can do and deliberately not what the install is
+route (and =account_logins: true= on one whose JSON-lines push reads =login=
+lines and an account's =login=, which an older build refuses whole; see
+[[file:plugins.org][Plugins]]). It says what the build can do and deliberately not what the install is
 doing — health is the one route with no authentication, and how many changes
 are waiting is business activity, behind the viewer role at
 =/api/v1/confirmations=.

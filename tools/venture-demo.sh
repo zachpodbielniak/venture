@@ -2685,7 +2685,7 @@ seed_evermoor_accounts () {
 
     # The places the economy already keeps, claimed by the accounts that
     # are them: "<account_namespace>:<account key>". The mirror then
-    # promotes only the alt and the warband bank.
+    # promotes only the alts and the warband bank.
     ctl update location "${economy[brisk]}" external_ref="evermoor:Brisk-Thornmere" \
         data_source_id="${source}" > /dev/null || die "could not adopt Brisk's location"
     ctl update location "${economy[tallow]}" external_ref="evermoor:Tallow-Silverfen" \

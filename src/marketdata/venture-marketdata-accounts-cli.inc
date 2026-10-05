@@ -22,8 +22,10 @@ static const VentureCliOption venture_cli_accounts_options[] = {
 	{ "mail_days", "mail_days", VENTURE_CLI_OPTION_INT, NULL },
 	{ "stale_days", "stale_days", VENTURE_CLI_OPTION_INT, NULL },
 	{ "sort", "sort", VENTURE_CLI_OPTION_TEXT,
-	  "attention|name|realm|gold|positions|expiry|inbound|last_seen|freshness" },
+	  "attention|name|realm|gold|positions|expiry|inbound|last_seen|freshness|login" },
 	{ "dir", "dir", VENTURE_CLI_OPTION_TEXT, "asc|desc" },
+	{ "login", "login", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "by_login", "by_login", VENTURE_CLI_OPTION_BOOL, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
@@ -59,6 +61,8 @@ static const VentureCliOption venture_cli_accounts_inventory_options[] = {
 	{ "dir", "dir", VENTURE_CLI_OPTION_TEXT, "asc|desc" },
 	{ "page", "page", VENTURE_CLI_OPTION_INT, NULL },
 	{ "per_page", "per_page", VENTURE_CLI_OPTION_INT, NULL },
+	{ "login", "login", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "group_by", "group_by", VENTURE_CLI_OPTION_TEXT, "login" },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
@@ -67,9 +71,10 @@ static const VentureCliOption venture_cli_accounts_pnl_options[] = {
 	{ "source", "source", VENTURE_CLI_OPTION_INT, NULL },
 	{ "data_source_id", "source", VENTURE_CLI_OPTION_INT, NULL },
 	{ "period", "period", VENTURE_CLI_OPTION_TEXT, NULL },
-	{ "group_by", "group_by", VENTURE_CLI_OPTION_TEXT, "day|week|month|account|venue|instrument|source" },
+	{ "group_by", "group_by", VENTURE_CLI_OPTION_TEXT, "day|week|month|account|venue|instrument|source|login" },
 	{ "account", "account", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "account_key", "account", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "login", "login", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "venue", "venue", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "instrument", "instrument", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "label", "label", VENTURE_CLI_OPTION_TEXT, NULL },
@@ -132,6 +137,7 @@ static const VentureCliColumn venture_cli_books_trade_columns[] = {
 static const VentureCliColumn venture_cli_accounts_columns[] = {
 	{ "display_name", "Account", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "key", "Key", VENTURE_CLI_CELL_TEXT, TRUE },
+	{ "login_name", "Login", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "realm", "Realm", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "kind", "Kind", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "gold", "Money", VENTURE_CLI_CELL_MONEY, FALSE },
@@ -141,6 +147,32 @@ static const VentureCliColumn venture_cli_accounts_columns[] = {
 	{ "inbound", "Mail", VENTURE_CLI_CELL_NUMBER, FALSE },
 	{ "last_seen", "Last seen", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "data_source_id", "Source", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ NULL, NULL, 0, FALSE }
+};
+
+/* A login's card, as the overview's `logins` carry it. */
+static const VentureCliColumn venture_cli_login_columns[] = {
+	{ "name", "Login", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "key", "Key", VENTURE_CLI_CELL_TEXT, TRUE },
+	{ "characters", "Characters", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "realms", "Realms", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "balances", "Money", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "inventory_value", "Inventory", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "positions", "Listings", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "positions_expired", "Expired", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "net_30d", "Net, 30 days", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "needs_login", "To visit", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ NULL, NULL, 0, FALSE }
+};
+
+/* The inventory's `by_login`, when group_by=login asked for it. */
+static const VentureCliColumn venture_cli_inventory_login_columns[] = {
+	{ "name", "Login", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "key", "Key", VENTURE_CLI_CELL_TEXT, TRUE },
+	{ "lines", "Lines", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "units", "Units", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "value", "Value", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "share", "Of these", VENTURE_CLI_CELL_FRACTION, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
 
@@ -238,14 +270,17 @@ static const VentureCliColumn venture_cli_flip_columns[] = {
 
 static const gchar venture_cli_accounts_usage[] =
 	"usage: venturectl accounts VERB ...\n"
-	"  list [source=N] [group=REALM] [basis=B] [sort=S] [dir=asc|desc]\n"
-	"       [expiring_hours=N] [mail_days=N] [stale_days=N]\n"
-	"  attention [the same options]     where to log in next, most urgent first\n"
+	"  list [source=N] [group=REALM] [login=KEY] [basis=B] [sort=S] [dir=asc|desc]\n"
+	"       [expiring_hours=N] [mail_days=N] [stale_days=N] [by_login=true]\n"
+	"                                   with logins, a table of them follows the accounts\n"
+	"  attention [the same options]     where to log in next, a login at a time, most\n"
+	"                                   urgent first\n"
 	"  show SOURCE_ID KEY [basis=B] [ledger=N]\n"
-	"  inventory [source=N] [account=KEY] [place=P] [category=PATH] [search=TEXT]\n"
-	"            [min_value=\"100.00 GOLD\"] [dead=true] [dead_days=N] [basis=B]\n"
-	"            [sort=S] [dir=asc|desc] [page=N] [per_page=N]\n"
-	"  pnl [source=N] [period=P] [group_by=G] [account=KEY] [venue=KEY]\n"
+	"  inventory [source=N] [account=KEY] [login=KEY] [place=P] [category=PATH]\n"
+	"            [search=TEXT] [min_value=\"100.00 GOLD\"] [dead=true] [dead_days=N]\n"
+	"            [basis=B] [sort=S] [dir=asc|desc] [page=N] [per_page=N]\n"
+	"            [group_by=login]\n"
+	"  pnl [source=N] [period=P] [group_by=G] [account=KEY] [login=KEY] [venue=KEY]\n"
 	"      [instrument=KEY] [label=TEXT] [top=N]\n"
 	"  post SOURCE_ID [from=DATE] [until=DATE] [account=KEY] [dry_run=true]\n"
 	"                                   the source's ledger into the books, a journal per\n"
@@ -260,12 +295,16 @@ static const gchar venture_cli_accounts_usage[] =
 	"region_sale_avg.\n"
 	"Examples:\n"
 	"  venturectl accounts attention\n"
+	"  venturectl accounts attention login=ZAKMANN\n"
 	"  venturectl accounts list sort=gold dir=desc\n"
+	"  venturectl accounts list by_login=true\n"
 	"  venturectl accounts show 4 \"Drgold-Thorium Brotherhood\"\n"
 	"  venturectl accounts inventory place=bank min_value=\"500.00 GOLD\"\n"
 	"  venturectl accounts inventory dead=true dead_days=45 sort=value\n"
 	"  venturectl accounts pnl period=last_90_days group_by=week\n"
 	"  venturectl accounts pnl group_by=instrument account=\"Drgold-Thorium Brotherhood\"\n"
+	"  venturectl accounts pnl group_by=login period=last_90_days\n"
+	"  venturectl accounts inventory group_by=login\n"
 	"  venturectl accounts post 4 dry_run=true\n"
 	"  venturectl accounts post 4 until=2026-10-01\n"
 	"  venturectl accounts record-flips 4 min_profit=\"5.0000 GOLD\"";
@@ -277,8 +316,10 @@ venture_cli_accounts_print_attention(
 	VentureCli	*cli,
 	JsonNode	*answer
 ){
+	g_autofree gchar *last_group = NULL;
 	JsonObject *root;
 	JsonArray *rows;
+	gboolean by_login = FALSE;
 	guint i;
 
 	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) || !JSON_NODE_HOLDS_OBJECT(answer))
@@ -293,11 +334,48 @@ venture_cli_accounts_print_attention(
 	if (((NULL == rows) || (0 == json_array_get_length(rows))) && !cli->quiet)
 		g_print("Nothing needs a login.\n");
 
+	/* Rows come a login at a time; with any login named, each login's
+	 * places go under its name, the costly switch said once. */
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonNode *login = json_object_get_member(json_array_get_object_element(rows, i), "login");
+
+		if ((NULL != login) && JSON_NODE_HOLDS_OBJECT(login))
+			by_login = TRUE;
+	}
+
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
 	{
 		JsonObject *row = json_array_get_object_element(rows, i);
 		JsonArray *reasons = json_object_get_array_member(row, "reasons");
+		JsonNode *login = json_object_get_member(row, "login");
+		const gchar *name = NULL;
 		guint j;
+
+		if (by_login)
+		{
+			g_autofree gchar *group = NULL;
+			const gchar *key = NULL;
+
+			if ((NULL != login) && JSON_NODE_HOLDS_OBJECT(login))
+			{
+				name = venture_json_object_get_string(json_node_get_object(login), "name", NULL);
+				key = venture_json_object_get_string(json_node_get_object(login), "key", NULL);
+			}
+
+			/* By key: two logins may share a name. */
+			group = g_strdup_printf("%" G_GINT64_FORMAT "\x1f%s",
+			                        json_object_get_int_member_with_default(row, "data_source_id", 0),
+			                        (NULL != key) ? key : "");
+
+			if ((NULL == last_group) || (0 != g_strcmp0(group, last_group)))
+			{
+				g_print("%s== %s ==\n", (NULL != last_group) ? "\n" : "",
+				        (NULL != name) ? name : "Any login");
+				g_free(last_group);
+				last_group = g_steal_pointer(&group);
+			}
+		}
 
 		g_print("%s  [%s]\n", venture_json_object_get_string(row, "title", ""),
 		        venture_json_object_get_string(row, "severity", ""));
@@ -314,7 +392,8 @@ venture_cli_accounts_print_attention(
 	venture_cli_print_notes(cli, root);
 }
 
-/* The money arrays of the summary as one line each, for the figures. */
+/* The money arrays of the summary, or of a login's card (the same
+ * members), as one line each, for the figures. */
 static void
 venture_cli_accounts_flatten_money(JsonObject *summary)
 {
@@ -570,6 +649,29 @@ venture_cli_command_accounts(
 
 		venture_cli_print_answer(cli, response, "accounts", venture_cli_accounts_columns,
 		                         "No accounts yet: push them with venturectl feeds push.");
+
+		/* Each login's sums, when the source sends logins. Money cells
+		 * flattened in a copy, as the summary's are. */
+		if ((VENTURE_OUTPUT_FORMAT_TABLE == cli->format) && JSON_NODE_HOLDS_OBJECT(response) &&
+		    (json_array_get_length(json_object_get_array_member(json_node_get_object(response),
+		                                                        "logins")) > 0))
+		{
+			g_autofree gchar *text = json_to_string(response, FALSE);
+			g_autoptr(JsonNode) fresh = json_from_string(text, NULL);
+			JsonArray *logins = (NULL != fresh)
+				? json_object_get_array_member(json_node_get_object(fresh), "logins") : NULL;
+			guint i;
+
+			for (i = 0; (NULL != logins) && (i < json_array_get_length(logins)); i++)
+				venture_cli_accounts_flatten_money(json_array_get_object_element(logins, i));
+
+			if (NULL != fresh)
+			{
+				g_print("\nBy login\n");
+				venture_cli_print_answer(cli, fresh, "logins", venture_cli_login_columns, "");
+			}
+		}
+
 		return 0;
 	}
 
@@ -649,6 +751,15 @@ venture_cli_command_accounts(
 		}
 
 		venture_cli_print_answer(cli, response, "rows", venture_cli_inventory_columns, "Nothing held matches.");
+
+		if ((VENTURE_OUTPUT_FORMAT_TABLE == cli->format) && JSON_NODE_HOLDS_OBJECT(response) &&
+		    (json_array_get_length(json_object_get_array_member(json_node_get_object(response),
+		                                                        "by_login")) > 0))
+		{
+			g_print("\nBy login\n");
+			venture_cli_print_answer(cli, response, "by_login", venture_cli_inventory_login_columns, "");
+		}
+
 		return 0;
 	}
 

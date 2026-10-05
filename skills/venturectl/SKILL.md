@@ -143,10 +143,10 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `market venues [source=N] [group=G] [organization_id=N]` | the venue index: cheaper/equal/dearer than the region, update interval, data age (`venues`) |
 | `market instrument SOURCE_ID KEY [venue=KEY] [units=N] [organization_id=N]` | one instrument: its figures, every venue's row, history; `units=` prices a bulk buy (`bulk`) |
 | `market watchlist [ID] [organization_id=N]` | the watchlists, or one priced now against its targets (`entries`); `watchlists` is the same verb |
-| `accounts [list\|attention] [source=N] [group=REALM] [basis=B] [expiring_hours=N] [mail_days=N] [stale_days=N] [sort=S] [dir=asc\|desc] [organization_id=N]` | the operator's characters and banks, as `/accounts` shows them: `summary` (money on hand, inventory value, listed, mail, 30-day net), `attention` (where to log in next, most urgent first, each with its reasons), `accounts` (one row each). `attention` prints just the places and reasons |
+| `accounts [list\|attention] [source=N] [group=REALM] [login=KEY] [by_login=true] [basis=B] [expiring_hours=N] [mail_days=N] [stale_days=N] [sort=S] [dir=asc\|desc] [organization_id=N]` | the operator's characters and banks, as `/accounts` shows them: `summary` (money on hand, inventory value, listed, mail, 30-day net, `logins`), `logins` (a card per login: its sums; "No login" last), `attention` (where to log in next, most urgent first, grouped a login at a time, each with its reasons), `accounts` (one row each, with `login`/`login_name`). `attention` prints just the places and reasons, under a heading per login |
 | `accounts show SOURCE_ID KEY [basis=B] [ledger=N] [organization_id=N]` | one account: listings against the market (`undercut`, `vs_market_pct`, `urgency`), mail, holdings by place valued, the newest ledger rows. KEY is the account's key in the store (`"Drgold-Thorium Brotherhood"`); a `/` in it is fine |
-| `accounts inventory [source=N] [account=KEY] [place=P] [category=PATH] [search=T] [min_value="100.00 GOLD"] [dead=true] [dead_days=N] [basis=B] [sort=S] [dir=asc\|desc] [page=N] [per_page=N] [organization_id=N]` | everything held, per item across accounts, valued (`rows`, `totals`, `portfolio_value`) |
-| `accounts pnl [source=N] [period=P] [group_by=G] [account=KEY] [venue=KEY] [instrument=KEY] [label=TEXT] [top=N] [organization_id=N]` | the source's own trading ledger summed (`totals`, `buckets`, `top_items`) and the `flips` (buys matched to later sales, first in first out) |
+| `accounts inventory [source=N] [account=KEY] [login=KEY] [group_by=login] [place=P] [category=PATH] [search=T] [min_value="100.00 GOLD"] [dead=true] [dead_days=N] [basis=B] [sort=S] [dir=asc\|desc] [page=N] [per_page=N] [organization_id=N]` | everything held, per item across accounts, valued (`rows`, `totals`, `portfolio_value`; `by_login` with `group_by=login`) |
+| `accounts pnl [source=N] [period=P] [group_by=G] [account=KEY] [login=KEY] [venue=KEY] [instrument=KEY] [label=TEXT] [top=N] [organization_id=N]` | the source's own trading ledger summed (`totals`, `buckets`, `top_items`) and the `flips` (buys matched to later sales, first in first out) |
 | `accounts post SOURCE_ID [from=DATE] [until=DATE] [account=KEY] [dry_run=true] [organization_id=N]` | **writes to the books**: the source's external ledger as one journal per account per day (needs the source's `books: daily`); `--stage` proposes it. Answer: the data source with the pass in `result` (JSON text: `days_by_status`, `days[]`, `capital`, `notes`) |
 | `accounts record-flips SOURCE_ID [from=DATE] [until=DATE] [instrument=KEY] [min_profit="5.0000 GOLD"] [limit=N] [dry_run=true] [organization_id=N]` | **writes to the books**: each sale matched FIFO to earlier buys becomes a closed `arbitrage_trade` (strategy `flip`), once (needs `books: trades`); `--stage` proposes it |
 | `market alerts [count=N] [organization_id=N]` | the alert rules and the recent hits |
@@ -1098,9 +1098,13 @@ calls.
   decimal places, the wrong currency) takes that kind out of its account's
   `account_snapshot`: what the store had of it is kept, not swept, and
   the run's notes say so. Fix the line and push again.
-- The account-operations lines (`account`, `account_snapshot`, `balance`,
-  `holding`, `position`, `inbound`, `txn`; docs/plugins.org) refuse an
-  unknown member, and their money is in the **data source's** currency:
+- The account-operations lines (`login`, `account`, `account_snapshot`,
+  `balance`, `holding`, `position`, `inbound`, `txn`; docs/plugins.org)
+  refuse an unknown member. A `login` (`key`; `name`, `kind`
+  game_account|platform_account|other, `group`, `attrs`) is a credential
+  -- tsmctl: one per WoW account folder; an `account`'s `login` names it
+  (absent/null keeps the stored login, `""` clears it). Their money is in the
+  **data source's** currency:
   set the source's `currency` (a `balance` in another is refused and
   noted). An `account_snapshot` replaces the covered kinds of that one
   account and must come before its rows. Ledger `txn` rows upsert on `id`:
@@ -1108,7 +1112,9 @@ calls.
   records -- no `list` verb reads it, except what the mirror below copies.
 - After every run the marketdata module **mirrors** a source's accounts
   into `location` records (kind `character`/`shared`/`guild`/`other`,
-  inside a `group` location per realm) and its open positions into
+  inside a `group` location per realm -- per realm *per login*, inside a
+  `login` location, for an account that names a login; a place a person
+  moved is never moved back) and its open positions into
   `listing` records (`list listing data_source_id=ID outcome=open`; their
   `external_id` is `<source uuid>:<position id>`). A gone position is closed
   from the ledger: sold, partial, expired, or cancelled after
@@ -1296,8 +1302,10 @@ A data source that reports the operator's own accounts (a `push` source fed
 by tsmctl, say) has four pages under Trading > Your accounts, each with a
 JSON twin and an `accounts` verb (table above):
 
-- **Where to log in next** is `accounts attention`: one row per realm (an
-  account's group; a shared bank is its own place), most urgent first --
+- **Where to log in next** is `accounts attention`: one row per realm per
+  login (an account's group; a shared bank is its own place), grouped a
+  login at a time ("Log in to Main → Thornmere"; `login` on each row),
+  most urgent first within and across --
   listings already expired, listings and mail about to expire, then money
   or items waiting in the mail, then accounts not seen in `stale_days`
   (14). Thresholds: `expiring_hours` (12, 1-720), `mail_days` (3, 1-60),
@@ -1313,22 +1321,30 @@ JSON twin and an `accounts` verb (table above):
   unless asked for by place.
 - **Dead stock** is `accounts inventory dead=true dead_days=N`: items with
   no sale in the ledger for N days (30).
+- **Logins.** `login=KEY` (the login's key, e.g. tsmctl's folder
+  `ZAKMANN`) narrows `list`, `attention`, `inventory` and `pnl`;
+  `group_by=login` on `inventory`/`pnl` and `by_login=true` on `list` group
+  by it. The cards add up to the summary; a shared warband or guild bank
+  is "No login", counted once. A `login` that matches nothing is an empty
+  answer, not an error -- read `login_choices` (or `summary.logins`) for
+  the keys.
 - **Trading P&L** is the source's ledger, not the books: `accounts pnl
-  period=last_90_days group_by=week|month|account|instrument|venue|source`.
+  period=last_90_days group_by=week|month|account|instrument|venue|source|login`.
   Sales are after the venue's cut; `net` = sales + income - purchases -
   expenses, per currency, integers. Flips match buys to later sales FIFO;
   `open_units` is bought and not yet sold, `held` what the accounts hold now.
 - Reports: `report accounts`, `report account_holdings` (**not**
   `holdings`, which is the ledger's report of what each location holds in
   the books) and `report external_pnl` (the period is its window), with
-  options `data_source_id`, `group_key`, `basis`, `expiring_hours`,
-  `mail_days`, `stale_days`, `sort` / `account_key`, `place`,
-  `category_path`, `min_value`, `dead_days`, `top` / `group_by`,
-  `account_key`, `venue`, `instrument`, `source`.
+  options `data_source_id`, `group_key`, `login`, `group_by` (`login`),
+  `basis`, `expiring_hours`, `mail_days`, `stale_days`, `sort` /
+  `account_key`, `login`, `group_by` (`login`), `place`, `category_path`,
+  `min_value`, `dead_days`, `top` / `group_by` (`login` among them),
+  `account_key`, `login`, `venue`, `instrument`, `source`.
   `report listing_performance group_by=location` gives a sale rate per
   character (each mirrored account is a location).
 - Dashboard kinds: `accounts_attention`, `accounts_summary`,
-  `holdings_value`, `external_pnl`; the `operations` template puts them
+  `holdings_value`, `external_pnl` (each takes `options.login`); the `operations` template puts them
   together (`dashboard create operations organization_id=N` -- file it
   under the organization whose accounts it shows, or it opens in the
   default one and shows nothing).

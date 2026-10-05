@@ -954,6 +954,7 @@ worker_ingest_accounts(
 	g_autoptr(GArray) balances = NULL;
 	g_autoptr(GArray) inbound = NULL;
 	g_autoptr(GArray) txns = NULL;
+	g_autoptr(GArray) logins = NULL;
 	VentureSeriesAccountBatch view;
 	VentureSeriesAccountResult result;
 	gint64 dropped;
@@ -1040,7 +1041,25 @@ worker_ingest_accounts(
 			g_array_append_val(txns, row);
 		}
 
+		/* A login's name and attributes are the producer's text like an
+		 * account's, and are redacted the same way. */
+		logins = g_array_sized_new(FALSE, FALSE, sizeof(VentureSeriesLogin), view.n_logins);
+
+		for (i = 0; i < view.n_logins; i++)
+		{
+			VentureSeriesLogin row = view.logins[i];
+			gchar *name = worker_redact(source, row.name);
+			gchar *attrs = worker_redact(source, row.attrs_json);
+
+			g_ptr_array_add(owned, name);
+			g_ptr_array_add(owned, attrs);
+			row.name = name;
+			row.attrs_json = attrs;
+			g_array_append_val(logins, row);
+		}
+
 		view.accounts = (const VentureSeriesAccount *)(gpointer)accounts->data;
+		view.logins = (const VentureSeriesLogin *)(gpointer)logins->data;
 		view.inbound = (const VentureSeriesInbound *)(gpointer)inbound->data;
 		view.txns = (const VentureSeriesTxn *)(gpointer)txns->data;
 	}
@@ -1067,6 +1086,17 @@ worker_ingest_accounts(
 		                       unit, result.accounts, result.accounts_new, result.holdings,
 		                       result.positions, result.inbound, result.balances, result.removed,
 		                       result.txns_new, result.txns_updated, result.txns_unchanged);
+		venture_feed_run_add_note(run, note);
+	}
+
+	/* Said apart, and only when a login was named, so the accounts line
+	 * reads as it always has for a source that sends none. */
+	if (result.logins > 0)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("%s: logins %" G_GINT64_FORMAT " (%" G_GINT64_FORMAT " new)",
+		                       unit, result.logins, result.logins_new);
 		venture_feed_run_add_note(run, note);
 	}
 

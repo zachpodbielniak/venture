@@ -89,6 +89,17 @@ venture_market: scope          # AuctionDB figures: scope, all or none
 venture_token_file: ~/.config/tsmctl/venture-token
 #+end_src
 
+*Two WoW accounts (licences) on one machine.* tsmctl reads every account folder under =WTF/Account/= -- =ZAKMANN= and =53141745#1=, say -- and exports each as a *login*: a =login= line keyed by the folder's name, named by =account_labels= in its config, with every character's =account= line naming its folder in =login=. Each folder keeps its own warband bank, =warbank:<folder>=, under its login; with the licences mapped to one Battle.net account (=battlenet_groups=) and =warband: shared=, their warbands are one account, =warbank:<group>=, under no login, counted once. VENTURE then says on every page which login each character belongs to, and its attention list says which login to sign in with first ([[file:../market-data.org::*Logins][Market data: logins]]):
+
+#+begin_src yaml
+account_labels:
+  ZAKMANN: Main
+  "53141745#1": Alt account
+battlenet_groups:          # optional: licences that share a Battle.net account
+  bnet-main: [ZAKMANN, "53141745#1"]
+warband: per_account       # or shared, with the groups above
+#+end_src
+
 The token goes in a file only you can read. tsmctl refuses a token file with any group or other permission, never takes the token on its command line (argv is readable by every user through =/proc=), sends it only in the =Authorization= header, refuses plain =http://= to anything but this machine, and refuses redirects rather than follow one with the header attached:
 
 #+begin_src sh
@@ -191,7 +202,9 @@ Pick the organization in the sidebar, then *Trading -> Your accounts*.
 
 ** Overview: =/accounts=
 
-The top of the page is the attention list, one entry per realm, sorted by what is most overdue:
+With more than one login, a card per login comes first: its characters and realms, its gold, what its bags are worth, its listings and its thirty days' net, and how many of its places need a visit -- the cards add up to the headline, and a shared warband or a guild bank is its own "No login" card, counted once. Then the attention list, one entry per realm *per login*, titled "Log in to Main → Thornmere", sorted by what is most overdue and then grouped by login under a heading each: everything to do on one licence before you sign out of it for the other. =login=ZAKMANN= narrows the whole page to one login.
+
+The attention list's reasons:
 
 | Reason | When |
 |--------+------|
@@ -201,7 +214,7 @@ The top of the page is the attention list, one entry per realm, sorted by what i
 | waiting in the mail | gold or items to collect |
 | not seen | a character not seen in use for =stale_days= (14); banks are never stale, they are opened through a character |
 
-Below it: gold on hand, inventory value, what is listed at buyout, what waits in the mail and the last thirty days' net, then every account with its gold, a thirty-day trend, listings, mail and when it was last seen. =by_realm=1= groups them by realm.
+Below it: gold on hand, inventory value, what is listed at buyout, what waits in the mail and the last thirty days' net, then every account with its login, gold, a thirty-day trend, listings, mail and when it was last seen. =by_realm=1= groups them by realm; =by_login=1= by login, then realm.
 
 ** One account: =/accounts/<source>/<key>=
 
@@ -209,19 +222,22 @@ Its gold over ninety days, its holdings by place (bags, bank, reagent bank, mail
 
 ** Inventory: =/accounts/inventory=
 
-Every item across every account and place, summed, valued, and sorted by value. The default basis, =conservative=, is the lower of the region's sale average and the realm's market value -- what the stack would really fetch, not what the most hopeful listing asks -- and =market=, =min=, =historical=, =region_market= and =region_sale_avg= are the others. Days of supply divide what you hold by what the region sells a day (TSM's =sold_per_day= where the store has none of its own); =dead=1= shows what has not sold in =dead_days= (30).
+Every item across every account and place, summed, valued, and sorted by value; =login== narrows it to one login's characters and banks, and "Value by login" (=group_by=login=) adds what each login holds. The default basis, =conservative=, is the lower of the region's sale average and the realm's market value -- what the stack would really fetch, not what the most hopeful listing asks -- and =market=, =min=, =historical=, =region_market= and =region_sale_avg= are the others. Days of supply divide what you hold by what the region sells a day (TSM's =sold_per_day= where the store has none of its own); =dead=1= shows what has not sold in =dead_days= (30).
 
 ** Profit and loss: =/accounts/pnl=
 
-TSM's ledger as a P&L for a period, by day, week, month, account, realm, item or source (Auction, Vendor, Postage...): sales after the house's cut, purchases, other income and expenses, units expired and cancelled, and the net; the top items by profit; and the flips -- buys matched to later sales first in first out, per item, with cost, proceeds, profit and return, and what was bought and is still held. It answers what =tsmctl pnl= and =tsmctl flips= answer, over everything every push has sent.
+TSM's ledger as a P&L for a period, by day, week, month, account, login, realm, item or source (Auction, Vendor, Postage...), for every login or one: sales after the house's cut, purchases, other income and expenses, units expired and cancelled, and the net; the top items by profit; and the flips -- buys matched to later sales first in first out, per item, with cost, proceeds, profit and return, and what was bought and is still held. It answers what =tsmctl pnl= and =tsmctl flips= answer, over everything every push has sent.
 
 ** From the command line
 
 #+begin_src sh
-venturectl accounts attention organization_id=2              # where to log in next
+venturectl accounts attention organization_id=2              # where to log in next, a login at a time
+venturectl accounts attention login=ZAKMANN organization_id=2  # one login's places
+venturectl accounts list by_login=true organization_id=2       # by login, then realm; the logins after
 venturectl accounts show 7 "Drgold-Thorium Brotherhood" organization_id=2
 venturectl accounts inventory sort=value per_page=20 organization_id=2
 venturectl accounts pnl period=last_90_days group_by=instrument organization_id=2
+venturectl accounts pnl group_by=login organization_id=2      # what each WoW account made
 venturectl report accounts organization_id=2 data_source_id=7  # the same figures as a report
 #+end_src
 
@@ -229,7 +245,7 @@ venturectl report accounts organization_id=2 data_source_id=7  # the same figure
 
 After every run the mirror ([[file:../market-data.org::*Accounts and positions in the books][Market data: accounts and positions in the books]]) brings two things into the main database:
 
-- every account becomes a =location= -- a character inside a location for its realm, the warband bank and guild banks beside them -- referenced ="<account_namespace>:<key>"=. A location you already keep for a character is adopted by giving it that =external_ref= (and the source as =data_source_id=): =venturectl update location 12 external_ref="wow:Drgold-Thorium Brotherhood" data_source_id=7=. Its holding account is then the purse the books post into;
+- every account becomes a =location= -- a character inside a location for its realm, inside a location for its login (="<account_namespace>/login:<folder>"=, then ="…/login:<folder>/group:<realm>"=), its login's warband bank inside the login, a shared warband and the guild banks with no login beside them -- referenced ="<account_namespace>:<key>"=. A place the mirror made follows its character when a login appears or changes; a place you moved by hand stays where you put it ([[file:../market-data.org::*Where a place sits, and a person's move][Market data: where a place sits]]). A location you already keep for a character is adopted by giving it that =external_ref= (and the source as =data_source_id=): =venturectl update location 12 external_ref="wow:Drgold-Thorium Brotherhood" data_source_id=7=. Its holding account is then the purse the books post into;
 - every posted auction becomes an open =listing= at its realm, posted by its character, for the item's product. When it disappears from a later push it is closed from the ledger: =sold= or =partial= when sale rows account for it, =expired= or =cancelled= when expired or cancelled rows do, judged from the expiry when the ledger is silent. A listing you edit by hand is never touched again by the mirror.
 
 Undercut alerts, the =listing_performance= report's sale rate (=group_by=location= is per character) and the =upcoming= widget then work on your real auctions.
@@ -292,7 +308,7 @@ VENTURE, tsmctl and this page are not affiliated with or endorsed by TradeSkillM
 
 * The demo
 
-=make demo= builds this for its game organization, Evermoor Trading: =tools/venture-demo-accounts.sh= writes what tsmctl would push about Brisk (a gatherer on Thornmere), Tallow (a crafter on Silverfen), an alt on Duskwatch nobody has visited for three weeks, the warband bank and the guild bank -- sixty days of gold and ledger, forty auctions, mail and AuctionDB figures -- and the demo pushes it with =venturectl feeds push= to "Evermoor accounts (tsmctl)", a push source sharing the market source's namespaces. Brisk's and Tallow's existing locations are adopted by their external references, so their purses take the books, which post daily (=books: daily=, =venturectl accounts post=). Three alert rules (auctions running out, which fires; mail about to be lost; alts away a month, which does not) and the Operations dashboard complete it. =tests/demo-accounts.sh= replays the generated body at awkward clock times and fails if any purse would be spent before it was funded.
+=make demo= builds this for its game organization, Evermoor Trading: =tools/venture-demo-accounts.sh= writes what tsmctl would push about two WoW accounts: on "Main", Brisk (a gatherer on Thornmere), Tallow (a crafter on Silverfen), an alt on Duskwatch nobody has visited for three weeks and Main's warband bank; on "Alt account", Wren on Moonwell, with an auction that ran out after the logout and one about to; and the guild bank, which any login reaches -- sixty days of gold and ledger, forty-two auctions, mail and AuctionDB figures -- and the demo pushes it with =venturectl feeds push= to "Evermoor accounts (tsmctl)", a push source sharing the market source's namespaces. Brisk's and Tallow's existing locations are adopted by their external references, so their purses take the books, which post daily (=books: daily=, =venturectl accounts post=). Three alert rules (auctions running out, which fires; mail about to be lost; alts away a month, which does not) and the Operations dashboard complete it. =tests/demo-accounts.sh= replays the generated body at awkward clock times and fails if any purse would be spent before it was funded.
 
 #+begin_src sh
 tools/venture-demo-accounts.sh --out - --anchor "$(( $(date +%s) / 3600 * 3600 ))" | head -20
@@ -318,6 +334,8 @@ tools/venture-demo-accounts.sh --out - --anchor "$(( $(date +%s) / 3600 * 3600 )
 | exec run fails "tsmctl is not on the server's PATH" | the server's =PATH= (as it was when the plugin loaded) has no tsmctl | install it where the server's user finds it and restart, or push instead |
 | exec run fails "tsmctl export exited with status N" | tsmctl failed: usually ssh (no agent socket, a host key prompt) | run the same =tsmctl export --check= as the server's user; read the run's error, which quotes tsmctl's standard error |
 | =accounts post= reports days "no place" | the character's location was deleted | restore it, or leave that character out of the books |
+| every character shows "any" for its login | the export predates logins, or sends none | update tsmctl; an account line without =login= keeps what VENTURE has, an empty one clears it |
+| a character's place did not move under its login | you (or anyone) moved it by hand, or its login's or realm's place was deleted | move it yourself; the mirror moves only places it put where they are, and never restores a deleted parent |
 | the Operations dashboard is empty | it is filed under another organization than the source | =venturectl dashboard create operations organization_id=N= in the source's organization |
 
 * Files

@@ -105,7 +105,8 @@ TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 # The members each account-operations kind may carry: anything else is
 # refused by the server, the whole push with it.
 MEMBERS = {
-    "account": ({"type", "key", "kind"}, {"name", "group", "venue", "last_seen", "attrs"}),
+    "login": ({"type", "key"}, {"name", "kind", "group", "attrs"}),
+    "account": ({"type", "key", "kind"}, {"name", "group", "venue", "last_seen", "attrs", "login"}),
     "account_snapshot": ({"type", "account", "at", "covers"}, set()),
     "balance": ({"type", "account", "currency", "amount"}, {"at"}),
     "holding": ({"type", "account", "place", "instrument", "quantity"}, {"at"}),
@@ -132,7 +133,7 @@ def when(text):
                .replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
-venues, instruments, accounts = set(), set(), {}
+venues, instruments, accounts, logins = set(), set(), {}, {}
 snapshotted, rows_seen = {}, set()
 balances, txns, positions, inbound, ids = {}, [], [], [], set()
 last_txn_at = 0
@@ -159,10 +160,20 @@ for n, line in enumerate(open(path, encoding="utf-8"), 1):
         venues.add(message["key"])
     elif kind == "instrument":
         instruments.add(message["key"])
+    elif kind == "login":
+        if message["key"] in logins:
+            die(n, "a login described twice")
+        if message.get("kind", "other") not in ("game_account", "platform_account", "other"):
+            die(n, "a login kind outside the contract")
+        logins[message["key"]] = message
     elif kind == "account":
         accounts[message["key"]] = message
         if message["kind"] not in ("character", "shared", "guild", "other"):
             die(n, "an account kind outside the contract")
+        # Described before it is named: the store would create a named
+        # login bare, and the name the page shows would arrive later.
+        if "login" in message and message["login"] not in logins:
+            die(n, "an account names a login no login line described before it")
     elif kind == "account_snapshot":
         account = message["account"]
         if account in snapshotted:
@@ -287,8 +298,17 @@ def require(condition, what):
         print(f"not ok at anchor {anchor}: {what}", file=sys.stderr)
         sys.exit(1)
 
-require(len(accounts) == 5, "five accounts")
-require(len(positions) == 40, "forty posted auctions")
+require(len(accounts) == 6, "six accounts")
+require(len(positions) == 42, "forty-two posted auctions")
+require(sorted(logins) == ["EVERMOOR1", "EVERMOOR2"], "two logins")
+require("login" not in accounts["guild:Tidewardens-Silverfen"], "the guild bank reached from any login")
+require(accounts["warbank:EVERMOOR1"].get("login") == "EVERMOOR1", "Main's own warband bank")
+# The second login must be somewhere to go, or the attention list shows
+# one login and the walk-through's switch never happens.
+wren = [when(p["expires_at"]) for p in positions if p["account"] == "Wren-Moonwell"]
+require(accounts["Wren-Moonwell"].get("login") == "EVERMOOR2", "Wren on the alt login")
+require(any(snapshotted["Wren-Moonwell"][0] < e <= anchor for e in wren),
+        "Wren has an auction that ran out after the logout")
 for who in ("Brisk-Thornmere", "Tallow-Silverfen"):
     mine = [when(p["expires_at"]) for p in positions if p["account"] == who]
     seen = snapshotted[who][0]
@@ -346,4 +366,4 @@ body="$(sed -n '/^seed_evermoor_accounts () {/,/^}/p' "${demo}")"
         || fail "the Operations dashboard is not filed under Evermoor"
 }
 
-printf 'ok demo-accounts: deterministic, within the contract, every purse funded\n'
+printf 'ok demo-accounts: deterministic, within the contract, two logins, every purse funded\n'

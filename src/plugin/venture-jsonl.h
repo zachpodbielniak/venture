@@ -101,9 +101,10 @@ GType venture_jsonl_message_get_type(void) G_GNUC_CONST;
  *
  * Unknown members of the market-data types are ignored, so a later
  * protocol revision can add optional members without breaking an older
- * reader. The account-operations types (`account`, `account_snapshot`,
- * `balance`, `holding`, `position`, `inbound`, `txn`) refuse one: their
- * rows replace stored state, and a misspelt member -- `expiry` for
+ * reader. The account-operations types (`login`, `account`,
+ * `account_snapshot`, `balance`, `holding`, `position`, `inbound`, `txn`)
+ * refuse one: their rows replace stored state, and a misspelt member --
+ * `expiry` for
  * `expires_at` -- would otherwise erase a value without a word.
  *
  * Returns: (transfer full) (nullable): the message, or %NULL on error

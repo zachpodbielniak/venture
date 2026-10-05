@@ -975,6 +975,10 @@ typedef enum
  * @VENTURE_JSONL_MESSAGE_POSITION: one of the operator's own open listings
  * @VENTURE_JSONL_MESSAGE_INBOUND: something waiting to be collected: mail
  * @VENTURE_JSONL_MESSAGE_TXN: a row of the operator's external ledger
+ * @VENTURE_JSONL_MESSAGE_LOGIN: a credential the operator signs in with to
+ *   reach a set of accounts: a game account or licence, a platform
+ *   account, a seller login. Appended last, so every older value keeps
+ *   its number
  *
  * The message vocabulary of protocol 1 of the JSON-lines protocol spoken by
  * exec plugins and read from `file_jsonl` sources. The nick is the
@@ -1001,7 +1005,8 @@ typedef enum
 	VENTURE_JSONL_MESSAGE_HOLDING,
 	VENTURE_JSONL_MESSAGE_POSITION,
 	VENTURE_JSONL_MESSAGE_INBOUND,
-	VENTURE_JSONL_MESSAGE_TXN
+	VENTURE_JSONL_MESSAGE_TXN,
+	VENTURE_JSONL_MESSAGE_LOGIN
 } VentureJsonlMessageKind;
 
 /**

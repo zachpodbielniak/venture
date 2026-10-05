@@ -154,6 +154,7 @@ venture_feed_batch_new(void)
 	self->positions = g_array_new(FALSE, TRUE, sizeof(VentureSeriesPosition));
 	self->inbound = g_array_new(FALSE, TRUE, sizeof(VentureSeriesInbound));
 	self->txns = g_array_new(FALSE, TRUE, sizeof(VentureSeriesTxn));
+	self->logins = g_array_new(FALSE, TRUE, sizeof(VentureSeriesLogin));
 	self->holding_index = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	self->account_state = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
 	self->jsonl_venue_currency = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -202,6 +203,7 @@ venture_feed_batch_unref(VentureFeedBatch *self)
 	g_array_unref(self->positions);
 	g_array_unref(self->inbound);
 	g_array_unref(self->txns);
+	g_array_unref(self->logins);
 	g_string_chunk_free(self->strings);
 	g_free(self);
 }
@@ -714,6 +716,9 @@ venture_feed_batch_add_record(
 static const gchar *const feed_batch_account_kinds[] = {
 	"character", "shared", "guild", "other", NULL
 };
+static const gchar *const feed_batch_login_kinds[] = {
+	"game_account", "platform_account", "other", NULL
+};
 static const gchar *const feed_batch_places[] = {
 	"bag", "bank", "reagent_bank", "warbank", "guild", "mail", "auction",
 	"void", "equipped", "currency", "other", NULL
@@ -861,9 +866,11 @@ venture_feed_batch_add_account(
 	g_return_val_if_fail(NULL != self, FALSE);
 	g_return_val_if_fail(NULL != account, FALSE);
 
+	/* An empty login is "reached through none"; any other must be a key. */
 	if (!feed_batch_check_account(self, account->key, error) ||
 	    !feed_batch_check_key("account's venue", account->venue_key, FALSE, error) ||
 	    !feed_batch_check_key("account's group", account->group_key, FALSE, error) ||
+	    !feed_batch_check_key("account's login", account->login_key, FALSE, error) ||
 	    !feed_batch_check_attrs(account->attrs_json, error))
 		return FALSE;
 
@@ -889,7 +896,55 @@ venture_feed_batch_add_account(
 	row.attrs_json = (NULL != account->attrs_json)
 		? g_string_chunk_insert(self->strings, account->attrs_json) : NULL;
 	row.last_seen = account->last_seen;
+	row.login_key = feed_batch_intern(self, account->login_key);
 	g_array_append_val(self->accounts, row);
+
+	return TRUE;
+}
+
+gboolean
+venture_feed_batch_add_login(
+	VentureFeedBatch		 *self,
+	const VentureSeriesLogin	 *login,
+	GError				**error
+){
+	VentureSeriesLogin row;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+	g_return_val_if_fail(NULL != login, FALSE);
+
+	if (!feed_batch_check_key("login", login->key, TRUE, error) ||
+	    !feed_batch_check_key("login's group", login->group_key, FALSE, error) ||
+	    !feed_batch_check_attrs(login->attrs_json, error))
+		return FALSE;
+
+	if ((NULL != login->kind) &&
+	    !feed_batch_check_choice(login->kind, feed_batch_login_kinds, "kind of login", error))
+		return FALSE;
+
+	if ((NULL != login->attrs_json) && (strlen(login->attrs_json) > VENTURE_JSONL_MAX_ATTRS_BYTES))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A login's attributes are at most %d bytes", VENTURE_JSONL_MAX_ATTRS_BYTES);
+		return FALSE;
+	}
+
+	/* Logins are bounded like accounts: a login reaches accounts, and a
+	 * batch names at most so many of those. */
+	if (self->logins->len >= VENTURE_FEED_BATCH_MAX_ACCOUNTS)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A batch describes at most %d logins", VENTURE_FEED_BATCH_MAX_ACCOUNTS);
+		return FALSE;
+	}
+
+	row.key = feed_batch_intern(self, login->key);
+	row.name = feed_batch_keep_text(self, login->name, VENTURE_SERIES_MAX_KEY_LENGTH);
+	row.kind = feed_batch_intern(self, login->kind);
+	row.group_key = feed_batch_intern(self, login->group_key);
+	row.attrs_json = (NULL != login->attrs_json)
+		? g_string_chunk_insert(self->strings, login->attrs_json) : NULL;
+	g_array_append_val(self->logins, row);
 
 	return TRUE;
 }
@@ -1318,9 +1373,11 @@ venture_feed_batch_get_accounts(
 	out->n_inbound = self->inbound->len;
 	out->txns = (const VentureSeriesTxn *)(gpointer)self->txns->data;
 	out->n_txns = self->txns->len;
+	out->logins = (const VentureSeriesLogin *)(gpointer)self->logins->data;
+	out->n_logins = self->logins->len;
 
 	return (out->n_accounts + out->n_snapshots + out->n_balances + out->n_holdings +
-	        out->n_positions + out->n_inbound + out->n_txns) > 0;
+	        out->n_positions + out->n_inbound + out->n_txns + out->n_logins) > 0;
 }
 
 void
@@ -1458,7 +1515,7 @@ venture_feed_batch_count_items(VentureFeedBatch *self)
 	        (gint64)self->quotes->len + (gint64)self->entries->len +
 	        (gint64)self->records->len + (gint64)self->accounts->len +
 	        (gint64)self->account_snapshots->len + feed_batch_account_rows(self) +
-	        (gint64)self->txns->len;
+	        (gint64)self->txns->len + (gint64)self->logins->len;
 
 	for (i = 0; i < self->snapshots->len; i++)
 	{
@@ -1491,7 +1548,7 @@ venture_feed_batch_describe(VentureFeedBatch *self)
 	}
 
 	if ((0 == self->accounts->len) && (0 == feed_batch_account_rows(self)) &&
-	    (0 == self->txns->len))
+	    (0 == self->txns->len) && (0 == self->logins->len))
 		return g_strdup_printf("%u venues, %u instruments, %u snapshots, %"
 		                       G_GINT64_FORMAT " listings, %" G_GINT64_FORMAT
 		                       " figures, %u quotes, %u entries, %u records, %"
@@ -1984,8 +2041,23 @@ jsonl_account_message(
 		account.venue_key = jsonl_string(object, "venue");
 		account.attrs_json = attrs;
 		account.last_seen = jsonl_time(object, "last_seen", VENTURE_SERIES_NONE);
+		account.login_key = jsonl_string(object, "login");
 
 		return venture_feed_batch_add_account(self, &account, error);
+	}
+
+	case VENTURE_JSONL_MESSAGE_LOGIN:
+	{
+		g_autofree gchar *attrs = jsonl_attrs(object, "attrs");
+		VentureSeriesLogin login;
+
+		login.key = jsonl_string(object, "key");
+		login.name = jsonl_string(object, "name");
+		login.kind = jsonl_string(object, "kind");
+		login.group_key = jsonl_string(object, "group");
+		login.attrs_json = attrs;
+
+		return venture_feed_batch_add_login(self, &login, error);
 	}
 
 	case VENTURE_JSONL_MESSAGE_ACCOUNT_SNAPSHOT:
@@ -2271,6 +2343,7 @@ venture_feed_batch_add_jsonl(
 		case VENTURE_JSONL_MESSAGE_POSITION:
 		case VENTURE_JSONL_MESSAGE_INBOUND:
 		case VENTURE_JSONL_MESSAGE_TXN:
+		case VENTURE_JSONL_MESSAGE_LOGIN:
 		{
 			ok = jsonl_account_message(self, message, default_currency, &local_error);
 			break;

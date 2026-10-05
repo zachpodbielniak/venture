@@ -2177,7 +2177,7 @@ alerts_accounts_load(
 	if (NULL != accounts->rows)
 		return TRUE;
 
-	accounts->rows = venture_series_store_list_accounts(store, NULL, NULL, now, error);
+	accounts->rows = venture_series_store_list_accounts(store, NULL, NULL, NULL, now, error);
 
 	/* The store answers every account or refuses (past
 	 * venture_series_accounts_get_max_accounts()): never the first part,

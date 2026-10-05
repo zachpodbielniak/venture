@@ -1835,7 +1835,8 @@ test_reports(
 	gconstpointer	 user_data
 ){
 	static const gchar *const options[] = {
-		"account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "basis", NULL
+		"account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "basis", "login",
+		NULL
 	};
 	g_autoptr(JsonNode) answer = NULL;
 	g_autoptr(VentureMcpCatalog) catalog = NULL;
@@ -2051,6 +2052,542 @@ test_organizations(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 }
 
+/* --- Logins ---------------------------------------------------------------------- */
+
+/*
+ * The seed, then two logins over it, the way tsmctl sends a second WoW
+ * licence: Main reaches Drgold, the hostile account and Oldtimer, the
+ * "Alt licence" reaches Herbz, and the warband bank names none -- a bank
+ * any login reaches. Only the account lines move; everything else the
+ * seed pushed stays as it was.
+ */
+static void
+seed_logins(Fixture *fixture)
+{
+	g_autoptr(GString) body = g_string_new(NULL);
+
+	seed(fixture);
+	line(body, "{\"type\":\"login\",\"key\":\"MAIN\",\"name\":\"Main\",\"kind\":\"game_account\","
+	           "\"group\":\"bnet-1\"}");
+	line(body, "{\"type\":\"login\",\"key\":\"ALT\",\"name\":\"Alt licence\",\"kind\":\"game_account\","
+	           "\"group\":\"bnet-1\"}");
+	line(body, "{\"type\":\"account\",\"key\":\"Drgold-A\",\"kind\":\"character\",\"login\":\"MAIN\"}");
+	line(body, "{\"type\":\"account\",\"key\":\"%s\",\"kind\":\"character\",\"login\":\"MAIN\"}", hostile_key);
+	line(body, "{\"type\":\"account\",\"key\":\"Oldtimer-B\",\"kind\":\"character\",\"login\":\"MAIN\"}");
+	line(body, "{\"type\":\"account\",\"key\":\"Herbz-B\",\"kind\":\"character\",\"login\":\"ALT\"}");
+	line(body, "{\"type\":\"account\",\"key\":\"warbank:ME\",\"kind\":\"shared\",\"login\":null}");
+	push(fixture, fixture->source_id, body->str);
+}
+
+/* The sum of one money member across an array's objects, first currency. */
+static gint64
+sum_first(
+	JsonArray	*rows,
+	const gchar	*member
+){
+	gint64 total = 0;
+	guint i;
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		gint64 amount = first_amount(json_array_get_object_element(rows, i), member);
+
+		if (G_MININT64 != amount)
+			total += amount;
+	}
+
+	return total;
+}
+
+/* A login card's key, "" for the accounts reached through none. */
+static const gchar *
+login_key_of(JsonObject *row)
+{
+	JsonNode *node = json_object_get_member(row, "key");
+
+	return ((NULL == node) || JSON_NODE_HOLDS_NULL(node)) ? "" : json_node_get_string(node);
+}
+
+/*
+ * The overview with logins: a card per login whose figures add up to the
+ * headline exactly, the shared warband counted once under no login, the
+ * attention list grouped a login at a time and naming it, the login
+ * filter narrowing every figure, and the table ordered login then realm.
+ *
+ * What breaks if this regresses: the page tells the operator to sign in
+ * to the same licence twice in one round, the cards add to more than the
+ * gold there is, or a filtered page still counts the other licence's
+ * listings.
+ */
+static void
+test_logins(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureMarketdataAccountsQuery query;
+	JsonObject *root;
+	JsonObject *summary;
+	JsonArray *logins;
+	JsonArray *rows;
+	const gchar *expected[] = { "ALT", "MAIN", "MAIN", "MAIN", "" };
+	guint i;
+
+	(void)user_data;
+
+	seed_logins(fixture);
+	answer = overview(fixture, 0, 0, 0, NULL, FALSE);
+	root = root_of(answer);
+	summary = json_object_get_object_member(root, "summary");
+	logins = json_object_get_array_member(root, "logins");
+
+	g_assert_cmpint(json_object_get_int_member(summary, "logins"), ==, 2);
+	g_assert_cmpuint(json_array_get_length(logins), ==, 3);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "login_choices")), ==, 2);
+
+	/* By name, the accounts reached through none last. */
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(logins, 0), "name"), ==,
+	                "Alt licence");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(logins, 1), "name"), ==, "Main");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(logins, 2), "name"), ==,
+	                "No login");
+	g_assert_true(json_object_get_null_member(json_array_get_object_element(logins, 2), "key"));
+
+	/* Exact, and adding up to the headline. */
+	g_assert_cmpint(first_amount(json_array_get_object_element(logins, 1), "balances"), ==, 15005000);
+	g_assert_cmpint(first_amount(json_array_get_object_element(logins, 0), "balances"), ==, 2500000);
+	g_assert_cmpint(first_amount(json_array_get_object_element(logins, 2), "balances"), ==, 400000);
+	g_assert_cmpint(sum_first(logins, "balances"), ==, first_amount(summary, "balances"));
+	g_assert_cmpint(sum_first(logins, "inventory_value"), ==, first_amount(summary, "inventory_value"));
+	g_assert_cmpint(sum_first(logins, "positions_value"), ==, first_amount(summary, "positions_value"));
+	g_assert_cmpint(sum_first(logins, "net_30d"), ==, first_amount(summary, "net_30d"));
+	g_assert_cmpint(first_amount(json_array_get_object_element(logins, 1), "net_30d"), ==, 20000);
+	g_assert_cmpint(first_amount(json_array_get_object_element(logins, 0), "net_30d"), ==, 40000);
+
+	{
+		JsonObject *main_card = json_array_get_object_element(logins, 1);
+		JsonObject *none = json_array_get_object_element(logins, 2);
+
+		g_assert_cmpint(json_object_get_int_member(main_card, "positions"), ==, 2);
+		g_assert_cmpint(json_object_get_int_member(main_card, "positions_expired"), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(main_card, "characters"), ==, 3);
+		g_assert_cmpstr(json_object_get_string_member(main_card, "group_key"), ==, "bnet-1");
+		g_assert_cmpstr(json_object_get_string_member(main_card, "kind"), ==, "game_account");
+		g_assert_nonnull(strstr(json_object_get_string_member(main_card, "url"), "login=MAIN"));
+		/* The shared warband: once, under no login, in no login's card. */
+		g_assert_cmpint(json_object_get_int_member(none, "accounts"), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(none, "characters"), ==, 0);
+	}
+
+	/*
+	 * Main's two places are together although Alt's sits between them by
+	 * urgency: Realm A overdue, Alt's Realm B soon, Main's Realm B stale.
+	 * Realm B under two logins is two places, since each needs its own
+	 * sign-in.
+	 */
+	rows = json_object_get_array_member(root, "attention");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "title"), ==,
+	                "Log in to Main \xe2\x86\x92 Realm A");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 1), "title"), ==,
+	                "Log in to Main \xe2\x86\x92 Realm B");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 2), "title"), ==,
+	                "Log in to Alt licence \xe2\x86\x92 Realm B");
+	g_assert_cmpstr(json_object_get_string_member(
+		json_object_get_object_member(json_array_get_object_element(rows, 2), "login"), "key"), ==, "ALT");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 1), "severity"), ==,
+	                "stale");
+
+	/* Each account says its login; the bank says none. */
+	g_assert_cmpstr(json_object_get_string_member(find_row(json_object_get_array_member(root, "accounts"),
+	                                                        "key", "Herbz-B"), "login_name"), ==,
+	                "Alt licence");
+	g_assert_true(json_object_get_null_member(find_row(json_object_get_array_member(root, "accounts"), "key",
+	                                                   "warbank:ME"), "login"));
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* One login: every figure narrows to it. */
+	venture_marketdata_accounts_query_init(&query);
+	query.organization_id = fixture->org;
+	query.now = fixture->now;
+	query.login = "ALT";
+	answer = venture_marketdata_accounts(fixture->context, &query, &error);
+	g_assert_no_error(error);
+	root = root_of(answer);
+	summary = json_object_get_object_member(root, "summary");
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "accounts")), ==, 1);
+	g_assert_cmpint(json_object_get_int_member(summary, "positions"), ==, 1);
+	g_assert_cmpint(first_amount(summary, "balances"), ==, 2500000);
+	g_assert_cmpint(first_amount(summary, "net_30d"), ==, 40000);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "attention")), ==, 1);
+	/* The picker still offers every login. */
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "login_choices")), ==, 2);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Grouped by login, then realm: Alt's, Main's, then no login's. */
+	venture_marketdata_accounts_query_init(&query);
+	query.organization_id = fixture->org;
+	query.now = fixture->now;
+	query.login_first = TRUE;
+	query.realm_first = TRUE;
+	query.sort = "name";
+	answer = venture_marketdata_accounts(fixture->context, &query, &error);
+	g_assert_no_error(error);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpuint(json_array_get_length(rows), ==, G_N_ELEMENTS(expected));
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		JsonNode *node = json_object_get_member(row, "login");
+
+		g_assert_cmpstr(JSON_NODE_HOLDS_NULL(node) ? "" : json_node_get_string(node), ==, expected[i]);
+	}
+}
+
+/*
+ * The inventory and the profit and loss by login: the holdings' value per
+ * login adds up to the page's total, line by line; the ledger's buckets
+ * per login are its accounts' rows; a login filter narrows both.
+ *
+ * What breaks if this regresses: the "By login" table on the inventory
+ * disagrees with its own total, or a login's P&L counts the other
+ * licence's sales.
+ */
+static void
+test_login_inventory_pnl(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureMarketdataInventoryQuery inventory;
+	VentureMarketdataPnlQuery pnl;
+	JsonObject *root;
+	JsonArray *groups;
+	gint64 total;
+	gint64 sum;
+	guint i;
+
+	(void)user_data;
+
+	seed_logins(fixture);
+
+	venture_marketdata_inventory_query_init(&inventory);
+	inventory.organization_id = fixture->org;
+	inventory.now = fixture->now;
+	inventory.group_by = "login";
+	answer = venture_marketdata_inventory(fixture->context, &inventory, &error);
+	g_assert_no_error(error);
+	root = root_of(answer);
+	groups = json_object_get_array_member(root, "by_login");
+	g_assert_cmpuint(json_array_get_length(groups), ==, 3);
+	g_assert_true(json_object_get_null_member(json_array_get_object_element(groups, 2), "key"));
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(groups, 2), "name"), ==,
+	                "No login");
+	total = money_amount(json_object_get_object_member(root, "totals"), "value");
+	sum = 0;
+
+	for (i = 0; i < json_array_get_length(groups); i++)
+	{
+		gint64 value = money_amount(json_array_get_object_element(groups, i), "value");
+
+		if (G_MININT64 != value)
+			sum += value;
+	}
+
+	g_assert_cmpint(sum, ==, total);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "logins")), ==, 2);
+
+	/* The breakdown says whose login each line is. */
+	{
+		JsonArray *rows = json_object_get_array_member(root, "rows");
+		gboolean said = FALSE;
+
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonArray *parts = json_object_get_array_member(json_array_get_object_element(rows, i), "breakdown");
+			guint j;
+
+			for (j = 0; j < json_array_get_length(parts); j++)
+			{
+				JsonObject *part = json_array_get_object_element(parts, j);
+
+				if (0 == g_strcmp0(json_object_get_string_member(part, "account_key"), "Herbz-B"))
+				{
+					g_assert_cmpstr(json_object_get_string_member(part, "login_name"), ==, "Alt licence");
+					said = TRUE;
+				}
+			}
+		}
+
+		g_assert_true(said);
+	}
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* One login's holdings: Herbz's alone, the value its group said. */
+	venture_marketdata_inventory_query_init(&inventory);
+	inventory.organization_id = fixture->org;
+	inventory.now = fixture->now;
+	inventory.login = "ALT";
+	answer = venture_marketdata_inventory(fixture->context, &inventory, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root_of(answer), "totals"), "lines"),
+	                ==, 2);
+	g_clear_pointer(&answer, json_node_unref);
+
+	inventory.group_by = "realm";
+	answer = venture_marketdata_inventory(fixture->context, &inventory, &error);
+	g_assert_null(answer);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	venture_marketdata_pnl_query_init(&pnl);
+	pnl.organization_id = fixture->org;
+	pnl.now = fixture->now;
+	pnl.group_by = "login";
+	answer = venture_marketdata_external_pnl(fixture->context, &pnl, &error);
+	g_assert_no_error(error);
+	groups = json_object_get_array_member(root_of(answer), "buckets");
+	g_assert_cmpuint(json_array_get_length(groups), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(find_row(groups, "key", "ALT"), "label"), ==, "Alt licence");
+	g_assert_cmpint(money_amount(find_row(groups, "key", "ALT"), "net"), ==, 40000);
+	g_assert_cmpint(money_amount(find_row(groups, "key", "MAIN"), "net"), ==, 20000);
+	g_assert_nonnull(strstr(json_object_get_string_member(find_row(groups, "key", "MAIN"), "url"), "login=MAIN"));
+	g_clear_pointer(&answer, json_node_unref);
+
+	pnl.group_by = NULL;
+	pnl.login = "MAIN";
+	answer = venture_marketdata_external_pnl(fixture->context, &pnl, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(money_amount(json_array_get_object_element(
+		json_object_get_array_member(root_of(answer), "totals"), 0), "net"), ==, 20000);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "logins")), ==, 2);
+}
+
+/*
+ * Every door takes `login`: the pages and their API twins, the three
+ * reports (and group_by=login) through the web API, the report page and
+ * the CLI, the MCP catalogue, the cards and their option check -- and an
+ * operator with one login sees no login column, card or heading at all.
+ *
+ * What breaks if this regresses: an option silently absent from one door
+ * answers a different question there (AGENTS.md: "A report option is
+ * dropped unless every door forwards it").
+ */
+static void
+test_login_doors(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(VentureDashboardWidget) attention = NULL;
+	g_autoptr(VentureDashboardWidget) bad = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	VentureWidgetScope scope;
+	JsonArray *rows;
+	gint64 orgs[1];
+
+	(void)user_data;
+
+	/* An exporter asks the build before it sends login lines, which an
+	 * older build refuses whole. */
+	answer = get_json(fixture, "/api/v1/health", 200);
+	g_assert_true(json_object_get_boolean_member(root_of(answer), "account_logins"));
+	g_clear_pointer(&answer, json_node_unref);
+
+	seed(fixture);
+
+	/* One login (none at all): the page as it always was. */
+	{
+		g_autofree gchar *page = get_page(fixture, "/accounts");
+
+		/* Markup, not class names: the stylesheet is inlined in every
+		 * page and names them all. */
+		g_assert_null(strstr(page, "class=\"card login-card\""));
+		g_assert_null(strstr(page, "name=\"login\""));
+		g_assert_null(strstr(page, "class=\"attention-login\""));
+	}
+
+	seed_logins(fixture);
+
+	{
+		g_autofree gchar *page = get_page(fixture, "/accounts?by_login=1");
+		g_autofree gchar *alt = get_page(fixture, "/accounts?login=ALT");
+		g_autofree gchar *account_path = g_strdup_printf("/accounts/%" G_GINT64_FORMAT "/Herbz-B",
+		                                                 fixture->source_id);
+		g_autofree gchar *account = get_page(fixture, account_path);
+		g_autofree gchar *inventory = get_page(fixture, "/accounts/inventory?group_by=login");
+		g_autofree gchar *pnl = get_page(fixture, "/accounts/pnl?group_by=login&login=MAIN");
+
+		g_assert_nonnull(strstr(page, "class=\"card login-card\""));
+		g_assert_nonnull(strstr(page, "accounts-login-row"));
+		g_assert_nonnull(strstr(page, "class=\"attention-login\""));
+		g_assert_nonnull(strstr(page, "Log in to Main \xe2\x86\x92 Realm A"));
+		g_assert_nonnull(strstr(page, "name=\"login\""));
+		g_assert_nonnull(strstr(page, ">any<"));
+		g_assert_nonnull(strstr(alt, "Herbz"));
+		g_assert_null(strstr(alt, ">Drgold<"));
+		g_assert_nonnull(strstr(account, "class=\"account-login\""));
+		g_assert_nonnull(strstr(inventory, "id=\"by-login-h\""));
+		g_assert_nonnull(strstr(pnl, "<option value=\"MAIN\" selected>"));
+		assert_buttons_named(page, "/accounts?by_login=1");
+	}
+
+	answer = get_json(fixture, "/api/v1/accounts?login=ALT", 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "accounts")), ==, 1);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/reports/accounts?period=all&group_by=login", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/reports/accounts?period=all&login=MAIN", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/reports/account_holdings?period=all&group_by=login", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/reports/external_pnl?period=last_30_days&group_by=login", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 2);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/reports/external_pnl?period=last_30_days&login=ALT", 200);
+	g_assert_cmpint(money_amount(find_row(json_object_get_array_member(root_of(answer), "metrics"), "key", "net"),
+	                             "value"), ==, 40000);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/reports/accounts?period=all&group_by=realm", 400);
+	g_clear_pointer(&answer, json_node_unref);
+
+	{
+		g_autofree gchar *page = get_page(fixture, "/reports/accounts?period=all&login=ALT");
+
+		g_assert_nonnull(strstr(page, "name=\"login\""));
+		g_assert_nonnull(strstr(page, "Herbz"));
+		g_assert_null(strstr(page, ">Drgold<"));
+	}
+
+	{
+		static const gchar *const report[] = {
+			"report", "external_pnl", "last_30_days", "group_by=login", "login=MAIN", NULL
+		};
+		static const gchar *const attention_cli[] = { "accounts", "attention", "login=ALT", NULL };
+		static const gchar *const inventory_cli[] = { "accounts", "inventory", "group_by=login", NULL };
+		g_autofree gchar *out = cli(fixture, report);
+
+		if (NULL != out)
+		{
+			g_autofree gchar *second = NULL;
+			g_autofree gchar *third = NULL;
+
+			g_assert_nonnull(strstr(out, "Main"));
+			g_assert_null(strstr(out, "Alt licence"));
+			second = cli(fixture, attention_cli);
+			g_assert_nonnull(strstr(second, "Log in to Alt licence"));
+			g_assert_null(strstr(second, "Log in to Main"));
+			third = cli(fixture, inventory_cli);
+			g_assert_nonnull(strstr(third, "\"by_login\""));
+		}
+	}
+
+	/* The card: a login narrows it; a login that is not text is refused. */
+	scope_of(fixture, &scope, orgs);
+	dashboard = venture_dashboard_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(dashboard), fixture->org);
+	g_object_set(dashboard, "name", "Logins", "slug", "logins", NULL);
+	save(fixture, dashboard);
+	attention = widget_of(fixture, ID(dashboard), "accounts_attention", "{\"login\": \"ALT\"}");
+	result = venture_dashboard_render_widget(fixture->context, attention, &scope);
+	g_assert_null(result->error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(result->data)), ==, 1);
+	g_assert_nonnull(strstr(result->html, "Log in to Alt licence"));
+
+	bad = venture_dashboard_widget_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(bad), fixture->org);
+	g_object_set(bad, "dashboard-id", ID(dashboard), "kind", "external_pnl", "options", "{\"login\": 5}",
+	             NULL);
+	g_assert_false(venture_database_save(fixture->database, VENTURE_ENTITY(bad), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/*
+ * Two organizations whose sources both know a login keyed "MAIN" never
+ * see each other's: the logins, the picker and a login filter answer
+ * within the organization asked about.
+ *
+ * What breaks if this regresses: a second business's licence of the same
+ * name appears in the first's attention list, or its gold in a card.
+ */
+static void
+test_login_organizations(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) other = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureMarketdataAccountsQuery query;
+	JsonArray *choices;
+	gint64 other_org;
+	gint64 other_source;
+	guint i;
+
+	(void)user_data;
+
+	seed_logins(fixture);
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Evermoor Trading", "slug", "evermoor", NULL);
+	save(fixture, other);
+	other_org = ID(other);
+	other_source = push_source(fixture, other_org, "Evermoor TSM");
+	line(body, "{\"type\":\"login\",\"key\":\"MAIN\",\"name\":\"Theirs\"}");
+	line(body, "{\"type\":\"account\",\"key\":\"Theirs-A\",\"kind\":\"character\",\"login\":\"MAIN\"}");
+	line(body, "{\"type\":\"balance\",\"account\":\"Theirs-A\",\"currency\":\"GOLD\",\"amount\":\"7.0000\"}");
+	push(fixture, other_source, body->str);
+
+	venture_marketdata_accounts_query_init(&query);
+	query.organization_id = fixture->org;
+	query.now = fixture->now;
+	query.login = "MAIN";
+	answer = venture_marketdata_accounts(fixture->context, &query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "accounts")), ==, 3);
+	g_assert_cmpint(first_amount(json_object_get_object_member(root_of(answer), "summary"), "balances"), ==,
+	                15005000);
+	choices = json_object_get_array_member(root_of(answer), "login_choices");
+
+	for (i = 0; i < json_array_get_length(choices); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+
+		g_assert_cmpint(json_object_get_int_member(choice, "data_source_id"), ==, fixture->source_id);
+		g_assert_cmpstr(json_object_get_string_member(choice, "name"), !=, "Theirs");
+	}
+
+	g_clear_pointer(&answer, json_node_unref);
+
+	query.organization_id = other_org;
+	answer = venture_marketdata_accounts(fixture->context, &query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "logins")), ==, 1);
+	g_assert_cmpstr(login_key_of(json_array_get_object_element(json_object_get_array_member(root_of(answer),
+	                                                                                        "logins"), 0)),
+	                ==, "MAIN");
+	g_assert_cmpint(first_amount(json_object_get_object_member(root_of(answer), "summary"), "balances"), ==,
+	                70000);
+}
+
 #define ADD(path, func) \
 	g_test_add("/accounts-pages/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -2074,6 +2611,10 @@ main(
 	ADD("reports", test_reports);
 	ADD("listing-performance-location", test_listing_performance_location);
 	ADD("organizations", test_organizations);
+	ADD("logins", test_logins);
+	ADD("login-inventory-pnl", test_login_inventory_pnl);
+	ADD("login-doors", test_login_doors);
+	ADD("login-organizations", test_login_organizations);
 
 	return g_test_run();
 }

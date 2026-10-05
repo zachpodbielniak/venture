@@ -2260,9 +2260,9 @@ test_jsonl_kind_names_match_enum(void)
 	}
 
 	/* Twelve, plus `result`, which an exec automation handler answers
-	 * with, plus the seven account-operations types. One more that the
-	 * parser does not name fails above. */
-	g_assert_cmpuint(klass->n_values, ==, 20);
+	 * with, plus the seven account-operations types and `login`. One
+	 * more that the parser does not name fails above. */
+	g_assert_cmpuint(klass->n_values, ==, 21);
 	g_type_class_unref(klass);
 
 	g_assert_false(venture_jsonl_kind_from_name("Listing", NULL));
@@ -2505,6 +2505,21 @@ test_jsonl_accepts_account_kinds(void)
 		"{\"type\":\"stat\",\"venue\":\"region-us\",\"instrument\":\"2770\",\"market\":\"30.5\","
 		"\"historical\":\"28.25\",\"sale_rate\":\"0.153\",\"sold_per_day\":\"1520.5\"}",
 		"{\"type\":\"stat\",\"venue\":\"region-us\",\"instrument\":\"2770\",\"sale_rate\":\"1\"}",
+		/* Logins: the contract's example, a bare one, and an account
+		 * naming one, naming none ("" and null) and naming a folder
+		 * key with a '#' in it, as a second WoW licence's has. */
+		"{\"type\":\"login\",\"key\":\"ZAKMANN\",\"name\":\"Main\",\"kind\":\"game_account\","
+		"\"group\":\"bnet-1\",\"attrs\":{\"region\":\"us\"}}",
+		"{\"type\":\"login\",\"key\":\"53141745#1\"}",
+		"{\"type\":\"login\",\"key\":\"seller\",\"kind\":\"platform_account\",\"name\":null}",
+		"{\"type\":\"login\",\"key\":\"x\",\"kind\":\"other\",\"group\":\"\",\"attrs\":{}}",
+		"{\"type\":\"account\",\"key\":\"Drgold-Thorium Brotherhood\",\"kind\":\"character\","
+		"\"login\":\"ZAKMANN\",\"attrs\":{\"login_account\":\"ZAKMANN\"}}",
+		"{\"type\":\"account\",\"key\":\"warbank:bnet-1\",\"kind\":\"shared\",\"login\":null,"
+		"\"attrs\":{\"login_group\":\"bnet-1\"}}",
+		"{\"type\":\"account\",\"key\":\"guild:Treasury-Thorium\",\"kind\":\"guild\",\"login\":\"\"}",
+		"{\"type\":\"account\",\"key\":\"warbank:53141745#1\",\"kind\":\"shared\","
+		"\"login\":\"53141745#1\"}",
 	};
 	gsize i;
 
@@ -2613,6 +2628,19 @@ test_jsonl_account_refusals(void)
 		  "never a JSON number" },
 		{ "{\"type\":\"stat\",\"venue\":\"v\",\"instrument\":\"i\",\"historical\":\"-2\"}",
 		  "non-negative decimal" },
+		/* A login is as strict as an account: its rows replace what a
+		 * page groups by. */
+		{ "{\"type\":\"login\",\"name\":\"Main\"}", "login.key is required" },
+		{ "{\"type\":\"login\",\"key\":\"\"}", "login.key must not be empty" },
+		{ "{\"type\":\"login\",\"key\":\"a\",\"kind\":\"character\"}", "login.kind must be one of" },
+		{ "{\"type\":\"login\",\"key\":\"a\",\"label\":\"Main\"}", "login.label is not a member of login" },
+		{ "{\"type\":\"login\",\"key\":\"a\",\"venue\":\"v\"}", "login.venue is not a member of login" },
+		{ "{\"type\":\"login\",\"key\":\"a\",\"attrs\":{\"x\":{}}}", "only strings, numbers and booleans" },
+		{ "{\"type\":\"login\",\"key\":7}", "login.key must be a string" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"login\":1}",
+		  "account.login must be a string" },
+		{ "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"other\",\"login_key\":\"Z\"}",
+		  "account.login_key is not a member of account" },
 		{ NULL, "may carry at most" },
 		{ NULL, "is longer than" },
 	};

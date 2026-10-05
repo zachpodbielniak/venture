@@ -1106,7 +1106,7 @@ test_tsmctl_sync(
 	}
 
 	reader = reader_of(fixture, id);
-	accounts = venture_series_store_list_accounts(reader, NULL, NULL, 1790000000, &error);
+	accounts = venture_series_store_list_accounts(reader, NULL, NULL, NULL, 1790000000, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(accounts->len, ==, 2);
 

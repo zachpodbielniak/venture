@@ -141,6 +141,8 @@ typedef enum
  * @VENTURE_SERIES_TXN_GROUP_INSTRUMENT: by instrument
  * @VENTURE_SERIES_TXN_GROUP_SOURCE: by the source's own label for where a
  *   row came from (TSM's "Auction", "Vendor", "Trade")
+ * @VENTURE_SERIES_TXN_GROUP_LOGIN: by the login the row's account is
+ *   reached through ("" for accounts reached through none)
  *
  * How venture_series_store_txn_totals() buckets the ledger.
  */
@@ -152,13 +154,14 @@ typedef enum
 	VENTURE_SERIES_TXN_GROUP_ACCOUNT,
 	VENTURE_SERIES_TXN_GROUP_VENUE,
 	VENTURE_SERIES_TXN_GROUP_INSTRUMENT,
-	VENTURE_SERIES_TXN_GROUP_SOURCE
+	VENTURE_SERIES_TXN_GROUP_SOURCE,
+	VENTURE_SERIES_TXN_GROUP_LOGIN
 } VentureSeriesTxnGroup;
 
 /**
  * venture_series_txn_group_from_string:
  * @name: (nullable): "day", "week", "month", "account", "venue",
- *   "instrument" or "source"
+ *   "instrument", "source" or "login"
  * @out: (out): the grouping
  *
  * Returns: %TRUE when @name is one
@@ -172,6 +175,33 @@ venture_series_txn_group_from_string(
 /* --- What goes in ---------------------------------------------------------- */
 
 /**
+ * VentureSeriesLogin:
+ * @key: the login's key at the source, stable for its life; required.
+ *   tsmctl sends the game's account folder name
+ * @name: (nullable): what the operator calls it; %NULL keeps the stored
+ *   name
+ * @kind: (nullable): game_account, platform_account or other; %NULL keeps
+ *   the stored kind (other for a new login)
+ * @group_key: (nullable): the parent credential logins share -- the
+ *   platform account two game licences belong to; "" for none, %NULL
+ *   keeps the stored group
+ * @attrs_json: (nullable): a JSON object of scalars; %NULL keeps them
+ *
+ * A credential the operator signs in with to reach a set of accounts: a
+ * game account or licence, a platform account, a seller login. Switching
+ * between two is the costly step of a round of logins, so the pages group
+ * by it before anything else.
+ */
+typedef struct
+{
+	const gchar	*key;
+	const gchar	*name;
+	const gchar	*kind;
+	const gchar	*group_key;
+	const gchar	*attrs_json;
+} VentureSeriesLogin;
+
+/**
  * VentureSeriesAccount:
  * @key: the account's key at the source; required
  * @name: (nullable): what it is called
@@ -182,6 +212,9 @@ venture_series_txn_group_from_string(
  * @attrs_json: (nullable): a JSON object of scalars
  * @last_seen: when the source last saw it in use (a login), or
  *   %VENTURE_SERIES_NONE
+ * @login_key: (nullable): the login it is reached through; "" for none (a
+ *   guild bank, a bank several logins share); %NULL keeps the stored
+ *   login. A login the store has not heard of is created bare.
  *
  * One of the operator's accounts. %NULL members keep what is stored.
  */
@@ -194,6 +227,7 @@ typedef struct
 	const gchar	*venue_key;
 	const gchar	*attrs_json;
 	gint64		 last_seen;
+	const gchar	*login_key;
 } VentureSeriesAccount;
 
 /**
@@ -362,6 +396,8 @@ typedef struct
  * @n_inbound: how many
  * @txns: (array length=n_txns): ledger rows
  * @n_txns: how many
+ * @logins: (array length=n_logins): logins to upsert, before the accounts
+ * @n_logins: how many
  *
  * Everything one fetch or push said about the operator's accounts, as
  * plain arrays. Every row's account need not be among @accounts: one the
@@ -384,6 +420,8 @@ typedef struct
 	guint					 n_inbound;
 	const VentureSeriesTxn			*txns;
 	guint					 n_txns;
+	const VentureSeriesLogin		*logins;
+	guint					 n_logins;
 } VentureSeriesAccountBatch;
 
 /**
@@ -406,6 +444,8 @@ typedef struct
  * @instruments_refused: new instruments refused past the size cap (their
  *   rows are kept; only the instrument row is missing)
  * @rows_written: rows inserted, updated or deleted
+ * @logins: logins written, the bare ones accounts named included
+ * @logins_new: logins the store had not seen
  *
  * What applying a batch did.
  */
@@ -426,6 +466,8 @@ typedef struct
 	gint64	instruments_new;
 	gint64	instruments_refused;
 	gint64	rows_written;
+	gint64	logins;
+	gint64	logins_new;
 } VentureSeriesAccountResult;
 
 /**
@@ -438,7 +480,7 @@ typedef struct
  * @error: (out) (optional): return location for a #GError
  *
  * Applies one batch in one transaction (a savepoint inside a batch
- * already open): accounts first, then each snapshot's replacement, then
+ * already open): logins first, then accounts, then each snapshot's replacement, then
  * the rows outside any snapshot, then the ledger. A malformed row fails
  * the whole batch and writes nothing; a stale snapshot is skipped and
  * counted. Venues and instruments the rows name are created bare when
@@ -505,6 +547,8 @@ typedef struct
  *   inbound, per currency (@at 0)
  * @inbound_cod: (element-type VentureSeriesAmount): cash on delivery it
  *   would owe to collect, per currency
+ * @login_key: the login it is reached through, "" when none
+ * @login_name: (nullable): that login's name, when the source gave one
  *
  * An account with the figures a "needs attention" list is made of.
  */
@@ -533,6 +577,8 @@ typedef struct
 	GArray	*balances;
 	GArray	*inbound_money;
 	GArray	*inbound_cod;
+	gchar	*login_key;
+	gchar	*login_name;
 } VentureSeriesAccountRow;
 
 /**
@@ -549,12 +595,14 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesAccountRow, venture_series_account_ro
  * @self: a store
  * @kind: (nullable): only this kind
  * @group_key: (nullable): only this group ("" for none)
+ * @login_key: (nullable): only accounts reached through this login ("" for
+ *   the ones reached through none)
  * @now: the moment "expired" is judged against
  * @error: (out) (optional): return location for a #GError
  *
  * Every account, by group, name and key. A store with more than
- * venture_series_accounts_get_max_accounts() of them (in @group_key and
- * @kind, when given) is refused with %VENTURE_ERROR_INVALID_ARGUMENT
+ * venture_series_accounts_get_max_accounts() of them (in @group_key,
+ * @login_key and @kind, when given) is refused with %VENTURE_ERROR_INVALID_ARGUMENT
  * saying to narrow the read, never answered with the first part.
  *
  * Returns: (transfer full) (element-type VentureSeriesAccountRow)
@@ -565,7 +613,63 @@ venture_series_store_list_accounts(
 	VentureSeriesStore	 *self,
 	const gchar		 *kind,
 	const gchar		 *group_key,
+	const gchar		 *login_key,
 	gint64			  now,
+	GError			**error
+);
+
+/**
+ * VentureSeriesLoginRow:
+ * @key: the login's key
+ * @name: (nullable): its name
+ * @kind: game_account, platform_account or other
+ * @group_key: the credential it shares with others, "" when none
+ * @attrs_json: (nullable): its attributes
+ * @first_seen: when the store first heard of it
+ * @last_seen: when a batch last named it, by a login line or an account
+ * @accounts: accounts reached through it
+ * @characters: of those, the characters
+ *
+ * One login, with how many accounts it reaches.
+ */
+typedef struct
+{
+	gchar	*key;
+	gchar	*name;
+	gchar	*kind;
+	gchar	*group_key;
+	gchar	*attrs_json;
+	gint64	 first_seen;
+	gint64	 last_seen;
+	gint64	 accounts;
+	gint64	 characters;
+} VentureSeriesLoginRow;
+
+/**
+ * venture_series_login_row_free:
+ * @row: (transfer full) (nullable): a login row
+ */
+void
+venture_series_login_row_free(VentureSeriesLoginRow *row);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesLoginRow, venture_series_login_row_free)
+
+/**
+ * venture_series_store_list_logins:
+ * @self: a store
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Every login the store knows, by name (else key), then key. Bounded and
+ * refused past venture_series_accounts_get_max_accounts() like the
+ * accounts: a login reaches at least one account or was described on its
+ * own, and an operator with more logins than that is not one operator.
+ *
+ * Returns: (transfer full) (element-type VentureSeriesLoginRow)
+ *   (nullable): the logins, or %NULL on error
+ */
+GPtrArray *
+venture_series_store_list_logins(
+	VentureSeriesStore	 *self,
 	GError			**error
 );
 
@@ -600,6 +704,8 @@ venture_series_store_get_account(
  *   ignoring case
  * @offset: rows to skip
  * @count: rows to return; 0 for %VENTURE_SERIES_MAX_ACCOUNT_ROWS
+ * @login_key: (nullable): the accounts reached through one login ("" for
+ *   those reached through none)
  *
  * Which holdings a read wants. Start from venture_series_holding_filter_init().
  */
@@ -612,6 +718,7 @@ typedef struct
 	const gchar	*search;
 	guint		 offset;
 	guint		 count;
+	const gchar	*login_key;
 } VentureSeriesHoldingFilter;
 
 /**
@@ -736,6 +843,8 @@ venture_series_store_holdings_by_instrument(
  *   no expiry are left out), or %VENTURE_SERIES_NONE for all
  * @offset: rows to skip
  * @count: rows to return; 0 for %VENTURE_SERIES_MAX_ACCOUNT_ROWS
+ * @login_key: (nullable): the accounts reached through one login ("" for
+ *   those reached through none)
  *
  * Which positions a read wants. Start from
  * venture_series_position_filter_init(): "no bound" is not zero.
@@ -748,6 +857,7 @@ typedef struct
 	gint64		 expires_before;
 	guint		 offset;
 	guint		 count;
+	const gchar	*login_key;
 } VentureSeriesPositionFilter;
 
 /**
@@ -830,6 +940,8 @@ venture_series_store_list_positions(
  *   %VENTURE_SERIES_NONE for all
  * @offset: rows to skip
  * @count: rows to return; 0 for %VENTURE_SERIES_MAX_ACCOUNT_ROWS
+ * @login_key: (nullable): the accounts reached through one login ("" for
+ *   those reached through none)
  *
  * Which inbound rows a read wants. Start from
  * venture_series_inbound_filter_init().
@@ -840,6 +952,7 @@ typedef struct
 	gint64		 expires_before;
 	guint		 offset;
 	guint		 count;
+	const gchar	*login_key;
 } VentureSeriesInboundFilter;
 
 /**
@@ -955,6 +1068,8 @@ venture_series_store_balance_history(
  * @count: rows to return (listing only); 0 for
  *   %VENTURE_SERIES_DEFAULT_PAGE, at most %VENTURE_SERIES_MAX_ACCOUNT_ROWS
  * @descending: newest first (listing only)
+ * @login_key: (nullable): the accounts reached through one login ("" for
+ *   those reached through none)
  *
  * Which ledger rows a read wants. Start from
  * venture_series_txn_filter_init(): "no bound" is not zero.
@@ -971,6 +1086,7 @@ typedef struct
 	guint		 offset;
 	guint		 count;
 	gboolean	 descending;
+	const gchar	*login_key;
 } VentureSeriesTxnFilter;
 
 /**
@@ -1270,6 +1386,8 @@ venture_series_value_sort_to_string(VentureSeriesValueSort sort);
  * @offset: instruments to skip
  * @count: instruments to return, 0 for %VENTURE_SERIES_DEFAULT_PAGE, at
  *   most %VENTURE_SERIES_MAX_ACCOUNT_ROWS
+ * @login_key: (nullable): the holdings of the accounts reached through one
+ *   login ("" for those reached through none)
  *
  * What venture_series_store_value_instruments() and _value_lines() read.
  * Start from venture_series_value_filter_init(): two "no bound" values are
@@ -1293,6 +1411,7 @@ typedef struct
 	gboolean		 descending;
 	guint			 offset;
 	guint			 count;
+	const gchar		*login_key;
 } VentureSeriesValueFilter;
 
 /**
@@ -1456,6 +1575,75 @@ venture_series_store_value_lines(
 	VentureSeriesStore			 *self,
 	const VentureSeriesValueFilter		 *filter,
 	const gchar *const			 *instrument_keys,
+	GError					**error
+);
+
+/**
+ * VentureSeriesValueGroup:
+ * @VENTURE_SERIES_VALUE_GROUP_ACCOUNT: one total per account
+ * @VENTURE_SERIES_VALUE_GROUP_LOGIN: one total per login ("" for the
+ *   accounts reached through none)
+ *
+ * How venture_series_store_value_totals() buckets the valued holdings.
+ */
+typedef enum
+{
+	VENTURE_SERIES_VALUE_GROUP_ACCOUNT = 0,
+	VENTURE_SERIES_VALUE_GROUP_LOGIN
+} VentureSeriesValueGroup;
+
+/**
+ * VentureSeriesValueGroupTotal:
+ * @key: the account's or the login's key ("" for no login)
+ * @label: (nullable): its name, when the store knows one
+ * @lines: holding lines
+ * @priced_lines: of those, the ones with a price
+ * @quantity: units
+ * @value: the priced lines' total, 0 when none is priced
+ *
+ * The valued holdings of one account or one login.
+ */
+typedef struct
+{
+	gchar	*key;
+	gchar	*label;
+	gint64	 lines;
+	gint64	 priced_lines;
+	gint64	 quantity;
+	gint64	 value;
+} VentureSeriesValueGroupTotal;
+
+/**
+ * venture_series_value_group_total_free:
+ * @total: (transfer full) (nullable): a group's total
+ */
+void
+venture_series_value_group_total_free(VentureSeriesValueGroupTotal *total);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesValueGroupTotal, venture_series_value_group_total_free)
+
+/**
+ * venture_series_store_value_totals:
+ * @self: a store
+ * @filter: which holdings, valued how; the sort, the minimum and the page
+ *   are not read
+ * @group: per account or per login
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The valued holdings summed per account or per login in one statement,
+ * line by line exactly as venture_series_store_value_instruments() values
+ * them, so the groups add up to its totals. Bounded by the accounts (at
+ * most venture_series_accounts_get_max_accounts() groups; past that the
+ * read is refused, never cut short).
+ *
+ * Returns: (transfer full) (element-type VentureSeriesValueGroupTotal)
+ *   (nullable): the totals by key, or %NULL on error
+ */
+GPtrArray *
+venture_series_store_value_totals(
+	VentureSeriesStore			 *self,
+	const VentureSeriesValueFilter		 *filter,
+	VentureSeriesValueGroup			  group,
 	GError					**error
 );
 

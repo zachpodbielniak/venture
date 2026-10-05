@@ -71,10 +71,10 @@ Every widget has a kind, a title (or the kind supplies one), a width — one col
 | =market_alerts=  | the latest market data alert hits, newest first, each linking to the hit (needs =marketdata=) | =limit= |
 | =source_health=  | each market data source's last run (status and rows) and how many of its venues are late (needs =feeds=) | nothing |
 | =opportunities=  | the top arbitrage opportunities now, from a preset (=record_id=) or a scan's question in =options= (=strategy=, =min_profit=, =min_roi=, ...), each with its net and ROI (needs =arbitrage=) | =record_id=, =options=, =limit= |
-| =accounts_attention= | where to log in next: the operator's accounts that need a login, most urgent first, each with its first reasons (needs =marketdata=) | =options= (=data_source_id=, =expiring_hours=, =mail_days=, =stale_days=), =limit= |
-| =accounts_summary= | money on hand across the accounts, what their holdings are worth, what is listed, what waits in the mail and the thirty days' net (needs =marketdata=) | =options= (=data_source_id=, =basis=) |
-| =holdings_value= | the most valuable things the accounts hold, valued on a basis (needs =marketdata=) | =options= (=data_source_id=, =basis=, =place=), =limit= |
-| =external_pnl= | the period's net from the source's own ledger of trades, with a sparkline of each day's and the sales and purchases (needs =marketdata=) | =period=, =options= (=data_source_id=, =account_key=) |
+| =accounts_attention= | where to log in next: the operator's accounts that need a login, most urgent first and a login at a time, each with its first reasons (needs =marketdata=) | =options= (=data_source_id=, =expiring_hours=, =mail_days=, =stale_days=, =login=), =limit= |
+| =accounts_summary= | money on hand across the accounts, what their holdings are worth, what is listed, what waits in the mail and the thirty days' net (needs =marketdata=) | =options= (=data_source_id=, =basis=, =login=) |
+| =holdings_value= | the most valuable things the accounts hold, valued on a basis (needs =marketdata=) | =options= (=data_source_id=, =basis=, =place=, =login=), =limit= |
+| =external_pnl= | the period's net from the source's own ledger of trades, with a sparkline of each day's and the sales and purchases (needs =marketdata=) | =period=, =options= (=data_source_id=, =account_key=, =login=) |
 
 *The opportunities kind* runs the scan /arbitrage runs (=venture_arbitrage_scan_run()=), for the scope's primary organization, with =top= set to the widget's =limit= (5 by default) and =preset_id= to its =record_id=; its =options= are the scan's own option names and are read by the scan's reader when the widget is saved, so a misspelt filter is refused at the save rather than ignored on every render (only while the module is on, as a hidden report's options are let through). Its JSON rows (key, title, net, =net_formatted=, ROI) and its card come from one loop. See [[file:arbitrage.org][Arbitrage]].
 

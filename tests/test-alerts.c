@@ -1294,10 +1294,10 @@ seed_accounts(
 	VentureSeriesAccountResult result;
 	gint64 at;
 	const VentureSeriesAccount accounts[] = {
-		{ "Drgold-Thorium", "Drgold", "character", "Thorium Brotherhood", "thorium", NULL, now - 10 * 86400 },
-		{ "Mule-Thorium", "Mule", "character", "Thorium Brotherhood", "thorium", NULL, now - 86400 },
-		{ "Alt-Argent", "Alt", "character", "Argent Dawn", "argent", NULL, VENTURE_SERIES_NONE },
-		{ "Warband", "Warband bank", "shared", NULL, NULL, NULL, now - 30 * 86400 },
+		{ "Drgold-Thorium", "Drgold", "character", "Thorium Brotherhood", "thorium", NULL, now - 10 * 86400, NULL },
+		{ "Mule-Thorium", "Mule", "character", "Thorium Brotherhood", "thorium", NULL, now - 86400, NULL },
+		{ "Alt-Argent", "Alt", "character", "Argent Dawn", "argent", NULL, VENTURE_SERIES_NONE, NULL },
+		{ "Warband", "Warband bank", "shared", NULL, NULL, NULL, now - 30 * 86400, NULL },
 	};
 	VentureSeriesPosition positions[] = {
 		{ "p-inside", "Drgold-Thorium", "thorium", "ore", 3, 150, VENTURE_SERIES_NONE, now + 7200, VENTURE_SERIES_NONE, 0 },

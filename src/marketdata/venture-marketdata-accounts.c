@@ -45,15 +45,19 @@ static const gchar *const ma_bases[] = {
 
 static const gchar *const ma_account_sorts[] = {
 	"attention", "name", "realm", "gold", "positions", "expiry", "inbound", "last_seen",
-	"freshness", NULL
+	"freshness", "login", NULL
 };
 
 static const gchar *const ma_inventory_sorts[] = {
 	"value", "quantity", "name", "unit_value", "accounts", "days_of_supply", NULL
 };
 
+static const gchar *const ma_inventory_groups[] = {
+	"login", NULL
+};
+
 static const gchar *const ma_pnl_groups[] = {
-	"day", "week", "month", "account", "venue", "instrument", "source", NULL
+	"day", "week", "month", "account", "venue", "instrument", "source", "login", NULL
 };
 
 /* Where things sit, in the order a person looks for them. */
@@ -789,6 +793,64 @@ ma_account_name(const VentureSeriesAccountRow *account)
 	return venture_string_is_empty(account->name) ? account->key : account->name;
 }
 
+/*
+ * Appends a store's logins to @into as {data_source_id, key, name,
+ * accounts}, for a page's login picker; a key already there (from another
+ * source) is not repeated, since the filter is by key. A source that
+ * sends no logins adds nothing.
+ */
+static gboolean
+ma_login_choices(
+	VentureSeriesStore	 *store,
+	gint64			  source_id,
+	JsonArray		 *into,
+	GError			**error
+){
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i;
+
+	rows = venture_series_store_list_logins(store, error);
+
+	if (NULL == rows)
+		return FALSE;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureSeriesLoginRow *login = g_ptr_array_index(rows, i);
+		JsonObject *object;
+		gboolean seen = FALSE;
+		guint j;
+
+		for (j = 0; !seen && (j < json_array_get_length(into)); j++)
+			seen = (0 == g_strcmp0(json_object_get_string_member(json_array_get_object_element(into, j),
+			                                                     "key"), login->key));
+
+		if (seen)
+			continue;
+
+		object = json_object_new();
+		json_object_set_int_member(object, "data_source_id", source_id);
+		json_object_set_string_member(object, "key", login->key);
+		json_object_set_string_member(object, "name", venture_string_is_empty(login->name)
+		                                              ? login->key : login->name);
+		json_object_set_int_member(object, "accounts", login->accounts);
+		json_array_add_object_element(into, object);
+	}
+
+	return TRUE;
+}
+
+/* What a person calls the login an account is reached through: its name,
+ * else its key; NULL for an account reached through none. */
+static const gchar *
+ma_login_name(const VentureSeriesAccountRow *account)
+{
+	if (venture_string_is_empty(account->login_key))
+		return NULL;
+
+	return venture_string_is_empty(account->login_name) ? account->login_key : account->login_name;
+}
+
 /* The source with accounts that a page about "the" inventory reads when
  * none is named: the first by name that has any, else the first. */
 static VentureEntity *
@@ -815,7 +877,7 @@ ma_pick_source(
 			first = source;
 
 		store = ma_reader(context, source, NULL, NULL);
-		accounts = (NULL != store) ? venture_series_store_list_accounts(store, NULL, NULL, 0, NULL) : NULL;
+		accounts = (NULL != store) ? venture_series_store_list_accounts(store, NULL, NULL, NULL, 0, NULL) : NULL;
 
 		if ((NULL != accounts) && (accounts->len > 0))
 			return g_object_ref(source);
@@ -881,6 +943,10 @@ typedef struct
 	gint64	 mail_item_units;
 	gint64	 mail_soon;
 	gint64	 mail_soonest;		/* NONE: no mail expiring in the window */
+	gint64	 inventory_value;	/* NONE: not valued (no currency) */
+	gint64	 inventory_lines;
+	gint64	 inventory_priced;
+	GArray	*net;			/* the thirty days' net, per currency */
 } MaOps;
 
 static MaOps *
@@ -892,8 +958,19 @@ ma_ops_new(void)
 	ops->earliest_expired = VENTURE_SERIES_NONE;
 	ops->soonest_future = VENTURE_SERIES_NONE;
 	ops->mail_soonest = VENTURE_SERIES_NONE;
+	ops->inventory_value = VENTURE_SERIES_NONE;
+	ops->net = g_array_new(FALSE, TRUE, sizeof(VentureSeriesAmount));
 
 	return ops;
+}
+
+static void
+ma_ops_free(gpointer data)
+{
+	MaOps *ops = data;
+
+	g_clear_pointer(&ops->net, g_array_unref);
+	g_free(ops);
 }
 
 static MaOps *
@@ -919,6 +996,8 @@ typedef struct
 {
 	gint64		 source_id;
 	gchar		*realm;
+	gchar		*login_key;	/* "" for none */
+	gchar		*login_name;	/* NULL for none */
 	JsonArray	*accounts;
 	JsonArray	*reasons;
 	gint		 tier;		/* 0 a deadline, 1 something to collect, 2 stale */
@@ -933,6 +1012,8 @@ ma_attention_free(gpointer data)
 	MaAttention *row = data;
 
 	g_free(row->realm);
+	g_free(row->login_key);
+	g_free(row->login_name);
 	g_clear_pointer(&row->accounts, json_array_unref);
 	g_clear_pointer(&row->reasons, json_array_unref);
 	g_free(row);
@@ -944,6 +1025,7 @@ typedef struct
 	JsonObject	*json;
 	gchar		*name_fold;
 	gchar		*realm_fold;
+	gchar		*login_fold;	/* "" for none, which sorts last */
 	gint64		 gold;
 	gint64		 positions;
 	gint64		 soonest;
@@ -962,7 +1044,54 @@ ma_account_free(gpointer data)
 	g_clear_pointer(&row->json, json_object_unref);
 	g_free(row->name_fold);
 	g_free(row->realm_fold);
+	g_free(row->login_fold);
 	g_free(row);
+}
+
+/*
+ * One login's share of the overview: the per-login cards. Every figure is
+ * a sum of its accounts' own, so the cards add up to the headline. Kept
+ * per source, since two sources' stores may each have a login by the
+ * same key and they are not the same login.
+ */
+typedef struct
+{
+	gint64		 source_id;
+	gchar		*key;		/* "" for the accounts reached through none */
+	gchar		*name;
+	gchar		*kind;
+	gchar		*group_key;
+	gint64		 accounts;
+	gint64		 characters;
+	gint64		 needs_login;
+	gint64		 positions;
+	gint64		 positions_expired;
+	gint64		 positions_expiring;
+	gint64		 inbound;
+	gint64		 inventory_lines;
+	gint64		 inventory_priced;
+	GHashTable	*realms;
+	GArray		*balances;
+	GArray		*inventory;
+	GArray		*positions_value;
+	GArray		*net;
+} MaLogin;
+
+static void
+ma_login_free(gpointer data)
+{
+	MaLogin *login = data;
+
+	g_free(login->key);
+	g_free(login->name);
+	g_free(login->kind);
+	g_free(login->group_key);
+	g_clear_pointer(&login->realms, g_hash_table_unref);
+	g_clear_pointer(&login->balances, g_array_unref);
+	g_clear_pointer(&login->inventory, g_array_unref);
+	g_clear_pointer(&login->positions_value, g_array_unref);
+	g_clear_pointer(&login->net, g_array_unref);
+	g_free(login);
 }
 
 /* Everything the overview gathers from every source. */
@@ -994,8 +1123,12 @@ typedef struct
 	gint64					 characters;
 	gint64					 stale;
 	GHashTable				*realms;
-	GHashTable				*attention;	/* "source|realm" -> MaAttention */
+	GHashTable				*attention;	/* "source|login|realm" -> MaAttention */
 	GPtrArray				*rows;		/* MaAccount */
+	GPtrArray				*logins;	/* MaLogin, in the order first met */
+	GHashTable				*login_index;	/* "source|login" -> MaLogin (borrowed) */
+	JsonArray				*login_choices;	/* every login, for the picker */
+	gboolean				 any_login;	/* an account shown has a login */
 	JsonArray				*sources;
 	GArray					*shown;		/* source ids */
 	gchar					*first_currency;
@@ -1014,6 +1147,9 @@ ma_overview_clear(MaOverview *view)
 	g_clear_pointer(&view->realms, g_hash_table_unref);
 	g_clear_pointer(&view->attention, g_hash_table_unref);
 	g_clear_pointer(&view->rows, g_ptr_array_unref);
+	g_clear_pointer(&view->login_index, g_hash_table_unref);
+	g_clear_pointer(&view->login_choices, json_array_unref);
+	g_clear_pointer(&view->logins, g_ptr_array_unref);
 	g_clear_pointer(&view->sources, json_array_unref);
 	g_clear_pointer(&view->shown, g_array_unref);
 	g_clear_pointer(&view->first_currency, g_free);
@@ -1054,8 +1190,14 @@ ma_attention_for(
 	g_autofree gchar *key = NULL;
 	MaAttention *row;
 
-	/* An account with no realm is a place of its own (a shared bank). */
-	key = g_strdup_printf("%" G_GINT64_FORMAT "|%s", source_id,
+	/*
+	 * An account with no realm is a place of its own (a shared bank). A
+	 * realm is a place per login: the same realm under two logins is two
+	 * visits, since reaching it means signing in with each. The key's
+	 * separator is a control character no key may hold unescaped in a
+	 * sensible export and, either way, only joins the parts.
+	 */
+	key = g_strdup_printf("%" G_GINT64_FORMAT "\x1f%s\x1f%s", source_id, account->login_key,
 	                      venture_string_is_empty(realm) ? account->key : realm);
 	row = g_hash_table_lookup(view->attention, key);
 
@@ -1063,6 +1205,8 @@ ma_attention_for(
 	{
 		row = g_new0(MaAttention, 1);
 		row->source_id = source_id;
+		row->login_key = g_strdup(account->login_key);
+		row->login_name = g_strdup(ma_login_name(account));
 		row->realm = g_strdup(venture_string_is_empty(realm) ? ma_account_name(account) : realm);
 		row->accounts = json_array_new();
 		row->reasons = json_array_new();
@@ -1370,6 +1514,19 @@ ma_account_row(
 	ma_set_text(json, "venue_key", account->venue_key);
 	json_object_set_string_member(json, "url", url);
 
+	/* The login the account is reached through; null for none, so a
+	 * table can say "any login" for a shared bank. */
+	if (venture_string_is_empty(account->login_key))
+	{
+		json_object_set_null_member(json, "login");
+		json_object_set_null_member(json, "login_name");
+	}
+	else
+	{
+		json_object_set_string_member(json, "login", account->login_key);
+		json_object_set_string_member(json, "login_name", ma_login_name(account));
+	}
+
 	/* The attributes as the source sent them, plus the two a table shows. */
 	attrs = ma_attrs(account->attrs_json);
 	member = json_object_get_member(attrs, "level");
@@ -1399,6 +1556,8 @@ ma_account_row(
 	gold = ma_amounts_get(account->balances, currency);
 	ma_set_money(json, "gold", gold, currency);
 	json_object_set_array_member(json, "balances", ma_amounts_json(account->balances, currency));
+	ma_set_money(json, "inventory_value", ops->inventory_value, currency);
+	json_object_set_array_member(json, "net_30d", ma_amounts_json(ops->net, currency));
 
 	if ((NULL != days) && (NULL != currency))
 	{
@@ -1447,6 +1606,17 @@ ma_account_row(
 
 	row->name_fold = g_utf8_casefold(ma_account_name(account), -1);
 	row->realm_fold = g_utf8_casefold(realm, -1);
+
+	if (venture_string_is_empty(account->login_key))
+		row->login_fold = g_strdup("");
+	else
+	{
+		g_autofree gchar *fold = g_utf8_casefold(ma_login_name(account), -1);
+
+		/* The key after the name, so two logins of one name still
+		 * keep their accounts apart. */
+		row->login_fold = g_strdup_printf("%s\x1f%s", fold, account->login_key);
+	}
 	row->gold = gold;
 	row->positions = account->positions;
 	row->soonest = account->soonest_position_expiry;
@@ -1455,6 +1625,58 @@ ma_account_row(
 	row->synced_at = account->synced_at;
 
 	return row;
+}
+
+/*
+ * The card of the login @account is reached through, made on first
+ * mention: one per source and login, and one per source for the accounts
+ * reached through none. @rows are the store's logins, for the kind and
+ * group a login line gave (NULL when no account shown names one).
+ */
+static MaLogin *
+ma_login_for(
+	MaOverview			*view,
+	gint64				 source_id,
+	const VentureSeriesAccountRow	*account,
+	GPtrArray			*rows
+){
+	g_autofree gchar *index = NULL;
+	MaLogin *login;
+	guint i;
+
+	index = g_strdup_printf("%" G_GINT64_FORMAT "\x1f%s", source_id, account->login_key);
+	login = g_hash_table_lookup(view->login_index, index);
+
+	if (NULL != login)
+		return login;
+
+	login = g_new0(MaLogin, 1);
+	login->source_id = source_id;
+	login->key = g_strdup(account->login_key);
+	login->name = g_strdup(venture_string_is_empty(account->login_key) ? "No login"
+	                                                                   : ma_login_name(account));
+	login->realms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	login->balances = ma_amounts_new();
+	login->inventory = ma_amounts_new();
+	login->positions_value = ma_amounts_new();
+	login->net = ma_amounts_new();
+
+	for (i = 0; (NULL != rows) && (i < rows->len); i++)
+	{
+		VentureSeriesLoginRow *row = g_ptr_array_index(rows, i);
+
+		if (0 != g_strcmp0(row->key, account->login_key))
+			continue;
+
+		login->kind = g_strdup(row->kind);
+		login->group_key = g_strdup(row->group_key);
+		break;
+	}
+
+	g_ptr_array_add(view->logins, login);
+	g_hash_table_insert(view->login_index, g_steal_pointer(&index), login);
+
+	return login;
 }
 
 /* Everything one source adds to the overview. */
@@ -1474,6 +1696,7 @@ ma_overview_source(
 	g_autoptr(GHashTable) venues = NULL;
 	g_autoptr(GHashTable) ops = NULL;
 	g_autoptr(GHashTable) listed = NULL;
+	g_autoptr(GPtrArray) login_rows = NULL;
 	g_autofree gchar *currency = NULL;
 	g_autofree gchar *default_group = NULL;
 	g_autofree gchar *name = NULL;
@@ -1498,7 +1721,12 @@ ma_overview_source(
 	if (NULL == store)
 		return TRUE;
 
-	accounts = venture_series_store_list_accounts(store, NULL, view->query->group_key, view->now, error);
+	/* Every login the source knows, whatever the filters, for the
+	 * picker that sets one. */
+	if (!ma_login_choices(store, source_id, view->login_choices, error))
+		return FALSE;
+
+	accounts = venture_series_store_list_accounts(store, NULL, view->query->group_key, view->query->login, view->now, error);
 
 	if (NULL == accounts)
 		return FALSE;
@@ -1527,7 +1755,7 @@ ma_overview_source(
 	if (NULL == venues)
 		return FALSE;
 
-	ops = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	ops = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, ma_ops_free);
 	listed = g_hash_table_new(g_str_hash, g_str_equal);
 
 	/* Only the accounts asked about (a group narrows them) count. */
@@ -1668,6 +1896,7 @@ ma_overview_source(
 			filter.now = view->now;
 			filter.exclude_place = "currency";
 			filter.count = 1;
+			filter.login_key = view->query->login;
 
 			if (NULL != view->query->group_key)
 				filter.account_key = ((VentureSeriesAccountRow *)g_ptr_array_index(accounts, k))->key;
@@ -1704,6 +1933,7 @@ ma_overview_source(
 
 			venture_series_txn_filter_init(&txns);
 			ma_thirty_days(context, view->now, &txns.since, &txns.until);
+			txns.login_key = view->query->login;
 
 			if (NULL != view->query->group_key)
 				txns.account_key = ((VentureSeriesAccountRow *)g_ptr_array_index(accounts, k))->key;
@@ -1732,11 +1962,90 @@ ma_overview_source(
 		}
 	}
 
+	/*
+	 * Each account's own figures beside the headline's: its holdings'
+	 * value and its thirty days, one grouped read each rather than one
+	 * read per account. The per-login cards are sums of these, so they
+	 * add up to the headline exactly -- the same lines, valued the same
+	 * way, grouped another way.
+	 */
+	if (NULL != currency)
+	{
+		VentureSeriesValueFilter filter;
+		g_autoptr(GPtrArray) worth = NULL;
+
+		venture_series_value_filter_init(&filter);
+		filter.currency = currency;
+		filter.basis = view->basis;
+		filter.default_group = default_group;
+		filter.now = view->now;
+		filter.exclude_place = "currency";
+		filter.login_key = view->query->login;
+		worth = venture_series_store_value_totals(store, &filter, VENTURE_SERIES_VALUE_GROUP_ACCOUNT,
+		                                          error);
+
+		if (NULL == worth)
+			return FALSE;
+
+		for (i = 0; i < worth->len; i++)
+		{
+			VentureSeriesValueGroupTotal *total = g_ptr_array_index(worth, i);
+			MaOps *mine;
+
+			if (!g_hash_table_contains(listed, total->key))
+				continue;
+
+			mine = ma_ops_for(ops, total->key);
+			mine->inventory_value = total->value;
+			mine->inventory_lines = total->lines;
+			mine->inventory_priced = total->priced_lines;
+		}
+	}
+
+	{
+		g_autoptr(GPtrArray) totals = NULL;
+
+		venture_series_txn_filter_init(&txns);
+		ma_thirty_days(context, view->now, &txns.since, &txns.until);
+		txns.login_key = view->query->login;
+		totals = venture_series_store_txn_totals(store, &txns, VENTURE_SERIES_TXN_GROUP_ACCOUNT, error);
+
+		if (NULL == totals)
+			return FALSE;
+
+		for (i = 0; i < totals->len; i++)
+		{
+			VentureSeriesTxnTotal *bucket = g_ptr_array_index(totals, i);
+
+			if (g_hash_table_contains(listed, bucket->key) &&
+			    !ma_amounts_add(ma_ops_for(ops, bucket->key)->net, bucket->currency, bucket->net,
+			                    error))
+				return FALSE;
+		}
+	}
+
+	/* The logins' own descriptions -- kind and group -- read only when an
+	 * account shown names one. */
+	for (i = 0; (NULL == login_rows) && (i < accounts->len); i++)
+	{
+		VentureSeriesAccountRow *account = g_ptr_array_index(accounts, i);
+
+		if (venture_string_is_empty(account->login_key))
+			continue;
+
+		login_rows = venture_series_store_list_logins(store, error);
+
+		if (NULL == login_rows)
+			return FALSE;
+	}
+
 	for (i = 0; i < accounts->len; i++)
 	{
 		VentureSeriesAccountRow *account = g_ptr_array_index(accounts, i);
 		g_autofree gchar *realm = ma_realm(account, venues);
 		MaOps *mine = ma_ops_for(ops, account->key);
+		MaAccount *shown;
+		MaLogin *login;
 		guint j;
 
 		view->accounts++;
@@ -1765,8 +2074,54 @@ ma_overview_source(
 				return FALSE;
 		}
 
-		g_ptr_array_add(view->rows, ma_account_row(view, source, account, realm, mine, currency,
-		                                           days, first_day));
+		shown = ma_account_row(view, source, account, realm, mine, currency, days, first_day);
+		g_ptr_array_add(view->rows, shown);
+
+		/* The account's share of its login's card. */
+		if (!venture_string_is_empty(account->login_key))
+			view->any_login = TRUE;
+
+		login = ma_login_for(view, source_id, account, login_rows);
+		login->accounts++;
+
+		if (0 == g_strcmp0(account->kind, "character"))
+		{
+			login->characters++;
+
+			if ('\0' != realm[0])
+				g_hash_table_add(login->realms, g_strdup(realm));
+		}
+
+		if (shown->tier < 3)
+			login->needs_login++;
+
+		login->positions += account->positions;
+		login->positions_expired += mine->expired;
+		login->positions_expiring += mine->soon;
+		login->inbound += account->inbound;
+		login->inventory_lines += mine->inventory_lines;
+		login->inventory_priced += mine->inventory_priced;
+
+		for (j = 0; j < account->balances->len; j++)
+		{
+			VentureSeriesAmount *balance = &g_array_index(account->balances, VentureSeriesAmount, j);
+
+			if (!ma_amounts_add(login->balances, balance->currency, balance->amount, error))
+				return FALSE;
+		}
+
+		for (j = 0; j < mine->net->len; j++)
+		{
+			VentureSeriesAmount *net = &g_array_index(mine->net, VentureSeriesAmount, j);
+
+			if (!ma_amounts_add(login->net, net->currency, net->amount, error))
+				return FALSE;
+		}
+
+		if (!ma_amounts_add(login->inventory, currency, mine->inventory_value, error) ||
+		    ((mine->positions > 0) &&
+		     !ma_amounts_add(login->positions_value, currency, mine->value, error)))
+			return FALSE;
 	}
 
 	return TRUE;
@@ -1794,7 +2149,10 @@ ma_compare_attention(
 	if ((2 == one->tier) && (one->oldest != two->oldest))
 		return (one->oldest < two->oldest) ? -1 : 1;
 
-	return g_utf8_collate(one->realm, two->realm);
+	if (0 != g_utf8_collate(one->realm, two->realm))
+		return g_utf8_collate(one->realm, two->realm);
+
+	return g_strcmp0(one->login_key, two->login_key);
 }
 
 /* The order the account table asks for. */
@@ -1803,7 +2161,24 @@ typedef struct
 	const gchar	*name;
 	gboolean	 descending;
 	gboolean	 realm_first;
+	gboolean	 login_first;
 } MaOrder;
+
+/* Logins by name, the accounts reached through none ("") last. */
+static gint
+ma_compare_login_fold(
+	const gchar	*a,
+	const gchar	*b
+){
+	gint by;
+
+	if (('\0' == a[0]) != ('\0' == b[0]))
+		return ('\0' == a[0]) ? 1 : -1;
+
+	by = g_strcmp0(a, b);
+
+	return (by < 0) ? -1 : ((by > 0) ? 1 : 0);
+}
 
 /*
  * A string comparison as -1, 0 or 1. g_strcmp0() answers a byte
@@ -1852,10 +2227,21 @@ ma_compare_accounts(
 	const gchar *ma_sort_name = order->name;
 	gint by = 0;
 
+	/* Grouped by login, the login leads, then the realm: a login's rows
+	 * and, inside it, a realm's must be contiguous for their headers. The
+	 * accounts reached through no login come last either way. */
+	if (order->login_first)
+	{
+		by = ma_compare_login_fold(one->login_fold, two->login_fold);
+
+		if (0 != by)
+			return by;
+	}
+
 	/* Grouped by realm, the realm leads whatever else sorts, or a realm's
 	 * rows interleave with another's and its header is drawn twice. The
 	 * realm sort itself goes the way it was asked, below. */
-	if (order->realm_first && (0 != g_strcmp0(ma_sort_name, "realm")))
+	if ((order->realm_first || order->login_first) && (0 != g_strcmp0(ma_sort_name, "realm")))
 	{
 		by = ma_compare_text(one->realm_fold, two->realm_fold);
 
@@ -1879,6 +2265,14 @@ ma_compare_accounts(
 		by = ma_compare_figure(one->last_seen, two->last_seen);
 	else if (0 == g_strcmp0(ma_sort_name, "freshness"))
 		by = ma_compare_figure(one->synced_at, two->synced_at);
+	else if (0 == g_strcmp0(ma_sort_name, "login"))
+	{
+		/* No login is last whichever way the order runs. */
+		by = ma_compare_login_fold(one->login_fold, two->login_fold);
+
+		if (('\0' == one->login_fold[0]) != ('\0' == two->login_fold[0]))
+			by *= 2;
+	}
 	else
 	{
 		/* Attention: the accounts with a deadline first, soonest first,
@@ -1898,6 +2292,153 @@ ma_compare_accounts(
 	by = g_strcmp0(one->realm_fold, two->realm_fold);
 
 	return (0 != by) ? by : g_strcmp0(one->name_fold, two->name_fold);
+}
+
+/*
+ * Puts each login's places together, keeping the order inside it: the
+ * logins go in the order of their most urgent place, since signing out of
+ * one and into another is the costly switch, and a list that alternated
+ * between two logins would have it made over and over. The accounts
+ * reached through none are a group of their own, ordered the same way.
+ */
+static void
+ma_group_attention(GPtrArray *attention)
+{
+	g_autoptr(GHashTable) groups = NULL;
+	g_autoptr(GPtrArray) order = NULL;
+	g_autoptr(GPtrArray) grouped = NULL;
+	guint i;
+	guint j;
+
+	groups = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                               (GDestroyNotify)g_ptr_array_unref);
+	order = g_ptr_array_new();
+
+	for (i = 0; i < attention->len; i++)
+	{
+		MaAttention *row = g_ptr_array_index(attention, i);
+		g_autofree gchar *key = NULL;
+		GPtrArray *members;
+
+		key = g_strdup_printf("%" G_GINT64_FORMAT "\x1f%s", row->source_id, row->login_key);
+		members = g_hash_table_lookup(groups, key);
+
+		if (NULL == members)
+		{
+			members = g_ptr_array_new();
+			g_ptr_array_add(order, members);
+			g_hash_table_insert(groups, g_steal_pointer(&key), members);
+		}
+
+		g_ptr_array_add(members, row);
+	}
+
+	grouped = g_ptr_array_new();
+
+	for (i = 0; i < order->len; i++)
+	{
+		GPtrArray *members = g_ptr_array_index(order, i);
+
+		for (j = 0; j < members->len; j++)
+			g_ptr_array_add(grouped, g_ptr_array_index(members, j));
+	}
+
+	for (i = 0; i < grouped->len; i++)
+		attention->pdata[i] = g_ptr_array_index(grouped, i);
+}
+
+/* Logins by name, then source; the accounts reached through none last. */
+static gint
+ma_compare_logins(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const MaLogin *one = *(MaLogin *const *)a;
+	const MaLogin *two = *(MaLogin *const *)b;
+	gint by;
+
+	if (('\0' == one->key[0]) != ('\0' == two->key[0]))
+		return ('\0' == one->key[0]) ? 1 : -1;
+
+	by = g_utf8_collate(one->name, two->name);
+
+	if (0 != by)
+		return by;
+
+	if (one->source_id != two->source_id)
+		return (one->source_id < two->source_id) ? -1 : 1;
+
+	return g_strcmp0(one->key, two->key);
+}
+
+/* How many logins the accounts shown are reached through. */
+static gint64
+ma_count_logins(MaOverview *view)
+{
+	gint64 count = 0;
+	guint i;
+
+	for (i = 0; (NULL != view->logins) && (i < view->logins->len); i++)
+	{
+		MaLogin *login = g_ptr_array_index(view->logins, i);
+
+		if ('\0' != login->key[0])
+			count++;
+	}
+
+	return count;
+}
+
+/* One login's card. */
+static JsonObject *
+ma_login_json(
+	MaLogin		*login,
+	const gchar	*first_currency
+){
+	JsonObject *object;
+
+	object = json_object_new();
+	json_object_set_int_member(object, "data_source_id", login->source_id);
+
+	if ('\0' == login->key[0])
+	{
+		/* No url: "reached through no login" is not a filter, it is
+		 * what is left once each login is counted. */
+		json_object_set_null_member(object, "key");
+		json_object_set_null_member(object, "url");
+	}
+	else
+	{
+		g_autoptr(GString) url = g_string_new("/accounts?login=");
+
+		g_string_append_uri_escaped(url, login->key, NULL, FALSE);
+		g_string_append_printf(url, "&source=%" G_GINT64_FORMAT, login->source_id);
+		json_object_set_string_member(object, "key", login->key);
+		json_object_set_string_member(object, "url", url->str);
+	}
+
+	json_object_set_string_member(object, "name", login->name);
+	ma_set_text(object, "kind", login->kind);
+	ma_set_text(object, "group_key", venture_string_is_empty(login->group_key) ? NULL
+	                                                                          : login->group_key);
+	json_object_set_int_member(object, "accounts", login->accounts);
+	json_object_set_int_member(object, "characters", login->characters);
+	json_object_set_int_member(object, "realms", g_hash_table_size(login->realms));
+	json_object_set_int_member(object, "needs_login", login->needs_login);
+	json_object_set_array_member(object, "balances", ma_amounts_json(login->balances, first_currency));
+	json_object_set_array_member(object, "inventory_value",
+	                             ma_amounts_json(login->inventory, first_currency));
+	json_object_set_int_member(object, "inventory_lines", login->inventory_lines);
+	json_object_set_int_member(object, "inventory_priced_lines", login->inventory_priced);
+	json_object_set_int_member(object, "positions", login->positions);
+	json_object_set_int_member(object, "positions_expired", login->positions_expired);
+	json_object_set_int_member(object, "positions_expiring", login->positions_expiring);
+	json_object_set_array_member(object, "positions_value",
+	                             ma_amounts_json(login->positions_value, first_currency));
+	json_object_set_int_member(object, "inbound", login->inbound);
+	json_object_set_array_member(object, "net_30d", ma_amounts_json(login->net, first_currency));
+
+	return object;
 }
 
 #endif /* VENTURE_HAVE_SQLITE */
@@ -1982,6 +2523,7 @@ venture_marketdata_accounts(
 	json_object_set_int_member(echo, "mail_days", mail_days);
 	json_object_set_int_member(echo, "stale_days", stale_days);
 	ma_set_text(echo, "group_key", query->group_key);
+	ma_set_text(echo, "login", query->login);
 	json_object_set_string_member(echo, "sort", (NULL != query->sort) ? query->sort : "attention");
 	json_object_set_boolean_member(echo, "descending", query->descending);
 	json_object_set_object_member(root, "query", echo);
@@ -2026,6 +2568,9 @@ venture_marketdata_accounts(
 		view.realms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 		view.attention = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, ma_attention_free);
 		view.rows = g_ptr_array_new_with_free_func(ma_account_free);
+		view.logins = g_ptr_array_new_with_free_func(ma_login_free);
+		view.login_index = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		view.login_choices = json_array_new();
 		view.sources = json_array_new();
 		view.shown = g_array_new(FALSE, FALSE, sizeof(gint64));
 
@@ -2082,19 +2627,39 @@ venture_marketdata_accounts(
 			g_ptr_array_add(attention, value);
 
 		g_ptr_array_sort(attention, ma_compare_attention);
+		ma_group_attention(attention);
 		rows = json_array_new();
 
 		for (i = 0; i < attention->len; i++)
 		{
 			MaAttention *row = g_ptr_array_index(attention, i);
 			JsonObject *object = json_object_new();
-			g_autofree gchar *title = g_strdup_printf("Log in to %s", row->realm);
+			g_autofree gchar *title = NULL;
 			const gchar *severity;
+
+			/* Which login to sign in with comes first: it is the slow
+			 * switch, the realm after it the quick one. */
+			if (NULL != row->login_name)
+				title = g_strdup_printf("Log in to %s \xe2\x86\x92 %s", row->login_name, row->realm);
+			else
+				title = g_strdup_printf("Log in to %s", row->realm);
 
 			severity = (0 == row->tier) ? ((row->due <= now) ? "overdue" : "soon")
 			         : ((1 == row->tier) ? "waiting" : "stale");
 			json_object_set_int_member(object, "data_source_id", row->source_id);
 			json_object_set_string_member(object, "realm", row->realm);
+
+			if (NULL != row->login_name)
+			{
+				JsonObject *login = json_object_new();
+
+				json_object_set_string_member(login, "key", row->login_key);
+				json_object_set_string_member(login, "name", row->login_name);
+				json_object_set_object_member(object, "login", login);
+			}
+			else
+				json_object_set_null_member(object, "login");
+
 			json_object_set_string_member(object, "title", title);
 			json_object_set_string_member(object, "severity", severity);
 			ma_set_time(object, "due_at", row->due);
@@ -2108,6 +2673,7 @@ venture_marketdata_accounts(
 		order.name = (NULL != query->sort) ? query->sort : "attention";
 		order.descending = query->descending;
 		order.realm_first = query->realm_first;
+		order.login_first = query->login_first;
 		g_ptr_array_sort_with_data(view.rows, ma_compare_accounts, &order);
 		rows = json_array_new();
 
@@ -2120,6 +2686,23 @@ venture_marketdata_accounts(
 
 		json_object_set_array_member(root, "accounts", rows);
 		json_object_set_array_member(root, "sources", json_array_ref(view.sources));
+
+		/* A card per login, only when some account has one: an operator
+		 * with a single login sees the page as it always was. */
+		rows = json_array_new();
+
+		if (view.any_login)
+		{
+			g_ptr_array_sort(view.logins, ma_compare_logins);
+
+			for (i = 0; i < view.logins->len; i++)
+				json_array_add_object_element(rows, ma_login_json(g_ptr_array_index(view.logins, i),
+				                                                  view.first_currency));
+		}
+
+		json_object_set_array_member(root, "logins", rows);
+		json_object_set_int_member(summary, "logins", ma_count_logins(&view));
+		json_object_set_array_member(root, "login_choices", json_array_ref(view.login_choices));
 
 		json_object_set_int_member(summary, "accounts", view.accounts);
 		json_object_set_int_member(summary, "characters", view.characters);
@@ -2156,6 +2739,8 @@ venture_marketdata_accounts(
 	json_object_set_array_member(root, "sources", json_array_new());
 	json_object_set_array_member(root, "attention", json_array_new());
 	json_object_set_array_member(root, "accounts", json_array_new());
+	json_object_set_array_member(root, "logins", json_array_new());
+	json_object_set_array_member(root, "login_choices", json_array_new());
 	json_object_set_int_member(summary, "accounts", 0);
 	json_object_set_object_member(root, "summary", summary);
 	ma_attribute(context, query->organization_id, root, NULL);
@@ -2446,7 +3031,7 @@ venture_marketdata_account(
 
 		if (NULL == positions)
 		{
-			g_free(ops);
+			ma_ops_free(ops);
 			goto fail;
 		}
 
@@ -2477,7 +3062,7 @@ venture_marketdata_account(
 			{
 				if (!ma_amounts_add(positions_value, position->currency, total, error))
 				{
-					g_free(ops);
+					ma_ops_free(ops);
 					goto fail;
 				}
 			}
@@ -2514,7 +3099,7 @@ venture_marketdata_account(
 			                                      &market, &local_error))
 			{
 				g_propagate_error(error, g_steal_pointer(&local_error));
-				g_free(ops);
+				ma_ops_free(ops);
 				goto fail;
 			}
 
@@ -2564,7 +3149,7 @@ venture_marketdata_account(
 
 		if (NULL == inbound)
 		{
-			g_free(ops);
+			ma_ops_free(ops);
 			goto fail;
 		}
 
@@ -2621,7 +3206,7 @@ venture_marketdata_account(
 		view.stale_seconds = VENTURE_MARKETDATA_ACCOUNTS_STALE_DAYS * MA_DAY;
 		view.attention = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, ma_attention_free);
 		row = ma_account_row(&view, source, account, realm, ops, currency, NULL, 0);
-		g_free(ops);
+		ma_ops_free(ops);
 		json_object_set_object_member(root, "account", g_steal_pointer(&row->json));
 		ma_account_free(row);
 		g_hash_table_unref(view.attention);
@@ -2826,6 +3411,42 @@ venture_marketdata_account(
 
 /* --- The inventory ------------------------------------------------------------------ */
 
+#ifdef VENTURE_HAVE_SQLITE
+
+/*
+ * @groups (consumed) with the one whose "key" is null -- the accounts
+ * reached through no login -- moved to the end, where every login list
+ * puts it; the store sorts "" first.
+ */
+static JsonArray *
+ma_logins_last(JsonArray *groups)
+{
+	JsonArray *sorted;
+	JsonNode *none = NULL;
+	guint i;
+
+	sorted = json_array_new();
+
+	for (i = 0; i < json_array_get_length(groups); i++)
+	{
+		JsonObject *group = json_array_get_object_element(groups, i);
+
+		if (json_object_get_null_member(group, "key"))
+			none = json_array_dup_element(groups, i);
+		else
+			json_array_add_element(sorted, json_array_dup_element(groups, i));
+	}
+
+	if (NULL != none)
+		json_array_add_element(sorted, none);
+
+	json_array_unref(groups);
+
+	return sorted;
+}
+
+#endif /* VENTURE_HAVE_SQLITE */
+
 JsonNode *
 venture_marketdata_inventory(
 	VentureContext				 *context,
@@ -2848,6 +3469,7 @@ venture_marketdata_inventory(
 	if (!ma_require_module(context, error) ||
 	    !ma_check_choice(query->basis, ma_bases, "The valuation basis", error) ||
 	    !ma_check_choice(query->sort, ma_inventory_sorts, "The inventory's order", error) ||
+	    !ma_check_choice(query->group_by, ma_inventory_groups, "The inventory's grouping", error) ||
 	    !ma_threshold(query->dead_days, VENTURE_MARKETDATA_ACCOUNTS_DEAD_DAYS, MA_MAX_DEAD_DAYS,
 	                  "dead_days", &dead_days, error))
 		return NULL;
@@ -2880,6 +3502,8 @@ venture_marketdata_inventory(
 
 	echo = json_object_new();
 	ma_set_text(echo, "account", query->account);
+	ma_set_text(echo, "login", query->login);
+	ma_set_text(echo, "group_by", query->group_by);
 	ma_set_text(echo, "place", query->place);
 	ma_set_text(echo, "category", query->category);
 	ma_set_text(echo, "search", query->search);
@@ -2895,6 +3519,8 @@ venture_marketdata_inventory(
 	json_object_set_boolean_member(root, "available", ma_series_ready(context, notes));
 	json_object_set_array_member(root, "rows", json_array_new());
 	json_object_set_array_member(root, "accounts", json_array_new());
+	json_object_set_array_member(root, "logins", json_array_new());
+	json_object_set_array_member(root, "by_login", json_array_new());
 
 	/* The places a holding can be in, for a picker. */
 	list = json_array_new();
@@ -2924,6 +3550,7 @@ venture_marketdata_inventory(
 		g_autoptr(GPtrArray) keys = NULL;
 		g_autoptr(GPtrArray) whole = NULL;
 		g_autoptr(GHashTable) venues = NULL;
+		g_autoptr(GHashTable) login_of = NULL;
 		g_autoptr(GArray) shown = NULL;
 		g_autoptr(VentureMoney) bound = NULL;
 		g_autofree gchar *currency = NULL;
@@ -2993,12 +3620,13 @@ venture_marketdata_inventory(
 		if (NULL == venues)
 			goto fail;
 
-		accounts = venture_series_store_list_accounts(store, NULL, NULL, now, error);
+		accounts = venture_series_store_list_accounts(store, NULL, NULL, NULL, now, error);
 
 		if (NULL == accounts)
 			goto fail;
 
 		array = json_array_new();
+		login_of = g_hash_table_new(g_str_hash, g_str_equal);
 
 		for (i = 0; i < accounts->len; i++)
 		{
@@ -3009,10 +3637,18 @@ venture_marketdata_inventory(
 			json_object_set_string_member(object, "key", account->key);
 			json_object_set_string_member(object, "name", ma_account_name(account));
 			json_object_set_string_member(object, "realm", realm);
+			ma_set_text(object, "login", venture_string_is_empty(account->login_key)
+			                             ? NULL : account->login_key);
+			ma_set_text(object, "login_name", ma_login_name(account));
 			json_array_add_object_element(array, object);
+			g_hash_table_insert(login_of, account->key, account);
 		}
 
 		json_object_set_array_member(root, "accounts", array);
+
+		/* The logins, for a picker; empty for a source that sends none. */
+		if (!ma_login_choices(store, source_id, json_object_get_array_member(root, "logins"), error))
+			goto fail;
 
 		if (0 == accounts->len)
 			ma_note(notes, "This source has sent no accounts yet.");
@@ -3023,6 +3659,7 @@ venture_marketdata_inventory(
 		filter.default_group = default_group;
 		filter.now = now;
 		filter.account_key = query->account;
+		filter.login_key = query->login;
 		filter.place = query->place;
 
 		/* A game's own tokens are holdings too, but not stock: left out
@@ -3167,6 +3804,16 @@ venture_marketdata_inventory(
 				json_object_set_string_member(part, "account_name",
 				                              (NULL != line->account_name) ? line->account_name
 				                                                           : line->account_key);
+
+				{
+					VentureSeriesAccountRow *holder = g_hash_table_lookup(login_of,
+					                                                      line->account_key);
+
+					ma_set_text(part, "login", ((NULL == holder) ||
+					                            venture_string_is_empty(holder->login_key))
+					                           ? NULL : holder->login_key);
+					ma_set_text(part, "login_name", (NULL != holder) ? ma_login_name(holder) : NULL);
+				}
 				json_object_set_string_member(part, "place", line->place);
 				json_object_set_string_member(part, "place_label", ma_place_label(line->place));
 				json_object_set_int_member(part, "quantity", line->quantity);
@@ -3178,6 +3825,57 @@ venture_marketdata_inventory(
 		}
 
 		json_object_set_array_member(root, "rows", array);
+
+		/*
+		 * The same holdings, login by login: the lines the filter selects,
+		 * valued line by line as the rows are, so the logins add up to the
+		 * totals. A minimum value bounds instruments, not lines, and has
+		 * no meaning for a login's sum, so it is left out and said.
+		 */
+		if (0 == g_strcmp0(query->group_by, "login"))
+		{
+			g_autoptr(GPtrArray) groups = NULL;
+			VentureSeriesValueFilter by_login = filter;
+
+			by_login.min_value = VENTURE_SERIES_NONE;
+			groups = venture_series_store_value_totals(store, &by_login, VENTURE_SERIES_VALUE_GROUP_LOGIN,
+			                                           error);
+
+			if (NULL == groups)
+				goto fail;
+
+			if (NULL != bound)
+				ma_note(notes, "The holdings by login are not bounded by min_value: it applies to "
+				               "an item's total, and a login's sum is of lines.");
+
+			array = json_array_new();
+
+			for (i = 0; i < groups->len; i++)
+			{
+				VentureSeriesValueGroupTotal *group = g_ptr_array_index(groups, i);
+				gboolean none = venture_string_is_empty(group->key);
+
+				object = json_object_new();
+				ma_set_text(object, "key", none ? NULL : group->key);
+				json_object_set_string_member(object, "name",
+				                              none ? "No login"
+				                                   : (!venture_string_is_empty(group->label)
+				                                      ? group->label : group->key));
+				json_object_set_int_member(object, "lines", group->lines);
+				json_object_set_int_member(object, "priced_lines", group->priced_lines);
+				json_object_set_int_member(object, "units", group->quantity);
+				ma_set_money(object, "value", (group->priced_lines > 0) ? group->value
+				                                                        : VENTURE_SERIES_NONE,
+				             currency);
+				ma_set_ratio(object, "share", ((group->priced_lines > 0) && (totals.value > 0))
+				                              ? (gdouble)group->value / (gdouble)totals.value : NAN);
+
+				json_array_add_object_element(array, object);
+			}
+
+			json_object_set_array_member(root, "by_login", ma_logins_last(array));
+		}
+
 		shown = g_array_new(FALSE, FALSE, sizeof(gint64));
 		g_array_append_val(shown, source_id);
 		ma_attribute(context, query->organization_id, root, shown);
@@ -3221,6 +3919,7 @@ venture_marketdata_inventory(
 #define MA_TREND_MAX_POINTS (2000)
 
 #ifdef VENTURE_HAVE_SQLITE
+
 
 /* One ledger bucket's money fields onto @object, in its currency. */
 static void
@@ -3450,6 +4149,7 @@ venture_marketdata_external_pnl(
 		JsonObject *echo = json_object_new();
 
 		ma_set_text(echo, "account", query->account);
+		ma_set_text(echo, "login", query->login);
 		ma_set_text(echo, "venue", query->venue);
 		ma_set_text(echo, "instrument", query->instrument);
 		ma_set_text(echo, "source", query->source);
@@ -3460,6 +4160,7 @@ venture_marketdata_external_pnl(
 	json_object_set_array_member(root, "totals", json_array_new());
 	json_object_set_array_member(root, "buckets", json_array_new());
 	json_object_set_array_member(root, "top_items", json_array_new());
+	json_object_set_array_member(root, "logins", json_array_new());
 	json_object_set_null_member(root, "trend");
 
 	{
@@ -3538,9 +4239,13 @@ venture_marketdata_external_pnl(
 		if (NULL == store)
 			goto done;
 
+		if (!ma_login_choices(store, source_id, json_object_get_array_member(root, "logins"), error))
+			goto fail;
+
 		(void)venture_series_txn_group_from_string(group_name, &group);
 		venture_series_txn_filter_init(&filter);
 		filter.account_key = query->account;
+		filter.login_key = query->login;
 		filter.venue_key = query->venue;
 		filter.instrument_key = query->instrument;
 		filter.source = query->source;
@@ -3589,6 +4294,15 @@ venture_marketdata_external_pnl(
 			json_array_add_object_element(array, object);
 			ma_set_text(object, "key", bucket->key);
 			ma_set_text(object, "label", (NULL != bucket->label) ? bucket->label : bucket->key);
+
+			/* The accounts reached through no login are one bucket, said
+			 * as such: an empty label reads as a missing one. */
+			if ((VENTURE_SERIES_TXN_GROUP_LOGIN == group) && venture_string_is_empty(bucket->key))
+			{
+				json_object_set_null_member(object, "key");
+				json_object_set_string_member(object, "label", "No login");
+			}
+
 			ma_set_time(object, "period_start", bucket->period_start);
 			ma_set_bucket(object, bucket);
 
@@ -3603,6 +4317,14 @@ venture_marketdata_external_pnl(
 				g_autofree gchar *url = venture_marketdata_instrument_path(source_id, bucket->key, NULL);
 
 				json_object_set_string_member(object, "url", url);
+			}
+			else if ((VENTURE_SERIES_TXN_GROUP_LOGIN == group) && !venture_string_is_empty(bucket->key))
+			{
+				g_autoptr(GString) url = g_string_new("/accounts/pnl?login=");
+
+				g_string_append_uri_escaped(url, bucket->key, NULL, FALSE);
+				g_string_append_printf(url, "&source=%" G_GINT64_FORMAT, source_id);
+				json_object_set_string_member(object, "url", url->str);
 			}
 			else
 				json_object_set_null_member(object, "url");

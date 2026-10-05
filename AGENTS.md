@@ -1834,13 +1834,24 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   database. Anything that mirrors these rows into records (positions into
   `listing`) is a main-thread after-run hook reading a reader handle.
 - **Account-operations lines are strict; market lines are not.** The
-  seven kinds (`account`, `account_snapshot`, `balance`, `holding`,
-  `position`, `inbound`, `txn`) refuse an unknown member; the market kinds
+  eight kinds (`login`, `account`, `account_snapshot`, `balance`,
+  `holding`, `position`, `inbound`, `txn`) refuse an unknown member; the market kinds
   ignore one. It is deliberate both ways -- a misspelt `expires_at` would
   store listings that never expire, and an older reader must survive a
   new optional market member. The contract is shared with tsmctl's Python
   exporter: a member added here is added there, in the same change, or
   every push fails at its first line.
+- **An account's `login` is absent-keeps, empty-clears.** Like every
+  account member, a missing or `null` `login` keeps the stored one (an
+  exporter from before logins must not strand every character outside
+  its login) and `""` takes it off (a warband moved to `warbank:<group>`).
+  `""` is also what every pre-step-7 account reads as, and what a
+  `login_key` filter of `""` selects: "reached through none", never
+  "unknown". A login a row names is created bare, like an account; logins
+  are written before the batch's accounts and never removed.
+  `VentureSeriesAccount` gained `login_key` *last*: an aggregate
+  initialiser of it (tests do this) must name it, or
+  `-Wmissing-field-initializers` fails the build.
 - **A snapshot replaces only what it covers, for one account, and never
   goes backwards.** Mark and sweep (rows stamped -1, restated rows written
   over the stamp, the rest deleted), not delete-then-insert, so a
@@ -2100,6 +2111,24 @@ and positions in the books") has every rule, the matching table included.
 - **A venue's location is set only when empty.** The first character on a
   realm becomes the place its money moves through; a later one, or a link
   a person made, is never replaced.
+- **A login is a place, and the realm is per login.** An account reached
+  through a login sits in `<ns>/login:<L>/group:<G>` inside
+  `<ns>/login:<L>` (a login's bank with no realm straight inside the
+  login); one reached through none keeps `<ns>/group:<G>`. Do not share
+  one realm place between logins: two licences on one realm are two
+  sign-ins, and the books file each purse under its own login.
+- **A place moves only while it sits where the mirror put it.** The
+  location's `mirror-state` (`{"parent_id": N}`) records where; a parent
+  that differs is a person's move and stands for good -- the same rule
+  as a listing's state, so the same trap: compare with the record, never
+  with the chain, or every hand-filed character is put back on the next
+  push. Only the mirror writes it (`MIRROR_LOCATION_PERMIT_KEY` in
+  `mirror_write()`; the location validator refuses anyone else). A place
+  with no record is the mirror's only when filed under the source and
+  exactly where the earlier rule left it (its realm's group place, or the
+  top with no group or a deleted group place); an adopted place at the
+  top of a realm that has a place is the person's. A move needs a live
+  parent and never restores one.
 - **Products are made only when asked** (`create_products` with
   `products_venture_id`); otherwise an unpriced item's position is left
   out and the run note names the items. Never make a product per item by
@@ -2190,6 +2219,23 @@ pages").
 - **Names in a table row are `td.row-head`, not `th`.** A `th` takes the
   labels' uppercase micro register, which turned every character's name
   into capitals.
+- **Group by login before realm, and add the logins up from the
+  accounts.** The attention list is sorted by urgency and then grouped a
+  login at a time (`ma_group_attention()`): switching licences is the
+  costly step, so a list that alternates between two is wrong even when
+  each row is in urgency order. A place is per login (the attention key
+  is source, login, realm). The login cards are sums of each account's
+  own figures -- its holdings valued once by
+  `venture_series_store_value_totals(..., GROUP_ACCOUNT)`, its ledger
+  summed once by account -- never a second valuation per login, so the
+  cards add up to the headline to the copper and a shared warband (no
+  login) is counted once. With no login anywhere, `logins` is empty and
+  the pages draw no card, column, heading or picker.
+- **A login filter is a key, and per source.** `login=` narrows every
+  reader through `login_key`; two sources (or organizations) may each
+  have a login keyed `ZAKMANN` and they are not one login. "No login" is
+  a group the cards and `group_by=login` show, not a filter value the
+  doors accept (an empty `login=` is no filter).
 
 ## Finding opportunities: the arbitrage scan
 

@@ -646,6 +646,7 @@ static const GEnumValue venture_jsonl_message_kind_values[] = {
 	VE(VENTURE_JSONL_MESSAGE_POSITION,     "position"),
 	VE(VENTURE_JSONL_MESSAGE_INBOUND,      "inbound"),
 	VE(VENTURE_JSONL_MESSAGE_TXN,          "txn"),
+	VE(VENTURE_JSONL_MESSAGE_LOGIN,        "login"),
 	VE_END
 };
 

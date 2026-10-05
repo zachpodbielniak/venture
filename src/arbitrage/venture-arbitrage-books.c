@@ -2480,7 +2480,7 @@ books_post_internal(
 	/* --- Which accounts: the store's, and any the books hold that it
 	 * no longer lists --- */
 
-	store_accounts = venture_series_store_list_accounts(run.store, NULL, NULL, run.now, error);
+	store_accounts = venture_series_store_list_accounts(run.store, NULL, NULL, NULL, run.now, error);
 
 	if (NULL == store_accounts)
 		goto out;

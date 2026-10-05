@@ -1143,11 +1143,12 @@ test_sale_currency_upgrade(
 	g_clear_object(&fixture->store);
 
 	/* As an older build left it: no column, version 4, and one venue's
-	 * snapshot log purged. Step 6 (the accounts) is undone too, since a
-	 * version-4 store never had it. */
+	 * snapshot log purged. Steps 6 and 7 (the accounts, the logins) are
+	 * undone too, since a version-4 store never had them. */
 	path = g_build_filename(fixture->dir, "store.db", NULL);
 	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
 	g_assert_cmpint(sqlite3_exec(db,
+	                             "DROP TABLE logins;"
 	                             "DROP TABLE accounts; DROP TABLE account_balances;"
 	                             "DROP TABLE account_holdings; DROP TABLE account_positions;"
 	                             "DROP TABLE account_inbound; DROP TABLE external_txns;"

@@ -32,6 +32,9 @@
 static const gchar *const accounts_kinds[] = {
 	"character", "shared", "guild", "other", NULL
 };
+static const gchar *const accounts_login_kinds[] = {
+	"game_account", "platform_account", "other", NULL
+};
 static const gchar *const accounts_places[] = {
 	"bag", "bank", "reagent_bank", "warbank", "guild", "mail", "auction",
 	"void", "equipped", "currency", "other", NULL
@@ -40,7 +43,7 @@ static const gchar *const accounts_txn_kinds[] = {
 	"sale", "buy", "income", "expense", "expired", "cancelled", NULL
 };
 static const gchar *const accounts_txn_groups[] = {
-	"day", "week", "month", "account", "venue", "instrument", "source", NULL
+	"day", "week", "month", "account", "venue", "instrument", "source", "login", NULL
 };
 
 gboolean
@@ -349,6 +352,7 @@ typedef struct
 	GHashTable			*accounts;	/* key -> AccountsTouched */
 	GHashTable			*venues;	/* keys ensured */
 	GHashTable			*instruments;	/* keys ensured */
+	GHashTable			*logins;	/* keys written this batch */
 	VentureSeriesAccountResult	*result;
 } AccountsApply;
 
@@ -358,6 +362,7 @@ accounts_apply_clear(AccountsApply *apply)
 	g_clear_pointer(&apply->accounts, g_hash_table_unref);
 	g_clear_pointer(&apply->venues, g_hash_table_unref);
 	g_clear_pointer(&apply->instruments, g_hash_table_unref);
+	g_clear_pointer(&apply->logins, g_hash_table_unref);
 }
 
 static gint64
@@ -419,19 +424,119 @@ accounts_instrument(
 	return TRUE;
 }
 
+/* --- Logins ------------------------------------------------------------------- */
+
+static const gchar accounts_sql_login_exists[] =
+	"SELECT 1 FROM logins WHERE key = ?1";
+
+static const gchar accounts_sql_upsert_login[] =
+	"INSERT INTO logins (key, name, kind, group_key, attrs, first_seen, last_seen)"
+	" VALUES (?1, ?2, COALESCE(?3, 'other'), COALESCE(?4, ''), ?5, ?6, ?6)"
+	" ON CONFLICT (key) DO UPDATE SET"
+	"  name = COALESCE(?2, name),"
+	"  kind = COALESCE(?3, kind),"
+	"  group_key = COALESCE(?4, group_key),"
+	"  attrs = COALESCE(?5, attrs),"
+	"  first_seen = min(first_seen, ?6),"
+	"  last_seen = max(last_seen, ?6)";
+
+/*
+ * Writes a login: described by a login line, or bare when an account
+ * names one the store has not heard of -- the way a row naming an unknown
+ * account creates it. %NULL members keep what is stored, so an account's
+ * bare mention never blanks the name a login line gave. Each key is
+ * written once a batch; a second mention would only bump last_seen to
+ * the same moment.
+ */
+static gboolean
+accounts_write_login(
+	AccountsApply			 *apply,
+	const VentureSeriesLogin	 *login,
+	GError				**error
+){
+	g_autoptr(SeriesCachedStmt) lookup = NULL;
+	g_autoptr(SeriesCachedStmt) upsert = NULL;
+	gboolean known;
+	gint rc;
+
+	if (!venture_series_store_internal_check_key(login->key, "login", error) ||
+	    !venture_series_store_internal_check_text(login->name, VENTURE_SERIES_MAX_KEY_LENGTH,
+	                                              "login name", error) ||
+	    !venture_series_store_internal_check_text(login->group_key,
+	                                              VENTURE_SERIES_MAX_KEY_LENGTH,
+	                                              "login group", error) ||
+	    !venture_series_store_internal_check_attrs(login->attrs_json, error))
+		return FALSE;
+
+	if ((NULL != login->kind) &&
+	    !accounts_check_choice(login->kind, accounts_login_kinds, "login kind", error))
+		return FALSE;
+
+	/* A bare mention after the login was written this batch adds
+	 * nothing; a described one always writes. */
+	if ((NULL == login->name) && (NULL == login->kind) && (NULL == login->group_key) &&
+	    (NULL == login->attrs_json) && g_hash_table_contains(apply->logins, login->key))
+		return TRUE;
+
+	lookup = venture_series_store_internal_stmt(apply->store, accounts_sql_login_exists, error);
+	if (NULL == lookup)
+		return FALSE;
+
+	series_bind_text(lookup, 1, login->key);
+	rc = sqlite3_step(lookup);
+	known = (SQLITE_ROW == rc);
+
+	if ((SQLITE_ROW != rc) && (SQLITE_DONE != rc))
+	{
+		venture_series_store_internal_sqlite_error(apply->store, rc, "finding a login", error);
+		return FALSE;
+	}
+
+	g_clear_pointer(&lookup, series_cached_stmt_release);
+
+	upsert = venture_series_store_internal_stmt(apply->store, accounts_sql_upsert_login, error);
+	if (NULL == upsert)
+		return FALSE;
+
+	series_bind_text(upsert, 1, login->key);
+	series_bind_text(upsert, 2, login->name);
+	series_bind_text(upsert, 3, login->kind);
+	series_bind_text(upsert, 4, login->group_key);
+	series_bind_text(upsert, 5, login->attrs_json);
+	sqlite3_bind_int64(upsert, 6, apply->fetched_at);
+
+	if (!venture_series_store_internal_step_done(apply->store, upsert, "writing a login", error))
+		return FALSE;
+
+	apply->result->rows_written++;
+
+	if (!g_hash_table_contains(apply->logins, login->key))
+	{
+		apply->result->logins++;
+		g_hash_table_add(apply->logins, g_strdup(login->key));
+	}
+
+	if (!known)
+		apply->result->logins_new++;
+
+	return TRUE;
+}
+
 static const gchar accounts_sql_account_id[] =
 	"SELECT id FROM accounts WHERE key = ?1";
 
 static const gchar accounts_sql_upsert_account[] =
 	"INSERT INTO accounts (key, name, kind, group_key, venue_key, attrs, last_seen,"
-	"                      first_seen, synced_at)"
-	" VALUES (?1, ?2, COALESCE(?3, 'other'), COALESCE(?4, ''), ?5, ?6, ?7, ?8, ?8)"
+	"                      first_seen, synced_at, login)"
+	" VALUES (?1, ?2, COALESCE(?3, 'other'), COALESCE(?4, ''), ?5, ?6, ?7, ?8, ?8,"
+	"         COALESCE(?9, ''))"
 	" ON CONFLICT (key) DO UPDATE SET"
 	"  name = COALESCE(?2, name),"
 	"  kind = COALESCE(?3, kind),"
 	"  group_key = COALESCE(?4, group_key),"
 	"  venue_key = COALESCE(?5, venue_key),"
 	"  attrs = COALESCE(?6, attrs),"
+	"  login = COALESCE(?9, login),"
 	"  last_seen = CASE WHEN ?7 IS NULL THEN last_seen"
 	"                   WHEN last_seen IS NULL OR ?7 > last_seen THEN ?7"
 	"                   ELSE last_seen END,"
@@ -461,12 +566,28 @@ accounts_write_account(
 	    !venture_series_store_internal_check_text(account->group_key,
 	                                              VENTURE_SERIES_MAX_KEY_LENGTH,
 	                                              "account group", error) ||
-	    !venture_series_store_internal_check_attrs(account->attrs_json, error))
+	    !venture_series_store_internal_check_attrs(account->attrs_json, error) ||
+	    !venture_series_store_internal_check_text(account->login_key,
+	                                              VENTURE_SERIES_MAX_KEY_LENGTH,
+	                                              "account login", error))
 		return NULL;
 
 	if ((NULL != account->kind) &&
 	    !accounts_check_choice(account->kind, accounts_kinds, "account kind", error))
 		return NULL;
+
+	/* The login it names exists before the account points at it, bare
+	 * when no login line described it. "" is no login, not a key. */
+	if (!venture_string_is_empty(account->login_key))
+	{
+		VentureSeriesLogin bare;
+
+		memset(&bare, 0, sizeof(bare));
+		bare.key = account->login_key;
+
+		if (!accounts_write_login(apply, &bare, error))
+			return NULL;
+	}
 
 	if ((NULL != account->venue_key) &&
 	    (!venture_series_store_internal_check_key(account->venue_key, "venue", error) ||
@@ -501,6 +622,7 @@ accounts_write_account(
 	series_bind_text(upsert, 6, account->attrs_json);
 	series_bind_figure(upsert, 7, account->last_seen);
 	sqlite3_bind_int64(upsert, 8, apply->fetched_at);
+	series_bind_text(upsert, 9, account->login_key);
 
 	if (!venture_series_store_internal_step_done(apply->store, upsert, "writing an account", error))
 		return NULL;
@@ -1607,10 +1729,16 @@ venture_series_store_apply_accounts(
 	apply.accounts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, accounts_touched_free);
 	apply.venues = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	apply.instruments = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	apply.logins = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
 	/* Read once: a batch of fifty thousand rows must not ask the file
 	 * system for its size fifty thousand times. */
 	ok = venture_series_store_internal_over_cap(self, &apply.over_cap, error);
+
+	/* Logins before the accounts that name them, so a described login is
+	 * written with its name rather than bare and then filled in. */
+	for (i = 0; ok && (i < batch->n_logins); i++)
+		ok = accounts_write_login(&apply, &batch->logins[i], error);
 
 	for (i = 0; ok && (i < batch->n_accounts); i++)
 	{
@@ -1715,6 +1843,8 @@ venture_series_account_row_free(VentureSeriesAccountRow *row)
 	g_clear_pointer(&row->balances, g_array_unref);
 	g_clear_pointer(&row->inbound_money, g_array_unref);
 	g_clear_pointer(&row->inbound_cod, g_array_unref);
+	g_free(row->login_key);
+	g_free(row->login_name);
 	g_free(row);
 }
 
@@ -1730,12 +1860,14 @@ venture_series_account_row_free(VentureSeriesAccountRow *row)
 	"  (SELECT COUNT(*) FROM account_inbound n WHERE n.account_id = a.id)," \
 	"  (SELECT COUNT(*) FROM account_inbound n WHERE n.account_id = a.id" \
 	"     AND n.expires_at <= ?1)," \
-	"  (SELECT MIN(n.expires_at) FROM account_inbound n WHERE n.account_id = a.id)" \
+	"  (SELECT MIN(n.expires_at) FROM account_inbound n WHERE n.account_id = a.id)," \
+	"  a.login, (SELECT l.name FROM logins l WHERE l.key = a.login)" \
 	" FROM accounts a"
 
 static const gchar accounts_sql_list[] =
 	ACCOUNTS_ROW_SQL
 	" WHERE (?2 IS NULL OR a.kind = ?2) AND (?3 IS NULL OR a.group_key = ?3)"
+	"  AND (?5 IS NULL OR a.login = ?5)"
 	" ORDER BY a.group_key, COALESCE(a.name, a.key), a.key"
 	" LIMIT ?4";
 
@@ -1847,9 +1979,14 @@ accounts_row_from(sqlite3_stmt *stmt)
 	row->inbound = sqlite3_column_int64(stmt, 18);
 	row->inbound_expired = sqlite3_column_int64(stmt, 19);
 	row->soonest_inbound_expiry = series_column_figure(stmt, 20);
+	row->login_key = series_column_strdup(stmt, 21);
+	row->login_name = series_column_strdup(stmt, 22);
 
 	if (NULL == row->group_key)
 		row->group_key = g_strdup("");
+
+	if (NULL == row->login_key)
+		row->login_key = g_strdup("");
 
 	return g_steal_pointer(&row);
 }
@@ -1859,6 +1996,7 @@ venture_series_store_list_accounts(
 	VentureSeriesStore	 *self,
 	const gchar		 *kind,
 	const gchar		 *group_key,
+	const gchar		 *login_key,
 	gint64			  now,
 	GError			**error
 ){
@@ -1880,6 +2018,7 @@ venture_series_store_list_accounts(
 	series_bind_text(stmt, 3, group_key);
 	bound = (guint)venture_series_accounts_get_max_accounts();
 	sqlite3_bind_int64(stmt, 4, (gint64)bound + 1);
+	series_bind_text(stmt, 5, login_key);
 
 	rows = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_account_row_free);
 	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
@@ -1905,8 +2044,8 @@ venture_series_store_list_accounts(
 	if (rows->len > bound)
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		            "The store has more than %u accounts there; narrow the read to a group or "
-		            "a kind", bound);
+		            "The store has more than %u accounts there; narrow the read to a group, "
+		            "a login or a kind", bound);
 		return NULL;
 	}
 
@@ -1972,6 +2111,83 @@ venture_series_store_get_account(
 	return TRUE;
 }
 
+/* --- Logins ------------------------------------------------------------------------ */
+
+void
+venture_series_login_row_free(VentureSeriesLoginRow *row)
+{
+	if (NULL == row)
+		return;
+
+	g_free(row->key);
+	g_free(row->name);
+	g_free(row->kind);
+	g_free(row->group_key);
+	g_free(row->attrs_json);
+	g_free(row);
+}
+
+static const gchar accounts_sql_logins[] =
+	"SELECT l.key, l.name, l.kind, l.group_key, l.attrs, l.first_seen, l.last_seen,"
+	"  (SELECT COUNT(*) FROM accounts a WHERE a.login = l.key),"
+	"  (SELECT COUNT(*) FROM accounts a WHERE a.login = l.key AND a.kind = 'character')"
+	" FROM logins l ORDER BY COALESCE(l.name, l.key), l.key LIMIT ?1";
+
+GPtrArray *
+venture_series_store_list_logins(
+	VentureSeriesStore	 *self,
+	GError			**error
+){
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	guint bound;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	stmt = venture_series_store_internal_stmt(self, accounts_sql_logins, error);
+	if (NULL == stmt)
+		return NULL;
+
+	bound = (guint)venture_series_accounts_get_max_accounts();
+	sqlite3_bind_int64(stmt, 1, (gint64)bound + 1);
+	rows = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_login_row_free);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		VentureSeriesLoginRow *row = g_new0(VentureSeriesLoginRow, 1);
+
+		g_ptr_array_add(rows, row);
+		row->key = series_column_strdup(stmt, 0);
+		row->name = series_column_strdup(stmt, 1);
+		row->kind = series_column_strdup(stmt, 2);
+		row->group_key = series_column_strdup(stmt, 3);
+		row->attrs_json = series_column_strdup(stmt, 4);
+		row->first_seen = sqlite3_column_int64(stmt, 5);
+		row->last_seen = sqlite3_column_int64(stmt, 6);
+		row->accounts = sqlite3_column_int64(stmt, 7);
+		row->characters = sqlite3_column_int64(stmt, 8);
+
+		if (NULL == row->group_key)
+			row->group_key = g_strdup("");
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "listing logins", error);
+		return NULL;
+	}
+
+	if (rows->len > bound)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The store has more than %u logins", bound);
+		return NULL;
+	}
+
+	return g_steal_pointer(&rows);
+}
+
 /* --- Holdings ---------------------------------------------------------------------- */
 
 void
@@ -2026,6 +2242,12 @@ accounts_holding_where(
 	{
 		g_string_append(sql, " AND h.account_id = (SELECT id FROM accounts WHERE key = ?)");
 		accounts_bind_add_text(bindings, filter->account_key);
+	}
+
+	if (NULL != filter->login_key)
+	{
+		g_string_append(sql, " AND h.account_id IN (SELECT id FROM accounts WHERE login = ?)");
+		accounts_bind_add_text(bindings, filter->login_key);
 	}
 
 	if (NULL != filter->instrument_key)
@@ -2280,6 +2502,12 @@ venture_series_store_list_positions(
 		accounts_bind_add_text(bindings, filter->account_key);
 	}
 
+	if (NULL != filter->login_key)
+	{
+		g_string_append(sql, " AND a.login = ?");
+		accounts_bind_add_text(bindings, filter->login_key);
+	}
+
 	if (NULL != filter->venue_key)
 	{
 		g_string_append(sql, " AND p.venue_key = ?");
@@ -2402,6 +2630,12 @@ venture_series_store_list_inbound(
 	{
 		g_string_append(sql, " AND n.account_id = (SELECT id FROM accounts WHERE key = ?)");
 		accounts_bind_add_text(bindings, filter->account_key);
+	}
+
+	if (NULL != filter->login_key)
+	{
+		g_string_append(sql, " AND a.login = ?");
+		accounts_bind_add_text(bindings, filter->login_key);
 	}
 
 	if (VENTURE_SERIES_NONE != filter->expires_before)
@@ -2592,6 +2826,12 @@ accounts_txn_where(
 	{
 		g_string_append(sql, " AND t.account_id = (SELECT id FROM accounts WHERE key = ?)");
 		accounts_bind_add_text(bindings, filter->account_key);
+	}
+
+	if (NULL != filter->login_key)
+	{
+		g_string_append(sql, " AND t.account_id IN (SELECT id FROM accounts WHERE login = ?)");
+		accounts_bind_add_text(bindings, filter->login_key);
 	}
 
 	if (NULL != filter->kind)
@@ -2807,6 +3047,11 @@ venture_series_store_txn_totals(
 		break;
 	case VENTURE_SERIES_TXN_GROUP_SOURCE:
 		key_expr = "COALESCE(t.source, '')";
+		break;
+	case VENTURE_SERIES_TXN_GROUP_LOGIN:
+		key_expr = "a.login";
+		label_expr = "l.name";
+		joins = " JOIN accounts a ON a.id = t.account_id LEFT JOIN logins l ON l.key = a.login";
 		break;
 	default:
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
@@ -3085,7 +3330,8 @@ accounts_value_cte(
 
 	g_string_append(sql,
 		"WITH lines AS (SELECT a.id AS account_id, a.key AS account_key, a.name AS account_name,"
-		"  a.venue_key AS account_venue, a.group_key AS account_group, h.place AS place,"
+		"  a.venue_key AS account_venue, a.group_key AS account_group, a.login AS account_login,"
+		"  h.place AS place,"
 		"  h.instrument_key AS instrument_key, i.name AS instrument_name, i.name_fold AS name_fold,"
 		"  i.category AS category, h.quantity AS quantity, h.at AS at,"
 		"  c.min_price AS realm_min, c.market_value AS realm_market,"
@@ -3119,6 +3365,12 @@ accounts_value_cte(
 	{
 		g_string_append(sql, " AND a.key = ?");
 		accounts_bind_add_text(bindings, filter->account_key);
+	}
+
+	if (NULL != filter->login_key)
+	{
+		g_string_append(sql, " AND a.login = ?");
+		accounts_bind_add_text(bindings, filter->login_key);
 	}
 
 	if (NULL != filter->place)
@@ -3435,6 +3687,99 @@ venture_series_store_value_lines(
 	return g_steal_pointer(&rows);
 }
 
+void
+venture_series_value_group_total_free(VentureSeriesValueGroupTotal *total)
+{
+	if (NULL == total)
+		return;
+
+	g_free(total->key);
+	g_free(total->label);
+	g_free(total);
+}
+
+GPtrArray *
+venture_series_store_value_totals(
+	VentureSeriesStore			 *self,
+	const VentureSeriesValueFilter		 *filter,
+	VentureSeriesValueGroup			  group,
+	GError					**error
+){
+	g_autoptr(GString) sql = NULL;
+	g_autoptr(GArray) bindings = NULL;
+	g_autoptr(SeriesOwnedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	guint bound;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+
+	if ((VENTURE_SERIES_VALUE_GROUP_ACCOUNT != group) && (VENTURE_SERIES_VALUE_GROUP_LOGIN != group))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Not a way to group valued holdings");
+		return NULL;
+	}
+
+	sql = g_string_new(NULL);
+	bindings = accounts_bindings_new();
+
+	if (!accounts_value_cte(filter, NULL, sql, bindings, error))
+		return NULL;
+
+	/* The same priced lines the instrument totals sum, grouped another
+	 * way: SUM over integers, which SQLite refuses to overflow. */
+	if (VENTURE_SERIES_VALUE_GROUP_LOGIN == group)
+		g_string_append(sql, " SELECT p.account_login, MAX(l.name), COUNT(*), COUNT(p.line_value),"
+		                     "  SUM(p.quantity), COALESCE(SUM(p.line_value), 0)"
+		                     " FROM priced p LEFT JOIN logins l ON l.key = p.account_login"
+		                     " GROUP BY p.account_login ORDER BY p.account_login LIMIT ?");
+	else
+		g_string_append(sql, " SELECT p.account_key, MAX(p.account_name), COUNT(*),"
+		                     "  COUNT(p.line_value), SUM(p.quantity), COALESCE(SUM(p.line_value), 0)"
+		                     " FROM priced p GROUP BY p.account_id ORDER BY p.account_key LIMIT ?");
+
+	bound = (guint)venture_series_accounts_get_max_accounts();
+	accounts_bind_add_int(bindings, (gint64)bound + 1);
+
+	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
+	if (NULL == stmt)
+		return NULL;
+
+	rows = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_value_group_total_free);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		VentureSeriesValueGroupTotal *total = g_new0(VentureSeriesValueGroupTotal, 1);
+
+		g_ptr_array_add(rows, total);
+		total->key = series_column_strdup(stmt, 0);
+		total->label = series_column_strdup(stmt, 1);
+		total->lines = sqlite3_column_int64(stmt, 2);
+		total->priced_lines = sqlite3_column_int64(stmt, 3);
+		total->quantity = sqlite3_column_int64(stmt, 4);
+		total->value = sqlite3_column_int64(stmt, 5);
+
+		if (NULL == total->key)
+			total->key = g_strdup("");
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		venture_series_store_internal_sqlite_error(self, rc, "valuing the holdings", error);
+		return NULL;
+	}
+
+	if (rows->len > bound)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The holdings span more than %u accounts; narrow the read", bound);
+		return NULL;
+	}
+
+	return g_steal_pointer(&rows);
+}
+
 /* ==========================================================================
  * Balances by day
  * ========================================================================== */
@@ -3630,7 +3975,8 @@ accounts_compare_flips(
 static const gchar accounts_sql_held[] =
 	"SELECT COALESCE(SUM(h.quantity), 0) FROM account_holdings h"
 	" WHERE h.instrument_key = ?1 AND h.place <> 'currency'"
-	"   AND (?2 IS NULL OR h.account_id = (SELECT id FROM accounts WHERE key = ?2))";
+	"   AND (?2 IS NULL OR h.account_id = (SELECT id FROM accounts WHERE key = ?2))"
+	"   AND (?3 IS NULL OR h.account_id IN (SELECT id FROM accounts WHERE login = ?3))";
 
 /* Adds @value to *@total, refusing an overflow by name. */
 static gboolean
@@ -3691,6 +4037,7 @@ accounts_flip_finish(
 
 	series_bind_text(stmt, 1, flip->instrument_key);
 	series_bind_text(stmt, 2, (NULL != filter) ? filter->account_key : NULL);
+	series_bind_text(stmt, 3, (NULL != filter) ? filter->login_key : NULL);
 	rc = sqlite3_step(stmt);
 
 	if (SQLITE_ROW != rc)
