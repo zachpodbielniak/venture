@@ -132,8 +132,8 @@ Guessing a field name costs a silent no-op. Reading it costs one command.
 | `comments add TYPE ID BODY` | say something on any record that takes comments; BODY is markdown, `-` reads it from stdin. `@username` tells somebody **who may read the record** (anybody else stays text, silently); `#type/id` links a record |
 | `comments reply ID BODY` | answer comment ID; it lands in that comment's thread (one level deep) |
 | `comments edit ID BODY` / `comments delete ID` / `comments get ID` | change your own (only the author may), delete yours (or any, as an organization owner/admin), read one |
-| `feeds sync ID [--wait] [organization_id=N]` | queue a market data source's sync (`data_source` ID); answers `{"status": "queued", "data_source_id": ID}` at once. `--wait` polls the source's runs once a second and prints the run the sync recorded; after five minutes it gives up with exit 7 (the sync stays queued) |
-| `feeds push ID FILE\|- [--wait] [organization_id=N]` | send JSON lines (a file, or `-` for standard input) to a `push` data source; answers `{"status": "queued", "push_id": ...}` at once. `--wait` makes the server hold the request until the run is written (at most two minutes) and prints the run -- check its `status`: a malformed line is a `failed` run naming the line, and still exit 0 |
+| `feeds sync ID [--wait] [organization_id=N]` | queue a market data source's sync (`data_source` ID); answers `{"status": "queued", "data_source_id": ID}` at once. `--wait` polls the source's runs once a second and prints the run the sync recorded -- exit 1 when that run `failed`; after five minutes it gives up with exit 7 (the sync stays queued) |
+| `feeds push ID FILE\|- [--wait] [organization_id=N]` | send JSON lines (a file, or `-` for standard input) to a `push` data source; answers `{"status": "queued", "push_id": ...}` at once. `--wait` makes the server hold the request until the run is written (at most two minutes) and prints the run; a `failed` run (a malformed line, named) exits 1, and an answer without the run (too slow, or two other requests already waiting) prints the queued answer and exits 7. Exit 4 when the source is not a push source, is off, or already has four pushes not yet stored -- push again when they finish |
 | `feeds runs ID [organization_id=N]` | a data source's runs, newest first: status, units, rows, error |
 | `feeds due [organization_id=N]` | every unit of every source in the organization and when it is checked next, soonest first; `null` for a unit that never runs on its own |
 | `market quote ID [basis=B] [venue=KEY\|GROUP] [venue_id=N] [at=DATE] [currency=C] [prefer_currency=C] [fallback=true] [source=S] [organization_id=N]` | the price oracle for an `instrument` ID (or `product=ID` instead of ID): `{basis, found, price, value, evidence}`. Bases: `market` (default), `min`, `market_14d`, `historical_60d`, `region_median`, `region_p33`, `region_market_avg`, `sale_avg`, and the numbers `sale_rate`, `sold_per_day`, `quantity` (in `value`) |
@@ -499,7 +499,7 @@ escaped and a leading `=` is defused.
 | 4 | conflict — usually a uniqueness constraint |
 | 5 | auth — token missing, wrong, or the wrong role |
 | 6 | unsupported |
-| 7 | network or timeout — the server is not there, or `feeds sync --wait` gave up waiting |
+| 7 | network or timeout — the server is not there, or `feeds sync --wait` / `feeds push --wait` gave up waiting (the sync or push stays queued) |
 | 8 | validation — the record was refused |
 | 1 | anything else |
 
@@ -1087,10 +1087,17 @@ calls.
   (or `-` for standard input) POSTs JSON lines to
   `/api/v1/feeds/ID/push` (`Content-Type: application/x-ndjson`). It is
   never scheduled and a `feeds sync` of it fails its run. Pushing needs an
-  editor (like a sync); a source whose provider is not `push`, or that is
-  switched off, is refused (exit 4); feeds off is exit 3; a body past
-  `feeds.max_push_mb` (32 MiB) is refused. Every push is a run of its own
-  with trigger `push`.
+  editor (like a sync); a source whose provider is not `push`, that is
+  switched off, or that already has four pushes not yet stored is refused
+  (exit 4 -- wait for those runs, then push again); feeds off is exit 3; a
+  body past `feeds.max_push_mb` (32 MiB) is refused. Every push is a run of
+  its own with trigger `push`. With `--wait`, a `failed` run exits 1 and an
+  unwaited answer (too slow, or two other pushes already being waited on)
+  exits 7 with the push still queued.
+- A refused `balance`, `holding`, `position` or `inbound` line (too many
+  decimal places, the wrong currency) takes that kind out of its account's
+  `account_snapshot`: what the store had of it is kept, not swept, and
+  the run's notes say so. Fix the line and push again.
 - The account-operations lines (`account`, `account_snapshot`, `balance`,
   `holding`, `position`, `inbound`, `txn`; docs/plugins.org) refuse an
   unknown member, and their money is in the **data source's** currency:

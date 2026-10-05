@@ -1245,6 +1245,15 @@ struct _VentureFeedsService
 	 * in @push_order (which borrows the table's keys). */
 	GHashTable		*pushes;
 	GQueue			 push_order;
+
+	/* Pushes handed to the worker whose runs have not come back: push
+	 * id -> data source id. Each holds its body until then, so a source
+	 * has at most VENTURE_FEEDS_PUSHES_IN_FLIGHT. Main thread only. */
+	GHashTable		*pushes_in_flight;
+
+	/* Calls of venture_feeds_service_wait_push() waiting now, each in
+	 * a nested loop on the one beneath it. */
+	guint			 push_waiters;
 };
 
 G_DEFINE_FINAL_TYPE(VentureFeedsService, venture_feeds_service, G_TYPE_OBJECT)
@@ -1302,6 +1311,10 @@ feeds_service_halt(
 
 	if (NULL != self->backups_in_flight)
 		g_hash_table_remove_all(self->backups_in_flight);
+
+	/* The worker goes with every body it held; none will answer. */
+	if (NULL != self->pushes_in_flight)
+		g_hash_table_remove_all(self->pushes_in_flight);
 
 	if (NULL != self->worker)
 	{
@@ -1363,6 +1376,7 @@ venture_feeds_service_finalize(GObject *object)
 	VentureFeedsService *self = VENTURE_FEEDS_SERVICE(object);
 
 	g_clear_pointer(&self->backups_in_flight, g_hash_table_unref);
+	g_clear_pointer(&self->pushes_in_flight, g_hash_table_unref);
 	g_queue_clear(&self->push_order);
 	g_clear_pointer(&self->pushes, g_hash_table_unref);
 
@@ -1384,6 +1398,52 @@ venture_feeds_service_init(VentureFeedsService *self)
 	self->backups_in_flight = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
 	self->pushes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	g_queue_init(&self->push_order);
+	self->pushes_in_flight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+}
+
+/*
+ * A source taken off the worker drops the pushes it had queued and not
+ * started, and no run will answer them: they stop counting against the
+ * source here, or it would refuse every push after. A pass already
+ * running still answers, and its answer then finds nothing to remove.
+ */
+static void
+feeds_service_forget_pushes(
+	VentureFeedsService	*self,
+	gint64			 source_id
+){
+	GHashTableIter iter;
+	gpointer value;
+
+	g_hash_table_iter_init(&iter, self->pushes_in_flight);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+	{
+		if (*(const gint64 *)value == source_id)
+			g_hash_table_iter_remove(&iter);
+	}
+}
+
+/* How many of a source's pushes are with the worker, unanswered. */
+static guint
+feeds_service_count_pushes(
+	VentureFeedsService	*self,
+	gint64			 source_id
+){
+	GHashTableIter iter;
+	gpointer value;
+	guint count;
+
+	count = 0;
+	g_hash_table_iter_init(&iter, self->pushes_in_flight);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+	{
+		if (*(const gint64 *)value == source_id)
+			count++;
+	}
+
+	return count;
 }
 
 static VentureSeriesWorker *
@@ -1480,6 +1540,7 @@ venture_feeds_service_refresh(VentureFeedsService *self)
 		if (venture_entity_is_deleted(record))
 		{
 			venture_series_worker_remove_source(self->worker, venture_entity_get_id(record));
+			feeds_service_forget_pushes(self, venture_entity_get_id(record));
 			continue;
 		}
 
@@ -1491,6 +1552,7 @@ venture_feeds_service_refresh(VentureFeedsService *self)
 			g_message("feeds: source %" G_GINT64_FORMAT " is not scheduled: %s",
 			          venture_entity_get_id(record), freeze_error->message);
 			venture_series_worker_remove_source(self->worker, venture_entity_get_id(record));
+			feeds_service_forget_pushes(self, venture_entity_get_id(record));
 			continue;
 		}
 
@@ -1906,6 +1968,11 @@ feeds_service_run_finished(
 	if (self->shut_down)
 		return;
 
+	/* Its body is gone with the pass: room for the source's next push,
+	 * before the run waits for a moment with no transaction. */
+	if (NULL != run->push_id)
+		g_hash_table_remove(self->pushes_in_flight, run->push_id);
+
 	g_queue_push_tail(&self->waiting, venture_feed_run_ref(run));
 
 	if (0 == self->waiting_source)
@@ -2024,6 +2091,22 @@ venture_feeds_service_push(
 		return FALSE;
 	}
 
+	/*
+	 * Each queued push holds its whole body until its run ends. A
+	 * producer that pushes faster than the worker stores -- a retry loop,
+	 * a cron job firing every minute -- would otherwise pile bodies of
+	 * up to feeds.max_push_mb in memory without bound. It is told to wait
+	 * for the earlier ones instead; nothing of this one is kept.
+	 */
+	if (feeds_service_count_pushes(self, data_source_id) >= VENTURE_FEEDS_PUSHES_IN_FLIGHT)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		            "Data source %" G_GINT64_FORMAT " already has %d pushes waiting to be "
+		            "stored; push again when they finish (see its runs)",
+		            data_source_id, VENTURE_FEEDS_PUSHES_IN_FLIGHT);
+		return FALSE;
+	}
+
 	push_id = g_uuid_string_random();
 	spec = feeds_freeze(self->context, record, &freeze_error);
 
@@ -2031,7 +2114,13 @@ venture_feeds_service_push(
 		feeds_service_record_failure(self, record, VENTURE_DATA_SOURCE_RUN_TRIGGER_PUSH, push_id,
 		                             freeze_error->message);
 	else
+	{
+		gint64 *source_id = g_new(gint64, 1);
+
+		*source_id = data_source_id;
+		g_hash_table_insert(self->pushes_in_flight, g_strdup(push_id), source_id);
 		venture_series_worker_push(feeds_service_worker(self), spec, push_id, body);
+	}
 
 	if (NULL != out_push_id)
 		*out_push_id = g_steal_pointer(&push_id);
@@ -2087,6 +2176,12 @@ venture_feeds_service_wait_push(
 	if (venture_feeds_service_lookup_push(self, push_id, out_run_id))
 		return TRUE;
 
+	/* Nested loops end last in, first out: one more waiter would hold
+	 * every waiter beneath it for as long as its own run took. Past the
+	 * bound a caller is answered with what is written already. */
+	if (self->push_waiters >= VENTURE_FEEDS_PUSH_WAITERS)
+		return FALSE;
+
 	/* Held across the loop: switching feeds off from a request served
 	 * inside it shuts the service down and drops the context's
 	 * reference, and this frame still reads it. */
@@ -2101,15 +2196,26 @@ venture_feeds_service_wait_push(
 	expired = FALSE;
 	deadline = g_timeout_add_seconds(CLAMP(timeout_seconds, 1, VENTURE_FEEDS_PUSH_WAIT_SECONDS),
 	                                 feeds_push_wait_expired, &expired);
+	self->push_waiters++;
 
 	while (!expired && !self->shut_down &&
 	       !venture_feeds_service_lookup_push(self, push_id, out_run_id))
 		g_main_context_iteration(NULL, TRUE);
 
+	self->push_waiters--;
+
 	if (!expired)
 		g_source_remove(deadline);
 
 	return venture_feeds_service_lookup_push(self, push_id, out_run_id);
+}
+
+guint
+venture_feeds_service_count_push_waiters(VentureFeedsService *self)
+{
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), 0);
+
+	return self->push_waiters;
 }
 
 gboolean

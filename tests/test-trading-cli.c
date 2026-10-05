@@ -1337,15 +1337,55 @@ test_second_organization(
 	}
 }
 
+/* A push --wait run with two requests already waiting on pushes, so the
+ * server queues it without waiting: run from inside both waits. */
+typedef struct
+{
+	Fixture			*fixture;
+	const gchar *const	*args;
+	guint			 depth;
+	gboolean		 done;
+	Run			 run;
+} UnwaitedPush;
+
+static gboolean
+unwaited_push(gpointer data)
+{
+	UnwaitedPush *push = data;
+	VentureFeedsService *service;
+	g_autofree gchar *id = NULL;
+
+	service = venture_context_get_feeds_service(push->fixture->context);
+
+	if (push->depth < VENTURE_FEEDS_PUSH_WAITERS)
+	{
+		id = g_strdup_printf("never-%u", push->depth);
+		push->depth++;
+		g_idle_add(unwaited_push, push);
+		(void)venture_feeds_service_wait_push(service, id, 1, NULL);
+		return G_SOURCE_REMOVE;
+	}
+
+	g_assert_cmpuint(venture_feeds_service_count_push_waiters(service), ==,
+	                 VENTURE_FEEDS_PUSH_WAITERS);
+	cli_run(push->fixture, "json", push->args, &push->run);
+	push->done = TRUE;
+
+	return G_SOURCE_REMOVE;
+}
+
 /*
  * feeds push ID FILE --wait: the file goes as JSON lines, the server
  * waits for the run, and the run is printed. A push without a file is a
  * usage error; a push to a source that is not a push source is the
- * server's refusal, with its exit code.
+ * server's refusal, with its exit code. Under --wait a failed run exits 1
+ * (the run still printed), and a push the server did not wait for exits
+ * 7, like feeds sync --wait giving up.
  *
  * What breaks if this regresses: the shell path tsmctl's systemd unit
  * could fall back to (an export piped into venturectl) pushes nothing, or
- * reports success for a refused push.
+ * reports success for a refused push -- or for a push whose every line
+ * was thrown away, or whose run nobody waited for.
  */
 static void
 test_feeds_push(
@@ -1404,6 +1444,54 @@ test_feeds_push(
 
 		cli_refused(fixture, no_file, 2, "feeds push ID FILE|-");
 		cli_refused(fixture, not_push, 4, "not by pushes");
+	}
+
+	/* A line that breaks the protocol fails the run: printed, and exit 1. */
+	{
+		g_autofree gchar *broken = g_build_filename(fixture->state_dir, "broken.jsonl", NULL);
+		const gchar *const push[] = { "feeds", "push", id, broken, "--wait", NULL };
+		g_autoptr(JsonNode) failed = NULL;
+		Run outcome;
+
+		g_assert_true(g_file_set_contents(broken,
+			"{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n"
+			"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"1\","
+			"\"instrument\":\"i\",\"quantity\":1,\"price\":817.98,"
+			"\"expires_at\":\"2026-10-05T00:00:00Z\"}\n", -1, NULL));
+		cli_run(fixture, "json", push, &outcome);
+		g_assert_cmpint(outcome.status, ==, 1);
+		g_assert_nonnull(strstr(outcome.err, "failed"));
+		g_assert_nonnull(strstr(outcome.err, "Line 2"));
+		failed = json_of(outcome.out);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(failed), "status"), ==,
+		                "failed");
+		run_clear(&outcome);
+	}
+
+	/* Two requests already waiting: queued, not waited for, exit 7. */
+	{
+		const gchar *const push_args[] = { "feeds", "push", id, path, "--wait", NULL };
+		g_autoptr(JsonNode) queued = NULL;
+		UnwaitedPush push;
+
+		memset(&push, 0, sizeof(push));
+		push.fixture = fixture;
+		push.args = push_args;
+		g_idle_add(unwaited_push, &push);
+
+		while (!push.done ||
+		       (0 != venture_feeds_service_count_push_waiters(
+		                venture_context_get_feeds_service(fixture->context))))
+			g_main_context_iteration(NULL, TRUE);
+
+		g_assert_cmpint(push.run.status, ==, 7);
+		g_assert_nonnull(strstr(push.run.err, "did not wait"));
+		g_assert_nonnull(strstr(push.run.err, "already waiting"));
+		queued = json_of(push.run.out);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(queued), "status"), ==,
+		                "queued");
+		g_assert_nonnull(json_object_get_string_member(json_node_get_object(queued), "push_id"));
+		run_clear(&push.run);
 	}
 }
 

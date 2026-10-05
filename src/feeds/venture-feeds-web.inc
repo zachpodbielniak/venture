@@ -1072,8 +1072,10 @@ venture_feeds_web_credentials(
  *
  * 202 {status: queued, push_id} at once; with ?wait=1, the request waits
  * (at most VENTURE_FEEDS_PUSH_WAIT_SECONDS) and answers 200 {status:
- * finished, run} -- the run as recorded, failed or not -- or 202 again
- * when the run took longer.
+ * finished, run} -- the run as recorded, failed or not -- or 202 again,
+ * with a note, when the run took longer or when VENTURE_FEEDS_PUSH_WAITERS
+ * requests were already waiting. A source with VENTURE_FEEDS_PUSHES_IN_FLIGHT
+ * pushes not yet stored is 409.
  */
 static HtmxResponse *
 venture_feeds_web_push(
@@ -1197,6 +1199,21 @@ venture_feeds_web_push(
 	if (!wait)
 	{
 		json_object_set_string_member(root, "status", "queued");
+		return venture_web_json_response(node, 202);
+	}
+
+	/* Each waiter is a nested loop under the one before it; past the
+	 * bound the push is queued like any other and said to be unwaited,
+	 * rather than holding every earlier waiter behind this one. */
+	if (venture_feeds_service_count_push_waiters(service) >= VENTURE_FEEDS_PUSH_WAITERS)
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("Not waited for: %d requests are already waiting on pushes; see "
+		                       "GET /api/v1/feeds/%" G_GINT64_FORMAT "/runs",
+		                       VENTURE_FEEDS_PUSH_WAITERS, venture_entity_get_id(source));
+		json_object_set_string_member(root, "status", "queued");
+		json_object_set_string_member(root, "note", note);
 		return venture_web_json_response(node, 202);
 	}
 

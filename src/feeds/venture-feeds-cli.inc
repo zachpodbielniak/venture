@@ -115,6 +115,37 @@ venture_cli_feeds_last_run(
 	return json_object_get_int_member(json_array_get_object_element(runs, 0), "id");
 }
 
+/*
+ * What --wait exits with once it has a run: the run is printed either way,
+ * and a failed one is the command's failure too (exit 1), with the run's
+ * own error -- a script that waited has nothing else to branch on, and a
+ * malformed line read as success is a push nobody notices went nowhere.
+ * Partial and deferred runs stored or will store something: exit 0.
+ */
+static gint
+venture_cli_feeds_run_result(
+	JsonNode	 *run,
+	GError		**error
+){
+	JsonObject *object;
+	const gchar *message;
+
+	if ((NULL == run) || !JSON_NODE_HOLDS_OBJECT(run))
+		return 0;
+
+	object = json_node_get_object(run);
+
+	if (0 != g_strcmp0(venture_json_object_get_string(object, "status", ""), "failed"))
+		return 0;
+
+	message = venture_json_object_get_string(object, "error", NULL);
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "Run %" G_GINT64_FORMAT " failed%s%s",
+	            venture_json_object_get_int(object, "id", 0),
+	            venture_string_is_empty(message) ? "" : ": ",
+	            venture_string_is_empty(message) ? "" : message);
+	return -1;
+}
+
 /* Reads a push's body: a file, or standard input for "-". */
 static GBytes *
 venture_cli_feeds_read_body(
@@ -166,8 +197,10 @@ venture_cli_feeds_read_body(
  * application/x-ndjson. Nothing is parsed here: the server reads it the
  * way it reads a file_jsonl source, and a malformed line is the run's
  * failure, with its line number. With --wait the server holds the request
- * until the run is written and the run is printed; its status says how it
- * went.
+ * until the run is written and the run is printed, and a failed run exits
+ * 1; when the server stopped waiting first (the run took longer, or other
+ * requests were already waiting) the queued answer is printed and the
+ * command exits 7, as feeds sync --wait does when it gives up.
  */
 static gint
 venture_cli_feeds_push(
@@ -230,7 +263,24 @@ venture_cli_feeds_push(
 	 * --wait; the queued answer otherwise, or when the run took longer. */
 	venture_cli_output(cli, ((NULL != run) && JSON_NODE_HOLDS_OBJECT(run)) ? run : node);
 
-	return 0;
+	if (!wait)
+		return 0;
+
+	/* Waited for and not answered: the push is queued and its push_id
+	 * printed, but the run it was asked to wait for is not there. */
+	if (0 == g_strcmp0(venture_json_object_get_string(json_node_get_object(node), "status", ""),
+	                   "queued"))
+	{
+		const gchar *note = venture_json_object_get_string(json_node_get_object(node), "note", NULL);
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_TIMEOUT,
+		            "The push is queued, but the server did not wait for its run%s%s; see "
+		            "venturectl feeds runs %s", venture_string_is_empty(note) ? "" : ": ",
+		            venture_string_is_empty(note) ? "" : note, args[2]);
+		return -1;
+	}
+
+	return venture_cli_feeds_run_result(run, error);
 }
 
 static gint
@@ -345,7 +395,7 @@ venture_cli_command_feeds(
 			if (latest > before)
 			{
 				venture_cli_output(cli, run);
-				return 0;
+				return venture_cli_feeds_run_result(run, error);
 			}
 
 			g_usleep(G_USEC_PER_SEC);

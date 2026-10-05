@@ -146,6 +146,29 @@ venture_feeds_queue_refresh(VentureContext *context);
  */
 #define VENTURE_FEEDS_PUSH_WAIT_SECONDS (120)
 
+/**
+ * VENTURE_FEEDS_PUSHES_IN_FLIGHT:
+ *
+ * The most pushes one data source may have handed to the worker and not
+ * yet answered with a run. Each holds its whole body in memory (up to
+ * feeds.max_push_mb) until its run ends, and a producer that pushes
+ * faster than the worker stores is a producer to slow down, not a queue
+ * to grow. Past it venture_feeds_service_push() refuses with
+ * %VENTURE_ERROR_CONFLICT.
+ */
+#define VENTURE_FEEDS_PUSHES_IN_FLIGHT (4)
+
+/**
+ * VENTURE_FEEDS_PUSH_WAITERS:
+ *
+ * The most requests that may wait on a push at once. Each waits in a
+ * nested main loop, and nested loops end last in, first out: a third
+ * waiter would hold the two beneath it until it finished, however long
+ * their own runs took. Past it venture_feeds_service_wait_push() does not
+ * wait at all.
+ */
+#define VENTURE_FEEDS_PUSH_WAITERS (2)
+
 /* --- The service ------------------------------------------------------------------- */
 
 #define VENTURE_TYPE_FEEDS_SERVICE (venture_feeds_service_get_type())
@@ -166,9 +189,11 @@ G_DECLARE_FINAL_TYPE(VentureFeedsService, venture_feeds_service, VENTURE, FEEDS_
  * through the same JSON-lines path a file_jsonl source's file takes; the
  * service does not parse it here, so a malformed line is the run's
  * failure, with its line number, not this call's. Refused with
- * %VENTURE_ERROR_NOT_FOUND for a source that is gone and
- * %VENTURE_ERROR_CONFLICT for one whose provider is not `push` or that is
- * switched off. A source that cannot be frozen gets a failed run at once.
+ * %VENTURE_ERROR_NOT_FOUND for a source that is gone, and
+ * %VENTURE_ERROR_CONFLICT for one whose provider is not `push`, that is
+ * switched off, or that already has %VENTURE_FEEDS_PUSHES_IN_FLIGHT pushes
+ * whose runs have not ended -- that one is retried once they have. A
+ * source that cannot be frozen gets a failed run at once.
  *
  * Returns: %TRUE when queued
  */
@@ -210,7 +235,10 @@ venture_feeds_service_lookup_push(
  * Waits for a push's run by running the default main context -- the
  * worker hands runs back there -- for at most @timeout_seconds. Main
  * thread only, and never inside a transaction: the run is written only
- * when none is open.
+ * when none is open. With %VENTURE_FEEDS_PUSH_WAITERS calls already
+ * waiting it does not wait, and answers only whether the run is written
+ * already; venture_feeds_service_count_push_waiters() tells a caller that
+ * wants to say so.
  *
  * Returns: %TRUE when the run was written in time
  */
@@ -221,6 +249,17 @@ venture_feeds_service_wait_push(
 	guint			 timeout_seconds,
 	gint64			*out_run_id
 );
+
+/**
+ * venture_feeds_service_count_push_waiters:
+ * @self: the service
+ *
+ * How many venture_feeds_service_wait_push() calls are waiting now.
+ *
+ * Returns: the number waiting, at most %VENTURE_FEEDS_PUSH_WAITERS
+ */
+guint
+venture_feeds_service_count_push_waiters(VentureFeedsService *self);
 
 /**
  * venture_feeds_service_sync:

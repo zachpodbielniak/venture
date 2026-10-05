@@ -156,12 +156,17 @@ struct _VentureFeedBatch
 /* What a batch knows of one account while it is being built: whether a
  * snapshot of it was begun, what it covers, and which kinds already have
  * rows -- a snapshot after its own rows would say they were all of them
- * when they were not. */
+ * when they were not. @refused is the kinds a row of was refused: the
+ * snapshot stops covering those, or the sweep would delete the stored row
+ * the batch could not read. @snapshot is its place in the batch's
+ * snapshots, plus one (0: none kept). */
 typedef struct
 {
 	gboolean	 snapshotted;
 	guint		 covers;
 	guint		 rows;
+	guint		 refused;
+	guint		 snapshot;
 } FeedAccountState;
 
 /* --- The frozen source ------------------------------------------------------ */

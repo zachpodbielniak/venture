@@ -941,12 +941,124 @@ venture_feed_batch_add_account_snapshot(
 	state->snapshotted = TRUE;
 	state->covers = covers;
 
+	/* A kind a row of was already refused is not replaced: the snapshot
+	 * could not say what the account has of it. */
+	if (0 == (covers & ~state->refused))
+	{
+		g_autofree gchar *note = NULL;
+
+		note = g_strdup_printf("Account \"%s\": its snapshot replaces nothing, because a row "
+		                       "of every kind it covers was refused; what is stored is kept",
+		                       account_key);
+		venture_feed_batch_add_note(self, note);
+		return TRUE;
+	}
+
 	row.account_key = feed_batch_intern(self, account_key);
 	row.at = at;
-	row.covers = covers;
+	row.covers = covers & ~state->refused;
 	g_array_append_val(self->account_snapshots, row);
+	state->snapshot = self->account_snapshots->len;
 
 	return TRUE;
+}
+
+/* The name a covered kind has in the protocol, for a note. */
+static const gchar *
+feed_batch_covers_name(guint kind)
+{
+	switch (kind)
+	{
+	case VENTURE_SERIES_COVERS_HOLDINGS:
+		return "holdings";
+	case VENTURE_SERIES_COVERS_POSITIONS:
+		return "positions";
+	case VENTURE_SERIES_COVERS_INBOUND:
+		return "inbound";
+	case VENTURE_SERIES_COVERS_BALANCES:
+		return "balances";
+	default:
+		return "rows";
+	}
+}
+
+/*
+ * A balance, holding, position or inbound row of @account_key was refused.
+ * Its account's snapshot can no longer say what the account has of that
+ * kind: replacing it would sweep away the stored row the batch could not
+ * read -- a listing that vanishes from the books, a purse that drops to
+ * zero -- for a line whose only fault was, say, one decimal place too
+ * many. So the kind comes out of the snapshot's covers, before or after
+ * the snapshot arrives, and the rows of it that were read are upserts; a
+ * snapshot left covering nothing is dropped. What is stored of the kind
+ * is kept as it was, which the next good export corrects.
+ */
+static void
+feed_batch_refuse_account_row(
+	VentureFeedBatch	*self,
+	const gchar		*account_key,
+	guint			 kind
+){
+	VentureSeriesAccountSnapshot *snapshot;
+	FeedAccountState *state;
+	g_autofree gchar *note = NULL;
+
+	state = (NULL != account_key) ? g_hash_table_lookup(self->account_state, account_key) : NULL;
+
+	/* An account the batch has not met yet: remembered, so a snapshot
+	 * after the refused row is held to it too. One the batch has no room
+	 * for cannot be snapshotted either. */
+	if (NULL == state)
+	{
+		if (!feed_batch_check_account(self, account_key, NULL))
+			return;
+
+		state = feed_batch_account_state(self, account_key);
+	}
+
+	if (0 != (state->refused & kind))
+		return;
+
+	state->refused |= kind;
+
+	if (0 == state->snapshot)
+		return;
+
+	snapshot = &g_array_index(self->account_snapshots, VentureSeriesAccountSnapshot,
+	                          state->snapshot - 1);
+
+	if (0 == (snapshot->covers & kind))
+		return;
+
+	snapshot->covers &= ~kind;
+	note = g_strdup_printf("Account \"%s\": a row of its %s was refused, so its snapshot does "
+	                       "not replace them; what is stored of them is kept",
+	                       account_key, feed_batch_covers_name(kind));
+	venture_feed_batch_add_note(self, note);
+
+	if (0 != snapshot->covers)
+		return;
+
+	/* Nothing left to replace: the snapshot goes. The last one takes its
+	 * place, and its account is told where it now is. */
+	{
+		guint index = state->snapshot - 1;
+
+		state->snapshot = 0;
+		g_array_remove_index_fast(self->account_snapshots, index);
+
+		if (index < self->account_snapshots->len)
+		{
+			FeedAccountState *moved;
+
+			moved = g_hash_table_lookup(self->account_state,
+			                            g_array_index(self->account_snapshots,
+			                                          VentureSeriesAccountSnapshot,
+			                                          index).account_key);
+			if (NULL != moved)
+				moved->snapshot = index + 1;
+		}
+	}
 }
 
 gboolean
@@ -2278,7 +2390,27 @@ venture_feed_batch_add_jsonl(
 
 		if (!ok)
 		{
+			guint kind = 0;
+
 			self->refused++;
+
+			switch (venture_jsonl_message_get_kind(message))
+			{
+			case VENTURE_JSONL_MESSAGE_BALANCE:
+				kind = VENTURE_SERIES_COVERS_BALANCES;
+				break;
+			case VENTURE_JSONL_MESSAGE_HOLDING:
+				kind = VENTURE_SERIES_COVERS_HOLDINGS;
+				break;
+			case VENTURE_JSONL_MESSAGE_POSITION:
+				kind = VENTURE_SERIES_COVERS_POSITIONS;
+				break;
+			case VENTURE_JSONL_MESSAGE_INBOUND:
+				kind = VENTURE_SERIES_COVERS_INBOUND;
+				break;
+			default:
+				break;
+			}
 
 			if (NULL != local_error)
 			{
@@ -2290,6 +2422,10 @@ venture_feed_batch_add_jsonl(
 				                       local_error->message);
 				venture_feed_batch_add_note(self, note);
 			}
+
+			/* After the line's own note, so the two read in order. */
+			if (0 != kind)
+				feed_batch_refuse_account_row(self, jsonl_string(object, "account"), kind);
 		}
 	}
 

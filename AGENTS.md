@@ -1848,7 +1848,21 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   replaced a kind is stale and skipped (`accounts.<kind>_at`); one after
   its own rows, or a second for the same account, is refused by the batch
   and the rows upsert alone. Times before 1970 are refused because -1 is
-  the mark.
+  the mark. A covered-kind row the batch refuses (a decimal place too
+  many, the wrong currency, a row past a cap) takes that kind out of its
+  account's snapshot (`feed_batch_refuse_account_row()`), before or after
+  the snapshot line: sweeping a kind the batch could not read whole
+  deletes the row it refused -- a listing vanishes, a purse reads zero.
+  A balance with no `at` inside a snapshot is as of the snapshot, like
+  every other covered kind; the push time would outrun the next sweep.
+- **A read of "all of them" is all of them or a refusal.**
+  `list_accounts`, and `list_holdings`/`_positions`/`_inbound` with no
+  count (or one past the bound), and `value_lines` read one row past
+  `VENTURE_SERIES_MAX_ACCOUNTS`/`_ACCOUNT_ROWS` and refuse with "narrow
+  the read" when they get it. Never a silent LIMIT: the mirror closes the
+  listing of every position it does not see. A count under the bound is a
+  page. Tests lower the bounds with `venture_series_accounts_set_max_rows()`
+  / `_set_max_accounts()` and restore them.
 - **The operator's money is in the data source's currency.** Only
   `balance` names a currency and it must be the source's; every ledger
   row of a source with a currency carries it, money or not, so an
@@ -1875,7 +1889,16 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
   the push's run is written, holding a reference on the service (a
   request served inside the loop can switch feeds off). The push id is
   remembered in memory (last 1024), not on the run record; there is no
-  migration for it.
+  migration for it. Nested loops end last in, first out, so at most
+  `VENTURE_FEEDS_PUSH_WAITERS` (2) wait at once; the next is answered 202
+  with a note, unwaited. Do not raise it without parking requests instead.
+- **A source has at most `VENTURE_FEEDS_PUSHES_IN_FLIGHT` (4) pushes with
+  the worker.** Each holds its body until its run is handed back;
+  `pushes_in_flight` (push id -> source id, main thread) is cleared on the
+  run's hand-back, on a source taken off the worker (the worker drops its
+  queued pushes without a run) and on halt. Past it the push is 409. A
+  path that drops a push without a run must forget it too, or the source
+  refuses every push until restart.
 - **The JSON-lines reader feeds the batch a slice at a time.**
   `venture_feed_batch_add_jsonl()` keeps its cross-message state (venue
   currencies, log count, account snapshots) on the batch so

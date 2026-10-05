@@ -51,7 +51,8 @@ G_BEGIN_DECLS
  * VENTURE_SERIES_MAX_ACCOUNTS:
  *
  * The most accounts one read returns. An operator with more characters
- * than this is not one operator.
+ * than this is not one operator. A read of every account past it is
+ * refused, never cut short: see venture_series_store_list_accounts().
  */
 #define VENTURE_SERIES_MAX_ACCOUNTS (10000)
 
@@ -59,9 +60,57 @@ G_BEGIN_DECLS
  * VENTURE_SERIES_MAX_ACCOUNT_ROWS:
  *
  * The most rows one read of holdings, positions, inbound or the ledger
- * returns; a page asks for less and pages.
+ * returns; a page asks for less and pages. A read that asks for all of
+ * them (a count of 0, or past this) and finds more is refused rather
+ * than answered with the first part: a caller that judges what is
+ * missing, as the mirror judges a vanished listing, would take the rest
+ * for gone.
  */
 #define VENTURE_SERIES_MAX_ACCOUNT_ROWS (100000)
+
+/**
+ * venture_series_accounts_get_max_rows:
+ *
+ * The bound a read of every holding, position, inbound row or holding
+ * line refuses past: %VENTURE_SERIES_MAX_ACCOUNT_ROWS unless a test
+ * lowered it. Read it rather than the macro so the refusal can be tested
+ * without writing a hundred thousand rows.
+ *
+ * Returns: the most rows one read of everything returns
+ */
+gint
+venture_series_accounts_get_max_rows(void);
+
+/**
+ * venture_series_accounts_set_max_rows:
+ * @max_rows: the new bound, or 0 to restore %VENTURE_SERIES_MAX_ACCOUNT_ROWS
+ *
+ * Lowers the bound for a test. Process-wide, so a test that lowers it
+ * restores it before it returns. Nothing outside the test suite calls it.
+ */
+void
+venture_series_accounts_set_max_rows(gint max_rows);
+
+/**
+ * venture_series_accounts_get_max_accounts:
+ *
+ * The bound venture_series_store_list_accounts() refuses past:
+ * %VENTURE_SERIES_MAX_ACCOUNTS unless a test lowered it.
+ *
+ * Returns: the most accounts one read returns
+ */
+gint
+venture_series_accounts_get_max_accounts(void);
+
+/**
+ * venture_series_accounts_set_max_accounts:
+ * @max_accounts: the new bound, or 0 to restore %VENTURE_SERIES_MAX_ACCOUNTS
+ *
+ * Lowers the bound for a test; process-wide, restored by the test that
+ * lowered it.
+ */
+void
+venture_series_accounts_set_max_accounts(gint max_accounts);
 
 /**
  * VentureSeriesCovers:
@@ -503,8 +552,10 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesAccountRow, venture_series_account_ro
  * @now: the moment "expired" is judged against
  * @error: (out) (optional): return location for a #GError
  *
- * Every account, by group, name and key, at most
- * %VENTURE_SERIES_MAX_ACCOUNTS.
+ * Every account, by group, name and key. A store with more than
+ * venture_series_accounts_get_max_accounts() of them (in @group_key and
+ * @kind, when given) is refused with %VENTURE_ERROR_INVALID_ARGUMENT
+ * saying to narrow the read, never answered with the first part.
  *
  * Returns: (transfer full) (element-type VentureSeriesAccountRow)
  *   (nullable): the accounts, or %NULL on error
@@ -609,7 +660,9 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesHoldingRow, venture_series_holding_ro
  * @error: (out) (optional): return location for a #GError
  *
  * Holdings by account, place and instrument name: an account's detail
- * page, grouped by place.
+ * page, grouped by place. A count under
+ * venture_series_accounts_get_max_rows() is a page; a read of all of them
+ * that finds more than that is refused (%VENTURE_ERROR_INVALID_ARGUMENT).
  *
  * Returns: (transfer full) (element-type VentureSeriesHoldingRow)
  *   (nullable): the rows, or %NULL on error
@@ -755,7 +808,10 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesPositionRow, venture_series_position_
  * @filter: (nullable): which; %NULL for all
  * @error: (out) (optional): return location for a #GError
  *
- * Open positions, soonest expiry first (none last), then by key.
+ * Open positions, soonest expiry first (none last), then by key. A count
+ * under venture_series_accounts_get_max_rows() is a page; a read of all of
+ * them (count 0, or past the bound) that finds more than the bound is
+ * refused with %VENTURE_ERROR_INVALID_ARGUMENT, never cut short.
  *
  * Returns: (transfer full) (element-type VentureSeriesPositionRow)
  *   (nullable): the rows, or %NULL on error
@@ -845,7 +901,9 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesInboundRow, venture_series_inbound_ro
  * @filter: (nullable): which; %NULL for all
  * @error: (out) (optional): return location for a #GError
  *
- * Inbound rows, soonest expiry first (none last), then by key.
+ * Inbound rows, soonest expiry first (none last), then by key. Paged and
+ * bounded as venture_series_store_list_positions() is: a read of all of
+ * them past venture_series_accounts_get_max_rows() is refused.
  *
  * Returns: (transfer full) (element-type VentureSeriesInboundRow)
  *   (nullable): the rows, or %NULL on error
@@ -1386,8 +1444,9 @@ venture_series_store_value_instruments(
  * @error: (out) (optional): return location for a #GError
  *
  * The holdings behind venture_series_store_value_instruments(), line by
- * line and valued the same way, by account, place and instrument name, at
- * most %VENTURE_SERIES_MAX_ACCOUNT_ROWS.
+ * line and valued the same way, by account, place and instrument name.
+ * More than venture_series_accounts_get_max_rows() lines is refused
+ * (%VENTURE_ERROR_INVALID_ARGUMENT), never cut short.
  *
  * Returns: (transfer full) (element-type VentureSeriesValuedLine)
  *   (nullable): the lines, or %NULL on error

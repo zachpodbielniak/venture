@@ -227,6 +227,39 @@ accounts_prepare_bound(
 	return stmt;
 }
 
+/* Zero is the macros' bound; only a test sets anything else. Atomic
+ * because the worker's readers and the main thread's read them. */
+static gint accounts_max_rows = 0;
+static gint accounts_max_accounts = 0;
+
+gint
+venture_series_accounts_get_max_rows(void)
+{
+	gint max_rows = g_atomic_int_get(&accounts_max_rows);
+
+	return (max_rows > 0) ? max_rows : VENTURE_SERIES_MAX_ACCOUNT_ROWS;
+}
+
+void
+venture_series_accounts_set_max_rows(gint max_rows)
+{
+	g_atomic_int_set(&accounts_max_rows, MAX(max_rows, 0));
+}
+
+gint
+venture_series_accounts_get_max_accounts(void)
+{
+	gint max_accounts = g_atomic_int_get(&accounts_max_accounts);
+
+	return (max_accounts > 0) ? max_accounts : VENTURE_SERIES_MAX_ACCOUNTS;
+}
+
+void
+venture_series_accounts_set_max_accounts(gint max_accounts)
+{
+	g_atomic_int_set(&accounts_max_accounts, MAX(max_accounts, 0));
+}
+
 /* The page a read asks for: 0 is @fallback, and nothing past the most. */
 static guint
 accounts_page(
@@ -236,7 +269,51 @@ accounts_page(
 	if (0 == count)
 		return fallback;
 
-	return MIN(count, (guint)VENTURE_SERIES_MAX_ACCOUNT_ROWS);
+	return MIN(count, (guint)venture_series_accounts_get_max_rows());
+}
+
+/*
+ * The LIMIT of a read that may be asked for everything. A count under the
+ * bound is a page, and a page ends where it ends. No count, or one past
+ * the bound, is a read of all of them: it asks for one row more than the
+ * bound, so that accounts_check_whole() can tell a whole answer from a
+ * cut one. A caller that judges what is missing -- the mirror closes the
+ * listing of a position it does not see -- must never be handed a cut
+ * answer as if it were whole.
+ */
+static gint64
+accounts_limit(
+	guint		 count,
+	guint		 bound,
+	gboolean	*out_all
+){
+	if ((0 == count) || (count > bound))
+	{
+		*out_all = TRUE;
+		return (gint64)bound + 1;
+	}
+
+	*out_all = FALSE;
+	return count;
+}
+
+/* Refuses a read of everything that found more than @bound rows. */
+static gboolean
+accounts_check_whole(
+	GPtrArray	 *rows,
+	gboolean	  all,
+	guint		  bound,
+	const gchar	 *what,
+	const gchar	 *narrow,
+	GError		**error
+){
+	if (!all || (rows->len <= bound))
+		return TRUE;
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "The store has more than %u %s; narrow the read to %s, or page it", bound, what,
+	            narrow);
+	return FALSE;
 }
 
 /* ==========================================================================
@@ -915,10 +992,7 @@ accounts_apply_balances(
 		gboolean skip;
 		gint64 at;
 
-		at = (VENTURE_SERIES_NONE != balance->at) ? balance->at : apply->fetched_at;
-
-		if (!accounts_check_time(at, "balance", error) ||
-		    !venture_series_store_internal_normalise_currency(balance->currency, currency,
+		if (!venture_series_store_internal_normalise_currency(balance->currency, currency,
 		                                                      error))
 			return FALSE;
 
@@ -937,6 +1011,24 @@ accounts_apply_balances(
 
 		if (skip)
 			continue;
+
+		/*
+		 * A balance with no time of its own is as of the snapshot that
+		 * restates it, like a position or a holding: the sweep judges a
+		 * currency's newest point against the snapshot's time, and a
+		 * restated balance stamped with the later push time would look
+		 * newer than every later snapshot that leaves its currency out --
+		 * so an emptied purse would never read zero.
+		 */
+		if (VENTURE_SERIES_NONE != balance->at)
+			at = balance->at;
+		else if (0 != (touched->replace & VENTURE_SERIES_COVERS_BALANCES))
+			at = touched->at;
+		else
+			at = apply->fetched_at;
+
+		if (!accounts_check_time(at, "balance", error))
+			return FALSE;
 
 		if (0 != (touched->replace & VENTURE_SERIES_COVERS_BALANCES))
 			g_hash_table_add(touched->currencies, g_strdup(currency));
@@ -1773,6 +1865,7 @@ venture_series_store_list_accounts(
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GArray) ids = NULL;
 	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	guint bound;
 	guint i;
 	gint rc;
 
@@ -1785,7 +1878,8 @@ venture_series_store_list_accounts(
 	sqlite3_bind_int64(stmt, 1, now);
 	series_bind_text(stmt, 2, kind);
 	series_bind_text(stmt, 3, group_key);
-	sqlite3_bind_int64(stmt, 4, VENTURE_SERIES_MAX_ACCOUNTS);
+	bound = (guint)venture_series_accounts_get_max_accounts();
+	sqlite3_bind_int64(stmt, 4, (gint64)bound + 1);
 
 	rows = g_ptr_array_new_with_free_func((GDestroyNotify)venture_series_account_row_free);
 	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
@@ -1805,6 +1899,16 @@ venture_series_store_list_accounts(
 	}
 
 	g_clear_pointer(&stmt, series_cached_stmt_release);
+
+	/* Every account or a refusal: a caller that judges the accounts it
+	 * does not see would take the rest for gone. */
+	if (rows->len > bound)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The store has more than %u accounts there; narrow the read to a group or "
+		            "a kind", bound);
+		return NULL;
+	}
 
 	/* The amounts after the walk: two cached statements stepping at once
 	 * would share one connection's cursor bookkeeping for nothing. */
@@ -1978,6 +2082,8 @@ venture_series_store_list_holdings(
 	g_autoptr(GArray) bindings = NULL;
 	g_autoptr(SeriesOwnedStmt) stmt = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
+	gboolean all;
+	guint bound;
 	gint rc;
 
 	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
@@ -1993,8 +2099,9 @@ venture_series_store_list_holdings(
 	g_string_append(sql, " ORDER BY a.group_key, COALESCE(a.name, a.key), a.key, h.place,"
 	                     " COALESCE(i.name_fold, h.instrument_key), h.instrument_key"
 	                     " LIMIT ? OFFSET ?");
-	accounts_bind_add_int(bindings, accounts_page((NULL != filter) ? filter->count : 0,
-	                                              VENTURE_SERIES_MAX_ACCOUNT_ROWS));
+	bound = (guint)venture_series_accounts_get_max_rows();
+	accounts_bind_add_int(bindings, accounts_limit((NULL != filter) ? filter->count : 0, bound,
+	                                               &all));
 	accounts_bind_add_int(bindings, (NULL != filter) ? filter->offset : 0);
 
 	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
@@ -2022,6 +2129,10 @@ venture_series_store_list_holdings(
 		venture_series_store_internal_sqlite_error(self, rc, "listing holdings", error);
 		return NULL;
 	}
+
+	if (!accounts_check_whole(rows, all, bound, "holdings", "an account, an instrument or a place",
+	                          error))
+		return NULL;
 
 	return g_steal_pointer(&rows);
 }
@@ -2137,19 +2248,21 @@ venture_series_store_list_positions(
 	const VentureSeriesPositionFilter	 *filter,
 	GError					**error
 ){
-	VentureSeriesPositionFilter all;
+	VentureSeriesPositionFilter everything;
 	g_autoptr(GString) sql = NULL;
 	g_autoptr(GArray) bindings = NULL;
 	g_autoptr(SeriesOwnedStmt) stmt = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
+	gboolean all;
+	guint bound;
 	gint rc;
 
 	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
 
 	if (NULL == filter)
 	{
-		venture_series_position_filter_init(&all);
-		filter = &all;
+		venture_series_position_filter_init(&everything);
+		filter = &everything;
 	}
 
 	sql = g_string_new("SELECT p.key, a.key, p.venue_key, p.instrument_key, i.name, p.quantity,"
@@ -2186,7 +2299,8 @@ venture_series_store_list_positions(
 	}
 
 	g_string_append(sql, " ORDER BY p.expires_at IS NULL, p.expires_at, p.key LIMIT ? OFFSET ?");
-	accounts_bind_add_int(bindings, accounts_page(filter->count, VENTURE_SERIES_MAX_ACCOUNT_ROWS));
+	bound = (guint)venture_series_accounts_get_max_rows();
+	accounts_bind_add_int(bindings, accounts_limit(filter->count, bound, &all));
 	accounts_bind_add_int(bindings, filter->offset);
 
 	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
@@ -2220,6 +2334,10 @@ venture_series_store_list_positions(
 		venture_series_store_internal_sqlite_error(self, rc, "listing positions", error);
 		return NULL;
 	}
+
+	if (!accounts_check_whole(rows, all, bound, "positions", "an account, a venue or an instrument",
+	                          error))
+		return NULL;
 
 	return g_steal_pointer(&rows);
 }
@@ -2256,19 +2374,21 @@ venture_series_store_list_inbound(
 	const VentureSeriesInboundFilter	 *filter,
 	GError					**error
 ){
-	VentureSeriesInboundFilter all;
+	VentureSeriesInboundFilter everything;
 	g_autoptr(GString) sql = NULL;
 	g_autoptr(GArray) bindings = NULL;
 	g_autoptr(SeriesOwnedStmt) stmt = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
+	gboolean all;
+	guint bound;
 	gint rc;
 
 	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
 
 	if (NULL == filter)
 	{
-		venture_series_inbound_filter_init(&all);
-		filter = &all;
+		venture_series_inbound_filter_init(&everything);
+		filter = &everything;
 	}
 
 	sql = g_string_new("SELECT n.key, a.key, n.sender, n.subject, n.money, n.cod, n.currency,"
@@ -2291,7 +2411,8 @@ venture_series_store_list_inbound(
 	}
 
 	g_string_append(sql, " ORDER BY n.expires_at IS NULL, n.expires_at, n.key LIMIT ? OFFSET ?");
-	accounts_bind_add_int(bindings, accounts_page(filter->count, VENTURE_SERIES_MAX_ACCOUNT_ROWS));
+	bound = (guint)venture_series_accounts_get_max_rows();
+	accounts_bind_add_int(bindings, accounts_limit(filter->count, bound, &all));
 	accounts_bind_add_int(bindings, filter->offset);
 
 	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
@@ -2326,6 +2447,9 @@ venture_series_store_list_inbound(
 		venture_series_store_internal_sqlite_error(self, rc, "listing inbound", error);
 		return NULL;
 	}
+
+	if (!accounts_check_whole(rows, all, bound, "inbound rows", "an account", error))
+		return NULL;
 
 	return g_steal_pointer(&rows);
 }
@@ -3254,6 +3378,8 @@ venture_series_store_value_lines(
 	g_autoptr(GArray) bindings = NULL;
 	g_autoptr(SeriesOwnedStmt) stmt = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
+	gboolean all;
+	guint bound;
 	gint rc;
 
 	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
@@ -3269,7 +3395,8 @@ venture_series_store_value_lines(
 	                     " FROM priced ORDER BY account_group, COALESCE(account_name, account_key),"
 	                     "  account_key, place, COALESCE(name_fold, instrument_key), instrument_key"
 	                     " LIMIT ?");
-	accounts_bind_add_int(bindings, VENTURE_SERIES_MAX_ACCOUNT_ROWS);
+	bound = (guint)venture_series_accounts_get_max_rows();
+	accounts_bind_add_int(bindings, accounts_limit(0, bound, &all));
 
 	stmt = accounts_prepare_bound(self, sql->str, bindings, error);
 	if (NULL == stmt)
@@ -3300,6 +3427,10 @@ venture_series_store_value_lines(
 		venture_series_store_internal_sqlite_error(self, rc, "valuing holding lines", error);
 		return NULL;
 	}
+
+	if (!accounts_check_whole(rows, all, bound, "holding lines", "an account or an instrument",
+	                          error))
+		return NULL;
 
 	return g_steal_pointer(&rows);
 }

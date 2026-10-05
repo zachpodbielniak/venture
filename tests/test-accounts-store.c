@@ -1204,6 +1204,189 @@ test_scale_smoke(
 	g_assert_cmpint(g_get_monotonic_time() - started, <, G_GINT64_CONSTANT(30) * G_USEC_PER_SEC);
 }
 
+/*
+ * A balance with no time of its own inside a snapshot is as of the
+ * snapshot. Two snapshots, both taken before the pushes that carried them,
+ * the second leaving SILVER out: SILVER's newest point is zero.
+ *
+ * What breaks if this regresses: the restated balance is stamped with the
+ * push's time, which is later than the next snapshot's, so the sweep
+ * judges it newer than that snapshot and never empties it -- a purse the
+ * character spent reads full for ever.
+ */
+static void
+test_balance_takes_snapshot_time(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	VentureSeriesBalance balances[2];
+	VentureSeriesAccountSnapshot snapshot;
+	VentureSeriesAccountBatch batch;
+	g_autoptr(VentureSeriesAccountRow) row = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesAmount *silver;
+	VentureSeriesAmount *gold;
+
+	(void)data;
+
+	snapshot.account_key = "a";
+	snapshot.at = T0 + HOUR;
+	snapshot.covers = VENTURE_SERIES_COVERS_BALANCES;
+	balances[0] = balance("a", 100, VENTURE_SERIES_NONE);
+	balances[1] = balance("a", 50, VENTURE_SERIES_NONE);
+	balances[1].currency = "SILVER";
+	batch = batch_new();
+	batch.snapshots = &snapshot;
+	batch.n_snapshots = 1;
+	batch.balances = balances;
+	batch.n_balances = 2;
+	apply(fixture, &batch, T0 + 10 * HOUR);
+
+	/* Read an hour after the first, pushed later still. */
+	snapshot.at = T0 + 2 * HOUR;
+	batch.n_balances = 1;
+	apply(fixture, &batch, T0 + 11 * HOUR);
+
+	g_assert_true(venture_series_store_get_account(fixture->store, "a", T0, &row, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(row);
+	g_assert_cmpuint(row->balances->len, ==, 2);
+
+	/* By currency: GOLD, then SILVER. The emptied purse first. */
+	silver = &g_array_index(row->balances, VentureSeriesAmount, 1);
+	gold = &g_array_index(row->balances, VentureSeriesAmount, 0);
+	g_assert_cmpstr(silver->currency, ==, "SILVER");
+	g_assert_cmpint(silver->amount, ==, 0);
+	g_assert_cmpint(silver->at, ==, T0 + 2 * HOUR);
+	g_assert_cmpstr(gold->currency, ==, "GOLD");
+	g_assert_cmpint(gold->amount, ==, 100);
+	g_assert_cmpint(gold->at, ==, T0 + HOUR);
+}
+
+/*
+ * A read of every position, inbound row, holding, holding line or account
+ * that finds more than the bound is refused, saying to narrow it; a page
+ * under the bound and a narrower read still answer.
+ *
+ * What breaks if this regresses: the read stops at the bound in silence,
+ * and the mirror, which closes the listing of every position it does not
+ * see, closes the listings of every position past it.
+ */
+static void
+test_reads_refuse_past_the_bound(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	VentureSeriesAccount accounts[3];
+	VentureSeriesHolding holdings[3];
+	VentureSeriesPosition positions[3];
+	VentureSeriesInbound mail[3];
+	VentureSeriesAccountBatch batch;
+	VentureSeriesPositionFilter position_filter;
+	VentureSeriesInboundFilter inbound_filter;
+	VentureSeriesHoldingFilter holding_filter;
+	VentureSeriesValueFilter value_filter;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+
+	(void)data;
+
+	accounts[0] = account("a", "Alpha", "character");
+	accounts[1] = account("b", "Beta", "character");
+	accounts[2] = account("c", "Gamma", "character");
+	accounts[2].group_key = "eu";
+	holdings[0] = holding("a", "bag", "ore", 1);
+	holdings[1] = holding("a", "bank", "ore", 2);
+	holdings[2] = holding("b", "bag", "ore", 3);
+	positions[0] = position("p1", "a", "ore", 100, T0 + HOUR);
+	positions[1] = position("p2", "a", "ore", 100, T0 + 2 * HOUR);
+	positions[2] = position("p3", "b", "ore", 100, T0 + 3 * HOUR);
+	mail[0] = inbound("m1", "a", 10, T0 + HOUR);
+	mail[1] = inbound("m2", "a", 10, T0 + 2 * HOUR);
+	mail[2] = inbound("m3", "b", 10, T0 + 3 * HOUR);
+
+	batch = batch_new();
+	batch.accounts = accounts;
+	batch.n_accounts = 3;
+	batch.holdings = holdings;
+	batch.n_holdings = 3;
+	batch.positions = positions;
+	batch.n_positions = 3;
+	batch.inbound = mail;
+	batch.n_inbound = 3;
+	apply(fixture, &batch, T0);
+
+	venture_series_accounts_set_max_rows(2);
+	venture_series_accounts_set_max_accounts(2);
+
+	/* Positions: all of them is three, past two. */
+	rows = venture_series_store_list_positions(fixture->store, NULL, &error);
+	g_assert_null(rows);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_assert_nonnull(strstr(error->message, "narrow"));
+	g_clear_error(&error);
+
+	/* A page of two is a page, and one account's two are all of them. */
+	venture_series_position_filter_init(&position_filter);
+	position_filter.count = 2;
+	rows = venture_series_store_list_positions(fixture->store, &position_filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	g_assert_cmpuint(count_positions(fixture, "a"), ==, 2);
+
+	venture_series_inbound_filter_init(&inbound_filter);
+	rows = venture_series_store_list_inbound(fixture->store, &inbound_filter, &error);
+	g_assert_null(rows);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	inbound_filter.account_key = "a";
+	rows = venture_series_store_list_inbound(fixture->store, &inbound_filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	venture_series_holding_filter_init(&holding_filter);
+	rows = venture_series_store_list_holdings(fixture->store, &holding_filter, &error);
+	g_assert_null(rows);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_cmpint(held(fixture, "a", "bank", "ore"), ==, 2);
+
+	venture_series_value_filter_init(&value_filter);
+	value_filter.currency = "GOLD";
+	value_filter.now = T0;
+	rows = venture_series_store_value_lines(fixture->store, &value_filter, NULL, &error);
+	g_assert_null(rows);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	value_filter.account_key = "b";
+	rows = venture_series_store_value_lines(fixture->store, &value_filter, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	/* Three accounts past a bound of two; the ungrouped two are not. */
+	rows = venture_series_store_list_accounts(fixture->store, NULL, NULL, T0, &error);
+	g_assert_null(rows);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_assert_nonnull(strstr(error->message, "accounts"));
+	g_clear_error(&error);
+	rows = venture_series_store_list_accounts(fixture->store, NULL, "", T0, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 2);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+
+	venture_series_accounts_set_max_rows(0);
+	venture_series_accounts_set_max_accounts(0);
+	g_assert_cmpint(venture_series_accounts_get_max_rows(), ==, VENTURE_SERIES_MAX_ACCOUNT_ROWS);
+	g_assert_cmpint(venture_series_accounts_get_max_accounts(), ==, VENTURE_SERIES_MAX_ACCOUNTS);
+
+	rows = venture_series_store_list_positions(fixture->store, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 3);
+}
+
 #define ADD(path, func) \
 	g_test_add("/accounts-store/" path, Fixture, NULL, fixture_set_up, func, \
 	           fixture_tear_down)
@@ -1227,6 +1410,8 @@ main(
 	ADD("retention", test_retention);
 	ADD("source-figures", test_source_figures);
 	ADD("scale-smoke", test_scale_smoke);
+	ADD("balance-takes-snapshot-time", test_balance_takes_snapshot_time);
+	ADD("reads-refuse-past-the-bound", test_reads_refuse_past_the_bound);
 
 	return g_test_run();
 }

@@ -3180,6 +3180,280 @@ test_feeds_account_lines_the_batch_refuses(
 	g_assert_nonnull(strstr(notes, "no currency"));
 }
 
+/* The position keys a store holds for @account_key, in key order, comma joined. */
+static gchar *
+position_keys(
+	VentureSeriesStore	*reader,
+	const gchar		*account_key
+){
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) keys = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesPositionFilter filter;
+	guint i;
+
+	venture_series_position_filter_init(&filter);
+	filter.account_key = account_key;
+	rows = venture_series_store_list_positions(reader, &filter, &error);
+	g_assert_no_error(error);
+	keys = g_ptr_array_new();
+
+	for (i = 0; i < rows->len; i++)
+		g_ptr_array_add(keys, ((VentureSeriesPositionRow *)g_ptr_array_index(rows, i))->key);
+
+	g_ptr_array_sort_values(keys, (GCompareFunc)g_strcmp0);
+	g_ptr_array_add(keys, NULL);
+
+	return g_strjoinv(",", (gchar **)keys->pdata);
+}
+
+/*
+ * A row the batch refuses inside an accepted snapshot does not take the
+ * stored row with it. The snapshot stops covering that kind -- the rows of
+ * it that were read are upserts, and nothing of it is swept -- while the
+ * kinds whose rows were all read are replaced as before. A refusal before
+ * the snapshot counts too, and a snapshot left covering nothing is
+ * dropped, whichever account's snapshot sits where in the batch.
+ *
+ * What breaks if this regresses: one price with a decimal place too many
+ * deletes that listing from the store (and the mirror closes its listing
+ * in the books), a refused purse line appends a zero to the purse, and a
+ * holding never restated because its neighbour failed vanishes.
+ */
+static void
+test_feeds_refused_rows_keep_their_state(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(VentureSeriesAccountRow) account = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autofree gchar *keys = NULL;
+	VentureSeriesHoldingFilter holding_filter;
+	VentureSeriesInboundFilter inbound_filter;
+	gint64 source_id;
+
+	(void)user_data;
+
+	source_id = create_push_source(fixture, "Characters", "USD");
+	run = push_and_wait(fixture, source_id,
+		"{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T00:00:00Z\","
+		"\"covers\":[\"holdings\",\"positions\",\"inbound\",\"balances\"]}\n"
+		"{\"type\":\"balance\",\"account\":\"a\",\"currency\":\"USD\",\"amount\":\"10.00\"}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"h1\",\"quantity\":1}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"h3\",\"quantity\":3}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"p1\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"1.00\",\"expires_at\":\"2026-10-10T00:00:00Z\"}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"p2\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"1.00\",\"expires_at\":\"2026-10-10T00:00:00Z\"}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"p3\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"1.00\",\"expires_at\":\"2026-10-10T00:00:00Z\"}\n"
+		"{\"type\":\"inbound\",\"account\":\"a\",\"id\":\"mail-a\",\"money\":\"1.00\"}\n"
+		"{\"type\":\"inbound\",\"account\":\"b\",\"id\":\"mail-b1\",\"money\":\"1.00\"}\n");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 0);
+	g_clear_object(&run);
+
+	/* The balance is refused before the snapshot, the second h2 stack
+	 * overflows, p2's price has three places: balances, holdings and
+	 * positions are kept; inbound, read whole, is replaced. */
+	run = push_and_wait(fixture, source_id,
+		"{\"type\":\"balance\",\"account\":\"a\",\"currency\":\"USD\",\"amount\":\"5.001\"}\n"
+		"{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T01:00:00Z\","
+		"\"covers\":[\"holdings\",\"positions\",\"inbound\",\"balances\"]}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"h1\",\"quantity\":2}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"h2\","
+		"\"quantity\":9223372036854775807}\n"
+		"{\"type\":\"holding\",\"account\":\"a\",\"place\":\"bag\",\"instrument\":\"h2\","
+		"\"quantity\":9223372036854775807}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"p1\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"2.00\",\"expires_at\":\"2026-10-10T00:00:00Z\"}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"p2\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"2.001\",\"expires_at\":\"2026-10-10T00:00:00Z\"}\n");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 3);
+	notes = run_text(run, "notes");
+	g_clear_object(&run);
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_no_error(error);
+
+	keys = position_keys(reader, "a");
+	g_assert_cmpstr(keys, ==, "p1,p2,p3");
+	g_clear_pointer(&keys, g_free);
+
+	g_assert_true(venture_series_store_get_account(reader, "a", 0, &account, &error));
+	g_assert_nonnull(account);
+	g_assert_cmpuint(account->balances->len, ==, 1);
+	g_assert_cmpint(g_array_index(account->balances, VentureSeriesAmount, 0).amount, ==, 1000);
+	g_assert_cmpint(account->inbound, ==, 0);
+	g_assert_cmpint(account->holdings, ==, 3);
+	g_clear_pointer(&account, venture_series_account_row_free);
+
+	venture_series_holding_filter_init(&holding_filter);
+	holding_filter.account_key = "a";
+	holding_filter.instrument_key = "h1";
+	rows = venture_series_store_list_holdings(reader, &holding_filter, &error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpint(((VentureSeriesHoldingRow *)g_ptr_array_index(rows, 0))->quantity, ==, 2);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	g_clear_object(&reader);
+
+	/* And the run says why each kind was kept. */
+	g_assert_nonnull(strstr(notes, "a row of its positions was refused"));
+	g_assert_nonnull(strstr(notes, "a row of its holdings was refused"));
+	g_assert_nonnull(strstr(notes, "Line 1 (balance)"));
+
+	/* Two snapshots, each left with nothing to replace: a's is dropped
+	 * and b's moves into its place, then b's goes too. */
+	run = push_and_wait(fixture, source_id,
+		"{\"type\":\"account_snapshot\",\"account\":\"a\",\"at\":\"2026-10-04T02:00:00Z\","
+		"\"covers\":[\"positions\"]}\n"
+		"{\"type\":\"account_snapshot\",\"account\":\"b\",\"at\":\"2026-10-04T02:00:00Z\","
+		"\"covers\":[\"inbound\"]}\n"
+		"{\"type\":\"position\",\"account\":\"a\",\"venue\":\"v\",\"id\":\"p1\",\"instrument\":\"i\","
+		"\"quantity\":1,\"price\":\"3.001\",\"expires_at\":\"2026-10-10T00:00:00Z\"}\n"
+		"{\"type\":\"inbound\",\"account\":\"b\",\"id\":\"mail-b2\",\"money\":\"1.001\"}\n");
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(run, "refused"), ==, 2);
+
+	reader = venture_feeds_service_open_reader(service_of(fixture), source_id, &error);
+	g_assert_no_error(error);
+	keys = position_keys(reader, "a");
+	g_assert_cmpstr(keys, ==, "p1,p2,p3");
+
+	venture_series_inbound_filter_init(&inbound_filter);
+	inbound_filter.account_key = "b";
+	rows = venture_series_store_list_inbound(reader, &inbound_filter, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(rows->len, ==, 1);
+	g_assert_cmpstr(((VentureSeriesInboundRow *)g_ptr_array_index(rows, 0))->key, ==, "mail-b1");
+}
+
+/*
+ * A source has at most VENTURE_FEEDS_PUSHES_IN_FLIGHT pushes with the
+ * worker whose runs have not come back; the next is refused as a
+ * conflict, holding nothing, and once the runs are in a push goes again.
+ *
+ * What breaks if this regresses: a producer in a retry loop queues bodies
+ * of up to feeds.max_push_mb each until the server runs out of memory.
+ */
+static void
+test_feeds_pushes_in_flight_are_bounded(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GBytes) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *last = NULL;
+	gint64 source_id;
+	gint64 other;
+	gint64 run_id;
+	guint i;
+
+	(void)user_data;
+
+	source_id = create_push_source(fixture, "Characters", "USD");
+	other = create_push_source(fixture, "Other characters", "USD");
+	body = g_bytes_new_static("{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n",
+	                          strlen("{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n"));
+
+	/* Runs come back on this thread, so none can between these calls. */
+	for (i = 0; i < VENTURE_FEEDS_PUSHES_IN_FLIGHT; i++)
+	{
+		g_clear_pointer(&last, g_free);
+		g_assert_true(venture_feeds_service_push(service_of(fixture), source_id, body, &last,
+		                                         &error));
+		g_assert_no_error(error);
+	}
+
+	g_assert_false(venture_feeds_service_push(service_of(fixture), source_id, body, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "push again when they finish"));
+	g_clear_error(&error);
+
+	/* Per source: another source's producer is not held back. */
+	g_assert_true(venture_feeds_service_push(service_of(fixture), other, body, NULL, &error));
+	g_assert_no_error(error);
+
+	/* The last of the four answers, and so have the others before it. */
+	g_assert_true(venture_feeds_service_wait_push(service_of(fixture), last, 60, &run_id));
+	settle(fixture);
+	g_assert_true(venture_feeds_service_push(service_of(fixture), source_id, body, NULL, &error));
+	g_assert_no_error(error);
+	settle(fixture);
+}
+
+/* What the nested waits below saw, the innermost first. */
+typedef struct
+{
+	Fixture		*fixture;
+	guint		 depth;
+	guint		 waiters_seen;
+	gboolean	 third_answered;
+	gint64		 third_took;
+} PushWaitNest;
+
+static gboolean
+push_wait_nest(gpointer data)
+{
+	PushWaitNest *nest = data;
+	VentureFeedsService *service = service_of(nest->fixture);
+	g_autofree gchar *id = NULL;
+	gint64 started;
+
+	id = g_strdup_printf("never-%u", nest->depth);
+
+	/* Two waits, each nesting a loop that runs the next idle; the third
+	 * finds both waiting and must answer at once. */
+	if (nest->depth < VENTURE_FEEDS_PUSH_WAITERS)
+	{
+		nest->depth++;
+		g_idle_add(push_wait_nest, nest);
+		g_assert_false(venture_feeds_service_wait_push(service, id, 1, NULL));
+		return G_SOURCE_REMOVE;
+	}
+
+	nest->waiters_seen = venture_feeds_service_count_push_waiters(service);
+	started = g_get_monotonic_time();
+	nest->third_answered = !venture_feeds_service_wait_push(service, id, 30, NULL);
+	nest->third_took = g_get_monotonic_time() - started;
+
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Waiting on a push nests a main loop, and nested loops end last in,
+ * first out; at most VENTURE_FEEDS_PUSH_WAITERS wait at once and the next
+ * is answered without waiting.
+ *
+ * What breaks if this regresses: every ?wait=1 request stacks a loop on
+ * the one before, and the first producer's answer waits on the last
+ * producer's run, however long that takes.
+ */
+static void
+test_feeds_push_waiters_are_bounded(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	PushWaitNest nest;
+
+	(void)user_data;
+
+	memset(&nest, 0, sizeof(nest));
+	nest.fixture = fixture;
+	g_idle_add(push_wait_nest, &nest);
+
+	while (!nest.third_answered || (0 != venture_feeds_service_count_push_waiters(service_of(fixture))))
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_cmpuint(nest.waiters_seen, ==, VENTURE_FEEDS_PUSH_WAITERS);
+	g_assert_cmpint(nest.third_took, <, G_USEC_PER_SEC / 2);
+}
+
 /*
  * file_jsonl reads the same account lines through the same path: a push
  * and a file of the same lines make the same store.
@@ -3311,6 +3585,12 @@ main(
 	           test_feeds_push_refusals, fixture_tear_down);
 	g_test_add("/feeds/account-lines-the-batch-refuses", Fixture, NULL, fixture_set_up,
 	           test_feeds_account_lines_the_batch_refuses, fixture_tear_down);
+	g_test_add("/feeds/refused-rows-keep-their-state", Fixture, NULL, fixture_set_up,
+	           test_feeds_refused_rows_keep_their_state, fixture_tear_down);
+	g_test_add("/feeds/pushes-in-flight-are-bounded", Fixture, NULL, fixture_set_up,
+	           test_feeds_pushes_in_flight_are_bounded, fixture_tear_down);
+	g_test_add("/feeds/push-waiters-are-bounded", Fixture, NULL, fixture_set_up,
+	           test_feeds_push_waiters_are_bounded, fixture_tear_down);
 	g_test_add("/feeds/file-jsonl-carries-accounts", Fixture, NULL, fixture_set_up,
 	           test_feeds_file_jsonl_carries_accounts, fixture_tear_down);
 	g_test_add("/feeds/push-first-sync-smoke", Fixture, NULL, fixture_set_up,
