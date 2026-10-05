@@ -345,6 +345,12 @@ PUBLIC_HDRS += $(wildcard src/docs/*.h)
 # Private implementation fragments are included by their owning C source;
 # they are neither installable headers nor introspection declarations.
 PUBLIC_HDRS += $(wildcard src/oidc/*.h)
+# venture.h includes these modules' record headers, so an installed
+# <venture/venture.h> -- what a crispy plugin compiles against -- needs them.
+PUBLIC_HDRS += $(wildcard src/ocr/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/leads/*.h))
+PUBLIC_HDRS += $(wildcard src/activities/*.h)
+PUBLIC_HDRS += $(wildcard src/calendar/*.h)
 PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
 
 TEST_SRCS := $(wildcard tests/test-*.c)
